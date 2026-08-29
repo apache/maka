@@ -66,6 +66,15 @@ export interface WorkHubDesktopSessionBridge {
   listTurns(
     sessionId: string,
   ): Promise<readonly Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource' | 'userPromptPreview'>>[]>;
+  queryMessageExecutions(
+    sessionId: string,
+    messageIds: readonly string[],
+  ): Promise<{
+    readonly resolutions: readonly (
+      | { messageId: string; state: 'pending' }
+      | { messageId: string; state: 'owned'; turnId: string; runId: string }
+    )[];
+  }>;
   create(input: { name: string }): Promise<WorkHubDesktopSession>;
   send(
     sessionId: string,
@@ -206,19 +215,44 @@ export function createDesktopWorkHubSessionPort(deps: {
           } catch {
             turnReadFailed = true;
           }
+          let executionReadFailed = false;
+          let resolutions: readonly (
+            | { messageId: string; state: 'pending' }
+            | { messageId: string; state: 'owned'; turnId: string; runId: string }
+          )[] = [];
+          try {
+            const result = await deps.sessions.queryMessageExecutions(
+              sessionId,
+              grouped.map(({ targetMessageId }) => targetMessageId),
+            );
+            resolutions = result.resolutions;
+          } catch {
+            executionReadFailed = true;
+          }
           const turnById = new Map(
             turns.flatMap((turn) => turn.turnId ? [[turn.turnId, turn] as const] : []),
           );
+          const resolutionByMessageId = new Map(
+            resolutions.map((resolution) => [resolution.messageId, resolution]),
+          );
           const session = sessionById.get(sessionId);
-          return grouped.map((reference): WorkHubDelegationFeedback => ({
-            delegationId: reference.delegationId,
-            state: projectDelegationExecutionState({
-              reference,
-              session,
-              turn: turnById.get(reference.targetTurnId),
-              turnReadFailed,
-            }),
-          }));
+          return grouped.map((reference): WorkHubDelegationFeedback => {
+            const resolution = resolutionByMessageId.get(reference.targetMessageId);
+            const executionTurnId = resolution?.state === 'owned'
+              ? resolution.turnId
+              : undefined;
+            return {
+              delegationId: reference.delegationId,
+              state: projectDelegationExecutionState({
+                resolutionState: resolution?.state,
+                executionTurnId,
+                session,
+                turn: executionTurnId ? turnById.get(executionTurnId) : undefined,
+                turnReadFailed,
+                executionReadFailed,
+              }),
+            };
+          });
         }),
       );
       const feedbackByDelegationId = new Map(
@@ -413,16 +447,22 @@ function projectState(session: WorkHubDesktopSession): WorkHubSessionState {
 }
 
 function projectDelegationExecutionState(input: {
-  reference: WorkHubDelegationReference;
+  resolutionState: 'pending' | 'owned' | undefined;
+  executionTurnId: string | undefined;
   session: WorkHubSessionFacts | undefined;
   turn: Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource'>> | undefined;
   turnReadFailed: boolean;
+  executionReadFailed: boolean;
 }): WorkHubDelegationFeedback['state'] {
-  const { reference, session, turn } = input;
+  const { executionTurnId, session, turn } = input;
+  if (input.executionReadFailed) return 'recovering';
+  if (!input.resolutionState) return 'recovering';
+  if (input.resolutionState === 'pending') return 'accepted';
+  if (!executionTurnId) return 'recovering';
   if (turn?.statusSource === 'recorded' && turn.status && turn.status !== 'running') {
     return turn.status;
   }
-  const ownsLiveTurn = session?.runningTurnIds?.includes(reference.targetTurnId) === true;
+  const ownsLiveTurn = session?.runningTurnIds?.includes(executionTurnId) === true;
   if (ownsLiveTurn && session?.state === 'waiting_for_user') return 'waiting_for_user';
   if (ownsLiveTurn || (turn?.statusSource === 'recorded' && turn.status === 'running')) {
     return 'running';

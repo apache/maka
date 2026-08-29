@@ -333,6 +333,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
   });
 
+  test('publishes a new compatibility epoch for Message execution ownership', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 61);
+  });
+
   test('publishes a new compatibility epoch for exact Session Connection identity', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
   });
@@ -1188,6 +1192,11 @@ describe('Runtime Host bootstrap protocol', () => {
         messageIds: ['message-1', 'message-2'],
       },
     };
+    const executionQuery = {
+      requestId: 'execution-query-request-1',
+      operation: 'turn.message.execution.query' as const,
+      input: query.input,
+    };
     const submit = {
       requestId: 'submit-request-1',
       operation: 'turn.message.submit' as const,
@@ -1216,6 +1225,35 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeClientFrame(query), query);
+    assert.deepEqual(decodeClientFrame(executionQuery), executionQuery);
+    const queried = {
+      requestId: executionQuery.requestId,
+      operation: executionQuery.operation,
+      ok: true as const,
+      result: {
+        resolutions: [
+          { messageId: 'message-1', state: 'pending' as const },
+          {
+            messageId: 'message-2',
+            state: 'owned' as const,
+            turnId: 'turn-2',
+            runId: 'run-2',
+          },
+        ],
+      },
+    };
+    assert.deepEqual(decodeHostFrame(queried), queried);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...queried,
+          result: {
+            ...queried.result,
+            resolutions: [...queried.result.resolutions, ...queried.result.resolutions],
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);

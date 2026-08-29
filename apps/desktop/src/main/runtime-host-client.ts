@@ -1084,6 +1084,12 @@ export class DesktopRuntimeHostClient {
     return this.request('turn.message.query', input);
   }
 
+  queryMessageExecutions(
+    input: OperationInput<'turn.message.execution.query'>,
+  ): Promise<OperationOutput<'turn.message.execution.query'>> {
+    return this.request('turn.message.execution.query', input);
+  }
+
   retractQueueEntry(
     input: Omit<QueueEntryRetractInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {

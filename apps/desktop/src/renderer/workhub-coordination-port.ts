@@ -131,6 +131,7 @@ export function projectWorkHubCoordinationTurns(
           delegationId: message.delegationId,
           targetSessionId: message.targetSessionId,
           targetSessionName: message.targetSessionName,
+          targetMessageId: message.targetMessageId,
           targetTurnId: message.targetTurnId,
           feedbackState: 'accepted',
         },

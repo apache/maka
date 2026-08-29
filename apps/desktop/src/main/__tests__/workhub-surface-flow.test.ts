@@ -130,6 +130,7 @@ test('durable delegation renders every projected target state as a navigable res
         delegationId: 'delegation-1',
         targetSessionId: 'payment',
         targetSessionName: 'Payments',
+        targetMessageId: 'payment-message',
         targetTurnId: 'payment-turn',
         feedbackState: state,
       },
@@ -334,6 +335,7 @@ test('real Session projection creates new guide topics and preserves origin ambi
       list: async () => sessions,
       listTurns: async (sessionId) =>
         (prompts.get(sessionId) ?? []).map((userPromptPreview) => ({ userPromptPreview })),
+      queryMessageExecutions: async () => ({ resolutions: [] }),
       create: async ({ name }) => {
         const id = name.includes('支付回调') ? 'payment' : 'layout';
         const session: WorkHubDesktopSession = {

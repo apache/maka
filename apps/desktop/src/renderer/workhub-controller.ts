@@ -74,6 +74,8 @@ export type WorkHubDelegationExecutionState =
 export interface WorkHubDelegationReference {
   readonly delegationId: string;
   readonly targetSessionId: string;
+  /** Stable delegated work identity; targetTurnId is only its admission location. */
+  readonly targetMessageId: string;
   readonly targetTurnId: string;
 }
 
@@ -102,6 +104,7 @@ export interface WorkHubCoordinationTurn {
     readonly delegationId: string;
     readonly targetSessionId: string;
     readonly targetSessionName: string;
+    readonly targetMessageId: string;
     readonly targetTurnId: string;
     readonly feedbackState: WorkHubDelegationExecutionState;
   };
@@ -648,6 +651,7 @@ function createWorkHubControllerImplementation(deps: {
             ? [{
                 delegationId: turn.assignment.delegationId,
                 targetSessionId: turn.assignment.targetSessionId,
+                targetMessageId: turn.assignment.targetMessageId,
                 targetTurnId: turn.assignment.targetTurnId,
               }]
             : [],

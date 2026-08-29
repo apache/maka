@@ -95,6 +95,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "interruptTurn"
   | 'listSessionTurns'
   | 'listSessionTurnLandmarks'
+  | 'queryMessageExecutions'
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
@@ -208,6 +209,14 @@ export function registerRuntimeHostSessionExecutionIpc(
     async (_event, sessionId: string, messageIds: unknown) => {
       if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
       return deps.client.queryMessages({ sessionId, messageIds });
+    },
+  );
+
+  ipcMain.handle(
+    'sessions:queryMessageExecutions',
+    async (_event, sessionId: string, messageIds: unknown) => {
+      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
+      return deps.client.queryMessageExecutions({ sessionId, messageIds });
     },
   );
 

@@ -74,6 +74,10 @@ export function scopeWorkHubSessionsToCoordinationHost(
       requireTargetHost(sessionId);
       return await sessions.listTurns(sessionId);
     },
+    async queryMessageExecutions(sessionId: string, messageIds: readonly string[]) {
+      requireTargetHost(sessionId);
+      return await sessions.queryMessageExecutions(sessionId, messageIds);
+    },
     async create(input: { name: string }) {
       requireHost();
       return await createOnCoordinationHost(coordinationSessionId!, input);

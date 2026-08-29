@@ -1790,6 +1790,9 @@ const makaBridge = {
     queryCancelledMessages(sessionId, messageIds) {
       return invokeSessionRuntimeHost('sessions:queryCancelledMessages', sessionId, messageIds);
     },
+    queryMessageExecutions(sessionId, messageIds) {
+      return invokeSessionRuntimeHost('sessions:queryMessageExecutions', sessionId, messageIds);
+    },
     retractQueueEntry(sessionId: string, entryId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:retractQueueEntry', sessionId, entryId);
     },

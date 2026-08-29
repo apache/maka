@@ -103,6 +103,7 @@ function coordinationAssignmentTurn(): WorkHubCoordinationTurn {
       delegationId: 'delegation-1',
       targetSessionId: 'payment',
       targetSessionName: 'Payments',
+      targetMessageId: 'payment-message',
       targetTurnId: 'payment-turn',
       feedbackState: 'accepted',
     },

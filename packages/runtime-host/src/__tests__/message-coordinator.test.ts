@@ -175,6 +175,59 @@ test('idle recovery does not reuse a predecessor identity for its queued success
   assert.equal(fixture.recoveredBatches[0]?.rootIdentity, undefined);
 });
 
+test('idle recovery resolves differently preassigned Messages to their shared successor Turn', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  for (const [messageId, turnId, runId] of [
+    ['workhub-message-a', 'preassigned-turn-a', 'preassigned-run-a'],
+    ['workhub-message-b', 'preassigned-turn-b', 'preassigned-run-b'],
+  ] as const) {
+    const content = { text: `recover ${messageId}` };
+    await fixture.admissions.commitMessageAdmission({
+      sessionId: ROOT.sessionId,
+      turnId,
+      runId,
+      messageId,
+      content,
+      submittedContentDigest: messageContentDigest(content),
+      submittedPlacement: 'current_turn',
+      placement: 'current_turn',
+      disposition: 'steering',
+      admittedAt: 10,
+    });
+  }
+
+  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+  const resolved = await fixture.coordinator.handlers['turn.message.execution.query'](
+    {
+      sessionId: ROOT.sessionId,
+      messageIds: ['workhub-message-a', 'workhub-message-b'],
+    },
+    operationContext(),
+  );
+
+  assert.equal(fixture.recoveredBatches[0]?.rootIdentity, undefined);
+  assert.deepEqual(resolved, {
+    ok: true,
+    result: {
+      resolutions: [
+        {
+          messageId: 'workhub-message-a',
+          state: 'owned',
+          turnId: 'recovered-turn',
+          runId: 'durable-run',
+        },
+        {
+          messageId: 'workhub-message-b',
+          state: 'owned',
+          turnId: 'recovered-turn',
+          runId: 'durable-run',
+        },
+      ],
+    },
+  });
+});
+
 test('idle submit starts exactly one root Turn and retry identity is connection-independent', async () => {
   const fixture = createFixture();
   fixture.setRootState({ kind: 'idle' });
@@ -247,20 +300,10 @@ test('message query reports only durable cancellation proof', async () => {
   await submit(fixture, 'cancelled-message', 'discard me', 'next_turn');
   await submit(fixture, 'accepted-message', 'waiting', 'next_turn');
   await fixture.coordinator.cancelMessages(ROOT.sessionId, ['cancelled-message']);
-  fixture.receipts.set(
-    'handed-off-message',
-    sourceReceipt('handed-off-message', 'delivered', 'current_turn', 'steering'),
-  );
-
   const result = await fixture.coordinator.handlers['turn.message.query'](
     {
       sessionId: ROOT.sessionId,
-      messageIds: [
-        'cancelled-message',
-        'accepted-message',
-        'handed-off-message',
-        'unknown-message',
-      ],
+      messageIds: ['cancelled-message', 'accepted-message', 'unknown-message'],
     },
     operationContext(),
   );
@@ -268,6 +311,64 @@ test('message query reports only durable cancellation proof', async () => {
   assert.deepEqual(result, {
     ok: true,
     result: { cancelledMessageIds: ['cancelled-message'] },
+  });
+});
+
+test('message execution query reports the Turn that durably owns each Message', async () => {
+  const fixture = createFixture();
+  const pendingContent = { text: 'not handed off yet' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'pending-message',
+    content: pendingContent,
+    submittedContentDigest: messageContentDigest(pendingContent),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 10,
+  });
+  fixture.receipts.set(
+    'handed-off-message',
+    sourceReceipt(
+      'handed-off-message',
+      'delivered by successor',
+      'current_turn',
+      'steering',
+      'successor-turn',
+    ),
+  );
+  fixture.events.push(steeringEvent('steered-message', 'consumed by admission Turn'));
+
+  const result = await fixture.coordinator.handlers['turn.message.execution.query'](
+    {
+      sessionId: ROOT.sessionId,
+      messageIds: ['pending-message', 'handed-off-message', 'steered-message', 'unknown-message'],
+    },
+    operationContext(),
+  );
+
+  assert.deepEqual(result, {
+    ok: true,
+    result: {
+      resolutions: [
+        {
+          messageId: 'pending-message',
+          state: 'pending',
+        },
+        {
+          messageId: 'handed-off-message',
+          state: 'owned',
+          turnId: 'successor-turn',
+          runId: 'durable-run',
+        },
+        {
+          messageId: 'steered-message',
+          state: 'owned',
+          turnId: ROOT.turnId,
+          runId: ROOT.runId,
+        },
+      ],
+    },
   });
 });
 

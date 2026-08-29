@@ -98,6 +98,7 @@ transcripts, such as:
 delegationId
 coordinationTurnId
 targetSessionId
+targetMessageId
 targetTurnId
 disposition
 ```
@@ -133,13 +134,18 @@ renderer does not append a second summary.
 
 The first-response contract is hybrid. The atomic `delegation_assigned` record is
 an immediate durable acknowledgement, so WorkHub confirms acceptance without
-waiting for target execution. It then joins that link to the exact target Turn's
-recorded lifecycle and the target Session's exact live-Turn membership to project
-`running`, `waiting_for_user`, `completed`, `failed`, and `aborted`. If the target
-authority is temporarily unreadable, WorkHub projects `recovering` rather than
-inventing a terminal result. These execution states are never appended as mutable
-Coordination records; Session change notifications invalidate the projection and
-opening WorkHub after restart rebuilds it from the same link and target facts.
+waiting for target execution. The target Message is the stable delegation
+identity; `targetTurnId` records only its admission location. WorkHub asks the
+target Message authority which Turn durably consumed or admitted that Message,
+then joins the resolved Turn's recorded lifecycle and the target Session's exact
+live-Turn membership to project `running`, `waiting_for_user`, `completed`,
+`failed`, and `aborted`. This remains correct when an unconsumed steering Message
+is folded into a successor Turn or recovery aggregates several pending Messages
+under one new Turn. If the target authority is temporarily unreadable, WorkHub
+projects `recovering` rather than inventing a terminal result. These execution
+states are never appended as mutable Coordination records; Session change
+notifications invalidate the projection and opening WorkHub after restart
+rebuilds it from the same link and target facts.
 
 The renderer persists only a Host-scoped action id until acknowledgement. Composer
 draft text uses a separate storage key and lifecycle. A reload therefore preserves

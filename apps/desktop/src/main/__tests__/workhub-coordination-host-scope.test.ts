@@ -44,6 +44,7 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
       completeHostIds: ['host-a', 'host-b'],
     }),
     listTurns: async () => [],
+    queryMessageExecutions: async () => ({ resolutions: [] }),
     create: async () => {
       throw new Error('unscoped create must not be used');
     },

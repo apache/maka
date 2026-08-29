@@ -1018,6 +1018,10 @@ export interface MakaBridge {
       sessionId: string,
       messageIds: readonly string[],
     ): Promise<import('@maka/runtime-host/protocol').TurnMessageQueryResult>;
+    queryMessageExecutions(
+      sessionId: string,
+      messageIds: readonly string[],
+    ): Promise<import('@maka/runtime-host/protocol').TurnMessageExecutionQueryResult>;
     retractQueueEntry(sessionId: string, entryId: string): Promise<void>;
     promoteQueueEntry(sessionId: string, entryId: string): Promise<void>;
     updateQueueEntry(

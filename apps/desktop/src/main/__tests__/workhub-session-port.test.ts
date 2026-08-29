@@ -56,6 +56,13 @@ const unusedTranscripts = {
   },
 };
 
+const noMessageExecutions = async () => ({
+  resolutions: [] as Array<
+    | { messageId: string; state: 'pending' }
+    | { messageId: string; state: 'owned'; turnId: string; runId: string }
+  >,
+});
+
 function transcriptsWith(messages: readonly StoredMessage[]) {
   return {
     open: async (sessionId: string, handler: (batch: DesktopTranscriptBatch) => void) => {
@@ -151,6 +158,7 @@ test('projects the durable Coordination transcript into the WorkHub conversation
       delegationId: 'payments-delegation',
       targetSessionId: 'payments',
       targetSessionName: 'Payments',
+      targetMessageId: 'payments-message',
       targetTurnId: 'payments-turn',
       feedbackState: 'accepted',
     },
@@ -294,6 +302,7 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -369,6 +378,7 @@ test('desktop adapter cancels an unavailable transcript without hiding ready Ses
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => { throw new Error('not used'); },
       send: async () => { throw new Error('not used'); },
       stop: async () => {},
@@ -451,6 +461,7 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
     sessions: {
       list: async () => source,
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -509,7 +520,7 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
   ]);
 });
 
-test('desktop adapter rebuilds delegation feedback from the exact authoritative Turn', async () => {
+test('desktop adapter rebuilds delegation feedback from the Message-owned execution Turn', async () => {
   const sessions = [
     desktopSession('accepted'),
     desktopSession('running', { status: 'running', runningTurnIds: ['turn-running'] }),
@@ -544,6 +555,18 @@ test('desktop adapter rebuilds delegation feedback from the exact authoritative 
         if (sessionId === 'recovering') throw new Error('Host is recovering');
         return turns.get(sessionId) ?? [];
       },
+      queryMessageExecutions: async (sessionId, messageIds) => ({
+        resolutions: sessionId === 'accepted'
+          ? messageIds.map((messageId) => ({ messageId, state: 'pending' as const }))
+          : sessionId === 'recovering'
+            ? []
+            : messageIds.map((messageId) => ({
+              messageId,
+              state: 'owned' as const,
+              turnId: `turn-${sessionId}`,
+              runId: `run-${sessionId}`,
+            })),
+      }),
       create: async () => { throw new Error('not used'); },
       send: async () => { throw new Error('not used'); },
       stop: async () => {},
@@ -563,6 +586,7 @@ test('desktop adapter rebuilds delegation feedback from the exact authoritative 
   ].map(([targetSessionId, targetTurnId]) => ({
     delegationId: `delegation-${targetSessionId}`,
     targetSessionId: targetSessionId!,
+    targetMessageId: `message-${targetSessionId}`,
     targetTurnId: targetTurnId!,
   }));
 
@@ -579,6 +603,63 @@ test('desktop adapter rebuilds delegation feedback from the exact authoritative 
   ]);
 });
 
+test('desktop adapter follows a delegated Message into its successor Turn', async () => {
+  const targetSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' });
+  const adapter = createDesktopWorkHubSessionPort({
+    transcripts: transcriptsWith([{
+      type: 'user',
+      id: 'payment-message',
+      turnId: 'successor-turn',
+      ts: 2,
+      text: 'Continue payment recovery',
+      steeringEventId: 'payment-message',
+    }]),
+    sessions: {
+      list: async () => [desktopSession(targetSessionId, {
+        status: 'running',
+        runningTurnIds: ['successor-turn'],
+      })],
+      listTurns: async () => [
+        {
+          turnId: 'admission-turn',
+          status: 'completed',
+          statusSource: 'recorded',
+        },
+        {
+          turnId: 'successor-turn',
+          status: 'running',
+          statusSource: 'recorded',
+        },
+      ],
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({
+          messageId,
+          state: 'owned' as const,
+          turnId: 'successor-turn',
+          runId: 'successor-run',
+        })),
+      }),
+      create: async () => { throw new Error('not used'); },
+      send: async () => { throw new Error('not used'); },
+      stop: async () => {},
+      subscribeChanges: () => () => {},
+    },
+    projectName: () => 'Maka',
+    newTurnId: () => 'unused',
+  });
+
+  const references = [{
+    delegationId: 'payment-delegation',
+    targetSessionId,
+    targetTurnId: 'admission-turn',
+    targetMessageId: 'payment-message',
+  }];
+  assert.deepEqual(await adapter.delegationFeedback(references), [{
+    delegationId: 'payment-delegation',
+    state: 'running',
+  }]);
+});
+
 test('desktop adapter preserves per-Host catalog coverage for ownership reconciliation', async () => {
   const localSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'local' });
   const adapter = createDesktopWorkHubSessionPort({
@@ -590,6 +671,7 @@ test('desktop adapter preserves per-Host catalog coverage for ownership reconcil
         completeHostIds: ['local-host'],
       }),
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => { throw new Error('not used'); },
       send: async () => { throw new Error('not used'); },
       stop: async () => {},
@@ -619,6 +701,7 @@ test('desktop adapter delegates create, send, and invalidation to Session APIs',
         runningTurnIds: ['turn-new'],
       })],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async (input) => {
         calls.push(['create', input]);
         return desktopSession('created', { name: input.name });
@@ -667,6 +750,7 @@ test('desktop adapter preserves when Session delivery steered an existing root T
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -699,6 +783,7 @@ test('desktop adapter distinguishes definite rejection from an unknown delivery 
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => { throw new Error('not used'); },
       send: async () => {
         if (outcome === 'throw') throw new Error('transport disconnected');
@@ -792,6 +877,7 @@ test('desktop adapter reconciles lost replies from authoritative transcript iden
       sessions: {
         list: async () => [],
         listTurns: async () => [],
+        queryMessageExecutions: noMessageExecutions,
         create: async () => { throw new Error('not used'); },
         send: async () => { throw new Error('not used'); },
         stop: async () => {},
@@ -818,6 +904,7 @@ test('desktop adapter binds stop to the root Turn owned by the WorkHub submissio
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -855,6 +942,7 @@ test('desktop adapter derives stable origin evidence from the existing Session l
           { userPromptPreview: '把风险按高、中、低分组' },
         ];
       },
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
