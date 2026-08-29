@@ -316,22 +316,51 @@ export function findComponentBody(blanked, name) {
 }
 
 /**
- * `useX(`, `useX<T>(` and `useX\n  (` all call a hook; `obj.useX(` and
- * `ReturnType<typeof useX>` do not.
+ * `useX(`, `React.useX(`, `useX<T>(`, `useX\n  (` and the bare `use(` of React
+ * 19 all call a hook; `ReturnType<typeof useX>` does not, and neither does
+ * `shellCopy.useSkillPrompt(name)` — the shell really does call that one.
+ *
+ * That last case is why the qualifier is the literal `React.` and not any
+ * identifier: a general `<name>.useX(` rule would count a locale copy function
+ * as a hook. The narrow rule leaves one hole, `import * as X from 'react'`,
+ * which `assertCountableReactImport` closes by failing rather than by guessing.
  */
 // One level of nesting is enough for `useX<Record<string, number>>(...)`;
 // deeper generics in a hook call do not occur here and would only cost a
 // miscount in the safe direction (a failure, not a silent pass).
 const TYPE_ARGUMENTS = String.raw`<(?:[^<>()]|<[^<>()]*>)*>`;
 const HOOK_CALL = new RegExp(
-  String.raw`(?<![.\w$])use[A-Z][A-Za-z0-9]*(?=\s*(?:${TYPE_ARGUMENTS}\s*)?\()`,
+  String.raw`(?<![.\w$])(?:React\.)?(use(?:[A-Z][A-Za-z0-9]*)?)(?=\s*(?:${TYPE_ARGUMENTS}\s*)?\()`,
   'g',
 );
+
+/**
+ * A namespace import of React would let `X.useState(...)` past a scanner that
+ * only knows the name `React`, and the whole point of this gate is that it
+ * cannot be widened by accident. It has no way to resolve the alias, so it
+ * refuses the file instead of under-counting it.
+ */
+export function assertCountableReactImport(source) {
+  const namespaceImport = /import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s+['"]react['"]/.exec(
+    source,
+  );
+  if (!namespaceImport) return null;
+  return (
+    `imports React as the namespace \`${namespaceImport[1]}\`.\n` +
+    '  This gate counts hook calls textually and knows only the name `React`,\n' +
+    '  so `' +
+    namespaceImport[1] +
+    '.useState(...)` would be invisible to it.\n' +
+    '  Use named imports, or teach the scanner the alias.'
+  );
+}
 
 export function countHooks(body) {
   const counts = {};
   for (const match of body.matchAll(HOOK_CALL)) {
-    const name = match[0];
+    // `React.useState` is the same call site as `useState`, and the inventory
+    // names the hook, not the syntax that reached it.
+    const name = match[1];
     if (DERIVED_HOOKS.has(name)) continue;
     counts[name] = (counts[name] ?? 0) + 1;
   }
@@ -355,7 +384,14 @@ export function compareToInventory(counts, allowed) {
 }
 
 function main() {
-  const blanked = stripNonCode(readFileSync(join(root, shellFile), 'utf8'));
+  const source = readFileSync(join(root, shellFile), 'utf8');
+  // Against the raw source: `stripNonCode` blanks the `'react'` specifier.
+  const uncountableImport = assertCountableReactImport(source);
+  if (uncountableImport) {
+    console.error(`${shellFile}: ${uncountableImport}`);
+    process.exit(1);
+  }
+  const blanked = stripNonCode(source);
   const failures = [];
   let hooks = 0;
   let callSites = 0;

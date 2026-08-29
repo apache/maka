@@ -22,6 +22,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   ALLOWED,
+  assertCountableReactImport,
   compareToInventory,
   countHooks,
   findComponentBody,
@@ -117,10 +118,33 @@ test('an explicit type argument is still a call site', () => {
   });
 });
 
-test('a member call is not a hook', () => {
-  const source =
-    'function C() {\n  copy.useSkillPrompt(name);\n  React.useState(0);\n  useToast();\n}\n';
+test('a member call on something other than React is not a hook', () => {
+  const source = 'function C() {\n  copy.useSkillPrompt(name);\n  useToast();\n}\n';
   assert.deepEqual(countIn(source, 'C'), { useToast: 1 });
+});
+
+// The gate's whole value is that it fails closed. Every form React supports has
+// to be counted, or a future subscription widens the shell's scope while this
+// exact inventory stays green.
+test('the React namespace form is the same call site as the bare name', () => {
+  const source =
+    'function C() {\n  React.useState(0);\n  useState(1);\n  React.useEffect(fn);\n}\n';
+  assert.deepEqual(countIn(source, 'C'), { useState: 2, useEffect: 1 });
+});
+
+test("React 19's bare `use` is a hook, and identifiers merely starting with `use` are not", () => {
+  const source =
+    'function C() {\n  use(promise);\n  user(id);\n  usedBy(x);\n  router.use(mw);\n}\n';
+  assert.deepEqual(countIn(source, 'C'), { use: 1 });
+});
+
+test('a namespace import of React is refused rather than under-counted', () => {
+  assert.equal(assertCountableReactImport("import { useState } from 'react';"), null);
+  assert.equal(assertCountableReactImport("import * as Lodash from 'lodash';"), null);
+  assert.match(
+    assertCountableReactImport("import * as R from 'react';") ?? '',
+    /imports React as the namespace `R`/,
+  );
 });
 
 test('a type position is not a call site', () => {
