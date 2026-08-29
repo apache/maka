@@ -15,4 +15,4 @@
 # specific language governing permissions and limitations
 # under the License.
 
-npx --no -- commitlint --edit "$1"
+./node_modules/.bin/commitlint --edit "$1"

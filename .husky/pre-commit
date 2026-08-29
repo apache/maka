@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-npm exec -- biome check --staged --no-errors-on-unmatched
+./node_modules/.bin/biome check --staged --no-errors-on-unmatched
 node scripts/asf-license-headers.mjs check-staged
 node scripts/protocol-epoch-check.mjs --staged
 git diff --cached --check
