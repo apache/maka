@@ -656,6 +656,115 @@ test('access credentials persist only as hashes and stay revoked after reload', 
   }
 });
 
+test('capability-provider credentials retain a Host-verified Client owner identity', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-provider-owner-'));
+  try {
+    const authority = await openRuntimeHostAccessAuthority(directory);
+    const owner = await authority.prepare({
+      principalKind: 'remote_owner',
+      principalId: 'terminal-owner',
+      operationGrants: ['access.credential.finalize', 'session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      bindClientInstance: true,
+    });
+    await authority.finalize(owner.credentialId, 'terminal-client');
+    const unboundOwner = await authority.issue({
+      principalKind: 'remote_owner',
+      principalId: 'unbound-owner',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const providerInput = {
+      principalKind: 'capability_provider' as const,
+      principalId: 'terminal-mcp-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'] as const,
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+    };
+    const expectedOwner = {
+      principalId: 'terminal-owner',
+      clientInstanceId: 'terminal-client',
+    } as const;
+    await assert.rejects(
+      authority.issue({
+        ...providerInput,
+        capabilityOwnerCredentialId: unboundOwner.credentialId,
+      }),
+      /must be bound to one Client identity/u,
+    );
+    await assert.rejects(
+      authority.issue({
+        principalKind: 'remote_owner',
+        principalId: 'invalid-owner-reference',
+        operationGrants: ['session.catalog.query'],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+        capabilityOwnerCredentialId: owner.credentialId,
+      }),
+      /Only a capability provider/u,
+    );
+
+    const provider = await authority.issue({
+      ...providerInput,
+      capabilityOwnerCredentialId: owner.credentialId,
+    });
+    assert.deepEqual(provider.capabilityOwner, expectedOwner);
+    assert.equal(
+      JSON.parse(await readFile(join(directory, 'runtime-host-access.json'), 'utf8')).schemaVersion,
+      2,
+    );
+    const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
+      '../control/access-credential-delivery.js'
+    );
+    const credential = await consumeAccessCredentialDeliveryFromControlDirectory(
+      directory,
+      provider.deliveryId,
+      provider.credentialId,
+    );
+    assert.deepEqual(authority.authenticate(credential)?.capabilityOwner, expectedOwner);
+
+    const replacementOwner = await authority.prepareRotation({
+      replacementOfCredentialId: owner.credentialId,
+    });
+    await authority.finalize(replacementOwner.credentialId, 'terminal-client');
+    const replacementProvider = await authority.issue({
+      ...providerInput,
+      principalId: 'rotated-terminal-mcp-provider',
+      capabilityOwnerCredentialId: replacementOwner.credentialId,
+    });
+    assert.deepEqual(replacementProvider.capabilityOwner, provider.capabilityOwner);
+
+    const reopened = await openRuntimeHostAccessAuthority(directory);
+    assert.deepEqual(reopened.authenticate(credential)?.capabilityOwner, expectedOwner);
+    await assert.rejects(
+      reopened.issue({
+        ...providerInput,
+        principalId: 'missing-owner-provider',
+        capabilityOwnerCredentialId: 'missing-owner-credential',
+      }),
+      /active remote-owner credential/u,
+    );
+    await authority.close();
+    await reopened.close();
+    const downgraded = JSON.parse(
+      await readFile(join(directory, 'runtime-host-access.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    await writeFile(
+      join(directory, 'runtime-host-access.json'),
+      `${JSON.stringify({ ...downgraded, schemaVersion: 1 })}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      openRuntimeHostAccessAuthority(directory),
+      /Legacy Runtime Host access files cannot declare Client Capability owners/u,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('credential rotation preserves authority and cannot outlive its active source', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-rotation-'));
   const authority = await openRuntimeHostAccessAuthority(directory);

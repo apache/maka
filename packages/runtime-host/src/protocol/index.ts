@@ -95,7 +95,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 73 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 74 as const;
+// 74: Capability-provider credentials may carry one Host-authenticated owner
+// identity. Older peers cannot preserve the association and could select an
+// unrelated provider for an interactive Session.
 // 73: Transcript pages carry a Host-owned Turn range boundary. Older peers
 // cannot preserve both the complete edge Turn and the bounded projection.
 // 71: Session Guests can submit durable exact Turn access requests and Owners

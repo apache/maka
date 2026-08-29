@@ -21,6 +21,7 @@ import type {
   AccessCredentialPrincipalKind,
   ClientCapabilityClientFrame,
   ClientCapabilityHostFrame,
+  ClientCapabilityOwnerIdentity,
 } from '../protocol/index.js';
 
 export interface ClientCapabilityConnectionSender {
@@ -32,6 +33,7 @@ export interface ClientCapabilityConnectionIdentity {
   readonly principalId: string;
   readonly clientInstanceId: string;
   readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
 }
 
 export interface ClientCapabilityConnection {

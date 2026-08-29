@@ -22,6 +22,7 @@ import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   type AccessCredentialPrincipalKind,
+  type ClientCapabilityOwnerIdentity,
   HOST_OPERATION_SPECS,
   operationAllowsRemoteOwner,
   type SessionCollaborationGrant,
@@ -30,7 +31,9 @@ import {
   type OperationKey,
 } from '../protocol/index.js';
 
-const ACCESS_FILE_SCHEMA_VERSION = 3;
+// Schema 4 makes provider ownership downgrade-safe: a pre-association Host
+// rejects the file instead of silently treating a bound provider as global.
+const ACCESS_FILE_SCHEMA_VERSION = 4;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
 const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
 const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
@@ -80,6 +83,7 @@ export interface StoredAccessCredential {
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   readonly createdAt: string;
   readonly bindClientInstanceOnFinalize?: true;
   readonly clientInstanceId?: string;
@@ -225,12 +229,21 @@ function serializeAccessCredentialFile(file: AccessCredentialFile): string {
 function decodeAccessFile(value: unknown): AccessCredentialFile {
   if (
     !isRecord(value) ||
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3)
+    (value.schemaVersion !== 1 &&
+      value.schemaVersion !== 2 &&
+      value.schemaVersion !== 3 &&
+      value.schemaVersion !== 4)
   ) {
     throw new Error('Unsupported Runtime Host access file');
   }
   if (!Array.isArray(value.credentials)) throw new Error('Invalid Runtime Host access file');
   const credentials = value.credentials.map(decodeStoredCredential);
+  if (
+    value.schemaVersion === LEGACY_ACCESS_FILE_SCHEMA_VERSION &&
+    credentials.some((credential) => credential.capabilityOwner !== undefined)
+  ) {
+    throw new Error('Legacy Runtime Host access files cannot declare Client Capability owners');
+  }
   if (
     new Set(credentials.map((credential) => credential.credentialId)).size !== credentials.length
   ) {
@@ -349,6 +362,10 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   ) {
     throw new Error('Invalid access credential Client binding state');
   }
+  const capabilityOwner = decodeCapabilityOwner(value.capabilityOwner);
+  if (capabilityOwner && principalKind !== 'capability_provider') {
+    throw new Error('Only a capability provider may declare a Client Capability owner');
+  }
   const expiresAt = value.expiresAt;
   if (value.status === 'pending') {
     if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
@@ -370,6 +387,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     operationGrants,
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
+    ...(capabilityOwner ? { capabilityOwner } : {}),
     createdAt,
     ...(bindClientInstanceOnFinalize === true ? { bindClientInstanceOnFinalize } : {}),
     ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
@@ -397,6 +415,23 @@ function decodeStoredSessionGrant(value: unknown): SessionCollaborationGrant {
     sessionId,
     createdAt,
   });
+}
+
+function decodeCapabilityOwner(value: unknown): ClientCapabilityOwnerIdentity | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('Invalid Client Capability owner identity');
+  const principalId = requireStoredString(value.principalId, 'capabilityOwner.principalId');
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
+    throw new Error('Invalid capabilityOwner.principalId');
+  }
+  const clientInstanceId = requireStoredString(
+    value.clientInstanceId,
+    'capabilityOwner.clientInstanceId',
+  );
+  if (clientInstanceId.length > 128) {
+    throw new Error('Invalid capabilityOwner.clientInstanceId');
+  }
+  return Object.freeze({ principalId, clientInstanceId });
 }
 
 function migrateStoredOperationGrants(grants: readonly string[]): readonly string[] {

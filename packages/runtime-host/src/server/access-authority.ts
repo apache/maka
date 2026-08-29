@@ -23,6 +23,7 @@ import { runtimeHostAccessCredentialHash } from '../access-credential-identity.j
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
+  type ClientCapabilityOwnerIdentity,
   type AccessCredentialFinalizeResult,
   type AccessCredentialPrepareInput,
   type AccessCredentialPrepareResult,
@@ -229,6 +230,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
             !match.bindClientInstanceOnFinalize && match.canPublishClientCapabilities,
           canUseHostPaths: !match.bindClientInstanceOnFinalize && match.canUseHostPaths,
           ...(match.clientInstanceId ? { clientInstanceId: match.clientInstanceId } : {}),
+          ...(match.capabilityOwner ? { capabilityOwner: match.capabilityOwner } : {}),
         })
       : undefined;
   }
@@ -601,7 +603,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           operationGrants: current.operationGrants,
           canPublishClientCapabilities: current.canPublishClientCapabilities,
           canUseHostPaths: current.canUseHostPaths,
-          bindClientInstance: current.bindClientInstanceOnFinalize === true,
+          bindClientInstance: current.clientInstanceId !== undefined,
         },
         'prepare',
         current.operationGrants,
@@ -622,6 +624,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     operationGrants = issuedAccessGrants(input.operationGrants),
   ): Promise<AccessCredentialIssueResult> {
     assertCredentialAuthority(input, operationGrants);
+    const capabilityOwner = this.#resolveCapabilityOwner(
+      'capabilityOwnerCredentialId' in input ? input.capabilityOwnerCredentialId : undefined,
+    );
     if (
       mode === 'prepare' &&
       (input.principalKind !== 'remote_owner' ||
@@ -639,6 +644,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: input.canPublishClientCapabilities,
       canUseHostPaths: input.canUseHostPaths,
+      ...(capabilityOwner ? { capabilityOwner } : {}),
     });
     const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
     const createdAt = new Date();
@@ -651,6 +657,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: input.canPublishClientCapabilities,
       canUseHostPaths: input.canUseHostPaths,
+      ...(capabilityOwner ? { capabilityOwner } : {}),
       createdAt: createdAt.toISOString(),
       ...(mode === 'prepare'
         ? {
@@ -700,7 +707,31 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: stored.canPublishClientCapabilities,
       canUseHostPaths: stored.canUseHostPaths,
+      ...(stored.capabilityOwner ? { capabilityOwner: stored.capabilityOwner } : {}),
     };
+  }
+
+  #resolveCapabilityOwner(
+    credentialId: string | undefined,
+  ): ClientCapabilityOwnerIdentity | undefined {
+    if (!credentialId) return undefined;
+    const owner = this.#file.credentials.find(
+      (credential) => credential.credentialId === credentialId && credential.status === 'active',
+    );
+    if (!owner || owner.principalKind !== 'remote_owner') {
+      throw new RuntimeHostAccessInputError(
+        'A capability provider owner must be one active remote-owner credential',
+      );
+    }
+    if (!owner.clientInstanceId) {
+      throw new RuntimeHostAccessInputError(
+        'A capability provider owner credential must be bound to one Client identity',
+      );
+    }
+    return Object.freeze({
+      principalId: owner.principalId,
+      clientInstanceId: owner.clientInstanceId,
+    });
   }
 
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
@@ -1056,7 +1087,14 @@ function assertCredentialAuthority(
   input: AccessCredentialIssueInput,
   operationGrants: readonly string[],
 ): void {
-  if (input.principalKind !== 'capability_provider') return;
+  if (input.principalKind !== 'capability_provider') {
+    if (input.capabilityOwnerCredentialId) {
+      throw new RuntimeHostAccessInputError(
+        'Only a capability provider credential may declare a Client owner',
+      );
+    }
+    return;
+  }
   if (!input.canPublishClientCapabilities || input.canUseHostPaths) {
     throw new RuntimeHostAccessInputError(
       'A capability provider must publish Client Capabilities without Host path authority',

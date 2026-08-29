@@ -320,6 +320,40 @@ describe('Runtime Host operator commands', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'access',
+        'issue',
+        '--kind',
+        'capability-provider',
+        '--principal',
+        'terminal-mcp-provider',
+        '--capability-owner-credential',
+        'terminal-owner-credential',
+      ]),
+      {
+        kind: 'runtime-host-access-issue',
+        principalKind: 'capability_provider',
+        principalId: 'terminal-mcp-provider',
+        operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+        capabilityOwnerCredentialId: 'terminal-owner-credential',
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'access',
+        'issue',
+        '--principal',
+        'terminal-owner',
+        '--grant',
+        'session.catalog.query',
+        '--capability-owner-credential',
+        'terminal-owner-credential',
+      ]).kind,
+      'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
         'prepare',
         '--current-fingerprint',
         'a'.repeat(32),
