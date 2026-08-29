@@ -20,12 +20,15 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # `edited` also covers title and body changes. Isolate those no-op runs so
+  # they cannot cancel the check for the current pull request revision.
+  group: ci-${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'edited' && github.event.changes.base.ref.from == '' && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -42,6 +45,10 @@ jobs:
   # Renaming it would leave that check unreported on every open pull request
   # until the rename merged, and nothing could merge while it was unreported.
   test:
+    # A base-ref edit keeps the protected `CI / test` name. Other edits create
+    # only a differently named skipped check, so they cannot satisfy it.
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '' && 'ignored-edit' || 'test' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
     # Pinned, not `ubuntu-latest`. The two resolve to the same image, but only
     # the alias makes this required context wait at the tail, and the steps
     # below already assume this image. `ci-workflow-policy.test.mjs` holds the
