@@ -83,7 +83,7 @@ export interface RuntimeHostPeerNativeEndpoint {
   }): Promise<RuntimeHostPeerNativeStream>;
   configureTransit(options: {
     readonly allowedPeerIds: readonly string[];
-    readonly relayAddresses: readonly string[];
+    readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   cancelConnect(requestId: number): Promise<boolean>;
   accept(): Promise<RuntimeHostPeerNativeStream | null>;
@@ -95,6 +95,11 @@ export interface RuntimeHostPeerTransitSnapshot {
   readonly allowedPeerCount: number;
   readonly activeReservationCount: number;
   readonly activeCircuitCount: number;
+}
+
+export interface RuntimeHostPeerTransitRelayCandidate {
+  readonly peerId: string;
+  readonly addresses: readonly string[];
 }
 
 interface RuntimeHostPeerNativeModule {

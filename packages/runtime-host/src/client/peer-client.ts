@@ -25,6 +25,7 @@ import {
   type RuntimeHostPeerIdentityProof,
   type RuntimeHostPeerNativeEndpoint,
   type RuntimeHostPeerNativeStream,
+  type RuntimeHostPeerTransitRelayCandidate,
   type RuntimeHostPeerTransitSnapshot,
 } from '../transport/peer-native.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
@@ -58,7 +59,7 @@ export interface RuntimeHostPeerClient {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly relayAddresses: readonly string[];
+    readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   connect(
     input: RuntimeHostPeerConnectInput,
@@ -187,7 +188,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly relayAddresses: readonly string[];
+    readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void> {
     return this.#requireEndpoint().configureTransit(input);
   }

@@ -20,6 +20,7 @@
 import type {
   RuntimeHostPeerIdentityProof,
   RuntimeHostPeerNativeStream,
+  RuntimeHostPeerTransitRelayCandidate,
   RuntimeHostPeerTransitSnapshot,
 } from '../transport/peer-native.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -36,6 +37,8 @@ import {
   PEER_MESH_MAX_MESHES,
   PEER_MESH_MAX_INVITATION_RECORDS,
   PEER_MESH_MAX_PENDING_INVITATIONS,
+  PEER_MESH_MAX_TRANSIT_ADDRESSES_PER_RELAY,
+  PEER_MESH_MAX_TRANSIT_RELAY_ADDRESSES,
   peerMeshRouteRecordSigningBytes,
   peerMeshId,
   peerMeshInvitationSecretDigest,
@@ -171,7 +174,7 @@ export interface PeerMeshTransport {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly relayAddresses: readonly string[];
+    readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   connectMeshControl(
     input: {
@@ -531,8 +534,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           result: undefined,
         };
       });
-      await this.#refreshLocalRoute();
-      await this.#reconcileTransit();
+      try {
+        await this.#reconcileTransit();
+        await this.#refreshLocalRoute();
+      } catch {
+        void this.reconcile().catch(() => undefined);
+      }
     });
   }
 
@@ -645,8 +652,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       ? AbortSignal.any([signal, this.#lifetime.signal])
       : this.#lifetime.signal;
     lifetimeSignal.throwIfAborted();
-    await this.#refreshLocalRoute();
     await this.#reconcileTransit();
+    await this.#refreshLocalRoute();
     const identity = this.#peer.identity();
     const stored = this.#store.read();
     const memberships = stored.meshes.filter(
@@ -1277,13 +1284,42 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         );
       })
       .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId));
+    const relayCandidates = transitRelayCandidates(eligibleRelays);
     await this.#peer.configureTransit({
       allowedPeerIds: selected
         ? selected.roster.roster.members.filter((peerId) => peerId !== localPeerId)
         : [],
-      relayAddresses: eligibleRelays.flatMap(({ route }) => route.routeHints),
+      relayCandidates,
     });
   }
+}
+
+function transitRelayCandidates(
+  routes: readonly SignedPeerMeshRouteRecordV1[],
+): readonly RuntimeHostPeerTransitRelayCandidate[] {
+  let remaining = PEER_MESH_MAX_TRANSIT_RELAY_ADDRESSES;
+  const candidates: RuntimeHostPeerTransitRelayCandidate[] = [];
+  for (const { route } of routes) {
+    if (remaining === 0) break;
+    const addresses = [
+      ...new Set(route.routeHints.filter((address) => isBaseRelayFor(address, route.peerId))),
+    ].slice(0, Math.min(PEER_MESH_MAX_TRANSIT_ADDRESSES_PER_RELAY, remaining));
+    if (addresses.length === 0) continue;
+    candidates.push(Object.freeze({ peerId: route.peerId, addresses: Object.freeze(addresses) }));
+    remaining -= addresses.length;
+  }
+  return Object.freeze(candidates);
+}
+
+function isBaseRelayFor(address: string, peerId: string): boolean {
+  const segments = address.split('/');
+  const peerProtocol = segments.indexOf('p2p');
+  return (
+    !segments.includes('p2p-circuit') &&
+    peerProtocol === segments.lastIndexOf('p2p') &&
+    peerProtocol === segments.length - 2 &&
+    segments.at(-1) === peerId
+  );
 }
 
 function isActiveMeshMember(

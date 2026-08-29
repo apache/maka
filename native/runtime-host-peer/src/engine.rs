@@ -1571,7 +1571,6 @@ fn reconcile_transit_reservations(
     }
     for (peer_id, addresses) in desired {
         let relay = relays.entry(peer_id).or_default();
-        relay.automatic_addresses.clear();
         relay.transit_addresses = addresses;
         relay.transit_reserve = true;
         relay.next_connection_attempt = Instant::now();
