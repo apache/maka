@@ -48,6 +48,9 @@ function streamingRoot(
   requestAnimationFrame: (callback: FrameRequestCallback) => number = () => 1,
 ) {
   const { document, window } = parseHTML('<div id="root"></div>');
+  Object.assign(window, {
+    getComputedStyle: () => ({ direction: 'ltr', writingMode: 'horizontal-tb' }),
+  });
   Object.assign(globalThis, {
     document,
     window,
@@ -224,4 +227,40 @@ test('keeps a restored prefix inside math visible and handles a formula rewrite'
   assert.match(container.textContent ?? '', /2/);
 
   await act(() => root.unmount());
+});
+
+test('keeps split fenced-code openers literal through final flush', async () => {
+  for (const { prefix, target } of [
+    { prefix: '~~', target: '~~~ts\n\\(not math\\)\n~~~' },
+    { prefix: '``', target: '```ts\n\\(not math\\)\n```' },
+  ]) {
+    const frames: FrameRequestCallback[] = [];
+    const { container, root } = streamingRoot((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    const render = (text: string, streaming: boolean) => root.render(
+      <LocaleProvider locale="en">
+        <MarkdownBody
+          text={text}
+          settledText={streaming ? prefix : undefined}
+          streaming={streaming}
+        />
+      </LocaleProvider>,
+    );
+
+    await act(() => render(prefix, true));
+    await act(() => render(target, true));
+    for (let tick = 1; tick <= 30 && frames.length > 0; tick++) {
+      const frame = frames.shift();
+      assert.ok(frame);
+      await act(() => frame(tick * 100));
+    }
+    await act(() => render(target, false));
+
+    assert.equal(container.querySelector('code')?.textContent, '\\(not math\\)');
+    assert.equal(container.querySelector('.maka-math'), null);
+    assert.doesNotMatch(container.textContent ?? '', /MAKA_MATH|\uE000|\uE001/);
+    await act(() => root.unmount());
+  }
 });

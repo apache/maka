@@ -109,7 +109,11 @@ function protectMarkdownMath(source: string, startsAtLineStart = true): {
 
   while (index < source.length) {
     const fence = atLineStart ? readFence(source, index) : undefined;
-    if (fence) {
+    if (fence?.kind === 'pending') {
+      text += source.slice(index);
+      break;
+    }
+    if (fence?.kind === 'match') {
       text += source.slice(index, fence.end);
       index = fence.end;
       atLineStart = source[index - 1] === '\n';
@@ -188,9 +192,17 @@ function protectMarkdownMath(source: string, startsAtLineStart = true): {
 function readFence(
   source: string,
   index: number,
-): { end: number; closed: boolean } | undefined {
-  const opening = /^( {0,3})(`{3,}|~{3,})/.exec(source.slice(index));
-  if (!opening) return undefined;
+):
+  | { kind: 'match'; end: number; closed: boolean }
+  | { kind: 'pending' }
+  | undefined {
+  const tail = source.slice(index);
+  const opening = /^( {0,3})(`{3,}|~{3,})/.exec(tail);
+  if (!opening) {
+    return /^ {0,3}(?:`{1,2}|~{1,2})?$/.test(tail)
+      ? { kind: 'pending' }
+      : undefined;
+  }
   const marker = opening[2] ?? '';
   let lineStart = source.indexOf('\n', index);
   while (lineStart >= 0) {
@@ -202,11 +214,15 @@ function readFence(
       candidateMarker.length >= marker.length
     ) {
       const lineEnd = source.indexOf('\n', lineStart);
-      return { end: lineEnd < 0 ? source.length : lineEnd + 1, closed: true };
+      return {
+        kind: 'match',
+        end: lineEnd < 0 ? source.length : lineEnd + 1,
+        closed: true,
+      };
     }
     lineStart = source.indexOf('\n', lineStart);
   }
-  return { end: source.length, closed: false };
+  return { kind: 'match', end: source.length, closed: false };
 }
 
 function readLiteralToken(
