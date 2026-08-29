@@ -33,6 +33,7 @@ import {
   ToolRuntime,
   type MakaTool,
   type RuntimeManagedMutationAdmission,
+  type RuntimeManagedMutationSettlement,
   type ToolRuntimeInput,
 } from '../tool-runtime.js';
 
@@ -335,7 +336,6 @@ describe('ToolRuntime durable boundary', () => {
             });
             return {
               kind: 'no_workspace_change_committed',
-              providerResult: proof.content,
               durableOutcome: proof.terminalOutcome!.durableOutcome,
             };
           },
@@ -733,23 +733,17 @@ describe('ToolRuntime durable boundary', () => {
         admitManagedMutation: async (input) => {
           operationId = input.operationId;
           return managedAdmission(async (operation) => {
-            await operation();
-            const result = { error: 'candidate was safely discarded' };
+            const proof = await operation();
+            assert.equal(proof.terminalOutcome?.kind, 'operation_failed_no_effect');
             return {
               kind: 'operation_failed_no_effect_committed',
-              providerResult: result,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: result },
-                true,
-                { terminalKind: 'operation_failed_no_effect' },
-              ),
+              durableOutcome: proof.terminalOutcome!.durableOutcome,
             };
           });
         },
       },
     );
-    const managedTool = tool(() => ({ ok: true }));
+    const managedTool = tool(() => ({ error: 'candidate was safely discarded' }));
     managedTool.name = 'Write';
     managedTool.recoveryMode = 'reconcile';
     managedTool.durableExecutionProfile = 'managed_mutation_v1';
@@ -777,20 +771,17 @@ describe('ToolRuntime durable boundary', () => {
       {
         admitManagedMutation: async (input) => {
           operationId = input.operationId;
-          return managedAdmission(async (operation) => {
-            await operation();
-            const result = { ok: true, changed: false };
-            return {
-              kind: 'no_workspace_change_committed',
-              providerResult: result,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: result },
-                false,
-                { terminalKind: 'no_workspace_change' },
-              ),
-            };
-          });
+          return {
+            ...managedAdmission(async (operation) => {
+              const proof = await operation();
+              assert.equal(proof.terminalOutcome?.kind, 'no_workspace_change');
+              return {
+                kind: 'no_workspace_change_committed',
+                durableOutcome: proof.terminalOutcome!.durableOutcome,
+              };
+            }),
+            immutableBase: Object.freeze({ content: 'same' }),
+          };
         },
       },
     );
@@ -799,13 +790,16 @@ describe('ToolRuntime durable boundary', () => {
     managedTool.recoveryMode = 'reconcile';
     managedTool.durableExecutionProfile = 'managed_mutation_v1';
 
-    assert.deepEqual(await harness.execute(managedTool), { ok: true, changed: false });
+    assert.deepEqual(
+      await harness.executeWithInput(managedTool, { path: 'notes.txt', content: 'same' }),
+      { kind: 'file_write', path: 'notes.txt', bytes: 4 },
+    );
     const published = harness.events.at(-1);
     assert.equal(published?.type, 'tool_result');
     assert.equal(published?.type === 'tool_result' && published.isError, false);
   });
 
-  it('snapshots a safe-discard result before its owner can mutate it', async () => {
+  it('ignores a mutable provider result smuggled across the owner boundary', async () => {
     let operationId = '';
     const ownerResult = { error: 'discarded-A' };
     const appendedMessages: StoredMessage[] = [];
@@ -826,22 +820,18 @@ describe('ToolRuntime durable boundary', () => {
         admitManagedMutation: async (input) => {
           operationId = input.operationId;
           return managedAdmission(async (operation) => {
-            await operation();
+            const proof = await operation();
+            assert.equal(proof.terminalOutcome?.kind, 'operation_failed_no_effect');
             return {
               kind: 'operation_failed_no_effect_committed',
               providerResult: ownerResult,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: { error: 'discarded-A' } },
-                true,
-                { terminalKind: 'operation_failed_no_effect' },
-              ),
-            };
+              durableOutcome: proof.terminalOutcome!.durableOutcome,
+            } as unknown as RuntimeManagedMutationSettlement;
           });
         },
       },
     );
-    const managedTool = tool(() => ({ ok: true }));
+    const managedTool = tool(() => ({ error: 'runtime-owned-A' }));
     managedTool.name = 'Write';
     managedTool.recoveryMode = 'reconcile';
     managedTool.durableExecutionProfile = 'managed_mutation_v1';
@@ -850,11 +840,11 @@ describe('ToolRuntime durable boundary', () => {
     const storedResult = appendedMessages.find((message) => message.type === 'tool_result');
 
     assert.equal(ownerResult.error, 'mutated-B');
-    assert.deepEqual(result, { error: 'discarded-A' });
+    assert.deepEqual(result, { error: 'runtime-owned-A' });
     assert.equal(Object.isFrozen(result), true);
     assert.deepEqual(storedResult?.type === 'tool_result' ? storedResult.content : undefined, {
       kind: 'json',
-      value: { error: 'discarded-A' },
+      value: { error: 'runtime-owned-A' },
     });
   });
 
@@ -876,16 +866,11 @@ describe('ToolRuntime durable boundary', () => {
           operationId = input.operationId;
           return managedAdmission(async (operation) => {
             retainedOperation = operation;
-            const result = { error: 'candidate was safely discarded' };
+            const proof = await operation();
+            assert.equal(proof.terminalOutcome?.kind, 'operation_failed_no_effect');
             return {
               kind: 'operation_failed_no_effect_committed',
-              providerResult: result,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: result },
-                true,
-                { terminalKind: 'operation_failed_no_effect' },
-              ),
+              durableOutcome: proof.terminalOutcome!.durableOutcome,
             };
           });
         },
@@ -893,7 +878,7 @@ describe('ToolRuntime durable boundary', () => {
     );
     const managedTool = tool(() => {
       implementationCalls += 1;
-      return { ok: true };
+      return { error: 'candidate was safely discarded' };
     });
     managedTool.name = 'Write';
     managedTool.recoveryMode = 'reconcile';
@@ -904,7 +889,7 @@ describe('ToolRuntime durable boundary', () => {
     });
     assert.ok(retainedOperation);
     await assert.rejects(retainedOperation(), /operation capability is closed/i);
-    assert.equal(implementationCalls, 0);
+    assert.equal(implementationCalls, 1);
   });
 
   it('does not accept terminal settlement while a detached operation is running', async () => {
@@ -930,7 +915,6 @@ describe('ToolRuntime durable boundary', () => {
             const result = { error: 'candidate was safely discarded' };
             return {
               kind: 'operation_failed_no_effect_committed',
-              providerResult: result,
               durableOutcome: managedOutcomeEvent(
                 operationId,
                 { kind: 'json', value: result },
@@ -967,7 +951,7 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
-  it('rejects a safe discard whose live error differs from its durable result', async () => {
+  it('rejects a terminal proof whose durable result differs from the Runtime result', async () => {
     let operationId = '';
     const harness = makeHarness(
       {
@@ -985,7 +969,6 @@ describe('ToolRuntime durable boundary', () => {
             await operation();
             return {
               kind: 'operation_failed_no_effect_committed',
-              providerResult: { error: 'live provider error A' },
               durableOutcome: managedOutcomeEvent(
                 operationId,
                 { kind: 'json', value: { error: 'durable replay error B' } },
@@ -1006,108 +989,6 @@ describe('ToolRuntime durable boundary', () => {
       harness.events.some((event) => event.type === 'tool_result'),
       false,
     );
-  });
-
-  it('fail-stops safe-discard canonicalization without writing generic T2', async () => {
-    let genericOutcomeCalls = 0;
-    let operationId = '';
-    const providerResult = Object.defineProperty({}, 'kind', {
-      enumerable: true,
-      get: () => {
-        throw new Error('provider result getter exploded');
-      },
-    });
-    const harness = makeHarness(
-      {
-        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
-        commitToolOutcome: async () => {
-          genericOutcomeCalls += 1;
-          return { created: true, runtimeEventSeq: 2 };
-        },
-      },
-      undefined,
-      'run-1',
-      {
-        admitManagedMutation: async (input) => {
-          operationId = input.operationId;
-          return managedAdmission(async (operation) => {
-            await operation();
-            return {
-              kind: 'operation_failed_no_effect_committed',
-              providerResult,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: { error: 'discarded' } },
-                true,
-              ),
-            };
-          });
-        },
-      },
-    );
-    const managedTool = tool(() => ({ ok: true }));
-    managedTool.name = 'Write';
-    managedTool.recoveryMode = 'reconcile';
-    managedTool.durableExecutionProfile = 'managed_mutation_v1';
-
-    await assert.rejects(
-      harness.execute(managedTool),
-      /strict JSON.*accessor|provider result getter exploded|byte limit exceeded/i,
-    );
-    assert.equal(genericOutcomeCalls, 0);
-    assert.equal(
-      harness.events.some((event) => event.type === 'tool_result'),
-      false,
-    );
-  });
-
-  it('fail-stops an oversized safe discard before durable publication', async () => {
-    let genericOutcomeCalls = 0;
-    let operationId = '';
-    const oversized = { error: 'x'.repeat(128) };
-    const harness = makeHarness(
-      {
-        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
-        commitToolOutcome: async () => {
-          genericOutcomeCalls += 1;
-          return { created: true, runtimeEventSeq: 2 };
-        },
-      },
-      undefined,
-      'run-1',
-      {
-        admitManagedMutation: async (input) => {
-          operationId = input.operationId;
-          return managedAdmission(async (operation) => {
-            await operation();
-            return {
-              kind: 'operation_failed_no_effect_committed',
-              providerResult: oversized,
-              durableOutcome: managedOutcomeEvent(
-                operationId,
-                { kind: 'json', value: oversized },
-                true,
-                {
-                  origin: 'code_mode',
-                  modelVisibility: 'hidden',
-                  toolCallId: 'nested-call-1',
-                  parentToolCallId: 'exec-1',
-                  parentOperationId: 'exec-op-1',
-                },
-              ),
-            };
-          });
-        },
-      },
-    );
-    const managedTool = tool(() => ({ ok: true }));
-    managedTool.name = 'Write';
-    managedTool.recoveryMode = 'reconcile';
-    managedTool.durableExecutionProfile = 'managed_mutation_v1';
-
-    await assert.rejects(harness.executeNested(managedTool, 32), /byte limit exceeded/i);
-    assert.equal(genericOutcomeCalls, 0);
-    assert.equal(JSON.stringify(harness.events).includes(oversized.error), false);
   });
 
   it('stops snapshot traversal as soon as a managed result exceeds its byte budget', async () => {

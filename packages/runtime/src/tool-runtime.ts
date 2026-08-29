@@ -441,8 +441,6 @@ export type RuntimeManagedMutationSettlement =
     }
   | {
       readonly kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
-      /** Exact value returned to the provider and canonicalized for durable replay. */
-      readonly providerResult: unknown;
       readonly durableOutcome: RuntimeEvent;
     }
   | { readonly kind: 'unsettled'; readonly error: unknown };
@@ -1726,7 +1724,7 @@ export class ToolRuntime {
             // discarded; every other failure remains unsettled for recovery.
             throw new RuntimeManagedMutationUnsettledError(ownerError);
           }
-          const normalized = normalizeManagedMutationSettlement(settlement, ctx.maxResultBytes);
+          const normalized = normalizeManagedMutationSettlement(settlement);
           if (normalized.kind === 'workspace_successor_committed') {
             if (!runtimeOwnedValue) {
               throw new RuntimeManagedMutationUnsettledError(
@@ -1741,9 +1739,14 @@ export class ToolRuntime {
               durableOutcome: normalized.durableOutcome,
             };
           } else {
+            if (!runtimeOwnedValue) {
+              throw new RuntimeManagedMutationUnsettledError(
+                new Error('Managed mutation owner committed a terminal state without execution'),
+              );
+            }
             settledExecution = {
               kind: 'managed',
-              value: normalized.value,
+              value: runtimeOwnedValue,
               durableOutcome: normalized.durableOutcome,
               terminalKind:
                 normalized.kind === 'no_workspace_change_committed'
@@ -3326,17 +3329,13 @@ function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSi
   };
 }
 
-function normalizeManagedMutationSettlement(
-  settlement: unknown,
-  maxResultBytes: number | undefined,
-):
+function normalizeManagedMutationSettlement(settlement: unknown):
   | {
       kind: 'workspace_successor_committed';
       durableOutcome: RuntimeEvent;
     }
   | {
       kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
-      value: RuntimeManagedMutationOperationValue<unknown>;
       durableOutcome: RuntimeEvent;
     } {
   if (!settlement || typeof settlement !== 'object' || Array.isArray(settlement)) {
@@ -3373,10 +3372,6 @@ function normalizeManagedMutationSettlement(
     };
   }
 
-  if (!Object.hasOwn(record, 'providerResult')) {
-    throw new Error('Managed no-effect settlement has no provider result');
-  }
-  const providerResult = snapshotManagedToolResult(record.providerResult, maxResultBytes);
   const response = durableOutcome.content;
   const expectedError = kind === 'operation_failed_no_effect_committed';
   if (
@@ -3385,21 +3380,8 @@ function normalizeManagedMutationSettlement(
   ) {
     throw new Error('Managed no-effect settlement has the wrong durable outcome state');
   }
-  const content = Object.freeze(coerceResultContent(providerResult));
-  const outcome = Object.freeze({
-    content,
-    isError: expectedError,
-    durationMs:
-      typeof durableOutcome.actions?.stateDelta?.durationMs === 'number'
-        ? durableOutcome.actions.stateDelta.durationMs
-        : 0,
-  });
   return {
     kind,
-    value: Object.freeze({
-      result: providerResult,
-      outcome,
-    }),
     durableOutcome,
   };
 }
