@@ -43,6 +43,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'apps/desktop/electron-builder.config.mjs',
   'apps/desktop/package.json',
   '.github/workflows/cli-package-validation.yml',
+  '.github/workflows/desktop-nightly.yml',
   '.github/workflows/release-cli-finalize.yml',
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
@@ -146,6 +147,7 @@ function isCliPackagePath(path) {
 function isReleaseContractPath(path) {
   return (
     RELEASE_CONTRACT_FILES.has(path) ||
+    path.startsWith('scripts/desktop-nightly') ||
     path.startsWith('scripts/product-release-') ||
     path.startsWith('scripts/release-cli-')
   );

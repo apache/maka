@@ -31,13 +31,19 @@ concurrency:
 
 jobs:
   identity:
-    if: vars.DESKTOP_NIGHTLY_ENABLED == 'true' && github.run_attempt == 1
+    if: vars.DESKTOP_NIGHTLY_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       source_commit: ${{ steps.identity.outputs.source_commit }}
       version: ${{ steps.identity.outputs.version }}
     steps:
+      - name: Reject in-place workflow reruns
+        if: github.run_attempt != 1
+        run: |
+          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          exit 1
+
       - name: Check out the scheduled main commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,7 +63,6 @@ jobs:
         run: node scripts/desktop-nightly.mjs identity
 
   desktop:
-    if: github.run_attempt == 1
     needs: identity
     strategy:
       fail-fast: false
@@ -176,7 +181,6 @@ jobs:
           retention-days: 30
 
   publish:
-    if: github.run_attempt == 1
     needs: [identity, desktop]
     runs-on: ubuntu-24.04
     environment: nightly
@@ -222,7 +226,7 @@ jobs:
 
       - name: Attest the exact Nightly payloads
         id: attest
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: ${{ github.workspace }}/.nightly-publish/versions/${{ needs.identity.outputs.version }}/*
 

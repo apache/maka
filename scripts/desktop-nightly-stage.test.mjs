@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { stringify } from 'yaml';
 import { stageDesktopNightly } from './desktop-nightly.mjs';
+import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 
 async function writeUpdateSet(directory, version, platform) {
   const isMac = platform === 'mac';
@@ -67,6 +68,36 @@ test('staging separates append-only payloads from the mutable Nightly feed', asy
     sourceCommit: 'a'.repeat(40),
   });
 
+  const payloadNames = [
+    `Maka-${version}-mac-arm64.dmg`,
+    `Maka-${version}-mac-arm64.zip`,
+    `Maka-${version}-mac-arm64.zip.blockmap`,
+    `Maka-${version}-win-x64.exe`,
+    `Maka-${version}-win-x64.exe.blockmap`,
+    `Maka-${version}-win-x64.zip`,
+  ];
+  for (const name of payloadNames) {
+    assert.deepEqual(
+      await readFile(join(output, 'versions', version, name)),
+      await readFile(join(input, name)),
+      name,
+    );
+  }
+  await Promise.all([
+    verifyDesktopUpdateArtifacts({
+      directory: output,
+      metadataName: 'feed/latest-mac.yml',
+      version,
+      artifactName: `versions/${version}/Maka-${version}-mac-arm64.zip`,
+    }),
+    verifyDesktopUpdateArtifacts({
+      directory: output,
+      metadataName: 'feed/latest.yml',
+      version,
+      artifactName: `versions/${version}/Maka-${version}-win-x64.exe`,
+    }),
+  ]);
+
   const macMetadata = (await import('yaml')).parse(
     await readFile(join(output, 'feed', 'latest-mac.yml'), 'utf8'),
   );
@@ -85,12 +116,5 @@ test('staging separates append-only payloads from the mutable Nightly feed', asy
     'latest-mac.yml',
     'latest.yml',
   ]);
-  assert.deepEqual((await readdir(join(output, 'versions', version))).sort(), [
-    `Maka-${version}-mac-arm64.dmg`,
-    `Maka-${version}-mac-arm64.zip`,
-    `Maka-${version}-mac-arm64.zip.blockmap`,
-    `Maka-${version}-win-x64.exe`,
-    `Maka-${version}-win-x64.exe.blockmap`,
-    `Maka-${version}-win-x64.zip`,
-  ]);
+  assert.deepEqual((await readdir(join(output, 'versions', version))).sort(), payloadNames);
 });

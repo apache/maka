@@ -167,6 +167,18 @@ test('release authority changes select their dedicated contract gate', () => {
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
 });
 
+test('Desktop Nightly authority changes select the release contract gate', () => {
+  for (const path of [
+    '.github/workflows/desktop-nightly.yml',
+    'scripts/desktop-nightly.mjs',
+    'scripts/desktop-nightly.test.mjs',
+    'scripts/desktop-nightly-stage.test.mjs',
+    'scripts/desktop-nightly-workflow-policy.test.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
+});
+
 // Both notices are committed generator output. A hand edit or a merge-conflict
 // resolution can corrupt either one, and `check:release` is what regenerates
 // and diffs them, so both must reach that gate — the desktop notice lives

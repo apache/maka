@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
@@ -34,12 +35,13 @@ test('a failed Nightly is retried only as a fresh workflow run', async () => {
     group: 'desktop-nightly',
     'cancel-in-progress': false,
   });
-  assert.equal(
-    workflow.jobs.identity.if,
-    "vars.DESKTOP_NIGHTLY_ENABLED == 'true' && github.run_attempt == 1",
-  );
-  assert.equal(workflow.jobs.desktop.if, 'github.run_attempt == 1');
-  assert.equal(workflow.jobs.publish.if, 'github.run_attempt == 1');
+  assert.equal(workflow.jobs.identity.if, "vars.DESKTOP_NIGHTLY_ENABLED == 'true'");
+  const rerunGuard = workflow.jobs.identity.steps[0];
+  assert.equal(rerunGuard.name, 'Reject in-place workflow reruns');
+  assert.equal(rerunGuard.if, 'github.run_attempt != 1');
+  assert.equal(spawnSync('bash', ['-c', rerunGuard.run]).status, 1);
+  assert.equal(workflow.jobs.desktop.if, undefined);
+  assert.equal(workflow.jobs.publish.if, undefined);
   const upload = workflow.jobs.desktop.steps.find((step) =>
     step.uses?.startsWith('actions/upload-artifact@'),
   );
@@ -85,10 +87,7 @@ test('the protected publisher appends workspace-staged payloads before advancing
 test('Nightly stays disabled until its external publishing authority is configured', async () => {
   const workflow = await readWorkflow();
   assert.equal(workflow.permissions.contents, 'read');
-  assert.equal(
-    workflow.jobs.identity.if,
-    "vars.DESKTOP_NIGHTLY_ENABLED == 'true' && github.run_attempt == 1",
-  );
+  assert.equal(workflow.jobs.identity.if, "vars.DESKTOP_NIGHTLY_ENABLED == 'true'");
   const branchGate = workflow.jobs.identity.steps.find(
     (step) => step.name === 'Require the Apache main branch',
   );
