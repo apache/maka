@@ -22,7 +22,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { scheduledTaskSessionLabel } from '@maka/core/scheduled-task';
+import {
+  scheduledTaskPresetSessionLabel,
+  scheduledTaskSessionLabel,
+} from '@maka/core/scheduled-task';
 import { openInteractiveScheduledTaskStoreForWrite } from '@maka/storage/scheduled-task-store';
 import {
   resolveStorageRoot,
@@ -60,7 +63,11 @@ test('Daily Review fixture uses the ScheduledTask and ordinary Session shapes', 
 
     const sessions = dailyReviewSessions(now);
     assert.deepEqual(sessions.map(({ header }) => header.labels), [
-      [scheduledTaskSessionLabel('system-daily-review')],
+      [
+        'scheduled-task',
+        scheduledTaskSessionLabel('system-daily-review'),
+        scheduledTaskPresetSessionLabel('daily-review'),
+      ],
       ['migrated:daily-review'],
     ]);
     assert.deepEqual(sessions.map(({ messages }) => messages[0]?.type), [

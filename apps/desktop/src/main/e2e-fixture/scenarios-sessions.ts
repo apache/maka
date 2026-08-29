@@ -18,7 +18,10 @@
  */
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
-import { scheduledTaskSessionLabel } from '@maka/core/scheduled-task';
+import {
+  scheduledTaskPresetSessionLabel,
+  scheduledTaskSessionLabel,
+} from '@maka/core/scheduled-task';
 import {
   header,
   LONG_SIDEBAR_PROJECT_ID,
@@ -81,7 +84,11 @@ export function dailyReviewSessions(
           now,
           lastMessageAt: now - 35 * 60_000,
         }),
-        labels: [scheduledTaskSessionLabel('system-daily-review')],
+        labels: [
+          'scheduled-task',
+          scheduledTaskSessionLabel('system-daily-review'),
+          scheduledTaskPresetSessionLabel('daily-review'),
+        ],
       },
       messages: [{
         type: 'assistant',
