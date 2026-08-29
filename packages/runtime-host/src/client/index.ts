@@ -44,6 +44,7 @@ export {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
@@ -52,6 +53,7 @@ export {
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
   runtimeHostProfileAccess,
+  runtimeHostProfileTargetFingerprint,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type EnvironmentRuntimeHostProfile,
@@ -63,6 +65,7 @@ export {
   type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
+  type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {

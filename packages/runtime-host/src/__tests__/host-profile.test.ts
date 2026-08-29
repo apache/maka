@@ -30,6 +30,7 @@ import {
 import {
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
@@ -416,6 +417,30 @@ describe('Runtime Host profiles', () => {
     assert.equal(await credentials.get(targetB), 'token-b');
     await credentials.delete(targetB);
     assert.equal(await credentials.get(targetA), 'token-a');
+  });
+
+  test('isolates capability-provider credentials by target and owning Client', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const targetB = remoteProfile('office', 'wss://b.example.com', ROOT_B);
+
+    await assert.rejects(
+      () => credentials.set(targetA, 'owner-a', 'not a token'),
+      /credential is invalid/,
+    );
+    await credentials.set(targetA, 'owner-a', 'provider-a');
+    await credentials.set(targetA, 'owner-b', 'provider-b');
+    await credentials.set(targetB, 'owner-a', 'provider-other-target');
+
+    assert.equal(await credentials.get(targetA, 'owner-a'), 'provider-a');
+    assert.equal(await credentials.get(targetA, 'owner-b'), 'provider-b');
+    assert.equal(await credentials.get(targetB, 'owner-a'), 'provider-other-target');
+    await credentials.delete(targetA, 'owner-a');
+    assert.equal(await credentials.get(targetA, 'owner-a'), null);
+    assert.equal(await credentials.get(targetA, 'owner-b'), 'provider-b');
   });
 
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {

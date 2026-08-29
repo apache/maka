@@ -90,6 +90,11 @@ export interface RuntimeHostCliConnectionContext {
   close(): Promise<void>;
 }
 
+export interface RuntimeHostCliConnectionContextWithIdentity
+  extends RuntimeHostCliConnectionContext {
+  readonly clientInstanceId: string;
+}
+
 export interface RuntimeHostCliTarget {
   readonly connection: ConnectionCatalogEntry;
   readonly model: string;
@@ -114,7 +119,7 @@ export async function connectRuntimeHostCli(
     readonly interactiveSsh?: boolean;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
-): Promise<RuntimeHostCliConnectionContext> {
+): Promise<RuntimeHostCliConnectionContextWithIdentity> {
   const deps: RuntimeHostCliContextDeps = {
     connectOrSpawn: connectOrSpawnRuntimeHost,
     connectProfile: connectRuntimeHostProfile,
@@ -201,6 +206,7 @@ export async function connectRuntimeHostCli(
       connection: liveConnection,
       catalog: await deps.readConnectionCatalog(liveConnection),
       profile,
+      clientInstanceId,
       close: async () => {
         try {
           await liveConnection.close();

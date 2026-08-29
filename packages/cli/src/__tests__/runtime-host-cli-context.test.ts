@@ -94,6 +94,7 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   assert.ok(candidateEntrypoint instanceof URL);
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
   assert.ok(clientInstanceId);
+  assert.equal(context.clientInstanceId, clientInstanceId);
   await context.close();
   assert.equal(closes, 1);
 });
@@ -309,6 +310,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
   assert.equal(remoteInput?.profile.rootId, rootId);
   assert.equal(remoteInput?.credential, 'opaque-token');
   assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(context.clientInstanceId, '11111111-1111-4111-8111-111111111111');
   assert.equal(Object.hasOwn(context.profile, 'credential'), false);
   await context.close();
 });

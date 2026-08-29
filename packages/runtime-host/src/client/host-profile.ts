@@ -26,6 +26,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   isCanonicalRuntimeHostWebSocketPath,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  requireClientInstanceId,
   requireHostRootId,
 } from '../protocol/index.js';
 import type { RuntimeHostProfileOfKind } from '../profile-kind.js';
@@ -220,6 +221,16 @@ export interface RuntimeHostProfileCredentialStore {
   delete(profile: RemoteRuntimeHostProfile): Promise<void>;
 }
 
+export interface RuntimeHostCapabilityProviderCredentialStore {
+  get(profile: RemoteRuntimeHostProfile, ownerClientInstanceId: string): Promise<string | null>;
+  set(
+    profile: RemoteRuntimeHostProfile,
+    ownerClientInstanceId: string,
+    credential: string,
+  ): Promise<void>;
+  delete(profile: RemoteRuntimeHostProfile, ownerClientInstanceId: string): Promise<void>;
+}
+
 export function createFileRuntimeHostProfileCatalog(
   path: string,
   credentials: RuntimeHostProfileCredentialStore,
@@ -249,12 +260,10 @@ export function createRuntimeHostProfileCredentialStore(
       return credentials.getSecret(profileCredentialSlot(profile), 'runtime_host_access');
     },
     set: (profile, credential) => {
-      if (
-        !credential ||
-        /\s/u.test(credential) ||
-        Buffer.byteLength(credential, 'utf8') > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES
-      ) {
-        return Promise.reject(new Error('Runtime Host access credential is invalid'));
+      try {
+        requireRuntimeHostAccessCredential(credential);
+      } catch (error) {
+        return Promise.reject(error);
       }
       return credentials.setSecret(
         profileCredentialSlot(profile),
@@ -265,6 +274,39 @@ export function createRuntimeHostProfileCredentialStore(
     delete: (profile) =>
       credentials.deleteSecret(profileCredentialSlot(profile), 'runtime_host_access'),
   };
+}
+
+export function createRuntimeHostCapabilityProviderCredentialStore(
+  credentials: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>,
+): RuntimeHostCapabilityProviderCredentialStore {
+  return {
+    get: (profile, ownerClientInstanceId) =>
+      credentials.getSecret(
+        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
+        'runtime_host_capability_provider',
+      ),
+    set: (profile, ownerClientInstanceId, credential) => {
+      try {
+        requireRuntimeHostAccessCredential(credential);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return credentials.setSecret(
+        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
+        'runtime_host_capability_provider',
+        credential,
+      );
+    },
+    delete: (profile, ownerClientInstanceId) =>
+      credentials.deleteSecret(
+        capabilityProviderCredentialSlot(profile, ownerClientInstanceId),
+        'runtime_host_capability_provider',
+      ),
+  };
+}
+
+export function runtimeHostProfileTargetFingerprint(profile: RemoteRuntimeHostProfile): string {
+  return profileCredentialBinding(profile);
 }
 
 export async function connectRuntimeHostProfile(
@@ -1072,6 +1114,29 @@ function requireProfileId(value: unknown): string {
 
 function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
   return `runtime-host-profile:${requireProfileId(profile.id)}:${profileCredentialBinding(profile)}`;
+}
+
+function capabilityProviderCredentialSlot(
+  profile: RemoteRuntimeHostProfile,
+  ownerClientInstanceId: string,
+): string {
+  return [
+    'runtime-host-profile-capability-provider',
+    requireProfileId(profile.id),
+    profileCredentialBinding(profile),
+    createHash('sha256').update(requireClientInstanceId(ownerClientInstanceId)).digest('hex'),
+  ].join(':');
+}
+
+function requireRuntimeHostAccessCredential(credential: string): string {
+  if (
+    !credential ||
+    /\s/u.test(credential) ||
+    Buffer.byteLength(credential, 'utf8') > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES
+  ) {
+    throw new Error('Runtime Host access credential is invalid');
+  }
+  return credential;
 }
 
 function profileTargetBinding(profile: PersistedRuntimeHostProfile): string {
