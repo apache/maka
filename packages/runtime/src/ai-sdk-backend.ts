@@ -1905,6 +1905,7 @@ export class AiSdkBackend implements AgentBackend {
         watchdogTimeoutState.current = null;
         return timeout;
       };
+      let lastCompletedStepHadToolResult = false;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2788,6 +2789,7 @@ export class AiSdkBackend implements AgentBackend {
             toolCalls: returnedToolCalls,
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
+          lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
@@ -3030,7 +3032,11 @@ export class AiSdkBackend implements AgentBackend {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError));
+          const errorReason =
+            streamErrorClass === 'Timeout' && lastCompletedStepHadToolResult
+              ? 'model_after_tool_timeout'
+              : undefined;
+          queue.push(this.makeErrorEvent(turnId, terminalError, errorReason));
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -3344,8 +3350,8 @@ export class AiSdkBackend implements AgentBackend {
     return this.modelAdapter.mapFinishReason(reason);
   }
 
-  private makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
-    return this.modelAdapter.makeErrorEvent(turnId, err);
+  private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
+    return this.modelAdapter.makeErrorEvent(turnId, err, reasonOverride);
   }
 
   private computeTokenUsageCostUsd(usage: NormalizedAiSdkUsage): number | undefined {
