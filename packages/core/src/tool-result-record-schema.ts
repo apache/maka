@@ -265,7 +265,8 @@ export function decodePersistedToolResultContent(
     return {
       kind: 'text',
       text:
-        value.report ?? value.summary ?? value.message ?? `Inspected ${value.filesInspected} files`,
+        firstNonEmptyString(value.report, value.summary, value.message) ??
+        `Inspected ${value.filesInspected} files`,
     };
   }
   if (!isRecord(value) || value.kind !== 'subagent') {
@@ -273,6 +274,10 @@ export function decodePersistedToolResultContent(
   }
   const permissionMode = decodePersistedPermissionMode(value.permissionMode);
   return decodeCanonicalToolResultContent({ ...value, permissionMode });
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value.trim().length > 0);
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {

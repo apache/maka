@@ -64,6 +64,9 @@ import {
 import { withToolResultArchiveResourceRef } from './tool-result-archive.js';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
+import { markPersisted } from '@maka/core/persisted-value';
+import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
+import type { ToolResultContent } from '@maka/core/events';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
@@ -607,16 +610,28 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        const shellResult = decodeCanonicalShellToolResultContent(event.content.result);
+        const usesProviderOutput =
+          event.content.providerExecuted && event.content.providerOutput !== undefined;
         let invalidResultMessage: string | undefined;
-        let normalizedResult: unknown =
-          event.content.providerExecuted && event.content.providerOutput !== undefined
-            ? event.content.providerOutput
-            : withToolResultArchiveResourceRef(event.content.result);
-        if (shellResult.state === 'invalid') {
-          invalidResultMessage = 'function_response contains an invalid shell tool result';
-        } else if (shellResult.state === 'valid') {
-          normalizedResult = shellResult.content;
+        let normalizedResult: unknown = usesProviderOutput
+          ? event.content.providerOutput
+          : withToolResultArchiveResourceRef(event.content.result);
+        if (!usesProviderOutput && isRetiredExploreAgentResult(normalizedResult)) {
+          try {
+            normalizedResult = decodePersistedToolResultContent(
+              markPersisted<ToolResultContent>(normalizedResult),
+            );
+          } catch {
+            invalidResultMessage = 'function_response contains an invalid retired tool result';
+          }
+        }
+        if (!invalidResultMessage) {
+          const shellResult = decodeCanonicalShellToolResultContent(normalizedResult);
+          if (shellResult.state === 'invalid') {
+            invalidResultMessage = 'function_response contains an invalid shell tool result';
+          } else if (shellResult.state === 'valid') {
+            normalizedResult = shellResult.content;
+          }
         }
         if (!invalidResultMessage && event.content.name === 'Bash') {
           normalizedResult = projectBashToolResultForModel(normalizedResult);
@@ -732,6 +747,12 @@ export function buildRuntimeEventModelReplayPlan(
       semanticKinds.includes('tool_call') ||
       semanticKinds.includes('tool_result'),
   };
+}
+
+function isRetiredExploreAgentResult(value: unknown): boolean {
+  return (
+    typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'explore_agent'
+  );
 }
 
 /**

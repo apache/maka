@@ -223,6 +223,25 @@ describe('retired ExploreAgent results in stored transcripts', () => {
     assert.deepEqual(toolResultContent(decodePersistedMessage(storedToolResult(stored))), expected);
   });
 
+  test('uses a non-empty failure summary when the legacy report is empty', () => {
+    const failed = {
+      ...stored,
+      ok: false,
+      terminalStatus: 'failed',
+      report: '',
+      summary: '未完成：目标无效。',
+      reason: 'invalid_objective',
+      message: '目标无效。',
+    } as const;
+
+    assert.deepEqual(
+      decodePersistedToolResultContent(
+        markPersisted<ToolResultContent>(failed as unknown as ToolResultContent),
+      ),
+      { kind: 'text', text: '未完成：目标无效。' },
+    );
+  });
+
   test('rejects the retired result kind at canonical live boundaries', () => {
     assert.throws(() => decodeCanonicalToolResultContent(stored), /Invalid tool result content/);
     assert.throws(
