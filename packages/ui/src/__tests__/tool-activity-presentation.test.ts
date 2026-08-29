@@ -512,19 +512,6 @@ describe('collapsed tool row target', () => {
     assert.match(markup, /npm test/);
   });
 
-  it('names a task ledger call by its first subject', async () => {
-    const { ToolTrow } = await import('../tool-activity.js');
-    const markup = renderToStaticMarkup(createElement(ToolTrow, {
-      items: [{
-        ...baseItem,
-        toolName: 'task_create',
-        displayName: 'Task Create',
-        args: { tasks: [{ subject: '修复登录 bug' }, { subject: '补测试' }] },
-      }],
-    }));
-    assert.match(markup, /修复登录 bug 等 2 项/);
-  });
-
   it('caps a long command so the collapsed row stays single-line', async () => {
     const { ToolTrow } = await import('../tool-activity.js');
     const markup = renderToStaticMarkup(createElement(ToolTrow, {

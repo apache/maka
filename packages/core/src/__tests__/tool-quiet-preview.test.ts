@@ -47,42 +47,6 @@ describe('formatToolInvocationLine', () => {
     assert.equal(line, 'git status --porcelain');
   });
 
-  it('names a task_create call by its first subject with a count suffix', () => {
-    const line = formatToolInvocationLine(
-      {
-        toolName: 'task_create',
-        args: { tasks: [{ subject: '修复登录 bug' }, { subject: '写测试' }] },
-      },
-      'zh',
-    );
-    assert.equal(line, '修复登录 bug 等 2 项');
-    const en = formatToolInvocationLine(
-      {
-        toolName: 'task_create',
-        args: { tasks: [{ subject: 'Fix login' }, { subject: 'Add tests' }, { subject: 'Ship' }] },
-      },
-      'en',
-    );
-    assert.equal(en, 'Fix login +2 more');
-  });
-
-  it('names a task_update call by subject, then id and status', () => {
-    assert.equal(
-      formatToolInvocationLine(
-        { toolName: 'task_update', args: { id: 'T1', subject: '改名后的任务' } },
-        'zh',
-      ),
-      '改名后的任务',
-    );
-    assert.equal(
-      formatToolInvocationLine(
-        { toolName: 'task_update', args: { id: 'T1', status: 'completed' } },
-        'en',
-      ),
-      'T1 → completed',
-    );
-  });
-
   it('names a GoalSet call by its condition', () => {
     const line = formatToolInvocationLine(
       { toolName: 'GoalSet', args: { condition: 'all tests in packages/runtime pass' } },
@@ -181,18 +145,14 @@ describe('projectToolArgsPreview', () => {
     assert.ok(JSON.stringify(preview).length <= 2048);
   });
 
-  it('keeps task subjects so the formatter reports the original count', () => {
-    const preview = projectToolArgsPreview('task_create', {
-      tasks: [
-        { subject: 'one', parent_id: 'p' },
-        { subject: 'two' },
-        { subject: 'three' },
-        { subject: 'four' },
-        { subject: 'five' },
-      ],
-    });
-    const line = formatToolInvocationLine({ toolName: 'task_create', args: preview }, 'zh');
-    assert.equal(line, 'one 等 5 项');
+  it('excludes Task Ledger tools until their durable semantic projection owns identity', () => {
+    assert.equal(projectToolArgsPreview('task_create', { tasks: [{ subject: 'one' }] }), undefined);
+    assert.equal(
+      projectToolArgsPreview('task_update', { id: 'T1', status: 'completed' }),
+      undefined,
+    );
+    assert.equal(projectToolArgsPreview('task_list', { status: 'pending' }), undefined);
+    assert.equal(projectToolArgsPreview('task_get', { id: 'T1' }), undefined);
   });
 
   it('preserves the WriteStdin projected inputPreview shape', () => {

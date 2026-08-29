@@ -47,8 +47,6 @@ interface QuietPreviewStrings {
   written: string;
   /** Format a byte count suffix, e.g. `共 7 字节` / `7 bytes`. */
   bytes: (n: number) => string;
-  /** Suffix for a task list previewed by its first entry, e.g. `等 3 项` / `+2 more`. */
-  moreTasks: (total: number) => string;
   /** Suffix for a question list previewed by its first entry, e.g. `等 2 问` / `+1 more`. */
   moreQuestions: (total: number) => string;
 }
@@ -62,7 +60,6 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => `${n} 处`,
     written: '已写入',
     bytes: (n) => `共 ${n} 字节`,
-    moreTasks: (total) => (total > 1 ? ` 等 ${total} 项` : ''),
     moreQuestions: (total) => (total > 1 ? ` 等 ${total} 问` : ''),
   },
   en: {
@@ -73,7 +70,6 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     replacements: (n) => (n === 1 ? '1 replacement' : `${n} replacements`),
     written: 'written',
     bytes: (n) => `${n} bytes`,
-    moreTasks: (total) => (total > 1 ? ` +${total - 1} more` : ''),
     moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
   },
 };
@@ -271,33 +267,6 @@ export function formatToolInvocationLine(
     }
   }
 
-  // Session task ledger and other structured-args tools: the generic key:value
-  // fallback renders their nested payloads as `tasks:` / `questions:` dumps, so
-  // give the row the one fact a reader needs — the first subject / question,
-  // the goal condition — with a count suffix when more entries exist.
-  if (name === 'task_create') {
-    const tasks = Array.isArray(args.tasks) ? args.tasks : undefined;
-    const firstSubject = tasks
-      ?.map((task) => stringField(asRecord(task), 'subject'))
-      .find((subject) => subject !== undefined);
-    if (firstSubject) {
-      // A wire args preview caps the list; `tasksTotal` keeps the real count.
-      const total = numberField(args, 'tasksTotal') ?? tasks!.length;
-      return redactSecrets(`${firstSubject}${s.moreTasks(total)}`);
-    }
-  }
-
-  if (name === 'task_update') {
-    const subject = stringField(args, 'subject');
-    if (subject) return redactSecrets(subject);
-    const id = stringField(args, 'id');
-    if (id) {
-      const status = stringField(args, 'status');
-      const shortId = id.length > 12 ? `${id.slice(0, 8)}…` : id;
-      return redactSecrets(status ? `${shortId} → ${status}` : shortId);
-    }
-  }
-
   if (name === 'GoalSet') {
     const condition = stringField(args, 'condition');
     if (condition) return redactSecrets(condition);
@@ -356,8 +325,10 @@ export function formatToolInvocationLine(
 const ARGS_PREVIEW_STRING_MAX_CHARS = 240;
 /** Whole-preview cap; lowest-priority fields drop until the preview fits. */
 const ARGS_PREVIEW_MAX_CHARS = 2048;
-/** List fields (tasks / questions) keep only their leading entries. */
+/** Question lists keep only their leading entries. */
 const ARGS_PREVIEW_LIST_MAX_ITEMS = 4;
+
+const TASK_LEDGER_TOOL_NAMES = new Set(['task_create', 'task_update', 'task_list', 'task_get']);
 
 /**
  * Whitelist of scalar args keys {@link formatToolInvocationLine} can read, in
@@ -404,21 +375,18 @@ function previewStringField(record: Record<string, unknown>, key: string): strin
   return typeof raw === 'string' && raw.trim().length > 0 ? boundPreviewString(raw) : undefined;
 }
 
-function previewListSubjects(
+function previewQuestions(
   record: Record<string, unknown>,
-  listKey: 'tasks' | 'questions',
-  itemKey: 'subject' | 'question',
 ): { items: Record<string, unknown>[]; total: number } | undefined {
-  if (isSensitiveKey(listKey) || isSensitiveKey(itemKey)) return undefined;
-  const list = record[listKey];
+  const list = record.questions;
   if (!Array.isArray(list) || list.length === 0) return undefined;
   const items: Record<string, unknown>[] = [];
   for (const entry of list.slice(0, ARGS_PREVIEW_LIST_MAX_ITEMS)) {
-    const text = previewStringField(asRecord(entry) ?? {}, itemKey);
+    const text = previewStringField(asRecord(entry) ?? {}, 'question');
     if (text === undefined) continue;
     const redacted = redactSecrets(text);
     if (redacted.trim().length === 0) continue;
-    items.push({ [itemKey]: redacted });
+    items.push({ question: redacted });
   }
   return items.length > 0 ? { items, total: list.length } : undefined;
 }
@@ -467,6 +435,10 @@ export function projectToolArgsPreview(
 ): Record<string, unknown> | undefined {
   const record = asRecord(args);
   if (!record) return undefined;
+  // Task rows need committed IDs and the exact Task Ledger mutation snapshot;
+  // args alone cannot identify the user-facing task reliably. Keep them out of
+  // the generic live preview until the Host-owned semantic timeline (#4179).
+  if (TASK_LEDGER_TOOL_NAMES.has(toolName)) return undefined;
 
   // Apply the canonical activity projection first so WriteStdin's inputPreview
   // shape (bounded, display-safe) is what the whitelist picks up.
@@ -495,12 +467,7 @@ export function projectToolArgsPreview(
     const size = previewSize(projected.size);
     if (size) picked.set('size', size);
   }
-  const tasks = previewListSubjects(projected, 'tasks', 'subject');
-  if (tasks) {
-    picked.set('tasks', tasks.items);
-    if (tasks.total > tasks.items.length) picked.set('tasksTotal', tasks.total);
-  }
-  const questions = previewListSubjects(projected, 'questions', 'question');
+  const questions = previewQuestions(projected);
   if (questions) {
     picked.set('questions', questions.items);
     if (questions.total > questions.items.length) picked.set('questionsTotal', questions.total);
@@ -515,8 +482,6 @@ export function projectToolArgsPreview(
     ...ARGS_PREVIEW_NUMBER_KEYS,
     'inputPreview',
     'size',
-    'tasks',
-    'tasksTotal',
     'questions',
     'questionsTotal',
   ];

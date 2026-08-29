@@ -4347,26 +4347,6 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /\(no output\)/);
   });
 
-  test('names a task_create row by its first subject, not a JSON dump', () => {
-    const state = createMakaPiTranscriptState();
-    applyMakaSessionEventToTranscript(
-      state,
-      event({
-        type: 'tool_start',
-        toolUseId: 'task-1',
-        toolName: 'task_create',
-        displayName: 'Task Create',
-        args: undefined,
-        argsPreview: { tasks: [{ subject: '修复登录 bug' }], tasksTotal: 2 },
-      }),
-    );
-
-    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
-    assert.match(rendered, /修复登录 bug/);
-    assert.doesNotMatch(rendered, /tasks:/);
-    assert.doesNotMatch(rendered, /\(no output\)/);
-  });
-
   test('orders and de-dupes tool_output_delta by seq and marks redacted chunks', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
