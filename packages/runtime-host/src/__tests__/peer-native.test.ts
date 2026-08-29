@@ -26,12 +26,19 @@ import { test } from 'node:test';
 import { createRuntimeHostPeerClient } from '../client/peer-client.js';
 import {
   ensureRuntimeHostPeerIdentity,
+  normalizePeerError,
   readRuntimeHostPeerAuthentication,
   readRuntimeHostPeerAuthenticationResult,
   RuntimeHostPeerError,
   startRuntimeHostPeerEndpoint,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
+
+test('preserves transit route failures from the native boundary', () => {
+  const error = normalizePeerError(new Error('transit_unavailable: no approved route'));
+  assert.equal(error.code, 'transit_unavailable');
+  assert.equal(error.message, 'no approved route');
+});
 
 test('shares one peer endpoint, serializes same-peer connects, and cancels independently', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-peer-abort-'));

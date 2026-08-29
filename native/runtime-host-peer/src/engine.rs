@@ -1156,23 +1156,22 @@ fn maybe_open_peer_stream(
         return;
     };
     let peer_id = waiter.peer_id;
+    let eligible_relay_peers = match waiter.stream_kind {
+        StreamKind::Application => waiter.transit_relay_peers.clone(),
+        StreamKind::MeshControl => waiter.coordination_relay_peers.iter().copied().collect(),
+    };
     let available = match waiter.stream_kind {
-        StreamKind::Application => application_control.has_connection(
-            peer_id,
-            retiring_connections,
-            &waiter.transit_relay_peers,
-            false,
-        ),
+        StreamKind::Application => {
+            application_control.has_connection(peer_id, retiring_connections, &eligible_relay_peers)
+        }
         StreamKind::MeshControl => {
-            mesh_control.has_connection(peer_id, retiring_connections, &HashSet::new(), true)
+            mesh_control.has_connection(peer_id, retiring_connections, &eligible_relay_peers)
         }
     };
     if waiter.opening.is_some() || !available {
         return;
     }
     let stream_kind = waiter.stream_kind;
-    let transit_relay_peers = waiter.transit_relay_peers.clone();
-    let allow_any_relay = stream_kind == StreamKind::MeshControl;
     let retiring_connections = retiring_connections.clone();
     waiter.opening = Some(tokio::spawn(async move {
         let control = match stream_kind {
@@ -1180,12 +1179,7 @@ fn maybe_open_peer_stream(
             StreamKind::MeshControl => &mut mesh_control,
         };
         let result = control
-            .open_stream(
-                peer_id,
-                &retiring_connections,
-                &transit_relay_peers,
-                allow_any_relay,
-            )
+            .open_stream(peer_id, &retiring_connections, &eligible_relay_peers)
             .await
             .map_err(|error| error.to_string());
         let _ = opened_tx.send(OpenedStream { request_id, result }).await;
@@ -1978,7 +1972,6 @@ fn retry_connect_routes(
             peer_id,
             &direct.retiring_connections,
             &connect.transit_relay_peers,
-            false,
         ) {
             continue;
         }

@@ -188,11 +188,10 @@ impl Control {
         &self,
         peer_id: PeerId,
         excluded: &HashSet<ConnectionId>,
-        transit_relays: &HashSet<PeerId>,
-        allow_any_relay: bool,
+        allowed_relays: &HashSet<PeerId>,
     ) -> bool {
         lock(&self.shared)
-            .connection(peer_id, excluded, transit_relays, allow_any_relay)
+            .connection(peer_id, excluded, allowed_relays)
             .is_some()
     }
 
@@ -200,11 +199,10 @@ impl Control {
         &mut self,
         peer_id: PeerId,
         excluded: &HashSet<ConnectionId>,
-        transit_relays: &HashSet<PeerId>,
-        allow_any_relay: bool,
+        allowed_relays: &HashSet<PeerId>,
     ) -> Result<OpenedStream, OpenStreamError> {
         let (connection_id, relay_peer_id, sender) = lock(&self.shared)
-            .connection(peer_id, excluded, transit_relays, allow_any_relay)
+            .connection(peer_id, excluded, allowed_relays)
             .ok_or(OpenStreamError::NoEligibleConnection)?;
         let (result, receiver) = oneshot::channel();
         sender
@@ -291,8 +289,7 @@ impl DirectConnections {
         &self,
         peer_id: PeerId,
         excluded: &HashSet<ConnectionId>,
-        transit_relays: &HashSet<PeerId>,
-        allow_any_relay: bool,
+        allowed_relays: &HashSet<PeerId>,
     ) -> Option<(ConnectionId, Option<PeerId>, mpsc::Sender<NewStream>)> {
         self.connections
             .iter()
@@ -301,7 +298,7 @@ impl DirectConnections {
                     && !excluded.contains(connection_id)
                     && connection
                         .relay_peer_id
-                        .is_none_or(|relay| allow_any_relay || transit_relays.contains(&relay))
+                        .is_none_or(|relay| allowed_relays.contains(&relay))
                     && !connection.sender.is_closed()
             })
             .map(|(connection_id, connection)| {
@@ -532,10 +529,10 @@ mod tests {
         );
         assert!(
             lock(&control.shared)
-                .connection(peer_id, &HashSet::new(), &HashSet::new(), false)
+                .connection(peer_id, &HashSet::new(), &HashSet::new())
                 .is_none()
         );
-        assert!(!control.has_connection(peer_id, &HashSet::new(), &HashSet::new(), false));
+        assert!(!control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
 
         trusted
             .write()
@@ -557,12 +554,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![protocol.clone()]
         );
-        assert!(control.has_connection(
-            peer_id,
-            &HashSet::new(),
-            &HashSet::from([relay_peer_id]),
-            false,
-        ));
+        assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::from([relay_peer_id]),));
         assert_eq!(
             control.connections_via(&HashSet::from([relay_peer_id])),
             vec![ConnectionId::new_unchecked(2)],
@@ -589,10 +581,10 @@ mod tests {
         );
         assert!(
             lock(&control.shared)
-                .connection(peer_id, &HashSet::new(), &HashSet::new(), false)
+                .connection(peer_id, &HashSet::new(), &HashSet::new())
                 .is_some()
         );
-        assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::new(), false));
+        assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
         assert!(!control.has_connection(
             peer_id,
             &HashSet::from([
@@ -600,7 +592,6 @@ mod tests {
                 ConnectionId::new_unchecked(3),
             ]),
             &HashSet::new(),
-            false,
         ));
     }
 }

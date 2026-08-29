@@ -415,7 +415,7 @@ export function normalizePeerError(error: unknown): RuntimeHostPeerError {
   if (error instanceof RuntimeHostPeerError) return error;
   const cause = asError(error);
   const match =
-    /^(peer_[a-z_]+|direct_path_unavailable|mesh_control_unavailable|coordination_unavailable):\s*(.*)$/su.exec(
+    /^(peer_[a-z_]+|direct_path_unavailable|mesh_control_unavailable|coordination_unavailable|transit_unavailable):\s*(.*)$/su.exec(
       cause.message,
     );
   if (match && isPeerErrorCode(match[1])) {
