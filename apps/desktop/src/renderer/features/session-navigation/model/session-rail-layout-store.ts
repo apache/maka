@@ -26,6 +26,7 @@ import {
   readSessionListCollapsed,
   readSessionListViewMode,
   readSessionListWidth,
+  SESSION_LIST_EXPANDED_MIN_WIDTH,
   writeSessionListViewMode,
 } from './session-list-layout.js';
 
@@ -72,6 +73,14 @@ export function createSessionRailLayoutStore() {
     },
     /** Debounced: a drag reports a width per frame and only the last one is worth storing. */
     setWidth(next: number): void {
+      // Astryx reports a collapse as `onSizeChange(0)`, from the button and from
+      // a drag past the collapse threshold alike. That zero is the collapsed
+      // geometry, not a width the user chose, and clamping it would overwrite
+      // the remembered expanded width with the minimum. Every real width Astryx
+      // reports is already clamped to `minWidth`, so anything below it is the
+      // sentinel. The guard lives here rather than at the call site because the
+      // call site moves — that is exactly how it was lost (#4109).
+      if (next < SESSION_LIST_EXPANDED_MIN_WIDTH) return;
       const current = state.getState();
       const width = clampSessionListWidth(next);
       if (current.width === width) return;

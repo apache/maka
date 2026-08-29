@@ -45,6 +45,7 @@ export {
   readSessionListViewMode,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
+export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
 
 export function createFakeSessionNavigationServices(
   overrides: Partial<SessionNavigationServices> = {},
