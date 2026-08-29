@@ -81,15 +81,14 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
 }
 
 /**
- * Frames are explicit: the flag that says "this scroll was ours" is cleared on
- * the next frame, and every case below turns on whether the event arrives
- * before or after that.
+ * The authority observes the scroller's own box as well as the content, so the
+ * suite owns a `ResizeObserver`. Frames are not faked: nothing here schedules
+ * one — whether a scroll event is this authority's own is answered by where the
+ * scroller is, not by when the event arrives.
  */
-function withFrames<T>(run: (flush: () => void, resize: () => void) => T): T {
-  const pending: FrameRequestCallback[] = [];
+function withResizeObserver<T>(run: (resize: () => void) => T): T {
   const observers = new Set<() => void>();
-  const originalWindow = (globalThis as { window?: unknown }).window;
-  const originalResizeObserver = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  const original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
   (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
     constructor(private readonly callback: () => void) {
       observers.add(callback);
@@ -99,40 +98,17 @@ function withFrames<T>(run: (flush: () => void, resize: () => void) => T): T {
       observers.delete(this.callback);
     }
   };
-  const handles = new Map<number, FrameRequestCallback>();
-  let nextHandle = 1;
-  (globalThis as { window?: unknown }).window = {
-    requestAnimationFrame(callback: FrameRequestCallback) {
-      const handle = nextHandle++;
-      handles.set(handle, callback);
-      pending.push(callback);
-      return handle;
-    },
-    cancelAnimationFrame(handle: number) {
-      const callback = handles.get(handle);
-      handles.delete(handle);
-      const index = callback ? pending.indexOf(callback) : -1;
-      if (index >= 0) pending.splice(index, 1);
-    },
-  };
   try {
-    return run(
-      () => {
-        const frame = pending.splice(0, pending.length);
-        for (const callback of frame) callback(0);
-      },
-      () => {
-        for (const observer of [...observers]) observer();
-      },
-    );
+    return run(() => {
+      for (const observer of [...observers]) observer();
+    });
   } finally {
-    (globalThis as { window?: unknown }).window = originalWindow;
-    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = originalResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
   }
 }
 
 test('content that grows under a pinned transcript keeps the tail on screen', () => {
-  withFrames((flush) => {
+  withResizeObserver(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
@@ -145,17 +121,15 @@ test('content that grows under a pinned transcript keeps the tail on screen', ()
     // The write's own scroll event lands before the frame that clears the flag,
     // which is the whole reason the flag exists.
     root.emitScroll();
-    flush();
     assert.equal(authority.getSnapshot().pinned, true);
   });
 });
 
 test('a scroll this authority did not write is the reader, and releases the tail', () => {
-  withFrames((flush) => {
+  withResizeObserver(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    flush();
 
     root.scrollTop = 1_000;
     root.emitScroll();
@@ -172,11 +146,10 @@ test('a scroll this authority did not write is the reader, and releases the tail
 });
 
 test('returning to the tail re-pins, and following resumes', () => {
-  withFrames((flush) => {
+  withResizeObserver(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    flush();
     root.scrollTop = 0;
     root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, false);
@@ -184,7 +157,6 @@ test('returning to the tail re-pins, and following resumes', () => {
     authority.pinToTail();
     assert.equal(root.scrollTop, 2_400);
     assert.equal(authority.getSnapshot().awayFromTail, false);
-    flush();
 
     root.grow(600);
     authority.notifyContentResize();
@@ -193,7 +165,7 @@ test('returning to the tail re-pins, and following resumes', () => {
 });
 
 test('a detached authority writes nothing and reports the tail', () => {
-  withFrames(() => {
+  withResizeObserver(() => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     const detach = authority.attach(root as unknown as HTMLElement);
@@ -206,11 +178,10 @@ test('a detached authority writes nothing and reports the tail', () => {
 });
 
 test('a viewport that loses height takes the pinned reader back to the tail', () => {
-  withFrames((flush, resize) => {
+  withResizeObserver((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    flush();
 
     // The transcript did not change at all — the box looking at it did, which
     // is a window resize, a composer gaining a line, or a dock growing taller.
@@ -218,5 +189,25 @@ test('a viewport that loses height takes the pinned reader back to the tail', ()
     resize();
     assert.equal(root.scrollTop, 2_700);
     assert.equal(authority.getSnapshot().pinned, true);
+  });
+});
+
+test('a scroll event that arrives late is still this authority\'s own write', () => {
+  withResizeObserver(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // The write's event has not been dispatched yet, and the transcript keeps
+    // growing underneath it. By the time it lands the scroller is 302px from a
+    // tail that has moved — which is exactly what a reader who scrolled up
+    // looks like, and is why timing cannot be the discriminator.
+    root.grow(302);
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, true);
+
+    authority.notifyContentResize();
+    assert.equal(root.scrollTop, 2_702);
   });
 });

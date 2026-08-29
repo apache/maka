@@ -33,10 +33,12 @@
  * and "the reader is dragging" is also just don't touch it — so both of those
  * are the same instruction to this code: stay out of the way.
  *
- * Being the only writer is what makes the state exact rather than guessed. A
- * write flags itself, so an unflagged scroll event is the reader by
- * construction. Astryx had to infer that from scroll direction, height deltas
- * and wheel events, and every one of those signals has more than one cause.
+ * Being the only writer is what makes the state exact rather than guessed. It
+ * remembers the offset it wrote, so a scroll event that finds the scroller
+ * still on that offset is its own echo and any other offset is the reader — by
+ * construction, and with no dependence on when the event arrives. Astryx had to
+ * infer that from scroll direction, height deltas and wheel events, and every
+ * one of those signals has more than one cause.
  */
 
 import {
@@ -83,8 +85,16 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   let root: HTMLElement | null = null;
   let pinned = true;
   let awayFromTail = false;
-  let writing = false;
-  let writingFrame = 0;
+  /**
+   * The offset this authority last wrote, as the browser clamped it.
+   *
+   * A scroll event arrives asynchronously, and on a loaded machine that can be
+   * more than a frame after the write that caused it. Timing cannot tell the
+   * two apart — the position can: our own write is still sitting in `scrollTop`
+   * when its event lands, and a reader's gesture has already moved it somewhere
+   * else.
+   */
+  let lastWrittenTop: number | undefined;
   let snapshot: TranscriptScrollSnapshot = { pinned, awayFromTail };
   const listeners = new Set<() => void>();
 
@@ -97,22 +107,12 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
   const distanceToTail = (): number =>
     root ? root.scrollHeight - root.scrollTop - root.clientHeight : 0;
 
-  const markWriting = (): void => {
-    writing = true;
-    if (writingFrame !== 0) window.cancelAnimationFrame(writingFrame);
-    // A scroll event is dispatched asynchronously, so clearing this on the
-    // current turn would let our own write read as a gesture; clearing it any
-    // later than the next frame would swallow the reader's next one.
-    writingFrame = window.requestAnimationFrame(() => {
-      writingFrame = 0;
-      writing = false;
-    });
-  };
-
   const writeToTail = (): void => {
     if (!root) return;
-    markWriting();
     root.scrollTop = root.scrollHeight;
+    // Read it back: the browser clamps the write to the end of the scroller,
+    // and the clamped value is what the event will carry.
+    lastWrittenTop = root.scrollTop;
     awayFromTail = false;
     publish();
   };
@@ -123,11 +123,15 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const target = root;
       if (!target) return () => undefined;
       const onScroll = (): void => {
-        // Everything this authority writes flags itself, so an unflagged event
-        // is the reader — exactly, not by inference. Nested scrollers (a tool
-        // output box, a terminal) never reach here at all: `scroll` does not
-        // bubble, and there is no `wheel` listener to catch instead.
-        if (writing) return;
+        // An event that finds the scroller still on the offset this authority
+        // put it on is the echo of that write, however late it arrives; any
+        // other offset is the reader, exactly, and not by inference. Nested
+        // scrollers (a tool output box, a terminal) never reach here at all:
+        // `scroll` does not bubble, and there is no `wheel` listener to catch
+        // instead.
+        if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
+          return;
+        }
         const distance = distanceToTail();
         pinned = distance <= PIN_THRESHOLD_PX;
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
@@ -147,11 +151,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       return () => {
         viewport.disconnect();
         target.removeEventListener('scroll', onScroll);
-        if (writingFrame !== 0) {
-          window.cancelAnimationFrame(writingFrame);
-          writingFrame = 0;
-          writing = false;
-        }
+        lastWrittenTop = undefined;
         if (root === target) root = null;
       };
     },
