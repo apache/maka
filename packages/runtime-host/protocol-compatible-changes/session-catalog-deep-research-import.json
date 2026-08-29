@@ -1,5 +1,5 @@
 {
-  "epoch": 64,
+  "epoch": 65,
   "files": ["packages/runtime-host/src/protocol/session-catalog.ts"],
   "reason": "Renames an internal Deep Research import without changing any session catalog codec or message shape"
 }
