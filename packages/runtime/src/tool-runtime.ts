@@ -653,10 +653,11 @@ export class ToolRuntime {
     return this.settleUserQuestionAnswer(turnId, response, pending);
   }
 
-  async respondToSandboxBoundaryRequest(
-    turnId: string,
-    response: { requestId: string; decision: SandboxBoundaryDecision },
-  ): Promise<boolean> {
+  async respondToSandboxBoundaryResponse(response: {
+    requestId: string;
+    decision: SandboxBoundaryDecision;
+  }): Promise<boolean> {
+    if (!this.sandboxBoundaryRequests.has(response.requestId)) return false;
     if (
       !response ||
       typeof response.requestId !== 'string' ||
@@ -682,14 +683,6 @@ export class ToolRuntime {
       decision: response.decision,
     });
     return this.sandboxBoundaryRequests.resolve(response.requestId, settlement) !== null;
-  }
-
-  async respondToSandboxBoundaryResponse(response: {
-    requestId: string;
-    decision: SandboxBoundaryDecision;
-  }): Promise<boolean> {
-    if (!this.sandboxBoundaryRequests.has(response.requestId)) return false;
-    return this.respondToSandboxBoundaryRequest(this.turnId, response);
   }
 
   private settleUserQuestionAnswer(
