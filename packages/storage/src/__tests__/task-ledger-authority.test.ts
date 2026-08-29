@@ -204,6 +204,47 @@ describe('interactive task ledger authority', () => {
       assert.equal(copied?.owner?.runId, 'copied-root-run');
     });
   });
+
+  test('exposes sequenced canonical events and preserves tool correlation across copy', async () => {
+    await withInteractiveOwner(async ({ writer }) => {
+      const sourceSessionId = 'sequenced-source';
+      const targetSessionId = 'sequenced-target';
+      await writer.create(sourceSessionId, [{ subject: 'Correlated task' }], {
+        turnId: 'turn-1',
+        runId: 'source-run',
+        toolCallId: 'tool-call-1',
+        source: 'tool',
+        actor: 'main_agent',
+      });
+      const sourceEvents = await writer.readSequencedEvents(sourceSessionId);
+      assert.equal(sourceEvents.length, 1);
+      assert.equal(sourceEvents[0]?.sequence, 0);
+
+      await writer.copyConversationTaskLedger({
+        sourceSessionId,
+        targetSessionId,
+        turnIds: ['turn-1'],
+        runIdMap: [{ sourceRunId: 'source-run', targetRunId: 'target-run' }],
+      });
+      const targetEvents = await writer.readSequencedEvents(targetSessionId);
+      assert.equal(targetEvents.length, 1);
+      assert.equal(targetEvents[0]?.sequence, 0);
+      assert.notEqual(targetEvents[0]?.event.eventId, sourceEvents[0]?.event.eventId);
+      assert.equal(targetEvents[0]?.event.sessionId, targetSessionId);
+      assert.deepEqual(targetEvents[0]?.event.refs, {
+        turnId: 'turn-1',
+        toolCallId: 'tool-call-1',
+        runId: 'target-run',
+      });
+
+      const returned = targetEvents[0];
+      if (returned) returned.event.task.subject = 'Caller mutation';
+      assert.equal(
+        (await writer.readSequencedEvents(targetSessionId))[0]?.event.task.subject,
+        'Correlated task',
+      );
+    });
+  });
 });
 
 async function withInteractiveOwner(

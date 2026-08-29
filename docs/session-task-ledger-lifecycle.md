@@ -170,6 +170,23 @@ across Host epochs. The authority preserves the existing `task-events.jsonl`,
 `tasks.json`, legacy-read, and backfill behavior. Runtime Host is the sole
 interactive writer after production activation.
 
+Historical tool presentation uses the separate `task.mutation.query` operation.
+The caller supplies exact `{ turnId, toolCallId }` correlations taken from the
+durable Session transcript. Runtime Host derives one immutable, sanitized
+`create` or `update` presentation for each correlation directly from the
+sequenced Task Ledger events; it never joins an old tool row to the current
+Task snapshot and does not persist a second presentation authority. Legacy,
+missing, or non-projectable correlations return explicit unresolved results.
+
+Mutation traversal is stateless and append-stable. The first page fixes a
+high-water pair consisting of the latest included SQLite sequence and its
+event id. Continuations repeat the same bounded correlation list and carry an
+opaque cursor bound to the Session, correlation digest, high-water pair, and
+next result position. Events appended above that watermark are excluded from
+the traversal. If purge or replacement causes the high-water sequence to name
+a different event, the Host returns `history_changed`, and the Client discards
+the partial traversal instead of mixing two ledger incarnations.
+
 ## Child Agent Ownership
 
 `agent_spawn(task_id=...)` resolves the task in the current session and claims

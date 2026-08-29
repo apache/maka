@@ -48,7 +48,10 @@ import {
 } from '@maka/core/task-ledger';
 import { chainWrite } from './write-queue.js';
 import { assertSafeSessionId } from './session-store.js';
-import { registerTaskLedgerCanonicalReader } from './task-ledger-store-internal.js';
+import {
+  registerTaskLedgerCanonicalReader,
+  type SequencedTaskLedgerEvent,
+} from './task-ledger-store-internal.js';
 import {
   acquireOperationalStateDatabase,
   type OperationalStateDatabaseLease,
@@ -92,6 +95,7 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
     registerTaskLedgerCanonicalReader(this, {
       list: (sessionId, options) => this.#listCanonical(sessionId, options),
       get: (sessionId, id, options) => this.#getCanonical(sessionId, id, options),
+      readSequencedEvents: (sessionId) => this.#readSequencedEvents(sessionId),
     });
   }
 
@@ -574,6 +578,10 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
   }
 
   private async readTaskEvents(sessionId: string): Promise<TaskLedgerEvent[]> {
+    return (await this.#readSequencedEvents(sessionId)).map(({ event }) => event);
+  }
+
+  async #readSequencedEvents(sessionId: string): Promise<readonly SequencedTaskLedgerEvent[]> {
     return readSqliteTaskLedgerEvents(this.#lease.database, sessionId);
   }
 
@@ -653,25 +661,39 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
   }
 }
 
-function readSqliteTaskLedgerEvents(database: DatabaseSync, sessionId: string): TaskLedgerEvent[] {
+function readSqliteTaskLedgerEvents(
+  database: DatabaseSync,
+  sessionId: string,
+): readonly SequencedTaskLedgerEvent[] {
   assertSafeSessionId(sessionId);
   const rows = database
     .prepare(`
-      SELECT record_json
+      SELECT sequence, event_id, record_json
       FROM workflow_task_ledger_events
       WHERE session_id = ?
       ORDER BY sequence
     `)
-    .all(sessionId) as Array<{ record_json?: unknown }>;
+    .all(sessionId) as Array<{ sequence?: unknown; event_id?: unknown; record_json?: unknown }>;
   return rows.map((row, index) => {
+    if (
+      typeof row.sequence !== 'number' ||
+      !Number.isSafeInteger(row.sequence) ||
+      row.sequence !== index
+    ) {
+      throw new Error(`Invalid SQLite task event sequence at row ${index}`);
+    }
     if (typeof row.record_json !== 'string') {
       throw new Error(`Invalid SQLite task event at sequence ${index}`);
     }
     const parsed = JSON.parse(row.record_json);
-    if (!isTaskLedgerEvent(parsed) || parsed.sessionId !== sessionId) {
+    if (
+      !isTaskLedgerEvent(parsed) ||
+      parsed.sessionId !== sessionId ||
+      row.event_id !== parsed.eventId
+    ) {
       throw new Error(`Invalid SQLite task event at sequence ${index}`);
     }
-    return parsed;
+    return Object.freeze({ sequence: row.sequence, event: parsed });
   });
 }
 

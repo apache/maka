@@ -35,6 +35,7 @@ import {
 } from './task-ledger-store-internal.js';
 
 export type { TaskLedgerCanonicalReader } from './task-ledger-store-internal.js';
+export type { SequencedTaskLedgerEvent } from './task-ledger-store-internal.js';
 export type { ConversationTaskLedgerCopyInput } from './task-ledger-store.js';
 
 const writerBrand: unique symbol = Symbol('InteractiveTaskLedgerWriter');
@@ -132,6 +133,15 @@ function createInteractiveWriterFacade(
     [writerBrand]: true,
     list: (sessionId, options) => run(() => canonicalReader.list(sessionId, options)),
     get: (sessionId, id, options) => run(() => canonicalReader.get(sessionId, id, options)),
+    readSequencedEvents: (sessionId) =>
+      run(async () => {
+        const events = await canonicalReader.readSequencedEvents(sessionId);
+        return Object.freeze(
+          events.map(({ sequence, event }) =>
+            Object.freeze({ sequence, event: structuredClone(event) }),
+          ),
+        );
+      }),
     create: (sessionId, drafts, context) => run(() => store.create(sessionId, drafts, context)),
     update: (sessionId, id, patch, context) =>
       run(() => store.update(sessionId, id, patch, context)),

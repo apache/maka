@@ -248,6 +248,11 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.query'), true);
   });
 
+  test('publishes a new compatibility epoch for durable Task mutation queries', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 68);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'task.mutation.query'), true);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',

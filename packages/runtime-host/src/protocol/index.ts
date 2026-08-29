@@ -87,6 +87,7 @@ export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './session-turns.js';
 export * from './task-ledger.js';
+export * from './task-mutation.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
@@ -95,7 +96,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 76 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 77 as const;
+// 77: Clients may query the durable, tool-call-correlated Task mutation
+// projection. Older peers do not know the closed operation/result vocabulary.
 // 76: Peer Mesh endpoint and Mesh display names are signed, persisted facts
 // managed through Host operations rather than local-only Client labels.
 // 75: Peer Mesh routes identify whether a peer is a Client or Runtime Host so

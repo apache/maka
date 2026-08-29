@@ -17,14 +17,26 @@
  * under the License.
  */
 
-import type { Task, TaskLedgerListOptions, TaskLedgerStore } from '@maka/core/task-ledger';
+import type {
+  Task,
+  TaskLedgerEvent,
+  TaskLedgerListOptions,
+  TaskLedgerStore,
+} from '@maka/core/task-ledger';
+
+export interface SequencedTaskLedgerEvent {
+  readonly sequence: number;
+  readonly event: TaskLedgerEvent;
+}
 
 export interface TaskLedgerCanonicalReader {
   list(sessionId: string, options?: TaskLedgerListOptions): Promise<Task[]>;
   get(sessionId: string, id: string, options?: TaskLedgerListOptions): Promise<Task | undefined>;
+  readSequencedEvents(sessionId: string): Promise<readonly SequencedTaskLedgerEvent[]>;
 }
 
-// Package-private bridge: this module must stay outside both the root barrel and package exports.
+// Package-private registration bridge. The authenticated authority facade may
+// deliberately re-export a minimal read capability to Runtime Host.
 const canonicalReaderByStore = new WeakMap<object, TaskLedgerCanonicalReader>();
 
 export function registerTaskLedgerCanonicalReader(

@@ -60,6 +60,7 @@ import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
 import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
+import { TASK_MUTATION_OPERATION_SPECS } from './task-mutation.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
@@ -200,6 +201,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
   TASK_LEDGER_OPERATION_SPECS,
+  TASK_MUTATION_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_TRANSCRIPT_OPERATION_SPECS,
@@ -326,6 +328,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'subscription.close',
   'subscription.open',
   'task.ledger.query',
+  'task.mutation.query',
   'turn.interrupt',
   'turn.message.execution.query',
   'turn.message.query',

@@ -135,7 +135,10 @@ export type SessionCatalogOperationKey = Exclude<
   | SessionRetirementOperationKey
   | SessionEffectOperationKey
 >;
-export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
+export type TaskLedgerOperationKey = Extract<
+  OperationKey,
+  'task.ledger.query' | 'task.mutation.query'
+>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;

@@ -375,6 +375,22 @@ async function verifyConcurrentRevisionAuthority(
       'Legacy child task',
       'Retained task',
     ]);
+    const copiedMutation = await tui.request('task.mutation.query', {
+      kind: 'start',
+      sessionId: branch.id,
+      correlations: [{ turnId: 'turn-1', toolCallId: 'task-create-turn-1' }],
+    });
+    assert.equal(copiedMutation.kind, 'page');
+    if (copiedMutation.kind !== 'page') {
+      assert.fail('Branch Task mutation query must return a page');
+    }
+    assert.equal(copiedMutation.lookups[0]?.kind, 'found');
+    assert.equal(
+      copiedMutation.lookups[0]?.kind === 'found'
+        ? copiedMutation.lookups[0].presentation.changes[0]?.subject
+        : undefined,
+      'Retained task',
+    );
 
     const renamed = await desktop.request('session.metadata.update', {
       sessionId: sourceSessionId,
@@ -1473,6 +1489,8 @@ async function seedSource(
     }
     await tasks.create(source.id, [{ subject: 'Retained task' }], {
       turnId: 'turn-1',
+      runId: 'run-turn-1',
+      toolCallId: 'task-create-turn-1',
       source: 'tool',
       actor: 'main_agent',
     });
@@ -1488,6 +1506,8 @@ async function seedSource(
       { status: 'in_progress' },
       {
         turnId: 'turn-2',
+        runId: 'run-turn-2',
+        toolCallId: 'task-update-turn-2',
         source: 'tool',
         actor: 'main_agent',
       },

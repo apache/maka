@@ -90,6 +90,8 @@ import {
   type SubscriptionFrame,
   type TaskLedgerQueryResult,
   type TaskLedgerRevision,
+  type TaskMutationCorrelation,
+  type TaskMutationQueryResult,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
@@ -244,6 +246,14 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
   await withExecutionRoot(async (fixture) => {
     const initialRunId = randomUUID();
     const initialTurnId = randomUUID();
+    const createCorrelation = {
+      turnId: initialTurnId,
+      toolCallId: randomUUID(),
+    } satisfies TaskMutationCorrelation;
+    const updateCorrelation = {
+      turnId: initialTurnId,
+      toolCallId: randomUUID(),
+    } satisfies TaskMutationCorrelation;
     // Exercise the Runtime-facing port before Host startup; Hosted tool composition is separate.
     const toolPortProjection = await withOwnedTaskLedgerToolPort(
       fixture,
@@ -251,7 +261,7 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
         const context = taskLedgerToolContext(fixture, {
           runId: initialRunId,
           turnId: initialTurnId,
-          toolCallId: randomUUID(),
+          toolCallId: createCorrelation.toolCallId,
         });
         const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
         const createInput = create.parameters.parse({
@@ -265,7 +275,7 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
         const updateInput = update.parameters.parse({ id: 'T1', status: 'in_progress' });
         await update.impl(updateInput, {
           ...context,
-          toolCallId: randomUUID(),
+          toolCallId: updateCorrelation.toolCallId,
         });
         return coordinator.list(fixture.sessionId, {
           includeTerminal: true,
@@ -312,6 +322,42 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
       assert.deepEqual(byKey.task, desktopProjection.tasks[0]);
       assert.equal(byKey.task?.owner?.runId, initialRunId);
       assert.equal(byKey.task?.owner?.turnId, initialTurnId);
+
+      const desktopMutations = await collectTaskMutationProjection(desktop, fixture.sessionId, [
+        createCorrelation,
+        updateCorrelation,
+      ]);
+      const tuiMutations = await collectTaskMutationProjection(tui, fixture.sessionId, [
+        createCorrelation,
+        updateCorrelation,
+      ]);
+      assert.deepEqual(tuiMutations, desktopMutations);
+      assert.deepEqual(
+        desktopMutations.lookups.map((lookup) =>
+          lookup.kind === 'found'
+            ? {
+                kind: lookup.kind,
+                operation: lookup.presentation.operation,
+                changes: lookup.presentation.changes.length,
+                subject: lookup.presentation.changes[0]?.subject,
+              }
+            : { kind: lookup.kind },
+        ),
+        [
+          {
+            kind: 'found',
+            operation: 'create',
+            changes: TASK_LEDGER_PAGE_MAX_ITEMS + 1,
+            subject: 'Authority acceptance task 1',
+          },
+          {
+            kind: 'found',
+            operation: 'update',
+            changes: 1,
+            subject: 'Authority acceptance task 1',
+          },
+        ],
+      );
 
       const firstPage = desktopProjection.pages[0];
       assert.ok(firstPage?.nextCursor);
@@ -374,6 +420,148 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
     } finally {
       await successor.close();
       await fixture.stopHost(successorHost);
+    }
+  });
+});
+
+test('Task mutation cursor freezes appends and detects purged history incarnation', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const runId = randomUUID();
+    const turnId = randomUUID();
+    const createCorrelation = { turnId, toolCallId: randomUUID() };
+    const updateCorrelations: TaskMutationCorrelation[] = [];
+    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
+      const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
+      await create.impl(
+        create.parameters.parse({
+          tasks: Array.from({ length: 128 }, () => ({ subject: '界'.repeat(200) })),
+        }),
+        taskLedgerToolContext(fixture, { runId, ...createCorrelation }),
+      );
+      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
+      for (let index = 1; index < 128; index += 1) {
+        await update.impl(
+          update.parameters.parse({ id: `T${index}`, status: 'in_progress' }),
+          taskLedgerToolContext(fixture, {
+            runId,
+            turnId,
+            toolCallId: randomUUID(),
+          }),
+        );
+        const correlation = { turnId, toolCallId: randomUUID() };
+        updateCorrelations.push(correlation);
+        await update.impl(
+          update.parameters.parse({
+            id: `T${index}`,
+            status: 'completed',
+            completionEvidence: '证'.repeat(1000),
+          }),
+          taskLedgerToolContext(fixture, { runId, ...correlation }),
+        );
+      }
+    });
+    const correlations = [createCorrelation, ...updateCorrelations];
+    assert.equal(correlations.length, 128);
+
+    const firstHost = await fixture.startHost();
+    const firstClient = await connectClient(fixture.root);
+    let firstPage: TaskMutationPage;
+    try {
+      const result = await firstClient.request('task.mutation.query', {
+        kind: 'start',
+        sessionId: fixture.sessionId,
+        correlations,
+      });
+      assert.equal(result.kind, 'page');
+      if (result.kind !== 'page') throw new Error('Expected initial Task mutation page');
+      assert.ok(result.nextCursor);
+      firstPage = result;
+    } finally {
+      await firstClient.close();
+      await fixture.stopHost(firstHost);
+    }
+
+    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
+      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
+      const appendedCorrelation = { turnId: randomUUID(), toolCallId: randomUUID() };
+      await update.impl(
+        update.parameters.parse({ id: 'T128', status: 'in_progress' }),
+        taskLedgerToolContext(fixture, {
+          runId: randomUUID(),
+          ...appendedCorrelation,
+        }),
+      );
+    });
+
+    const successorHost = await fixture.startHost();
+    const successor = await connectClient(fixture.root);
+    try {
+      const pages = [firstPage];
+      let cursor = firstPage.nextCursor;
+      while (cursor) {
+        const result = await successor.request('task.mutation.query', {
+          kind: 'continue',
+          sessionId: fixture.sessionId,
+          correlations,
+          revision: firstPage.revision,
+          cursor,
+        });
+        assert.equal(result.kind, 'page');
+        if (result.kind !== 'page') throw new Error('Expected frozen Task mutation continuation');
+        assert.equal(result.revision, firstPage.revision);
+        pages.push(result);
+        cursor = result.nextCursor;
+      }
+      const lookups = pages.flatMap((page) => page.lookups);
+      assert.equal(lookups.length, correlations.length);
+      assert.deepEqual(
+        lookups.map((lookup) => lookup.correlation),
+        correlations,
+      );
+      assert.ok(lookups.every((lookup) => lookup.kind === 'found'));
+    } finally {
+      await successor.close();
+      await fixture.stopHost(successorHost);
+    }
+
+    const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire Task Ledger purge authority');
+    const writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    try {
+      await writer.purgeConversationTaskLedger(fixture.sessionId);
+      await writer.create(fixture.sessionId, [{ subject: 'Replacement ledger' }], {
+        runId: randomUUID(),
+        turnId: randomUUID(),
+        toolCallId: randomUUID(),
+        source: 'tool',
+        actor: 'main_agent',
+      });
+    } finally {
+      writer.close();
+      await owner.close();
+    }
+
+    const replacementHost = await fixture.startHost();
+    const replacementClient = await connectClient(fixture.root);
+    try {
+      assert.ok(firstPage.nextCursor);
+      const changed = await replacementClient.request('task.mutation.query', {
+        kind: 'continue',
+        sessionId: fixture.sessionId,
+        correlations,
+        revision: firstPage.revision,
+        cursor: firstPage.nextCursor,
+      });
+      assert.equal(changed.kind, 'history_changed');
+      if (changed.kind !== 'history_changed') {
+        throw new Error('Expected purged Task mutation history to invalidate the cursor');
+      }
+      assert.equal(changed.expected, firstPage.revision);
+      assert.notEqual(changed.actual, firstPage.revision);
+    } finally {
+      await replacementClient.close();
+      await fixture.stopHost(replacementHost);
     }
   });
 });
@@ -1312,6 +1500,52 @@ async function collectTaskLedgerProjection(
     revision,
     pages,
     tasks: pages.flatMap((page) => page.tasks),
+  };
+}
+
+type TaskMutationPage = Extract<TaskMutationQueryResult, { kind: 'page' }>;
+
+async function collectTaskMutationProjection(
+  client: RuntimeHostConnection,
+  sessionId: string,
+  correlations: readonly TaskMutationCorrelation[],
+): Promise<{
+  revision: TaskMutationPage['revision'];
+  pages: TaskMutationPage[];
+  lookups: TaskMutationPage['lookups'];
+}> {
+  const pages: TaskMutationPage[] = [];
+  let result = await client.request('task.mutation.query', {
+    kind: 'start',
+    sessionId,
+    correlations,
+  });
+  assert.equal(result.kind, 'page');
+  if (result.kind !== 'page') throw new Error('Expected initial Task mutation page');
+  const revision = result.revision;
+
+  while (true) {
+    assert.equal(result.sessionId, sessionId);
+    assert.equal(result.revision, revision);
+    pages.push(result);
+    if (result.nextCursor === null) break;
+    result = await client.request('task.mutation.query', {
+      kind: 'continue',
+      sessionId,
+      correlations,
+      revision,
+      cursor: result.nextCursor,
+    });
+    assert.equal(result.kind, 'page');
+    if (result.kind !== 'page') {
+      throw new Error('Task mutation history changed while collecting a stable projection');
+    }
+  }
+
+  return {
+    revision,
+    pages,
+    lookups: pages.flatMap((page) => page.lookups),
   };
 }
 
