@@ -78,7 +78,6 @@ test('one root version defines every product artifact from one source commit', (
   });
 
   assert.equal(identity.version, '1.2.3');
-  assert.equal(identity.isPrerelease, false);
   assert.equal(identity.tag, 'v1.2.3');
   assert.equal(identity.sourceCommit, 'a'.repeat(40));
   assert.equal(identity.sourceReferenceTag, 'v1.2.3-incubating-rc2');
@@ -144,32 +143,8 @@ printf verified
   assert.equal(stdout, 'verified');
 });
 
-test('the product identity classifies prereleases once for every publication surface', () => {
-  const version = '1.2.3-beta.2';
-  const identity = resolveProductReleaseIdentity({
-    rootManifest: { ...rootManifest, version },
-    desktopManifest: { version },
-    cliManifest: { version, bin: { maka: './dist/cli.js' } },
-    sha: 'a'.repeat(40),
-    sourceReferenceTag: `v${version}-incubating-rc1`,
-  });
-
-  assert.equal(identity.isPrerelease, true);
-  assert.equal(identity.tag, `v${version}`);
-});
-
-test('product prereleases use only updater-compatible alpha and beta channels', () => {
-  for (const version of ['1.2.3-alpha.1', '1.2.3-beta.2']) {
-    assert.equal(
-      resolveProductManifestIdentity({
-        rootManifest: { ...rootManifest, version },
-        desktopManifest: { version },
-        cliManifest: { version, bin: { maka: './dist/cli.js' } },
-      }).isPrerelease,
-      true,
-    );
-  }
-  for (const version of ['1.2.3-rc.1', '1.2.3-dev.1']) {
+test('formal product identity rejects every prerelease channel', () => {
+  for (const version of ['1.2.3-alpha.1', '1.2.3-beta.2', '1.2.3-rc.1', '1.2.3-dev.1']) {
     assert.throws(
       () =>
         resolveProductManifestIdentity({
@@ -177,7 +152,7 @@ test('product prereleases use only updater-compatible alpha and beta channels', 
           desktopManifest: { version },
           cliManifest: { version, bin: { maka: './dist/cli.js' } },
         }),
-      /prerelease channel must be alpha or beta/u,
+      /require a stable version/u,
     );
   }
 });
@@ -721,17 +696,16 @@ test('one product workflow gates one draft release on every required artifact', 
   const publishRelease = jobs.publish.steps.find(
     (step) => step.name === 'Create or update the draft GitHub Release',
   ).run;
+  assert.equal(Object.hasOwn(jobs['release-identity'].outputs, 'is_prerelease'), false);
   assert.equal(
-    jobs['release-identity'].outputs.is_prerelease,
-    '${{ steps.identity.outputs.is_prerelease }}',
+    Object.hasOwn(
+      jobs.publish.steps.find((step) => step.name === 'Create or update the draft GitHub Release')
+        .env,
+      'IS_PRERELEASE',
+    ),
+    false,
   );
-  assert.equal(
-    jobs.publish.steps.find((step) => step.name === 'Create or update the draft GitHub Release').env
-      .IS_PRERELEASE,
-    '${{ needs.release-identity.outputs.is_prerelease }}',
-  );
-  assert.match(publishRelease, /classification=\(--prerelease=false --latest=false\)/u);
-  assert.match(publishRelease, /classification=\(--prerelease --latest=false\)/u);
+  assert.match(publishRelease, /--prerelease=false/u);
   assert.doesNotMatch(publishRelease, /--latest(?:\s|\\|$)/u);
   assert.match(publishRelease, /--json isPrerelease/u);
   assert.doesNotMatch(publishRelease, /gh release delete-asset/u);
@@ -771,10 +745,7 @@ test('repository control plane admits only each release phase owner ref', async 
     prevent_self_review: false,
     deployment_branch_policy: {
       protected_branches: false,
-      policies: [
-        { name: 'v*', type: 'tag' },
-        { name: 'main', type: 'branch' },
-      ],
+      policies: [{ name: 'main', type: 'branch' }],
     },
   });
   assert.deepEqual(

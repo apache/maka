@@ -25,11 +25,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import {
-  createProductNightlyPublicationRecord,
-  productNightlyIdentity,
-  validateProductNightlyPublicationRecord,
-} from './product-nightly.mjs';
+import { parseProductNightlyVersionFile, productNightlyIdentity } from './product-nightly.mjs';
+import { assertProductNightlyAdvances } from './release-version.mjs';
 
 const run = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -43,96 +40,49 @@ test('a nightly identity is a dev build of the checked-in product version', () =
       sourceCommit: 'a'.repeat(40),
     }),
     {
-      version: '0.2.0-dev.20260829.42',
+      version: '0.2.0-dev.42.20260829',
       sourceCommit: 'a'.repeat(40),
     },
   );
 });
 
-test('Desktop consumes the exact successful npm Nightly identity', () => {
-  const record = createProductNightlyPublicationRecord({
-    productVersion: '0.2.0',
-    version: '0.2.0-dev.20260829.42',
-    sourceCommit: 'a'.repeat(40),
-    repository: 'apache/maka',
-    workflowPath: '.github/workflows/npm-publication.yml',
-    runId: '123',
-    runAttempt: '1',
-  });
-  assert.deepEqual(
-    validateProductNightlyPublicationRecord(record, {
-      productVersion: '0.2.0',
-      sourceCommit: 'a'.repeat(40),
-      repository: 'apache/maka',
-      workflowPath: '.github/workflows/npm-publication.yml',
-      runId: '123',
-      runAttempt: '1',
-    }),
-    record,
+test('the version handoff contains only the exact npm Nightly version', () => {
+  assert.equal(
+    parseProductNightlyVersionFile('0.2.0-dev.42.20260829\n', '0.2.0'),
+    '0.2.0-dev.42.20260829',
   );
-  assert.throws(
-    () =>
-      validateProductNightlyPublicationRecord(record, {
-        productVersion: '0.2.0',
-        sourceCommit: 'b'.repeat(40),
-        repository: 'apache/maka',
-        workflowPath: '.github/workflows/npm-publication.yml',
-        runId: '123',
-        runAttempt: '1',
-      }),
-    /sourceCommit does not match/u,
-  );
-  assert.throws(
-    () =>
-      validateProductNightlyPublicationRecord(
-        { ...record, schemaVersion: 2 },
-        {
-          productVersion: '0.2.0',
-          sourceCommit: 'a'.repeat(40),
-          repository: 'apache/maka',
-          workflowPath: '.github/workflows/npm-publication.yml',
-          runId: '123',
-          runAttempt: '1',
-        },
-      ),
-    /schema version is unsupported/u,
-  );
+  for (const source of [
+    '0.2.0-dev.42.20260829',
+    '0.2.0-dev.42.20260829\nextra\n',
+    '{"version":"0.2.0-dev.42.20260829"}\n',
+  ]) {
+    assert.throws(() => parseProductNightlyVersionFile(source, '0.2.0'));
+  }
 });
 
-test('the publication record CLI hands the exact npm run to Desktop', async (t) => {
+test('the version handoff CLI passes only the exact version to Desktop', async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), 'maka-product-nightly-record-'));
   t.after(() => rm(fixture, { recursive: true, force: true }));
-  const record = join(fixture, 'identity.json');
+  const record = join(fixture, 'version.txt');
   const output = join(fixture, 'github-output');
   const script = join(repoRoot, 'scripts', 'product-nightly.mjs');
-  const version = '0.2.0-dev.20260829.42';
-  const sourceCommit = 'a'.repeat(40);
-  await run(process.execPath, [
-    script,
-    'write-publication-record',
-    record,
-    version,
-    sourceCommit,
-    '123',
-    '1',
-    'apache/maka',
-    '.github/workflows/npm-publication.yml',
-  ]);
-  await run(process.execPath, [
-    script,
-    'inspect-publication-record',
-    record,
-    '123',
-    '1',
-    'apache/maka',
-    '.github/workflows/npm-publication.yml',
-    sourceCommit,
-    output,
-  ]);
+  const version = '0.2.0-dev.42.20260829';
+  await run(process.execPath, [script, 'write-version', record, version]);
+  await run(process.execPath, [script, 'inspect-version', record, output]);
+  assert.equal(await readFile(output, 'utf8'), `version=${version}\n`);
+});
+
+test('run number is the single monotonic Nightly authority across UTC dates', () => {
   assert.equal(
-    await readFile(output, 'utf8'),
-    `version=${version}\nsource_commit=${sourceCommit}\n`,
+    assertProductNightlyAdvances('0.2.0-dev.43.20260828', '0.2.0-dev.42.20260829', '0.2.0'),
+    '0.2.0-dev.43.20260828',
   );
+  for (const candidate of ['0.2.0-dev.42.20260830', '0.2.0-dev.41.20260830']) {
+    assert.throws(
+      () => assertProductNightlyAdvances(candidate, '0.2.0-dev.42.20260829', '0.2.0'),
+      /does not advance current run/u,
+    );
+  }
 });
 
 test('the identity entrypoint runs before repository dependencies are installed', async (t) => {
@@ -160,7 +110,7 @@ test('the identity entrypoint runs before repository dependencies are installed'
     },
   });
   assert.deepEqual(JSON.parse(stdout), {
-    version: '0.2.0-dev.20260829.42',
+    version: '0.2.0-dev.42.20260829',
     sourceCommit: 'a'.repeat(40),
   });
 });

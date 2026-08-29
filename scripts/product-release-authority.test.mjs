@@ -71,7 +71,6 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
     artifactDirectory: directory,
     identity: {
       version,
-      isPrerelease: false,
       tag: `v${version}`,
       sourceReferenceTag: `v${version}-incubating-rc1`,
       sourceCommit,

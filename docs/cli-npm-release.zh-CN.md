@@ -30,7 +30,8 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 
 ## 发布不变量
 
-- 产品 Release workflow 只能从已批准的 ASF source candidate tag dispatch；npm Stage 只能从随后创建的产品 `v<version>` tag dispatch，npm Finalize 只能从 `main` dispatch；
+- 产品发布工作流只能从已批准的 ASF source candidate tag dispatch；npm Stage 与 npm
+  Finalize 都只能从 `main` dispatch，Stage 仅把随后创建的产品 `v<version>` tag 作为已验证数据；
 - 获批的稳定版本使用 `latest`，开发快照使用 `nightly`；不再存在 `next` 渠道，`nightly`
   永远不得修改 `latest`；
 - 不创建 npm 专属 Git tag 或 GitHub Release；`Release` workflow 在 npm staging 前创建产品
@@ -40,16 +41,18 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 - 正式发布只能运行 `npm stage publish`，由人工 package maintainer 使用 npm 2FA 批准；只有
   Product Nightly 可以直接运行 `npm publish --tag nightly`；
 - validation、staging、approval 和 finalization 之间不得重新构建；
-- 已公开的版本不得复用。修复必须使用新的 prerelease、patch、minor 或 major 版本。
+- 已公开的版本不得复用。正式产品修复必须使用新的 patch、minor 或 major 版本。
 
 workflow 边界分别是：
 
 1. [npm publication](../.github/workflows/npm-publication.yml) 是唯一的 Trusted Publisher
-   caller，负责从精确产品 tag 路由正式发布，并从 `main` 发布 npm Nightly；
+   caller；它只能从 `main` 运行，把精确产品 tag 作为待验证的数据路由正式发布，并发布 npm Nightly；
 2. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) 解析已有的产品 tag 与 GitHub
-   Release，checkout 该产品的精确 commit，构建并验证一个 immutable tarball，记录这个唯一的 tag commit 与 workflow run，进入受保护的 `npm-publication` Environment，然后通过 OIDC 提交到 npm staging；
-3. [Desktop Nightly](../.github/workflows/desktop-nightly.yml) 只在 npm Nightly 成功后启动，消费
-   它的 immutable identity record，并使用相同 source commit 和精确版本发布 Desktop；
+   Release；无 OIDC 的 job 从产品 commit 构建并验证一个 immutable tarball；OIDC job 只执行
+   `main` 上已审查的 publisher 代码，分别记录产品 source 与 publisher 身份，再把验证过的字节提交到 npm staging；
+3. [Desktop Nightly](../.github/workflows/desktop-nightly.yml) 只在 npm Nightly 成功后启动，只消费
+   immutable version file；source commit 与上游 run 身份直接取自已认证的
+   `workflow_run` event；
 4. [Finalize product release](../.github/workflows/release-cli-finalize.yml) 只接受精确的成功
    Stage run、Release build run 及其自包含 publication record；`main` 上当前已审查的 verifier
    验证公共 registry 字节、signature、provenance、dist-tag、不可变 build artifacts 与 live Draft
@@ -63,7 +66,7 @@ workflow 边界分别是：
 仓库中的 `.asf.yaml` 是 `npm-publication` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
 同步出的 live 配置满足：
 
-- `npm-publication` 只允许 selected `main` branch 和 `v*` tag；为保证 Nightly 自动运行，不设置
+- `npm-publication` 只允许 selected `main` branch；为保证 Nightly 自动运行，不设置
   approval gate；
 - `product-release` 只允许 selected `main` branch，required reviewer 为 `M4n5ter`，并禁止
   self-review；
@@ -86,8 +89,8 @@ Environment policy。Finalize 使用 GitHub Actions OIDC 为精确便利包生�
 | Allowed actions | `npm publish` 与 `npm stage publish` |
 
 Workflow filename 区分大小写，并且不包含 `.github/workflows/` 前缀。正式 staging 与 Nightly
-direct publish 都使用 `npm-publication` Environment；它只允许 `main` 和 immutable `v*` 产品
-tag。因为 Nightly 需要自动运行，所以不设置 GitHub approval gate；正式发布在 staging 后仍须由
+direct publish 都使用 `npm-publication` Environment；它只允许 `main`。因为 Nightly 需要自动
+运行，所以不设置 GitHub approval gate；正式发布在 staging 后仍须由
 人工使用 npm 2FA 批准。不要配置第二个 publisher 或 npm token。
 
 第一次 OIDC Stage 成功后，将 package publishing access 设置为 **Require two-factor
@@ -101,18 +104,20 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 ## Product Nightly
 
 定时 `npm-publication.yml` run 会从精确的 `main` commit 生成一个类似
-`0.2.0-dev.20260829.42` 的 immutable 身份，验证四平台 `maka-agent` tarball 并发布到
+`0.2.0-dev.42.20260829` 的 immutable 版本，验证四平台 `maka-agent` tarball 并发布到
 `nightly`。只有精确版本和 dist-tag 已公开后，成功的 workflow 才会触发
-`desktop-nightly.yml`。Desktop 消费 immutable identity record，并从相同 source commit 构建
-同一个精确版本。打包后的 Desktop 记录精确的 Runtime Host setup specifier，例如
-`maka-agent@0.2.0-dev.20260829.42`，绝不安装会漂移的 `nightly` tag。
+`desktop-nightly.yml`。Desktop 只消费该版本；精确 source commit 来自已认证的上游 event。
+打包后的 Desktop 记录精确的 Runtime Host setup specifier，例如
+`maka-agent@0.2.0-dev.42.20260829`，绝不安装会漂移的 `nightly` tag。
 
 两个 workflow 按以下顺序发布：
 
-1. 使用 provenance 将精确 npm tarball 发布到 `nightly`；
-2. 要求公共 registry 中的精确版本和 `nightly` tag 都已可读；
-3. 向 `nightlies.apache.org` 追加 immutable Desktop payload；
-4. 最后推进可变的 Desktop update feed。
+1. 要求候选 npm run number 大于当前 `nightly` tag；
+2. 使用 provenance 将精确 npm tarball 发布到 `nightly`；
+3. 要求公共 registry 中的精确版本和 `nightly` tag 都已可读；
+4. 要求候选 Desktop run number 大于所有现有平台 feed；
+5. 向 `nightlies.apache.org` 追加 immutable Desktop payload；
+6. 最后推进可变的 Desktop update feed。
 
 这个顺序既避免 Desktop 指向 npm 中不存在的 Runtime Host，也允许 npm Nightly 在 Desktop Infra
 就绪前独立运行。npm 或 Desktop run 失败后都不得原地 rerun；应启动新的 npm Nightly：
@@ -144,16 +149,18 @@ Nightly 是开发快照，不是 Apache Release，不得从面向最终用户的
 
 ## Stage 候选包
 
-1. 使用精确产品 tag 作为 GitHub ref dispatch workflow：
+1. 从已审查的 `main` dispatch workflow，并提供精确产品版本：
 
    ```sh
    version=0.2.0
-   gh workflow run npm-publication.yml --ref "v$version" \
+   gh workflow run npm-publication.yml --ref main \
      -f channel=formal \
      -f version="$version"
    ```
 
-2. 确认新建的 run 使用 `v<version>`。workflow 要求其 GitHub ref、checkout、产品 tag、Release、source commit 和 npm provenance 全部指向这一个 tag commit，并要求该 commit 仍是 `main` 的 ancestor；
+2. 确认新建的 run 使用 `main`。workflow 把 `v<version>` 与 Draft 作为数据解析，要求 tag
+   commit 仍是 `main` 的 ancestor，在无 OIDC 的 job 构建候选包，并把 npm provenance 绑定到
+   已审查的 `main` publisher workflow 与精确 run；
 3. 等待可复用 package validation jobs 全部通过。它们只构建一个 tarball，并在 Linux x64/arm64、
    macOS arm64、Windows x64 上验证安装态 CLI，在 Linux x64 上运行真实 Harbor 和 Pier
    Docker cell；
@@ -190,7 +197,7 @@ node scripts/product-release-authority.mjs verify-draft \
 ```
 
 verifier 必须成功。tag 不存在、已移动、不再位于 `main`，匹配的 GitHub Release 不再是 Draft，
-或 prerelease 分类与版本不一致时都必须停止。
+或被标记为 prerelease 时都必须停止。
 
 只批准这个 stage ID。npm 会要求 2FA，并在批准时将 package 公开：
 

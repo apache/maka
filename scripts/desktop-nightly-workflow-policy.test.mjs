@@ -30,7 +30,7 @@ async function readWorkflow(name) {
 test('npm publication owns both npm channels and no Desktop authority', async () => {
   const workflow = await readWorkflow('npm-publication.yml');
   assert.deepEqual(workflow.concurrency, {
-    group: 'npm-publication-${{ github.ref }}',
+    group: "npm-publication-${{ inputs.channel || 'nightly' }}",
     'cancel-in-progress': false,
   });
   assert.match(workflow.jobs.identity.if, /vars\.NPM_NIGHTLY_ENABLED == 'true'/u);
@@ -44,8 +44,8 @@ test('npm publication owns both npm channels and no Desktop authority', async ()
   const positions = [
     'Publish the exact npm Nightly',
     'Require the public npm Nightly',
-    'Record the published Product Nightly identity',
-    'Hand the exact identity to Desktop Nightly',
+    'Record the published Product Nightly version',
+    'Hand the exact version to Desktop Nightly',
   ].map((name) => steps.findIndex((step) => step.name === name));
   assert.deepEqual(
     positions,
@@ -67,16 +67,16 @@ test('Desktop Nightly starts only from a successful published npm identity', asy
   assert.match(workflow.jobs.identity.if, /vars\.DESKTOP_NIGHTLY_ENABLED == 'true'/u);
   assert.match(workflow.jobs.identity.if, /workflow_run\.conclusion == 'success'/u);
   assert.match(workflow.jobs.identity.if, /workflow_run\.head_branch == 'main'/u);
+  assert.match(workflow.jobs.identity.if, /display_title == 'npm nightly publication'/u);
   const download = workflow.jobs.identity.steps.find(
-    (step) => step.name === 'Download the published Nightly identity',
+    (step) => step.name === 'Download the published Nightly version',
   );
-  assert.equal(download.with.name, 'product-nightly-identity');
+  assert.equal(download.with.name, 'product-nightly-version');
   assert.equal(download.with['run-id'], '${{ github.event.workflow_run.id }}');
   const bind = workflow.jobs.identity.steps.find(
-    (step) => step.name === 'Bind Desktop to the exact npm Nightly',
+    (step) => step.name === 'Bind Desktop to the exact npm Nightly version',
   );
-  assert.match(bind.run, /product-nightly\.mjs inspect-publication-record/u);
-  assert.match(bind.run, /\.github\/workflows\/npm-publication\.yml/u);
+  assert.match(bind.run, /product-nightly\.mjs inspect-version/u);
   assert.equal(
     workflow.jobs.desktop.env.MAKA_DESKTOP_NIGHTLY_VERSION,
     '${{ needs.identity.outputs.version }}',
@@ -130,6 +130,7 @@ test('the protected Desktop publisher appends payloads before advancing the feed
   const positions = [
     'Attest the exact Nightly payloads',
     'Verify the issued Nightly provenance',
+    'Require the Desktop Nightly feed to advance',
     'Publish immutable Nightly payloads',
     'Advance the Nightly update feed last',
   ].map((name) => steps.findIndex((step) => step.name === name));

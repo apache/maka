@@ -108,8 +108,6 @@ github:
       deployment_branch_policy:
         protected_branches: false
         policies:
-          - name: "v*"
-            type: tag
           - name: main
             type: branch
     product-release:

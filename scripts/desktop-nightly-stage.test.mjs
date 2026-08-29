@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { stringify } from 'yaml';
-import { stageDesktopNightly } from './desktop-nightly.mjs';
+import { assertDesktopNightlyFeedAdvance, stageDesktopNightly } from './desktop-nightly.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 
 async function writeUpdateSet(directory, version, platform) {
@@ -52,7 +52,7 @@ test('staging separates append-only payloads from the mutable Nightly feed', asy
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'input');
   const output = join(root, 'output');
-  const version = '0.2.0-dev.20260829.42';
+  const version = '0.2.0-dev.42.20260829';
   await mkdir(input);
   await Promise.all([
     writeUpdateSet(input, version, 'mac'),
@@ -117,4 +117,28 @@ test('staging separates append-only payloads from the mutable Nightly feed', asy
     'latest.yml',
   ]);
   assert.deepEqual((await readdir(join(output, 'versions', version))).sort(), payloadNames);
+});
+
+test('the Desktop feed advances only to a newer npm run number', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-feed-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await Promise.all([
+    writeFile(join(directory, 'latest-mac.yml'), 'version: 0.2.0-dev.42.20260829\n'),
+    writeFile(join(directory, 'latest.yml'), 'version: 0.2.0-dev.42.20260829\n'),
+  ]);
+  await assert.doesNotReject(
+    assertDesktopNightlyFeedAdvance({
+      directory,
+      candidateVersion: '0.2.0-dev.43.20260828',
+      productVersion: '0.2.0',
+    }),
+  );
+  await assert.rejects(
+    assertDesktopNightlyFeedAdvance({
+      directory,
+      candidateVersion: '0.2.0-dev.41.20260830',
+      productVersion: '0.2.0',
+    }),
+    /does not advance current run/u,
+  );
 });

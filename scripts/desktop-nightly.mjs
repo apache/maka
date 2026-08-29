@@ -21,7 +21,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
-import { assertProductNightlyVersion } from './release-version.mjs';
+import { assertProductNightlyAdvances, assertProductNightlyVersion } from './release-version.mjs';
 
 export const DESKTOP_NIGHTLY_FEED_URL = 'https://nightlies.apache.org/maka/desktop/';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -39,6 +39,29 @@ export function resolveDesktopBuildVersion(productVersion, environment = process
 
 export function resolveRuntimeHostSetupPackage(productVersion, environment = process.env) {
   return `maka-agent@${resolveDesktopBuildVersion(productVersion, environment)}`;
+}
+
+export async function assertDesktopNightlyFeedAdvance({
+  directory,
+  candidateVersion,
+  productVersion,
+}) {
+  const { parse } = await import('yaml');
+  for (const name of ['latest-mac.yml', 'latest.yml']) {
+    let source;
+    try {
+      source = await readFile(join(directory, name), 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    const currentVersion = parse(source)?.version;
+    if (typeof currentVersion !== 'string') {
+      throw new Error(`Desktop Nightly feed ${name} has no valid version`);
+    }
+    assertProductNightlyAdvances(candidateVersion, currentVersion, productVersion);
+  }
+  return candidateVersion;
 }
 
 function nightlyArtifactNames(version) {
@@ -168,8 +191,18 @@ async function main(args) {
     });
     return;
   }
+  if (command === 'assert-feed-advance' && rest.length === 2) {
+    const [directory, candidateVersion] = rest;
+    const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+    await assertDesktopNightlyFeedAdvance({
+      directory,
+      candidateVersion,
+      productVersion: productManifest.version,
+    });
+    return;
+  }
   throw new Error(
-    'usage: desktop-nightly.mjs stage <input-directory> <output-directory> <version> <source-commit>',
+    'usage: desktop-nightly.mjs stage <input-directory> <output-directory> <version> <source-commit> | assert-feed-advance <feed-directory> <candidate-version>',
   );
 }
 

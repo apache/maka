@@ -36,7 +36,8 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
-  Dispatch npm Stage from the resulting product `v<version>` tag and product Finalize from `main`.
+  Dispatch both npm Stage and product Finalize from `main`; Stage accepts the resulting product
+  `v<version>` tag only as verified release data.
 - Publish approved stable versions under `latest`. Publish developer snapshots under `nightly`.
   There is no `next` channel, and `nightly` must never modify `latest`.
 - Do not create an npm-specific Git tag or GitHub Release. The `Release` workflow creates the
@@ -46,19 +47,20 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 - Formal publication may only run `npm stage publish`; a human package maintainer approves the
   staged package with npm 2FA. Product Nightly alone may run `npm publish --tag nightly` directly.
 - Do not rebuild between validation, staging, approval, and finalization.
-- Never reuse a public version. Fixes require a new prerelease, patch, minor, or major version.
+- Never reuse a public version. Formal product fixes require a new patch, minor, or major version.
 
 The workflow boundaries are:
 
 1. [npm publication](../.github/workflows/npm-publication.yml) is the only Trusted Publisher caller.
-   It routes formal publication from an exact product tag and publishes npm Nightly from `main`.
+   It runs exclusively from `main`, routes formal publication for an exact product tag supplied as
+   data, and publishes npm Nightly.
 2. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
-   tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
-   tarball, records that single tag commit and workflow run, enters the protected `npm-publication`
-   Environment, and submits it to npm staging through OIDC.
+   tag and GitHub Release. Jobs without OIDC build and validate one immutable tarball from that
+   product commit. The OIDC job executes only reviewed `main` publisher code, records the separate
+   product-source and publisher identities, and submits the validated bytes to npm staging.
 3. [Desktop Nightly](../.github/workflows/desktop-nightly.yml) starts only after a successful npm
-   Nightly run, consumes its immutable identity record, and publishes Desktop from the same source
-   commit and exact version.
+   Nightly run, consumes only its immutable version file, and takes the source commit and upstream
+   run identity from the authenticated `workflow_run` event.
 4. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
    successful Stage run, Release build run, and self-contained publication record. The current
    reviewed verifier on `main` checks the public registry bytes, signature, provenance, dist-tag,
@@ -75,7 +77,7 @@ The checked-in `.asf.yaml` is the authority for the `npm-publication` and `produ
 Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
-- selected `main` branch and `v*` tag rules for `npm-publication`, with no approval gate so the
+- a selected `main` branch rule for `npm-publication`, with no approval gate so the
   scheduled Nightly can publish automatically;
 - a selected `main` branch rule for `product-release`, with `M4n5ter` as required reviewer and
   self-review disabled;
@@ -100,7 +102,7 @@ In the `maka-agent` package settings, configure one GitHub Actions trusted publi
 
 The workflow filename is case-sensitive and contains no `.github/workflows/` prefix. Both formal
 staging and direct Nightly publication use the same `npm-publication` Environment. Its deployment
-rules admit only `main` and immutable `v*` product tags. It has no GitHub approval gate because the
+rules admit only `main`. It has no GitHub approval gate because the
 scheduled Nightly is automatic; formal publication still requires human npm 2FA approval after
 staging. Do not configure a second publisher or npm token.
 
@@ -115,20 +117,22 @@ before relying on the schedule. This variable controls npm only; Desktop has its
 
 ## Product Nightly
 
-The scheduled `npm-publication.yml` run creates one immutable identity such as
-`0.2.0-dev.20260829.42` from the exact scheduled `main` commit, validates the four-platform
+The scheduled `npm-publication.yml` run creates one immutable version such as
+`0.2.0-dev.42.20260829` from the exact scheduled `main` commit, validates the four-platform
 `maka-agent` tarball, and publishes it under `nightly`. Only after the exact version and dist-tag are
-public does the successful workflow trigger `desktop-nightly.yml`. Desktop consumes the immutable
-identity record and builds from the same source commit and exact version. The packaged Desktop
-records the exact Runtime Host setup specifier, for example `maka-agent@0.2.0-dev.20260829.42`; it
+public does the successful workflow trigger `desktop-nightly.yml`. Desktop consumes only that
+version; the authenticated upstream event supplies the exact source commit. The packaged Desktop
+records the exact Runtime Host setup specifier, for example `maka-agent@0.2.0-dev.42.20260829`; it
 never installs the mutable `nightly` tag.
 
 The two workflows publish in this order:
 
-1. publish the exact npm tarball with provenance under `nightly`;
-2. require both the exact version and `nightly` tag to be readable from the public registry;
-3. append the immutable Desktop payloads to `nightlies.apache.org`;
-4. advance the mutable Desktop update feed last.
+1. require the candidate npm run number to be newer than the current `nightly` tag;
+2. publish the exact npm tarball with provenance under `nightly`;
+3. require both the exact version and `nightly` tag to be readable from the public registry;
+4. require the candidate Desktop run number to be newer than every existing platform feed;
+5. append the immutable Desktop payloads to `nightlies.apache.org`;
+6. advance the mutable Desktop update feed last.
 
 This ordering prevents Desktop from advertising a Runtime Host version that npm does not have and
 lets npm Nightly operate before Desktop's Infra transport is enabled. A failed npm or Desktop run is
@@ -169,16 +173,18 @@ automation must use the exact version recorded by Desktop.
 
 ## Stage the candidate
 
-1. Dispatch the workflow with the exact product tag as its GitHub ref:
+1. Dispatch the workflow from reviewed `main`, supplying the exact product version:
 
    ```sh
    version=0.2.0
-   gh workflow run npm-publication.yml --ref "v$version" \
+   gh workflow run npm-publication.yml --ref main \
      -f channel=formal \
      -f version="$version"
    ```
 
-2. Confirm the created run uses `v<version>`. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
+2. Confirm the created run uses `main`. The workflow resolves `v<version>` and its Draft as data,
+   requires that tag commit to remain an ancestor of `main`, builds the candidate without OIDC, and
+   binds npm provenance to the reviewed `main` publisher workflow and exact run.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64/arm64, macOS arm64, and Windows x64, plus real Harbor and Pier
    Docker cells on Linux x64.
@@ -216,7 +222,7 @@ node scripts/product-release-authority.mjs verify-draft \
 ```
 
 The verifier must succeed. Stop if the tag is absent, moved, no longer on `main`, the matching
-GitHub Release is no longer a Draft, or its prerelease classification does not match the version.
+GitHub Release is no longer a stable Draft, or is marked as a prerelease.
 
 Approve only that stage ID. npm requires 2FA and makes the package public as part of approval:
 

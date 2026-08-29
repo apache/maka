@@ -30,7 +30,7 @@ const run = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 test('a nightly package embeds only the Apache Nightlies update authority', () => {
-  const version = '0.2.0-dev.20260829.42';
+  const version = '0.2.0-dev.42.20260829';
   const config = resolveDesktopBuilderConfig({
     MAKA_DESKTOP_NIGHTLY_VERSION: version,
   });
@@ -59,7 +59,7 @@ test('formal release checks ignore the ambient Nightly packaging environment', a
       cwd: repoRoot,
       env: {
         ...environment,
-        MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.20260829.42',
+        MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.42.20260829',
       },
     },
   );
@@ -68,15 +68,15 @@ test('formal release checks ignore the ambient Nightly packaging environment', a
 test('packaging observes a valid nightly version without changing product manifests', () => {
   assert.equal(
     resolveDesktopBuildVersion('0.2.0', {
-      MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.20260829.42',
+      MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.42.20260829',
     }),
-    '0.2.0-dev.20260829.42',
+    '0.2.0-dev.42.20260829',
   );
   assert.equal(resolveDesktopBuildVersion('0.2.0', {}), '0.2.0');
   assert.equal(
     resolveRuntimeHostSetupPackage('0.2.0', {
-      MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.20260829.42',
+      MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.42.20260829',
     }),
-    'maka-agent@0.2.0-dev.20260829.42',
+    'maka-agent@0.2.0-dev.42.20260829',
   );
 });

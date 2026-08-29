@@ -16,6 +16,7 @@
 # under the License.
 
 name: npm publication
+run-name: npm ${{ inputs.channel || 'nightly' }} publication
 
 on:
   schedule:
@@ -40,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-publication-${{ github.ref }}
+  group: npm-publication-${{ inputs.channel || 'nightly' }}
   cancel-in-progress: false
 
 jobs:
@@ -137,21 +138,18 @@ jobs:
         id: npm-nightly
         env:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
-          RELEASE_REPOSITORY: ${{ github.repository }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RELEASE_SHA: ${{ needs.identity.outputs.source_commit }}
-          RELEASE_WORKFLOW: .github/workflows/npm-publication.yml
         run: |
           node scripts/release-cli-publication.mjs prepare-nightly \
             packages/cli/release \
             "$NIGHTLY_VERSION" \
-            "$RELEASE_SHA" \
-            "$RELEASE_RUN_ID" \
-            "$RELEASE_RUN_ATTEMPT" \
-            "$RELEASE_REPOSITORY" \
-            "$RELEASE_WORKFLOW" \
             "$GITHUB_OUTPUT"
+
+      - name: Require the Nightly channel to advance
+        env:
+          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
+        run: |
+          current="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/)"
+          node scripts/product-nightly.mjs assert-channel-advance "$NIGHTLY_VERSION" "$current"
 
       - name: Publish the exact npm Nightly
         env:
@@ -179,31 +177,21 @@ jobs:
           echo "npm Nightly did not become readable with the exact nightly tag" >&2
           exit 1
 
-      - name: Record the published Product Nightly identity
+      - name: Record the published Product Nightly version
         env:
-          IDENTITY_DIRECTORY: ${{ runner.temp }}/product-nightly-identity
+          VERSION_DIRECTORY: ${{ runner.temp }}/product-nightly-version
           NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
-          RELEASE_REPOSITORY: ${{ github.repository }}
-          RELEASE_RUN_ID: ${{ github.run_id }}
-          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RELEASE_SHA: ${{ needs.identity.outputs.source_commit }}
-          RELEASE_WORKFLOW: .github/workflows/npm-publication.yml
         run: |
-          mkdir -p "$IDENTITY_DIRECTORY"
-          node scripts/product-nightly.mjs write-publication-record \
-            "$IDENTITY_DIRECTORY/identity.json" \
-            "$NIGHTLY_VERSION" \
-            "$RELEASE_SHA" \
-            "$RELEASE_RUN_ID" \
-            "$RELEASE_RUN_ATTEMPT" \
-            "$RELEASE_REPOSITORY" \
-            "$RELEASE_WORKFLOW"
+          mkdir -p "$VERSION_DIRECTORY"
+          node scripts/product-nightly.mjs write-version \
+            "$VERSION_DIRECTORY/version.txt" \
+            "$NIGHTLY_VERSION"
 
-      - name: Hand the exact identity to Desktop Nightly
+      - name: Hand the exact version to Desktop Nightly
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: product-nightly-identity
-          path: ${{ runner.temp }}/product-nightly-identity/identity.json
+          name: product-nightly-version
+          path: ${{ runner.temp }}/product-nightly-version/version.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

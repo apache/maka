@@ -40,7 +40,6 @@ const PUBLICATION_RECORD_KEYS = [
   'sourceCommit',
   'tag',
   'version',
-  'prerelease',
   'assets',
 ];
 
@@ -186,7 +185,7 @@ function assertRepository(repository) {
 
 export function assertProductReleasePublicationRecord(record, expected = {}) {
   exactKeys(record, PUBLICATION_RECORD_KEYS, 'Product release publication record');
-  if (record.schemaVersion !== 1) {
+  if (record.schemaVersion !== 2) {
     throw new Error('Unsupported product release publication record');
   }
   assertRepository(record.repository);
@@ -200,9 +199,9 @@ export function assertProductReleasePublicationRecord(record, expected = {}) {
   const product = parseProductTag(record.tag);
   const source = parseAsfSourceReferenceTag(record.sourceReferenceTag);
   if (
+    product.prerelease.length > 0 ||
     record.version !== product.version ||
-    source.version !== product.version ||
-    record.prerelease !== product.prerelease.length > 0
+    source.version !== product.version
   ) {
     throw new Error('Product release publication identity is inconsistent');
   }
@@ -251,7 +250,7 @@ export async function createProductReleasePublicationRecord({
   assertRunIdentity(runId, runAttempt);
   await verifyProductReleaseArtifactIntegrity(artifactDirectory, identity);
   return assertProductReleasePublicationRecord({
-    schemaVersion: 1,
+    schemaVersion: 2,
     repository,
     workflow: PRODUCT_RELEASE_WORKFLOW,
     runId,
@@ -260,7 +259,6 @@ export async function createProductReleasePublicationRecord({
     sourceCommit: identity.sourceCommit,
     tag: identity.tag,
     version: identity.version,
-    prerelease: identity.isPrerelease,
     assets: await artifactRecords(artifactDirectory, allArtifactNames(identity)),
   });
 }

@@ -51,12 +51,31 @@ export function assertProductNightlyVersion(version, productVersion) {
     nightly.core.some((identifier, index) => identifier !== product.core[index]) ||
     nightly.prerelease.length !== 3 ||
     nightly.prerelease[0] !== 'dev' ||
-    !/^\d{8}$/u.test(nightly.prerelease[1]) ||
-    !/^[1-9]\d*$/u.test(nightly.prerelease[2])
+    !/^[1-9]\d*$/u.test(nightly.prerelease[1]) ||
+    !/^\d{8}$/u.test(nightly.prerelease[2])
   ) {
     throw new Error(`Product Nightly version ${version} must be a dev build of ${productVersion}`);
   }
   return version;
+}
+
+export function productNightlyRunNumber(version, productVersion) {
+  assertProductNightlyVersion(version, productVersion);
+  return BigInt(parseProductReleaseVersion(version).prerelease[1]);
+}
+
+export function assertProductNightlyAdvances(candidateVersion, currentVersion, productVersion) {
+  const candidateRun = productNightlyRunNumber(candidateVersion, productVersion);
+  if (currentVersion === undefined || currentVersion === null || currentVersion === '') {
+    return candidateVersion;
+  }
+  const currentRun = productNightlyRunNumber(currentVersion, productVersion);
+  if (candidateRun <= currentRun) {
+    throw new Error(
+      `Product Nightly ${candidateVersion} does not advance current run ${currentVersion}`,
+    );
+  }
+  return candidateVersion;
 }
 
 export function compareProductReleaseVersions(left, right) {

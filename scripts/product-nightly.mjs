@@ -20,19 +20,13 @@
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { assertProductNightlyVersion, parseProductReleaseVersion } from './release-version.mjs';
+import {
+  assertProductNightlyAdvances,
+  assertProductNightlyVersion,
+  parseProductReleaseVersion,
+} from './release-version.mjs';
 
-export const PRODUCT_NIGHTLY_WORKFLOW = '.github/workflows/npm-publication.yml';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const publicationRecordKeys = [
-  'schemaVersion',
-  'repository',
-  'workflowPath',
-  'runId',
-  'runAttempt',
-  'sourceCommit',
-  'version',
-].sort();
 
 export function productNightlyIdentity({ productVersion, date, runNumber, sourceCommit }) {
   if (parseProductReleaseVersion(productVersion).prerelease.length > 0) {
@@ -49,7 +43,7 @@ export function productNightlyIdentity({ productVersion, date, runNumber, source
   }
 
   const day = date.toISOString().slice(0, 10).replaceAll('-', '');
-  const version = `${productVersion}-dev.${day}.${runNumber}`;
+  const version = `${productVersion}-dev.${runNumber}.${day}`;
   assertProductNightlyVersion(version, productVersion);
   return {
     version,
@@ -57,68 +51,14 @@ export function productNightlyIdentity({ productVersion, date, runNumber, source
   };
 }
 
-export function createProductNightlyPublicationRecord({
-  productVersion,
-  version,
-  sourceCommit,
-  repository,
-  workflowPath,
-  runId,
-  runAttempt,
-}) {
-  assertProductNightlyVersion(version, productVersion);
-  if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
-    throw new Error('Product Nightly publication requires an exact source commit');
+export function parseProductNightlyVersionFile(source, productVersion) {
+  if (typeof source !== 'string' || !source.endsWith('\n') || source.slice(0, -1).includes('\n')) {
+    throw new Error(
+      'Product Nightly version file must contain exactly one newline-terminated line',
+    );
   }
-  if (repository !== 'apache/maka') {
-    throw new Error('Product Nightly publication requires the apache/maka repository');
-  }
-  if (workflowPath !== PRODUCT_NIGHTLY_WORKFLOW) {
-    throw new Error(`Product Nightly publication requires ${PRODUCT_NIGHTLY_WORKFLOW}`);
-  }
-  if (typeof runId !== 'string' || !/^[1-9]\d*$/u.test(runId)) {
-    throw new Error('Product Nightly publication requires a positive workflow run ID');
-  }
-  if (typeof runAttempt !== 'string' || !/^[1-9]\d*$/u.test(runAttempt)) {
-    throw new Error('Product Nightly publication requires a positive workflow run attempt');
-  }
-  return {
-    schemaVersion: 1,
-    repository,
-    workflowPath,
-    runId,
-    runAttempt,
-    sourceCommit,
-    version,
-  };
-}
-
-export function validateProductNightlyPublicationRecord(record, expected) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw new Error('Product Nightly publication record must be an object');
-  }
-  const actualKeys = Object.keys(record).sort();
-  if (JSON.stringify(actualKeys) !== JSON.stringify(publicationRecordKeys)) {
-    throw new Error('Product Nightly publication record has an unexpected shape');
-  }
-  const canonical = createProductNightlyPublicationRecord({
-    productVersion: expected.productVersion,
-    version: record.version,
-    sourceCommit: record.sourceCommit,
-    repository: record.repository,
-    workflowPath: record.workflowPath,
-    runId: record.runId,
-    runAttempt: record.runAttempt,
-  });
-  if (record.schemaVersion !== canonical.schemaVersion) {
-    throw new Error('Product Nightly publication record schema version is unsupported');
-  }
-  for (const key of ['repository', 'workflowPath', 'runId', 'runAttempt', 'sourceCommit']) {
-    if (canonical[key] !== expected[key]) {
-      throw new Error(`Product Nightly publication record ${key} does not match its workflow run`);
-    }
-  }
-  return canonical;
+  const version = source.slice(0, -1);
+  return assertProductNightlyVersion(version, productVersion);
 }
 
 async function main(args, environment = process.env) {
@@ -141,42 +81,28 @@ async function main(args, environment = process.env) {
     console.log(JSON.stringify(identity));
     return;
   }
-  if (command === 'write-publication-record' && rest.length === 7) {
-    const [output, version, sourceCommit, runId, runAttempt, repository, workflowPath] = rest;
-    const record = createProductNightlyPublicationRecord({
-      productVersion: productManifest.version,
-      version,
-      sourceCommit,
-      repository,
-      workflowPath,
-      runId,
-      runAttempt,
-    });
-    await writeFile(output, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+  if (command === 'write-version' && rest.length === 2) {
+    const [output, version] = rest;
+    assertProductNightlyVersion(version, productManifest.version);
+    await writeFile(output, `${version}\n`, 'utf8');
     return;
   }
-  if (command === 'inspect-publication-record' && rest.length === 7) {
-    const [input, runId, runAttempt, repository, workflowPath, sourceCommit, output] = rest;
-    const record = validateProductNightlyPublicationRecord(
-      JSON.parse(await readFile(input, 'utf8')),
-      {
-        productVersion: productManifest.version,
-        repository,
-        workflowPath,
-        runId,
-        runAttempt,
-        sourceCommit,
-      },
+  if (command === 'inspect-version' && rest.length === 2) {
+    const [input, output] = rest;
+    const version = parseProductNightlyVersionFile(
+      await readFile(input, 'utf8'),
+      productManifest.version,
     );
-    await appendFile(
-      output,
-      `version=${record.version}\nsource_commit=${record.sourceCommit}\n`,
-      'utf8',
-    );
+    await appendFile(output, `version=${version}\n`, 'utf8');
+    return;
+  }
+  if (command === 'assert-channel-advance' && (rest.length === 1 || rest.length === 2)) {
+    const [candidateVersion, currentVersion = ''] = rest;
+    assertProductNightlyAdvances(candidateVersion, currentVersion, productManifest.version);
     return;
   }
   throw new Error(
-    'usage: product-nightly.mjs identity | write-publication-record <output> <version> <source-commit> <run-id> <run-attempt> <repository> <workflow-path> | inspect-publication-record <input> <run-id> <run-attempt> <repository> <workflow-path> <source-commit> <output>',
+    'usage: product-nightly.mjs identity | write-version <output> <version> | inspect-version <input> <output> | assert-channel-advance <candidate-version> [current-version]',
   );
 }
 
