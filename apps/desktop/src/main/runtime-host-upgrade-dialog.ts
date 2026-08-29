@@ -24,7 +24,7 @@ import type {
   RuntimeHostUpgradePrompts,
   RuntimeHostNonRestartableDecision,
 } from './runtime-host-desktop-manager.js';
-import { buildRuntimeHostUpgradeDialogOptions } from './runtime-host-upgrade-copy.js';
+import { buildRuntimeHostUpgradeDialog } from './runtime-host-upgrade-copy.js';
 
 export function createRuntimeHostUpgradePrompts(
   resolveLocale: () => Promise<UiLocale>,
@@ -37,28 +37,34 @@ export function createRuntimeHostUpgradePrompts(
     restartable: async (conflict): Promise<RuntimeHostRestartDecision> => {
       const locale = await resolveLocale();
       const canWait = conflict.registration.lifecycleMode !== 'service';
-      const { response } = await showDialog(
-        buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', locale),
+      const dialog = buildRuntimeHostUpgradeDialog(
+        conflict,
+        { action: 'restart', canWait },
         locale,
       );
-      if (response === 0) return 'restart';
-      if (canWait && response === 1) return 'wait';
-      return 'cancel';
+      const { response } = await showDialog(
+        dialog.options,
+        locale,
+      );
+      const decision = dialog.decisions[response] ?? 'cancel';
+      return decision === 'restart' || decision === 'wait' ? decision : 'cancel';
     },
     nonRestartable: async (
       conflict,
-      canReplace,
+      actions,
     ): Promise<RuntimeHostNonRestartableDecision> => {
       const locale = await resolveLocale();
-      const canWait = conflict.registration.lifecycleMode !== 'service';
-      const { response } = await showDialog(
-        buildRuntimeHostUpgradeDialogOptions(conflict, canReplace ? 'replace' : undefined, locale),
+      const dialog = buildRuntimeHostUpgradeDialog(
+        conflict,
+        { action: actions.canReplace ? 'replace' : undefined, canWait: actions.canWait },
         locale,
       );
-      if (!canReplace) return canWait && response === 0 ? 'wait' : 'cancel';
-      if (response === 0) return 'replace';
-      if (canWait && response === 1) return 'wait';
-      return 'cancel';
+      const { response } = await showDialog(
+        dialog.options,
+        locale,
+      );
+      const decision = dialog.decisions[response] ?? 'cancel';
+      return decision === 'replace' || decision === 'wait' ? decision : 'cancel';
     },
   };
 }

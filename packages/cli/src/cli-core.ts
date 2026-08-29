@@ -525,6 +525,7 @@ export async function runMakaCli(
           defaultRootPath: serviceDataRoots.workspaceRoot,
           selector: command.selector,
           expectedTarget: command.expectedTarget,
+          ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
           ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
           ...(command.operatorDeploymentId
             ? { operatorDeploymentId: command.operatorDeploymentId }
@@ -541,6 +542,7 @@ export async function runMakaCli(
         ...(sourcePackageIntegrity ? { sourcePackageIntegrity } : {}),
         version,
         expectedTarget: command.expectedTarget,
+        ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
         ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
         ...(command.operatorDeploymentId
           ? { operatorDeploymentId: command.operatorDeploymentId }

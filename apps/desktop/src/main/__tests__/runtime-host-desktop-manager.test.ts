@@ -1176,10 +1176,14 @@ test('waits passively for a Host that cannot be taken over', async () => {
 });
 
 test('replaces a non-restartable Local Host through the supplied authority and retries', async () => {
-  const conflict = upgradeRequired(false);
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
   const replacement = candidateHarness();
   let starts = 0;
-  let replaced: typeof conflict.registration | undefined;
+  let replaced: typeof observed.registration | undefined;
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
@@ -1189,14 +1193,16 @@ test('replaces a non-restartable Local Host through the supplied authority and r
       },
       upgradePrompts: {
         restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
-        nonRestartable: async (_conflict, canReplace) => {
-          assert.equal(canReplace, true);
+        nonRestartable: async (_conflict, actions) => {
+          assert.deepEqual(actions, { canReplace: true, canWait: false });
           return 'replace';
         },
       },
-      replaceLocalHost: async (registration) => {
-        replaced = registration;
-      },
+      resolveLocalHostReplacement: async (registration) => ({
+        replace: async () => {
+          replaced = registration;
+        },
+      }),
     },
   );
   assert.equal(starts, 2);
@@ -1212,8 +1218,9 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
       startCandidate: async () => conflict,
       upgradePrompts: {
         restartable: async () => assert.fail('incompatible Host used restart prompt'),
-        nonRestartable: async (actual) => {
+        nonRestartable: async (actual, actions) => {
           presented = actual;
+          assert.deepEqual(actions, { canReplace: false, canWait: true });
           return 'cancel';
         },
       },

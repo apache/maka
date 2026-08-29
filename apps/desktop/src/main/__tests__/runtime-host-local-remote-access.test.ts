@@ -32,10 +32,7 @@ import {
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
 
 const RECOVERY_DEPLOYMENT_ID = '33333333-3333-4333-8333-333333333333';
-import {
-  createDesktopLocalRuntimeHostRemoteAccess,
-  stopConflictingEphemeralRuntimeHost,
-} from '../runtime-host-local-remote-access.js';
+import { createDesktopLocalRuntimeHostRemoteAccess } from '../runtime-host-local-remote-access.js';
 import type { createDesktopRuntimeHostLocalOperator } from '../runtime-host-local-operator.js';
 
 test('enabling remote access hands the same root to one managed service before Desktop resumes', async (t) => {
@@ -237,14 +234,13 @@ test('keeps the managed service visible when Direct peer support is unavailable'
   assert.equal(snapshot.managedService, true);
 });
 
-test('replaces a conflicting supervised Host through its exact service authority', async (t) => {
+test('replaces a conflicting supervised Host through canonical authority without a receipt', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-conflict-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const clientDataRoot = join(base, 'client');
   const rootPath = join(clientDataRoot, 'workspaces', 'default');
   const rootId = 'a'.repeat(64);
   await mkdir(rootPath, { recursive: true });
-  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
   let updated = false;
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
@@ -254,13 +250,27 @@ test('replaces a conflicting supervised Host through its exact service authority
     directPeerAvailable: true,
     manager: () => undefined,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    resolveManagedDeploymentAuthority: async () => ({
+      kind: 'active',
+      lifecycleMode: 'supervised',
+      target: {
+        schemaVersion: 1,
+        serviceId: rootId,
+        rootPath,
+        rootId,
+        operatorPath: join(base, 'operator'),
+        deploymentId: RECOVERY_DEPLOYMENT_ID,
+      },
+    }),
     operator: {
       async runUpdate(input: {
         readonly target: { readonly rootId: string; readonly deploymentId?: string };
+        readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
         readonly allowInterruptActiveTasks?: boolean;
       }) {
         assert.equal(input.target.rootId, rootId);
         assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
+        assert.deepEqual(input.expectedHost, { hostEpoch: 'older-host', pid: 42 });
         assert.equal(input.allowInterruptActiveTasks, true);
         updated = true;
         return {
@@ -274,57 +284,13 @@ test('replaces a conflicting supervised Host through its exact service authority
   });
   t.after(() => service.close());
 
-  await service.replaceConflictingHost(
+  const replacement = await service.resolveConflictingHostReplacement(
     hostRegistration({ rootId, lifecycleMode: 'service' }),
     new AbortController().signal,
   );
+  assert.ok(replacement);
+  await replacement.replace();
   assert.equal(updated, true);
-});
-
-test('stops only the revalidated ephemeral Host identity', async () => {
-  const registration = hostRegistration({ lifecycleMode: 'ephemeral' });
-  let alive = true;
-  const signaled: number[] = [];
-  await stopConflictingEphemeralRuntimeHost(
-    {
-      rootPath: '/workspace',
-      registration,
-      signal: new AbortController().signal,
-    },
-    {
-      connectExisting: async () => ({
-        kind: 'upgrade_required',
-        registration,
-        restartable: false,
-      }) as never,
-      signalProcess(pid) {
-        signaled.push(pid);
-        alive = false;
-      },
-      isProcessAlive: () => alive,
-    },
-  );
-  assert.deepEqual(signaled, [registration.pid]);
-
-  await assert.rejects(
-    stopConflictingEphemeralRuntimeHost(
-      {
-        rootPath: '/workspace',
-        registration,
-        signal: new AbortController().signal,
-      },
-      {
-        connectExisting: async () => ({
-          kind: 'upgrade_required',
-          registration: { ...registration, hostEpoch: 'replacement' },
-          restartable: false,
-        }) as never,
-        signalProcess: () => assert.fail('a changed Host identity must not be signaled'),
-        isProcessAlive: () => true,
-      },
-    ),
-    /could not verify that the process still owns this workspace/u,
-  );
 });
 
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
@@ -408,6 +374,7 @@ test('adopts committed managed authority for every pending receipt without repla
       manager: () => assert.fail('pre-start reconciliation must not require the Local manager'),
       resolveManagedDeploymentAuthority: async () => ({
         kind: 'active',
+        lifecycleMode: 'supervised',
         target: {
           schemaVersion: 1,
           serviceId: rootId,

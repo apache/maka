@@ -25,6 +25,12 @@ import type {
 } from './runtime-host-desktop-manager.js';
 
 type Conflict = RuntimeHostRestartableConflict | RuntimeHostWaitConflict;
+export type RuntimeHostUpgradeDialogDecision = 'restart' | 'replace' | 'wait' | 'cancel';
+
+export interface RuntimeHostUpgradeDialog {
+  readonly options: MessageBoxOptions;
+  readonly decisions: readonly RuntimeHostUpgradeDialogDecision[];
+}
 type ActivityKey =
   | 'goal'
   | 'scheduledTask'
@@ -34,38 +40,55 @@ type ActivityKey =
   | 'graph'
   | 'other';
 
-export function buildRuntimeHostUpgradeDialogOptions(
+export function buildRuntimeHostUpgradeDialog(
   conflict: Conflict,
-  action: 'restart' | 'replace' | undefined,
+  availability: {
+    readonly action: 'restart' | 'replace' | undefined;
+    readonly canWait: boolean;
+  },
   locale: UiLocale,
-): MessageBoxOptions {
+): RuntimeHostUpgradeDialog {
   const activity = conflict.handshake?.activity;
   const hasWork =
     (activity?.activeOperations ?? 0) > 0 || (activity?.residencies.length ?? 0) > 0;
   const copy = UPGRADE_COPY[locale];
-  const canWait = conflict.registration.lifecycleMode !== 'service';
-  const buttons = action
-    ? canWait
-      ? [action === 'restart' ? copy.restart : copy.replace, copy.wait, copy.cancel]
-      : [action === 'restart' ? copy.restart : copy.replace, copy.cancel]
-    : canWait
-      ? [copy.wait, copy.cancel]
-      : [copy.cancel];
+  const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
+    [];
+  if (availability.action) {
+    choices.push({
+      label: availability.action === 'restart' ? copy.restart : copy.replace,
+      decision: availability.action,
+    });
+  }
+  if (availability.canWait) choices.push({ label: copy.wait, decision: 'wait' });
+  choices.push({ label: copy.cancel, decision: 'cancel' });
+  const defaultDecision =
+    availability.action === 'restart' && !hasWork
+      ? 'restart'
+      : availability.canWait
+        ? 'wait'
+        : 'cancel';
   return {
-    type: 'warning',
-    title: copy.title,
-    message: copy.message,
-    detail: formatActivity(conflict, action, locale),
-    buttons,
-    defaultId: action === 'restart' && !hasWork ? 0 : action ? 1 : 0,
-    cancelId: action ? (canWait ? 2 : 1) : canWait ? 1 : 0,
-    noLink: true,
+    options: {
+      type: 'warning',
+      title: copy.title,
+      message: copy.message,
+      detail: formatActivity(conflict, availability, locale),
+      buttons: choices.map((choice) => choice.label),
+      defaultId: choices.findIndex((choice) => choice.decision === defaultDecision),
+      cancelId: choices.findIndex((choice) => choice.decision === 'cancel'),
+      noLink: true,
+    },
+    decisions: choices.map((choice) => choice.decision),
   };
 }
 
 function formatActivity(
   conflict: Conflict,
-  action: 'restart' | 'replace' | undefined,
+  availability: {
+    readonly action: 'restart' | 'replace' | undefined;
+    readonly canWait: boolean;
+  },
   locale: UiLocale,
 ): string {
   const activity = conflict.handshake?.activity;
@@ -81,12 +104,15 @@ function formatActivity(
       lines.push(`${copy.activity[activityKey(residency.label)]}: ${residency.count}`);
     }
   } else lines.push(copy.unknownActivity);
-  lines.push('', action === 'replace' ? copy.replaceWarning : copy.restartWarning);
-  if (action === 'replace') lines.push(copy.replaceExplanation);
-  else if (conflict.kind !== 'upgrade_required' || !conflict.restartable) {
+  if (availability.action === 'replace') {
+    lines.push('', copy.replaceWarning, copy.replaceExplanation);
+  } else if (availability.action === 'restart') {
+    lines.push('', copy.restartWarning);
+  } else if (conflict.kind !== 'upgrade_required' || !conflict.restartable) {
+    lines.push('');
     lines.push(copy.exitOwner(conflict.registration.pid));
   }
-  if (conflict.registration.lifecycleMode !== 'service') lines.push(copy.waitExplanation);
+  if (availability.canWait) lines.push(copy.waitExplanation);
   return lines.join('\n');
 }
 

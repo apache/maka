@@ -164,7 +164,7 @@ describe('managed Runtime Host selected update', () => {
     assert.equal(updateInput?.sourcePackageRoot, '/managed/versions/2.0.0');
   });
 
-  it('keeps non-admitted candidates outside package acquisition and mutation', async () => {
+  it('requires a registration-bound confirmation for manual candidates', async () => {
     let output = '';
     const exitCode = await runManagedRuntimeHostSelectedUpdateCli(OPTIONS, {
       resolveSelection: async () =>
@@ -181,6 +181,31 @@ describe('managed Runtime Host selected update', () => {
     const frame = decodeRuntimeHostServiceManagementFrame(output.trim());
     assert.equal(exitCode, 1);
     assert.equal(frame?.kind === 'error' ? frame.error.code : undefined, 'update_not_admitted');
+
+    const selection = updateSelection({
+      kind: 'manual_action',
+      reason: 'compatibility_mismatch',
+    });
+    let updateInput: RuntimeHostUpdateCliOptions | undefined;
+    assert.equal(
+      await runManagedRuntimeHostSelectedUpdateCli(
+        {
+          ...OPTIONS,
+          expectedHost: { hostEpoch: 'older-host', pid: 42 },
+          allowInterruptActiveTasks: true,
+        },
+        {
+          resolveSelection: async () => selection,
+          withPackage: async (_candidate, use) => use('/verified/package'),
+          update: async (input) => {
+            updateInput = input;
+            return 0;
+          },
+        },
+      ),
+      0,
+    );
+    assert.deepEqual(updateInput?.expectedHost, { hostEpoch: 'older-host', pid: 42 });
   });
 });
 

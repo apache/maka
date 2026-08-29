@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildRuntimeHostUpgradeDialogOptions } from '../runtime-host-upgrade-copy.js';
+import { buildRuntimeHostUpgradeDialog } from '../runtime-host-upgrade-copy.js';
 import { createRuntimeHostUpgradePrompts } from '../runtime-host-upgrade-dialog.js';
 
 const conflict = {
@@ -40,8 +40,16 @@ const conflict = {
 } as never;
 
 test('localizes upgrade activity without changing decision indexes', () => {
-  const en = buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', 'en');
-  const zh = buildRuntimeHostUpgradeDialogOptions(conflict, 'restart', 'zh');
+  const en = buildRuntimeHostUpgradeDialog(
+    conflict,
+    { action: 'restart', canWait: true },
+    'en',
+  ).options;
+  const zh = buildRuntimeHostUpgradeDialog(
+    conflict,
+    { action: 'restart', canWait: true },
+    'zh',
+  ).options;
   assert.deepEqual(en.buttons, ['Restart Runtime Host', 'Wait', 'Cancel Startup']);
   assert.deepEqual(zh.buttons, ['重启 Runtime Host', '等待', '取消启动']);
   assert.equal(en.defaultId, 1);
@@ -53,27 +61,14 @@ test('localizes upgrade activity without changing decision indexes', () => {
   assert.match(en.detail ?? '', /Process ID \(PID\):/);
 });
 
-test('offers a non-default replacement action for a non-restartable Local Host', () => {
-  const options = buildRuntimeHostUpgradeDialogOptions(
-    {
-      kind: 'upgrade_required',
-      restartable: false,
-      registration: { pid: 42 },
-    } as never,
-    'replace',
-    'en',
-  );
-  assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
-  assert.equal(options.defaultId, 1);
-  assert.equal(options.cancelId, 2);
-  assert.match(options.detail ?? '', /Maka will stop this Host/);
-});
-
-test('maps the native replacement button to the replace decision', async () => {
+test('maps the non-default replacement choice to the replace decision', async () => {
   const prompts = createRuntimeHostUpgradePrompts(
     async () => 'en',
     async (options) => {
       assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
+      assert.equal(options.defaultId, 1);
+      assert.equal(options.cancelId, 2);
+      assert.match(options.detail ?? '', /Maka will stop this Host/);
       return { response: 0, checkboxChecked: false };
     },
   );
@@ -84,7 +79,7 @@ test('maps the native replacement button to the replace decision', async () => {
         restartable: false,
         registration: { pid: 42 },
       } as never,
-      true,
+      { canReplace: true, canWait: true },
     ),
     'replace',
   );
@@ -106,5 +101,8 @@ test('does not offer passive waiting for a supervised Host', async () => {
       return { response: 1, checkboxChecked: false };
     },
   );
-  assert.equal(await prompts.nonRestartable(conflict, true), 'cancel');
+  assert.equal(
+    await prompts.nonRestartable(conflict, { canReplace: true, canWait: false }),
+    'cancel',
+  );
 });

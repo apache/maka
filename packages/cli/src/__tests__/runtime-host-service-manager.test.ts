@@ -202,6 +202,37 @@ describe('managed Runtime Host service', () => {
         },
       },
     );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'update',
+        '--framed',
+        '--allow-interrupt-active-tasks',
+        '--target',
+        '0.2.0',
+        '--expected-host-json',
+        JSON.stringify({ hostEpoch: 'older-host', pid: 42 }),
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-service-update',
+        json: false,
+        framed: true,
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
+        expectedHost: { hostEpoch: 'older-host', pid: 42 },
+        selector: { kind: 'exact', version: '0.2.0' },
+        allowInterruptActiveTasks: true,
+      },
+    );
     assert.equal(parseRuntimeHostCommand(['service', 'peer', 'disable']).kind, 'error');
     for (const action of ['rotate', 'descriptor']) {
       assert.equal(

@@ -1013,8 +1013,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       });
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
-    replaceLocalHost: (registration, signal) =>
-      localRuntimeHostRemoteAccess.replaceConflictingHost(registration, signal),
+    resolveLocalHostReplacement: (registration, signal) =>
+      localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();

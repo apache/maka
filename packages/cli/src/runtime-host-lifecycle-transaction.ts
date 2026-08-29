@@ -81,7 +81,7 @@ export interface RuntimeHostLifecycleTransitionInput {
 
 export class RuntimeHostLifecycleTransactionError extends Error {
   constructor(
-    readonly code: 'transition_failed' | 'recovery_failed',
+    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -305,6 +305,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   readonly rootPath: string;
   readonly rootId: string;
   readonly allowInterruptActiveTasks?: boolean;
+  readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
   readonly supervisor?: {
     status(): Promise<{
       readonly active: boolean;
@@ -323,6 +324,10 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   const idleOwner = await tryAcquireStateRootOwner(capability);
   if (idleOwner) {
     try {
+      if (input.expectedOwner && input.supervisor) {
+        const status = await input.supervisor.status();
+        if (status.active) assertExpectedSupervisorOwner(input.expectedOwner, status);
+      }
       if (input.retireIdleSupervisor !== false) await input.supervisor?.retire();
       return { kind: 'retired', owner: idleOwner };
     } catch (error) {
@@ -337,9 +342,14 @@ export async function retireRuntimeHostLifecycleOwner(input: {
       max: RUNTIME_HOST_PROTOCOL_VERSION,
     },
   });
+  assertExpectedRuntimeHostOwner(
+    input.expectedOwner,
+    'registration' in connected ? connected.registration : undefined,
+  );
   if (connected.kind !== 'connected') {
     if (input.allowInterruptActiveTasks && input.supervisor) {
       const status = await input.supervisor.status();
+      assertExpectedSupervisorOwner(input.expectedOwner, status);
       if (status.active && status.pid !== null) {
         await input.supervisor.retire();
         return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
@@ -353,6 +363,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   try {
     const diagnostics = await connected.connection.request('host.diagnostics.query', {});
     const supervisorStatus = await input.supervisor?.status();
+    if (supervisorStatus) assertExpectedSupervisorOwner(input.expectedOwner, supervisorStatus);
     if (
       supervisorStatus &&
       (!supervisorStatus.active || supervisorStatus.pid !== diagnostics.pid)
@@ -380,6 +391,32 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
 }
 
+function assertExpectedRuntimeHostOwner(
+  expected: { readonly hostEpoch: string; readonly pid: number } | undefined,
+  observed: { readonly hostEpoch: string; readonly pid: number } | undefined,
+): void {
+  if (!expected) return;
+  if (!observed || observed.hostEpoch !== expected.hostEpoch || observed.pid !== expected.pid) {
+    throw new RuntimeHostLifecycleTransactionError(
+      'owner_changed',
+      'The Runtime Host changed after replacement was confirmed',
+    );
+  }
+}
+
+function assertExpectedSupervisorOwner(
+  expected: { readonly hostEpoch: string; readonly pid: number } | undefined,
+  observed: { readonly active: boolean; readonly pid: number | null },
+): void {
+  if (!expected) return;
+  if (!observed.active || observed.pid !== expected.pid) {
+    throw new RuntimeHostLifecycleTransactionError(
+      'owner_changed',
+      'The supervised Runtime Host changed after replacement was confirmed',
+    );
+  }
+}
+
 async function waitForRuntimeHostLifecycleOwner(
   capability: Awaited<ReturnType<typeof resolveExistingStorageRoot>>,
   timeoutMs: number,
@@ -405,6 +442,7 @@ export async function replaceRuntimeHostLifecycle(input: {
   readonly current?: RuntimeHostManagedDeploymentConfig;
   readonly desired: RuntimeHostManagedDeploymentConfig;
   readonly allowInterruptActiveTasks?: boolean;
+  readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
   readonly deps: RuntimeHostLifecycleTransactionDeps;
   readonly retirementSupervisor?: {
     status(): Promise<{ readonly active: boolean; readonly pid: number | null }>;
@@ -431,6 +469,7 @@ export async function replaceRuntimeHostLifecycle(input: {
         ? { supervisor: currentProvider.supervisor }
         : {}),
     allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
+    ...(input.expectedOwner ? { expectedOwner: input.expectedOwner } : {}),
   });
   if (retirement.kind === 'active_tasks') return retirement;
   await applyRetiredRuntimeHostLifecycleTransition({

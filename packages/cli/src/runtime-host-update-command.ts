@@ -74,11 +74,12 @@ import {
   RuntimeHostUpdatePackageError,
   withRuntimeHostRegistryUpdatePackage,
 } from './runtime-host-update-package.js';
-import type { RuntimeHostUpdateSelector } from './runtime-host-cli.js';
+import type { RuntimeHostExpectedHost, RuntimeHostUpdateSelector } from './runtime-host-cli.js';
 import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
+  RuntimeHostLifecycleTransactionError,
   verifyRuntimeHostLifecycleProjection,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
@@ -96,6 +97,7 @@ export interface RuntimeHostUpdateCliOptions {
   readonly sourcePackageIntegrity?: string;
   readonly version: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
+  readonly expectedHost?: RuntimeHostExpectedHost;
   readonly managedRootId?: string;
   readonly operatorDeploymentId?: string;
   readonly registrySelection?: {
@@ -690,6 +692,7 @@ async function runCanonicalRuntimeHostUpdate(
           current,
           desired,
           allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
+          ...(options.expectedHost ? { expectedOwner: options.expectedHost } : {}),
           ...(desired.lifecycle.mode === 'on_demand'
             ? {
                 activateDesired: async () => {
@@ -754,7 +757,9 @@ async function runCanonicalRuntimeHostUpdate(
       error instanceof RuntimeHostManagedDeploymentError ||
       error instanceof RuntimeHostDeploymentAuthorityError
         ? error.code
-        : 'update_incomplete';
+        : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'owner_changed'
+          ? 'target_mismatch'
+          : 'update_incomplete';
     emit({
       schemaVersion: 1,
       kind: 'error',
@@ -839,7 +844,14 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
   };
 
   try {
-    if (selection.outcome.kind === 'manual_action') {
+    if (
+      selection.outcome.kind === 'manual_action' &&
+      !(
+        options.expectedHost &&
+        options.allowInterruptActiveTasks &&
+        selection.outcome.reason !== 'target_not_newer'
+      )
+    ) {
       frameSink({
         schemaVersion: 1,
         kind: 'error',

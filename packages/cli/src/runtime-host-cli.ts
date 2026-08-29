@@ -39,6 +39,11 @@ export type RuntimeHostUpdateSelector =
   | { readonly kind: 'channel'; readonly channel: 'latest' | 'next' }
   | { readonly kind: 'exact'; readonly version: string };
 
+export interface RuntimeHostExpectedHost {
+  readonly hostEpoch: string;
+  readonly pid: number;
+}
+
 export type RuntimeHostCliCommand =
   | {
       kind: 'runtime-host-managed-activate';
@@ -208,6 +213,7 @@ export type RuntimeHostCliCommand =
       managedRootId?: string;
       operatorDeploymentId?: string;
       expectedTarget: RuntimeHostManagedServiceTarget;
+      expectedHost?: RuntimeHostExpectedHost;
       selector?: RuntimeHostUpdateSelector;
       allowInterruptActiveTasks?: true;
     }
@@ -725,6 +731,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
   let allowInterruptActiveTasks = false;
   let clientDataRoot: string | undefined;
   let updateTarget: string | undefined;
+  let expectedHost: RuntimeHostExpectedHost | undefined;
   let expectedConfigFingerprint: string | undefined;
   const flagOptions: Readonly<Record<string, () => void | RuntimeHostCliError>> =
     action === 'uninstall'
@@ -764,6 +771,16 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             '--target': (value: string) => {
               if (updateTarget !== undefined) return error('Duplicate --target');
               updateTarget = value;
+            },
+          }
+        : {}),
+      ...(action === 'update'
+        ? {
+            '--expected-host-json': (value: string) => {
+              if (expectedHost !== undefined) return error('Duplicate --expected-host-json');
+              const parsed = parseExpectedHost(value);
+              if ('kind' in parsed) return parsed;
+              expectedHost = parsed;
             },
           }
         : {}),
@@ -863,6 +880,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
         ? { operatorDeploymentId: options.operatorDeploymentId }
         : {}),
       expectedTarget: options.expectedTarget!,
+      ...(expectedHost ? { expectedHost } : {}),
       ...(selector ? { selector } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     };
@@ -1111,6 +1129,33 @@ function parseUpdateSelector(
     return error('--target must be latest, next, or an exact Maka version');
   }
   return { kind: 'exact', version: value };
+}
+
+function parseExpectedHost(value: string): RuntimeHostExpectedHost | RuntimeHostCliError {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    return error('--expected-host-json must be valid JSON');
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length !== 2 ||
+    typeof (parsed as { hostEpoch?: unknown }).hostEpoch !== 'string' ||
+    (parsed as { hostEpoch: string }).hostEpoch.length === 0 ||
+    Buffer.byteLength((parsed as { hostEpoch: string }).hostEpoch, 'utf8') > 128 ||
+    /[\u0000-\u001f\u007f]/u.test((parsed as { hostEpoch: string }).hostEpoch) ||
+    !Number.isSafeInteger((parsed as { pid?: unknown }).pid) ||
+    (parsed as { pid: number }).pid <= 0
+  ) {
+    return error('--expected-host-json must contain one valid hostEpoch and pid');
+  }
+  return {
+    hostEpoch: (parsed as { hostEpoch: string }).hostEpoch,
+    pid: (parsed as { pid: number }).pid,
+  };
 }
 
 interface ManagedServiceOptions {
