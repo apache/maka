@@ -339,8 +339,24 @@ async function replaceFilesTransactionally(writes) {
   if (new Set(writes.map((write) => write.path)).size !== writes.length) {
     throw new Error('model metadata outputs must use distinct paths');
   }
+  // Later workspace prebuilds may sync after an earlier workspace has already
+  // compiled. Preserve byte-identical targets so their mtimes cannot make that
+  // already-built workspace look stale.
+  const changedWrites = (
+    await Promise.all(
+      writes.map(async (write) => {
+        try {
+          return (await readFile(write.path)).equals(Buffer.from(write.text)) ? undefined : write;
+        } catch (error) {
+          if (error?.code === 'ENOENT') return write;
+          throw error;
+        }
+      }),
+    )
+  ).filter(Boolean);
+  if (changedWrites.length === 0) return;
   const transactionId = `${process.pid}-${randomUUID()}`;
-  const entries = writes.map((write) => ({
+  const entries = changedWrites.map((write) => ({
     ...write,
     stagedPath: `${write.path}.tmp-${transactionId}`,
     backupPath: `${write.path}.bak-${transactionId}`,
