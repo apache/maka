@@ -35,6 +35,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
   collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
@@ -61,6 +62,7 @@ import {
   authenticateInteractiveSessionTodoWriter,
   type InteractiveSessionTodoWriter,
 } from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import type {
   OperationOutcome,
   SessionConversationCopyInput,
@@ -106,6 +108,10 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
   readonly sessionTodo: InteractiveSessionTodoWriter;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'copyReferences' | 'retireSession'
+  >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
@@ -503,6 +509,28 @@ export class HostSessionRevisionCoordinator {
           )
           .map(({ descriptor, serializedResult }) => [descriptor.artifactId, serializedResult]),
       );
+      const sourceContextRefIds = collectConversationCopySessionContextRefIds({
+        sourceSessionId: input.sourceSessionId,
+        copiedMessages: slice.messages,
+        plan,
+      });
+      if (sourceContextRefIds.length > 0 && !this.options.contextOffload) {
+        throw new Error('Session context copy authority is unavailable');
+      }
+      const contextCopy =
+        sourceContextRefIds.length === 0
+          ? { ok: true as const, copied: [] }
+          : await this.options.contextOffload!.copyReferences({
+              sourceSessionId: input.sourceSessionId,
+              targetSessionId: input.targetSessionId,
+              references: sourceContextRefIds.map((sourceRefId) => ({
+                sourceRefId,
+                targetOwner: { kind: 'read_image_snapshot', ownerId: sourceRefId },
+              })),
+            });
+      if (!contextCopy.ok) {
+        throw new Error(`Session context references could not be copied: ${contextCopy.reason}`);
+      }
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
@@ -528,6 +556,9 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
+        contextRefs: new Map(
+          contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
+        ),
         linkedChildren:
           kind === 'side_conversation'
             ? {
@@ -819,6 +850,7 @@ export class HostSessionRevisionCoordinator {
       {
         artifacts: this.#artifacts,
         sessionTodo: this.#sessionTodo,
+        ...(this.options.contextOffload ? { contextOffload: this.options.contextOffload } : {}),
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
       },

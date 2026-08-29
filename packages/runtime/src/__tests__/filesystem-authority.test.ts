@@ -435,7 +435,7 @@ describe('file tools follow the execution boundary', () => {
         },
         snapshotImage: async (input) => {
           snapshots.push(input.bytes);
-          return { kind: 'session_file', sessionId: input.sessionId, relativePath: 'artifact-1' };
+          return { kind: 'session_context', sessionId: input.sessionId, refId: 'context-1' };
         },
       });
 

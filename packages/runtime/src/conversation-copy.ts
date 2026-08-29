@@ -25,7 +25,7 @@ import type {
 } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
@@ -104,6 +104,7 @@ export type ConversationCopyArtifactReferenceMap =
       readonly mode: 'exact';
       readonly artifactIds: ReadonlyMap<string, string>;
       readonly relativePaths: ReadonlyMap<string, string>;
+      readonly contextRefs?: ReadonlyMap<string, string>;
       readonly linkedChildren:
         | { readonly mode: 'reject' }
         | {
@@ -157,6 +158,35 @@ export interface ConversationRuntimeLedgerCopyPlan {
     readonly runtimeEvents: readonly RuntimeEvent[];
     readonly operationalEvents: readonly AgentRunEvent[];
   }[];
+}
+
+/** Finds durable Session context references that the exact copy will rewrite. */
+export function collectConversationCopySessionContextRefIds(input: {
+  readonly sourceSessionId: string;
+  readonly copiedMessages: readonly StoredMessage[];
+  readonly plan: ConversationRuntimeLedgerCopyPlan;
+}): readonly string[] {
+  const refIds = new Set<string>();
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (isStorageRef(value)) {
+      if (value.kind === 'session_context' && value.sessionId === input.sourceSessionId) {
+        refIds.add(value.refId);
+      }
+      return;
+    }
+    if (typeof value !== 'object' || value === null || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    for (const item of Object.values(value)) visit(item);
+  };
+  visit(input.copiedMessages);
+  visit(input.plan.inlineRuntimeEvents);
+  for (const run of input.plan.runs) visit(run.runtimeEvents);
+  return [...refIds].sort();
 }
 
 export interface CloneConversationRuntimeLedgerResult {
@@ -1779,12 +1809,22 @@ function rewriteStorageRef(
   ref: StorageRef,
   references: ConversationCopyArtifactReferenceMap,
 ): StorageRef {
-  if (ref.kind === 'session_context' && ref.sessionId === references.sourceSessionId) {
-    if (references.mode === 'preserve_external') return ref;
-    throw new Error('Conversation copy does not support Session context references yet');
+  if (
+    (ref.kind !== 'session_file' && ref.kind !== 'session_context') ||
+    ref.sessionId !== references.sourceSessionId
+  ) {
+    return ref;
   }
-  if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
   if (references.mode === 'preserve_external') return ref;
+  if (ref.kind === 'session_context') {
+    const refId = references.contextRefs?.get(ref.refId);
+    if (!refId) throw new Error(`Conversation copy is missing Session context ${ref.refId}`);
+    return {
+      ...ref,
+      sessionId: references.targetSessionId,
+      refId,
+    };
+  }
   const artifactId = references.artifactIds.get(ref.relativePath);
   if (artifactId) {
     return {

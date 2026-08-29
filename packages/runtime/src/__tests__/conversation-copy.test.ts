@@ -44,6 +44,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
   collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
@@ -721,6 +722,17 @@ test('conversation copy rewrites owned references without changing opaque tool p
             relativePath: 'session-source/artifact-source-file.txt',
           },
         },
+        {
+          kind: 'image',
+          name: 'snapshot.png',
+          mimeType: 'image/png',
+          bytes: 4,
+          ref: {
+            kind: 'session_context',
+            sessionId: 'session-source',
+            refId: 'context-source',
+          },
+        },
       ],
     },
     {
@@ -800,6 +812,7 @@ test('conversation copy rewrites owned references without changing opaque tool p
     relativePaths: new Map([
       ['session-source/artifact-source-file.txt', 'session-target/artifact-target-file.txt'],
     ]),
+    contextRefs: new Map([['context-source', 'context-target']]),
     runIds: new Map([['run-source', 'run-target']]),
     invocationIds: new Map([['invocation-source', 'invocation-target']]),
     runtimeEventIds: new Map([['event-source', 'event-target']]),
@@ -812,6 +825,32 @@ test('conversation copy rewrites owned references without changing opaque tool p
     sessionId: 'session-target',
     relativePath: 'session-target/artifact-target-file.txt',
   });
+  assert.deepEqual(rewritten[0]?.type === 'user' ? rewritten[0].attachments?.[1]?.ref : undefined, {
+    kind: 'session_context',
+    sessionId: 'session-target',
+    refId: 'context-target',
+  });
+  assert.deepEqual(
+    collectConversationCopySessionContextRefIds({
+      sourceSessionId: 'session-source',
+      copiedMessages: messages,
+      plan: {
+        sourceSessionId: 'session-source',
+        copyTurnIds: ['turn-1'],
+        inlineRuntimeEvents: [],
+        runs: [],
+      },
+    }),
+    ['context-source'],
+  );
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(messages[0]!, {
+        ...references,
+        contextRefs: new Map(),
+      }),
+    /missing Session context context-source/,
+  );
   const userMessage = messages[0];
   assert.equal(userMessage?.type, 'user');
   if (userMessage?.type !== 'user') return;
@@ -1001,44 +1040,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
         linkedChildren: { mode: 'preserve_validated', references: new Map() },
       }),
     /missing linked child Session child-session/,
-  );
-});
-
-test('reader-only conversation copy rejects source-owned Session context refs', () => {
-  const message: StoredMessage = {
-    type: 'user',
-    id: 'user-context',
-    turnId: 'turn-1',
-    ts: 1,
-    text: 'context',
-    attachments: [
-      {
-        kind: 'image',
-        name: 'snapshot.png',
-        mimeType: 'image/png',
-        bytes: 4,
-        ref: {
-          kind: 'session_context',
-          sessionId: 'session-source',
-          refId: 'context-source',
-        },
-      },
-    ],
-  };
-  assert.throws(
-    () =>
-      rewriteConversationCopyMessage(message, {
-        mode: 'exact',
-        sourceSessionId: 'session-source',
-        targetSessionId: 'session-target',
-        artifactIds: new Map(),
-        relativePaths: new Map(),
-        linkedChildren: { mode: 'reject' },
-        runIds: new Map(),
-        runtimeEventIds: new Map(),
-        providerTraceIds: new Map(),
-      }),
-    /does not support Session context references yet/,
   );
 });
 

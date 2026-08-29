@@ -103,7 +103,7 @@ test('production composition owns the long-term memory database lifecycle', asyn
   });
 });
 
-test('production composition reaches Ready when the optional context reader cannot open', async () => {
+test('production composition reaches Ready when the optional context Store cannot open', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
     const originalConsoleError = console.error;
@@ -114,7 +114,7 @@ test('production composition reaches Ready when the optional context reader cann
       composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
       assert.equal(composition.workspaceExecution.state, 'ready');
       assert.equal(
-        diagnostics.some((message) => message.includes('optional context-offload reader')),
+        diagnostics.some((message) => message.includes('optional context-offload Store')),
         true,
       );
     } finally {

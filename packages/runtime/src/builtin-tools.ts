@@ -184,11 +184,10 @@ export interface BuildBuiltinToolsOptions {
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
     sessionId: string;
-    turnId: string;
-    name: string;
+    ownerId: string;
     bytes: Uint8Array;
     mimeType: string;
-  }) => Promise<Extract<StorageRef, { kind: 'session_file' }>>;
+  }) => Promise<Extract<StorageRef, { kind: 'session_context' }>>;
 }
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
@@ -400,8 +399,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             throw new Error('Read image snapshots are not available in this toolset.');
           const ref = await options.snapshotImage({
             sessionId,
-            turnId: ctx.turnId,
-            name: basename(path),
+            ownerId: ctx.toolCallId,
             bytes: result.bytes,
             mimeType: result.mimeType,
           });

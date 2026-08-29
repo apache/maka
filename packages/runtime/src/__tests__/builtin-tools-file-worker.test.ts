@@ -169,6 +169,7 @@ describe('builtin file tools use the sandboxed worker', () => {
   test('uses one worker read operation for image paths', async () => {
     const cwd = await temporaryDirectory('maka-file-worker-cwd-');
     const calls: FilesystemWorkerExecuteInput[] = [];
+    let snapshotOwnerId: string | undefined;
     const tools = buildBuiltinTools({
       filesystemWorker: {
         execute: async (input) => {
@@ -176,11 +177,14 @@ describe('builtin file tools use the sandboxed worker', () => {
           return { kind: 'read_image', base64: 'iVBORw0KGgo=', mimeType: 'image/png' };
         },
       },
-      snapshotImage: async () => ({
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-1',
-      }),
+      snapshotImage: async (input) => {
+        snapshotOwnerId = input.ownerId;
+        return {
+          kind: 'session_context',
+          sessionId: 'session-1',
+          refId: 'context-1',
+        };
+      },
       sandboxPlatform: 'darwin',
     });
 
@@ -188,6 +192,7 @@ describe('builtin file tools use the sandboxed worker', () => {
 
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
+    assert.equal(snapshotOwnerId, 'tool-Read');
   });
 
   test('serializes writes through real and symlinked cwd paths', async () => {
