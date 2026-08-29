@@ -72,6 +72,7 @@ import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
+import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -98,7 +99,13 @@ function legacySentSkillTokens(text: string) {
 }
 
 function AttachmentImage(props: { attachment: AttachmentRef }) {
-  const ref = props.attachment.ref.kind === 'session_file'
+  const preview = resolvePreviewKind({
+    name: props.attachment.name,
+    kind: 'image',
+    mimeType: props.attachment.mimeType,
+    sizeBytes: props.attachment.bytes,
+  });
+  const ref = preview.kind === 'image' && props.attachment.ref.kind === 'session_file'
     ? {
         sessionId: props.attachment.ref.sessionId,
         artifactId: props.attachment.ref.relativePath,
@@ -111,7 +118,7 @@ function AttachmentImage(props: { attachment: AttachmentRef }) {
         className="maka-user-attachment-thumbnail"
         alt={props.attachment.name}
         label={props.attachment.name}
-        isLoading
+        isLoading={preview.kind === 'image'}
       />
     );
   }

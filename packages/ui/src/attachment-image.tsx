@@ -36,7 +36,7 @@ export type ReadAttachmentBytes = (
 
 type SessionAttachmentContextValue = {
   sessionId: string;
-  loadImage: (sessionId: string, artifactId: string) => Promise<ArtifactBinaryReadResult>;
+  loadImage: (sessionId: string, artifactId: string) => Promise<string | undefined>;
 };
 
 const SessionAttachmentContext = createContext<SessionAttachmentContextValue | undefined>(undefined);
@@ -51,16 +51,21 @@ export function SessionAttachmentProvider(props: {
     () => {
       const readBytes = props.readBytes;
       if (!readBytes) return undefined;
-      const pending = new Map<string, Promise<ArtifactBinaryReadResult>>();
+      const pending = new Map<string, Promise<string | undefined>>();
       return {
         sessionId: props.sessionId,
         loadImage(sessionId: string, artifactId: string) {
           const key = `${sessionId}\0${artifactId}`;
           const existing = pending.get(key);
           if (existing) return existing;
-          const loaded = readBytes(sessionId, artifactId).catch(
-            (): ArtifactBinaryReadResult => ({ ok: false, reason: 'read_failed' }),
-          );
+          const loaded = readBytes(sessionId, artifactId)
+            .then((result) => {
+              const outcome = decideImageReadOutcome(result);
+              return outcome.kind === 'image'
+                ? `data:${outcome.safeMime};base64,${outcome.base64}`
+                : undefined;
+            })
+            .catch(() => undefined);
           pending.set(key, loaded);
           void loaded.finally(() => {
             if (pending.get(key) === loaded) pending.delete(key);
@@ -82,7 +87,7 @@ export function SessionAttachmentProvider(props: {
 export function useAttachmentImageSource(ref: {
   artifactId: string;
   sessionId?: string;
-} | undefined, safePreview = false): string | undefined {
+} | undefined): string | undefined {
   const context = useContext(SessionAttachmentContext);
   const artifactId = ref?.artifactId;
   const sessionId = ref?.sessionId ?? context?.sessionId;
@@ -94,20 +99,13 @@ export function useAttachmentImageSource(ref: {
     if (!artifactId || !sessionId || !loadImage) return;
     let cancelled = false;
     loadImage(sessionId, artifactId)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        const outcome = safePreview ? decideImageReadOutcome(result) : undefined;
-        if (safePreview && outcome?.kind !== 'image') return;
-        setSrc(
-          outcome?.kind === 'image'
-            ? `data:${outcome.safeMime};base64,${outcome.base64}`
-            : `data:${result.mimeType};base64,${result.base64}`,
-        );
+      .then((loaded) => {
+        if (!cancelled) setSrc(loaded);
       })
     return () => {
       cancelled = true;
     };
-  }, [artifactId, loadImage, safePreview, sessionId]);
+  }, [artifactId, loadImage, sessionId]);
 
   return src;
 }

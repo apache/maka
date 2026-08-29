@@ -252,7 +252,6 @@ function MarkdownImage(props: { src: string; alt: string }) {
   const attachment = parseAttachmentResourceRef(props.src);
   const attachmentSrc = useAttachmentImageSource(
     attachment ? { artifactId: attachment.artifactId } : undefined,
-    true,
   );
   if (attachment) {
     if (!attachmentSrc) return <span>[{props.alt}]</span>;

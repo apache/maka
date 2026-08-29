@@ -103,19 +103,14 @@ const TURN_WITH_IMAGE: TurnViewModel = {
   timeline: [],
 };
 
-test('keeps the existing user thumbnail payload contract', async () => {
+test('renders a user thumbnail admitted by the shared preview policy', async () => {
   const { container, root } = domRoot();
-  const base64 = 'a'.repeat(3 * 1024 * 1024);
   await act(async () => {
     root.render(
       <LocaleProvider locale="en">
         <SessionAttachmentProvider
           sessionId="session-1"
-          readBytes={async () => ({
-            ok: true,
-            base64,
-            mimeType: 'image/png',
-          })}
+          readBytes={async () => ({ ok: true, base64: 'aW1n', mimeType: 'image/png' })}
         >
           <TurnView turn={TURN_WITH_IMAGE} />
         </SessionAttachmentProvider>
@@ -125,7 +120,38 @@ test('keeps the existing user thumbnail payload contract', async () => {
 
   const image = container.querySelector('.maka-user-attachment-thumbnail img');
   assert.ok(image);
-  assert.equal(image.getAttribute('src'), `data:image/png;base64,${base64}`);
+  assert.equal(image.getAttribute('src'), 'data:image/png;base64,aW1n');
+});
+
+test('rejects an oversized user thumbnail before reading it', async () => {
+  const { container, root } = domRoot();
+  let reads = 0;
+  await act(async () => {
+    root.render(
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider
+          sessionId="session-1"
+          readBytes={async () => {
+            reads += 1;
+            return { ok: false, reason: 'not_found' };
+          }}
+        >
+          <TurnView
+            turn={{
+              ...TURN_WITH_IMAGE,
+              user: {
+                ...TURN_WITH_IMAGE.user!,
+                attachments: [{ ...TURN_WITH_IMAGE.user!.attachments![0]!, bytes: 3 * 1024 * 1024 }],
+              },
+            }}
+          />
+        </SessionAttachmentProvider>
+      </LocaleProvider>,
+    );
+  });
+
+  assert.equal(container.querySelector('.maka-user-attachment-thumbnail img'), null);
+  assert.equal(reads, 0);
 });
 
 test('renders a session attachment referenced by assistant Markdown', async () => {
