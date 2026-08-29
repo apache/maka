@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { expect } from './test-helpers.js';
 import {
   decodeMessageContent,
+  isCanonicalStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
   type SessionEvent,
@@ -173,6 +174,33 @@ describe('continuation-start protocol', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('recognizes canonical durable Session context references', () => {
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: 'read-image:owner-1',
+      }),
+      true,
+    );
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: '😀'.repeat(512),
+      }),
+      true,
+    );
+    for (const ref of [
+      { kind: 'session_context', sessionId: 'bad/session', refId: 'ref-1' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '😀'.repeat(513) },
+      { kind: 'session_context', sessionId: 'session-1', refId: 'ref-1', extra: true },
+    ]) {
+      assert.equal(isCanonicalStorageRef(ref), false);
+    }
+  });
+
   test('preserves sent inline references as message identity', () => {
     const inlineReferences = [
       { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 8 },
@@ -323,6 +351,17 @@ describe('RuntimeEvent content variants', () => {
         mimeType: 'text/typescript',
         bytes: 1,
         ref: { kind: 'workspace_file' as const, relativePath: 'a.ts' },
+      },
+      {
+        kind: 'image' as const,
+        name: 'snapshot.png',
+        mimeType: 'image/png',
+        bytes: 8,
+        ref: {
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        },
       },
     ];
     const quotes = [

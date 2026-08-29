@@ -23,6 +23,9 @@ export interface SessionContextRef {
   readonly refId: string;
 }
 
+/** Maximum Unicode code points accepted for durable context-offload identities. */
+export const CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS = 512;
+
 export type ContextOffloadOwner =
   | {
       readonly kind: 'read_image_snapshot';

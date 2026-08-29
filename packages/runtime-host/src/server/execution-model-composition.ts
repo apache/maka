@@ -49,6 +49,8 @@ import {
   persistProviderRequestCaptureArtifact,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
+import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {
@@ -70,6 +72,7 @@ export interface HostAiSdkBackendInput {
   readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
+  readonly contextOffload?: InteractiveContextOffloadWriter;
   readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
@@ -381,6 +384,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
+          ...(input.contextOffload
+            ? {
+                readImageSnapshots: createReadImageSnapshotStore(
+                  input.contextOffload,
+                  input.context.sessionId,
+                ),
+              }
+            : {}),
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
         toolResultArchive: input.executionArtifacts.toolResultArchive,

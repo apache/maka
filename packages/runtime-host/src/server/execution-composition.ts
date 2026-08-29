@@ -18,6 +18,8 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
 import {
   describeChatConfigurationReason,
@@ -196,6 +198,17 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
 }
 
+const CONTEXT_OFFLOAD_READER_LIMITS: ContextOffloadLimits = Object.freeze({
+  ownerMaxBytes: Object.freeze({
+    read_image_snapshot: MAX_READ_IMAGE_BYTES,
+    tool_result_archive: 0,
+  }),
+  // This expand slice opens only the reader path. Zero quotas make accidental
+  // non-empty puts fail closed until the writer/lifecycle cutover lands.
+  sessionLogicalBytes: 0,
+  workspacePhysicalBytes: 0,
+});
+
 export interface CreateExecutionRuntimeHostCompositionOptions {
   readonly bootstrapRuntimePolicy?: boolean;
   readonly skillHomeDirectory?: string;
@@ -222,6 +235,7 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
+    contextOffloadLimits: CONTEXT_OFFLOAD_READER_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
         await ensureBootstrapRuntimePolicy({
@@ -258,6 +272,10 @@ export async function createExecutionRuntimeHostComposition(
     const longTermMemoryStore = storage.longTermMemory;
     const taskLedgerStore = storage.taskLedger;
     const openedArtifactStore = storage.artifacts;
+    const openedContextOffloadStore = storage.contextOffload;
+    if (!openedContextOffloadStore) {
+      throw new Error('Runtime Host context-offload reader authority is unavailable');
+    }
     const openedUsageStores = storage.usage;
     const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
@@ -672,6 +690,7 @@ export async function createExecutionRuntimeHostComposition(
               ? {}
               : { memoryExtraction }),
             artifacts: openedArtifactStore,
+            contextOffload: openedContextOffloadStore,
             executionArtifacts,
             usage: openedUsageStores,
             childAgents: bindHostChildAgentBackend(

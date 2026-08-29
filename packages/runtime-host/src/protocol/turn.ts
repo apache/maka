@@ -431,14 +431,16 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
       throw invalidProtocolFrame('Invalid AttachmentRef bytes');
     }
-    if (attachment.ref.kind === 'session_file') {
+    if (attachment.ref.kind === 'session_file' || attachment.ref.kind === 'session_context') {
       requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
     }
-    const path =
+    const identity =
       attachment.ref.kind === 'external_file'
         ? attachment.ref.absolutePath
-        : attachment.ref.relativePath;
-    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+        : attachment.ref.kind === 'session_context'
+          ? attachment.ref.refId
+          : attachment.ref.relativePath;
+    requireUtf8String(identity, 'AttachmentRef identity', ATTACHMENT_PATH_MAX_BYTES, false);
   }
   if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
     throw invalidProtocolFrame('Invalid Message quotes');

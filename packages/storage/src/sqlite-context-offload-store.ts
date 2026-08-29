@@ -24,6 +24,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
+  CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS,
   type ContextOffloadCopyResult,
   type ContextOffloadGarbageCollectionResult,
   type ContextOffloadLimits,
@@ -46,7 +47,6 @@ import {
   syncFile,
 } from './stable-storage.js';
 
-const MAX_ID_CODE_POINTS = 512;
 const MAX_MEDIA_TYPE_CODE_POINTS = 256;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MANAGED_FILE_LOCATOR_PATTERN = /^sha256\/([0-9a-f]{2})\/([0-9a-f]{64})$/;
@@ -1368,7 +1368,7 @@ function isOwnerKind(value: unknown): value is ContextOffloadOwner['kind'] {
 }
 
 function assertBoundedIdentity(value: string, label: string): void {
-  assertBoundedText(value, MAX_ID_CODE_POINTS, label);
+  assertBoundedText(value, CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, label);
 }
 
 function assertBoundedText(value: string, maxCodePoints: number, label: string): void {
