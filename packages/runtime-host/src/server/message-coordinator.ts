@@ -859,8 +859,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       const entry: LiveEntry = {
         entryId: this.#createId(),
         messageId: admission.messageId,
-        turnId: rootState.turnId,
-        runId: rootState.runId,
+        turnId: admission.turnId,
+        runId: admission.runId,
         admittedAt: admission.admittedAt,
         content: submittedProjectionContent(admission.content),
         modelContent: admission.content,

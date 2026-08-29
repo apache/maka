@@ -619,6 +619,34 @@ test('recovery starts one explicit follow-up and keeps later messages queued', a
     fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
     ['recovered-second'],
   );
+
+  const projection = fixture.coordinator.projection(ROOT.sessionId);
+  const remainingEntryId = projection.followup[0]?.entryId;
+  assert.ok(remainingEntryId);
+  const updated = await fixture.coordinator.handlers['queue.entry.update'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId: remainingEntryId,
+      updateId: 'update-recovered-second',
+      expectedQueueRevision: projection.queueRevision,
+      text: 'edited after recovery',
+    },
+    operationContext(),
+  );
+  assert.equal(updated.ok, true);
+  assert.deepEqual(fixture.readMessageAdmission('recovered-second'), {
+    sessionId: ROOT.sessionId,
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
+    messageId: 'recovered-second',
+    content: { text: 'edited after recovery' },
+    submittedContentDigest: messageContentDigest({ text: 'edited after recovery' }),
+    submittedPlacement: 'next_turn',
+    placement: 'next_turn',
+    disposition: 'followup',
+    admittedAt: 2,
+  });
 });
 
 test('recovery folds later steering ahead of an earlier explicit follow-up', async () => {
@@ -2881,6 +2909,14 @@ function memoryMessageAdmissionStore(
     updateMessageAdmission: async (admission) => {
       const existing = admissions.get(admission.messageId);
       if (!existing) throw new Error(`Missing admission ${admission.messageId}`);
+      if (
+        existing.admission.turnId !== admission.turnId ||
+        existing.admission.runId !== admission.runId ||
+        existing.admission.submittedPlacement !== admission.submittedPlacement ||
+        existing.admission.admittedAt !== admission.admittedAt
+      ) {
+        throw new Error(`Message admission update identity conflict: ${admission.messageId}`);
+      }
       existing.admission = admission;
     },
     reorderMessageAdmissions: async () => undefined,
