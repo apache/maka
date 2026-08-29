@@ -186,7 +186,7 @@ function defaultOnboardingProviders(): OnboardingProviderEntry[] {
   return listApiKeyOnboardableProviders().map((provider) => ({
     ...provider,
     target: { kind: 'create', providerType: provider.providerType },
-    label: `${provider.label} · 添加账号`,
+    label: provider.label,
     enabledModelIds: [],
   }));
 }
@@ -238,7 +238,7 @@ function savedOnboardingRefreshFailed(connectionId = 'saved-connection-id'): Onb
     },
     refresh: {
       kind: 'failed',
-      warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+      reason: 'catalog_unavailable',
     },
   };
 }
@@ -801,7 +801,7 @@ describe('Maka Pi TUI runner', () => {
         verify: async (input) => {
           verifyCalls.push(input.apiKey ?? '');
           return verifyCalls.length === 1
-            ? { kind: 'error', text: 'HTTP 401 Unauthorized' }
+            ? { kind: 'rejected', reason: 'connection_not_found' }
             : { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
         },
       }),
@@ -830,7 +830,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => verifyCalls.length === 1);
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '验证失败') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), '该连接已不存在') !== null;
       } catch {
         return false;
       }
@@ -841,6 +841,51 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => verifyCalls.length === 2);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
     assert.deepEqual(verifyCalls, ['sk-bad', 'sk-good']);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('localizes a save rejection without displaying Host text', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    let saveCalls = 0;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      locale: 'zh',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        save: async () => {
+          saveCalls += 1;
+          return { kind: 'rejected', reason: 'superseded' };
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('配置模型提供商'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-test');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('该连接已发生变化'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /This connection changed/);
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -1066,8 +1111,11 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/setup');
     terminal.input('\r');
     await waitFor(() =>
-      plainTerminalOutput(terminal.screenOutput()).includes('storage read failed'),
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Could not read configured connections',
+      ),
     );
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /storage read failed/);
     assert.doesNotMatch(
       plainTerminalOutput(terminal.screenOutput()),
       /No configurable API key providers are available/,
@@ -1158,7 +1206,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('sk-b'));
     // A's verify now resolves with a failure. It must not clobber attempt B:
     // no failure status line, and the key being typed for B survives.
-    resolveFirst({ kind: 'error', text: 'HTTP 401 Unauthorized' });
+    resolveFirst({ kind: 'failed', errorClass: 'auth' });
     // Sentinel render: one more typed key char forces a full repaint that lands
     // after A's settled continuation, so a wrongly-applied failure line would be
     // in this exact frame.
@@ -3599,6 +3647,42 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('localizes generic model and thinking picker hints in Chinese', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5',
+      models: ['gpt-5', 'gpt-5-mini'],
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      permissionMode: 'ask',
+      locale: 'zh',
+      terminal,
+    });
+
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('选择模型'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /↑↓ 选择 · Enter 确认 · Esc 关闭/u);
+    terminal.input('\x1b');
+
+    terminal.input('/thinking');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('选择思考级别'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /↑↓ 选择 · Enter 确认 · Esc 关闭/u);
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /enter select \/ esc close/iu,
+    );
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
   });
 
   test('resumes a read-only session as Read only, and never marks Auto as current', async () => {

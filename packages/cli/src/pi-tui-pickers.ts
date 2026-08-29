@@ -45,7 +45,13 @@ import {
 } from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
-import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
+import type {
+  ModelChoice,
+  OnboardingFailure,
+  OnboardingFailureClass,
+  OnboardingProviderEntry,
+  OnboardingRejectionReason,
+} from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
 import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 
@@ -55,7 +61,9 @@ interface TuiPickerCopy {
   readonly modelSearchHint: string;
   readonly searchLabel: string;
   readonly noMatchingModels: string;
+  readonly selectPickerHint: string;
   readonly providerConfigured: string;
+  readonly addAccount: string;
   readonly thinkingLevels: Readonly<Record<ThinkingLevel, string>>;
   readonly defaultThinkingLevel: string;
   readonly thinkingPickerTitle: string;
@@ -65,9 +73,10 @@ interface TuiPickerCopy {
   readonly baseUrlLabel: string;
   readonly apiKeyLabel: string;
   readonly onboardingUnavailable: string;
-  readonly verifyFailed: string;
-  readonly setupFailed: string;
-  readonly saveFailed: string;
+  readonly onboardingRequestFailed: string;
+  readonly onboardingRejections: Readonly<Record<OnboardingRejectionReason, string>>;
+  readonly onboardingFailures: Readonly<Record<OnboardingFailureClass, string>>;
+  readonly accountSavedRefreshFailed: string;
   readonly listProvidersFailed: string;
   readonly noConfigurableProviders: string;
   readonly baseUrlRequired: string;
@@ -100,6 +109,18 @@ interface TuiPickerCopy {
 const TUI_PICKER_COPY = resolveUiMessageCatalog(
   defineUiMessageCatalog<TuiPickerCopy>()(TUI_COPY_RESOURCES.pickers),
 );
+
+export function onboardingFailureMessage(failure: OnboardingFailure, locale: UiLocale): string {
+  const copy = TUI_PICKER_COPY[locale];
+  switch (failure.kind) {
+    case 'rejected':
+      return copy.onboardingRejections[failure.reason];
+    case 'failed':
+      return copy.onboardingFailures[failure.errorClass];
+    case 'unavailable':
+      return copy.onboardingRequestFailed;
+  }
+}
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
   private readonly fileProvider: CombinedAutocompleteProvider | undefined;
@@ -401,7 +422,7 @@ export class PickerOverlay implements Component {
     private readonly input: {
       title: string;
       rightLabel: string;
-      hint?: string;
+      hint: string;
       notice?: string;
       onInput?: (data: string) => boolean;
     },
@@ -420,7 +441,7 @@ export class PickerOverlay implements Component {
     const safeWidth = Math.max(1, width);
     return [
       padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
-      padLine(ansi.dim(this.input.hint ?? 'enter select / esc close'), safeWidth),
+      padLine(ansi.dim(this.input.hint), safeWidth),
       ...(this.input.notice ? [padLine(ansi.yellow(this.input.notice), safeWidth)] : []),
       padLine('', safeWidth),
       ...this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth)),
@@ -1412,9 +1433,10 @@ export class OnboardingWizard implements Component {
     this.keyEditor.focused = false;
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
-    const hint = this.picked?.target.kind === 'existing'
-      ? this.copy.reuseBaseUrlHint
-      : this.copy.enterBaseUrlHint;
+    const hint =
+      this.picked?.target.kind === 'existing'
+        ? this.copy.reuseBaseUrlHint
+        : this.copy.enterBaseUrlHint;
     return [
       padLine(
         `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`,

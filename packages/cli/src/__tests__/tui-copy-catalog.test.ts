@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { formatUiMessage } from '@maka/core/ui-locale';
-import { getTuiPickerCopy } from '../pi-tui-pickers.js';
+import { getTuiPickerCopy, onboardingFailureMessage } from '../pi-tui-pickers.js';
 import { TUI_COPY_RESOURCES } from '../tui-copy-catalog.js';
 
 const MESSAGE_VALUES = {
@@ -68,6 +68,7 @@ describe('TUI copy resources', () => {
     assert.equal(getTuiPickerCopy('en').searchLabel, 'Search');
     assert.equal(getTuiPickerCopy('zh').modelPickerTitle, '选择模型');
     assert.equal(getTuiPickerCopy('zh').searchLabel, '搜索');
+    assert.equal(getTuiPickerCopy('zh').selectPickerHint, '↑↓ 选择 · Enter 确认 · Esc 关闭');
     assert.equal(getTuiPickerCopy('zh').currentMarker, '当前');
     assert.equal(getTuiPickerCopy('zh').defaultMarker, '默认');
   });
@@ -79,25 +80,22 @@ describe('TUI copy resources', () => {
     assert.equal(formatUiMessage(template, { count: 2 }, 'en'), '2 tools');
   });
 
-  test('preserves verification detail placement in both locales', () => {
-    const en = TUI_COPY_RESOURCES.pickers.en.verifyFailed;
-    const zh = TUI_COPY_RESOURCES.pickers.zh.verifyFailed;
-
+  test('localizes stable onboarding failure codes at the TUI boundary', () => {
     assert.equal(
-      formatUiMessage(en, { detail: 'HTTP 401', hasDetail: true }, 'en'),
-      'API key verification failed: HTTP 401. Check it and try again.',
+      onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'en'),
+      'This connection no longer exists. Reopen /setup and try again.',
     );
     assert.equal(
-      formatUiMessage(zh, { detail: 'HTTP 401', hasDetail: true }, 'zh'),
-      'API key 验证失败：HTTP 401。请检查后重新输入。',
+      onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'zh'),
+      '该连接已不存在，请重新打开 /setup 后重试。',
     );
     assert.equal(
-      formatUiMessage(en, { detail: '', hasDetail: false }, 'en'),
-      'API key verification failed. Check it and try again.',
+      onboardingFailureMessage({ kind: 'failed', errorClass: 'auth' }, 'zh'),
+      '服务商身份验证失败，请检查 API key 后重试。',
     );
     assert.equal(
-      formatUiMessage(zh, { detail: '', hasDetail: false }, 'zh'),
-      'API key 验证失败，请检查后重新输入。',
+      onboardingFailureMessage({ kind: 'unavailable' }, 'zh'),
+      '无法连接 Runtime Host，请重试。',
     );
   });
 });

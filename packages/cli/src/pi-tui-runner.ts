@@ -151,6 +151,7 @@ import {
   modelChoiceConnectionLabels,
   getTuiPickerCopy,
   modelPickerItems,
+  onboardingFailureMessage,
   permissionModePickerItems,
   skillPickerItems,
   thinkingLevelPickerItems,
@@ -2079,7 +2080,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const picker = new PickerOverlay(list, {
       title,
       rightLabel,
-      hint: options.hint,
+      hint: options.hint ?? pickerCopy.selectPickerHint,
       notice: options.notice,
     });
     let overlay: OverlayHandle | undefined;
@@ -2129,20 +2130,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     void input.onboarding.verify({ target, apiKey, baseUrl: wizardBaseUrl }).then(
       (result) => {
         if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        if (result.kind === 'error') {
-          // Probe failed: re-arm the key field in place. The host stores nothing
-          // during verify, so retrying with a corrected key is clean.
-          // A stale snapshot (the targeted connection is gone) is not a key
-          // problem — retyping cannot fix it, so skip that framing.
-          wizard.setKeyError(
-            result.stale
-              ? result.text
-              : formatUiMessage(
-                  pickerCopy.verifyFailed,
-                  { detail: result.text, hasDetail: result.text.trim().length > 0 },
-                  locale,
-                ),
-          );
+        if (result.kind !== 'ok') {
+          wizard.setKeyError(onboardingFailureMessage(result, locale));
           requestRender();
           return;
         }
@@ -2150,15 +2139,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         wizard.setModels(result.models); // advance to the models step
         requestRender();
       },
-      (error) => {
+      () => {
         if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-        wizard.setKeyError(
-          formatUiMessage(
-            pickerCopy.setupFailed,
-            { detail: error instanceof Error ? error.message : String(error) },
-            locale,
-          ),
-        );
+        wizard.setKeyError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
         requestRender();
       },
     );
@@ -2190,9 +2173,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       })
       .then(
         (result) => {
-          if (result.kind === 'error') {
+          if (result.kind !== 'ok') {
             if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-            wizard.setModelError(result.text);
+            wizard.setModelError(onboardingFailureMessage(result, locale));
             requestRender();
             return;
           }
@@ -2218,19 +2201,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           }
           wizard.setSuccess(
             enabledModelIds.length,
-            result.refresh.kind === 'failed' ? result.refresh.warning : undefined,
+            result.refresh.kind === 'failed' ? pickerCopy.accountSavedRefreshFailed : undefined,
           );
           requestRender();
         },
-        (error) => {
+        () => {
           if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-          wizard.setModelError(
-            formatUiMessage(
-              pickerCopy.saveFailed,
-              { detail: error instanceof Error ? error.message : String(error) },
-              locale,
-            ),
-          );
+          wizard.setModelError(onboardingFailureMessage({ kind: 'unavailable' }, locale));
           requestRender();
         },
       );
@@ -2241,15 +2218,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (input.onboarding) {
       try {
         providers = await input.onboarding.listProviders();
-      } catch (error) {
+      } catch {
         state.entries.push({
           kind: 'notice',
           level: 'info',
-          text: formatUiMessage(
-            pickerCopy.listProvidersFailed,
-            { detail: error instanceof Error ? error.message : String(error) },
-            locale,
-          ),
+          text: pickerCopy.listProvidersFailed,
         });
         requestRender();
         return;
@@ -2260,7 +2233,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       providers = listApiKeyOnboardableProviders().map((provider) => ({
         ...provider,
         target: { kind: 'create' as const, providerType: provider.providerType },
-        label: `${provider.label} · 添加账号`,
+        label: provider.label,
         enabledModelIds: [],
       }));
     }
