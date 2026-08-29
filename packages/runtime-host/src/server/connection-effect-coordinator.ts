@@ -24,11 +24,7 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import { parseRequestHeaders } from '@maka/core/runtime-policy';
-import {
-  PROVIDER_DEFAULTS,
-  deriveConnectionSlug,
-  providerAuthSupportsApiKey,
-} from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
@@ -187,9 +183,10 @@ export class HostConnectionEffectCoordinator {
   #verifyOnboarding(
     input: ConnectionOnboardingVerifyInput,
   ): Promise<OperationOutcome<'connection.onboarding.verify'>> {
-    // Same lane a models.fetch on the targeted connection would use; the
-    // derived slug only keys the create-at-canonical-slug flow.
-    const lane = input.connectionId ?? deriveConnectionSlug(input.providerType);
+    // Existing targets share their connection lane with models.fetch. Create
+    // attempts share a provider lane until Storage assigns and commits the
+    // next authoritative identity.
+    const lane = onboardingLane(input);
     return this.#admit(lane, 'connection.onboarding.verify', async () => {
       const prepared = await this.#discoverOnboarding(input);
       return prepared.kind === 'ready' ? { kind: 'verified', models: prepared.models } : prepared;
@@ -199,7 +196,7 @@ export class HostConnectionEffectCoordinator {
   #saveOnboarding(
     input: ConnectionOnboardingSaveInput,
   ): Promise<OperationOutcome<'connection.onboarding.save'>> {
-    const lane = input.connectionId ?? deriveConnectionSlug(input.providerType);
+    const lane = onboardingLane(input);
     return this.#admit(lane, 'connection.onboarding.save', async () => {
       const prepared = await this.#discoverOnboarding(input);
       if (prepared.kind !== 'ready') return prepared;
@@ -212,30 +209,31 @@ export class HostConnectionEffectCoordinator {
   }
 
   async #discoverOnboarding(input: ConnectionOnboardingVerifyInput): Promise<OnboardingDiscovery> {
-    if (!providerAuthSupportsApiKey(input.providerType)) {
-      return { kind: 'rejected', reason: 'provider_unsupported' };
-    }
     // The begin/complete ticket pair binds this discovery to the connection
     // revision, credential, and proxy it observed: a concurrent policy update
     // between the remote probe and the commit supersedes the save instead of
     // pairing the new endpoint with an inventory it never produced. Verify
     // simply abandons its ticket (they are WeakMap-held one-shots).
     const begun = await this.#stores.operations.beginConnectionOnboarding({
-      providerType: input.providerType,
-      connectionId: input.connectionId,
+      target: input.target,
+      baseUrl: input.baseUrl,
     });
     if (begun.kind === 'target_missing') {
       // Identity supplied by the client names a connection that is gone or
       // changed provider type: reject instead of deriving a duplicate.
       return { kind: 'rejected', reason: 'connection_not_found' };
     }
-    if (begun.kind === 'slug_conflict') {
-      return { kind: 'rejected', reason: 'slug_conflict' };
+    if (begun.kind === 'provider_unsupported') {
+      return { kind: 'rejected', reason: 'provider_unsupported' };
     }
-    const candidate = begun.connection ?? undefined;
+    if (begun.kind === 'catalog_full') {
+      return { kind: 'rejected', reason: 'catalog_full' };
+    }
+    const providerType = begun.candidate.providerType;
+    const candidate = begun.existingConnection ?? undefined;
     const supplied = input.apiKey?.trim() ?? '';
     const secret = supplied || begun.storedSecret || '';
-    if (PROVIDER_DEFAULTS[input.providerType].authKind === 'api_key' && secret.length === 0) {
+    if (PROVIDER_DEFAULTS[providerType].authKind === 'api_key' && secret.length === 0) {
       return { kind: 'rejected', reason: 'credential_not_configured' };
     }
     // Mirrors the blank-key contract above: a null baseUrl reuses the
@@ -243,9 +241,9 @@ export class HostConnectionEffectCoordinator {
     // A relay provider with no endpoint from any of those sources cannot
     // run discovery — reject up front instead of probing an empty URL.
     const base = candidate
-      ? { ...candidate, ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}) }
-      : transientConnection(input.providerType, input.baseUrl);
-    if (!base.baseUrl && !PROVIDER_DEFAULTS[input.providerType].baseUrl) {
+      ? { ...candidate, ...(begun.baseUrl ? { baseUrl: begun.baseUrl } : {}) }
+      : transientConnection(begun.candidate, begun.baseUrl);
+    if (!base.baseUrl && !PROVIDER_DEFAULTS[providerType].baseUrl) {
       return { kind: 'rejected', reason: 'base_url_not_configured' };
     }
     // The ticket's basis certifies this exact proxy, so discovery must use
@@ -292,10 +290,7 @@ export class HostConnectionEffectCoordinator {
       const committed = await this.#stores.operations.completeConnectionOnboarding(
         prepared.ticket,
         {
-          providerType: input.providerType,
-          connectionId: input.connectionId,
           suppliedSecret: prepared.suppliedSecret || null,
-          baseUrl: input.baseUrl,
           enabledModelIds: input.enabledModelIds,
           discovery: {
             models: prepared.models,
@@ -304,8 +299,8 @@ export class HostConnectionEffectCoordinator {
           },
         },
       );
-      if (committed.kind === 'slug_conflict') {
-        return { kind: 'rejected', reason: 'slug_conflict' };
+      if (committed.kind === 'catalog_full') {
+        return { kind: 'rejected', reason: 'catalog_full' };
       }
       if (committed.kind === 'target_missing') {
         return { kind: 'rejected', reason: 'connection_not_found' };
@@ -314,7 +309,7 @@ export class HostConnectionEffectCoordinator {
         return { kind: 'rejected', reason: 'superseded' };
       }
       if (committed.changed) this.#onCommittedMutation();
-      return { kind: 'saved' };
+      return { kind: 'saved', connection: committed.connection };
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError && error.code === 'commit_outcome_unknown') {
         this.#onCommittedMutation();
@@ -484,7 +479,7 @@ type OnboardingDiscovery =
         | 'connection_not_found'
         | 'credential_not_configured'
         | 'base_url_not_configured'
-        | 'slug_conflict';
+        | 'catalog_full';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
 
@@ -598,15 +593,16 @@ function operationFailure<
 }
 
 function transientConnection(
-  providerType: ConnectionOnboardingVerifyInput['providerType'],
+  identity: Pick<ConnectionCatalogEntry, 'connectionId' | 'slug' | 'providerType'>,
   baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
+  const { providerType } = identity;
   const definition = PROVIDER_DEFAULTS[providerType];
   const models = definition.fallbackModels.map((id) => ({ id }));
   return {
-    connectionId: '00000000-0000-4000-8000-000000000000',
+    connectionId: identity.connectionId,
     revision: 0,
-    slug: deriveConnectionSlug(providerType),
+    slug: identity.slug,
     name: definition.label,
     providerType,
     ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
@@ -616,4 +612,10 @@ function transientConnection(
     modelSource: 'fallback',
     modelsFetchedAt: 0,
   };
+}
+
+function onboardingLane(input: ConnectionOnboardingVerifyInput): string {
+  return input.target.kind === 'existing'
+    ? input.target.connectionId
+    : `onboarding:create:${input.target.providerType}`;
 }
