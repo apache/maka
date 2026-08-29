@@ -391,6 +391,12 @@ dialog:modal {
   display: flex;
   padding-left: var(--space-3);
   -webkit-app-region: no-drag;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-titlebar-identity__action {
+  flex: 0 0 auto;
 }
 
 /* Every box between the strip's column and the text has to agree to shrink, or

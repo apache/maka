@@ -929,6 +929,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     registerClientIpc: registerHostClientIpc,
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
+    resolveLocalCollaborationConnectionTarget: () =>
+      localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(

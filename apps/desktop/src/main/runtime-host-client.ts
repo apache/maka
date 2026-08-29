@@ -104,6 +104,11 @@ import {
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
+  type SharedSessionCatalogProjection,
+  type CollaborationAccessQueryResult,
+  type CollaborationInvitationPrepareResult,
+  type CollaborationPrincipalRevokeResult,
+  type SessionCollaborationGrantKind,
   type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
@@ -269,6 +274,26 @@ export class DesktopRuntimeHostClient {
     timeoutMs?: number,
   ): Promise<OperationOutput<'access.credential.finalize'>> {
     return this.request('access.credential.finalize', {}, timeoutMs);
+  }
+
+  prepareCollaborationInvitation(
+    sessionId: string,
+    grantKinds: readonly SessionCollaborationGrantKind[],
+  ): Promise<CollaborationInvitationPrepareResult> {
+    return this.request('collaboration.invitation.prepare', { sessionId, grantKinds });
+  }
+
+  queryCollaborationAccess(sessionId?: string): Promise<CollaborationAccessQueryResult> {
+    return this.request(
+      'collaboration.access.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  revokeCollaborationPrincipal(
+    principalId: string,
+  ): Promise<CollaborationPrincipalRevokeResult> {
+    return this.request('collaboration.principal.revoke', { principalId });
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -570,6 +595,11 @@ export class DesktopRuntimeHostClient {
         "Session catalog kept changing while Desktop read it",
       );
     }
+  }
+
+  async getSharedSession(): Promise<SharedSessionCatalogProjection | null> {
+    this.#assertOpen();
+    return (await this.request('session.shared.query', {})).session;
   }
 
   async listProjects(

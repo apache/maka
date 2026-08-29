@@ -217,6 +217,7 @@ export class RuntimeHostKernel {
   #resolveClosed!: () => void;
   #rejectClosed!: (error: unknown) => void;
   readonly #unsubscribeAccessRevocations: (() => void) | undefined;
+  readonly #unsubscribeSessionGrantRevocations: (() => void) | undefined;
 
   private constructor(options: RuntimeHostKernelOptions) {
     this.#lifecycle = normalizeLifecycle(options);
@@ -232,6 +233,16 @@ export class RuntimeHostKernel {
     this.#options = options;
     this.#unsubscribeAccessRevocations = options.accessAuthority?.subscribeRevocations(
       (credentialId) => this.#revokeCredentialConnections(credentialId),
+    );
+    this.#unsubscribeSessionGrantRevocations = options.accessAuthority?.subscribeGrantRevocations(
+      (grant) => {
+        if (grant.kind === 'session_observation') {
+          this.#composition?.hostChanges?.publishSessionCatalogAndCloseScope(
+            grant.sessionId,
+            grant.principalId,
+          );
+        }
+      },
     );
     this.#operationHandlers = this.#createOperationHandlers(
       createUnavailableDomainOperationHandlers(),
@@ -418,6 +429,11 @@ export class RuntimeHostKernel {
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         resolveHostChanges: () => this.#composition?.hostChanges,
+        resolveSharedSessionId: () =>
+          this.#options.accessAuthority?.activeSessionGrantForPrincipal(
+            authority.principalId,
+            'session_observation',
+          )?.sessionId,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
@@ -915,6 +931,7 @@ export class RuntimeHostKernel {
   async #closeResources(): Promise<void> {
     const errors: unknown[] = [];
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     // Stop new admissions before any asynchronous shutdown bookkeeping. The
     // shutdown deadline may expire while publishing the draining registration;
     // leaving the listener open in that case strands an unreachable, ref'ed
@@ -968,6 +985,7 @@ export class RuntimeHostKernel {
   async #abortStartup(): Promise<void> {
     this.#state = 'draining';
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     for (const transport of this.#handshakingTransports) transport.abort();
     for (const transport of this.#acceptedTransports) transport.abort();
     await this.#listeners?.closeAdmission().catch(() => undefined);

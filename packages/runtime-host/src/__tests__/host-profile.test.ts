@@ -57,7 +57,7 @@ describe('Runtime Host profiles', () => {
   test('persists WSL environments without projecting a remote credential', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
-    assert.deepEqual(await catalog.read(), { schemaVersion: 2, profiles: [] });
+    assert.deepEqual(await catalog.read(), { schemaVersion: 3, profiles: [] });
     await catalog.create({
       id: 'ubuntu',
       name: 'Ubuntu',
@@ -117,7 +117,7 @@ describe('Runtime Host profiles', () => {
     );
 
     assert.deepEqual(await catalog.read(), {
-      schemaVersion: 2,
+      schemaVersion: 3,
       profiles: [
         {
           id: 'office',
@@ -140,7 +140,7 @@ describe('Runtime Host profiles', () => {
     if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
 
     assert.deepEqual(await catalog.remove('office'), {
-      schemaVersion: 2,
+      schemaVersion: 3,
       profiles: [
         {
           id: 'backup',
@@ -178,7 +178,7 @@ describe('Runtime Host profiles', () => {
 
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
     const document = await catalog.read();
-    assert.equal(document.schemaVersion, 2);
+    assert.equal(document.schemaVersion, 3);
     assert.equal(
       (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
       1,
@@ -258,7 +258,7 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.removeIfCurrent(created), {
       removed: false,
       document: {
-        schemaVersion: 2,
+        schemaVersion: 3,
         profiles: [
           {
             ...profile,
@@ -271,7 +271,7 @@ describe('Runtime Host profiles', () => {
     const rotated = await desktop.resolve(profile.id);
     assert.equal(rotated.credential, 'rotated-token');
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
-    assert.deepEqual(await desktop.read(), { schemaVersion: 2, profiles: [] });
+    assert.deepEqual(await desktop.read(), { schemaVersion: 3, profiles: [] });
   });
 
   test('conditionally updates one Host connection and credential', async () => {

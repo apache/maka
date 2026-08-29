@@ -109,6 +109,11 @@ import type {
   OperationOutcome,
   OperationOutput,
 } from '@maka/runtime-host/protocol';
+import type {
+  CollaborationAccessQueryResult,
+  CollaborationInvitationPrepareResult,
+  CollaborationPrincipalRevokeResult,
+} from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type {
   RuntimeHostServiceManagementFrame,
@@ -313,6 +318,24 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly pairingRecoveryBlocked?: true;
   readonly pairingRecoveryPending?: true;
 }
+
+export type DesktopSessionCollaborationImportResult =
+  | { readonly kind: 'connected' }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'insecure_confirmation_required'
+        | 'connection_failed';
+      readonly message?: string;
+    };
+
+export type DesktopSessionCollaborationPrepareResult =
+  | {
+      readonly kind: 'prepared';
+      readonly invitation: CollaborationInvitationPrepareResult;
+    }
+  | { readonly kind: 'insecure_confirmation_required' };
 
 export interface DesktopRuntimeHostRef {
   readonly profileId: string;
@@ -650,6 +673,22 @@ export interface DesktopSessionUsageSummary extends UsageSummaryV2 {
 }
 
 export interface MakaBridge {
+  sessionCollaboration: {
+    prepareInvitation(
+      sessionId: string,
+      allowInsecure?: boolean,
+    ): Promise<DesktopSessionCollaborationPrepareResult>;
+    getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+    revokePrincipal(
+      sessionId: string,
+      principalId: string,
+    ): Promise<CollaborationPrincipalRevokeResult>;
+    importInvitation(input: {
+      readonly code: string;
+      readonly allowInsecure?: boolean;
+    }): Promise<DesktopSessionCollaborationImportResult>;
+  };
+
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
       operation: K,

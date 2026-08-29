@@ -107,6 +107,9 @@ import {
   type TaskEntryError,
 } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
+import { SessionCollaborationDialog } from './session-collaboration-dialog';
+import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
+import { useSessionCollaborationDialog } from './use-session-collaboration-dialog';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
@@ -345,6 +348,7 @@ function AppShellContent({
 }) {
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
+  const sharedSessionDialog = useSessionCollaborationDialog();
   const updateInstallInFlightRef = useRef(false);
   const notifiedInstallErrorRef = useRef<string | null>(null);
   const previousInterruptionShownRef = useRef(false);
@@ -374,6 +378,10 @@ function AppShellContent({
     setMessageLoadPending,
     sessionUiController,
   } = useAppShellSessionWorkspace(toastApi);
+  const activeCatalogSession = sessions.find((session) => session.id === activeId);
+  const sharedSessionActive =
+    (activeCatalogSession as DesktopSessionSummary | undefined)?.shared === true;
+  const ownerActiveId = activeCatalogSession && !sharedSessionActive ? activeId : undefined;
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
     const epochs = interactionHydrationEpochRef.current;
@@ -535,7 +543,8 @@ function AppShellContent({
   const { memoryActive, refreshMemoryActive } = useShellMemoryPill({
     toastApi,
     uiLocale,
-    sessionId: activeId,
+    sessionId: ownerActiveId,
+    disabled: sharedSessionActive,
   });
   const newTaskHost = taskEntry.selectors.selectedHost
     ? {
@@ -556,7 +565,7 @@ function AppShellContent({
   const sessionHostConnections = useShellConnections({
     toastApi,
     uiLocale,
-    target: { kind: 'session', sessionId: activeId },
+    target: { kind: 'session', sessionId: ownerActiveId },
   });
   const startupConnectionSnapshot =
     initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
@@ -586,13 +595,13 @@ function AppShellContent({
     return Promise.all([
       defaultHostConnections.refreshConnections(),
       newTaskConnections.refreshConnections(),
-      ...(activeId ? [sessionHostConnections.refreshConnections()] : []),
+      ...(ownerActiveId ? [sessionHostConnections.refreshConnections()] : []),
     ]).then(() => undefined);
   }
   function handleConnectionEvent(event: ConnectionEvent): void {
     defaultHostConnections.handleConnectionEvent(event);
     newTaskConnections.handleConnectionEvent(event);
-    if (activeId) sessionHostConnections.handleConnectionEvent(event);
+    if (ownerActiveId) sessionHostConnections.handleConnectionEvent(event);
   }
   const onboardingState = onboarding.snapshot?.state;
   const onboardingSettled = hasSettledInitialOnboarding(onboarding.snapshot?.milestones ?? []);
@@ -800,10 +809,10 @@ function AppShellContent({
     resumePendingSessionId,
     resumeParkDescriptionBySession,
     resumeInterruptedSession,
-  } = useShellResume({ activeId, toastApi, shellCopy, uiLocale });
+  } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
   const rendererMountedRef = useRef(true);
   const goals = useGoalController({
-    activeSessionId: activeId,
+    activeSessionId: ownerActiveId,
     reportError: showSessionError,
   });
   // Set of session ids whose backend / connection is no longer usable —
@@ -818,11 +827,11 @@ function AppShellContent({
       }),
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
-  const activeInteraction = activeInteractionFor(interactionBySession, activeId);
+  const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
-  const activeSession = sessions.find((session) => session.id === activeId);
+  const activeSession = activeCatalogSession;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
@@ -1220,32 +1229,32 @@ function AppShellContent({
     unreadable: activeExecutionBoundaryUnreadable,
     reading: activeExecutionBoundaryReading,
     reload: reloadActiveExecutionBoundary,
-  } = useActiveExecutionBoundary(activeId, activeSessionForView?.permissionMode);
+  } = useActiveExecutionBoundary(ownerActiveId, activeSessionForView?.permissionMode);
   // The session view only subscribes to the session it shows, so a request
   // raised while another session was active never reaches this surface as a
   // live event — and neither does one raised before the window existed. The
   // runtime holds every unanswered request, so read them back whenever the
   // active session changes (#2072).
   useEffect(() => {
-    if (!activeId) return;
+    if (!ownerActiveId) return;
     let cancelled = false;
-    const hydrationEpoch = interactionHydrationEpochRef.current.get(activeId) ?? 0;
+    const hydrationEpoch = interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0;
     void window.maka.sessions
-      .listActiveInteractions(activeId)
+      .listActiveInteractions(ownerActiveId)
       .then((requests) => {
         if (
           cancelled ||
-          (interactionHydrationEpochRef.current.get(activeId) ?? 0) !== hydrationEpoch
+          (interactionHydrationEpochRef.current.get(ownerActiveId) ?? 0) !== hydrationEpoch
         ) {
           return;
         }
-        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
+        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, ownerActiveId, requests));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeId, sessionUiController.setInteractionBySession]);
+  }, [ownerActiveId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
       window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
@@ -1262,7 +1271,7 @@ function AppShellContent({
     activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newTaskPermissionMode,
   );
   const activePermissionMode = activeBoundarySurface.permissionMode;
-  const planMode = usePlanModeState(activeSessionForView);
+  const planMode = usePlanModeState(sharedSessionActive ? undefined : activeSessionForView);
   const planConversationItems = (planMode.state?.proposals ?? []).map((proposal) => ({
     id: proposal.proposalId,
     afterTurnId: proposal.turnId,
@@ -1446,10 +1455,10 @@ function AppShellContent({
   } = useAppShellProjectContext({
     uiLocale,
     rendererMountedRef,
-    sessionId: activeId,
-    sessionCwd: activeSession?.cwd,
-    sessionProjectId: activeSession?.projectId,
-    sessionProfileKind: activeDesktopSession?.profileKind,
+    sessionId: ownerActiveId,
+    sessionCwd: sharedSessionActive ? undefined : activeSession?.cwd,
+    sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
+    sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
       void refreshProjectSkillsRef.current();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
@@ -1528,7 +1537,7 @@ function AppShellContent({
   const taskReadiness = useTaskSubmissionReadiness(
     taskReadinessRequest,
     onboarding.snapshot,
-    activeId,
+    ownerActiveId,
     activeId ? undefined : taskEntry.selectors.target,
   );
   const taskReadinessNotice = deriveTaskReadinessNotice(taskReadiness.snapshot, uiLocale);
@@ -1542,10 +1551,12 @@ function AppShellContent({
   // The titlebar names the directory the ACTIVE session runs in, so it reads
   // the same projected project state the picker does — `projectInfo` already
   // resolves to the session's own cwd once a session owns it.
-  const titlebarProjectName = deriveTitlebarProjectName({
-    projectName: currentProject?.name,
-    projectPath: projectInfo?.projectPath,
-  });
+  const titlebarProjectName = sharedSessionActive
+    ? undefined
+    : deriveTitlebarProjectName({
+        projectName: currentProject?.name,
+        projectPath: projectInfo?.projectPath,
+      });
   const { startModeSession } = useStableActions(createAppShellSessionStartActions, {
     uiLocale,
     activeIdRef,
@@ -1625,8 +1636,12 @@ function AppShellContent({
   // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
   const composerMentionsSurface: ComposerMentionsSurface = {
     skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
-    sessionId: activeId,
-    projectPath: activeId ? projectInfo?.projectPath : taskEntry.selectors.projectPath,
+    sessionId: ownerActiveId,
+    projectPath: activeId
+      ? ownerActiveId
+        ? projectInfo?.projectPath
+        : undefined
+      : taskEntry.selectors.projectPath,
     newTaskTarget: activeId ? undefined : taskEntry.selectors.target,
     newSessionModel: newChatModel,
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
@@ -1635,7 +1650,7 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.target !== undefined;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -2763,6 +2778,14 @@ function AppShellContent({
                    next one. A remount ties the edit to the session it belongs to. */
                 key={activeSessionForView.id}
                 sessionName={activeSessionForView.name}
+                readOnly={sharedSessionActive}
+                action={sharedSessionActive ? undefined : {
+                  label: getSessionCollaborationCopy(uiLocale).shareAction,
+                  onClick: () => sharedSessionDialog.open({
+                    sessionId: activeSessionForView.id,
+                    sessionName: activeSessionForView.name,
+                  }),
+                }}
                 onRenameSession={(name) => {
                   void sessionNavigationCommandsRef.current?.renameSession(activeSessionForView.id, name);
                 }}
@@ -2779,7 +2802,7 @@ function AppShellContent({
                 parentSession={titlebarParentSession}
               />
             )}
-            {!VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
+            {!sharedSessionActive && !VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
               <WorkbarTitlebarActions
                 available={workbarAvailable}
                 collapsed={workbar.selectors.rightCollapsed}
@@ -2874,7 +2897,7 @@ function AppShellContent({
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
-                    {navSelection.section === 'sessions' &&
+                    {!sharedSessionActive && navSelection.section === 'sessions' &&
                     activeId &&
                     activeSessionForView &&
                     !isLinkedSubagentSession(activeSessionForView) ? (
@@ -2885,7 +2908,7 @@ function AppShellContent({
                         onOpenSession={openSessionInChat}
                       />
                     ) : null}
-                    {navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
+                    {!sharedSessionActive && navSelection.section === 'sessions' ? <PlanExecutionPanel planMode={planMode} /> : null}
                     {workHubEnabled && navSelection.section === 'sessions' && activeId ? (
                       <Button
                         className="workhub-return"
@@ -2895,6 +2918,11 @@ function AppShellContent({
                         onClick={openWorkHub}
                       />
                     ) : null}
+                    {sharedSessionActive ? (
+                      <div className="sessionCollaborationReadOnly">
+                        {getSessionCollaborationCopy(uiLocale).observeHelp}
+                      </div>
+                    ) : (
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
@@ -3050,6 +3078,7 @@ function AppShellContent({
                       : undefined
                   }
                     />
+                    )}
                   </>
                 }
               >
@@ -3077,19 +3106,19 @@ function AppShellContent({
                 renderProviderMark={(type) => <ProviderLogo type={type} compact />}
                 modelChoices={chatModelChoices}
                 modelChangePending={modelChangePending}
-                onModelChange={(input) => setSessionModel(input)}
+                onModelChange={sharedSessionActive ? undefined : (input) => setSessionModel(input)}
                 userLabel={userLabel}
                 memoryActive={memoryActive}
-                onOpenMemorySettings={() => openSettingsSection('memory')}
+                onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
                 goalIndicator={goals.selectors.indicator}
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
                 deriveTurnPresentation={deriveTurnPresentation}
-                onTurnFooterAction={handleTurnFooterAction}
-                onSwitchToBypassAndRetry={handleSwitchToBypassAndRetry}
-                onEditUserMessage={(turnId) => { void beginEditUserMessage(turnId); }}
-                safeResumeAction={activeId ? {
+                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
+                onSwitchToBypassAndRetry={sharedSessionActive ? undefined : handleSwitchToBypassAndRetry}
+                onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
+                safeResumeAction={!sharedSessionActive && activeId ? {
                   pending: resumePendingSessionId === activeId,
                   detail: resumeParkDescriptionBySession[activeId],
                   onResume: () => { void resumeInterruptedSession(); },
@@ -3120,10 +3149,14 @@ function AppShellContent({
                 onRevisionNavigate={openSessionInChat}
                 onNew={createSession}
                 onPromptSuggestion={(prompt) => composerRef.current?.appendText(prompt)}
-                onQuoteSelection={(selection) => {
-                  addQuote(selection);
-                  composerRef.current?.focus();
-                }}
+                onQuoteSelection={
+                  sharedSessionActive
+                    ? undefined
+                    : (selection) => {
+                        addQuote(selection);
+                        composerRef.current?.focus();
+                      }
+                }
                 onAskAboutSelection={
                   activeId
                     ? (input) => {
@@ -3214,6 +3247,14 @@ function AppShellContent({
       <GoalHost model={goals.host} />
       <TaskEntryHost model={taskEntry.host} />
       <RuntimeHostSshTerminalDialog />
+      {sharedSessionDialog.target ? (
+        <SessionCollaborationDialog
+          mode="share"
+          sessionId={sharedSessionDialog.target.sessionId}
+          sessionName={sharedSessionDialog.target.sessionName}
+          onClose={sharedSessionDialog.close}
+        />
+      ) : null}
 
       <AppShellOverlays
         settingsOpen={settingsOpen}

@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 223 files — blocker 0, polish 1, aligned 222.
+**Totals:** 224 files — blocker 0, polish 1, aligned 223.
 
 ## Exclusions (explicit)
 
@@ -71,6 +71,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Banner, Button, Collapsible | aligned — uses Astryx (Badge, Banner, Button, Collapsible) | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/remote-project-directory-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text) | aligned |
+| `apps/desktop/src/renderer/session-collaboration-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector, Text, VStack | aligned — uses Astryx (Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
@@ -239,7 +240,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/skills-panel.tsx` | module-hub | Button, EmptyState, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Text, TextInput, Toolbar | aligned — uses Astryx (Button, EmptyState, IconButton, List, ListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |
 | `packages/ui/src/styles.css` | ui-composition | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `packages/ui/src/task-ledger-panel.tsx` | shell-chrome-or-panel | Banner, Collapsible, EmptyState, IconButton, Spinner | aligned — uses Astryx (Banner, Collapsible, EmptyState, IconButton, Spinner) | aligned |
-| `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs) | aligned |
+| `packages/ui/src/titlebar-session-identity.tsx` | shell-chrome-or-panel | BreadcrumbItem, Breadcrumbs, IconButton, Tooltip | aligned — uses Astryx (BreadcrumbItem, Breadcrumbs, IconButton, Tooltip) | aligned |
 | `packages/ui/src/toast.tsx` | ui-composition | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
 | `packages/ui/src/tool-activity.tsx` | ui-composition | Banner, Button, ChatToolCalls, List, ListItem, Text | aligned — uses Astryx (Banner, Button, ChatToolCalls, List, ListItem, Text) | aligned |
 | `packages/ui/src/tool-activity/diff-code-preview.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |

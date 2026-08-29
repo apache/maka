@@ -262,9 +262,13 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
     const observationGrant = preparedGuest.grants.find(
       (grant) => grant.kind === 'session_observation',
     )!;
+    const guestCatalogChanged = new Promise<string>((resolve) => {
+      guest?.subscribeSessionCatalogChanges((frame) => resolve(frame.sessionId));
+    });
     await local.request('collaboration.grant.revoke', {
       grantId: observationGrant.grantId,
     });
+    assert.equal(await guestCatalogChanged, 'shared-session');
     const closed = await guestSubscription[Symbol.asyncIterator]().next();
     assert.equal(closed.done, false);
     assert.equal(closed.value?.kind, 'subscription.closed');

@@ -206,7 +206,9 @@ function SessionListGroups(props: {
         worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
         meta={rail.sessionMeta?.(session)}
         onSelectSession={rail.onSelectSession}
-        actions={rail.rowActions}
+        actions={(session as SessionSummary & { readonly shared?: true }).shared
+          ? undefined
+          : rail.rowActions}
         onStartRename={startRename}
       />
     ),

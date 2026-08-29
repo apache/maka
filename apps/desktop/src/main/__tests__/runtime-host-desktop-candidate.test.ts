@@ -23,6 +23,7 @@ import test from 'node:test';
 import type { IpcMain } from 'electron';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { ShellRunUpdate } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import type {
   ClientCapabilityProvider,
@@ -181,6 +182,68 @@ test('owns one complete Desktop candidate generation and can restart cleanly', a
   );
   await reconnected.close();
   assert.equal(ipc.size, 0);
+});
+
+test('registers only shared observation IPC and consumes scoped catalog changes for a Guest', async () => {
+  const ipc = ipcHarness();
+  const sharedResource = sharedShellRunUpdate('session-guest');
+  const host = connectionHarness('guest', { runtimeResourceUpdate: sharedResource });
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const rendererEvents: Array<{ channel: string; payload: unknown }> = [];
+  const candidate = await createCandidate(
+    host.connection,
+    {
+      ...deps(ipc),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+      renderer: {
+        send(channel, _scope, payload) {
+          rendererEvents.push({ channel, payload });
+        },
+      },
+    },
+    undefined,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.deepEqual(
+    ((await ipc.invoke('sessions:list')) as SessionCatalogProjection[]).map(({ id }) => id),
+    ['session-guest'],
+  );
+  assert.equal(ipc.channels.includes('sessions:observe'), true);
+  assert.equal(ipc.channels.includes('sessions:transcript:open'), true);
+  assert.equal(ipc.channels.includes('sessions:send'), false);
+  assert.equal(ipc.channels.includes('sessions:stop'), false);
+  assert.equal(ipc.channels.includes('tasks:list'), false);
+  assert.equal(ipc.channels.includes('attachments:readBytes'), true);
+  assert.deepEqual(await ipc.invoke('shell-runs:list', 'session-guest'), [sharedResource]);
+  assert.equal(ipc.channels.includes('shell-runs:attach'), false);
+  await ipc.invoke('sessions:observe', 'session-guest', 'guest-observer');
+  host.pushSubscriptionFrame({
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: 'host-guest',
+    subscriptionId: 'subscription-guest',
+    sequence: 1,
+    sessionId: 'session-guest',
+    domain: 'runtime_resource',
+    resources: [
+      { sourceSessionId: 'session-guest', ref: sharedResource.result.ref },
+    ],
+  });
+  await waitFor(() =>
+    rendererEvents.some(
+      ({ channel, payload }) =>
+        channel === 'shell-runs:update' &&
+        (payload as ShellRunUpdate).result.ref === sharedResource.result.ref,
+    ),
+  );
+  host.publishSessionCatalogChange('session-guest');
+  assert.deepEqual(changes, [{ reason: 'updated', sessionId: 'session-guest' }]);
+
+  await candidate.close();
 });
 
 test('rejects a stale Host identity when raw Session IDs collide', async () => {
@@ -778,6 +841,48 @@ test('retries candidate startup when a restored observation cannot seed', async 
   await observations.close();
 });
 
+test('drops a stale shared Session observation when Guest access is gone', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const firstIpc = ipcHarness();
+  const firstHost = connectionHarness('shared-before-revoke', {
+    sessionId: 'session-1',
+    subscriptionSnapshot: continuitySnapshot(),
+  });
+  const firstCandidate = await createCandidate(
+    firstHost.connection,
+    deps(firstIpc),
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+  await firstIpc.invoke('sessions:observe', 'session-1', 'observer-1');
+  await firstCandidate.close();
+
+  const changes: Array<{ reason: string; sessionId?: string }> = [];
+  const revokedHost = connectionHarness('shared-after-revoke', {
+    sharedSessionAvailable: false,
+  });
+  const candidate = await createCandidate(
+    revokedHost.connection,
+    {
+      ...deps(ipcHarness()),
+      emitSessionsChanged: (_scope, reason, sessionId) => {
+        changes.push({ reason, ...(sessionId === undefined ? {} : { sessionId }) });
+      },
+    },
+    observations,
+    'external',
+    'remote',
+    'session_guest',
+  );
+
+  assert.deepEqual(observations.trackedSessionIds(), []);
+  assert.deepEqual(changes, [{ reason: 'deleted', sessionId: 'session-1' }]);
+  await candidate.close();
+  await observations.close();
+});
+
 type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
 
 function ipcHarness(onSend?: (channel: string, payload: unknown) => void) {
@@ -898,6 +1003,8 @@ function connectionHarness(
     activeAssistantStreams?: readonly SessionAssistantStreamIdentity[];
     subscriptionError?: Error;
     runtimeResourcePty?: ReturnType<typeof ptySnapshot>;
+    runtimeResourceUpdate?: ShellRunUpdate;
+    sharedSessionAvailable?: boolean;
   } = {},
 ) {
   let resolveClosed: (() => void) | undefined;
@@ -909,6 +1016,7 @@ function connectionHarness(
     resolveTurnStarted = resolve;
   });
   const closeSubscriptions = new Set<() => void>();
+  const sessionCatalogListeners = new Set<(frame: { sessionId: string }) => void>();
   let provider: ClientCapabilityProvider | undefined;
   let capabilityRegistrations = 0;
   let capabilityUnregistrations = 0;
@@ -932,6 +1040,21 @@ function connectionHarness(
           revision: catalogRevision(label),
           sessions: [session(options.sessionId ?? `session-${label}`)],
           nextCursor: null,
+        };
+      }
+      if (operation === 'session.shared.query') {
+        if (options.sharedSessionAvailable === false) return { session: null };
+        const id = options.sessionId ?? `session-${label}`;
+        return {
+          session: {
+            kind: 'shared_session',
+            id,
+            revision: 1,
+            createdAt: 1,
+            activityAt: 1,
+            name: `Session ${label}`,
+            status: 'idle',
+          },
         };
       }
       if (operation === 'session.create') {
@@ -967,11 +1090,23 @@ function connectionHarness(
         };
       }
       if (operation === 'runtime.resource.query') {
+        const query = input as { kind: string; sessionId: string; ref?: string };
+        if (query.kind === 'get') {
+          return {
+            kind: 'resource',
+            sessionId: query.sessionId,
+            revision: catalogRevision(`${label}-resource`),
+            resource:
+              options.runtimeResourceUpdate?.result.ref === query.ref
+                ? options.runtimeResourceUpdate
+                : null,
+          };
+        }
         return {
           kind: 'page',
-          sessionId: (input as { sessionId: string }).sessionId,
+          sessionId: query.sessionId,
           revision: catalogRevision(`${label}-resource`),
-          resources: [],
+          resources: options.runtimeResourceUpdate ? [options.runtimeResourceUpdate] : [],
           nextCursor: null,
         };
       }
@@ -1052,6 +1187,10 @@ function connectionHarness(
       capabilityUnregistrations += 1;
       return { registrationId: `registration-${label}`, revision: 2 };
     },
+    subscribeSessionCatalogChanges: (listener: (frame: { sessionId: string }) => void) => {
+      sessionCatalogListeners.add(listener);
+      return () => sessionCatalogListeners.delete(listener);
+    },
     close: async () => {
       closeCalls += 1;
       for (const closeSubscription of closeSubscriptions) closeSubscription();
@@ -1073,6 +1212,9 @@ function connectionHarness(
     pushSubscriptionFrame: (frame: SubscriptionFrame) => {
       assert.ok(activeSubscriptionFrames);
       activeSubscriptionFrames.push(frame);
+    },
+    publishSessionCatalogChange: (sessionId: string) => {
+      for (const listener of sessionCatalogListeners) listener({ sessionId });
     },
     get capabilityRegistrations() {
       return capabilityRegistrations;
@@ -1157,6 +1299,34 @@ function ptySnapshot(ref: string, buffer: string) {
     sequence: 4,
     buffer,
     size: { cols: 80, rows: 24 },
+  };
+}
+
+function sharedShellRunUpdate(sessionId: string): ShellRunUpdate {
+  return {
+    sessionId,
+    ownership: { kind: 'local' },
+    sourceTurnId: 'turn-shared',
+    sourceToolCallId: 'tool-shared',
+    result: {
+      kind: 'shell_run',
+      ref: 'maka://runtime/background-tasks/shared',
+      mode: 'pipes',
+      status: 'running',
+      cwd: '/workspace',
+      cmd: 'echo shared',
+      startedAt: 1,
+      updatedAt: 1,
+      revision: 1,
+      output: {
+        mode: 'pipes',
+        stdout: 'shared output',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+    },
   };
 }
 
