@@ -648,11 +648,14 @@ fn rejects_an_exact_candidate_retry_when_the_result_blob_is_corrupt() {
     let published = invoke_request(request.clone());
     assert!(published.status.success());
     let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
-    fs::write(
-        loose_object_path(&destination, published["resultBlobOid"].as_str().unwrap()),
-        b"not a zlib object",
+    let result_object_path =
+        loose_object_path(&destination, published["resultBlobOid"].as_str().unwrap());
+    fs::rename(
+        &result_object_path,
+        fixture.root.join("original-corrupt-result-object"),
     )
     .unwrap();
+    fs::write(result_object_path, b"not a zlib object").unwrap();
 
     let retry = invoke_request(request);
     assert_helper_error(&retry, "candidate_ref_target_invalid");
