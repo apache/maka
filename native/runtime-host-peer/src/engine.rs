@@ -46,9 +46,9 @@ mod identity_store;
 mod peer_stream;
 mod relay_discovery;
 
+pub(crate) use address::transit_relay_peer_id;
 use address::{
     address_with_expected_peer, address_with_peer, coordination_relay_peer_id, is_relayed_address,
-    transit_relay_peer_id,
 };
 use identity_store::load_or_create_key;
 use peer_stream::spawn_stream;
@@ -135,8 +135,7 @@ pub enum EngineCommand {
 
 pub struct TransitPolicy {
     pub allowed_peers: HashSet<PeerId>,
-    pub trusted_relays: HashSet<PeerId>,
-    pub reservation_relays: Vec<Multiaddr>,
+    pub relays: Vec<Multiaddr>,
 }
 
 #[derive(Clone, Default)]
@@ -1457,9 +1456,15 @@ fn configure_transit(
 ) {
     let TransitPolicy {
         allowed_peers,
-        trusted_relays,
-        reservation_relays,
+        relays,
     } = policy;
+    let trusted_relays = relays
+        .iter()
+        .map(|address| {
+            transit_relay_peer_id(address)
+                .expect("transit relay address was validated before reconciliation")
+        })
+        .collect::<HashSet<_>>();
     let was_enabled = transit
         .allowed_peers
         .read()
@@ -1514,12 +1519,7 @@ fn configure_transit(
     for connection_id in application_stream.connections_via(&changed_relays) {
         let _ = swarm.close_connection(connection_id);
     }
-    reconcile_transit_reservations(
-        swarm,
-        coordination_relays,
-        reservation_relays,
-        local_peer_id,
-    );
+    reconcile_transit_reservations(swarm, coordination_relays, relays, local_peer_id);
     publish_transit_snapshot(transit);
 }
 
@@ -2256,12 +2256,7 @@ mod tests {
         let target_peer_id = ensure_identity(target_key.clone())
             .await
             .expect("create target identity");
-        configure_test_transit(
-            &relay,
-            HashSet::from([source.peer_id, target_peer_id]),
-            HashSet::new(),
-        )
-        .await;
+        configure_test_transit(&relay, HashSet::from([source.peer_id, target_peer_id])).await;
         let relay_address = relay
             .listen_addresses
             .first()
@@ -2271,7 +2266,6 @@ mod tests {
         configure_test_transit_with_reservations(
             &target,
             HashSet::new(),
-            HashSet::from([relay.peer_id]),
             vec![relay_address.clone()],
         )
         .await;
@@ -2323,7 +2317,7 @@ mod tests {
             1,
         );
 
-        configure_test_transit(&relay, HashSet::from([target.peer_id]), HashSet::new()).await;
+        configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
         wait_for_test_snapshot(&relay, |snapshot| snapshot.active_circuit_count == 0).await;
         let (result, response) = oneshot::channel();
         if source_stream
@@ -2439,24 +2433,13 @@ mod tests {
         endpoint.thread.join().expect("join endpoint thread");
     }
 
-    async fn configure_test_transit(
-        endpoint: &StartedEndpoint,
-        allowed_peers: HashSet<PeerId>,
-        trusted_relays: HashSet<PeerId>,
-    ) {
-        configure_test_transit_with_reservations(
-            endpoint,
-            allowed_peers,
-            trusted_relays,
-            Vec::new(),
-        )
-        .await;
+    async fn configure_test_transit(endpoint: &StartedEndpoint, allowed_peers: HashSet<PeerId>) {
+        configure_test_transit_with_reservations(endpoint, allowed_peers, Vec::new()).await;
     }
 
     async fn configure_test_transit_with_reservations(
         endpoint: &StartedEndpoint,
         allowed_peers: HashSet<PeerId>,
-        trusted_relays: HashSet<PeerId>,
         reservation_relays: Vec<Multiaddr>,
     ) {
         let (result, response) = oneshot::channel();
@@ -2465,8 +2448,7 @@ mod tests {
             .send(EngineCommand::ConfigureTransit {
                 policy: TransitPolicy {
                     allowed_peers,
-                    trusted_relays,
-                    reservation_relays,
+                    relays: reservation_relays,
                 },
                 result,
             })

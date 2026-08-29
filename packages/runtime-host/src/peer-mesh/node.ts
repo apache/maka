@@ -171,8 +171,7 @@ export interface PeerMeshTransport {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly trustedRelayPeerIds: readonly string[];
-    readonly reservationRelays: readonly string[];
+    readonly relayAddresses: readonly string[];
   }): Promise<void>;
   connectMeshControl(
     input: {
@@ -1282,8 +1281,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       allowedPeerIds: selected
         ? selected.roster.roster.members.filter((peerId) => peerId !== localPeerId)
         : [],
-      trustedRelayPeerIds: eligibleRelays.map(({ route }) => route.peerId),
-      reservationRelays: eligibleRelays.flatMap(({ route }) => route.routeHints),
+      relayAddresses: eligibleRelays.flatMap(({ route }) => route.routeHints),
     });
   }
 }

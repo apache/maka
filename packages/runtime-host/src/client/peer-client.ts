@@ -58,8 +58,7 @@ export interface RuntimeHostPeerClient {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly trustedRelayPeerIds: readonly string[];
-    readonly reservationRelays: readonly string[];
+    readonly relayAddresses: readonly string[];
   }): Promise<void>;
   connect(
     input: RuntimeHostPeerConnectInput,
@@ -188,8 +187,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly trustedRelayPeerIds: readonly string[];
-    readonly reservationRelays: readonly string[];
+    readonly relayAddresses: readonly string[];
   }): Promise<void> {
     return this.#requireEndpoint().configureTransit(input);
   }

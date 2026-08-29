@@ -33,8 +33,8 @@ use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
-const MAX_TRANSIT_PEERS: usize = 32;
-const MAX_TRANSIT_RELAY_ADDRESSES: usize = 128;
+const MAX_TRANSIT_PEERS: usize = 64;
+const MAX_TRANSIT_RELAY_ADDRESSES: usize = 256;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -58,8 +58,7 @@ pub struct ConnectPeerOptions {
 #[napi(object)]
 pub struct ConfigurePeerTransitOptions {
     pub allowed_peer_ids: Vec<String>,
-    pub trusted_relay_peer_ids: Vec<String>,
-    pub reservation_relays: Vec<String>,
+    pub relay_addresses: Vec<String>,
 }
 
 #[napi(object)]
@@ -125,14 +124,23 @@ impl PeerEndpoint {
     #[napi]
     pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
         let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
-        let trusted_relays = parse_peer_ids(options.trusted_relay_peer_ids)?;
-        if options.reservation_relays.len() > MAX_TRANSIT_RELAY_ADDRESSES {
+        if options.relay_addresses.len() > MAX_TRANSIT_RELAY_ADDRESSES {
             return Err(Error::new(
                 Status::InvalidArg,
-                "transit policy cannot contain more than 128 relay addresses",
+                "transit policy cannot contain more than 256 relay addresses",
             ));
         }
-        let reservation_relays = parse_addresses(options.reservation_relays, "transit relay")?;
+        let relays = parse_addresses(options.relay_addresses, "transit relay")?;
+        let trusted_relays = relays
+            .iter()
+            .map(engine::transit_relay_peer_id)
+            .collect::<std::result::Result<HashSet<_>, _>>()
+            .map_err(|error| {
+                Error::new(
+                    Status::InvalidArg,
+                    format!("{}: {}", error.code, error.message),
+                )
+            })?;
         let local_peer_id = parse_peer_id(&self.peer_id)?;
         if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
             return Err(Error::new(
@@ -145,8 +153,7 @@ impl PeerEndpoint {
             .send(EngineCommand::ConfigureTransit {
                 policy: engine::TransitPolicy {
                     allowed_peers,
-                    trusted_relays,
-                    reservation_relays,
+                    relays,
                 },
                 result: result_tx,
             })
@@ -452,7 +459,7 @@ fn parse_peer_ids(values: Vec<String>) -> Result<HashSet<PeerId>> {
     if values.len() > MAX_TRANSIT_PEERS {
         return Err(Error::new(
             Status::InvalidArg,
-            "transit policy cannot contain more than 32 peers",
+            "transit policy cannot contain more than 64 peers",
         ));
     }
     values

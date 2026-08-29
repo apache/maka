@@ -243,8 +243,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     await memberB.reconcile();
     assert.equal(authority.status()[0]?.transitEnabled, true);
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-b', 'peer-c', 'peer-d']);
-    assert.deepEqual(memberBPeer.transitPolicy.trustedRelayPeerIds, ['peer-a']);
-    assert.deepEqual(memberBPeer.transitPolicy.reservationRelays, ['/memory/peer-a']);
+    assert.deepEqual(memberBPeer.transitPolicy.relayAddresses, ['/memory/peer-a']);
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelays, ['/memory/peer-a']);
 
     await memberD.setTransitMesh(meshId);
@@ -261,8 +260,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     await memberB.reconcile();
     assert.deepEqual(memberBPeer.transitPolicy, {
       allowedPeerIds: [],
-      trustedRelayPeerIds: [],
-      reservationRelays: [],
+      relayAddresses: [],
     });
 
     await authority.closeMesh(meshId);
@@ -430,8 +428,7 @@ class MemoryPeerClient implements PeerMeshTransport {
   #routeHints: readonly string[];
   transitPolicy = {
     allowedPeerIds: [] as readonly string[],
-    trustedRelayPeerIds: [] as readonly string[],
-    reservationRelays: [] as readonly string[],
+    relayAddresses: [] as readonly string[],
   };
 
   constructor(
@@ -482,7 +479,9 @@ class MemoryPeerClient implements PeerMeshTransport {
   transitSnapshot() {
     return {
       allowedPeerCount: this.transitPolicy.allowedPeerIds.length,
-      trustedRelayCount: this.transitPolicy.trustedRelayPeerIds.length,
+      trustedRelayCount: new Set(
+        this.transitPolicy.relayAddresses.map((address) => address.split('/').at(-1)),
+      ).size,
       activeReservationCount: 0,
       activeCircuitCount: 0,
     };
@@ -490,13 +489,11 @@ class MemoryPeerClient implements PeerMeshTransport {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
-    readonly trustedRelayPeerIds: readonly string[];
-    readonly reservationRelays: readonly string[];
+    readonly relayAddresses: readonly string[];
   }): Promise<void> {
     this.transitPolicy = {
       allowedPeerIds: [...input.allowedPeerIds],
-      trustedRelayPeerIds: [...input.trustedRelayPeerIds],
-      reservationRelays: [...input.reservationRelays],
+      relayAddresses: [...input.relayAddresses],
     };
     return Promise.resolve();
   }
