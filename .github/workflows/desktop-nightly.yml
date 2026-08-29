@@ -81,6 +81,12 @@ jobs:
     env:
       MAKA_DESKTOP_NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
     steps:
+      - name: Reject in-place workflow reruns
+        if: github.run_attempt != 1
+        run: |
+          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          exit 1
+
       - name: Check out the exact Nightly source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -191,6 +197,12 @@ jobs:
       contents: read
       id-token: write
     steps:
+      - name: Reject in-place workflow reruns
+        if: github.run_attempt != 1
+        run: |
+          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          exit 1
+
       - name: Check out the Nightly publisher
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

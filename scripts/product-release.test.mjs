@@ -25,7 +25,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
-import desktopBuilderConfig from '../apps/desktop/electron-builder.config.mjs';
+import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import {
   parseAsfSourceReferenceTag,
   resolveProductManifestIdentity,
@@ -56,6 +56,7 @@ import { ensureProductTag } from './product-release-tag.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, '..');
+const desktopBuilderConfig = resolveDesktopBuilderConfig({});
 
 const rootManifest = {
   version: '1.2.3',

@@ -36,10 +36,12 @@ test('a failed Nightly is retried only as a fresh workflow run', async () => {
     'cancel-in-progress': false,
   });
   assert.equal(workflow.jobs.identity.if, "vars.DESKTOP_NIGHTLY_ENABLED == 'true'");
-  const rerunGuard = workflow.jobs.identity.steps[0];
-  assert.equal(rerunGuard.name, 'Reject in-place workflow reruns');
-  assert.equal(rerunGuard.if, 'github.run_attempt != 1');
-  assert.equal(spawnSync('bash', ['-c', rerunGuard.run]).status, 1);
+  for (const jobName of ['identity', 'desktop', 'publish']) {
+    const rerunGuard = workflow.jobs[jobName].steps[0];
+    assert.equal(rerunGuard.name, 'Reject in-place workflow reruns');
+    assert.equal(rerunGuard.if, 'github.run_attempt != 1');
+    assert.equal(spawnSync('bash', ['-c', rerunGuard.run]).status, 1);
+  }
   assert.equal(workflow.jobs.desktop.if, undefined);
   assert.equal(workflow.jobs.publish.if, undefined);
   const upload = workflow.jobs.desktop.steps.find((step) =>

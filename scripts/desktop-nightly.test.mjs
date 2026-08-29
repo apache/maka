@@ -96,6 +96,25 @@ test('a nightly package embeds only the Apache Nightlies update authority', () =
   ]);
 });
 
+test('formal release checks ignore the ambient Nightly packaging environment', async () => {
+  const { NODE_TEST_CONTEXT: _nodeTestContext, ...environment } = process.env;
+  await run(
+    process.execPath,
+    [
+      '--test',
+      '--test-name-pattern=Desktop packaging derives|platform package verifiers',
+      'scripts/product-release.test.mjs',
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...environment,
+        MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.20260829.42',
+      },
+    },
+  );
+});
+
 test('packaging observes a valid nightly version without changing product manifests', () => {
   assert.equal(
     resolveDesktopBuildVersion('0.2.0', {
