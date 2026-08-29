@@ -2112,9 +2112,15 @@ mod tests {
             .detach();
         let replacement_blob_oid = repository.write_blob(b"replacement\n").unwrap().detach();
         drop(repository);
+        let result_object_path = loose_object_path(root.path(), &result_blob_oid.to_string());
+        fs::rename(
+            &result_object_path,
+            root.path().join("original-result-object"),
+        )
+        .unwrap();
         fs::copy(
             loose_object_path(root.path(), &replacement_blob_oid.to_string()),
-            loose_object_path(root.path(), &result_blob_oid.to_string()),
+            result_object_path,
         )
         .unwrap();
         let repository = managed_open_options()
