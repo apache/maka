@@ -19,6 +19,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { expect } from './test-helpers.js';
 import {
   decodeMessageContent,
@@ -30,6 +31,8 @@ import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../in
 import {
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
@@ -457,6 +460,32 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('binds the managed mutation digest to its canonical execution semantics', () => {
+    const canonicalProfile = JSON.stringify({
+      protocol: 'managed_mutation_execution_profile_v1',
+      toolNames: ['Write', 'Edit'],
+      transform: 'pure_frozen_args_only_v1',
+      objectFormat: 'sha1',
+      pathPolicyVersion: 3,
+      resultSnapshot: {
+        maxBytes: 1_048_576,
+        maxDepth: 64,
+        maxNodes: 65_536,
+        maxProperties: 65_536,
+        maxArrayLength: 65_536,
+        format: 'strict_json_v1',
+      },
+      terminalAuthority: 'owner_committed_exact_outcome_v1',
+      genericFallback: 'forbidden',
+    });
+
+    assert.equal(
+      MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+      `sha256:${createHash('sha256').update(canonicalProfile).digest('hex')}`,
+    );
+    assert.equal(JSON.stringify(MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC), canonicalProfile);
+  });
+
   test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
     const managedMutation = {
       protocol: 'managed_mutation_v2',
@@ -472,8 +501,7 @@ describe('RuntimeEvent actions', () => {
       baseTreeOid: '2'.repeat(40),
       expectedPath: 'src/a.ts',
       pathPolicyVersion: 3,
-      executionProfileDigest:
-        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262',
+      executionProfileDigest: MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
     } as const;
     const toolDispatch = {
       protocol: 't1_after_preflight_v1',

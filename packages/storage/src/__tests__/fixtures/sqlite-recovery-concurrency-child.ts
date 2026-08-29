@@ -375,7 +375,7 @@ function managedMutationPreparedCommit(variant: 'a' | 'b') {
             expectedPath: 'notes.txt',
             pathPolicyVersion: 3 as const,
             executionProfileDigest:
-              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
           },
         },
       },

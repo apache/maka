@@ -66,7 +66,8 @@ import type { ToolInvocationRecord } from '@maka/core/usage-stats/types';
 import { redactSecrets } from '@maka/core/redaction';
 import {
   decodeRuntimeEvent,
-  MANAGED_MUTATION_EXECUTION_PROFILE_V1,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
   type RuntimeEventManagedWorkspaceMutationV2,
@@ -2084,7 +2085,8 @@ export class ToolRuntime {
           typeof persistedPath !== 'string' ||
           input.managedMutation.expectedPath !== persistedPath ||
           input.managedMutation.pathPolicyVersion !== 3 ||
-          input.managedMutation.executionProfileDigest !== MANAGED_MUTATION_EXECUTION_PROFILE_V1
+          input.managedMutation.executionProfileDigest !==
+            MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST
         ) {
           throw new Error('Managed mutation admission does not match the durable tool call');
         }
@@ -3295,11 +3297,13 @@ function coerceResultContent(raw: unknown): ToolResultContent {
  * The walk stops at the first over-budget token and never retains a mutable
  * tool/owner-owned object alias.
  */
-const MANAGED_RESULT_MAX_BYTES = 1024 * 1024;
-const MANAGED_RESULT_MAX_DEPTH = 64;
-const MANAGED_RESULT_MAX_NODES = 65_536;
-const MANAGED_RESULT_MAX_PROPERTIES = 65_536;
-const MANAGED_RESULT_MAX_ARRAY_LENGTH = 65_536;
+const MANAGED_RESULT_MAX_BYTES = MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxBytes;
+const MANAGED_RESULT_MAX_DEPTH = MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxDepth;
+const MANAGED_RESULT_MAX_NODES = MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxNodes;
+const MANAGED_RESULT_MAX_PROPERTIES =
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxProperties;
+const MANAGED_RESULT_MAX_ARRAY_LENGTH =
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC.resultSnapshot.maxArrayLength;
 
 function snapshotManagedToolResult(value: unknown, maxBytes: number | undefined): unknown {
   const budget: ManagedResultSnapshotBudget = {

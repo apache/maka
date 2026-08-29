@@ -41,7 +41,9 @@ import {
   commitWorkspaceBaselineInternal,
   commitWorkspaceSuccessorInternal,
   readActiveManagedMutationInternal,
+  registerManagedMutationNoEffectVerifierInternal,
   registerWorkspaceSuccessorCandidateVerifierInternal,
+  type ManagedMutationNoEffectClaimV1,
   type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
@@ -49,6 +51,7 @@ const CRASH_READ_ARGS_HASH = canonicalToolArgsHash('Read', {
   path: '/workspace/README.md',
 });
 const CRASH_CANDIDATES = new WeakMap<object, WorkspaceSuccessorAuthorityInput>();
+const CRASH_NO_EFFECT_CLAIMS = new WeakMap<object, ManagedMutationNoEffectClaimV1>();
 
 function registerCrashCandidateVerifier(store: object): void {
   registerWorkspaceSuccessorCandidateVerifierInternal(store, (capability) => {
@@ -56,6 +59,17 @@ function registerCrashCandidateVerifier(store: object): void {
     if (!successor) throw new Error('Unrecognized crash-test candidate capability');
     return structuredClone(successor);
   });
+  registerManagedMutationNoEffectVerifierInternal(store, (capability) => {
+    const claim = CRASH_NO_EFFECT_CLAIMS.get(capability);
+    if (!claim) throw new Error('Unrecognized crash-test no-effect capability');
+    return structuredClone(claim);
+  });
+}
+
+function issueCrashNoEffect(claim: ManagedMutationNoEffectClaimV1): object {
+  const capability = Object.freeze({});
+  CRASH_NO_EFFECT_CLAIMS.set(capability, structuredClone(claim));
+  return capability;
 }
 const childMode = process.env.MAKA_SQLITE_CRASH_CHILD;
 
@@ -215,7 +229,7 @@ if (childMode) {
         bindWorkspaceBaselineAuthorityStoreRootInternal(store, 'a'.repeat(64));
         const retry = await commitWorkspaceSuccessorInternal(store, workspaceSuccessorCommit());
         assert.equal(retry.created, false);
-        assert.equal(retry.head.workspaceVersionId, `version_${'7'.repeat(32)}`);
+        assert.equal(retry.committedSuccessor.workspaceVersionId, `version_${'7'.repeat(32)}`);
         assert.equal(
           (await store.readToolOperation('workspace-successor-operation'))?.currentState,
           'outcome_committed',
@@ -511,7 +525,7 @@ function workspaceSuccessorPreparedCommit(operationId = 'workspace-successor-ope
             expectedPath: 'notes.txt',
             pathPolicyVersion: 3 as const,
             executionProfileDigest:
-              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
           },
         },
       },
@@ -549,7 +563,7 @@ function workspaceSuccessorCommit(): WorkspaceSuccessorCommitInput {
       changedFileCount: 1,
       deletedFileCount: 0,
       executionProfileDigest:
-        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+        'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
     },
     origin: {
       operationId: 'workspace-successor-operation',
@@ -592,6 +606,12 @@ function workspaceSuccessorCommit(): WorkspaceSuccessorCommitInput {
 
 function workspaceTerminalCommit() {
   return {
+    noEffectOutcome: issueCrashNoEffect({
+      operationId: 'workspace-successor-operation',
+      dispatchEventId: 'workspace-successor-dispatch',
+      workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+      terminalKind: 'no_workspace_change',
+    }),
     toolOutcome: {
       operationId: 'workspace-successor-operation',
       journalEventId: 'workspace-successor-operation_outcome',

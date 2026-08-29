@@ -99,6 +99,7 @@ import {
 } from './sqlite-runtime-schema.js';
 import {
   registerWorkspaceBaselineAuthorityWriterInternal,
+  type ManagedMutationNoEffectClaimV1,
   type ManagedMutationTerminalCommitInput,
   type ManagedMutationTerminalCommitResult,
   type WorkspaceSuccessorCommitInput,
@@ -1315,7 +1316,7 @@ export class SqliteRuntimeStore
         );
         return {
           created: false,
-          head: {
+          committedSuccessor: {
             repositoryId: existing.successor.repositoryId,
             workspaceId: existing.successor.workspaceId,
             workspaceEpochId: existing.successor.workspaceEpochId,
@@ -1465,14 +1466,17 @@ export class SqliteRuntimeStore
       this.assertWorkspaceProjectionsMatchSync(after);
       return {
         created: true,
-        head: nextHead,
+        committedSuccessor: nextHead,
         outcomeRuntimeEventSeq: outcomeResult.runtimeEventSeq,
       };
     });
   }
 
   async #commitManagedMutationTerminal(
-    input: ManagedMutationTerminalCommitInput,
+    input: {
+      noEffect: ManagedMutationNoEffectClaimV1;
+      toolOutcome: ManagedMutationTerminalCommitInput['toolOutcome'];
+    },
     rootId: string,
   ): Promise<ManagedMutationTerminalCommitResult> {
     const toolOutcome: CommitToolOutcomeInput = {
@@ -1482,6 +1486,14 @@ export class SqliteRuntimeStore
     assertOutcomeInput(toolOutcome);
     const terminal = toolOutcome.runtimeEvent.actions?.managedMutationTerminal;
     if (!terminal) throw new Error('Managed mutation terminal fact is missing');
+    if (
+      input.noEffect.operationId !== terminal.operationId ||
+      input.noEffect.dispatchEventId !== terminal.dispatchEventId ||
+      input.noEffect.workspaceInstanceId !== terminal.workspaceInstanceId ||
+      input.noEffect.terminalKind !== terminal.terminalKind
+    ) {
+      throw new Error('Managed mutation terminal does not match its owner-issued no-effect proof');
+    }
 
     return this.transaction(() => {
       this.#assertWorkspaceStorageRootBinding(rootId);

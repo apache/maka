@@ -43,12 +43,16 @@ import {
   commitWorkspaceBaselineInternal,
   commitWorkspaceSuccessorInternal,
   readActiveManagedMutationInternal,
+  registerManagedMutationNoEffectVerifierInternal,
   registerWorkspaceSuccessorCandidateVerifierInternal,
+  type ManagedMutationNoEffectClaimV1,
+  type ManagedMutationTerminalCommitInput,
   type WorkspaceSuccessorCommitInput,
 } from '../workspace-version-authority-internal.js';
 
 const TEST_STORAGE_ROOT_ID = 'a'.repeat(64);
 const TEST_CANDIDATES = new WeakMap<object, WorkspaceSuccessorAuthorityInput>();
+const TEST_NO_EFFECT_CLAIMS = new WeakMap<object, ManagedMutationNoEffectClaimV1>();
 
 function issueTestCandidate(successor: WorkspaceSuccessorAuthorityInput): object {
   const capability = Object.freeze({});
@@ -60,6 +64,18 @@ function verifyTestCandidate(capability: object): WorkspaceSuccessorAuthorityInp
   const successor = TEST_CANDIDATES.get(capability);
   if (!successor) throw new Error('Unrecognized test candidate capability');
   return structuredClone(successor);
+}
+
+function issueTestNoEffect(claim: ManagedMutationNoEffectClaimV1): object {
+  const capability = Object.freeze({});
+  TEST_NO_EFFECT_CLAIMS.set(capability, structuredClone(claim));
+  return capability;
+}
+
+function verifyTestNoEffect(capability: object): ManagedMutationNoEffectClaimV1 {
+  const claim = TEST_NO_EFFECT_CLAIMS.get(capability);
+  if (!claim) throw new Error('Unrecognized test no-effect capability');
+  return structuredClone(claim);
 }
 
 describe('workspace version persistence authority', () => {
@@ -297,15 +313,41 @@ describe('workspace version persistence authority', () => {
             toolCallId: prepared.providerToolCallId,
           },
         };
-        const input = {
-          toolOutcome: {
+        const toolOutcome = {
+          operationId: prepared.operationId,
+          journalEventId: `${prepared.operationId}_outcome`,
+          runtimeEvent: outcomeEvent,
+          committedAt: baseline.committedAt + 2,
+        };
+        const input: ManagedMutationTerminalCommitInput = {
+          noEffectOutcome: issueTestNoEffect({
             operationId: prepared.operationId,
-            journalEventId: `${prepared.operationId}_outcome`,
-            runtimeEvent: outcomeEvent,
-            committedAt: baseline.committedAt + 2,
-          },
+            dispatchEventId: prepared.dispatchRuntimeEvent.id,
+            workspaceInstanceId: baseline.epoch.workspaceInstanceId,
+            terminalKind,
+          }),
+          toolOutcome,
         };
 
+        await assert.rejects(
+          async () =>
+            commitManagedMutationTerminalInternal(store, {
+              toolOutcome,
+            } as unknown as ManagedMutationTerminalCommitInput),
+          /owner-issued no-effect proof/i,
+        );
+        await assert.rejects(
+          commitManagedMutationTerminalInternal(store, {
+            ...input,
+            noEffectOutcome: issueTestNoEffect({
+              operationId: prepared.operationId,
+              dispatchEventId: prepared.dispatchRuntimeEvent.id,
+              workspaceInstanceId: `instance_${'f'.repeat(32)}`,
+              terminalKind,
+            }),
+          }),
+          /does not match its owner-issued no-effect proof/i,
+        );
         const committed = await commitManagedMutationTerminalInternal(store, input);
         assert.equal(committed.created, true);
         assert.equal(
@@ -349,17 +391,18 @@ describe('workspace version persistence authority', () => {
       const result = await commitWorkspaceSuccessorInternal(store, input);
 
       assert.equal(result.created, true);
-      assert.equal(result.head.revision, 2);
+      assert.equal(result.committedSuccessor.revision, 2);
       assert.equal(
         (await store.readToolOperation(input.toolOutcome.operationId))?.currentState,
         'outcome_committed',
       );
       assert.deepEqual(
         await store.readWorkspaceHead(baseline.epoch.workspaceId, baseline.epoch.workspaceEpochId),
-        result.head,
+        result.committedSuccessor,
       );
       assert.equal(
-        (await store.readWorkspaceVersion(result.head.workspaceVersionId))?.origin.kind,
+        (await store.readWorkspaceVersion(result.committedSuccessor.workspaceVersionId))?.origin
+          .kind,
         'tool_mutation',
       );
 
@@ -376,7 +419,7 @@ describe('workspace version persistence authority', () => {
                 SELECT changed_paths_json FROM runtime_workspace_versions
                 WHERE workspace_version_id = ?
               `)
-              .get(result.head.workspaceVersionId) as { changed_paths_json: string }
+              .get(result.committedSuccessor.workspaceVersionId) as { changed_paths_json: string }
           ).changed_paths_json,
           '["notes.txt"]',
         );
@@ -544,16 +587,24 @@ describe('workspace version persistence authority', () => {
       const firstResult = await commitWorkspaceSuccessorInternal(store, first.input);
       const second = await prepareSuccessorCommit(store, 2);
       const secondResult = await commitWorkspaceSuccessorInternal(store, second.input);
-      assert.equal(secondResult.head.revision, firstResult.head.revision + 1);
+      assert.equal(
+        secondResult.committedSuccessor.revision,
+        firstResult.committedSuccessor.revision + 1,
+      );
 
       const retry = await commitWorkspaceSuccessorInternal(store, first.input);
+      assert.deepEqual(Object.keys(retry).sort(), [
+        'committedSuccessor',
+        'created',
+        'outcomeRuntimeEventSeq',
+      ]);
       assert.deepEqual(retry, { ...firstResult, created: false });
       assert.deepEqual(
         await store.readWorkspaceHead(
           first.baseline.epoch.workspaceId,
           first.baseline.epoch.workspaceEpochId,
         ),
-        secondResult.head,
+        secondResult.committedSuccessor,
       );
     });
   });
@@ -622,7 +673,7 @@ describe('workspace version persistence authority', () => {
 
         const prepared = await prepareSuccessorCommit(upgraded);
         const accepted = await commitWorkspaceSuccessorInternal(upgraded, prepared.input);
-        assert.equal(accepted.head.revision, 2);
+        assert.equal(accepted.committedSuccessor.revision, 2);
       } finally {
         upgraded.close();
       }
@@ -999,6 +1050,7 @@ async function withDatabase(
   });
   bindWorkspaceBaselineAuthorityStoreRootInternal(store, TEST_STORAGE_ROOT_ID);
   registerWorkspaceSuccessorCandidateVerifierInternal(store, verifyTestCandidate);
+  registerManagedMutationNoEffectVerifierInternal(store, verifyTestNoEffect);
   try {
     await run({
       root,
@@ -1079,7 +1131,7 @@ async function prepareSuccessorCommit(
             expectedPath: 'notes.txt',
             pathPolicyVersion: 3 as const,
             executionProfileDigest:
-              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
           },
         },
       },
@@ -1112,7 +1164,7 @@ async function prepareSuccessorCommit(
       changedFileCount: 1,
       deletedFileCount: 0,
       executionProfileDigest:
-        'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+        'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
     },
     origin: {
       operationId,
@@ -1209,7 +1261,7 @@ function managedPreparedCommit(
             expectedPath: 'notes.txt',
             pathPolicyVersion: 3 as const,
             executionProfileDigest:
-              'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const,
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
           },
         },
       },

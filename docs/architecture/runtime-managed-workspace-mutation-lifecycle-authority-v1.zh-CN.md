@@ -39,6 +39,7 @@ worktree、不执行文件写入、不引入 Git 或 npm 数据面，也不向 D
 | active mutation ownership | SQLite reservation projection | `workspace_instance_id` 主键跨进程仲裁；投影可从 RuntimeEvents 重建 |
 | accepted successor 与 canonical head | workspace successor authority writer | 只消费 repository owner 验证后的 opaque candidate capability；generic writer 不能写 reserved fact |
 | live provider result | `ToolRuntime` | 在 operation 返回边界生成 bounded strict-JSON immutable snapshot |
+| no-effect terminal proof | managed mutation owner | 先签发 opaque no-effect capability；Storage verifier 还原并逐字段绑定 terminal identity，普通 outcome 无权释放 reservation |
 | terminal durable proof | managed admission owner | Runtime 只 adopt 已提交的 exact outcome envelope，不代写 managed T2 |
 
 `RuntimeEvents` 是 durable truth；workspace head 与 reservation 表只是可删除、可重建的投影。internal writer
@@ -56,7 +57,7 @@ worktree、不执行文件写入、不引入 Git 或 npm 数据面，也不向 D
 - base workspace version、accepted event、head revision、commit/tree；
 - 与 durable Write/Edit `args.path` 完全相同的单一 canonical path；
 - Gitoxide path policy v3；
-- Runtime 固定的 managed transform/profile digest；
+- Runtime 固定的 managed transform/profile digest；该 digest 绑定一份 canonical profile spec，结果预算等运行时限制直接读取同一 spec，不能作为孤立标签修改；
 - v2 当前唯一支持的 SHA-1 object format。
 
 Storage 在同一个 T1 transaction 内重新比较 function call path 与授权 path，caller 不能自报另一组路径。
@@ -91,14 +92,16 @@ terminal proof、proof 畸形或 owner 异常一律 fail-stop，禁止 generic f
 7. 释放 durable reservation。
 
 任一步失败则整组 rollback。失败 outcome 不得推进 head。旧 operation 的 exact retry 根据 immutable
-successor 返回原结果，不要求它仍是当前最新 head。
+successor 返回 `committedSuccessor` 历史快照，不把它命名或解释为当前 head，也不要求它仍是当前最新 head。
 
 ### 4.3 no-effect terminal
 
-`no_workspace_change` 与 `operation_failed_no_effect` 各自拥有明确的 terminal kind。专用 writer 在一个
-transaction 中写入 function response + reserved terminal action，并释放 reservation；workspace head 保持
-不变。generic T2 无权写该 action。projection rebuild 根据 immutable terminal 判断 reservation 已结束，
-不会把它重新激活。
+`no_workspace_change` 与 `operation_failed_no_effect` 各自拥有明确的 terminal kind。专用 writer 只消费
+mutation owner 签发的 opaque no-effect capability；内部 verifier 将其还原为 operation、dispatch、workspace
+instance 与 terminal kind，并与 durable event 逐字段匹配。普通 outcome 或自报 descriptor 无权释放
+reservation。验证通过后，writer 才在一个 transaction 中写入 function response + reserved terminal action；
+workspace head 保持不变。generic T2 无权写该 action。projection rebuild 根据 immutable terminal 判断
+reservation 已结束，不会把它重新激活。
 
 ## 5. Runtime 线性状态机
 
@@ -157,6 +160,7 @@ open -> running -> settled -> closed
 - child process 在 successor transaction 内退出：outcome/successor/head 全部 rollback；
 - child process 在 successor commit 后退出：exact retry 返回已接受结果；
 - child process 在 no-effect terminal transaction 内/commit 后退出：分别 rollback 或保留 terminal 并释放 reservation；
+- plain no-effect outcome 缺少 owner-issued capability 时拒绝，并保留 active reservation；
 - 删除 projection 后从 immutable RuntimeEvents 重建 head 与 reservation；
 - Runtime owner 的 retained callback、detached operation、mutable result、oversized/non-JSON result 对抗测试；
 - managed T1 后所有异常路径的 generic T2 调用次数为零。

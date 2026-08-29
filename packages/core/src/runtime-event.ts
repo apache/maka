@@ -258,8 +258,31 @@ export interface RuntimeEventToolDispatch {
   managedMutation?: RuntimeEventManagedWorkspaceMutationV2;
 }
 
-export const MANAGED_MUTATION_EXECUTION_PROFILE_V1 =
-  'sha256:7032f291deed40ef4afee654b6587236e58813bb479d012128408fad86d36262' as const;
+/**
+ * Canonical semantics bound by the managed mutation execution-profile digest.
+ * Runtime consumes these limits directly, so changing the execution contract
+ * requires changing this representation and its digest together.
+ */
+export const MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC = Object.freeze({
+  protocol: 'managed_mutation_execution_profile_v1',
+  toolNames: Object.freeze(['Write', 'Edit'] as const),
+  transform: 'pure_frozen_args_only_v1',
+  objectFormat: 'sha1',
+  pathPolicyVersion: 3,
+  resultSnapshot: Object.freeze({
+    maxBytes: 1_048_576,
+    maxDepth: 64,
+    maxNodes: 65_536,
+    maxProperties: 65_536,
+    maxArrayLength: 65_536,
+    format: 'strict_json_v1',
+  }),
+  terminalAuthority: 'owner_committed_exact_outcome_v1',
+  genericFallback: 'forbidden',
+} as const);
+
+export const MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST =
+  'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const;
 
 export interface RuntimeEventManagedWorkspaceMutationV2 {
   protocol: 'managed_mutation_v2';
@@ -275,7 +298,7 @@ export interface RuntimeEventManagedWorkspaceMutationV2 {
   baseTreeOid: string;
   expectedPath: string;
   pathPolicyVersion: 3;
-  executionProfileDigest: typeof MANAGED_MUTATION_EXECUTION_PROFILE_V1;
+  executionProfileDigest: typeof MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST;
 }
 
 export interface RuntimeEventManagedMutationTerminalV1 {
@@ -914,7 +937,7 @@ function isRuntimeManagedWorkspaceMutation(
     typeof value.baseCommitOid !== 'string' ||
     typeof value.baseTreeOid !== 'string' ||
     value.pathPolicyVersion !== 3 ||
-    value.executionProfileDigest !== MANAGED_MUTATION_EXECUTION_PROFILE_V1 ||
+    value.executionProfileDigest !== MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST ||
     !isCanonicalManagedMutationPathV1(value.expectedPath)
   ) {
     return false;

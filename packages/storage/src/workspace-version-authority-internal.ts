@@ -46,10 +46,23 @@ interface VerifiedWorkspaceSuccessorCommitInput {
 }
 export interface WorkspaceSuccessorCommitResult {
   created: boolean;
-  head: WorkspaceHeadRecordV1;
+  /** Historical successor accepted by this operation, not necessarily the current head. */
+  committedSuccessor: WorkspaceHeadRecordV1;
   outcomeRuntimeEventSeq: number;
 }
 export interface ManagedMutationTerminalCommitInput {
+  /** Opaque capability issued after the mutation owner proves that no workspace effect occurred. */
+  noEffectOutcome: object;
+  toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
+}
+export interface ManagedMutationNoEffectClaimV1 {
+  readonly operationId: string;
+  readonly dispatchEventId: string;
+  readonly workspaceInstanceId: string;
+  readonly terminalKind: 'no_workspace_change' | 'operation_failed_no_effect';
+}
+interface VerifiedManagedMutationTerminalCommitInput {
+  noEffect: ManagedMutationNoEffectClaimV1;
   toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
 }
 export interface ManagedMutationTerminalCommitResult {
@@ -57,7 +70,7 @@ export interface ManagedMutationTerminalCommitResult {
   outcomeRuntimeEventSeq: number;
 }
 type ManagedMutationTerminalAuthorityWriter = (
-  input: ManagedMutationTerminalCommitInput,
+  input: VerifiedManagedMutationTerminalCommitInput,
   rootId: string,
 ) => Promise<ManagedMutationTerminalCommitResult>;
 type WorkspaceSuccessorAuthorityWriter = (
@@ -67,6 +80,7 @@ type WorkspaceSuccessorAuthorityWriter = (
 type WorkspaceSuccessorCandidateVerifier = (
   candidateOutcome: object,
 ) => WorkspaceSuccessorAuthorityInput;
+type ManagedMutationNoEffectVerifier = (noEffectOutcome: object) => ManagedMutationNoEffectClaimV1;
 type WorkspaceHeadReader = (
   workspaceId: string,
   workspaceEpochId: string,
@@ -95,6 +109,7 @@ interface WorkspaceBaselineAuthorityRegistration {
   readonly writer: WorkspaceBaselineAuthorityWriter;
   readonly successorWriter: WorkspaceSuccessorAuthorityWriter;
   candidateVerifier?: WorkspaceSuccessorCandidateVerifier;
+  noEffectVerifier?: ManagedMutationNoEffectVerifier;
   readonly terminalWriter: ManagedMutationTerminalAuthorityWriter;
   readonly readHead: WorkspaceHeadReader;
   readonly readActiveManagedMutation: ManagedMutationReservationReader;
@@ -198,6 +213,18 @@ export function registerWorkspaceSuccessorCandidateVerifierInternal(
   registration.candidateVerifier = verifier;
 }
 
+export function registerManagedMutationNoEffectVerifierInternal(
+  store: object,
+  verifier: ManagedMutationNoEffectVerifier,
+): void {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Managed mutation terminal authority writer is unavailable');
+  if (registration.noEffectVerifier) {
+    throw new Error('Managed mutation no-effect verifier is already registered');
+  }
+  registration.noEffectVerifier = verifier;
+}
+
 export function commitManagedMutationTerminalInternal(
   store: object,
   input: ManagedMutationTerminalCommitInput,
@@ -207,7 +234,17 @@ export function commitManagedMutationTerminalInternal(
   if (!registration.boundRootId) {
     throw new Error('Workspace successor authority store has no durable storage-root binding');
   }
-  return registration.terminalWriter(input, registration.boundRootId);
+  if (!registration.noEffectVerifier) {
+    throw new Error('Managed mutation owner-issued no-effect proof verifier is unavailable');
+  }
+  if (!input.noEffectOutcome || typeof input.noEffectOutcome !== 'object') {
+    throw new Error('Managed mutation terminal requires an owner-issued no-effect proof');
+  }
+  const noEffect = registration.noEffectVerifier(input.noEffectOutcome);
+  return registration.terminalWriter(
+    { noEffect, toolOutcome: input.toolOutcome },
+    registration.boundRootId,
+  );
 }
 
 export function bindWorkspaceBaselineAuthorityStoreRootInternal(
