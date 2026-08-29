@@ -42,10 +42,6 @@ export type SettingsProjectsCopy = {
     revokeSharedAccessConfirm: string;
     revokeSharedAccessDescription: string;
     revokeSharedAccessDone: string;
-    uninstallLocalService: string;
-    uninstallLocalServiceConfirm: string;
-    uninstallLocalServiceDescription: string;
-    uninstallLocalServiceDone: string;
     createConnectionCode: string;
     connectionCodeTitle: string;
     connectionCodeDescription: string;
@@ -312,10 +308,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       revokeSharedAccessConfirm: '撤销共享访问？',
       revokeSharedAccessDescription: '已连接的 Desktop 将断开，尚未使用的连接码也会失效。',
       revokeSharedAccessDone: '共享访问已撤销',
-      uninstallLocalService: '移除后台服务',
-      uninstallLocalServiceConfirm: '移除 Runtime Host 后台服务？',
-      uninstallLocalServiceDescription: '数据和已授予的共享访问会保留；Local Host 将恢复为仅在 Maka Desktop 运行时启动。',
-      uninstallLocalServiceDone: '后台服务已移除',
       createConnectionCode: '新建连接码',
       connectionCodeTitle: '连接这台电脑',
       connectionCodeDescription: '连接码将在 15 分钟后过期且只能使用一次。对方将获得 Owner 权限；Direct peer 无后备连接。',
@@ -605,10 +597,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       revokeSharedAccessConfirm: 'Revoke shared access?',
       revokeSharedAccessDescription: 'The connected Desktop will be disconnected, and unused connection codes will stop working.',
       revokeSharedAccessDone: 'Shared access revoked',
-      uninstallLocalService: 'Remove background service',
-      uninstallLocalServiceConfirm: 'Remove the Runtime Host background service?',
-      uninstallLocalServiceDescription: 'Data and granted shared access are retained. The Local Host will return to running only while Maka Desktop is open.',
-      uninstallLocalServiceDone: 'Background service removed',
       createConnectionCode: 'New connection code',
       connectionCodeTitle: 'Connect to this computer',
       connectionCodeDescription: 'Expires in 15 minutes and can be used once. The other Desktop receives Owner access. Direct peer has no fallback.',

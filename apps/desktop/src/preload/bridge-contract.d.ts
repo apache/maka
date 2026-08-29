@@ -707,6 +707,7 @@ export interface MakaBridge {
     run(
       profileId: string,
       action: DesktopRuntimeHostManagementAction,
+      allowInterruptActiveTasks?: boolean,
     ): Promise<DesktopRuntimeHostManagementResponse>;
     update(
       profileId: string,

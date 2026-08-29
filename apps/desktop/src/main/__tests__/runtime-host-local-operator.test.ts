@@ -24,7 +24,9 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
+  encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
 } from '@maka/runtime-host/operator';
 import {
@@ -118,4 +120,87 @@ test('local setup forwards the exact development archive evidence', async (t) =>
   }, () => undefined);
 
   assert.equal(environment?.[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV], integrity);
+});
+
+test('local update runs the selected package against the exact managed deployment', async (t) => {
+  let executable: string | undefined;
+  let args: readonly string[] | undefined;
+  let environment: NodeJS.ProcessEnv | undefined;
+  const phases: string[] = [];
+  const spawnProcess = ((command, commandArgs, options) => {
+    executable = command;
+    args = commandArgs;
+    environment = options?.env;
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    Object.assign(child, { pid: 1234, stdout, stderr, kill: () => true });
+    process.nextTick(() => {
+      stdout.end(
+        encodeRuntimeHostServiceManagementFrame({
+          schemaVersion: 1,
+          kind: 'progress',
+          action: 'update',
+          phase: 'staging',
+          currentVersion: '0.2.0',
+          targetVersion: '0.3.0',
+        }) +
+        encodeRuntimeHostServiceManagementFrame({
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'update',
+          service: {
+            platform: 'darwin',
+            arch: 'arm64',
+            osRelease: '25.6.0',
+            state: 'running',
+            pid: 42,
+            lastExitCode: 0,
+            installedVersion: '0.3.0',
+            projectDirectoryRoots: [],
+          },
+          update: { kind: 'updated', previousVersion: '0.2.0', targetVersion: '0.3.0' },
+        }),
+      );
+      stderr.end();
+      child.emit('close', 0, null);
+    });
+    return child;
+  }) as typeof spawn;
+  const operator = createDesktopRuntimeHostLocalOperator({
+    environment: { PATH: process.env.PATH },
+    spawnProcess,
+  });
+  t.after(() => operator.close());
+  const deploymentId = '00000000-0000-4000-8000-000000000001';
+
+  await operator.runUpdate(
+    {
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@0.3.0' },
+      target: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/tmp/maka/root',
+        rootId: 'a'.repeat(64),
+        deploymentId,
+      },
+    },
+    (phase) => phases.push(phase),
+  );
+
+  assert.equal(executable, 'npm');
+  assert.deepEqual(args, [
+    'exec', '--yes', '--package', 'maka-agent@0.3.0', '--',
+    'maka', 'runtime-host', 'service', 'update', '--framed',
+    '--managed-root-id', 'a'.repeat(64),
+    '--operator-deployment-id', deploymentId,
+    '--expected-service-id', 'a'.repeat(64),
+    '--expected-root-path', '/tmp/maka/root',
+    '--expected-root-id', 'a'.repeat(64),
+    '--expected-deployment-id', deploymentId,
+  ]);
+  assert.equal(
+    environment?.[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV],
+    '1',
+  );
+  assert.deepEqual(phases, ['staging']);
 });

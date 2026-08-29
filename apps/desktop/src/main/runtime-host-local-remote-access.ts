@@ -83,6 +83,30 @@ type LocalManagedDeploymentAuthority =
   | { readonly kind: 'active'; readonly target: LocalServiceTarget }
   | { readonly kind: 'transition' };
 
+export interface DesktopRuntimeHostLocalManagementTarget
+  extends DesktopRuntimeHostLocalServiceTarget {
+  readonly operatorPath: string;
+  readonly deploymentId: string;
+}
+
+export type DesktopRuntimeHostLocalManagementResult<T> =
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'complete'; readonly value: T };
+
+export interface DesktopLocalRuntimeHostRemoteAccess {
+  getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+  enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
+  disable(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+  uninstall(value: unknown): Promise<{ readonly kind: 'active_tasks' | 'uninstalled' }>;
+  manage<T>(
+    allowInterruptActiveTasks: boolean | undefined,
+    operation: (target: DesktopRuntimeHostLocalManagementTarget) => Promise<T>,
+  ): Promise<DesktopRuntimeHostLocalManagementResult<T>>;
+  recoverManagedSetup(signal?: AbortSignal): Promise<boolean>;
+  recover(): Promise<void>;
+  close(): Promise<void>;
+}
+
 interface LocalServicePeerChanging extends LocalServiceTarget {
   readonly state: 'peerChanging';
   readonly peerEnabled: boolean;
@@ -130,11 +154,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   readonly resolveManagedDeploymentAuthority?: (
     rootId: string,
   ) => Promise<LocalManagedDeploymentAuthority | undefined>;
-}): {
-  recoverManagedSetup(signal?: AbortSignal): Promise<boolean>;
-  recover(): Promise<void>;
-  close(): Promise<void>;
-} {
+}): DesktopLocalRuntimeHostRemoteAccess {
   const lifecyclePath = join(input.clientDataRoot, LIFECYCLE_FILE);
   const closing = new AbortController();
   let mutation = Promise.resolve();
@@ -619,6 +639,20 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   input.ipcMain.handle(channels[5], (_event, value: unknown) => uninstall(value));
 
   return {
+    getSnapshot,
+    enable,
+    disable,
+    uninstall,
+    manage: (allowInterruptActiveTasks, operation) =>
+      serialize(async () => {
+        const managed = requireManaged(
+          await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
+        );
+        if (allowInterruptActiveTasks === undefined) {
+          return { kind: 'complete', value: await operation(managed) };
+        }
+        return runManagedServiceChange(allowInterruptActiveTasks, () => operation(managed));
+      }),
     recoverManagedSetup: async (signal) => {
       if (!supported(input.directPeerAvailable)) return false;
       const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;

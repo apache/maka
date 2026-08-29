@@ -25,6 +25,7 @@ import {
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
+import type { DesktopRuntimeHostManagementProvider } from '../runtime-host-management-provider.js';
 import type {
   DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshCleanupInput,
@@ -35,6 +36,51 @@ import type {
 } from '../runtime-host-ssh-terminal.js';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
+
+test('routes built-in Local management through its provider with explicit interruption authority', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const calls: unknown[] = [];
+  const provider = {
+    profileId: 'local',
+    run: async (action: string, allowInterruptActiveTasks?: boolean) => {
+      calls.push([action, allowInterruptActiveTasks]);
+      return action === 'uninstall'
+        ? { kind: 'uninstalled' as const, retainedStateRoot: '/state' }
+        : serviceResult(action as DesktopRuntimeHostSshManagementInput['action']);
+    },
+  } as unknown as DesktopRuntimeHostManagementProvider;
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => assert.fail('Local must not resolve an SSH service'),
+      resolveManagedAccess: async () => assert.fail('Local must not resolve SSH access'),
+      markManagedServiceUninstalling: async () => assert.fail('Local must not mutate SSH state'),
+      markManagedServiceCleanupPending: async () => assert.fail('Local must not mutate SSH state'),
+      clearManagedServiceBinding: async () => assert.fail('Local must not mutate SSH state'),
+      rotateManagedCredential: async () => assert.fail('Local must not mutate SSH state'),
+    },
+    runServiceManagement: async () => assert.fail('Local must not use SSH transport'),
+    runAccessManagement: async () => assert.fail('Local must not use SSH transport'),
+    cleanupManagedDeployment: async () => assert.fail('Local must not use SSH transport'),
+    providers: [provider],
+  });
+
+  const run = handlers.get('runtime-host-management:run');
+  assert.ok(run);
+  await run({}, 'local', 'status');
+  await run({}, 'local', 'uninstall', true);
+
+  assert.deepEqual(calls, [['status', false], ['uninstall', true]]);
+  assert.throws(
+    () => run({}, 'local', 'restart', true),
+    /authority is not valid for this action/u,
+  );
+});
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();

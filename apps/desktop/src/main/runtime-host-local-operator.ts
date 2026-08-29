@@ -31,14 +31,19 @@ import {
   decodeRuntimeHostPeerManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+  RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   type RuntimeHostAccessManagementFrame,
+  type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementFrame,
   type RuntimeHostServiceManagementFrame,
+  type RuntimeHostServiceUpdatePhase,
   type RuntimeHostSetupFrame,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
@@ -71,6 +76,25 @@ export interface DesktopRuntimeHostLocalSetupInput {
 export interface DesktopRuntimeHostLocalSetupCommand {
   readonly executable: string;
   readonly args: readonly string[];
+}
+
+export interface DesktopRuntimeHostLocalServiceManagementInput {
+  readonly operatorPath: string;
+  readonly action:
+    | 'status'
+    | 'start'
+    | 'restart'
+    | 'logs'
+    | 'install'
+    | 'configure'
+    | 'retire'
+    | 'uninstall';
+  readonly target: DesktopRuntimeHostLocalServiceTarget;
+  readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
+  readonly expectedConfigFingerprint?: string;
+  readonly allowInterruptActiveTasks?: boolean;
+  readonly retainManagedDeployment?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export function runtimeHostLocalSetupCommand(input: {
@@ -148,14 +172,32 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostAccessManagementFrame>;
-  runService(input: {
+  runService(
+    input: DesktopRuntimeHostLocalServiceManagementInput,
+  ): Promise<RuntimeHostServiceManagementFrame>;
+  runUpdate(
+    input: {
+      readonly setupPackage: DesktopRuntimeHostSetupPackage;
+      readonly target: DesktopRuntimeHostLocalServiceTarget;
+      readonly allowInterruptActiveTasks?: boolean;
+      readonly signal?: AbortSignal;
+    },
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<RuntimeHostServiceManagementFrame>;
+  runUpdatePolicy(input: {
     readonly operatorPath: string;
-    readonly action: 'status' | 'retire' | 'uninstall';
     readonly target: DesktopRuntimeHostLocalServiceTarget;
-    readonly allowInterruptActiveTasks?: boolean;
-    readonly retainManagedDeployment?: boolean;
+    readonly policy?: RuntimeHostManagedUpdatePolicy;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostServiceManagementFrame>;
+  runUpdateReconciliation(
+    input: {
+      readonly operatorPath: string;
+      readonly target: DesktopRuntimeHostLocalServiceTarget;
+      readonly signal?: AbortSignal;
+    },
+    onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
+  ): Promise<RuntimeHostServiceManagementFrame>;
   cleanupManagedDeployment(input: {
     readonly operatorPath: string;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
@@ -272,6 +314,17 @@ export function createDesktopRuntimeHostLocalOperator(input: {
           args: [
             command.action,
             '--framed',
+            ...(command.projectDirectoryRoots === undefined
+              ? []
+              : command.projectDirectoryRoots.length === 0
+                ? ['--no-project-roots']
+                : command.projectDirectoryRoots.flatMap(({ label, path }) => [
+                    '--project-root-json',
+                    JSON.stringify({ label, path }),
+                  ])),
+            ...(command.expectedConfigFingerprint
+              ? ['--expected-config-fingerprint', command.expectedConfigFingerprint]
+              : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
@@ -280,13 +333,118 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostServiceManagementFrame,
         label: 'Local Runtime Host service management',
-        environment: input.environment ?? process.env,
+        environment: {
+          ...(input.environment ?? process.env),
+          [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
+        },
         spawnProcess: input.spawnProcess ?? spawn,
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
         terminate,
         signal: combinedSignal(command.signal, closing.signal),
         active,
       }).then((frame) => requireServiceFrame(frame, command.action));
+    },
+    runUpdate(command, onProgress) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      const deploymentId = command.target.deploymentId;
+      if (!deploymentId) {
+        return Promise.reject(new Error('Runtime Host update requires a deployment generation'));
+      }
+      const setupPackage = resolveLocalSetupPackage(command.setupPackage);
+      return runServiceFrameProcess({
+        command: {
+          executable: 'npm',
+          args: [
+            'exec',
+            '--yes',
+            '--package',
+            setupPackage.specifier,
+            '--',
+            'maka',
+            'runtime-host',
+            'service',
+            'update',
+            '--framed',
+            '--managed-root-id',
+            command.target.rootId,
+            '--operator-deployment-id',
+            deploymentId,
+            ...managedTargetArgs(command.target),
+            ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+          ],
+        },
+        environment: {
+          ...(input.environment ?? process.env),
+          ...(setupPackage.integrity
+            ? { [RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV]: setupPackage.integrity }
+            : {}),
+          [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
+        },
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+        action: 'update',
+        onProgress,
+      });
+    },
+    runUpdatePolicy(command) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      const policy = command.policy;
+      return runServiceFrameProcess({
+        command: {
+          executable: command.operatorPath,
+          args: [
+            'update-policy',
+            '--framed',
+            ...(policy
+              ? [
+                  '--target',
+                  policy.kind === 'channel'
+                    ? policy.channel
+                    : policy.kind === 'fixed'
+                      ? policy.version
+                      : 'manual',
+                ]
+              : []),
+            ...managedTargetArgs(command.target),
+          ],
+        },
+        environment: {
+          ...(input.environment ?? process.env),
+          [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
+            RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+        },
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+        action: 'update_policy',
+      });
+    },
+    runUpdateReconciliation(command, onProgress) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      return runServiceFrameProcess({
+        command: {
+          executable: command.operatorPath,
+          args: ['reconcile-update', '--framed', ...managedTargetArgs(command.target)],
+        },
+        environment: {
+          ...(input.environment ?? process.env),
+          [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
+          [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
+            RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+        },
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+        action: 'reconcile_update',
+        onProgress,
+      });
     },
     async cleanupManagedDeployment(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
@@ -357,12 +515,55 @@ function requireAccessListFrame(
 
 function requireServiceFrame(
   frame: RuntimeHostServiceManagementFrame,
-  action: 'status' | 'retire' | 'uninstall',
+  action: DesktopRuntimeHostLocalServiceManagementInput['action'],
 ): RuntimeHostServiceManagementFrame {
   if (frame.action !== action) {
     throw new Error('Local Runtime Host service management returned an unrelated result');
   }
   return frame;
+}
+
+function runServiceFrameProcess(input: {
+  readonly command: DesktopRuntimeHostLocalSetupCommand;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly spawnProcess: typeof spawn;
+  readonly timeoutMs: number;
+  readonly terminate: typeof terminateChildProcessTree;
+  readonly signal?: AbortSignal;
+  readonly active: Set<ChildProcess>;
+  readonly action: RuntimeHostServiceManagementFrame['action'];
+  readonly onProgress?: (phase: RuntimeHostServiceUpdatePhase) => void;
+}): Promise<RuntimeHostServiceManagementFrame> {
+  let result: RuntimeHostServiceManagementFrame | undefined;
+  let failure: Error | undefined;
+  return runFramedProcess({
+    ...input,
+    prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+    decode: decodeRuntimeHostServiceManagementFrame,
+    label: 'Local Runtime Host service management',
+    onFrame(frame) {
+      if (frame.action !== input.action) {
+        failure = new Error('Local Runtime Host service management returned an unrelated result');
+        return;
+      }
+      if (frame.kind === 'progress') {
+        if (!input.onProgress) {
+          failure = new Error('Local Runtime Host service management returned unexpected progress');
+        } else {
+          input.onProgress(frame.phase);
+        }
+        return;
+      }
+      if (result) {
+        failure = new Error('Local Runtime Host service management returned multiple results');
+      } else {
+        result = frame;
+      }
+    },
+    result: () => result,
+    failure: () => failure,
+    acceptNonzeroResult: true,
+  });
 }
 
 function combinedSignal(
