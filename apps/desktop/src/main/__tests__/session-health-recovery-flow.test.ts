@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
-import { act, createElement, Fragment, useRef } from 'react';
+import { act, createElement, Fragment, useCallback, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
@@ -32,7 +32,6 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import { SessionHealthRecoveryNotice } from '../../renderer/chat-recovery-notice.js';
-import { useComposerModelPickerAdapter } from '../../renderer/composer-model-picker-adapter.js';
 import { useShellChatModel } from '../../renderer/use-shell-chat-model.js';
 
 const originalGlobals = {
@@ -96,7 +95,9 @@ function RecoveryFlow(props: {
   onOpenSettings: (section: string) => void;
 }) {
   const composerRef = useRef<ComposerHandle>(null);
-  const openModelPicker = useComposerModelPickerAdapter(composerRef);
+  const openModelPicker = useCallback(() => {
+    composerRef.current?.openModelPicker();
+  }, []);
   const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
     streaming: props.streaming,
     sessionStatus: LEGACY_SESSION.status,
