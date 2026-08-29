@@ -64,7 +64,10 @@ SQLite accepted head 仍由后续 mutation authority 拥有。本切片不提供
 - 每个公开入口都复用 admission 时捕获的 helper capability，并在短生命周期 helper 启动前重新验证
   artifact identity，同时要求 release claim 明确 attest 本次实际调用的 operation；
 - candidate fresh self-check 与 exact retry 都必须实际加载 result blob，在 64 MiB 上限内验证 kind 与
-  checksum，不能只相信 candidate tree 中记录的 OID edge。
+  checksum，不能只相信 candidate tree 中记录的 OID edge；
+- exact retry 从 verified base tree、继承的目标 mode、canonical path 与 result blob 纯计算唯一 expected
+  candidate tree OID，不写入新 object；receipt tree 必须与它完全相等。由此目标之外的额外变化、目标 mode
+  flip 和伪造 no-change receipt 都无法获得 outcome capability。
 
 ## 3. 失败与回滚
 
@@ -75,15 +78,17 @@ SQLite accepted head 仍由后续 mutation authority 拥有。本切片不提供
 | base commit/tree identity 不一致 | 写 object 前 fail closed |
 | candidate 违反 policy v3 | candidate ref CAS 前 fail closed |
 | candidate ref 已存在且 request digest 不同 | 写 object 前返回 `candidate_request_conflict`，不覆盖已有 candidate |
+| existing receipt 的 tree 不是 exact base 单路径转换结果 | 返回 `candidate_ref_target_invalid`，不签发 capability |
 | result 与 base tree 相同 | 写入 same-tree receipt commit 并 CAS operation ref，返回 `candidate_no_change` outcome capability |
 | 同一 operation 后续给出不同 path/content/disposition | deterministic commit 不同，稳定 conflict |
 | direct read 路径、类型、大小、UTF-8 或 object identity 不合法 | fail closed，不读取 filesystem |
 | helper 超时、中断或输出不匹配 | 不签发新 capability；由调用者重试 exact operation 或 park |
 
 candidate outcome 的线性化点是 operation-specific direct candidate ref 的 `MustNotExist` CAS。任何 object
-write 前先检查既有 direct receipt：request digest 相同则完整重验 receipt/tree/result 后 exact retry，request
-不同则稳定 conflict。CAS 竞争失败后再次重读 direct ref：相同 deterministic commit 视为 exact retry，不同
-commit 视为 conflict；无法证明 publication 状态时返回 `candidate_publication_indeterminate`。
+write 前先检查既有 direct receipt：request digest 相同则从 verified base 纯计算 expected successor tree，
+要求 receipt tree 与之精确一致，再重验 result blob 后 exact retry；request 不同则稳定 conflict。CAS 竞争失败
+后再次重读 direct ref：相同 deterministic commit 视为 exact retry，不同 commit 视为 conflict；无法证明
+publication 状态时返回 `candidate_publication_indeterminate`。
 
 accepted ref 在本切片中只读，并与 `refs/maka/candidates/<operation-hash>` namespace 不重叠。第二次 accepted
 ref 检查与 candidate CAS 不是一个跨 ref transaction：二者之间的 accepted drift 可能留下绑定旧 base 的

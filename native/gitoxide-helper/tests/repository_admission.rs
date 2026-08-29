@@ -595,6 +595,96 @@ fn publishes_and_exactly_retries_an_operation_candidate_without_advancing_accept
 }
 
 #[test]
+fn rejects_an_existing_candidate_receipt_with_an_unrelated_tree_change() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("candidate-extra-change.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/1414141414141414141414141414141414141414141414141414141414141414";
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": candidate_ref,
+        "path": "docs/result.txt",
+        "contentBase64": "ZXhhY3QgcmVzdWx0Cg==",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+
+    let unrelated_blob = git_bare_input_output(
+        &destination,
+        ["hash-object", "-t", "blob", "-w", "--stdin"],
+        b"unrelated\n",
+    );
+    let mut forged_tree_input = git_bare_bytes(
+        &destination,
+        ["ls-tree", published["candidateTreeOid"].as_str().unwrap()],
+    );
+    forged_tree_input
+        .extend_from_slice(format!("100644 blob {unrelated_blob}\tunrelated.txt\n").as_bytes());
+    let forged_tree = git_bare_input_output(&destination, ["mktree"], &forged_tree_input);
+    replace_candidate_ref_tree(&destination, candidate_ref, &published, &forged_tree);
+
+    let retry = invoke_request(request);
+    assert_helper_error(&retry, "candidate_ref_target_invalid");
+}
+
+#[test]
+fn rejects_an_existing_candidate_receipt_with_a_target_mode_flip() {
+    let fixture = RepositoryFixture::sha1_with_commit();
+    let source_head = fixture.git_output(["rev-parse", "HEAD"]);
+    let destination = fixture.root.join("candidate-mode-flip.git");
+    let imported = invoke_import(&fixture.root, &source_head, &destination);
+    let imported: serde_json::Value = serde_json::from_slice(&imported.stdout).unwrap();
+    let candidate_ref =
+        "refs/maka/candidates/1515151515151515151515151515151515151515151515151515151515151515";
+    let request = serde_json::json!({
+        "protocolVersion": 1,
+        "operation": "create_candidate",
+        "repositoryPath": destination,
+        "acceptedRef": "refs/maka/baseline",
+        "expectedBaseCommitOid": imported["baselineCommitOid"],
+        "expectedBaseTreeOid": imported["baselineTreeOid"],
+        "candidateRef": candidate_ref,
+        "path": "hello.txt",
+        "contentBase64": "bW9kZS1wcmVzZXJ2aW5nCg==",
+        "managedTreePolicyVersion": 3,
+    });
+    let published = invoke_request(request.clone());
+    assert!(published.status.success());
+    let published: serde_json::Value = serde_json::from_slice(&published.stdout).unwrap();
+
+    let original_entry = format!(
+        "100644 blob {}\thello.txt",
+        published["resultBlobOid"].as_str().unwrap()
+    );
+    let candidate_tree = String::from_utf8(git_bare_bytes(
+        &destination,
+        ["ls-tree", published["candidateTreeOid"].as_str().unwrap()],
+    ))
+    .unwrap();
+    assert!(candidate_tree.contains(&original_entry));
+    let forged_tree_input = candidate_tree.replacen(
+        &original_entry,
+        &original_entry.replacen("100644", "100755", 1),
+        1,
+    );
+    let forged_tree = git_bare_input_output(&destination, ["mktree"], forged_tree_input.as_bytes());
+    replace_candidate_ref_tree(&destination, candidate_ref, &published, &forged_tree);
+
+    let retry = invoke_request(request);
+    assert_helper_error(&retry, "candidate_ref_target_invalid");
+}
+
+#[test]
 fn rejects_an_exact_candidate_retry_when_the_result_blob_is_missing() {
     let fixture = RepositoryFixture::sha1_with_commit();
     let source_head = fixture.git_output(["rev-parse", "HEAD"]);
@@ -1731,6 +1821,53 @@ fn git_bare_bytes<const N: usize>(repository: &Path, args: [&str; N]) -> Vec<u8>
         .unwrap();
     assert!(output.status.success());
     output.stdout
+}
+
+fn git_bare_input_output<const N: usize>(
+    repository: &Path,
+    args: [&str; N],
+    input: &[u8],
+) -> String {
+    let mut child = Command::new("git")
+        .arg("--git-dir")
+        .arg(repository)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn replace_candidate_ref_tree(
+    repository: &Path,
+    candidate_ref: &str,
+    published: &serde_json::Value,
+    replacement_tree: &str,
+) {
+    let original_commit = git_bare_bytes(
+        repository,
+        [
+            "cat-file",
+            "commit",
+            published["candidateCommitOid"].as_str().unwrap(),
+        ],
+    );
+    let original_tree_line = format!("tree {}", published["candidateTreeOid"].as_str().unwrap());
+    let forged_commit_data = String::from_utf8(original_commit).unwrap().replacen(
+        &original_tree_line,
+        &format!("tree {replacement_tree}"),
+        1,
+    );
+    let forged_commit = git_bare_input_output(
+        repository,
+        ["hash-object", "-t", "commit", "-w", "--stdin"],
+        forged_commit_data.as_bytes(),
+    );
+    git_bare_output(repository, ["update-ref", candidate_ref, &forged_commit]);
 }
 
 fn git_bare_succeeds<const N: usize>(repository: &Path, args: [&str; N]) -> bool {

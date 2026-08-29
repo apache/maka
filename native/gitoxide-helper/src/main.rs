@@ -893,7 +893,9 @@ fn create_candidate(
             &repository,
             existing,
             expected_base,
+            expected_base_tree,
             &path,
+            entry_kind,
             result_blob,
             &request_digest_sha256,
         )?;
@@ -1079,7 +1081,9 @@ fn verify_existing_candidate_receipt(
     repository: &gix::Repository,
     candidate_commit_oid: gix::hash::ObjectId,
     expected_base_commit_oid: gix::hash::ObjectId,
+    expected_base_tree_oid: gix::hash::ObjectId,
     path: &str,
+    entry_kind: gix::objs::tree::EntryKind,
     expected_result_blob_oid: gix::hash::ObjectId,
     request_digest_sha256: &str,
 ) -> Result<gix::hash::ObjectId, &'static str> {
@@ -1110,6 +1114,16 @@ fn verify_existing_candidate_receipt(
         return Err("candidate_ref_target_invalid");
     }
     let candidate_tree = commit.tree;
+    let expected_candidate_tree = compute_candidate_tree_from_verified_base(
+        repository,
+        expected_base_tree_oid,
+        path,
+        entry_kind,
+        expected_result_blob_oid,
+    )?;
+    if candidate_tree != expected_candidate_tree {
+        return Err("candidate_ref_target_invalid");
+    }
     let result_entry = lookup_verified_tree_entry(repository, candidate_tree, path)?
         .ok_or("candidate_ref_target_invalid")?;
     if result_entry.1 != expected_result_blob_oid {
@@ -1254,6 +1268,53 @@ fn write_candidate_tree_from_verified_base(
     entry_kind: gix::objs::tree::EntryKind,
     result_blob_oid: gix::hash::ObjectId,
 ) -> Result<gix::hash::ObjectId, &'static str> {
+    edit_candidate_tree_from_verified_base(
+        repository,
+        base_tree_oid,
+        path,
+        entry_kind,
+        result_blob_oid,
+        |tree| {
+            repository
+                .write_object(tree)
+                .map(|id| id.detach())
+                .map_err(|_| ())
+        },
+    )
+}
+
+fn compute_candidate_tree_from_verified_base(
+    repository: &gix::Repository,
+    base_tree_oid: gix::hash::ObjectId,
+    path: &str,
+    entry_kind: gix::objs::tree::EntryKind,
+    result_blob_oid: gix::hash::ObjectId,
+) -> Result<gix::hash::ObjectId, &'static str> {
+    use gix::objs::WriteTo;
+
+    edit_candidate_tree_from_verified_base(
+        repository,
+        base_tree_oid,
+        path,
+        entry_kind,
+        result_blob_oid,
+        |tree| {
+            let mut encoded = Vec::new();
+            tree.write_to(&mut encoded).map_err(|_| ())?;
+            gix::objs::compute_hash(repository.object_hash(), gix::objs::Kind::Tree, &encoded)
+                .map_err(|_| ())
+        },
+    )
+}
+
+fn edit_candidate_tree_from_verified_base<E>(
+    repository: &gix::Repository,
+    base_tree_oid: gix::hash::ObjectId,
+    path: &str,
+    entry_kind: gix::objs::tree::EntryKind,
+    result_blob_oid: gix::hash::ObjectId,
+    write_tree: impl FnMut(&gix::objs::Tree) -> Result<gix::hash::ObjectId, E>,
+) -> Result<gix::hash::ObjectId, &'static str> {
     let root = load_verified_object(
         repository,
         base_tree_oid,
@@ -1274,9 +1335,7 @@ fn write_candidate_tree_from_verified_base(
     editor
         .upsert(path.split('/'), entry_kind, result_blob_oid)
         .map_err(|_| "tree_edit_failed")?;
-    editor
-        .write(|tree| repository.write_object(tree).map(|id| id.detach()))
-        .map_err(|_| "tree_write_failed")
+    editor.write(write_tree).map_err(|_| "tree_write_failed")
 }
 
 fn lookup_verified_tree_entry(
