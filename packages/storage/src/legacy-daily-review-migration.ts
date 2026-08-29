@@ -141,8 +141,7 @@ export async function migrateLegacyDailyReview(input: {
           llmConnectionId: target.connectionId,
           llmConnectionSlug: target.connectionSlug,
           model: target.model,
-          permissionMode: (await input.runtimePolicy.runtimePolicy.getSnapshot()).policy
-            .chatDefaults.permissionMode,
+          permissionMode: 'ask',
           collaborationMode: 'agent',
           orchestrationMode: 'default',
         },
@@ -334,24 +333,42 @@ async function resolveExecutionTarget(
 > {
   const explicit = parseModelKey(modelKey);
   const catalog = await runtimePolicy.connectionCatalog.getSnapshot();
-  if (explicit) {
-    const connection = catalog.connections.find(
-      (candidate) => candidate.slug === explicit.connectionSlug,
-    );
-    return connection ? { connectionId: connection.connectionId, ...explicit } : undefined;
+  const selected = explicit
+    ? (() => {
+        const connection = catalog.connections.find(
+          (candidate) => candidate.slug === explicit.connectionSlug,
+        );
+        return connection
+          ? {
+              connectionId: connection.connectionId,
+              connectionSlug: connection.slug,
+              model: explicit.model,
+            }
+          : undefined;
+      })()
+    : (() => {
+        const target = catalog.defaultTarget;
+        const connection = target
+          ? catalog.connections.find((candidate) => candidate.connectionId === target.connectionId)
+          : undefined;
+        return target && connection
+          ? {
+              connectionId: connection.connectionId,
+              connectionSlug: connection.slug,
+              model: target.modelId,
+            }
+          : undefined;
+      })();
+  if (!selected) return undefined;
+  const resolved = await runtimePolicy.operations.resolveExecutionConnection({
+    kind: 'bound',
+    connectionId: selected.connectionId,
+    connectionSlug: selected.connectionSlug,
+  });
+  if (resolved.kind !== 'ready' || !resolved.connection.enabledModelIds.includes(selected.model)) {
+    return undefined;
   }
-  const target = catalog.defaultTarget;
-  const connection = target
-    ? catalog.connections.find((candidate) => candidate.connectionId === target.connectionId)
-    : undefined;
-  if (target && connection) {
-    return {
-      connectionId: connection.connectionId,
-      connectionSlug: connection.slug,
-      model: target.modelId,
-    };
-  }
-  return undefined;
+  return selected;
 }
 
 function parseModelKey(

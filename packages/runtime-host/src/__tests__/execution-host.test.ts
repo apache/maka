@@ -226,6 +226,35 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       .run(archive.id, archive.generatedAt, archive.day.fromMs, JSON.stringify(archive));
     database.close();
 
+    const disabledPolicyOwner = await tryAcquireInteractiveRootOwner(fixture.capability);
+    assert.ok(disabledPolicyOwner);
+    if (!disabledPolicyOwner) return;
+    const disabledPolicy = await openInteractiveRuntimePolicyStoresForWrite(
+      disabledPolicyOwner.lease,
+    );
+    const unsafeDefaults = await disabledPolicy.runtimePolicy.getSnapshot();
+    const unsafeDefaultsResult = await disabledPolicy.runtimePolicy.mutate({
+      expectedRevision: unsafeDefaults.revision,
+      operation: {
+        kind: 'set_chat_defaults',
+        value: { permissionMode: 'bypass' },
+      },
+    });
+    assert.equal(unsafeDefaultsResult.kind, 'committed');
+    const disabledCatalog = await disabledPolicy.connectionCatalog.getSnapshot();
+    const disabledConnectionResult = await disabledPolicy.connectionCatalog.create({
+      expectedCatalogRevision: disabledCatalog.revision,
+      connection: {
+        slug: 'fake',
+        name: 'Disabled Daily Review fixture',
+        providerType: 'moonshot',
+        enabled: false,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(disabledConnectionResult.kind, 'committed');
+    await disabledPolicyOwner.close();
+
     const unresolvedHost = await fixture.startHost();
     const unresolvedDesktop = await connectClient(fixture.root);
     try {
@@ -269,19 +298,23 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
     if (!policyOwner) return;
     const policy = await openInteractiveRuntimePolicyStoresForWrite(policyOwner.lease);
     const current = await policy.connectionCatalog.getSnapshot();
-    const createdConnection = await policy.connectionCatalog.create({
-      expectedCatalogRevision: current.revision,
-      connection: {
-        slug: 'fake',
+    const disabledConnection = current.connections.find(({ slug }) => slug === 'fake');
+    assert.ok(disabledConnection);
+    if (!disabledConnection) return;
+    const enabledConnection = await policy.connectionCatalog.update({
+      expected: {
+        connectionId: disabledConnection.connectionId,
+        revision: disabledConnection.revision,
+      },
+      changes: {
         name: 'Migrated Daily Review fixture',
-        providerType: 'moonshot',
         enabled: true,
         enabledModelIds: ['fake-model'],
       },
     });
-    assert.equal(createdConnection.kind, 'committed');
-    if (createdConnection.kind !== 'committed') return;
-    const connection = createdConnection.snapshot.connections.find(({ slug }) => slug === 'fake');
+    assert.equal(enabledConnection.kind, 'committed');
+    if (enabledConnection.kind !== 'committed') return;
+    const connection = enabledConnection.snapshot.connections.find(({ slug }) => slug === 'fake');
     assert.ok(connection);
     if (!connection) return;
     const credential = await policy.credentialVault.set({
@@ -310,6 +343,10 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
       assert.equal(
         task?.effect.kind === 'agent_run' ? task.effect.execution.llmConnectionId : undefined,
         connection.connectionId,
+      );
+      assert.equal(
+        task?.effect.kind === 'agent_run' ? task.effect.execution.permissionMode : undefined,
+        'ask',
       );
       assert.deepEqual(task?.schedule, {
         kind: 'calendar',
