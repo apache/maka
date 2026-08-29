@@ -342,10 +342,6 @@
   border-radius: 18px;
 }
 
-.settingsPeerMeshToolbar {
-  min-height: 40px;
-}
-
 .settingsPeerMeshList {
   display: flex;
   flex-direction: column;
@@ -390,8 +386,8 @@
 }
 
 .settingsPeerMeshMembersHeading {
-  min-height: 34px;
   margin-top: var(--space-1);
+  padding-block: var(--space-1);
   border-bottom: var(--border-width-hairline) solid var(--border-soft);
 }
 
@@ -401,7 +397,6 @@
 }
 
 .settingsPeerMeshMember {
-  min-height: 44px;
   padding-block: var(--space-2);
 }
 
@@ -441,8 +436,8 @@
 }
 
 .settingsPeerMeshFocusedIcon {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border-radius: 13px;
 }
 
