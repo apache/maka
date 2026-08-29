@@ -17,40 +17,17 @@
  * under the License.
  */
 
-import {
-  appendFile,
-  copyFile,
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
-import { parseProductReleaseVersion } from './release-version.mjs';
+import { assertProductNightlyVersion } from './release-version.mjs';
 
 export const DESKTOP_NIGHTLY_FEED_URL = 'https://nightlies.apache.org/maka/desktop/';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
 export function assertDesktopNightlyVersion(version, productVersion) {
-  const product = parseProductReleaseVersion(productVersion);
-  const nightly = parseProductReleaseVersion(version);
-  if (product.prerelease.length > 0) {
-    throw new Error('Desktop Nightly requires a stable checked-in product version');
-  }
-  if (
-    nightly.core.some((identifier, index) => identifier !== product.core[index]) ||
-    nightly.prerelease.length !== 3 ||
-    nightly.prerelease[0] !== 'dev' ||
-    !/^\d{8}$/u.test(nightly.prerelease[1]) ||
-    !/^[1-9]\d*$/u.test(nightly.prerelease[2])
-  ) {
-    throw new Error(`Desktop Nightly version ${version} must be a dev build of ${productVersion}`);
-  }
-  return version;
+  return assertProductNightlyVersion(version, productVersion);
 }
 
 export function resolveDesktopBuildVersion(productVersion, environment = process.env) {
@@ -58,6 +35,10 @@ export function resolveDesktopBuildVersion(productVersion, environment = process
   return nightlyVersion
     ? assertDesktopNightlyVersion(nightlyVersion, productVersion)
     : productVersion;
+}
+
+export function resolveRuntimeHostSetupPackage(productVersion, environment = process.env) {
+  return `maka-agent@${resolveDesktopBuildVersion(productVersion, environment)}`;
 }
 
 function nightlyArtifactNames(version) {
@@ -175,26 +156,8 @@ export async function stageDesktopNightly({
   await writeFile(join(feedDirectory, 'index.html'), nightlyIndex(version, sourceCommit, names));
 }
 
-async function main(args, environment = process.env) {
+async function main(args) {
   const [command, ...rest] = args;
-  if (command === 'identity' && rest.length === 0) {
-    const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
-    const identity = desktopNightlyIdentity({
-      productVersion: productManifest.version,
-      date: new Date(environment.NIGHTLY_BUILD_DATE ?? Date.now()),
-      runNumber: environment.GITHUB_RUN_NUMBER,
-      sourceCommit: environment.GITHUB_SHA,
-    });
-    if (environment.GITHUB_OUTPUT) {
-      await appendFile(
-        environment.GITHUB_OUTPUT,
-        `version=${identity.version}\nsource_commit=${identity.sourceCommit}\n`,
-        'utf8',
-      );
-    }
-    console.log(JSON.stringify(identity));
-    return;
-  }
   if (command === 'stage' && rest.length === 4) {
     const [inputDirectory, outputDirectory, version, sourceCommit] = rest;
     await stageDesktopNightly({
@@ -206,33 +169,10 @@ async function main(args, environment = process.env) {
     return;
   }
   throw new Error(
-    'usage: desktop-nightly.mjs identity | stage <input-directory> <output-directory> <version> <source-commit>',
+    'usage: desktop-nightly.mjs stage <input-directory> <output-directory> <version> <source-commit>',
   );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv.slice(2));
-}
-
-export function desktopNightlyIdentity({ productVersion, date, runNumber, sourceCommit }) {
-  if (parseProductReleaseVersion(productVersion).prerelease.length > 0) {
-    throw new Error('Desktop Nightly requires a stable checked-in product version');
-  }
-  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) {
-    throw new Error('Desktop Nightly requires a valid build date');
-  }
-  if (typeof runNumber !== 'string' || !/^[1-9]\d*$/u.test(runNumber)) {
-    throw new Error('Desktop Nightly requires a positive run number');
-  }
-  if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(sourceCommit)) {
-    throw new Error('Desktop Nightly requires an exact source commit');
-  }
-
-  const day = date.toISOString().slice(0, 10).replaceAll('-', '');
-  const version = `${productVersion}-dev.${day}.${runNumber}`;
-  assertDesktopNightlyVersion(version, productVersion);
-  return {
-    version,
-    sourceCommit,
-  };
 }

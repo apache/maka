@@ -21,6 +21,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/cli-package-validation.yml'
+      - '.github/workflows/npm-publication.yml'
       - '.github/workflows/runtime-host-peer-admission.yml'
       - 'deny.toml'
       - 'native/runtime-host-peer/**'
@@ -45,6 +46,11 @@ on:
     inputs:
       source_commit:
         description: Exact product release commit to build; defaults to the triggering commit
+        required: false
+        type: string
+        default: ''
+      package_version:
+        description: Exact Product Nightly version; empty builds the checked-in formal version
         required: false
         type: string
         default: ''
@@ -165,6 +171,7 @@ jobs:
           merge-multiple: true
       - name: Build the release tarball once
         env:
+          MAKA_CLI_NIGHTLY_VERSION: ${{ inputs.package_version }}
           MAKA_RUNTIME_HOST_PEER_PREBUILDS: ${{ runner.temp }}/runtime-host-peer-prebuilds
         run: npm run release:cli:pack
       - name: Upload the immutable release candidate

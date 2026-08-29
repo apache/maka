@@ -41,6 +41,24 @@ export function parseProductReleaseVersion(version) {
   };
 }
 
+export function assertProductNightlyVersion(version, productVersion) {
+  const product = parseProductReleaseVersion(productVersion);
+  const nightly = parseProductReleaseVersion(version);
+  if (product.prerelease.length > 0) {
+    throw new Error('Product Nightly requires a stable checked-in product version');
+  }
+  if (
+    nightly.core.some((identifier, index) => identifier !== product.core[index]) ||
+    nightly.prerelease.length !== 3 ||
+    nightly.prerelease[0] !== 'dev' ||
+    !/^\d{8}$/u.test(nightly.prerelease[1]) ||
+    !/^[1-9]\d*$/u.test(nightly.prerelease[2])
+  ) {
+    throw new Error(`Product Nightly version ${version} must be a dev build of ${productVersion}`);
+  }
+  return version;
+}
+
 export function compareProductReleaseVersions(left, right) {
   const a = parseProductReleaseVersion(left);
   const b = parseProductReleaseVersion(right);

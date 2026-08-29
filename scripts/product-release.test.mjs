@@ -753,7 +753,6 @@ test('repository control plane admits only each release phase owner ref', async 
   const environments = config.github.environments;
   for (const [name, pattern, type] of [
     ['release', 'v*-incubating-rc*', 'tag'],
-    ['npm-release', 'v*', 'tag'],
     ['product-release', 'main', 'branch'],
   ]) {
     assert.deepEqual(environments[name], {
@@ -766,6 +765,18 @@ test('repository control plane admits only each release phase owner ref', async 
       },
     });
   }
+  assert.deepEqual(environments['npm-publication'], {
+    required_reviewers: [],
+    wait_timer: 0,
+    prevent_self_review: false,
+    deployment_branch_policy: {
+      protected_branches: false,
+      policies: [
+        { name: 'v*', type: 'tag' },
+        { name: 'main', type: 'branch' },
+      ],
+    },
+  });
   assert.deepEqual(
     config.github.rulesets.find((ruleset) => ruleset.name === 'Immutable release tags'),
     {

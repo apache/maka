@@ -18,11 +18,14 @@
 name: Desktop Nightly
 
 on:
-  schedule:
-    - cron: '17 18 * * *'
-  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - npm publication
+    types:
+      - completed
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -31,7 +34,10 @@ concurrency:
 
 jobs:
   identity:
-    if: vars.DESKTOP_NIGHTLY_ENABLED == 'true'
+    if: >-
+      vars.DESKTOP_NIGHTLY_ENABLED == 'true' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -41,26 +47,47 @@ jobs:
       - name: Reject in-place workflow reruns
         if: github.run_attempt != 1
         run: |
-          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          echo "Desktop Nightly retries require a fresh npm Nightly dispatch" >&2
           exit 1
 
-      - name: Check out the scheduled main commit
+      - name: Check out the published Nightly source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
-      - name: Require the Apache main branch
+      - name: Require the successful Apache npm Nightly run
+        env:
+          UPSTREAM_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
         run: |
           test "$GITHUB_REPOSITORY" = apache/maka
-          test "$GITHUB_REF" = refs/heads/main
+          test "$UPSTREAM_REPOSITORY" = apache/maka
 
-      - name: Resolve the immutable Nightly identity
+      - name: Download the published Nightly identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: product-nightly-identity
+          path: ${{ runner.temp }}/product-nightly-identity
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Bind Desktop to the exact npm Nightly
         id: identity
         env:
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: node scripts/desktop-nightly.mjs identity
+          IDENTITY_PATH: ${{ runner.temp }}/product-nightly-identity/identity.json
+          NPM_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          NPM_RUN_ID: ${{ github.event.workflow_run.id }}
+          NPM_SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          node scripts/product-nightly.mjs inspect-publication-record \
+            "$IDENTITY_PATH" \
+            "$NPM_RUN_ID" \
+            "$NPM_RUN_ATTEMPT" \
+            "$GITHUB_REPOSITORY" \
+            .github/workflows/npm-publication.yml \
+            "$NPM_SOURCE_COMMIT" \
+            "$GITHUB_OUTPUT"
 
   desktop:
     needs: identity
@@ -84,7 +111,7 @@ jobs:
       - name: Reject in-place workflow reruns
         if: github.run_attempt != 1
         run: |
-          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          echo "Desktop Nightly retries require a fresh npm Nightly dispatch" >&2
           exit 1
 
       - name: Check out the exact Nightly source
@@ -200,7 +227,7 @@ jobs:
       - name: Reject in-place workflow reruns
         if: github.run_attempt != 1
         run: |
-          echo "Desktop Nightly retries require a fresh workflow dispatch" >&2
+          echo "Desktop Nightly retries require a fresh npm Nightly dispatch" >&2
           exit 1
 
       - name: Check out the Nightly publisher

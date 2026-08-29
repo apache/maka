@@ -135,6 +135,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'apps/desktop/electron-builder.config.mjs',
     'apps/desktop/package.json',
     '.github/workflows/cli-package-validation.yml',
+    '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
@@ -167,13 +169,16 @@ test('release authority changes select their dedicated contract gate', () => {
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
 });
 
-test('Desktop Nightly authority changes select the release contract gate', () => {
+test('Product Nightly authority changes select the release contract gate', () => {
   for (const path of [
     '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
     'scripts/desktop-nightly.mjs',
     'scripts/desktop-nightly.test.mjs',
     'scripts/desktop-nightly-stage.test.mjs',
     'scripts/desktop-nightly-workflow-policy.test.mjs',
+    'scripts/product-nightly.mjs',
+    'scripts/product-nightly.test.mjs',
   ]) {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }

@@ -22,12 +22,12 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
-import { compareProductReleaseVersions, parseProductReleaseVersion } from './release-version.mjs';
+import { assertProductNightlyVersion, parseProductReleaseVersion } from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const REPOSITORY = 'apache/maka';
-const STAGE_WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
+const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -43,9 +43,21 @@ const RELEASE_RECORD_KEYS = [
 
 export function parseCliReleaseVersion(version) {
   const { prerelease } = parseProductReleaseVersion(version);
+  if (prerelease.length > 0) {
+    throw new Error('Formal CLI releases must use a stable product version');
+  }
   return {
     version,
-    distTag: prerelease.length > 0 ? 'next' : 'latest',
+    distTag: 'latest',
+    tarball: `${PACKAGE_NAME}-${version}.tgz`,
+  };
+}
+
+export function parseCliNightlyVersion(version, productVersion) {
+  assertProductNightlyVersion(version, productVersion);
+  return {
+    version,
+    distTag: 'nightly',
     tarball: `${PACKAGE_NAME}-${version}.tgz`,
   };
 }
@@ -57,17 +69,32 @@ export function validateRegistryChannels({ releaseVersion, releaseDistTag, distT
   if (distTags[releaseDistTag] !== releaseVersion) {
     throw new Error(`Registry dist-tag ${releaseDistTag} does not point to ${releaseVersion}`);
   }
+}
 
-  const latest = distTags.latest;
-  const next = distTags.next;
-  if (releaseDistTag === 'latest' && typeof next !== 'string') {
-    throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
+export function prepareNightlyRelease({
+  repoRoot,
+  releaseDirectory,
+  expectedVersion,
+  sourceSha,
+  runId,
+  runAttempt,
+  repository,
+  workflowPath,
+}) {
+  const cliManifest = readJson(join(repoRoot, 'packages/cli/package.json'), 'CLI manifest');
+  if (cliManifest.name !== PACKAGE_NAME) {
+    throw new Error(`CLI package name must be ${PACKAGE_NAME}`);
   }
-  if (typeof latest === 'string' && typeof next === 'string') {
-    if (compareProductReleaseVersions(next, latest) < 0) {
-      throw channelLagError({ releaseVersion, releaseDistTag, latest, next });
-    }
-  }
+  const identity = parseCliNightlyVersion(expectedVersion, cliManifest.version);
+  validateSourceIdentity({
+    sourceSha,
+    runId,
+    runAttempt,
+    repository,
+    workflowPath,
+  });
+  const candidate = validateCandidateFiles(releaseDirectory, identity);
+  return { ...identity, tarballPath: candidate.tarballPath, sha256: candidate.sha256 };
 }
 
 export function prepareStageRelease({
@@ -311,8 +338,8 @@ function validateSourceIdentity({ sourceSha, runId, runAttempt, repository, work
   if (!/^[1-9]\d*$/u.test(runId)) throw new Error('Release workflow run ID is invalid');
   if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error('Release workflow run attempt is invalid');
   if (repository !== REPOSITORY) throw new Error(`Release repository must be ${REPOSITORY}`);
-  if (workflowPath !== STAGE_WORKFLOW_PATH) {
-    throw new Error(`Release workflow must be ${STAGE_WORKFLOW_PATH}`);
+  if (workflowPath !== PUBLICATION_WORKFLOW_PATH) {
+    throw new Error(`Release workflow must be ${PUBLICATION_WORKFLOW_PATH}`);
   }
 }
 
@@ -358,18 +385,6 @@ function matchesReleaseProvenance(statement, record) {
       'https://github.com/actions/runner/',
     ) &&
     statement?.predicate?.runDetails?.metadata?.invocationId === invocationId
-  );
-}
-
-function channelLagError({ releaseVersion, releaseDistTag, latest, next }) {
-  const current = typeof next === 'string' ? next : 'missing';
-  if (releaseDistTag === 'next') {
-    return new Error(
-      `Registry next dist-tag (${current}) is behind latest (${latest}); prerelease ${releaseVersion} cannot advance the next channel`,
-    );
-  }
-  return new Error(
-    `Registry next dist-tag (${current}) is behind the latest release. Before finalizing, authenticate interactively with npm and run: npm dist-tag add "${PACKAGE_NAME}@${releaseVersion}" next --registry ${REGISTRY_ORIGIN}/`,
   );
 }
 
@@ -504,6 +519,34 @@ async function main() {
     });
     return;
   }
+  if (command === 'prepare-nightly' && args.length === 8) {
+    const [
+      releaseDirectory,
+      expectedVersion,
+      sourceSha,
+      runId,
+      runAttempt,
+      repository,
+      workflowPath,
+      output,
+    ] = args;
+    const result = prepareNightlyRelease({
+      repoRoot: resolve(import.meta.dirname, '..'),
+      releaseDirectory: resolve(releaseDirectory),
+      expectedVersion,
+      sourceSha,
+      runId,
+      runAttempt,
+      repository,
+      workflowPath,
+    });
+    appendOutputs(output, {
+      version: result.version,
+      dist_tag: result.distTag,
+      tarball: result.tarballPath,
+    });
+    return;
+  }
   if (command === 'validate-stage-run' && (args.length === 3 || args.length === 4)) {
     const [releaseDirectory, runPath, expectedVersion, output] = args;
     const record = validateStageRun({
@@ -545,7 +588,7 @@ async function main() {
     return;
   }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
   );
 }
 

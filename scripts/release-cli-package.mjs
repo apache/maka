@@ -38,6 +38,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import { assertProductNightlyVersion } from './release-version.mjs';
 import {
   isCurrentDevelopmentJavaScript,
   isMakaDevelopmentArtifact,
@@ -53,6 +54,7 @@ const repoRoot = resolve(import.meta.dirname, '..');
 const cliSource = join(repoRoot, 'packages/cli');
 const allowDirty = process.argv.includes('--allow-dirty');
 const developmentBuild = process.argv.includes('--development');
+const nightlyVersion = process.env.MAKA_CLI_NIGHTLY_VERSION?.trim();
 const preparedTree = process.env.MAKA_CLI_RELEASE_PREPARED_TREE === '1';
 const releaseRoot = join(cliSource, 'release');
 const artifactRoot = developmentBuild ? createDevelopmentArtifactRoot() : releaseRoot;
@@ -93,6 +95,16 @@ try {
 
 function main() {
   validateNodeVersion();
+  if (developmentBuild && nightlyVersion) {
+    throw new Error('A public Nightly cannot be combined with --development');
+  }
+  if (allowDirty && nightlyVersion) {
+    throw new Error('A public Nightly cannot be built from a dirty worktree');
+  }
+  if (nightlyVersion) {
+    const productVersion = readJson(join(repoRoot, 'package.json')).version;
+    assertProductNightlyVersion(nightlyVersion, productVersion);
+  }
   if (!developmentBuild) validateReleaseNpmVersion();
   if (developmentBuild) {
     if (allowDirty || preparedTree) {
@@ -520,13 +532,24 @@ function copyEvalMirror() {
 
 function copyReleaseDocuments() {
   const readme = readFileSync(join(cliSource, 'README.md'), 'utf8');
+  const readmeZhCn = readFileSync(join(cliSource, 'README.zh-CN.md'), 'utf8');
   const disclaimer = readFileSync(join(repoRoot, 'DISCLAIMER-WIP'), 'utf8');
-  writeFileSync(join(stageRoot, 'README.md'), renderNpmReadme(readme, disclaimer), 'utf8');
-  copyFileSync(join(cliSource, 'README.zh-CN.md'), join(stageRoot, 'README.zh-CN.md'));
+  const nightlyNotice = nightlyVersion
+    ? '> **Developer snapshot:** This Nightly is not an Apache release and is not intended for production use. Its version is bound to one exact `apache/maka` commit.\n\n'
+    : '';
+  const nightlyNoticeZhCn = nightlyVersion
+    ? '> **开发快照：**此 Nightly 不是 Apache Release，不用于生产环境；其版本只对应一个精确的 `apache/maka` commit。\n\n'
+    : '';
+  writeFileSync(
+    join(stageRoot, 'README.md'),
+    `${nightlyNotice}${renderNpmReadme(readme, disclaimer)}`,
+    'utf8',
+  );
+  writeFileSync(join(stageRoot, 'README.zh-CN.md'), `${nightlyNoticeZhCn}${readmeZhCn}`, 'utf8');
   copyFileSync(join(repoRoot, 'LICENSE'), join(stageRoot, 'LICENSE'));
   copyFileSync(join(repoRoot, 'NOTICE'), join(stageRoot, 'NOTICE'));
-  // Incubator policy: podling releases carry the incubating disclaimer, kept
-  // next to LICENSE/NOTICE. The npm tarball is a release like the installers.
+  // Incubator policy: every public podling artifact carries the incubating
+  // disclaimer next to LICENSE/NOTICE, including developer-only Nightlies.
   copyFileSync(join(repoRoot, 'DISCLAIMER-WIP'), join(stageRoot, 'DISCLAIMER-WIP'));
   copyFileSync(
     join(cliSource, 'THIRD_PARTY_NOTICES.txt'),
@@ -653,8 +676,10 @@ function writeReleaseManifest(cli, publishable) {
   }
   const manifest = {
     name: source.name,
-    version: source.version,
-    description: 'Apache Maka (Incubating), a local-first agent workspace for the terminal.',
+    version: publishable && nightlyVersion ? nightlyVersion : source.version,
+    description: nightlyVersion
+      ? 'Apache Maka (Incubating) developer snapshot; not an Apache release.'
+      : 'Apache Maka (Incubating), a local-first agent workspace for the terminal.',
     license: source.license,
     type: source.type,
     exports: {},
@@ -673,7 +698,7 @@ function writeReleaseManifest(cli, publishable) {
       ? {
           access: 'public',
           registry: 'https://registry.npmjs.org/',
-          tag: source.version.includes('-') ? 'next' : 'latest',
+          tag: nightlyVersion ? 'nightly' : 'latest',
         }
       : {
           access: 'restricted',

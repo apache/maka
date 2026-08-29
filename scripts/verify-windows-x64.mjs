@@ -24,7 +24,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -253,7 +253,9 @@ export async function verifyPackagedWindowsApp(
   const ptyProbe = makePtyProbe(
     process.env.ComSpec || 'cmd.exe',
     ['/c', 'echo', 'maka-node-pty-ok'],
-    requiresCurrentContract ? product.runtimeHostSetupPackage : undefined,
+    requiresCurrentContract
+      ? resolveRuntimeHostSetupPackage(product.version, environment)
+      : undefined,
   );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {

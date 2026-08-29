@@ -73,7 +73,7 @@ registry side effects.
 After both source-release votes approve the candidate, the product Release
 workflow creates `v<version>` at that approved commit. The npm Stage workflow
 then builds and validates one tarball from that final tag, submits those exact
-bytes to npm staging through the protected `npm-release` Environment and OIDC,
+bytes to npm staging through the ref-restricted `npm-publication` Environment and OIDC,
 and records the stage identity. Human approval with npm 2FA makes the package
 public; Finalize verifies the registry bytes, integrity, signature, provenance,
 and dist-tag.

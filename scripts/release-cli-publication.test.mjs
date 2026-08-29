@@ -27,7 +27,9 @@ import test from 'node:test';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
   fetchRegistryRelease,
+  parseCliNightlyVersion,
   parseCliReleaseVersion,
+  prepareNightlyRelease,
   prepareSignatureAuditTree,
   prepareStageRelease,
   validateRegistryChannels,
@@ -36,11 +38,11 @@ import {
 } from './release-cli-publication.mjs';
 
 const SOURCE_SHA = 'a'.repeat(40);
-const WORKFLOW_PATH = '.github/workflows/release-cli-stage.yml';
+const WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
 const CURRENT_CLI_VERSION = JSON.parse(
   readFileSync(resolve(import.meta.dirname, '../packages/cli/package.json'), 'utf8'),
 ).version;
-const PRODUCT_TAG = 'v0.1.0-beta.1';
+const PRODUCT_TAG = 'v0.2.0';
 const STAGE_RUN = {
   id: 321,
   run_attempt: 1,
@@ -52,57 +54,58 @@ const STAGE_RUN = {
   head_repository: { full_name: 'apache/maka' },
 };
 
-test('release versions map prereleases and stable versions to distinct channels', () => {
-  assert.deepEqual(parseCliReleaseVersion('0.1.0-beta.1'), {
-    version: '0.1.0-beta.1',
-    distTag: 'next',
-    tarball: 'maka-agent-0.1.0-beta.1.tgz',
+test('formal and Nightly versions map to their only public channels', () => {
+  assert.deepEqual(parseCliReleaseVersion('0.2.0'), {
+    version: '0.2.0',
+    distTag: 'latest',
+    tarball: 'maka-agent-0.2.0.tgz',
   });
-  assert.equal(parseCliReleaseVersion('0.1.0').distTag, 'latest');
+  assert.deepEqual(parseCliNightlyVersion('0.2.0-dev.20260829.42', '0.2.0'), {
+    version: '0.2.0-dev.20260829.42',
+    distTag: 'nightly',
+    tarball: 'maka-agent-0.2.0-dev.20260829.42.tgz',
+  });
+  assert.throws(() => parseCliReleaseVersion('0.2.0-beta.1'), /must use a stable/u);
+  assert.throws(() => parseCliNightlyVersion('0.2.0-beta.1', '0.2.0'), /must be a dev build/u);
   for (const version of ['01.0.0', '0.1', '0.1.0+local', '0.1.0-beta..1', '../0.1.0']) {
     assert.throws(() => parseCliReleaseVersion(version), /valid product release version/u);
   }
 });
 
-test('release channels never leave next behind latest', () => {
-  for (const next of ['0.1.0', '0.2.0-beta.1']) {
-    assert.doesNotThrow(() =>
-      validateRegistryChannels({
-        releaseVersion: '0.1.0',
-        releaseDistTag: 'latest',
-        distTags: { latest: '0.1.0', next },
-      }),
-    );
-  }
-
-  for (const next of [undefined, '0.1.0-beta.1']) {
-    assert.throws(
-      () =>
-        validateRegistryChannels({
-          releaseVersion: '0.1.0',
-          releaseDistTag: 'latest',
-          distTags: { latest: '0.1.0', ...(next ? { next } : {}) },
-        }),
-      /npm dist-tag add "maka-agent@0\.1\.0" next/u,
-    );
-  }
-
+test('formal finalization requires only the exact latest channel', () => {
   assert.doesNotThrow(() =>
     validateRegistryChannels({
-      releaseVersion: '0.2.0-beta.1',
-      releaseDistTag: 'next',
-      distTags: { latest: '0.1.0', next: '0.2.0-beta.1' },
+      releaseVersion: '0.2.0',
+      releaseDistTag: 'latest',
+      distTags: { latest: '0.2.0', nightly: '0.3.0-dev.20260829.42' },
     }),
   );
   assert.throws(
     () =>
       validateRegistryChannels({
-        releaseVersion: '0.1.0-beta.2',
-        releaseDistTag: 'next',
-        distTags: { latest: '0.1.0', next: '0.1.0-beta.2' },
+        releaseVersion: '0.2.0',
+        releaseDistTag: 'latest',
+        distTags: { latest: '0.1.0' },
       }),
-    /cannot advance the next channel/u,
+    /does not point to 0\.2\.0/u,
   );
+});
+
+test('Nightly preparation binds an exact dev candidate to main workflow evidence', () => {
+  const fixture = createCandidate('0.2.0-dev.20260829.42', '0.2.0');
+  const prepared = prepareNightlyRelease({
+    repoRoot: fixture.root,
+    releaseDirectory: fixture.releaseDirectory,
+    expectedVersion: fixture.version,
+    sourceSha: SOURCE_SHA,
+    runId: '321',
+    runAttempt: '1',
+    repository: 'apache/maka',
+    workflowPath: WORKFLOW_PATH,
+  });
+  assert.equal(prepared.distTag, 'nightly');
+  assert.equal(prepared.tarballPath, fixture.tarballPath);
+  assert.equal(prepared.sha256, fixture.sha256);
 });
 
 test('stage records bind the checked candidate to one source workflow run', () => {
@@ -157,7 +160,7 @@ test('stage preparation rejects confirmation and checksum drift', () => {
       prepareStageRelease({
         repoRoot: fixture.root,
         releaseDirectory: fixture.releaseDirectory,
-        expectedVersion: '0.1.0-beta.2',
+        expectedVersion: '0.2.1',
         productTag: PRODUCT_TAG,
         sourceSha: SOURCE_SHA,
         runId: '321',
@@ -201,7 +204,7 @@ test('finalization accepts only the exact successful product-tag stage run', () 
   for (const drift of [
     { path: '.github/workflows/other.yml' },
     { event: 'pull_request' },
-    { head_branch: 'v0.1.0-beta.2' },
+    { head_branch: 'v0.2.1' },
     { conclusion: 'failure' },
     { head_sha: 'c'.repeat(40) },
     { run_attempt: 2 },
@@ -547,7 +550,7 @@ function provenanceBundle(mutate = () => {}) {
   };
 }
 
-function createCandidate(version = '0.1.0-beta.1') {
+function createCandidate(version = '0.2.0', sourceVersion = version) {
   const root = mkdtempSync(join(tmpdir(), 'maka-cli-publication-'));
   const releaseDirectory = join(root, 'packages/cli/release');
   const tarball = `maka-agent-${version}.tgz`;
@@ -558,7 +561,7 @@ function createCandidate(version = '0.1.0-beta.1') {
   writeFileSync(join(root, 'package.json'), '{"packageManager":"npm@11.19.0"}\n');
   writeFileSync(
     join(root, 'packages/cli/package.json'),
-    `${JSON.stringify({ name: 'maka-agent', version })}\n`,
+    `${JSON.stringify({ name: 'maka-agent', version: sourceVersion })}\n`,
   );
   writeFileSync(tarballPath, bytes);
   writeFileSync(`${tarballPath}.sha256`, `${sha256}  ${tarball}\n`);
@@ -582,7 +585,7 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
     }
     if (url === 'https://registry.npmjs.org/maka-agent') {
       assert.equal(options.headers?.accept, 'application/vnd.npm.install-v1+json');
-      return Response.json({ 'dist-tags': { next: fixture.version } });
+      return Response.json({ 'dist-tags': { latest: fixture.version } });
     }
     if (url === tarballUrl) return new Response(bytes);
     return new Response('not found', { status: 404 });

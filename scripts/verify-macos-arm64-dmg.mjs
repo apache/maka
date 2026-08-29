@@ -33,7 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -162,7 +162,11 @@ export async function verifyPackagedMacApp(
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
 
-  const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok'], product.runtimeHostSetupPackage);
+  const ptyProbe = makePtyProbe(
+    '/bin/echo',
+    ['maka-node-pty-ok'],
+    resolveRuntimeHostSetupPackage(product.version, environment),
+  );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',

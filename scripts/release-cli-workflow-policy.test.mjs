@@ -48,6 +48,7 @@ test('validation consumers download the artifact produced by the build job', () 
 
 test('stage consumes the validated artifact and makes provenance staging the final step', () => {
   const workflow = readWorkflow('release-cli-stage.yml');
+  assert.match(workflow, /environment:\n\s+name: npm-publication/u);
   const steps = workflowSteps(workflow);
   const download = namedStep(steps, 'Download the validated release candidate');
   assert.match(
@@ -55,9 +56,7 @@ test('stage consumes the validated artifact and makes provenance staging the fin
     /artifact-ids: \$\{\{ needs\.validate\.outputs\.release_candidate_artifact_id \}\}/u,
   );
   assert.match(workflow, /RELEASE_RUN_ATTEMPT/u);
-  const guidance = namedStep(steps, 'Record the post-staging approval step');
-  assert.match(guidance, /if \[\[ "\$RELEASE_DIST_TAG" == "latest" \]\]/u);
-  assert.match(guidance, /npm dist-tag add/u);
+  namedStep(steps, 'Record the post-staging approval step');
   const submit = namedStep(steps, 'Submit the candidate to npm staging');
   assert.equal(steps.at(-1), submit);
   assert.match(submit, /product-release-authority\.mjs verify-draft/u);
@@ -83,6 +82,7 @@ test('stage builds the npm candidate from the exact product release commit', () 
   assert.match(workflow, /EXPECTED_PRODUCT_VERSION/u);
   assert.doesNotMatch(workflow, /EXPECTED_PRODUCT_TAG|EXPECTED_PRODUCT_SOURCE_COMMIT/u);
   assert.match(workflow, /RELEASE_SHA: \$\{\{ github\.sha \}\}/u);
+  assert.match(workflow, /RELEASE_WORKFLOW: \.github\/workflows\/npm-publication\.yml/u);
   const bind = namedStep(workflowSteps(workflow), 'Bind the candidate to this workflow run');
   assert.match(bind, /PRODUCT_TAG: \$\{\{ needs\.authorize\.outputs\.product_tag \}\}/u);
 });
@@ -151,6 +151,7 @@ test('finalize preserves npm evidence and owns the single product publication bo
 test('release workflows select npm from the root packageManager authority', () => {
   for (const name of [
     'cli-package-validation.yml',
+    'npm-publication.yml',
     'release-cli-stage.yml',
     'release-cli-finalize.yml',
   ]) {

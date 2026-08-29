@@ -30,7 +30,7 @@ Runtime Host in one command. Linux uses a systemd user service; macOS uses a Lau
 requires an active GUI login session for that user.
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -42,7 +42,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@latest maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup

@@ -61,8 +61,12 @@ must never be exposed to fork or ordinary pull-request jobs.
 Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
-- the `release` and `npm-release` Environments accept only their declared tag patterns,
-  `product-release` accepts only `main`, and each requires a reviewer other than the triggering user.
+- the `release` Environment accepts only its declared source-candidate tag pattern and requires a
+  reviewer other than the triggering user;
+- `npm-publication` accepts only `main` and `v*` product tags, while `product-release` accepts only
+  `main` and requires a reviewer other than the triggering user. `npm-publication` has no GitHub
+  approval gate because scheduled Nightly publication is automatic; formal npm publication still
+  requires human 2FA approval after staging.
 
 These controls close the check-to-upload and check-to-stage windows. Finalize uses GitHub Actions
 OIDC rather than a stored signing key to attest every convenience artifact. Keep the Release in
@@ -111,7 +115,8 @@ then rerun. If only the tag exists, the retry creates the missing Draft.
 Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact product tag and Draft:
 
 1. Record the successful **Release** workflow run ID and attempt that built the Draft assets. Run
-   **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
+   **npm publication** with `channel=formal` from `v<version>` and record its successful run ID and
+   attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
 3. Run **Finalize product release** from `main`. Its first job verifies the public package
    bytes, provenance, signature, and release dist-tag.

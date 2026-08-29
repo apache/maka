@@ -21,6 +21,7 @@ import { readFileSync } from 'node:fs';
 import {
   DESKTOP_NIGHTLY_FEED_URL,
   resolveDesktopBuildVersion,
+  resolveRuntimeHostSetupPackage,
 } from '../../scripts/desktop-nightly.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
 
@@ -264,6 +265,7 @@ export function resolveDesktopBuilderConfig(environment = process.env) {
     extraMetadata: {
       ...baseDesktopBuilderConfig.extraMetadata,
       version,
+      runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
       makaUpdateChannel: 'nightly',
     },
     publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL }],

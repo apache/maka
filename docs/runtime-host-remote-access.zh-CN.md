@@ -28,7 +28,7 @@ Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSo
 在具备 Node.js 22.19 或更新版本的机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host。Linux 使用 systemd user service；macOS 使用 LaunchAgent，并要求该用户存在活跃的 GUI 登录会话：
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -37,7 +37,7 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 
 `--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
 
-在 Host 上运行 `npx --yes --package maka-agent@next maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
+在 Host 上运行 `npx --yes --package maka-agent@latest maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
 
 ## 手动设置 Host
 

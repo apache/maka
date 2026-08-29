@@ -23,40 +23,94 @@ import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 
-const workflowPath = new URL('../.github/workflows/desktop-nightly.yml', import.meta.url);
-
-async function readWorkflow() {
-  return parse(await readFile(workflowPath, 'utf8'));
+async function readWorkflow(name) {
+  return parse(await readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
 }
 
-test('a failed Nightly is retried only as a fresh workflow run', async () => {
-  const workflow = await readWorkflow();
+test('npm publication owns both npm channels and no Desktop authority', async () => {
+  const workflow = await readWorkflow('npm-publication.yml');
+  assert.deepEqual(workflow.concurrency, {
+    group: 'npm-publication-${{ github.ref }}',
+    'cancel-in-progress': false,
+  });
+  assert.match(workflow.jobs.identity.if, /vars\.NPM_NIGHTLY_ENABLED == 'true'/u);
+  assert.equal(workflow.jobs.formal.uses, './.github/workflows/release-cli-stage.yml');
+  assert.equal(workflow.jobs.formal.permissions['id-token'], 'write');
+  assert.equal(workflow.jobs.cli.uses, './.github/workflows/cli-package-validation.yml');
+  assert.equal(workflow.jobs.cli.with.package_version, '${{ needs.identity.outputs.version }}');
+  assert.equal(workflow.jobs.publish.environment, 'npm-publication');
+  assert.equal(workflow.jobs.publish.permissions['id-token'], 'write');
+  const steps = workflow.jobs.publish.steps;
+  const positions = [
+    'Publish the exact npm Nightly',
+    'Require the public npm Nightly',
+    'Record the published Product Nightly identity',
+    'Hand the exact identity to Desktop Nightly',
+  ].map((name) => steps.findIndex((step) => step.name === name));
+  assert.deepEqual(
+    positions,
+    positions.toSorted((left, right) => left - right),
+  );
+  assert.ok(positions.every((position) => position >= 0));
+  assert.doesNotMatch(JSON.stringify(workflow), /DESKTOP_NIGHTLY_ENABLED|NIGHTLIES_RSYNC/u);
+  assert.doesNotMatch(JSON.stringify(workflow), /NODE_AUTH_TOKEN|NPM_TOKEN/u);
+});
+
+test('Desktop Nightly starts only from a successful published npm identity', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  assert.deepEqual(workflow.on, {
+    workflow_run: {
+      workflows: ['npm publication'],
+      types: ['completed'],
+    },
+  });
+  assert.match(workflow.jobs.identity.if, /vars\.DESKTOP_NIGHTLY_ENABLED == 'true'/u);
+  assert.match(workflow.jobs.identity.if, /workflow_run\.conclusion == 'success'/u);
+  assert.match(workflow.jobs.identity.if, /workflow_run\.head_branch == 'main'/u);
+  const download = workflow.jobs.identity.steps.find(
+    (step) => step.name === 'Download the published Nightly identity',
+  );
+  assert.equal(download.with.name, 'product-nightly-identity');
+  assert.equal(download.with['run-id'], '${{ github.event.workflow_run.id }}');
+  const bind = workflow.jobs.identity.steps.find(
+    (step) => step.name === 'Bind Desktop to the exact npm Nightly',
+  );
+  assert.match(bind.run, /product-nightly\.mjs inspect-publication-record/u);
+  assert.match(bind.run, /\.github\/workflows\/npm-publication\.yml/u);
+  assert.equal(
+    workflow.jobs.desktop.env.MAKA_DESKTOP_NIGHTLY_VERSION,
+    '${{ needs.identity.outputs.version }}',
+  );
+  assert.doesNotMatch(JSON.stringify(workflow), /npm publish|npm stage publish/u);
+});
+
+test('a failed Desktop Nightly is retried through a fresh npm Nightly', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
   assert.deepEqual(workflow.concurrency, {
     group: 'desktop-nightly',
     'cancel-in-progress': false,
   });
-  assert.equal(workflow.jobs.identity.if, "vars.DESKTOP_NIGHTLY_ENABLED == 'true'");
   for (const jobName of ['identity', 'desktop', 'publish']) {
     const rerunGuard = workflow.jobs[jobName].steps[0];
     assert.equal(rerunGuard.name, 'Reject in-place workflow reruns');
     assert.equal(rerunGuard.if, 'github.run_attempt != 1');
     assert.equal(spawnSync('bash', ['-c', rerunGuard.run]).status, 1);
+    assert.match(rerunGuard.run, /fresh npm Nightly dispatch/u);
   }
-  assert.equal(workflow.jobs.desktop.if, undefined);
-  assert.equal(workflow.jobs.publish.if, undefined);
   const upload = workflow.jobs.desktop.steps.find((step) =>
     step.uses?.startsWith('actions/upload-artifact@'),
   );
-  const download = workflow.jobs.publish.steps.find((step) =>
-    step.uses?.startsWith('actions/download-artifact@'),
+  const download = workflow.jobs.publish.steps.find(
+    (step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern,
   );
   assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}');
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
-test('the protected publisher appends workspace-staged payloads before advancing the feed', async () => {
-  const workflow = await readWorkflow();
+test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
   const publish = workflow.jobs.publish;
+  assert.equal(workflow.jobs.desktop.environment, 'nightly');
   assert.equal(publish.environment, 'nightly');
   assert.equal(
     publish.steps.filter((step) => step.uses?.startsWith('burnett01/rsync-deployments@')).length,
@@ -72,36 +126,7 @@ test('the protected publisher appends workspace-staged payloads before advancing
   );
   assert.match(transport.run, /StrictHostKeyChecking=yes/u);
   assert.doesNotMatch(transport.run, /ssh-keyscan|StrictHostKeyChecking=no/u);
-  const transfers = [
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
-  ].map((name) => publish.steps.find((step) => step.name === name));
-  assert.deepEqual(
-    transfers.map((step) => step.env?.NIGHTLIES_RSYNC_KEY),
-    [undefined, undefined],
-  );
-  for (const step of transfers) {
-    assert.match(step.run, /^rsync -rlptDvz --protect-args /u);
-    assert.doesNotMatch(step.run, /--delete/u);
-  }
-});
-
-test('Nightly stays disabled until its external publishing authority is configured', async () => {
-  const workflow = await readWorkflow();
-  assert.equal(workflow.permissions.contents, 'read');
-  assert.equal(workflow.jobs.identity.if, "vars.DESKTOP_NIGHTLY_ENABLED == 'true'");
-  const branchGate = workflow.jobs.identity.steps.find(
-    (step) => step.name === 'Require the Apache main branch',
-  );
-  assert.match(branchGate.run, /test "\$GITHUB_REPOSITORY" = apache\/maka/u);
-  assert.match(branchGate.run, /test "\$GITHUB_REF" = refs\/heads\/main/u);
-  assert.equal(workflow.jobs.desktop.environment, 'nightly');
-  assert.equal(workflow.jobs.publish.environment, 'nightly');
-});
-
-test('Nightly verifies provenance and advances mutable feeds only after payload upload', async () => {
-  const workflow = await readWorkflow();
-  const steps = workflow.jobs.publish.steps;
+  const steps = publish.steps;
   const positions = [
     'Attest the exact Nightly payloads',
     'Verify the issued Nightly provenance',
@@ -113,10 +138,16 @@ test('Nightly verifies provenance and advances mutable feeds only after payload 
     positions.toSorted((left, right) => left - right),
   );
   assert.ok(positions.every((position) => position >= 0));
-  const verify = steps[positions[1]];
   assert.equal(
-    verify.env.CERTIFICATE_IDENTITY,
+    steps[positions[1]].env.CERTIFICATE_IDENTITY,
     'https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main',
   );
-  assert.match(verify.run, /gh attestation verify/u);
+  for (const name of [
+    'Publish immutable Nightly payloads',
+    'Advance the Nightly update feed last',
+  ]) {
+    const step = steps.find((candidate) => candidate.name === name);
+    assert.match(step.run, /^rsync -rlptDvz --protect-args /u);
+    assert.doesNotMatch(step.run, /--delete/u);
+  }
 });

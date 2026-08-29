@@ -18,7 +18,7 @@
 name: Stage CLI npm release
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
         description: Exact maka-agent version from packages/cli/package.json
@@ -88,7 +88,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: npm-release
+      name: npm-publication
       url: https://www.npmjs.com/package/maka-agent
     permissions:
       contents: read
@@ -120,7 +120,7 @@ jobs:
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
           RELEASE_SHA: ${{ github.sha }}
-          RELEASE_WORKFLOW: .github/workflows/release-cli-stage.yml
+          RELEASE_WORKFLOW: .github/workflows/npm-publication.yml
         run: |
           node scripts/release-cli-publication.mjs prepare-stage \
             packages/cli/release \
@@ -160,12 +160,6 @@ jobs:
             echo "- stage run ID: \`$RELEASE_RUN_ID\`"
             echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
             echo "- version: \`$RELEASE_VERSION\`"
-            if [[ "$RELEASE_DIST_TAG" == "latest" ]]; then
-              echo
-              echo "Before finalizing this stable release, inspect npm dist-tags. If \`next\` is older than \`latest\`, authenticate interactively with npm and run:"
-              echo
-              echo "\`npm dist-tag add \"maka-agent@$RELEASE_VERSION\" next --registry https://registry.npmjs.org/\`"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:
