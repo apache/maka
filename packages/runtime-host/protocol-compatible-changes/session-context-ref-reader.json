@@ -1,0 +1,5 @@
+{
+  "epoch": 65,
+  "files": ["packages/runtime-host/src/protocol/turn.ts"],
+  "reason": "Widens the Host decoder for a durable context reference variant this reader-only slice does not emit; existing peers exchange the same frames until the writer cutover"
+}
