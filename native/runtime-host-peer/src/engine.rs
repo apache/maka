@@ -110,7 +110,7 @@ pub struct ConnectOptions {
     pub peer_id: PeerId,
     pub route_hints: Vec<Multiaddr>,
     pub coordination_relays: Vec<Multiaddr>,
-    pub transit_relays: Vec<Multiaddr>,
+    pub transit_relay_peers: Vec<PeerId>,
     pub deadline: Duration,
 }
 
@@ -252,7 +252,6 @@ struct CoordinationRelay {
     identify_received: bool,
     identify_sent: bool,
     reserve: bool,
-    transit_reserve: bool,
     reservation_accepted: bool,
     client_references: usize,
     reservation_listener: Option<ListenerId>,
@@ -273,7 +272,6 @@ impl Default for CoordinationRelay {
             identify_received: false,
             identify_sent: false,
             reserve: false,
-            transit_reserve: false,
             reservation_accepted: false,
             client_references: 0,
             reservation_listener: None,
@@ -289,7 +287,7 @@ impl CoordinationRelay {
     }
 
     fn is_active(&self) -> bool {
-        self.reserve || self.transit_reserve || self.client_references > 0
+        self.reserve || !self.transit_addresses.is_empty() || self.client_references > 0
     }
 
     fn connection_lost(&mut self, now: Instant) -> Option<ListenerId> {
@@ -1050,7 +1048,7 @@ fn start_connect(
 ) -> Result<StartedConnect, PeerError> {
     if options.route_hints.is_empty()
         && options.coordination_relays.is_empty()
-        && options.transit_relays.is_empty()
+        && options.transit_relay_peers.is_empty()
     {
         let code = match stream_kind {
             StreamKind::Application => "direct_path_unavailable",
@@ -1075,18 +1073,14 @@ fn start_connect(
             relay_peers.push(relay_peer);
         }
     }
-    for relay_address in &options.transit_relays {
-        let relay_peer = transit_relay_peer_id(relay_address)?;
+    for relay_peer in &options.transit_relay_peers {
         validate_relay_target(
-            relay_peer,
+            *relay_peer,
             options.peer_id,
             local_peer_id,
             "transit_unavailable",
             "transit relay",
         )?;
-        if !relay_peers.contains(&relay_peer) {
-            relay_peers.push(relay_peer);
-        }
     }
     let direct_targets = options
         .route_hints
@@ -1105,30 +1099,32 @@ fn start_connect(
             referenced.insert(relay_peer),
         )?;
     }
-    for relay_address in &options.transit_relays {
-        let relay_peer = transit_relay_peer_id(relay_address)
-            .expect("transit relay was validated before registration");
-        register_coordination_relay(
-            coordination_relays,
-            relay_address,
-            local_peer_id,
-            false,
-            referenced.insert(relay_peer),
-        )?;
+    let mut transit_relays = Vec::new();
+    let mut transit_relay_peers = HashSet::new();
+    for relay_peer in &options.transit_relay_peers {
+        let Some(relay) = coordination_relays.get_mut(relay_peer) else {
+            continue;
+        };
+        if relay.transit_addresses.is_empty() {
+            continue;
+        }
+        for address in relay.transit_addresses.clone() {
+            remember_relay_address(&mut transit_relays, address);
+        }
+        if referenced.insert(*relay_peer) {
+            relay.client_references += 1;
+        }
+        if !relay_peers.contains(relay_peer) {
+            relay_peers.push(*relay_peer);
+        }
+        transit_relay_peers.insert(*relay_peer);
     }
     maintain_coordination_relays(swarm, coordination_relays, false, Instant::now());
     Ok(StartedConnect {
         direct_routes: direct_targets,
         coordination_relay_peers: relay_peers,
-        transit_relays: options.transit_relays.clone(),
-        transit_relay_peers: options
-            .transit_relays
-            .iter()
-            .map(|address| {
-                transit_relay_peer_id(address)
-                    .expect("transit relay was validated before collection")
-            })
-            .collect(),
+        transit_relays,
+        transit_relay_peers,
     })
 }
 
@@ -1542,12 +1538,12 @@ fn reconcile_transit_reservations(
     let removed = relays
         .iter()
         .filter_map(|(peer_id, relay)| {
-            (relay.transit_reserve && !desired.contains_key(peer_id)).then_some(*peer_id)
+            (!relay.transit_addresses.is_empty() && !desired.contains_key(peer_id))
+                .then_some(*peer_id)
         })
         .collect::<Vec<_>>();
     for peer_id in removed {
         let remove = if let Some(relay) = relays.get_mut(&peer_id) {
-            relay.transit_reserve = false;
             relay.transit_addresses.clear();
             if relay.is_active() {
                 false
@@ -1572,7 +1568,6 @@ fn reconcile_transit_reservations(
     for (peer_id, addresses) in desired {
         let relay = relays.entry(peer_id).or_default();
         relay.transit_addresses = addresses;
-        relay.transit_reserve = true;
         relay.next_connection_attempt = Instant::now();
         relay.next_reservation_attempt = Instant::now();
     }
@@ -1676,7 +1671,7 @@ fn register_automatic_relay_candidate(
         return;
     }
     let relay = relays.entry(candidate.peer_id).or_default();
-    if (relay.reserve || relay.transit_reserve) && !relay.is_automatic() {
+    if (relay.reserve || !relay.transit_addresses.is_empty()) && !relay.is_automatic() {
         return;
     }
     relay.automatic_addresses = addresses;
@@ -1721,6 +1716,9 @@ fn rebalance_automatic_relays(
             continue;
         }
         relay.reserve = false;
+        if !relay.transit_addresses.is_empty() {
+            continue;
+        }
         relay.reservation_accepted = false;
         relay.reservation_addresses.clear();
         if let Some(listener) = relay.reservation_listener.take() {
@@ -1880,6 +1878,11 @@ fn discard_automatic_relay_candidate(
     }
     relay.automatic_addresses.clear();
     relay.reserve = false;
+    if !relay.transit_addresses.is_empty() {
+        relay.next_connection_attempt = Instant::now();
+        relay.next_reservation_attempt = Instant::now();
+        return;
+    }
     relay.reservation_addresses.clear();
     if let Some(listener) = relay.reservation_listener.take() {
         swarm.remove_listener(listener);
@@ -1974,7 +1977,7 @@ fn request_coordination_reservation(
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
     };
-    if !(relay.reserve || relay.transit_reserve)
+    if !(relay.reserve || !relay.transit_addresses.is_empty())
         || relay.reservation_listener.is_some()
         || !relay.identify_received
         || !relay.identify_sent
@@ -2268,7 +2271,9 @@ mod tests {
             vec![relay_address.clone()],
         )
         .await;
-        wait_for_test_snapshot(&relay, |snapshot| snapshot.active_reservation_count == 1).await;
+        configure_test_transit_with_reservations(&source, HashSet::new(), vec![relay_address])
+            .await;
+        wait_for_test_snapshot(&relay, |snapshot| snapshot.active_reservation_count == 2).await;
 
         let (result, response) = oneshot::channel();
         source
@@ -2279,7 +2284,7 @@ mod tests {
                     peer_id: target.peer_id,
                     route_hints: Vec::new(),
                     coordination_relays: Vec::new(),
-                    transit_relays: vec![relay_address],
+                    transit_relay_peers: vec![relay.peer_id],
                     deadline: Duration::from_secs(10),
                 },
                 stream_kind: StreamKind::Application,
@@ -2375,7 +2380,7 @@ mod tests {
                     peer_id,
                     route_hints: vec![route],
                     coordination_relays: Vec::new(),
-                    transit_relays: Vec::new(),
+                    transit_relay_peers: Vec::new(),
                     deadline: Duration::from_secs(5),
                 },
                 stream_kind,

@@ -262,9 +262,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     assert.deepEqual(memberBPeer.transitPolicy.relayCandidates, [
       { peerId: 'peer-a', addresses: ['/memory/peer-a/p2p/peer-a'] },
     ]);
-    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelays, [
-      '/memory/peer-a/p2p/peer-a',
-    ]);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
 
     await memberD.setTransitMesh(meshId);
     await memberD.reconcile();
@@ -274,16 +272,12 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     assert.deepEqual(memberBPeer.transitPolicy.relayCandidates, [
       { peerId: 'peer-a', addresses: ['/memory/peer-a/p2p/peer-a'] },
     ]);
-    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelays, [
-      '/memory/peer-a/p2p/peer-a',
-    ]);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
     const secondMeshId = (await memberB.create()).roster.roster.meshId;
     await memberD.join(await memberB.invite(secondMeshId));
     await authority.remove(meshId, 'peer-d');
     await memberB.reconcile();
-    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelays, [
-      '/memory/peer-a/p2p/peer-a',
-    ]);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
 
     await authority.remove(meshId, 'peer-b');
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-c']);

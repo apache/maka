@@ -51,7 +51,7 @@ pub struct ConnectPeerOptions {
     pub peer_id: String,
     pub route_hints: Vec<String>,
     pub coordination_relays: Option<Vec<String>>,
-    pub transit_relays: Option<Vec<String>>,
+    pub transit_relay_peer_ids: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
 }
 
@@ -240,8 +240,8 @@ async fn connect_peer(
         options.coordination_relays.unwrap_or_default(),
         "coordination relay",
     )?;
-    let transit_relays =
-        parse_addresses(options.transit_relays.unwrap_or_default(), "transit relay")?;
+    let transit_relay_peers =
+        parse_peer_id_list(options.transit_relay_peer_ids.unwrap_or_default())?;
     if !(1..=120_000).contains(&options.direct_deadline_ms) {
         return Err(Error::new(
             Status::InvalidArg,
@@ -257,7 +257,7 @@ async fn connect_peer(
                 peer_id,
                 route_hints,
                 coordination_relays,
-                transit_relays,
+                transit_relay_peers,
                 deadline: Duration::from_millis(u64::from(options.direct_deadline_ms)),
             },
             stream_kind,
@@ -481,16 +481,24 @@ fn parse_transit_relay_candidates(
 }
 
 fn parse_peer_ids(values: Vec<String>) -> Result<HashSet<PeerId>> {
+    Ok(parse_peer_id_list(values)?.into_iter().collect())
+}
+
+fn parse_peer_id_list(values: Vec<String>) -> Result<Vec<PeerId>> {
     if values.len() > MAX_TRANSIT_PEERS {
         return Err(Error::new(
             Status::InvalidArg,
             "transit policy cannot contain more than 64 peers",
         ));
     }
-    values
-        .into_iter()
-        .map(|value| parse_peer_id(&value))
-        .collect()
+    let mut peers = Vec::new();
+    for value in values {
+        let peer = parse_peer_id(&value)?;
+        if !peers.contains(&peer) {
+            peers.push(peer);
+        }
+    }
+    Ok(peers)
 }
 
 fn validate_identity_payload(payload: &[u8]) -> Result<()> {

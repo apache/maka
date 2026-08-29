@@ -69,13 +69,13 @@ module.exports = {
       listenAddresses: [],
       activeCoordinationRelays: [],
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0 },
-      connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelays }) => {
-        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelays });
+      connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
-      connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelays }) => {
-        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelays });
+      connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
+        stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
@@ -105,7 +105,7 @@ module.exports = {
         resolveRoutes: () => ({
           routeHints: ['/memory/discovered'],
           coordinationRelays: ['/memory/relay'],
-          transitRelays: ['/memory/transit'],
+          transitRelayPeerIds: ['transit-peer'],
         }),
       },
     });
@@ -142,28 +142,28 @@ module.exports = {
           peerId: 'pending',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
-          transitRelays: ['/memory/transit'],
+          transitRelayPeerIds: ['transit-peer'],
         },
         {
           requestId: 2,
           peerId: 'shared',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
-          transitRelays: ['/memory/transit'],
+          transitRelayPeerIds: ['transit-peer'],
         },
         {
           requestId: 3,
           peerId: 'shared',
           routeHints: ['/memory/1'],
           coordinationRelays: [],
-          transitRelays: [],
+          transitRelayPeerIds: [],
         },
         {
           requestId: 4,
           peerId: 'ready',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
-          transitRelays: ['/memory/transit'],
+          transitRelayPeerIds: ['transit-peer'],
         },
       ],
       cancellations: [1, 1],

@@ -140,7 +140,7 @@ export interface PeerMeshNode {
     | {
         readonly routeHints: readonly string[];
         readonly coordinationRelays: readonly string[];
-        readonly transitRelays: readonly string[];
+        readonly transitRelayPeerIds: readonly string[];
       }
     | undefined;
   reconcile(signal?: AbortSignal): Promise<void>;
@@ -565,7 +565,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       .filter(({ route }) => route.peerId === peerId && route.expiresAt > now)
       .sort((left, right) => right.route.sequence - left.route.sequence)[0]?.route;
     const localPeerId = this.#peer.identity().peerId;
-    const transitRelays = transitRelayCandidates(
+    const transitRelayPeerIds = transitRelayCandidates(
       stored.routes
         .filter(
           ({ route: candidate }) =>
@@ -582,12 +582,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             ),
         )
         .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId)),
-    ).flatMap(({ addresses }) => addresses);
-    if (!route && transitRelays.length === 0) return undefined;
+    ).map(({ peerId: relayPeerId }) => relayPeerId);
+    if (!route && transitRelayPeerIds.length === 0) return undefined;
     return Object.freeze({
       routeHints: route?.routeHints ?? [],
       coordinationRelays: route?.coordinationRelays ?? [],
-      transitRelays: Object.freeze([...new Set(transitRelays)]),
+      transitRelayPeerIds: Object.freeze(transitRelayPeerIds),
     });
   }
 
