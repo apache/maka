@@ -95,7 +95,7 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 71 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 72 as const;
 // 71: Session Guests can submit durable exact Turn access requests and Owners
 // can decide them. Older peers do not understand this execution-authority flow.
 // 70: Session Guest connections receive resource-scoped shared catalog and

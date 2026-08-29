@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 224 files — blocker 0, polish 1, aligned 223.
+**Totals:** 225 files — blocker 0, polish 1, aligned 224.
 
 ## Exclusions (explicit)
 
@@ -71,7 +71,8 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/plan-mode-panel.tsx` | shell-chrome-or-panel | Badge, Banner, Button, Collapsible | aligned — uses Astryx (Badge, Banner, Button, Collapsible) | aligned |
 | `apps/desktop/src/renderer/reference-shell.css` | styles | n/a (css) | aligned — no off-rhythm control heights flagged | aligned |
 | `apps/desktop/src/renderer/remote-project-directory-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text | aligned — uses Astryx (Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, Text) | aligned |
-| `apps/desktop/src/renderer/session-collaboration-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent) | aligned |
+| `apps/desktop/src/renderer/session-collaboration-dialog.tsx` | dialog-overlay | Button, Dialog, DialogHeader, Layout, LayoutContent, SegmentedControl, SegmentedControlItem | aligned — uses Astryx (Button, Dialog, DialogHeader, Layout, LayoutContent, SegmentedControl, SegmentedControlItem) | aligned |
+| `apps/desktop/src/renderer/session-turn-request-composer.tsx` | shell-chrome-or-panel | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | Button, HStack, Text, VStack | aligned — uses Astryx (Button, HStack, Text, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector, Text, VStack | aligned — uses Astryx (Banner, Button, Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector) | aligned |

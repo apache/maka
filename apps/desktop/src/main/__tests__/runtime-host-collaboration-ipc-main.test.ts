@@ -75,12 +75,20 @@ test('requires Owner confirmation before issuing a plaintext collaboration invit
   const prepare = handlers.get('session-collaboration:prepare');
   assert.ok(prepare);
 
-  assert.deepEqual(await prepare({} as Parameters<IpcHandler>[0], 'session-1', false), {
-    kind: 'insecure_confirmation_required',
-  });
+  assert.deepEqual(
+    await prepare({} as Parameters<IpcHandler>[0], 'session-1', 'observe', false),
+    {
+      kind: 'insecure_confirmation_required',
+    },
+  );
   assert.equal(prepareCalls, 0);
 
-  const result = await prepare({} as Parameters<IpcHandler>[0], 'session-1', true);
+  const result = await prepare(
+    {} as Parameters<IpcHandler>[0],
+    'session-1',
+    'observe',
+    true,
+  );
   assert.equal(prepareCalls, 1);
   assert.equal((result as { kind?: unknown }).kind, 'prepared');
   const invitation = (result as {

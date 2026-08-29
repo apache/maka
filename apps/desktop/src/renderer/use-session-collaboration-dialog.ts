@@ -22,6 +22,7 @@ import { useState } from 'react';
 export interface SessionCollaborationDialogTarget {
   readonly sessionId: string;
   readonly sessionName: string;
+  readonly requiresRemoteAccess: boolean;
 }
 
 export function useSessionCollaborationDialog() {

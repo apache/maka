@@ -1180,12 +1180,13 @@ const browserSelection = createBrowserSelectionCoordinator(runtimeHostSessionRef
 const makaBridge = {
   runtimeHost,
   sessionCollaboration: {
-    async prepareInvitation(sessionId, allowInsecure = false) {
+    async prepareInvitation(sessionId, preset, allowInsecure = false) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
         'session-collaboration:prepare',
         session.scope,
         session.sessionId,
+        preset,
         allowInsecure,
       );
     },
@@ -1205,8 +1206,53 @@ const makaBridge = {
         principalId,
       );
     },
+    async revokeGrant(sessionId, grantId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:revokeGrant',
+        session.scope,
+        grantId,
+      );
+    },
     importInvitation({ code, allowInsecure = false }) {
       return ipcRenderer.invoke('session-collaboration:import', code, allowInsecure);
+    },
+    async requestTurn(sessionId, input) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:create',
+        session.scope,
+        {
+          sessionId: session.sessionId,
+          turnId: input.turnId,
+          content: { text: input.text },
+        },
+      );
+    },
+    async getTurnRequests(sessionId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:query',
+        session.scope,
+        session.sessionId,
+      );
+    },
+    async acknowledgeTurnRequest(sessionId, requestId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:acknowledge',
+        session.scope,
+        requestId,
+      );
+    },
+    async decideTurnRequest(sessionId, requestId, decision) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:decide',
+        session.scope,
+        requestId,
+        decision,
+      );
     },
   },
   runtimeHostProfiles: {

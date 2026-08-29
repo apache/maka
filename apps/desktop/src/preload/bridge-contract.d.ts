@@ -111,8 +111,13 @@ import type {
 } from '@maka/runtime-host/protocol';
 import type {
   CollaborationAccessQueryResult,
+  CollaborationGrantRevokeResult,
   CollaborationInvitationPrepareResult,
   CollaborationPrincipalRevokeResult,
+  CollaborationTurnRequestAcknowledgeResult,
+  CollaborationTurnRequestDecideResult,
+  CollaborationTurnRequestQueryResult,
+  SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type {
@@ -676,9 +681,14 @@ export interface MakaBridge {
   sessionCollaboration: {
     prepareInvitation(
       sessionId: string,
+      preset: 'observe' | 'request_turn',
       allowInsecure?: boolean,
     ): Promise<DesktopSessionCollaborationPrepareResult>;
     getAccess(sessionId: string): Promise<CollaborationAccessQueryResult>;
+    revokeGrant(
+      sessionId: string,
+      grantId: string,
+    ): Promise<CollaborationGrantRevokeResult>;
     revokePrincipal(
       sessionId: string,
       principalId: string,
@@ -687,6 +697,20 @@ export interface MakaBridge {
       readonly code: string;
       readonly allowInsecure?: boolean;
     }): Promise<DesktopSessionCollaborationImportResult>;
+    requestTurn(
+      sessionId: string,
+      input: { readonly turnId: string; readonly text: string },
+    ): Promise<SessionTurnAccessRequest>;
+    getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
+    acknowledgeTurnRequest(
+      sessionId: string,
+      requestId: string,
+    ): Promise<CollaborationTurnRequestAcknowledgeResult>;
+    decideTurnRequest(
+      sessionId: string,
+      requestId: string,
+      decision: 'approve' | 'reject',
+    ): Promise<CollaborationTurnRequestDecideResult>;
   };
 
   runtimeHost: {

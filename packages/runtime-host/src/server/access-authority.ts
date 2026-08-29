@@ -430,6 +430,10 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   ): CollaborationTurnRequestQueryResult {
     const guest = principal.principalKind === 'session_guest';
     return {
+      canRequestTurns:
+        guest &&
+        this.activeSessionGrant(principal.principalId, input.sessionId, 'session_turn_request') !==
+          undefined,
       requests: this.#file.turnAccessRequests.filter(
         (request) =>
           (!guest || request.principalId === principal.principalId) &&

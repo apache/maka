@@ -106,8 +106,10 @@ import {
   type SessionCatalogProjection,
   type SharedSessionCatalogProjection,
   type CollaborationAccessQueryResult,
+  type CollaborationGrantRevokeResult,
   type CollaborationInvitationPrepareResult,
   type CollaborationPrincipalRevokeResult,
+  type CollaborationTurnRequestAcknowledgeResult,
   type CollaborationTurnRequestDecideResult,
   type CollaborationTurnRequestQueryResult,
   type SessionCollaborationGrantKind,
@@ -294,18 +296,30 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  revokeCollaborationGrant(grantId: string): Promise<CollaborationGrantRevokeResult> {
+    return this.request('collaboration.grant.revoke', { grantId });
+  }
+
   revokeCollaborationPrincipal(
     principalId: string,
   ): Promise<CollaborationPrincipalRevokeResult> {
     return this.request('collaboration.principal.revoke', { principalId });
   }
 
-  createCollaborationTurnRequest(intent: SessionTurnRequestIntent): Promise<SessionTurnAccessRequest> {
+  createCollaborationTurnRequest(
+    intent: SessionTurnRequestIntent,
+  ): Promise<SessionTurnAccessRequest> {
     return this.request('collaboration.turn-request.create', { intent });
   }
 
   queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
     return this.request('collaboration.turn-request.query', { sessionId });
+  }
+
+  acknowledgeCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult> {
+    return this.request('collaboration.turn-request.acknowledge', { requestId });
   }
 
   decideCollaborationTurnRequest(

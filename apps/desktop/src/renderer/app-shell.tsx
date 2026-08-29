@@ -108,6 +108,7 @@ import {
 } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
+import { SessionTurnRequestComposer } from './session-turn-request-composer.js';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
 import { useSessionCollaborationDialog } from './use-session-collaboration-dialog';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
@@ -835,6 +836,13 @@ function AppShellContent({
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
+  function openSessionSharing(session: DesktopSessionSummary): void {
+    sharedSessionDialog.open({
+      sessionId: session.id,
+      sessionName: session.name,
+      requiresRemoteAccess: session.profileKind === 'local',
+    });
+  }
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -2779,13 +2787,16 @@ function AppShellContent({
                 key={activeSessionForView.id}
                 sessionName={activeSessionForView.name}
                 readOnly={sharedSessionActive}
-                action={sharedSessionActive ? undefined : {
-                  label: getSessionCollaborationCopy(uiLocale).shareAction,
-                  onClick: () => sharedSessionDialog.open({
-                    sessionId: activeSessionForView.id,
-                    sessionName: activeSessionForView.name,
-                  }),
-                }}
+                action={
+                  sharedSessionActive ||
+                  !activeDesktopSession ||
+                  activeDesktopSession.profileKind === 'environment'
+                    ? undefined
+                    : {
+                        label: getSessionCollaborationCopy(uiLocale).shareAction,
+                        onClick: () => void openSessionSharing(activeDesktopSession),
+                      }
+                }
                 onRenameSession={(name) => {
                   void sessionNavigationCommandsRef.current?.renameSession(activeSessionForView.id, name);
                 }}
@@ -2918,10 +2929,8 @@ function AppShellContent({
                         onClick={openWorkHub}
                       />
                     ) : null}
-                    {sharedSessionActive ? (
-                      <div className="sessionCollaborationReadOnly">
-                        {getSessionCollaborationCopy(uiLocale).observeHelp}
-                      </div>
+                    {sharedSessionActive && activeId ? (
+                      <SessionTurnRequestComposer key={activeId} sessionId={activeId} />
                     ) : (
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
@@ -3252,6 +3261,13 @@ function AppShellContent({
           mode="share"
           sessionId={sharedSessionDialog.target.sessionId}
           sessionName={sharedSessionDialog.target.sessionName}
+          requiresRemoteAccess={sharedSessionDialog.target.requiresRemoteAccess}
+          onEnableRemoteAccess={() => {
+            const copy = getSessionCollaborationCopy(uiLocale);
+            sharedSessionDialog.close();
+            toastApi.info(copy.enableRemoteAccessTitle, copy.enableRemoteAccessBody);
+            openSettingsSection('projects');
+          }}
           onClose={sharedSessionDialog.close}
         />
       ) : null}

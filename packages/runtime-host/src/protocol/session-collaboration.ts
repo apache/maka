@@ -140,6 +140,7 @@ export interface CollaborationTurnRequestQueryInput {
 }
 
 export interface CollaborationTurnRequestQueryResult {
+  readonly canRequestTurns: boolean;
   readonly requests: readonly SessionTurnAccessRequest[];
 }
 
@@ -430,11 +431,20 @@ function decodeCollaborationTurnRequestQueryInput(
 function decodeCollaborationTurnRequestQueryResult(
   value: unknown,
 ): CollaborationTurnRequestQueryResult {
-  const record = requireExactRecord(value, 'collaboration Turn request query result', ['requests']);
+  const record = requireExactRecord(value, 'collaboration Turn request query result', [
+    'canRequestTurns',
+    'requests',
+  ]);
   if (!Array.isArray(record.requests)) {
     throw invalidProtocolFrame('Invalid collaboration Turn request query result');
   }
-  return { requests: record.requests.map(decodeSessionTurnAccessRequest) };
+  if (typeof record.canRequestTurns !== 'boolean') {
+    throw invalidProtocolFrame('Invalid collaboration Turn request authority');
+  }
+  return {
+    canRequestTurns: record.canRequestTurns,
+    requests: record.requests.map(decodeSessionTurnAccessRequest),
+  };
 }
 
 function decodeCollaborationTurnRequestAcknowledgeInput(

@@ -623,3 +623,23 @@
   align-items: center;
   gap: var(--space-1);
 }
+
+.sessionCollaborationTurnRequest {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--background-subtle);
+}
+
+.sessionCollaborationTurnRequest > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sessionCollaborationTurnRequestText {
+  white-space: pre-wrap;
+}

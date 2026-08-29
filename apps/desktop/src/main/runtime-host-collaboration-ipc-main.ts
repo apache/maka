@@ -31,7 +31,12 @@ export function registerRuntimeHostCollaborationIpc(
   client: Pick<
     DesktopRuntimeHostClient,
     | 'prepareCollaborationInvitation'
+    | 'acknowledgeCollaborationTurnRequest'
+    | 'createCollaborationTurnRequest'
+    | 'decideCollaborationTurnRequest'
+    | 'queryCollaborationTurnRequests'
     | 'queryCollaborationAccess'
+    | 'revokeCollaborationGrant'
     | 'revokeCollaborationPrincipal'
   >,
   ipcMain: ReconnectableReadIpcMain,
@@ -41,14 +46,21 @@ export function registerRuntimeHostCollaborationIpc(
 ): void {
   ipcMain.handle(
     'session-collaboration:prepare',
-    async (_event, sessionId: unknown, allowInsecure: unknown) => {
+    async (
+      _event,
+      sessionId: unknown,
+      preset: unknown,
+      allowInsecure: unknown,
+    ) => {
       const target = await resolveConnectionTarget();
       if (target.transport.kind === 'plaintext' && allowInsecure !== true) {
         return { kind: 'insecure_confirmation_required' } as const;
       }
       const prepared = await client.prepareCollaborationInvitation(
         requiredId(sessionId, 'Session'),
-        ['session_observation'],
+        requiredPreset(preset) === 'request_turn'
+          ? ['session_observation', 'session_turn_request']
+          : ['session_observation'],
       );
       return {
         kind: 'prepared',
@@ -62,11 +74,42 @@ export function registerRuntimeHostCollaborationIpc(
       };
     },
   );
+  ipcMain.handle(
+    'session-collaboration:turn-request:create',
+    (_event, intent: unknown) =>
+      client.createCollaborationTurnRequest(intent as Parameters<
+        DesktopRuntimeHostClient['createCollaborationTurnRequest']
+      >[0]),
+  );
+  handleReconnectableRead(
+    ipcMain,
+    'session-collaboration:turn-request:query',
+    (_event, sessionId: unknown) =>
+      client.queryCollaborationTurnRequests(requiredId(sessionId, 'Session')),
+  );
+  ipcMain.handle(
+    'session-collaboration:turn-request:acknowledge',
+    (_event, requestId: unknown) =>
+      client.acknowledgeCollaborationTurnRequest(requiredId(requestId, 'Turn request')),
+  );
+  ipcMain.handle(
+    'session-collaboration:turn-request:decide',
+    (_event, requestId: unknown, decision: unknown) =>
+      client.decideCollaborationTurnRequest(
+        requiredId(requestId, 'Turn request'),
+        requiredDecision(decision),
+      ),
+  );
   handleReconnectableRead(
     ipcMain,
     'session-collaboration:getAccess',
     (_event, sessionId: unknown) =>
       client.queryCollaborationAccess(requiredId(sessionId, 'Session')),
+  );
+  ipcMain.handle(
+    'session-collaboration:revokeGrant',
+    (_event, grantId: unknown) =>
+      client.revokeCollaborationGrant(requiredId(grantId, 'Grant')),
   );
   ipcMain.handle(
     'session-collaboration:revokePrincipal',
@@ -83,6 +126,20 @@ function requiredId(value: unknown, label: string): string {
     /[\u0000-\u001f\u007f]/u.test(value)
   ) {
     throw new Error(`Invalid ${label} identity`);
+  }
+  return value;
+}
+
+function requiredPreset(value: unknown): 'observe' | 'request_turn' {
+  if (value !== 'observe' && value !== 'request_turn') {
+    throw new Error('Invalid collaboration invitation preset');
+  }
+  return value;
+}
+
+function requiredDecision(value: unknown): 'approve' | 'reject' {
+  if (value !== 'approve' && value !== 'reject') {
+    throw new Error('Invalid collaboration Turn request decision');
   }
   return value;
 }

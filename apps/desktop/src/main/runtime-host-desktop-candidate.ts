@@ -811,14 +811,14 @@ export async function createDesktopRuntimeHostCandidate(
         ipc,
       );
     }
+    registerRuntimeHostCollaborationIpc(client, ipc, async () => {
+      if (collaborationConnectionTarget) return collaborationConnectionTarget;
+      if (target.kind === 'local' && deps.resolveLocalCollaborationConnectionTarget) {
+        return deps.resolveLocalCollaborationConnectionTarget();
+      }
+      throw new Error('This Runtime Host does not have a shareable connection target');
+    });
     if (target.access === 'owner') {
-      registerRuntimeHostCollaborationIpc(client, ipc, async () => {
-        if (collaborationConnectionTarget) return collaborationConnectionTarget;
-        if (target.kind === 'local' && deps.resolveLocalCollaborationConnectionTarget) {
-          return deps.resolveLocalCollaborationConnectionTarget();
-        }
-        throw new Error('This Runtime Host does not have a shareable connection target');
-      });
       registerRuntimeHostWorkHubIpc(client, ipc, {
         resolveCreateProject: () => deps.resolveSessionCreateProject({}, target),
         emitSessionsChanged,
