@@ -565,23 +565,24 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       .filter(({ route }) => route.peerId === peerId && route.expiresAt > now)
       .sort((left, right) => right.route.sequence - left.route.sequence)[0]?.route;
     const localPeerId = this.#peer.identity().peerId;
-    const transitRelays = stored.routes
-      .filter(
-        ({ route: candidate }) =>
-          candidate.peerId !== localPeerId &&
-          candidate.peerId !== peerId &&
-          candidate.expiresAt > now &&
-          candidate.transitMeshId !== undefined &&
-          sharedMeshIds.includes(candidate.transitMeshId) &&
-          isActiveMeshMember(
-            stored.meshes,
-            candidate.transitMeshId,
-            localPeerId,
-            candidate.peerId,
-          ),
-      )
-      .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId))
-      .flatMap(({ route: candidate }) => candidate.routeHints);
+    const transitRelays = transitRelayCandidates(
+      stored.routes
+        .filter(
+          ({ route: candidate }) =>
+            candidate.peerId !== localPeerId &&
+            candidate.peerId !== peerId &&
+            candidate.expiresAt > now &&
+            candidate.transitMeshId !== undefined &&
+            sharedMeshIds.includes(candidate.transitMeshId) &&
+            isActiveMeshMember(
+              stored.meshes,
+              candidate.transitMeshId,
+              localPeerId,
+              candidate.peerId,
+            ),
+        )
+        .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId)),
+    ).flatMap(({ addresses }) => addresses);
     if (!route && transitRelays.length === 0) return undefined;
     return Object.freeze({
       routeHints: route?.routeHints ?? [],
