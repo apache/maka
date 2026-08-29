@@ -469,7 +469,7 @@ export const test = base.extend<{
         await mkdir(path.join(folder, 'nested'), { recursive: true });
         await writeFile(path.join(folder, 'README.md'), 'DO_NOT_READ_FILE_CONTENTS');
         await writeFile(path.join(folder, 'nested', 'deep.txt'), 'DO_NOT_DESCEND');
-        // Replace only the OS chooser. IPC, Host admission, filesystem reads,
+        // Replace only the OS chooser. IPC, Host admission, message delivery,
         // event persistence and rendering still run through the real stack.
         await app.evaluate(({ dialog }, selectedPath) => {
           dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });

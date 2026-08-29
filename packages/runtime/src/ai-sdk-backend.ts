@@ -55,6 +55,7 @@ import type {
   ToolStartEvent,
   StorageRef,
   AttachmentRef,
+  DirectoryReference,
   QuoteRef,
   ContextBudgetExhaustedDetail,
 } from '@maka/core/events';
@@ -1937,6 +1938,7 @@ export class AiSdkBackend implements AgentBackend {
               scope.imageBudget,
               input.text,
               input.attachments,
+              input.directoryReferences,
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
             );
@@ -2048,6 +2050,9 @@ export class AiSdkBackend implements AgentBackend {
                 ? ''
                 : formatTextWithInlineRefs(input.text, {
                     ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+                    ...(input.directoryReferences !== undefined
+                      ? { directoryReferences: input.directoryReferences }
+                      : {}),
                     ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
                   }),
               turnTailPrompt,
@@ -4483,6 +4488,7 @@ export class AiSdkBackend implements AgentBackend {
     budget: ProviderImageBudget,
     text: string,
     attachments?: AttachmentRef[],
+    directoryReferences?: DirectoryReference[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
@@ -4490,6 +4496,7 @@ export class AiSdkBackend implements AgentBackend {
       budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
+        ...(directoryReferences !== undefined ? { directoryReferences } : {}),
         ...(quotes !== undefined ? { quotes } : {}),
       }),
       attachments,

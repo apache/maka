@@ -60,8 +60,8 @@ test('a folder reference is removable, survives send/reload, and leaves project 
   await expect(user).toContainText('referenced-source');
   await expect(user).not.toContainText('README.md');
   const transcript = page.getByRole('log');
-  await expect(transcript).toContainText('README.md');
-  await expect(transcript).toContainText('"status":"listed"');
+  await expect(transcript).not.toContainText('README.md');
+  await expect(transcript).not.toContainText('"status":"listed"');
   await expect(transcript).not.toContainText('DO_NOT_READ_FILE_CONTENTS');
   await expect(transcript).not.toContainText('deep.txt');
   await expect(chip).toHaveCount(0);
@@ -72,6 +72,6 @@ test('a folder reference is removable, survives send/reload, and leaves project 
   expect(sessions[0]!.cwd).not.toBe(folder);
   await page.reload();
   await expect(page.getByLabel('你发送的消息').first()).toContainText('referenced-source');
-  await expect(page.getByRole('log')).toContainText('README.md');
+  await expect(page.getByRole('log')).not.toContainText('README.md');
   await page.screenshot({ path: testInfo.outputPath('directory-reference-sent.png') });
 });

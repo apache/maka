@@ -378,9 +378,6 @@ export async function executeFilesystemOperation(
         'read',
         operationBoundary,
       );
-      // Validate enumeration inside the sandbox: glob otherwise hides root EACCES.
-      const directory = await fs.opendir(path);
-      await directory.close();
       const files: string[] = [];
       const limit = operation.limit ?? DEFAULT_GLOB_LIMIT;
       for await (const file of nodeGlob(operation.pattern, { cwd: path })) {

@@ -37,7 +37,6 @@ import {
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
-import { DirectoryContextPreparationError } from '@maka/runtime/directory-context';
 import {
   RuntimeHostedRootConflictError,
   RuntimeHostedRootUnavailableError,
@@ -336,10 +335,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       sessionId: string;
       content: MessageContent;
     }) => void,
-    private readonly prepareDirectories?: (
-      sessionId: string,
-      content: MessageContent,
-    ) => Promise<MessageContent>,
+    private readonly directoryHostId?: string,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -1083,7 +1079,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           };
         }
         const canonicalContent = preflightRootMessageContent(
-          await this.prepareDirectoryReferences(input.sessionId, prepared.content),
+          this.validateDirectoryReferences(input.sessionId, prepared.content),
         );
         if (!canonicalContent.ok)
           return { error: 'Prepared message content exceeds durable limits' };
@@ -1234,7 +1230,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (parseSkillInvocationTokens(content.text).length === 0) {
         return {
           kind: 'ready',
-          content: await this.prepareDirectoryReferences(input.sessionId, content),
+          content: this.validateDirectoryReferences(input.sessionId, content),
         };
       }
       const prepare = async () => {
@@ -1247,7 +1243,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         return prepared.kind === 'ready'
           ? {
               ...prepared,
-              content: await this.prepareDirectoryReferences(input.sessionId, prepared.content),
+              content: this.validateDirectoryReferences(input.sessionId, prepared.content),
             }
           : prepared;
       };
@@ -1257,25 +1253,18 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
-  private async prepareDirectoryReferences(
-    sessionId: string,
-    content: MessageContent,
-  ): Promise<MessageContent> {
+  private validateDirectoryReferences(sessionId: string, content: MessageContent): MessageContent {
     if (!content.directoryReferences?.length) return content;
-    if (!this.prepareDirectories) {
+    if (
+      !this.directoryHostId ||
+      content.directoryReferences.some((reference) => reference.hostId !== this.directoryHostId)
+    ) {
       throw new RuntimeHostedRootUnavailableError(
         sessionId,
-        'Directory context is unavailable on this Host',
+        'Directory references belong to a different Runtime Host',
       );
     }
-    try {
-      return await this.prepareDirectories(sessionId, content);
-    } catch (error) {
-      if (error instanceof DirectoryContextPreparationError) {
-        throw new RuntimeHostedRootUnavailableError(sessionId, error.message);
-      }
-      throw error;
-    }
+    return content;
   }
 
   claimStop(
@@ -1544,9 +1533,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const prepared = await this.prepareRootMessageContent(request, lease);
         if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
         const canonicalContent = preflightRootMessageContent(
-          'prepareFreshContent' in request
-            ? await this.prepareDirectoryReferences(request.sessionId, prepared.content)
-            : prepared.content,
+          this.validateDirectoryReferences(request.sessionId, prepared.content),
         );
         if (!canonicalContent.ok) return completedStart(canonicalContent.outcome);
         const attachments = canonicalContent.content.attachments ?? [];
