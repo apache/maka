@@ -34,6 +34,9 @@ import {
   ACTIVE_TRANSCRIPT_OVERLAY_MAX_MESSAGES,
   type SessionTranscriptReader,
 } from './session-transcript-reader.js';
+import { projectSharedSessionTranscriptMessage } from './shared-session-transcript.js';
+
+type SessionTranscriptProjection = 'owner' | 'shared';
 
 interface TranscriptCursorState {
   readonly version: 1;
@@ -53,6 +56,7 @@ export interface SubscriberTranscriptState {
   overlayMessages: readonly Buffer[] | undefined;
   readonly cursorSecret: Buffer;
   durableThroughSequence: number | null;
+  readonly projection: SessionTranscriptProjection;
 }
 
 export interface ActiveTranscriptAssistantStream {
@@ -78,9 +82,17 @@ export async function createSessionTranscriptBootstrap(input: {
   maxBytes: number;
   maxEncodedBytes?: number;
   preparedOverlayMessages?: readonly Buffer[];
+  projection: SessionTranscriptProjection;
 }): Promise<{ bootstrap: SessionTranscriptBootstrap; state: SubscriberTranscriptState }> {
-  const overlayMessages =
+  const projection = input.projection;
+  const preparedOverlayMessages =
     input.preparedOverlayMessages ?? (await prepareSessionTranscriptOverlay(input));
+  const overlayMessages =
+    projection === 'shared'
+      ? preparedOverlayMessages.flatMap((message) =>
+          projectEncodedSharedMessage(message, input.sessionId),
+        )
+      : preparedOverlayMessages;
   const cursorSecret = randomBytes(32);
   let rawBudget = input.maxBytes;
   for (;;) {
@@ -93,12 +105,16 @@ export async function createSessionTranscriptBootstrap(input: {
       overlayBudget,
     );
     const durableBudget = rawBudget - selectedOverlay.rawBytes;
-    const durableStorage = await input.reader.readDurablePage(input.sessionId, {
+    const durableRequest = {
       direction: 'older',
       throughSequence: input.throughSequence,
       maxBytes: durableBudget,
       maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-    });
+    } as const;
+    const durableStorage =
+      projection === 'shared'
+        ? await readSharedDurablePage(input.reader, input.sessionId, durableRequest)
+        : await input.reader.readDurablePage(input.sessionId, durableRequest);
     if (durableStorage.throughSequence !== input.throughSequence) {
       throw new Error('Session transcript durable watermark changed during bootstrap');
     }
@@ -109,9 +125,11 @@ export async function createSessionTranscriptBootstrap(input: {
       durableThroughSequence: input.throughSequence,
       overlayMessages,
       cursorSecret,
+      projection,
     };
     const bootstrap: SessionTranscriptBootstrap = {
       throughSequence: input.throughSequence,
+      durableCoverage: projection === 'shared' ? 'projected' : 'complete',
       overlayMessageCount: overlayMessages.length,
       durable: pageFromSelection(state, 'durable', 'older', storageSelection(durableStorage)),
       overlay: pageFromSelection(state, 'overlay', 'older', selectedOverlay),
@@ -193,14 +211,18 @@ export async function readSessionTranscriptPage(input: {
     );
   }
   if (request.throughSequence === null) return emptyPage(state, request);
-  const storage = await input.reader.readDurablePage(state.sessionId, {
+  const durableRequest = {
     direction: request.direction,
     throughSequence: request.throughSequence,
     position: position.position,
     ...(position.byteOffset === null ? {} : { byteOffset: position.byteOffset }),
     maxBytes: request.maxBytes,
     maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
-  });
+  } as const;
+  const storage =
+    state.projection === 'shared'
+      ? await readSharedDurablePage(input.reader, state.sessionId, durableRequest)
+      : await input.reader.readDurablePage(state.sessionId, durableRequest);
   return pageFromSelection(
     state,
     'durable',
@@ -208,6 +230,82 @@ export async function readSessionTranscriptPage(input: {
     storageSelection(storage),
     request.throughSequence,
   );
+}
+
+async function readSharedDurablePage(
+  reader: SessionTranscriptReader,
+  sessionId: string,
+  request: Parameters<SessionTranscriptReader['readDurablePage']>[1],
+): ReturnType<SessionTranscriptReader['readDurablePage']> {
+  const position =
+    request.position ??
+    (request.direction === 'older' ? (request.throughSequence ?? undefined) : 0);
+  const scanned = await reader.readDurableRecords(sessionId, {
+    direction: request.direction,
+    ...(request.throughSequence === undefined ? {} : { throughSequence: request.throughSequence }),
+    ...(position === undefined ? {} : { position }),
+    maxStoredBytes: ACTIVE_TRANSCRIPT_OVERLAY_MAX_BYTES,
+    maxMessages: SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
+  });
+  const fragments: Awaited<
+    ReturnType<SessionTranscriptReader['readDurablePage']>
+  >['fragments'][number][] = [];
+  let rawBytes = 0;
+  let next: { position: number; byteOffset: number | null } | null = null;
+  let recordIndex = 0;
+  for (; recordIndex < scanned.records.length; recordIndex += 1) {
+    const record = scanned.records[recordIndex]!;
+    const projected = projectSharedSessionTranscriptMessage(record.message, sessionId);
+    if (!projected) continue;
+    const bytes = Buffer.from(JSON.stringify(projected), 'utf8');
+    const continuationOffset =
+      record.sequence === position && request.byteOffset !== undefined ? request.byteOffset : null;
+    const selected = selectBuffer(
+      bytes,
+      request.direction,
+      continuationOffset,
+      request.maxBytes - rawBytes,
+    );
+    if (!selected) break;
+    fragments.push({
+      sequence: record.sequence,
+      byteOffset: selected.byteOffset,
+      totalBytes: bytes.byteLength,
+      payloadDigest: null,
+      data: selected.data,
+    });
+    rawBytes += selected.data.byteLength;
+    if (!selected.complete) {
+      next = { position: record.sequence, byteOffset: selected.nextOffset };
+      break;
+    }
+    if (fragments.length === request.maxMessages || rawBytes === request.maxBytes) {
+      recordIndex += 1;
+      break;
+    }
+  }
+  if (!next) {
+    next =
+      recordIndex < scanned.records.length
+        ? { position: scanned.records[recordIndex]!.sequence, byteOffset: null }
+        : scanned.nextPosition === null
+          ? null
+          : { position: scanned.nextPosition, byteOffset: null };
+  }
+  return {
+    throughSequence: scanned.throughSequence,
+    fragments,
+    rawBytes,
+    next,
+  };
+}
+
+function projectEncodedSharedMessage(bytes: Buffer, sessionId: string): Buffer[] {
+  const projected = projectSharedSessionTranscriptMessage(
+    JSON.parse(bytes.toString('utf8')),
+    sessionId,
+  );
+  return projected ? [Buffer.from(JSON.stringify(projected), 'utf8')] : [];
 }
 
 export function updateSubscriberTranscriptHighWater(

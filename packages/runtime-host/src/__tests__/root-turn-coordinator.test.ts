@@ -5162,6 +5162,7 @@ function operationContext(
     hostEpoch,
     connectionId,
     principal: 'local_os_user' as const,
+    principalKind: 'local_owner' as const,
     acquireResidency,
   };
 }

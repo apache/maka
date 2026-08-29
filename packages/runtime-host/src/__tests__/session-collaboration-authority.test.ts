@@ -44,6 +44,13 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
     await authority.finalize(credentialId, 'guest-client');
     assert.deepEqual(authority.authenticate(invitation.credential)?.operationGrants, [
       'host.status',
+      'artifact.query',
+      'runtime.resource.query',
+      'session.shared.query',
+      'subscription.open',
+      'subscription.close',
+      'session.transcript.page',
+      'session.transcript.overlay.release',
     ]);
 
     const observation = prepared.grants.find((grant) => grant.kind === 'session_observation')!;

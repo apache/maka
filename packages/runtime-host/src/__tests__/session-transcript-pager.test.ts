@@ -28,6 +28,7 @@ import {
   updateSubscriberTranscriptHighWater,
 } from '../server/session-transcript-pager.js';
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
+import { projectSharedSessionTranscriptMessage } from '../server/shared-session-transcript.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
 
 test('reads newly durable messages forward from an announced watermark', async () => {
@@ -41,6 +42,7 @@ test('reads newly durable messages forward from an announced watermark', async (
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 1024,
+    projection: 'owner',
   });
   assert.equal(bootstrap.throughSequence, 1);
 
@@ -68,6 +70,151 @@ test('reads newly durable messages forward from an announced watermark', async (
   assert.equal(page.nextCursor, null);
 });
 
+test('projects durable and active transcript records before sharing them', async () => {
+  const durable: StoredMessage[] = [
+    {
+      ...assistantMessage(0),
+      providerOptions: { replay: 'private' },
+      thinking: {
+        text: 'visible thought',
+        signature: 'private-signature',
+        providerOptions: { replay: 'private' },
+      },
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-0',
+      ts: 2,
+      toolUseId: 'tool-1',
+      isError: false,
+      content: { kind: 'text', text: 'visible result' },
+      modelVisibility: 'hidden',
+      providerOutput: { replay: 'private' },
+    },
+    {
+      type: 'system_note',
+      id: 'audit-1',
+      ts: 3,
+      kind: 'mode_change',
+      data: { previousSessionId: 'private-session' },
+    },
+    {
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-0',
+      ts: 4,
+      text: 'private composed skill instructions',
+      displayText: 'visible attachment',
+      steeringEventId: 'steering-event-1',
+      attachments: [
+        {
+          kind: 'code',
+          name: 'visible.ts',
+          mimeType: 'text/typescript',
+          bytes: 7,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'visible.ts' },
+        },
+        {
+          kind: 'code',
+          name: 'private.ts',
+          mimeType: 'text/typescript',
+          bytes: 8,
+          ref: { kind: 'external_file', absolutePath: '/private/private.ts' },
+        },
+      ],
+    },
+  ];
+  const overlay: StoredMessage[] = [
+    {
+      ...assistantMessage(1),
+      providerOptions: { replay: 'private' },
+    },
+  ];
+  const reader = transcriptReader(durable, overlay);
+  const owner = await createSessionTranscriptBootstrap({
+    reader,
+    sessionId: 'session-1',
+    subscriptionId: 'owner',
+    throughSequence: 2,
+    rootTurn: null,
+    activeAssistantStreams: [],
+    maxBytes: 16 * 1024,
+    projection: 'owner',
+  });
+  const shared = await createSessionTranscriptBootstrap({
+    reader,
+    sessionId: 'session-1',
+    subscriptionId: 'shared',
+    throughSequence: 3,
+    rootTurn: null,
+    activeAssistantStreams: [],
+    maxBytes: 16 * 1024,
+    projection: 'shared',
+  });
+
+  assert.equal(
+    (decodeBootstrap(owner.bootstrap.durable)[0] as { data?: unknown }).data !== undefined,
+    true,
+  );
+  assert.equal(
+    (decodeBootstrap(owner.bootstrap.overlay)[0] as { providerOptions?: unknown })
+      .providerOptions !== undefined,
+    true,
+  );
+  const sharedDurable = decodeBootstrap(shared.bootstrap.durable);
+  assert.deepEqual(
+    sharedDurable.map((message) => message.type),
+    ['user', 'tool_result', 'assistant'],
+  );
+  const sharedAttachments = sharedDurable[0]?.attachments;
+  assert.deepEqual(
+    Array.isArray(sharedAttachments)
+      ? sharedAttachments.map((item) => (item as { name: string }).name)
+      : [],
+    ['visible.ts'],
+  );
+  assert.equal(sharedDurable[0]?.text, 'visible attachment');
+  assert.equal('displayText' in sharedDurable[0]!, false);
+  assert.equal(sharedDurable[0]?.steeringEventId, 'steering-event-1');
+  assert.equal('providerOutput' in sharedDurable[1]!, false);
+  assert.equal('providerOptions' in sharedDurable[2]!, false);
+  assert.deepEqual(sharedDurable[2]!.thinking, { text: 'visible thought' });
+  assert.equal('providerOptions' in decodeBootstrap(shared.bootstrap.overlay)[0]!, false);
+  const projectedState = projectSharedSessionTranscriptMessage(
+    {
+      type: 'turn_state',
+      id: 'state-1',
+      turnId: 'turn-0',
+      ts: 5,
+      status: 'aborted',
+      abortedAt: 5,
+      abortSource: 'stop_button',
+      partialOutputRetained: true,
+    },
+    'session-1',
+  );
+  assert.equal(projectedState?.type, 'turn_state');
+  if (projectedState?.type === 'turn_state') {
+    assert.equal(projectedState.abortSource, 'stop_button');
+  }
+  const projectedInput = projectSharedSessionTranscriptMessage(
+    {
+      type: 'tool_call',
+      id: 'tool-1',
+      turnId: 'turn-0',
+      ts: 6,
+      toolName: 'WriteStdin',
+      args: { ref: 'shell-1', input: 'secret=sk-example-value' },
+    },
+    'session-1',
+  );
+  assert.equal(projectedInput?.type, 'tool_call');
+  if (projectedInput?.type === 'tool_call') {
+    assert.equal(JSON.stringify(projectedInput.args).includes('sk-example-value'), false);
+  }
+});
+
 test('rejects cursor tampering and cross-subscription replay', async () => {
   const reader = transcriptReader([userMessage(0, 'x'.repeat(2_000))]);
   const first = await createSessionTranscriptBootstrap({
@@ -78,6 +225,7 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 128,
+    projection: 'owner',
   });
   const second = await createSessionTranscriptBootstrap({
     reader,
@@ -87,6 +235,7 @@ test('rejects cursor tampering and cross-subscription replay', async () => {
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: 128,
+    projection: 'owner',
   });
   const cursor = first.bootstrap.durable.nextCursor;
   assert.ok(cursor);
@@ -127,6 +276,7 @@ test('keeps a durable continuation when overlay bytes reduce the bootstrap budge
     rootTurn: null,
     activeAssistantStreams: [],
     maxBytes: Buffer.byteLength(JSON.stringify(durable[0]), 'utf8') * 2,
+    projection: 'owner',
   });
   assert.ok(bootstrap.overlay.rawBytes > 0);
   assert.ok(bootstrap.durable.nextCursor);
@@ -143,6 +293,7 @@ test('shrinks the raw bootstrap until it fits its aggregate encoded budget', asy
     activeAssistantStreams: [],
     maxBytes: 16 * 1024,
     maxEncodedBytes: 4 * 1024,
+    projection: 'owner',
   });
   assert.ok(Buffer.byteLength(JSON.stringify(bootstrap), 'utf8') <= 4 * 1024);
   assert.ok(bootstrap.durable.nextCursor);
@@ -229,4 +380,12 @@ function assistantMessage(index: number): Extract<StoredMessage, { type: 'assist
     text: `message-${index}`,
     thinking: { text: `thinking-${index}`, signature: '' },
   };
+}
+
+function decodeBootstrap(
+  page: Awaited<ReturnType<typeof createSessionTranscriptBootstrap>>['bootstrap']['durable'],
+): Array<Record<string, unknown>> {
+  return page.fragments.map((fragment) =>
+    JSON.parse(Buffer.from(fragment.data, 'base64').toString('utf8')),
+  );
 }

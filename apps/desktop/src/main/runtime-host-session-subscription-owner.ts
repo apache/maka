@@ -404,11 +404,13 @@ export class RuntimeHostSessionSubscriptionOwner {
 }
 
 function subscriptionClosedError(
-  reason: "slow_consumer" | "session_removed",
+  reason: "access_revoked" | "slow_consumer" | "session_removed",
 ): Error {
-  return reason === "session_removed"
+  return reason !== "slow_consumer"
     ? new SessionRemovedSubscriptionError(
-        "Runtime Host Session was removed while it was observed",
+        reason === "access_revoked"
+          ? "Runtime Host Session access was revoked"
+          : "Runtime Host Session was removed while it was observed",
       )
     : new RuntimeHostSubscriptionError(
         "slow_consumer",

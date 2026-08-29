@@ -36,11 +36,13 @@ import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.j
 import { SESSION_COLLABORATION_OPERATION_SPECS } from '../protocol/session-collaboration.js';
 import { PEER_MESH_OPERATION_SPECS } from '../protocol/peer-mesh.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
   principal: string;
+  principalKind?: RuntimeHostConnectionAuthority['principalKind'];
   credentialId?: string;
   clientInstanceId?: string;
   acquireResidency(): OperationResidency;

@@ -1632,6 +1632,7 @@ function transcriptBootstrapFor(sessionId: string) {
   const contents = Buffer.from('t'.repeat(16 * 1024));
   return {
     throughSequence: 0,
+    durableCoverage: 'complete' as const,
     overlayMessageCount: 0,
     durable: {
       kind: 'page' as const,

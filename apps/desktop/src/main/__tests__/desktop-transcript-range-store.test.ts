@@ -230,6 +230,7 @@ test('keeps a bounded contiguous window while moving between history and the tai
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...page(null), source: 'overlay' },
@@ -294,6 +295,7 @@ test('delivers a mid-session tail append even while a history window is resident
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...page(null), source: 'overlay' },
@@ -364,6 +366,7 @@ test('does not resurrect a discarded replica when a tail re-anchor is in flight'
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...page(null), source: 'overlay' },
@@ -446,6 +449,7 @@ test('does not resurrect a discarded replica when a history load is in flight', 
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...page(null), source: 'overlay' },
@@ -518,6 +522,7 @@ test('does not drive a discarded replica terminal when a contiguous catch-up is 
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...page(null, 4), source: 'overlay' },
@@ -572,6 +577,7 @@ test('loads a history target with newer messages available below it', async () =
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...transcriptPage('older', null, 4), source: 'overlay' },
@@ -624,6 +630,7 @@ test('keeps an oversized transcript sparse while moving between indexed prompts'
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 15,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: bootstrapPage,
       overlay: { ...transcriptPage('older', null, 15), source: 'overlay' },
@@ -727,6 +734,7 @@ test('keeps history resident when an active overlay uses its own cache budget', 
     events: { async *[Symbol.asyncIterator]() {} },
     transcriptBootstrap: {
       throughSequence: 1,
+      durableCoverage: 'complete',
       overlayMessageCount: 1,
       durable: bootstrapPage,
       overlay: { ...transcriptPage('older', null, 1), source: 'overlay' },

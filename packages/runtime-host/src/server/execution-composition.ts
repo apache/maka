@@ -378,6 +378,9 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('runtime-resource'),
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
       resolveShell: async () =>
         resolveShellPlan((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell),
       onProjectionChanged: (update) =>
@@ -556,6 +559,7 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
       (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+      context.sessionAccessAuthority,
     );
     const continuityCoordinator = continuity;
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
@@ -1108,6 +1112,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       sessionAdmission,
       stores.sessionStore,
+      Date.now,
+      context.sessionAccessAuthority,
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,
@@ -1270,6 +1276,9 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
       stateRoot: context.owner.capability.canonicalPath,

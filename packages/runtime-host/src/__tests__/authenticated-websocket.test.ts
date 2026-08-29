@@ -39,6 +39,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
+  decodeCollaborationInvitationCode,
   type RequestFrame,
 } from '../protocol/index.js';
 import { openRuntimeHostAccessAuthority } from '../server/access-authority.js';
@@ -70,6 +71,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
   });
   let local: RuntimeHostConnection | undefined;
   let remote: RuntimeHostConnection | undefined;
+  let guest: RuntimeHostConnection | undefined;
   try {
     local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
     const issued = await local.request('access.credential.issue', {
@@ -217,6 +219,58 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       modelTarget: { kind: 'default' },
     });
     assert.ok(!('kind' in created));
+    const preparedGuest = await local.request('collaboration.invitation.prepare', {
+      sessionId: 'shared-session',
+      grantKinds: ['session_observation'],
+    });
+    const guestInvitation = decodeCollaborationInvitationCode(preparedGuest.invitationCode);
+    const pendingGuest = await connectRemoteRuntimeHost({
+      url,
+      credential: guestInvitation.credential,
+      clientInstanceId: 'guest-client',
+      expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: PROTOCOL,
+    });
+    assert.equal(pendingGuest.kind, 'connected', JSON.stringify(pendingGuest));
+    if (pendingGuest.kind !== 'connected') assert.fail('Session Guest did not connect');
+    await pendingGuest.connection.request('access.credential.finalize', {});
+    await pendingGuest.connection.close();
+    const activeGuest = await connectRemoteRuntimeHost({
+      url,
+      credential: guestInvitation.credential,
+      clientInstanceId: 'guest-client',
+      expectedRootId: capability.rootId,
+      compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+      protocol: PROTOCOL,
+    });
+    assert.equal(activeGuest.kind, 'connected', JSON.stringify(activeGuest));
+    if (activeGuest.kind !== 'connected') assert.fail('Session Guest did not reconnect');
+    guest = activeGuest.connection;
+    const sharedCatalog = await guest.request('session.shared.query', {});
+    assert.equal(sharedCatalog.session?.id, 'shared-session');
+    assert.equal('workspace' in sharedCatalog.session!, false);
+    await assert.rejects(
+      guest.request('session.catalog.query', { kind: 'list_start' }),
+      (error: unknown) =>
+        error instanceof RuntimeHostOperationError && error.code === 'unauthorized',
+    );
+    const guestSubscription = await guest.openSessionSubscription({
+      sessionId: 'shared-session',
+      transcript: { kind: 'none' },
+    });
+    const observationGrant = preparedGuest.grants.find(
+      (grant) => grant.kind === 'session_observation',
+    )!;
+    await local.request('collaboration.grant.revoke', {
+      grantId: observationGrant.grantId,
+    });
+    const closed = await guestSubscription[Symbol.asyncIterator]().next();
+    assert.equal(closed.done, false);
+    assert.equal(closed.value?.kind, 'subscription.closed');
+    if (closed.value?.kind === 'subscription.closed') {
+      assert.equal(closed.value.reason, 'access_revoked');
+    }
     assert.deepEqual(
       await remote.request('session.catalog.query', {
         kind: 'get',
@@ -409,7 +463,7 @@ test('one Local IPC owner and one authenticated WebSocket Client control the sam
       { credentialId: candidate.credentialId, revoked: true },
     );
   } finally {
-    await Promise.allSettled([remote?.close(), local?.close()]);
+    await Promise.allSettled([guest?.close(), remote?.close(), local?.close()]);
     await host.close().catch(() => undefined);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
       recursive: true,

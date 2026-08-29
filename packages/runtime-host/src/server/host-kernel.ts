@@ -119,6 +119,10 @@ export interface RuntimeHostCompositionContext {
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
+  sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    'activeSessionGrant' | 'activeSessionGrantForPrincipal' | 'subscribeGrantRevocations'
+  >;
   waitForResidencies?(): Promise<void>;
   waitForResidenciesExcept?(excludedLabel: string): Promise<void>;
 }
@@ -346,6 +350,9 @@ export class RuntimeHostKernel {
           acquireResidency: (label) => this.#acquireResidency(label),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
+          ...(this.#options.accessAuthority
+            ? { sessionAccessAuthority: this.#options.accessAuthority }
+            : {}),
           waitForResidencies: () => this.#waitForResidencies(),
           waitForResidenciesExcept: (excludedLabel) =>
             this.#waitForResidenciesExcept(excludedLabel),

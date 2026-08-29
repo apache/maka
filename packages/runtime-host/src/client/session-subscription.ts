@@ -317,7 +317,9 @@ export class ClientSessionSubscription
     }
     const overlay = await this.#consumeTranscriptOverlay(bootstrap);
     const durable = await this.#loadTranscriptSource(bootstrap.durable);
-    assertCompleteIdentities(durable, bootstrap.throughSequence);
+    if (bootstrap.durableCoverage === 'complete') {
+      assertCompleteIdentities(durable, bootstrap.throughSequence);
+    }
     const messages = durable.map((entry) => entry.value);
     const indexById = new Map<string, number>();
     for (const [index, message] of messages.entries()) {

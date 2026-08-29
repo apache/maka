@@ -57,6 +57,13 @@ export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
 export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'host.status',
+  'artifact.query',
+  'runtime.resource.query',
+  'session.shared.query',
+  'subscription.open',
+  'subscription.close',
+  'session.transcript.page',
+  'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
 
 export interface StoredAccessCredential {

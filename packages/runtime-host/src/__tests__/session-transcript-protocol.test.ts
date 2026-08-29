@@ -70,6 +70,7 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
 
   const bootstrap = {
     throughSequence: 3,
+    durableCoverage: 'complete' as const,
     overlayMessageCount: 0,
     durable: { ...page, direction: 'older' as const },
     overlay: {
@@ -181,6 +182,7 @@ test('Session transcript protocol rejects malformed and uncorrelated values', ()
     () =>
       decodeSessionTranscriptBootstrap({
         throughSequence: 3,
+        durableCoverage: 'complete',
         overlayMessageCount: 0,
         durable: page,
         overlay: { ...page, source: 'overlay', throughSequence: 2 },

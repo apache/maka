@@ -46,6 +46,7 @@ export function runtimeHostSessionFixture(input: {
     activeAssistantStreams: input.activeAssistantStreams ?? [],
     transcriptBootstrap: input.transcriptBootstrap ?? {
       throughSequence: null,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: emptyPage(sessionId, 'durable'),
       overlay: emptyPage(sessionId, 'overlay'),

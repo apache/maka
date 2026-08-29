@@ -222,6 +222,7 @@ export class RuntimeHostConnectionSession {
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         principal: this.#options.connection.authority.principalId,
+        principalKind: this.#options.connection.authority.principalKind,
         ...(this.#options.connection.authority.credentialId
           ? { credentialId: this.#options.connection.authority.credentialId }
           : {}),
@@ -330,10 +331,11 @@ export class RuntimeHostConnectionSession {
           this.#options.connection.authority,
           'project.catalog.query',
         ),
-        sessionCatalog: hasRuntimeHostOperationGrant(
-          this.#options.connection.authority,
-          'session.catalog.query',
-        ),
+        sessionCatalog:
+          hasRuntimeHostOperationGrant(
+            this.#options.connection.authority,
+            'session.catalog.query',
+          ) && this.#options.connection.authority.principalKind !== 'session_guest',
         scheduledTask: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'scheduled-task.query',

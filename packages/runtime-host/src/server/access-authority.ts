@@ -107,6 +107,10 @@ export interface RuntimeHostAccessAuthority {
     sessionId: string,
     kind: SessionCollaborationGrantKind,
   ): SessionCollaborationGrant | undefined;
+  activeSessionGrantForPrincipal(
+    principalId: string,
+    kind: SessionCollaborationGrantKind,
+  ): SessionCollaborationGrant | undefined;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void;
   close(): Promise<void>;
@@ -309,6 +313,15 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return this.#file.sessionGrants.find(
       (grant) =>
         grant.principalId === principalId && grant.sessionId === sessionId && grant.kind === kind,
+    );
+  }
+
+  activeSessionGrantForPrincipal(
+    principalId: string,
+    kind: SessionCollaborationGrantKind,
+  ): SessionCollaborationGrant | undefined {
+    return this.#file.sessionGrants.find(
+      (grant) => grant.principalId === principalId && grant.kind === kind,
     );
   }
 
