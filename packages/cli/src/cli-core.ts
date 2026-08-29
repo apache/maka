@@ -767,6 +767,7 @@ export async function runMakaCli(
         locale: locale.locale,
         cwd: process.cwd(),
         onProcessExit: handleMakaCliProcessExit,
+        buildVersion: version,
         ...(command.resumeSessionId ? { resumeSessionId: command.resumeSessionId } : {}),
         ...(command.resumeCwd ? { resumeCwd: command.resumeCwd } : {}),
         ...(command.hostProfileId ? { hostProfileId: command.hostProfileId } : {}),

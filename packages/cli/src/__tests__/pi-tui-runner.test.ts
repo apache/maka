@@ -80,6 +80,8 @@ import {
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
+import { stripAnsi } from '../tui-ansi.js';
+import { TUI_FULLSCREEN_ENV } from '../tui-fullscreen.js';
 import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
 import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
@@ -9959,3 +9961,148 @@ async function runFatalExitProbe(
   clearTimeout(killTimer);
   return { code, signal, stdout, stderr };
 }
+
+describe('fullscreen TUI trial (#4136)', () => {
+  const ALT_SCREEN_ENTER = '\x1b[?1049h';
+
+  /** A history tall enough to overflow a 24-row terminal many times over. */
+  function tallHistory(): StoredMessage[] {
+    const messages: StoredMessage[] = [];
+    for (let index = 0; index < 24; index += 1) {
+      messages.push(
+        storedUserMessage(
+          `u${index}`,
+          `turn-${index}`,
+          `HISTORY-QUESTION-${index}: ${'detail '.repeat(8)}`,
+        ),
+        storedAssistantMessage(
+          `a${index}`,
+          `turn-${index}`,
+          `HISTORY-ANSWER-${index}: ${'result '.repeat(14)}`,
+        ),
+      );
+    }
+    return messages;
+  }
+
+  function screenLines(terminal: FakeTerminal): string[] {
+    return terminal
+      .screenOutput()
+      .split(/\r?\n/)
+      .map((line) => stripAnsi(line));
+  }
+
+  test('wheel scrolling keeps the composer anchored and typing re-anchors the transcript', async () => {
+    const terminal = new FakeTerminal(80, 24);
+    const driver = new SlashCommandDriver(
+      [fakeSessionSummary('session-2', '/repo')],
+      new Map([['session-2', tallHistory()]]),
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      tuiFullscreen: true,
+      resumeSessionId: 'session-2',
+    });
+
+    await waitFor(() => screenLines(terminal).join('\n').includes('HISTORY-ANSWER-23'));
+    // The composer is anchored to the screen bottom, status line last.
+    let lines = screenLines(terminal);
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    assert.match(stripAnsi(lines.at(-2) ?? ''), /^─+$/);
+    // The transcript follows the newest output; the top of history is
+    // windowed out of the viewport instead of pushed into scrollback.
+    assert.equal(lines.join('\n').includes('HISTORY-QUESTION-0'), false);
+
+    // The mouse wheel scrolls the application-owned viewport up.
+    for (let index = 0; index < 150; index += 1) {
+      terminal.input('\x1b[<64;40;12M');
+    }
+    await waitFor(() => screenLines(terminal).join('\n').includes('HISTORY-QUESTION-0'));
+    lines = screenLines(terminal);
+    // The reading position moved up; the composer and status line did not.
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+    assert.match(stripAnsi(lines.at(-2) ?? ''), /^─+$/);
+
+    // Typing re-anchors to the newest output (the trial's chosen answer to
+    // issue #4136's "what happens when the user types while reading older
+    // content?"): the composer is never blind at the bottom of the screen.
+    terminal.input('x');
+    await waitFor(() => !screenLines(terminal).join('\n').includes('HISTORY-QUESTION-0'));
+    lines = screenLines(terminal);
+    assert.match(lines.join('\n'), /HISTORY-ANSWER-23/);
+    assert.match(lines.at(-1) ?? '', /claude-sonnet-4-5/);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('the trial follows the build channel and the MAKA_TUI_FULLSCREEN override', async () => {
+    const runsFullscreen = async (input: {
+      buildVersion?: string;
+      override?: string;
+    }): Promise<boolean> => {
+      const terminal = new FakeTerminal(80, 24);
+      const driver = new SlashCommandDriver();
+      const previousOverride = process.env[TUI_FULLSCREEN_ENV];
+      if (input.override === undefined) delete process.env[TUI_FULLSCREEN_ENV];
+      else process.env[TUI_FULLSCREEN_ENV] = input.override;
+      try {
+        const run = runMakaPiTui({
+          title: 'Maka',
+          driver,
+          cwd: '/repo',
+          model: 'claude-sonnet-4-5',
+          connectionSlug: 'claude-subscription',
+          permissionMode: 'ask',
+          terminal,
+          ...(input.buildVersion !== undefined ? { buildVersion: input.buildVersion } : {}),
+        });
+        await waitForTuiPaint(terminal);
+        const fullscreen = terminal.output().includes(ALT_SCREEN_ENTER);
+        exitMaka(terminal);
+        await Promise.race([
+          run,
+          delay(CLOSE_BUDGET_MS).then(() => {
+            throw new Error('TUI did not close during test cleanup');
+          }),
+        ]);
+        return fullscreen;
+      } finally {
+        if (previousOverride === undefined) delete process.env[TUI_FULLSCREEN_ENV];
+        else process.env[TUI_FULLSCREEN_ENV] = previousOverride;
+      }
+    };
+
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0' }),
+      false,
+      'release builds stay on the main screen',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0-dev.42.20260829' }),
+      true,
+      'nightly builds opt into the fullscreen trial',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0', override: '1' }),
+      true,
+      'the override opts a release build in',
+    );
+    assert.equal(
+      await runsFullscreen({ buildVersion: '0.2.0-dev.42.20260829', override: '0' }),
+      false,
+      'the override opts a nightly build out',
+    );
+  });
+});

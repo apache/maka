@@ -46,6 +46,14 @@ export class MakaSkillHighlightEditor extends Editor {
   private isInvocable: (name: string) => boolean = () => false;
 
   /**
+   * Invoked after any input that changed the editor text (typing, paste,
+   * autocomplete insertion). The fullscreen TUI uses it to re-anchor the
+   * transcript to the newest output — typing while reading older content
+   * jumps back to the bottom (an explicit evaluation point of issue #4136).
+   */
+  onUserTextChanged?: () => void;
+
+  /**
    * Swap the validator used by the render pass. Must be synchronous and
    * cheap (called per token per render) — the runner feeds it a snapshot of
    * the last fetched invocable-skill list.
@@ -74,6 +82,7 @@ export class MakaSkillHighlightEditor extends Editor {
     // here because super.handleInput performs the insertion.
     const textBefore = this.getText();
     super.handleInput(data);
+    if (this.getText() !== textBefore) this.onUserTextChanged?.();
     if (this.isShowingAutocomplete()) return;
     if (this.getText() === textBefore) return;
     // pi-tui auto-triggers slash completion only at line start (its
