@@ -19,6 +19,7 @@
 
 import { useRef } from 'react';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
+import { createObservableState } from './observable-state.js';
 
 /**
  * The session catalog and the selection, as one external store (#4109).
@@ -41,45 +42,24 @@ export interface SessionCatalogState {
   readonly activeSessionId: string | undefined;
 }
 
-export function createInitialSessionCatalogState(): SessionCatalogState {
-  return { sessions: [], revision: 0, activeSessionId: undefined };
-}
-
-export function createSessionCatalogController(
-  initialState: SessionCatalogState = createInitialSessionCatalogState(),
-) {
-  let currentState = initialState;
-  const listeners = new Set<() => void>();
-
-  function replaceState(next: SessionCatalogState): void {
-    if (next === currentState) return;
-    currentState = next;
-    // Synchronous, immediately after the swap: a selection change is read back
-    // by the handler that made it.
-    for (const listener of [...listeners]) listener();
-  }
-
-  /** Subscribe to state replacements. Stable identity, for `useSyncExternalStore`. */
-  function subscribe(listener: () => void): () => void {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  }
+export function createSessionCatalogController() {
+  const state = createObservableState<SessionCatalogState>({
+    sessions: [],
+    revision: 0,
+    activeSessionId: undefined,
+  });
 
   return {
-    getState: (): SessionCatalogState => currentState,
-    subscribe,
+    getState: state.getState,
+    subscribe: state.subscribe,
     commitSessions(next: readonly DesktopSessionSummary[]): void {
-      replaceState({
-        ...currentState,
-        sessions: next,
-        revision: currentState.revision + 1,
-      });
+      const current = state.getState();
+      state.replaceState({ ...current, sessions: next, revision: current.revision + 1 });
     },
     setActiveSessionId(next: string | undefined): void {
-      if (currentState.activeSessionId === next) return;
-      replaceState({ ...currentState, activeSessionId: next });
+      const current = state.getState();
+      if (current.activeSessionId === next) return;
+      state.replaceState({ ...current, activeSessionId: next });
     },
   };
 }

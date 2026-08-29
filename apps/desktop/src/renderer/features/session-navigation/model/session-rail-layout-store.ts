@@ -20,6 +20,7 @@
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
 import type { SessionViewMode } from '@maka/ui';
 import { safeLocalStorageSet } from '../../../browser-storage.js';
+import { createObservableState } from '../../../observable-state.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
@@ -51,48 +52,39 @@ export interface SessionRailLayoutState {
  * instance for it to be an instance of.
  */
 export function createSessionRailLayoutStore() {
-  let state: SessionRailLayoutState = {
+  const state = createObservableState<SessionRailLayoutState>({
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
     viewMode: readSessionListViewMode(),
-  };
-  const listeners = new Set<() => void>();
+  });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
 
-  function replaceState(next: SessionRailLayoutState): void {
-    if (next === state) return;
-    state = next;
-    for (const listener of [...listeners]) listener();
-  }
-
   return {
-    getState: (): SessionRailLayoutState => state,
-    subscribe(listener: () => void): () => void {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    getState: state.getState,
+    subscribe: state.subscribe,
     collapseHandleRef,
     setCollapsed(next: boolean): void {
-      if (state.collapsed === next) return;
-      replaceState({ ...state, collapsed: next });
+      const current = state.getState();
+      if (current.collapsed === next) return;
+      state.replaceState({ ...current, collapsed: next });
       safeLocalStorageSet('maka-chat-list-collapsed-v1', next ? 'true' : 'false');
     },
     /** Debounced: a drag reports a width per frame and only the last one is worth storing. */
     setWidth(next: number): void {
+      const current = state.getState();
       const width = clampSessionListWidth(next);
-      if (state.width === width) return;
-      replaceState({ ...state, width });
+      if (current.width === width) return;
+      state.replaceState({ ...current, width });
       if (widthPersistHandle !== undefined) clearTimeout(widthPersistHandle);
       widthPersistHandle = setTimeout(() => {
         safeLocalStorageSet('maka-chat-list-width-v1', String(width));
       }, LAYOUT_PERSIST_DEBOUNCE_MS);
     },
     setViewMode(next: SessionViewMode): void {
-      if (state.viewMode === next) return;
-      replaceState({ ...state, viewMode: next });
+      const current = state.getState();
+      if (current.viewMode === next) return;
+      state.replaceState({ ...current, viewMode: next });
       writeSessionListViewMode(next);
     },
   };
@@ -103,12 +95,8 @@ export type SessionRailLayoutStore = ReturnType<typeof createSessionRailLayoutSt
 export const sessionRailLayoutStore: SessionRailLayoutStore = createSessionRailLayoutStore();
 
 /**
- * The whole geometry, for a reader that wants more than one field of it. The
- * store replaces its state only when a field actually moved, so the identity is
- * already the comparison.
+ * The whole geometry. Both readers use more than one field of it, and the store
+ * replaces its state only when a field actually moved, so the identity is
+ * already the comparison — a per-field selector would buy no granularity.
  */
 export const selectRailLayout = (state: SessionRailLayoutState): SessionRailLayoutState => state;
-
-export const selectRailCollapsed = (state: SessionRailLayoutState): boolean => state.collapsed;
-export const selectRailWidth = (state: SessionRailLayoutState): number => state.width;
-export const selectRailViewMode = (state: SessionRailLayoutState): SessionViewMode => state.viewMode;

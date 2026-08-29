@@ -21,16 +21,15 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { useUiLocale, type SessionHistoryGroup, type SessionViewMode } from '@maka/ui';
+import { useUiLocale, type SessionHistoryGroup } from '@maka/ui';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
 import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import {
-  selectRailCollapsed,
-  selectRailViewMode,
-  selectRailWidth,
+  selectRailLayout,
   sessionRailLayoutStore,
+  type SessionRailLayoutState,
 } from '../model/session-rail-layout-store.js';
 import type { SessionNavigationSession } from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
@@ -90,12 +89,6 @@ export interface UseSessionNavigationControllerInput {
   ports: SessionNavigationPorts;
 }
 
-export interface SessionNavigationLayout {
-  collapsed: boolean;
-  width: number;
-  viewMode: SessionViewMode;
-}
-
 export interface SessionNavigationSelectors {
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
@@ -103,7 +96,7 @@ export interface SessionNavigationSelectors {
 }
 
 export interface SessionNavigationController {
-  layout: SessionNavigationLayout;
+  layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
 }
@@ -122,9 +115,10 @@ export function useSessionNavigationController(
   const { sessions: service } = useSessionNavigationServices();
   const { ports, rail } = input;
 
-  const collapsed = useExternalStoreSelector(sessionRailLayoutStore, selectRailCollapsed);
-  const width = useExternalStoreSelector(sessionRailLayoutStore, selectRailWidth);
-  const viewMode = useExternalStoreSelector(sessionRailLayoutStore, selectRailViewMode);
+  // One subscription, not one per field: every field here is read, so a split
+  // would buy no granularity, and the store replaces its state only when a
+  // field actually moved — the identity IS the comparison.
+  const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
 
   // The ports are commands, so their identity is not information. Published on
   // commit and called through the ref, they can carry whatever the shell
@@ -191,10 +185,6 @@ export function useSessionNavigationController(
     [sessionById],
   );
 
-  const layout = useMemo<SessionNavigationLayout>(
-    () => ({ collapsed, width, viewMode }),
-    [collapsed, viewMode, width],
-  );
   const selectors = useMemo<SessionNavigationSelectors>(
     () => ({ groups, worktreeSessionIds, sessionMeta }),
     [groups, sessionMeta, worktreeSessionIds],

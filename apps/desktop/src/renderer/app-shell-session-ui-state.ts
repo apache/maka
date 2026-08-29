@@ -21,6 +21,7 @@ import { useRef } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
 import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
+import { createObservableState } from './observable-state.js';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
@@ -129,38 +130,27 @@ export function clearAppShellTurnTransientForSession(
 export function createAppShellSessionUiStateController(
   initialState: AppShellSessionUiState = createInitialAppShellSessionUiState(),
 ) {
-  let currentState = initialState;
-  const liveTurnBySessionRef = { current: currentState.liveTurnBySession };
+  const state = createObservableState(initialState);
+  const liveTurnBySessionRef = { current: initialState.liveTurnBySession };
   // Written by the event-health probes and read back by them alone. Kept off
-  // `currentState` so a probe never notifies a subscriber.
+  // the observed state so a probe never notifies a subscriber.
   const sessionEventHealthBySessionRef: { current: Record<string, SessionEventStreamSnapshot> } = {
     current: {},
   };
-  const listeners = new Set<() => void>();
 
+  // The ref mirrors whatever is about to become current, so it is already
+  // correct when the synchronous notification reaches a listener that reads it.
   function replaceState(next: AppShellSessionUiState): void {
-    if (next === currentState) return;
-    currentState = next;
     liveTurnBySessionRef.current = next.liveTurnBySession;
-    // Synchronous, immediately after the swap. Never schedule this: the
-    // terminal-turn handoff reads the state it announces (#1985).
-    for (const listener of [...listeners]) listener();
-  }
-
-  /** Subscribe to state replacements. Stable identity, for `useSyncExternalStore`. */
-  function subscribe(listener: () => void): () => void {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
+    state.replaceState(next);
   }
 
   function updateMap<K extends AppShellSessionUiStateMapKey>(
     key: K,
     updater: (current: AppShellSessionUiState[K]) => AppShellSessionUiState[K],
   ): void {
-    const nextMap = updater(currentState[key]);
-    const latestState = currentState;
+    const latestState = state.getState();
+    const nextMap = updater(latestState[key]);
     if (nextMap === latestState[key]) return;
     replaceState({ ...latestState, [key]: nextMap });
   }
@@ -170,8 +160,8 @@ export function createAppShellSessionUiStateController(
   }
 
   return {
-    getState: () => currentState,
-    subscribe,
+    getState: state.getState,
+    subscribe: state.subscribe,
     liveTurnBySessionRef,
     sessionEventHealthBySessionRef,
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
@@ -205,14 +195,15 @@ export function createAppShellSessionUiStateController(
         sessionEventHealthBySessionRef.current,
         sessionId,
       );
-      replaceState(clearAppShellSessionUiStateForSession(currentState, sessionId));
+      replaceState(clearAppShellSessionUiStateForSession(state.getState(), sessionId));
     },
     clearTurnTransientStateIfCurrent: (
       sessionId: string,
       expected: LiveTurnProjection | undefined,
     ) => {
-      if (currentState.liveTurnBySession[sessionId] !== expected) return;
-      replaceState(clearAppShellTurnTransientForSession(currentState, sessionId));
+      const current = state.getState();
+      if (current.liveTurnBySession[sessionId] !== expected) return;
+      replaceState(clearAppShellTurnTransientForSession(current, sessionId));
     },
   };
 }
