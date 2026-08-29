@@ -303,6 +303,14 @@ export function ImportTasksSettingsPage(props: {
         // Already loaded this selection once. Show it immediately and refresh in
         // the background instead of blanking to the spinner on every switch.
         setCatalog(catalogCacheRef.current.get(key)!);
+        // Clear any spinner/Load More lock left by a superseded request. A
+        // still-pending search or pagination load from the previous selection
+        // will never reach its own `finally` reset (its generation is now
+        // stale), so restoring cached rows without this would strand the
+        // full-page spinner or a disabled Load More over an otherwise complete
+        // view until this hit's background refresh happens to land.
+        setCatalogLoading(false);
+        setLoadingMore(false);
         setImportRecovery(null);
       } else {
         setCatalogLoading(true);

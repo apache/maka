@@ -809,6 +809,126 @@ describe('ImportTasksSettingsPage source switching', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  it('clears the reading spinner when a pending search returns to a cached term', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    // The uncached search never resolves, so its spinner generation stays in
+    // flight; the return-to-'' refresh never resolves either, so only the
+    // cache-hit path — not a completed refresh — can retire the spinner.
+    const pendingSearch = new Promise<CatalogResult>(() => {});
+    const refreshPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      // [initial '' load, uncached 'zzz' search, background refresh on return to '']
+      catalogs: [
+        catalog(externalSession({ id: 's-codex', name: 'Codex conv' })),
+        pendingSearch,
+        refreshPending,
+      ],
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'initial load shows rows');
+
+    // Type an uncached term (the source and archived controls disable during a
+    // load, but the search box does not, so this is the reachable way to leave a
+    // request pending). It blanks to the spinner and never resolves.
+    await act(async () => {
+      setSearchInput(harness.container, 'zzz');
+      await Promise.resolve();
+    });
+    // Fire the 250ms debounce only after the effect above has registered it.
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, LOADING, 'uncached search shows the spinner');
+
+    // Return the search to the already-loaded empty term. The cached rows must
+    // come back with no spinner even though the older 'zzz' load is still
+    // pending and this hit's own refresh has not landed — the cache hit has to
+    // clear the stranded loading state itself.
+    await act(async () => {
+      setSearchInput(harness.container, '');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'cached rows shown instantly');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      LOADING,
+      'the stranded search spinner is cleared on the cache hit',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('clears a pending Load More lock when switching back to a cached source', async () => {
+    // Both revisit refreshes and the Load More append are left pending, so the
+    // only thing that can release the Load More lock is the cache-hit reset.
+    const codexRefreshPending = new Promise<CatalogResult>(() => {});
+    const codexLoadMorePending = new Promise<CatalogResult>(() => {});
+    const claudeCodeRefreshPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load (paged), revisit refresh, Load More append]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: 'c1' },
+          codexRefreshPending,
+          codexLoadMorePending,
+        ],
+        // [initial load (paged), revisit refresh]
+        'claude-code': [
+          { sessions: [externalSession({ id: 's-cc', name: 'CC conv' })], nextCursor: 'cc1' },
+          claudeCodeRefreshPending,
+        ],
+      },
+    });
+
+    // Load claude-code so it is cached with its own paged Load More.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+
+    // Revisit codex (cache hit; background refresh left pending), then start a
+    // Load More whose append never resolves so `loadingMore` stays set.
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const codexLoadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(codexLoadMore, 'codex Load More renders');
+    await act(async () => {
+      codexLoadMore.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const busyLoadMore = Array.from(
+      harness.container.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.includes('Loading…'));
+    assert.ok(busyLoadMore, 'Load More shows the pending label while the append is in flight');
+
+    // Switch back to the cached claude-code before that append resolves. Its
+    // Load More must not inherit the stranded lock from codex's pending append.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'cached claude-code rows shown');
+    const cachedLoadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(cachedLoadMore, "claude-code's Load More is released, not stuck on 'Loading…'");
+    assert.equal(cachedLoadMore.hasAttribute('disabled'), false, 'Load More is enabled again');
+
+    await act(async () => harness.root.unmount());
+  });
 });
 
 function externalSession(
@@ -946,6 +1066,24 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
     (button) => button.textContent === text,
   );
+}
+
+// Drives the search TextInput the way goal-dialog.test does: set the value and
+// invoke the React onChange the renderer wired to it, so `searchDraft` updates
+// without a real input event. The caller fires the debounce timer afterward.
+function setSearchInput(container: HTMLElement, value: string): void {
+  const input = Array.from(container.querySelectorAll<HTMLInputElement>('input')).find(
+    (element) => element.type !== 'checkbox' && element.type !== 'radio',
+  );
+  assert.ok(input, 'search input renders');
+  input.value = value;
+  const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+  assert.ok(propsKey, 'missing React props on the search input');
+  const props = (input as unknown as Record<string, unknown>)[propsKey] as {
+    onChange?: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
+  };
+  assert.ok(props.onChange, 'missing search change handler');
+  props.onChange({ target: input, defaultPrevented: false });
 }
 
 function segment(container: HTMLElement, value: string): HTMLButtonElement | undefined {
