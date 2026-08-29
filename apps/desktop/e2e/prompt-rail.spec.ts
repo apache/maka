@@ -85,7 +85,8 @@ function probeRail(page: Page): Promise<RailProbe | null> {
   return page.evaluate(RAIL_PROBE) as Promise<RailProbe | null>;
 }
 
-async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promise<void> {
+/** One jump, so a caller can still observe whatever the app does after it. */
+async function scrollTranscriptOnce(page: Page, position: 'top' | 'bottom'): Promise<void> {
   await page.evaluate((where) => {
     const scroller = document.querySelector('[data-chat-scroll-container="true"]');
     if (!scroller) throw new Error('the chat scroll container is missing');
@@ -93,6 +94,24 @@ async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promi
   }, position);
   await notifyTranscriptScrolled(page);
   await waitForPaintedFrames(page);
+}
+
+/** A single jump can stop thousands of px short of a virtualized extreme. */
+async function settleTranscriptAtExtreme(page: Page, position: 'top' | 'bottom'): Promise<void> {
+  // Polls the remaining distance rather than a boolean, so giving up says how
+  // far off it was.
+  await expect.poll(async () => {
+    await scrollTranscriptOnce(page, position);
+    return page.evaluate((where) => {
+      const scroller = document.querySelector('[data-chat-scroll-container="true"]');
+      if (!scroller) throw new Error('the chat scroll container is missing');
+      return Math.round(
+        where === 'top'
+          ? scroller.scrollTop
+          : scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
+      );
+    }, position);
+  }).toBeLessThanOrEqual(1);
 }
 
 async function waitForPaintedFrames(page: Page, count = 2): Promise<void> {
@@ -118,7 +137,7 @@ function notifyTranscriptScrolled(page: Page): Promise<void> {
 
 async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
   const transcript = page.locator('.maka-chat-message-list');
-  await scrollTranscriptTo(page, 'top');
+  await scrollTranscriptOnce(page, 'top');
   await transcript.hover();
   await page.mouse.wheel(0, -100);
   await expect.poll(async () => Number(await transcript.getAttribute('data-turn-source-count')))
@@ -154,7 +173,7 @@ test('the rail stays inside the scrollport at both scroll extremes', async ({
   expect(scroll.height).toBeGreaterThan(scroll.client);
 
   for (const position of ['top', 'bottom'] as const) {
-    await scrollTranscriptTo(page, position);
+    await settleTranscriptAtExtreme(page, position);
     // The bottom is where it bites: a sticky offset is clamped by its
     // containing block, and the chat shell ends a dock-height above the
     // scrollport's bottom edge (CI caught -62px insetTop that way).
@@ -291,8 +310,26 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
   await scroller.waitFor();
   await loadPromptRailBeyondVirtualWindow(page);
-  await scrollTranscriptTo(page, 'bottom');
-  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  await settleTranscriptAtExtreme(page, 'bottom');
+  // A bare count says only that a turn is missing. Report the scroll and window
+  // state as one string; a subset matcher would print just the key it matched.
+  await expect.poll(async () => page.evaluate(() => {
+    const scroller = document.querySelector('[data-chat-scroll-container="true"]');
+    if (!scroller) throw new Error('the chat scroll container is missing');
+    const mounted = [...document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')]
+      .map((turn) => turn.dataset.virtualTurnId ?? '');
+    const gap = Math.round(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop);
+    const source = document.querySelector('.maka-chat-message-list')
+      ?.getAttribute('data-turn-source-count');
+    return [
+      `tail=${mounted.includes('turn-prompt-rail-120')}`,
+      `gap=${gap}`,
+      `client=${scroller.clientHeight}`,
+      `mounted=${mounted.length}`,
+      `last=${mounted.at(-1) ?? 'none'}`,
+      `source=${source ?? 'none'}`,
+    ].join(' ');
+  })).toMatch(/^tail=true /u);
   const retainedTurnId = await page.evaluate(() => {
     const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
     const turn = turns.item(turns.length - 1);
@@ -314,7 +351,7 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
   // the one-shot jump so the assertion still catches any later restore that
   // would pin the viewport back on the retained Turn (#3121).
   await waitForPaintedFrames(page);
-  await scrollTranscriptTo(page, 'top');
+  await scrollTranscriptOnce(page, 'top');
   await notifyTranscriptScrolled(page);
   await expect.poll(async () => page.evaluate((turnId) => {
     const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
