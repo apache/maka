@@ -233,7 +233,7 @@ test('closed Mesh records do not permanently consume membership capacity', async
       if (index === 0) assert.equal(await hasActivePeerMeshMembership(root, 'peer-a'), false);
     }
     assert.equal((await node.create()).roster.roster.closed, false);
-    assert.equal(node.status().length, 16);
+    assert.equal(node.status().length, 1);
   } finally {
     await node.close();
     await peer.close();

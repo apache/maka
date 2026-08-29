@@ -217,6 +217,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
     })}\n`,
   );
   let setupCalls = 0;
+  let setupQuiesced = false;
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
     clientDataRoot,
@@ -228,6 +229,10 @@ test('an interrupted Local Host handoff converges to its exact managed service',
         async retireOwnedLocalHost(mode: string) {
           assert.equal(mode, 'interrupt_active_work');
           return { kind: 'not_owned' as const };
+        },
+        async runManagedLocalHostChange(change: () => Promise<unknown>) {
+          setupQuiesced = true;
+          return change();
         },
       }) as unknown as RuntimeHostDesktopManager,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
@@ -256,6 +261,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   await service.recover();
 
   assert.equal(setupCalls, 1);
+  assert.equal(setupQuiesced, true);
   assert.equal(
     JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
       .state,

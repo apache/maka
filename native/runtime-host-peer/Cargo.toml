@@ -49,3 +49,7 @@ tokio = { version = "1.53", features = ["fs", "io-util", "rt-multi-thread", "syn
 
 [build-dependencies]
 napi-build = "2.4"
+
+[profile.release]
+# build.mjs strips the copied addon once; Cargo stripping every intermediate artifact is redundant.
+strip = "none"

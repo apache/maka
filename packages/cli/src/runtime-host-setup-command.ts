@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   activateRuntimeHostManagedDeployment,
   connectRemoteRuntimeHost,
@@ -47,6 +48,7 @@ import {
   prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
   revokeRuntimeHostAccessCredential,
+  RuntimeHostAccessUnavailableError,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
@@ -118,6 +120,8 @@ import {
 import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
 const SETUP_LOCK_TIMEOUT_MS = 5 * 60_000;
+const PAIRING_AVAILABILITY_TIMEOUT_MS = 10_000;
+const PAIRING_AVAILABILITY_POLL_MS = 100;
 
 export interface RuntimeHostSetupCliOptions {
   readonly json: boolean;
@@ -1075,20 +1079,35 @@ async function pairAndVerifyRuntimeHostSetup(
     const pairCredential = options.deferPairingCommit
       ? deps.prepareCredential
       : deps.replaceCredential;
-    paired = await pairCredential({
+    const credentialInput = {
       rootPath: target.rootPath,
-      principalKind: 'remote_owner',
+      principalKind: 'remote_owner' as const,
       principalId: options.principalId,
       operationGrants: [],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
       preset: options.preset,
       ...(options.bindPairingToClient ? { bindClientInstance: true } : {}),
-    });
+    };
+    const deadline = Date.now() + PAIRING_AVAILABILITY_TIMEOUT_MS;
+    while (true) {
+      try {
+        paired = await pairCredential(credentialInput);
+        break;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostAccessUnavailableError) || Date.now() >= deadline) {
+          throw error;
+        }
+        await new Promise<void>((resolveWait) =>
+          setTimeout(resolveWait, Math.min(PAIRING_AVAILABILITY_POLL_MS, deadline - Date.now())),
+        );
+      }
+    }
   } catch (error) {
+    const reason = generalizedErrorMessage(error, 'Runtime Host access service is unavailable');
     throw new RuntimeHostSetupError(
       'pairing_failed',
-      'Runtime Host could not pair the requested Client identity',
+      `Runtime Host could not pair the requested Client identity: ${reason}`,
       { cause: error },
     );
   }

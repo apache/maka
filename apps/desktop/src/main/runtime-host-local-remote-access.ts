@@ -247,22 +247,29 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     }
     let target: LocalServiceTarget | undefined;
     try {
-      const complete = await input.operator.runSetup(
-        {
-          setupPackage,
-          clientDataRoot: input.clientDataRoot,
-          rootPath: handoff.rootPath,
-          principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-          coordinationRelays: handoff.coordinationRelays,
-          expectedTarget: {
-            serviceId: handoff.rootId,
+      const runSetup = () =>
+        input.operator.runSetup(
+          {
+            setupPackage,
+            clientDataRoot: input.clientDataRoot,
             rootPath: handoff.rootPath,
-            rootId: handoff.rootId,
+            principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+            coordinationRelays: handoff.coordinationRelays,
+            expectedTarget: {
+              serviceId: handoff.rootId,
+              rootPath: handoff.rootPath,
+              rootId: handoff.rootId,
+            },
+            signal: closing.signal,
           },
-          signal: closing.signal,
-        },
-        () => undefined,
-      );
+          () => undefined,
+        );
+      // Recovery may find that the operator already owns the root. Its setup
+      // can still restart that Host, so keep Desktop reconnect quiesced across
+      // the entire reconciliation just like every other managed-service change.
+      const complete = retirement.kind === 'not_owned'
+        ? await manager.runManagedLocalHostChange(runSetup)
+        : await runSetup();
       if (
         complete.serviceId !== handoff.rootId ||
         complete.rootPath !== handoff.rootPath ||

@@ -911,6 +911,35 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
   await first.candidate.close();
   const fatal = await fatalReported;
   assert.match(fatal.message, /older Runtime Host/);
+  await assert.rejects(
+    owner.retireOwnedLocalHost('interrupt_active_work'),
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.pid === 42 &&
+      error.cause === fatal,
+  );
+  await owner.close();
+});
+
+test('does not block quit after a supervised Local Host becomes permanently unavailable', async () => {
+  const first = candidateHarness({ ownership: 'supervised' });
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () =>
+      first.closeCalls === 0
+        ? ready(first.candidate)
+        : incompatibleHost('wait_for_idle_exit'),
+    onFatalError: reportFatal,
+  });
+
+  await first.candidate.close();
+  await fatalReported;
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
   await owner.close();
 });
 

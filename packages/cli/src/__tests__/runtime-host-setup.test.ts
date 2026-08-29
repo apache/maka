@@ -59,6 +59,7 @@ import {
   resolveRuntimeHostManagedDeploymentRoot,
 } from '../runtime-host-managed-deployment.js';
 import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
+import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
 import {
   resolveRuntimeHostLifecycleProvider,
@@ -86,6 +87,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   const outputs: string[] = [];
   let rootId = '';
   let projectedOperatorDeploymentRoot = '';
+  let pairingAttempts = 0;
   t.after(async () => {
     if (previousDataHome === undefined) delete process.env.XDG_DATA_HOME;
     else process.env.XDG_DATA_HOME = previousDataHome;
@@ -166,16 +168,20 @@ test('on-demand setup installs one exact deployment without a service backend', 
       projectedOperatorDeploymentRoot = desired?.deploymentRoot ?? '';
     },
     verifyOperator: async () => undefined,
-    replaceCredential: async () => ({
-      rootId,
-      credential: 'secret-token',
-      credentialId: 'credential-1',
-      principalKind: 'remote_owner' as const,
-      principalId: 'desktop:client-1',
-      operationGrants: [] as const,
-      canPublishClientCapabilities: false,
-      canUseHostPaths: false,
-    }),
+    replaceCredential: async () => {
+      pairingAttempts += 1;
+      if (pairingAttempts === 1) throw new RuntimeHostAccessUnavailableError('unavailable');
+      return {
+        rootId,
+        credential: 'secret-token',
+        credentialId: 'credential-1',
+        principalKind: 'remote_owner' as const,
+        principalId: 'desktop:client-1',
+        operationGrants: [] as const,
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      };
+    },
     verifyCredential: async ({ endpoint, rootId: expectedRootId }) => {
       assert.equal(endpoint, 'ws://127.0.0.1:43210/runtime-host');
       assert.equal(expectedRootId, rootId);
@@ -183,6 +189,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     writeOutput: (value) => outputs.push(value),
   } satisfies NonNullable<Parameters<typeof runRuntimeHostSetupCli>[1]>;
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
+  assert.equal(pairingAttempts, 2);
   const complete = outputs
     .map(decodeRuntimeHostSetupFrame)
     .find((frame) => frame?.kind === 'complete');

@@ -41,6 +41,7 @@ import {
   type DesktopRuntimeHostCandidate,
   type DesktopRuntimeHostCandidateStartInput,
   type DesktopRuntimeHostCandidateStartResult,
+  type DesktopRuntimeHostOwnership,
 } from './runtime-host-desktop-candidate.js';
 import { RuntimeHostReconnectingIpcMain } from './runtime-host-reconnecting-ipc-main.js';
 import { RuntimeHostSessionObservationRegistry } from './runtime-host-session-observation-registry.js';
@@ -181,6 +182,12 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
+  lastCandidate?: {
+    readonly hostId: string;
+    readonly hostEpoch: string;
+    readonly ownership: DesktopRuntimeHostOwnership;
+    readonly pid?: number;
+  };
   valid: boolean;
 }
 
@@ -576,10 +583,20 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   async #retireOwnedLocalHost(
     mode: RuntimeHostRetirementMode,
   ): Promise<DesktopLocalHostRetirement> {
-    const lifecycle = this.#requireLifecycle(
-      this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
-    );
-    const quiescence = await lifecycle.quiesce();
+    const target = this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id);
+    const lifecycle = this.#requireLifecycle(target);
+    const unavailable = this.#unavailableLocalHostRetirement(target);
+    if (unavailable) return unavailable;
+    let quiescence: Awaited<
+      ReturnType<RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>['quiesce']>
+    >;
+    try {
+      quiescence = await lifecycle.quiesce();
+    } catch (error) {
+      const terminal = this.#unavailableLocalHostRetirement(target, error);
+      if (terminal) return terminal;
+      throw error;
+    }
     let hostPid = quiescence.current.hostPid;
     let launchBarrierPaused = false;
     const resume = () => {
@@ -624,6 +641,25 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         { cause: error },
       );
     }
+  }
+
+  #unavailableLocalHostRetirement(
+    target: DesktopRuntimeHostTargetGeneration,
+    cause: unknown = target.state.readiness === 'unavailable' ? target.state.error : undefined,
+  ): DesktopLocalHostRetirement | undefined {
+    if (target.state.readiness !== 'unavailable') return undefined;
+    const last = target.lastCandidate;
+    if (!last || last.ownership !== 'owned_ephemeral') return { kind: 'not_owned' };
+    throw new DesktopLocalHostRetirementError(
+      {
+        hostId: last.hostId,
+        hostEpoch: last.hostEpoch,
+        lifecycleMode: 'ephemeral',
+        rootPath: this.#baseInput.rootPath,
+        ...(last.pid === undefined ? {} : { pid: last.pid }),
+      },
+      { cause: cause instanceof Error ? cause : new Error(String(cause)) },
+    );
   }
 
   #completeLocalHostRetirement(
@@ -743,6 +779,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
       if (result.kind === 'ready') {
         target.hostId = result.candidate.client.hostId;
+        target.lastCandidate = {
+          hostId: result.candidate.client.hostId,
+          hostEpoch: result.candidate.client.hostEpoch,
+          ownership: result.candidate.hostOwnership,
+          ...(result.candidate.hostPid === undefined ? {} : { pid: result.candidate.hostPid }),
+        };
         return result.candidate;
       }
       if (result.kind === 'upgrade_required' && result.restartable) {
