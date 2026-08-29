@@ -176,8 +176,8 @@ export type SessionToolEvent =
       activityKind?: ToolActivityKind;
       displayName?: string;
       /**
-       * Model/runtime-authored call intent (e.g. ExploreAgent's objective).
-       * Pass-through from the durable event; bounded on the wire.
+       * Model/runtime-authored call intent. Pass-through from the durable
+       * event; bounded on the wire.
        */
       intent?: string;
       /**

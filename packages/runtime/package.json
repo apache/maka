@@ -52,7 +52,6 @@
     "./conversation-copy": "./dist/conversation-copy.js",
     "./cua-frame-state": "./dist/cua-frame-state.js",
     "./execution-inspect": "./dist/execution-inspect.js",
-    "./explore-agent-tool": "./dist/explore-agent-tool.js",
     "./goal-continuation": "./dist/goal-continuation.js",
     "./goal-evaluator": "./dist/goal-evaluator.js",
     "./goal-state": "./dist/goal-state.js",

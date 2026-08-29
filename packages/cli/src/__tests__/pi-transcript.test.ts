@@ -4292,8 +4292,8 @@ describe('Maka Pi TUI transcript', () => {
       state,
       event({
         type: 'tool_start',
-        toolUseId: 'explore-intent',
-        toolName: 'ExploreAgent',
+        toolUseId: 'grep-intent',
+        toolName: 'Grep',
         args: undefined,
         intent: '  inspect   render entry with sk-1234567890abcdef  ',
       }),

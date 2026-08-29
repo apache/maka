@@ -136,7 +136,16 @@ export class DesktopLocalHostRetirementError extends Error {
 }
 
 export type RuntimeHostRestartDecision = 'restart' | 'wait' | 'cancel';
-export type RuntimeHostWaitDecision = 'wait' | 'cancel';
+export type RuntimeHostNonRestartableDecision = 'replace' | 'wait' | 'cancel';
+
+export interface RuntimeHostNonRestartableActions {
+  readonly canReplace: boolean;
+  readonly canWait: boolean;
+}
+
+export interface RuntimeHostLocalReplacement {
+  replace(): Promise<void>;
+}
 
 export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconnectError {
   constructor() {
@@ -170,7 +179,10 @@ export interface RuntimeHostUpgradePrompts {
   restartable(
     conflict: RuntimeHostRestartableConflict,
   ): Promise<RuntimeHostRestartDecision>;
-  waitOnly(conflict: RuntimeHostWaitConflict): Promise<RuntimeHostWaitDecision>;
+  nonRestartable(
+    conflict: RuntimeHostWaitConflict,
+    actions: RuntimeHostNonRestartableActions,
+  ): Promise<RuntimeHostNonRestartableDecision>;
 }
 
 interface DesktopRuntimeHostTargetGeneration {
@@ -210,6 +222,10 @@ export async function startRuntimeHostDesktopManager(
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>;
+    resolveLocalHostReplacement?: (
+      registration: HostRegistration,
+      signal: AbortSignal,
+    ) => Promise<RuntimeHostLocalReplacement | undefined>;
     recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     pairingFinalizationTimeoutMs?: number;
@@ -226,6 +242,7 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
+    options.resolveLocalHostReplacement,
     options.recoverLocalHost,
     options.reconnectBackoff,
     options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
@@ -266,6 +283,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>,
+    private readonly resolveLocalHostReplacement:
+      | ((
+          registration: HostRegistration,
+          signal: AbortSignal,
+        ) => Promise<RuntimeHostLocalReplacement | undefined>)
+      | undefined,
     private readonly recoverLocalHost:
       | ((signal: AbortSignal) => Promise<boolean>)
       | undefined,
@@ -853,8 +876,25 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         result.kind === 'incompatible' ||
         (result.kind === 'upgrade_required' && !result.restartable)
       ) {
-        const decision = await this.#resolveWaitOnly(result);
+        const replacement = target.input.profileTarget
+          ? undefined
+          : await this.resolveLocalHostReplacement?.(result.registration, signal);
+        const decision = await this.#resolveNonRestartable(result, {
+          canReplace: replacement !== undefined,
+          canWait:
+            replacement === undefined && result.registration.lifecycleMode !== 'service',
+        });
         if (decision === 'cancel') throw new RuntimeHostUpgradeCancelledError();
+        if (decision === 'replace') {
+          if (!replacement) {
+            throw new RuntimeHostPermanentReconnectError(
+              'This Runtime Host cannot be replaced from the current target',
+            );
+          }
+          await replacement.replace();
+          takeoverHostEpoch = undefined;
+          continue;
+        }
         takeoverHostEpoch = undefined;
         await this.waitForHostRetirement(result.registration, signal);
         continue;
@@ -871,8 +911,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return this.#missingUpgradePrompt();
   }
 
-  #resolveWaitOnly(conflict: RuntimeHostWaitConflict): Promise<RuntimeHostWaitDecision> {
-    if (this.upgradePrompts) return this.upgradePrompts.waitOnly(conflict);
+  #resolveNonRestartable(
+    conflict: RuntimeHostWaitConflict,
+    actions: RuntimeHostNonRestartableActions,
+  ): Promise<RuntimeHostNonRestartableDecision> {
+    if (this.upgradePrompts) return this.upgradePrompts.nonRestartable(conflict, actions);
     return this.#missingUpgradePrompt();
   }
 

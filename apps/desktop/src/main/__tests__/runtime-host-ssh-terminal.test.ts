@@ -461,11 +461,9 @@ test('runs an exact update package and reports progress before an active-work re
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
   assert.match(remoteCommand, /runtime-host.*service.*update/u);
+  assert.match(remoteCommand, /--target.*1\.3\.0/u);
   assert.match(remoteCommand, /--managed-root-id.*a{64}/u);
-  assert.match(
-    remoteCommand,
-    /--operator-deployment-id.*00000000-0000-4000-8000-000000000001/u,
-  );
+  assert.doesNotMatch(remoteCommand, /--operator-deployment-id/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(

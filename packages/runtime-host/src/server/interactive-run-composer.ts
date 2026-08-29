@@ -25,7 +25,7 @@ import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
 import {
   buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
-} from '@maka/core/explore-agent';
+} from '@maka/core/deep-research';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
@@ -44,7 +44,6 @@ import {
   buildSubmitPlanTool,
   buildUpdatePlanTool,
 } from '@maka/runtime/plan-tools';
-import { buildExploreAgentTool } from '@maka/runtime/explore-agent-tool';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { buildPersonalizationPromptFragment } from '@maka/runtime/system-prompt/personalization-prompt';
 import { buildRequestSandboxBoundaryTool } from '@maka/runtime/sandbox-boundary-tool';
@@ -247,11 +246,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.plan?.mode === 'plan'
                 ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
                 : undefined,
-              input.deepResearch
-                ? buildDeepResearchSystemPromptFragment({
-                    exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
-                  })
-                : undefined,
+              input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
         return Object.freeze({
@@ -510,7 +505,6 @@ function buildDefaultHostTools(
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const sandboxBoundary = buildRequestSandboxBoundaryTool();
-  const exploreAgent = buildExploreAgentTool();
   const taskTools = buildTaskLedgerTools({ store: taskLedger });
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
@@ -531,7 +525,6 @@ function buildDefaultHostTools(
     ...hostTools.map((tool) => tool.name),
     question.name,
     sandboxBoundary.name,
-    exploreAgent.name,
     'Skill',
     'SkillSearch',
     ...taskTools.map((tool) => tool.name),
@@ -548,7 +541,6 @@ function buildDefaultHostTools(
     ...hostTools,
     question,
     sandboxBoundary,
-    exploreAgent,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     ...taskTools,

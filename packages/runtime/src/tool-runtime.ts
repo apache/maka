@@ -288,7 +288,7 @@ type SandboxBoundaryFailureKind = 'invalid' | 'unresolved';
 type SandboxBoundaryFailureDetails = Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'];
 
 const SUBAGENT_TOOL_LIMIT_MESSAGE =
-  '只读探索并发过多：同一轮最多 5 个子代理。请等待已有探索完成后再继续。';
+  '子代理并发过多：同一轮最多 5 个子代理。请等待已有任务完成后再继续。';
 const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
   'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
 
@@ -960,7 +960,6 @@ export class ToolRuntime {
     // records, one is what the model reads — and a divergence would go here.
     const modelFacingArgs = persistedArgs;
     const now = this.input.now();
-    const toolIntent = describeToolIntent(tool, persistedArgs);
     const trace = this.input.getRunTrace?.() ?? null;
     const runId = this.input.runId;
     const invocationId = this.input.invocationId ?? runId;
@@ -1030,7 +1029,6 @@ export class ToolRuntime {
         ? { providerOptions: structuredClone(ctx.providerOptions) }
         : {}),
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
-      ...(toolIntent ? { intent: toolIntent } : {}),
       ...(stepId !== undefined ? { stepId } : {}),
     };
     let pushedCallEvent: ToolStartEvent | undefined;
@@ -1078,7 +1076,6 @@ export class ToolRuntime {
       ...activityIdentity,
       ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
-      ...(toolIntent ? { intent: toolIntent } : {}),
       args: structuredClone(persistedArgs),
       ...(ctx.providerOptions !== undefined
         ? { providerOptions: structuredClone(ctx.providerOptions) }
@@ -3039,9 +3036,6 @@ function deriveToolResultStatus(
     (raw as { error: string }).error.length > 0
   )
     return 'error';
-  if (content.kind === 'explore_agent' && content.ok === false) {
-    return content.reason === 'aborted' ? 'aborted' : 'error';
-  }
   if (content.kind === 'subagent') {
     if (content.status === 'completed') return 'success';
     if (content.status === 'cancelled') return 'aborted';
@@ -3091,12 +3085,6 @@ function summarizeToolResultForTelemetry(
   }
   if (content.kind === 'terminal' || content.kind === 'shell_run' || content.kind === 'subagent') {
     return { kind: content.kind, status: content.status };
-  }
-  if (content.kind === 'explore_agent') {
-    return {
-      kind: content.kind,
-      status: content.terminalStatus ?? (content.ok ? 'completed' : 'failed'),
-    };
   }
   if (content.kind === 'rive_workflow') {
     return {
@@ -3153,17 +3141,6 @@ function summarizePersistedArgs(args: unknown): string {
   const raw = typeof args === 'string' ? args : JSON.stringify(args ?? null);
   const text = redactSecrets(raw);
   return text.length <= 512 ? text : `${text.slice(0, 511)}…`;
-}
-
-function describeToolIntent(tool: MakaTool, args: unknown): string | undefined {
-  if (tool.categoryHint !== 'subagent' || tool.name !== 'ExploreAgent') return undefined;
-  if (!args || typeof args !== 'object') return undefined;
-  const objective = (args as { objective?: unknown }).objective;
-  if (typeof objective !== 'string') return undefined;
-  const normalized = redactSecrets(objective.replace(/\s+/g, ' ').trim());
-  if (normalized.length === 0) return undefined;
-  const capped = normalized.length <= 180 ? normalized : `${normalized.slice(0, 179)}…`;
-  return `只读探索：${capped}`;
 }
 
 function byteLength(value: unknown): number {

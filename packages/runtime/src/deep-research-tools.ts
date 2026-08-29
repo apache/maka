@@ -63,7 +63,6 @@ const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
   'Read',
   'Glob',
   'Grep',
-  'ExploreAgent',
   'WebSearch',
   DEEP_RESEARCH_START_TOOL_NAME,
   DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,

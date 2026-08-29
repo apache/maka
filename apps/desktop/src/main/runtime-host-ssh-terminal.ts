@@ -72,9 +72,10 @@ import type {
   DesktopRuntimeHostSshTerminalSnapshot,
 } from '../preload/bridge-contract.js';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
-import type {
-  DesktopRuntimeHostDevelopmentPeerTarget,
-  DesktopRuntimeHostSetupPackage,
+import {
+  runtimeHostSetupPackageVersion,
+  type DesktopRuntimeHostDevelopmentPeerTarget,
+  type DesktopRuntimeHostSetupPackage,
 } from './runtime-host-setup-package.js';
 
 interface ActiveTerminal {
@@ -1244,10 +1245,10 @@ function runtimeHostUpdateRemoteCommand(
   setupPackage: PreparedSetupPackage,
   input: DesktopRuntimeHostSshUpdateInput,
 ): string {
-  const deploymentId = input.expectedTarget.deploymentId;
-  if (!deploymentId) {
+  if (!input.expectedTarget.deploymentId) {
     throw new Error('Runtime Host update requires a deployment generation');
   }
+  const targetVersion = runtimeHostSetupPackageVersion(setupPackage);
   return runtimeHostPackageRemoteCommand(
     setupPackage,
     [
@@ -1255,10 +1256,9 @@ function runtimeHostUpdateRemoteCommand(
       'service',
       'update',
       '--framed',
+      ...(targetVersion ? ['--target', targetVersion] : []),
       '--managed-root-id',
       input.expectedTarget.rootId,
-      '--operator-deployment-id',
-      deploymentId,
       ...managedServiceTargetArgs(input.expectedTarget),
       ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ],

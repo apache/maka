@@ -129,6 +129,8 @@ export interface HostMessageRecoveryBatch {
   readonly content: MessageContent;
   readonly submittedContent: MessageContent;
   readonly sources: readonly RootTurnSourceMessage[];
+  /** Steering is bound to the exact root identity chosen before it became durable. */
+  readonly rootIdentity?: Pick<RuntimeMessageRunIdentity, 'turnId' | 'runId'>;
   /**
    * What the recovered Message asked of its Turn. Only a lone Message can
    * carry one — exact-Turn intent needs an idle Session and opens its own root
@@ -738,6 +740,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
   }
 
+  /** Consume pending admissions while the caller still owns this Session's admission lease. */
+  consumePendingAdmissionsAdmitted(
+    sessionId: string,
+    admission: SessionAdmissionLease,
+  ): Promise<void> {
+    return this.#sessionAdmission.runAdmitted(sessionId, admission, () =>
+      this.#consumePendingAdmissions(sessionId, admission),
+    );
+  }
+
   async #consumePendingAdmissions(
     sessionId: string,
     admissionLease: SessionAdmissionLease,
@@ -796,6 +808,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           content: aggregateMessageContents(pending.map((entry) => entry.content)),
           submittedContent: aggregateMessageContents(pending.map((entry) => entry.content)),
           sources: pending.map(pendingMessageSource),
+          ...pendingSteeringRootIdentity(pending),
           ...(pending.length === 1 && pending[0]!.submittedIntent
             ? { submittedIntent: pending[0]!.submittedIntent }
             : {}),
@@ -2294,6 +2307,20 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
     placement: admission.placement,
     disposition: admission.disposition,
   };
+}
+
+function pendingSteeringRootIdentity(
+  pending: readonly PendingMessageAdmission[],
+): Pick<HostMessageRecoveryBatch, 'rootIdentity'> {
+  const steering = pending.filter((entry) => entry.disposition === 'steering');
+  const first = steering[0];
+  if (!first) return {};
+  if (steering.some((entry) => entry.turnId !== first.turnId || entry.runId !== first.runId)) {
+    throw new RuntimeMessageAuthorityInvariantError(
+      'Pending steering admissions disagree on their root identity',
+    );
+  }
+  return { rootIdentity: { turnId: first.turnId, runId: first.runId } };
 }
 
 function submittedProjectionContent(content: MessageContent): MessageContent {

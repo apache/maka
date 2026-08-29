@@ -55,7 +55,7 @@ import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 
 const ROOT = { sessionId: 'session-1', turnId: 'turn-1', runId: 'run-1' } as const;
 
-test('consumes an atomically committed active-target admission exactly once', async (t) => {
+test('consumes an active-target admission before the terminal transition can make it idle', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-workhub-active-consume-'));
   const store = createSessionStore(root);
   t.after(async () => {
@@ -125,10 +125,23 @@ test('consumes an atomically committed active-target admission exactly once', as
     },
   });
 
-  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
-  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+  const admitted = deferred<void>();
+  const releaseAdmission = deferred<void>();
+  const consume = fixture.sessionAdmission.run(ROOT.sessionId, async (lease) => {
+    admitted.resolve(undefined);
+    await releaseAdmission.promise;
+    await fixture.coordinator.consumePendingAdmissionsAdmitted(ROOT.sessionId, lease);
+  });
+  await admitted.promise;
+  const terminal = fixture.sessionAdmission.run(ROOT.sessionId, () => {
+    fixture.setRootState({ kind: 'idle' });
+  });
+  releaseAdmission.resolve(undefined);
+  await consume;
+  await terminal;
 
   assert.equal(fixture.coordinator.projection(ROOT.sessionId).steering.length, 1);
+  assert.equal(fixture.recoveredBatches.length, 0);
   assert.equal(fixture.drainRequests(), 0);
 });
 
@@ -149,7 +162,7 @@ test('idle recovery resolves differently preassigned Messages to their shared su
       submittedContentDigest: messageContentDigest(content),
       submittedPlacement: 'current_turn',
       placement: 'current_turn',
-      disposition: 'steering',
+      disposition: 'followup',
       admittedAt: 10,
     });
   }
@@ -181,6 +194,29 @@ test('idle recovery resolves differently preassigned Messages to their shared su
         },
       ],
     },
+  });
+});
+
+test('idle recovery preserves the exact root identity of durable steering', async () => {
+  const fixture = createFixture();
+  fixture.setRootState({ kind: 'idle' });
+  const content = { text: 'recover exact steering' };
+  await fixture.admissions.commitMessageAdmission({
+    ...ROOT,
+    messageId: 'workhub-message',
+    content,
+    submittedContentDigest: messageContentDigest(content),
+    submittedPlacement: 'current_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 10,
+  });
+
+  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+
+  assert.deepEqual(fixture.recoveredBatches[0]?.rootIdentity, {
+    turnId: ROOT.turnId,
+    runId: ROOT.runId,
   });
 });
 

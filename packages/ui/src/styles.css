@@ -972,56 +972,9 @@
   font: var(--maka-text-supporting);
  display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
-.maka-tool-terminal-copy,
-.maka-agent-preview-copy { flex: 0 0 auto; }
-.maka-tool-terminal-copy[data-pending="true"],
-.maka-agent-preview-copy[data-pending="true"] { cursor: progress; }
-.maka-tool-terminal-copy[data-copy-error="true"],
-.maka-agent-preview-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
-
-.maka-agent-preview {
-  font: var(--maka-text-supporting);
- display: grid; gap: var(--space-2-5); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); white-space: normal; }
-.maka-agent-preview[data-ok="false"],
-.maka-agent-preview[data-status="failed"],
-.maka-agent-preview[data-status="cancelled"] { border-color: oklch(from var(--destructive) l c h / 0.22); }
-.maka-agent-preview-head { display: grid; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
-.maka-agent-preview-head strong {
-  font: var(--maka-text-heading-4);
- min-width: 0; overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-head small,
-.maka-agent-preview-section small,
-.maka-agent-preview-meta dt {
-  font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: var(--tracking-wider); text-transform: uppercase; }
-.maka-agent-preview-summary-line,
-.maka-agent-preview-section-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: var(--space-2); }
-.maka-agent-preview-summary-line small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1-5); margin-top: var(--space-1); }
-.maka-agent-preview-message {
-  font: var(--maka-text-supporting);
- padding: var(--space-2) var(--space-2-5); border-radius: var(--radius-control); background: oklch(from var(--destructive) l c h / 0.07); color: var(--destructive); }
-.maka-agent-preview-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin: 0; }
-.maka-agent-preview-meta > div { display: grid; min-width: 0; gap: var(--space-0-5); }
-.maka-agent-preview-meta dd {
-  font: var(--maka-text-supporting);
- min-width: 0; margin: 0; overflow: hidden; color: var(--foreground-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-section { display: grid; gap: var(--space-1-5); }
-.maka-agent-preview-section > strong,
-.maka-agent-preview-section-head > strong {
-  font: var(--maka-text-heading-5);
- min-width: 0; color: var(--foreground); }
-.maka-agent-preview-section ul { display: grid; gap: var(--space-1-5); margin: 0; padding: 0; list-style: none; }
-.maka-agent-preview-section li { display: grid; min-width: 0; gap: var(--space-0-5); padding-block: var(--space-1-5); border-top: 1px solid var(--foreground-5); }
-.maka-agent-preview-section li:first-child { padding-top: 0; border-top: 0; }
-.maka-agent-preview-section code {
-  font: var(--maka-text-supporting);
- min-width: 0; overflow: hidden; background: transparent; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
-.maka-agent-preview-section p,
-.maka-agent-preview-section span {
-  font: var(--maka-text-supporting);
- margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
-.maka-agent-preview-copy[data-copied="true"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
+.maka-tool-terminal-copy { flex: 0 0 auto; }
+.maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }
+.maka-tool-terminal-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }

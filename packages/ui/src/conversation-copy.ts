@@ -30,7 +30,7 @@ import {
   DEEP_RESEARCH_SCOPE_OPTIONS,
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
-} from '@maka/core/explore-agent';
+} from '@maka/core/deep-research';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 type ResearchItem = Readonly<{ title: string; body: string }>;
