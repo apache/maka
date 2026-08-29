@@ -1906,6 +1906,7 @@ export class AiSdkBackend implements AgentBackend {
         return timeout;
       };
       let lastCompletedStepHadToolResult = false;
+      let terminalProviderErrorReason: string | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2520,6 +2521,10 @@ export class AiSdkBackend implements AgentBackend {
                   : providerOutcome.failure;
               if (scope.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+                terminalProviderErrorReason =
+                  lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                    ? 'model_after_tool_timeout'
+                    : undefined;
                 break agentLoop;
               }
               // A retry is a fresh provider request that would run at least one
@@ -2635,6 +2640,10 @@ export class AiSdkBackend implements AgentBackend {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalProviderErrorReason =
+                lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                  ? 'model_after_tool_timeout'
+                  : undefined;
               break agentLoop;
             }
             break;
@@ -3032,11 +3041,7 @@ export class AiSdkBackend implements AgentBackend {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          const errorReason =
-            streamErrorClass === 'Timeout' && lastCompletedStepHadToolResult
-              ? 'model_after_tool_timeout'
-              : undefined;
-          queue.push(this.makeErrorEvent(turnId, terminalError, errorReason));
+          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
