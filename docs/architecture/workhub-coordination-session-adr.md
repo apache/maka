@@ -141,11 +141,12 @@ then joins the resolved Turn's recorded lifecycle and the target Session's exact
 live-Turn membership to project `running`, `waiting_for_user`, `completed`,
 `failed`, and `aborted`. This remains correct when an unconsumed steering Message
 is folded into a successor Turn or recovery aggregates several pending Messages
-under one new Turn. If the target authority is temporarily unreadable, WorkHub
-projects `recovering` rather than inventing a terminal result. These execution
-states are never appended as mutable Coordination records; Session change
-notifications invalidate the projection and opening WorkHub after restart
-rebuilds it from the same link and target facts.
+under one new Turn. A durable cancellation tombstone for a retracted queued
+Message resolves the delegation to `aborted`. If the target authority is
+temporarily unreadable, WorkHub projects `recovering` rather than inventing a
+terminal result. These execution states are never appended as mutable Coordination
+records; Session change notifications invalidate the projection and opening
+WorkHub after restart rebuilds it from the same link and target facts.
 
 The renderer persists only a Host-scoped action id until acknowledgement. Composer
 draft text uses a separate storage key and lifecycle. A reload therefore preserves

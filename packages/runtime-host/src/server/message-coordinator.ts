@@ -430,12 +430,14 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     MessageOutcome<{
       resolutions: Array<
         | { messageId: string; state: 'pending' }
+        | { messageId: string; state: 'cancelled' }
         | { messageId: string; state: 'owned'; turnId: string; runId: string }
       >;
     }>
   > {
     const resolutions: Array<
       | { messageId: string; state: 'pending' }
+      | { messageId: string; state: 'cancelled' }
       | { messageId: string; state: 'owned'; turnId: string; runId: string }
     > = [];
     for (const messageId of input.messageIds) {
@@ -472,6 +474,10 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           turnId: steering.event.turnId,
           runId: steering.event.runId,
         });
+        continue;
+      }
+      if (await this.#admissions.hasCancelledMessageAdmission(input.sessionId, messageId)) {
+        resolutions.push({ messageId, state: 'cancelled' });
         continue;
       }
       const pending = await this.#admissions.readMessageAdmission(input.sessionId, messageId);

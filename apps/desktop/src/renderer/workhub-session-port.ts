@@ -72,6 +72,7 @@ export interface WorkHubDesktopSessionBridge {
   ): Promise<{
     readonly resolutions: readonly (
       | { messageId: string; state: 'pending' }
+      | { messageId: string; state: 'cancelled' }
       | { messageId: string; state: 'owned'; turnId: string; runId: string }
     )[];
   }>;
@@ -218,6 +219,7 @@ export function createDesktopWorkHubSessionPort(deps: {
           let executionReadFailed = false;
           let resolutions: readonly (
             | { messageId: string; state: 'pending' }
+            | { messageId: string; state: 'cancelled' }
             | { messageId: string; state: 'owned'; turnId: string; runId: string }
           )[] = [];
           try {
@@ -447,7 +449,7 @@ function projectState(session: WorkHubDesktopSession): WorkHubSessionState {
 }
 
 function projectDelegationExecutionState(input: {
-  resolutionState: 'pending' | 'owned' | undefined;
+  resolutionState: 'pending' | 'cancelled' | 'owned' | undefined;
   executionTurnId: string | undefined;
   session: WorkHubSessionFacts | undefined;
   turn: Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource'>> | undefined;
@@ -457,6 +459,7 @@ function projectDelegationExecutionState(input: {
   const { executionTurnId, session, turn } = input;
   if (input.executionReadFailed) return 'recovering';
   if (!input.resolutionState) return 'recovering';
+  if (input.resolutionState === 'cancelled') return 'aborted';
   if (input.resolutionState === 'pending') return 'accepted';
   if (!executionTurnId) return 'recovering';
   if (turn?.statusSource === 'recorded' && turn.status && turn.status !== 'running') {

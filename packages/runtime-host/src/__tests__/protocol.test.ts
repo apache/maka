@@ -1189,7 +1189,7 @@ describe('Runtime Host bootstrap protocol', () => {
       operation: 'turn.message.query' as const,
       input: {
         sessionId: 'session-1',
-        messageIds: ['message-1', 'message-2'],
+        messageIds: ['message-1', 'message-2', 'message-3'],
       },
     };
     const executionQuery = {
@@ -1239,6 +1239,7 @@ describe('Runtime Host bootstrap protocol', () => {
             turnId: 'turn-2',
             runId: 'run-2',
           },
+          { messageId: 'message-3', state: 'cancelled' as const },
         ],
       },
     };

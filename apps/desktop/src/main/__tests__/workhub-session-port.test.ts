@@ -59,6 +59,7 @@ const unusedTranscripts = {
 const noMessageExecutions = async () => ({
   resolutions: [] as Array<
     | { messageId: string; state: 'pending' }
+    | { messageId: string; state: 'cancelled' }
     | { messageId: string; state: 'owned'; turnId: string; runId: string }
   >,
 });
@@ -534,6 +535,7 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
     }),
     desktopSession('failed'),
     desktopSession('aborted'),
+    desktopSession('cancelled'),
     desktopSession('recovering'),
   ];
   const turns = new Map<string, Array<{
@@ -558,6 +560,8 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
       queryMessageExecutions: async (sessionId, messageIds) => ({
         resolutions: sessionId === 'accepted'
           ? messageIds.map((messageId) => ({ messageId, state: 'pending' as const }))
+          : sessionId === 'cancelled'
+            ? messageIds.map((messageId) => ({ messageId, state: 'cancelled' as const }))
           : sessionId === 'recovering'
             ? []
             : messageIds.map((messageId) => ({
@@ -582,6 +586,7 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
     ['completed', 'turn-completed'],
     ['failed', 'turn-failed'],
     ['aborted', 'turn-aborted'],
+    ['cancelled', 'turn-cancelled'],
     ['recovering', 'turn-recovering'],
   ].map(([targetSessionId, targetTurnId]) => ({
     delegationId: `delegation-${targetSessionId}`,
@@ -599,6 +604,7 @@ test('desktop adapter rebuilds delegation feedback from the Message-owned execut
     { delegationId: 'delegation-completed', state: 'completed' },
     { delegationId: 'delegation-failed', state: 'failed' },
     { delegationId: 'delegation-aborted', state: 'aborted' },
+    { delegationId: 'delegation-cancelled', state: 'aborted' },
     { delegationId: 'delegation-recovering', state: 'recovering' },
   ]);
 });

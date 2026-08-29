@@ -889,6 +889,18 @@ test('entry retract removes one queued entry, replays its outcome, and rejects s
     fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
     ['steer-1'],
   );
+  assert.deepEqual(
+    await fixture.coordinator.handlers['turn.message.execution.query'](
+      { sessionId: ROOT.sessionId, messageIds: ['follow-1'] },
+      operationContext(),
+    ),
+    {
+      ok: true,
+      result: {
+        resolutions: [{ messageId: 'follow-1', state: 'cancelled' }],
+      },
+    },
+  );
 
   const retry = await fixture.coordinator.handlers['queue.entry.retract'](
     {

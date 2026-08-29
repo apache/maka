@@ -95,8 +95,8 @@ export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
 export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 67 as const;
-// 67: Message lifecycle queries expose durable execution ownership. Older
-// peers cannot decode or provide the closed execution proof list.
+// 67: Message lifecycle queries expose durable execution ownership and
+// cancellation. Older peers cannot decode or provide the closed proof list.
 // 66: Peer Mesh queries expose one canonical transit selection and runtime metrics.
 // 65: live `tool_start` frames may carry optional `intent` / `argsPreview`
 // keys. Older Clients decode the event with a strict allowed-key list and tear
