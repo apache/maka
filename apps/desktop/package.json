@@ -10,8 +10,11 @@
   "main": "dist/main/main.js",
   "scripts": {
     "start": "node scripts/start-dev-app.mjs",
+    "start:peer": "npm run prepare:runtime-host-peer && node scripts/start-dev-app.mjs --runtime-host-peer",
     "prepare:dev-app": "node scripts/prepare-dev-app.mjs",
+    "prepare:runtime-host-peer": "node ../../native/runtime-host-peer/build.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:peer": "npm run prepare:runtime-host-peer && node scripts/dev.mjs --runtime-host-peer",
     "dev:hmr": "node scripts/dev.mjs",
     "storybook": "storybook dev -p 6006 -c .storybook",
     "build-storybook": "storybook build -c .storybook --output-dir storybook-static",

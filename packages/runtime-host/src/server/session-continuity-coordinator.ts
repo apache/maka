@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { SessionEvent, ShellRunUpdate } from '@maka/core/events';
+import { projectToolArgsPreview } from '@maka/core/tool-quiet-preview';
 import {
   decodeRuntimeResourceRef,
   encodeProtocolMessage,
@@ -29,6 +30,8 @@ import {
   SESSION_RUNTIME_RESOURCE_CHANGES_MAX,
   SESSION_SUBSCRIPTION_FRAME_MAX_BYTES,
   SUBSCRIPTION_OPEN_RESULT_MAX_BYTES,
+  SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES,
+  SESSION_TOOL_INTENT_MAX_BYTES,
   SESSION_TOOL_NAME_MAX_BYTES,
   type AgentGraphChangedFrame,
   type AgentGraphChangedReason,
@@ -1966,6 +1969,13 @@ function projectSessionEvent(
         ...(event.displayName === undefined
           ? {}
           : { displayName: boundedUtf8(event.displayName, SESSION_TOOL_NAME_MAX_BYTES) }),
+        ...(event.intent === undefined
+          ? {}
+          : { intent: boundedUtf8(event.intent, SESSION_TOOL_INTENT_MAX_BYTES) }),
+        // A correlated hidden-shell poll publishes only its correlation ref:
+        // the frame is deliberately minimal (#3569), so no args preview rides
+        // along. Every other live tool start names itself for compact rows.
+        ...(shellRunRef ? {} : projectArgsPreviewForWire(event.toolName, event.args)),
         ...(event.stepId === undefined ? {} : { stepId: event.stepId }),
         ...(shellRunRef ? { shellRunRef } : {}),
       };
@@ -2008,6 +2018,20 @@ function projectSessionEvent(
         content: event.content,
       };
   }
+}
+
+/**
+ * Build the wire `argsPreview` spread for a live `tool_start`. The preview is
+ * computed and bounded in `@maka/core`; the extra byte check here is the
+ * wire-budget guard so a formatter change cannot silently bloat frames.
+ */
+function projectArgsPreviewForWire(toolName: string, args: unknown): { argsPreview?: unknown } {
+  const preview = projectToolArgsPreview(toolName, args);
+  if (preview === undefined) return {};
+  if (Buffer.byteLength(JSON.stringify(preview), 'utf8') > SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES) {
+    return {};
+  }
+  return { argsPreview: preview };
 }
 
 function boundedUtf8(value: string, maxBytes: number): string {

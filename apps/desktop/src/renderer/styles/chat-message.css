@@ -42,6 +42,16 @@
   width: 100%;
 }
 
+/* Inserting earlier turns above the reader must not move what they are
+   reading. The browser's scroll anchoring does exactly that, so state the
+   dependency on the scroller that runs it rather than inheriting the `auto`
+   default: Maka reads no geometry and restores no position of its own. The
+   one case anchoring declines is a scroller sitting at zero, compensated in
+   useChatScroll after the turns land. */
+[data-chat-scroll-container='true'] {
+  overflow-anchor: auto;
+}
+
 .maka-turn-virtual-item {
   display: flex;
   width: 100%;
@@ -318,8 +328,6 @@
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 0;
+  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
+  margin: var(--space-2) auto 0;
 }

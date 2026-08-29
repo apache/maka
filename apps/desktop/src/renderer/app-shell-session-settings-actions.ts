@@ -28,9 +28,9 @@ import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import type { SessionPendingClaim } from './app-shell-session-ui-state.js';
 
 type RefBox<T> = { current: T };
-type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
 
 type ToastApi = {
   success(title: string, description?: string): void;
@@ -64,8 +64,8 @@ export function createAppShellSessionSettingsActions(deps: {
   activeIdRef: RefBox<string | undefined>;
   connections: readonly LlmConnection[];
   messages: readonly StoredMessage[];
-  pendingPermissionModeChangesRef: RefBox<Set<string>>;
-  pendingSessionModelChangesRef: RefBox<Set<string>>;
+  permissionModePending: SessionPendingClaim;
+  sessionModelPending: SessionPendingClaim;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   saveComposerDefaults: (patch: {
     model: { llmConnectionId: string; llmConnectionSlug: string; model: string };
@@ -73,8 +73,6 @@ export function createAppShellSessionSettingsActions(deps: {
   sessionsRef: RefBox<DesktopSessionSummary[]>;
   /** Persists the chat default; awaited so a failure surfaces as one. */
   setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void | Promise<void>;
-  setPendingPermissionModeBySession: BooleanRecordUpdater;
-  setPendingSessionModelBySession: BooleanRecordUpdater;
   toastApi: ToastApi;
 }): AppShellSessionSettingsActions {
   const {
@@ -82,24 +80,15 @@ export function createAppShellSessionSettingsActions(deps: {
     activeIdRef,
     connections,
     messages,
-    pendingPermissionModeChangesRef,
-    pendingSessionModelChangesRef,
+    permissionModePending,
+    sessionModelPending,
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionSettingsActions;
-
-  function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
-    if (!(sessionId in current)) return current;
-    const next = { ...current };
-    delete next[sessionId];
-    return next;
-  }
 
   function modelLabel(connectionSlug: string, model: string): string {
     const connection = connections.find((entry) => entry.slug === connectionSlug);
@@ -121,8 +110,14 @@ export function createAppShellSessionSettingsActions(deps: {
       ? sessionsRef.current.find((session) => session.id === sessionId)?.permissionMode
       : undefined;
     if (currentMode === mode) return true;
+    // No session means the chat default, which has no row to mark pending. It
+    // still needs a key of its own so two rapid switches cannot both run.
     const pendingKey = sessionId ?? '__global_permission_mode__';
-    if (pendingPermissionModeChangesRef.current.has(pendingKey)) return false;
+    // Claimed before the confirm rather than after it: the dialog is part of
+    // the change, so a second click while it is open must not open a second
+    // one. The cost is that the control reads as pending while the user
+    // decides, which is what is actually true.
+    if (!permissionModePending.claim(pendingKey)) return false;
     if (
       mode === 'bypass' &&
       !(await toastApi.confirm({
@@ -133,15 +128,10 @@ export function createAppShellSessionSettingsActions(deps: {
         destructive: true,
       }))
     ) {
+      permissionModePending.release(pendingKey);
       return false;
     }
 
-    pendingPermissionModeChangesRef.current.add(pendingKey);
-    if (sessionId)
-      setPendingPermissionModeBySession((current) => ({
-        ...current,
-        [sessionId]: true,
-      }));
     try {
       let nextMode = mode;
       if (sessionId) {
@@ -165,8 +155,7 @@ export function createAppShellSessionSettingsActions(deps: {
       );
       return false;
     } finally {
-      pendingPermissionModeChangesRef.current.delete(pendingKey);
-      if (sessionId) setPendingPermissionModeBySession((current) => omitSessionKey(current, sessionId));
+      permissionModePending.release(pendingKey);
     }
   }
 
@@ -179,12 +168,7 @@ export function createAppShellSessionSettingsActions(deps: {
     if (!sessionId) return;
     const previous = sessionsRef.current.find((session) => session.id === sessionId);
     const lastUsedModel = latestAssistantModelId(messages);
-    if (pendingSessionModelChangesRef.current.has(sessionId)) return;
-    pendingSessionModelChangesRef.current.add(sessionId);
-    setPendingSessionModelBySession((current) => ({
-      ...current,
-      [sessionId]: true,
-    }));
+    if (!sessionModelPending.claim(sessionId)) return;
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
       if (activeIdRef.current === sessionId) {
@@ -209,16 +193,16 @@ export function createAppShellSessionSettingsActions(deps: {
       await refreshSessions();
     } catch (error) {
       if (activeIdRef.current === sessionId) {
+        const detail = localizedShellErrorMessage(error, copy.modelFallback, uiLocale);
         toastApi.error(
           copy.modelFailedTitle,
-          localizedShellErrorMessage(error, copy.modelFallback, uiLocale),
+          `${detail} ${copy.modelRecoveryHint}`,
           undefined,
           { sessionId },
         );
       }
     } finally {
-      pendingSessionModelChangesRef.current.delete(sessionId);
-      setPendingSessionModelBySession((current) => omitSessionKey(current, sessionId));
+      sessionModelPending.release(sessionId);
     }
   }
 
@@ -227,12 +211,7 @@ export function createAppShellSessionSettingsActions(deps: {
     if (!sessionId) return;
     const current = sessionsRef.current.find((session) => session.id === sessionId);
     if (current && current.thinkingLevel === level) return;
-    if (pendingSessionModelChangesRef.current.has(sessionId)) return;
-    pendingSessionModelChangesRef.current.add(sessionId);
-    setPendingSessionModelBySession((currentPending) => ({
-      ...currentPending,
-      [sessionId]: true,
-    }));
+    if (!sessionModelPending.claim(sessionId)) return;
     try {
       await window.maka.sessions.setThinkingLevel(sessionId, level);
       if (activeIdRef.current === sessionId) {
@@ -249,8 +228,7 @@ export function createAppShellSessionSettingsActions(deps: {
         );
       }
     } finally {
-      pendingSessionModelChangesRef.current.delete(sessionId);
-      setPendingSessionModelBySession((currentPending) => omitSessionKey(currentPending, sessionId));
+      sessionModelPending.release(sessionId);
     }
   }
 

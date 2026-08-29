@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import { findReleaseTarball } from './release-cli-eval-support.mjs';
 import {
   collectRuntimeHostFailureDiagnostic,
   renderRuntimeHostFailureDiagnostic,
@@ -56,11 +57,8 @@ const INSTALLED_ROOT_ENV = 'MAKA_CLI_RELEASE_INSTALLED_ROOT';
 const require = createRequire(import.meta.url);
 
 const repoRoot = resolve(import.meta.dirname, '..');
-const cliVersion = JSON.parse(
-  readFileSync(join(repoRoot, 'packages/cli/package.json'), 'utf8'),
-).version;
 const tarballPath = resolve(
-  process.argv[2] ?? join(repoRoot, `packages/cli/release/maka-agent-${cliVersion}.tgz`),
+  process.argv[2] ?? findReleaseTarball(join(repoRoot, 'packages/cli/release')),
 );
 
 const installedRoot = process.env[INSTALLED_ROOT_ENV];

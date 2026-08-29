@@ -23,10 +23,10 @@ import type React from "react";
 import { cn } from "../utils.js";
 
 /**
- * `Marker` — the per-turn status / lineage / footer chrome (issue #332, PR2).
+ * `Marker` — the per-turn lineage / footer chrome (issue #332, PR2).
  *
- * Retires the bespoke `.maka-turn-summary*`, `.maka-turn-aborted-marker`,
- * `.maka-turn-lineage-*`, and `.maka-turn-footer*` shell
+ * Retires the bespoke `.maka-turn-summary*`, `.maka-turn-lineage-*`, and
+ * `.maka-turn-footer*` shell
  * CSS (spread across `maka-tokens.css`, `styles/settings/models.css`, and the
  * re-anchored measure-column block in `styles/tool-output.css`), moving each
  * onto package-owned semantic classes.
@@ -46,7 +46,6 @@ import { cn } from "../utils.js";
  *
  */
 export type MarkerVariant =
-  | "aborted"
   | "host-origin"
   | "lineage-row"
   | "lineage-row-reverse"
@@ -55,7 +54,6 @@ export type MarkerVariant =
   | "footer-action";
 
 const MARKER_CLASSES: Record<MarkerVariant, string> = {
-  aborted: "maka-turn-aborted-marker",
   "host-origin": "maka-turn-host-origin",
   "lineage-row": "maka-turn-lineage-row",
   "lineage-row-reverse": "maka-turn-lineage-row maka-turn-lineage-row-reverse",

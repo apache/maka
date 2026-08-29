@@ -27,18 +27,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LocaleProvider } from '../locale-context.js';
+import { SessionRailProvider, type SessionRailChrome } from '../session-rail-context.js';
 import { SessionSidebarFooter } from '../session-sidebar-nav.js';
 
 function renderFooter(
   updateReminder?: { state: 'downloaded' | 'error'; latestVersion: string },
 ): string {
+  const chrome: SessionRailChrome = {
+    collapsed: false,
+    onCollapsedChange: () => undefined,
+    width: 260,
+    onWidthChange: () => undefined,
+    minWidth: 180,
+    maxWidth: 480,
+    viewMode: 'conversation',
+    selection: { section: 'sessions' },
+    onSelect: () => undefined,
+    onNew: () => undefined,
+    onOpenSettings: () => undefined,
+    onOpenUpdate: () => undefined,
+    updateReminder,
+  };
   return renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionSidebarFooter
-        updateReminder={updateReminder}
-        onOpenSettings={() => undefined}
-        onOpenUpdate={() => undefined}
-      />
+      <SessionRailProvider data={{ sessions: [], groupVariant: 'conversation', onSelectSession: () => undefined }} chrome={chrome}>
+        <SessionSidebarFooter />
+      </SessionRailProvider>
     </LocaleProvider>,
   );
 }

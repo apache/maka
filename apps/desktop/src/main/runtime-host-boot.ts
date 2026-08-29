@@ -29,6 +29,7 @@ import {
   type MessageBoxReturnValue,
 } from "electron";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
@@ -53,6 +54,7 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
 } from "@maka/runtime-host/client";
+import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
@@ -65,7 +67,10 @@ import { resolveStorageRoot } from "@maka/storage/root-authority";
 import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
-import { verifyDownloadedUpdateAttestation } from "./app-update-attestation.js";
+import {
+  desktopUpdateChannelFromManifest,
+  verifyDownloadedUpdateAttestation,
+} from "./app-update-attestation.js";
 import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
@@ -181,6 +186,8 @@ import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-oper
 import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
+import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
+import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
@@ -221,15 +228,36 @@ await resolveShellEnv();
 const MANAGED_UPDATE_RECONNECT_TIMEOUT_MS = 10_000;
 const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
 const userDataDir = app.getPath("userData");
-const runtimeHostDirectPeerAvailable = await configureDesktopRuntimeHostPeerClient({
+const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient({
   isPackaged: app.isPackaged,
+  enableDevelopmentPeer: process.argv.includes('--runtime-host-peer'),
   appPath: app.getAppPath(),
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
-const runtimeHostPeerClient = runtimeHostDirectPeerAvailable
-  ? createRuntimeHostPeerClientFromEnvironment()
-  : undefined;
+let runtimeHostPeerOwner: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>> | undefined;
+let runtimeHostPeerMesh: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>>['mesh'] | undefined;
+let runtimeHostPeerClient:
+  | ReturnType<typeof createRuntimeHostPeerClientFromEnvironment>
+  | undefined;
+if (runtimeHostPeerConfiguration) {
+  try {
+    runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
+      ...runtimeHostPeerConfiguration,
+      dataRoot: join(userDataDir, 'peer-mesh'),
+    });
+    runtimeHostPeerClient = runtimeHostPeerOwner.client;
+    runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
+    void runtimeHostPeerOwner.closed.catch((error) => {
+      runtimeHostPeerMesh = undefined;
+      console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+    });
+  } catch (error) {
+    console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
+    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
+  }
+}
+const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
 const runtimeHostClientInstanceId = await loadOrCreateRuntimeHostClientInstanceId(
   join(userDataDir, "runtime-host-client.json"),
 );
@@ -486,6 +514,24 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
+const localRuntimeHostManagement = createDesktopRuntimeHostLocalManagement({
+  remoteAccess: localRuntimeHostRemoteAccess,
+  operator: localRuntimeHostOperator,
+  rootPath: startupLocalStorageRoot.canonicalPath,
+  resolveUpdatePackage: () => runtimeHostSetupPackage.resolve(
+    desktopRuntimeHostDevelopmentPeerTarget(),
+  ),
+  currentHostEpoch: () =>
+    runtimeHostManager?.current('local')?.candidate?.client.hostEpoch,
+  awaitUpdatedConnection: async (previousHostEpoch, replacementExpected) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.waitUntilReady(
+      'local',
+      replacementExpected ? previousHostEpoch : undefined,
+      AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
+    );
+  },
+});
 const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
@@ -541,6 +587,13 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
     mainWindowController.send("runtime-host-management:progress", progress),
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
+  providers: [localRuntimeHostManagement],
+});
+const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
+  ipcMain,
+  localMesh: () => runtimeHostPeerMesh,
+  profiles: runtimeHostProfileService,
+  runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
@@ -682,9 +735,15 @@ const updateMockState =
     ? process.env.MAKA_UPDATE_MOCK_STATE
     : undefined;
 const updateTestFeed = process.env.MAKA_UPDATE_TEST_FEED;
+const desktopUpdateChannel = app.isPackaged
+  ? desktopUpdateChannelFromManifest(
+      JSON.parse(readFileSync(join(app.getAppPath(), "package.json"), "utf8")),
+    )
+  : "release";
 const updateService = createAppUpdateService({
   currentVersion: app.getVersion(),
   isPackaged: app.isPackaged,
+  updateChannel: desktopUpdateChannel,
   testFeedUrl: updateTestFeed,
   mockLatestVersion: process.env.MAKA_UPDATE_MOCK_VERSION,
   mockState: updateMockState,
@@ -698,6 +757,7 @@ const updateService = createAppUpdateService({
     ? async () => {}
     : ({ downloadedFile, version }) =>
         verifyDownloadedUpdateAttestation({
+          channel: desktopUpdateChannel,
           downloadedFile,
           version,
           trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),
@@ -742,6 +802,7 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
+await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
 runtimeHostManager = await startRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
@@ -951,6 +1012,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         isDefault: true,
       });
     },
+    recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
     onFatalError: (error, target) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
@@ -1659,7 +1721,9 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   permissionOverlay.dismiss();
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
+    Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
     runtimeHostManager?.close(),
+    runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),

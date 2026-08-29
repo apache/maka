@@ -53,6 +53,7 @@ import { type SessionSummary } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import type { ComposerModelSwitchAvailability } from './composer-helpers.js';
 
 const DEFAULT_THINKING_LEVEL = '__default__';
 
@@ -209,8 +210,13 @@ export function ChatModelSwitcher(props: {
   currentProviderType?: ProviderType;
   choices: ChatModelChoice[];
   hasConversationHistory?: boolean;
-  pending?: boolean;
+  availability?: ComposerModelSwitchAvailability;
   disabledReason?: string;
+  /** Optional controlled open state used by an external recovery action. */
+  isMenuOpen?: boolean;
+  onMenuOpenChange?(open: boolean): void;
+  /** Hide a stale display-only row while the Session requires identity recovery. */
+  hideUnavailableCurrentOption?: boolean;
   renderProviderMark?(type: ProviderType): ReactNode;
   onChange?(input: {
     llmConnectionId: string;
@@ -228,9 +234,15 @@ export function ChatModelSwitcher(props: {
         currentModel,
       )
     : undefined;
-  const pending = Boolean(props.pending);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const disabled = pending || Boolean(props.disabledReason) || !props.onChange || props.choices.length === 0;
+  const availability = props.availability ?? { available: true, pending: false };
+  const [internalMenuOpen, setInternalMenuOpen] = useState(false);
+  const menuOpen = props.isMenuOpen ?? internalMenuOpen;
+  const setMenuOpen = (open: boolean) => {
+    if (props.isMenuOpen === undefined) setInternalMenuOpen(open);
+    props.onMenuOpenChange?.(open);
+  };
+  const disabled =
+    !availability.available || !props.onChange || props.choices.length === 0;
   const grouped = modelMenuGroups(props.choices, locale);
   const currentKnownChoice = props.choices.some(
     (choice) =>
@@ -238,7 +250,7 @@ export function ChatModelSwitcher(props: {
       currentValue,
   );
   const displayLabel = props.activeModelLabel ?? currentModel;
-  const title = pending
+  const title = availability.pending
     ? `${copy.switching}…`
     : props.disabledReason ?? copy.switchAriaLabel;
   const announceWarning = menuOpen && props.hasConversationHistory === true;
@@ -246,6 +258,7 @@ export function ChatModelSwitcher(props: {
   return (
     <>
       <DropdownMenu
+        {...(props.isMenuOpen === undefined ? {} : { isMenuOpen: props.isMenuOpen })}
         placement="above"
         hasChevron={false}
         className="maka-composer-quiet-menu"
@@ -256,7 +269,7 @@ export function ChatModelSwitcher(props: {
           variant: 'ghost',
           size: 'sm',
           isDisabled: disabled,
-          isLoading: pending,
+          isLoading: availability.pending,
           tooltip: title,
           className: 'maka-model-switcher-trigger',
           'aria-label': copy.switchAriaLabel,
@@ -271,7 +284,11 @@ export function ChatModelSwitcher(props: {
         <ModelMenuItems
           groups={grouped}
           currentValue={currentValue}
-          leadingOption={!currentKnownChoice ? { label: displayLabel, providerType: props.currentProviderType } : undefined}
+          leadingOption={
+            !currentKnownChoice && !props.hideUnavailableCurrentOption
+              ? { label: displayLabel, providerType: props.currentProviderType }
+              : undefined
+          }
           renderProviderMark={props.renderProviderMark}
           disabled={disabled}
           onPick={async (next) => {

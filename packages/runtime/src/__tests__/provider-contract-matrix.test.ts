@@ -23,6 +23,7 @@ import { after, describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   PROVIDER_CONTRACT_MATRIX_PLAN,
+  listProviderContractCells,
   type ProviderContractDiscoveryPlan,
   type ProviderContractRow,
   type ProviderContractGeneratedCell,
@@ -49,6 +50,16 @@ const plan = PROVIDER_CONTRACT_MATRIX_PLAN;
 
 after(closeAllJsonServers);
 
+test('provider override cells and executable bindings are a bijection', () => {
+  const plannedKeys = listProviderContractCells(plan)
+    .flatMap(({ cell }) => (cell.state === 'override' ? [cell.overrideKey] : []))
+    .sort();
+  const bindingKeys = PROVIDER_CONTRACT_OVERRIDE_BINDINGS.flatMap(({ keys }) => keys).sort();
+  assert.deepEqual(duplicateValues(plannedKeys), [], 'override cells must be unique');
+  assert.deepEqual(duplicateValues(bindingKeys), [], 'override bindings must be unique');
+  assert.deepEqual(bindingKeys, plannedKeys);
+});
+
 describe('provider conformance matrix — override cells execute their bound contract', () => {
   for (const binding of PROVIDER_CONTRACT_OVERRIDE_BINDINGS) {
     test(`${binding.keys.join(' + ')} · ${binding.title}`, async () => {
@@ -56,6 +67,10 @@ describe('provider conformance matrix — override cells execute their bound con
     });
   }
 });
+
+function duplicateValues(values: readonly string[]): string[] {
+  return values.filter((value, index) => values.indexOf(value) !== index);
+}
 
 describe('provider conformance matrix — discovery', () => {
   for (const row of plan.rows) {

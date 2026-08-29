@@ -25,7 +25,6 @@
     "./interaction-store": "./dist/interaction-store-public.js",
     "./long-term-memory-store": "./dist/long-term-memory-store.js",
     "./managed-secret-store": "./dist/managed-secret-store.js",
-    "./managed-workspace-owner": "./dist/managed-workspace-owner.js",
     "./mcp-config-store": "./dist/mcp-config-store.js",
     "./memory-bundle-store": "./dist/memory-bundle-store.js",
     "./model-call-ledger": "./dist/model-call-ledger.js",

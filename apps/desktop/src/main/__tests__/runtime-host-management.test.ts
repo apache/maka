@@ -20,11 +20,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
+import type { DesktopRuntimeHostManagementProvider } from '../runtime-host-management-provider.js';
 import type {
   DesktopRuntimeHostSshAccessInput,
   DesktopRuntimeHostSshCleanupInput,
@@ -35,6 +36,57 @@ import type {
 } from '../runtime-host-ssh-terminal.js';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
+
+test('requires explicit interruption authority before a provider restarts active work', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const provider = {
+    profileId: 'local',
+    accessManagementAvailable: false,
+    run: async (action: string, allowInterruptActiveTasks: boolean) => {
+      return action === 'restart' && !allowInterruptActiveTasks
+        ? {
+            schemaVersion: 1 as const,
+            kind: 'error' as const,
+            action: 'restart' as const,
+            error: { code: 'active_tasks', message: 'Runtime Host still owns active work' },
+          }
+        : serviceResult(action as DesktopRuntimeHostSshManagementInput['action']);
+    },
+    uninstall: async () => ({ kind: 'uninstalled' as const, retainedStateRoot: '/state' }),
+  } as unknown as DesktopRuntimeHostManagementProvider;
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => assert.fail('Local must not resolve an SSH service'),
+      resolveManagedAccess: async () => assert.fail('Local must not resolve SSH access'),
+      markManagedServiceUninstalling: async () => assert.fail('Local must not mutate SSH state'),
+      markManagedServiceCleanupPending: async () => assert.fail('Local must not mutate SSH state'),
+      clearManagedServiceBinding: async () => assert.fail('Local must not mutate SSH state'),
+      rotateManagedCredential: async () => assert.fail('Local must not mutate SSH state'),
+    },
+    runServiceManagement: async () => assert.fail('Local must not use SSH transport'),
+    runAccessManagement: async () => assert.fail('Local must not use SSH transport'),
+    cleanupManagedDeployment: async () => assert.fail('Local must not use SSH transport'),
+    providers: [provider],
+  });
+
+  const run = handlers.get('runtime-host-management:run');
+  assert.ok(run);
+  const blocked = await run({}, 'local', 'restart');
+  const restarted = await run({}, 'local', 'restart', true);
+
+  assert.equal((blocked as { kind: string }).kind, 'error');
+  assert.equal((restarted as { kind: string }).kind, 'result');
+  assert.throws(
+    () => run({}, 'local', 'status', true),
+    /authority is not valid for this action/u,
+  );
+});
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -937,11 +989,11 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
       assert.equal(input.action, 'status');
       assert.equal(
         input.capabilityRequest,
-        RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+        RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
       );
       return {
         ...serviceResult('status'),
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY],
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY],
       };
     },
     runAccessManagement: async () => assert.fail('access management is not expected'),
@@ -971,9 +1023,9 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
 
   const configure = handlers.get('runtime-host-management:configure-direct-peer');
   assert.ok(configure);
-  const enabled = await configure({}, profile.id, true, []);
+  const enabled = await configure({}, profile.id, true, [], true);
   assert.equal((enabled as { profilePresent: boolean }).profilePresent, true);
-  const disabled = await configure({}, profile.id, false, []);
+  const disabled = await configure({}, profile.id, false, [], true);
   assert.equal((disabled as { profilePresent: boolean }).profilePresent, false);
   assert.deepEqual(actions, ['enable', 'disable']);
 });
@@ -1005,7 +1057,7 @@ test('disables a newly enabled listener when its Desktop profile cannot be commi
       directPeerClientAvailable: true,
       runServiceManagement: async () => ({
         ...serviceResult('status'),
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY],
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY],
       }),
       runAccessManagement: async () => assert.fail('access management is not expected'),
       runPeerManagement: async (input) => {
@@ -1037,7 +1089,7 @@ test('disables a newly enabled listener when its Desktop profile cannot be commi
     const configure = handlers.get('runtime-host-management:configure-direct-peer');
     assert.ok(configure);
     await assert.rejects(
-      configure({}, 'office', true, []) as Promise<unknown>,
+      configure({}, 'office', true, [], true) as Promise<unknown>,
       failure === 'descriptor' ? /usable direct-peer descriptor/u : /profile store failed/u,
     );
     assert.deepEqual(actions, ['enable', 'disable']);
@@ -1077,13 +1129,14 @@ test('does not invoke peer management when the remote operator lacks its capabil
     state: 'unsupported',
     routeHints: [],
     coordinationRelays: [],
+    automaticRelayDiscovery: false,
     profilePresent: false,
     profileEnabled: false,
     clientAvailable: true,
     managementAvailable: false,
   });
   await assert.rejects(
-    configure({}, 'office', true, []) as Promise<unknown>,
+    configure({}, 'office', true, [], true) as Promise<unknown>,
     /Update this Runtime Host/u,
   );
 });

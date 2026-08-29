@@ -51,6 +51,7 @@ import {
 const DESKTOP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const REPO_ROOT    = resolve(DESKTOP_DIR, '..', '..');
 const TSC_CLI      = join(REPO_ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+const MODEL_METADATA_SYNC = join(REPO_ROOT, 'scripts', 'sync-model-metadata.mjs');
 const RUNTIME_WORKER_BUILD = join(REPO_ROOT, 'packages', 'runtime', 'scripts', 'build-filesystem-worker.mjs');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -77,6 +78,12 @@ function runNodeTool(dir, script, args) {
 // ── build phases ─────────────────────────────────────────────────────────────
 
 const TIMER_START = Date.now();
+
+// A clean or ignore-scripts install has no generated model modules yet, and
+// `tsc --build` bypasses workspace prebuild hooks. Generate from the committed
+// snapshot before starting the incremental library graph.
+log('build', 'model metadata — generating from committed snapshot');
+await runNodeTool(REPO_ROOT, MODEL_METADATA_SYNC, []);
 
 // Phase 1: all library packages via `tsc --build` (single process, shared
 // .tsbuildinfo, sub-project incremental detection). The preload bundle imports

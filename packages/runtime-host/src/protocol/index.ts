@@ -71,6 +71,7 @@ export * from './configuration-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './plan.js';
+export * from './peer-mesh.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
@@ -93,9 +94,23 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 62 as const;
-// 62: Message content carries Host-bound directory references. Older peers
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 68 as const;
+// 68: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
+// 67: Message lifecycle queries expose durable execution ownership and
+// cancellation. Older peers cannot decode or provide the closed proof list.
+// 66: Peer Mesh queries expose one canonical transit selection and runtime metrics.
+// 65: live `tool_start` frames may carry optional `intent` / `argsPreview`
+// keys. Older Clients decode the event with a strict allowed-key list and tear
+// the connection down on unknown keys, so the pair must be refused up front.
+// The strict decoder's allowed-key union also retains `shellRunRef`.
+// 64: execution.inspect drops the retired resolve operation. Older peers still
+// know execution.inspect.resolve and would send it only to fail mid-connection,
+// so removing it needs its own handshake boundary.
+// 63: Connection updates accept the full canonical enabled-model limit.
+// Older peers reject valid catalogs containing more than 64 enabled models.
+// 62: A Direct peer listener can expose owner-only Peer Mesh management
+// operations. Older peers do not have this closed operation vocabulary.
 // 61: Session explicit model targets carry immutable Connection identity,
 // configuration updates are Host-merged patches, and projections expose the
 // required nullable binding ID. Older peers cannot preserve these invariants.
@@ -414,7 +429,9 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     compositionRevision: decodeCompositionRevision(registration.compositionRevision),
     ...(registration.lifecycleMode === undefined
       ? {}
-      : { lifecycleMode: requireHostLifecycleMode(registration.lifecycleMode) }),
+      : {
+          lifecycleMode: requireHostLifecycleMode(registration.lifecycleMode),
+        }),
     ...(registration.generation === undefined
       ? {}
       : { generation: requireHostGeneration(registration.generation) }),
@@ -465,7 +482,9 @@ function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {
 function decodeTakeover(value: unknown): ClientHello['takeover'] {
   if (value === undefined) return undefined;
   const takeover = requireRecord(value, 'Runtime Host takeover');
-  return { expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch') };
+  return {
+    expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch'),
+  };
 }
 
 export function encodeProtocolMessage(value: ClientFrame | HostFrame): EncodedProtocolMessage {

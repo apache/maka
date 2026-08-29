@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process';
 import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -84,6 +85,7 @@ export async function packageWindowsX64({
   platform = process.platform,
   arch = process.arch,
   run = runCommand,
+  env = process.env,
   remove = rm,
   assertFile = access,
 } = {}) {
@@ -92,8 +94,9 @@ export async function packageWindowsX64({
   }
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const exePath = join(releaseDirectory, `Maka-${manifest.version}-win-x64.exe`);
-  const zipPath = join(releaseDirectory, `Maka-${manifest.version}-win-x64.zip`);
+  const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
+  const exePath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.exe`);
+  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.zip`);
   const updateMetadataPath = join(releaseDirectory, 'latest.yml');
   const unpackedDirectory = join(releaseDirectory, 'win-unpacked');
 

@@ -77,23 +77,17 @@ const browserFrameScheduler: PromptRailFrameScheduler = {
 /**
  * Hold a jump's destination while the transcript grows under it.
  *
- * Two different things move the transcript out from under a jump, and
- * releasing auto-follow (`onNavigateStart`) only answers the first:
- *
- *  - Astryx's auto-follow spring, which keeps pulling toward the bottom
- *    because it never sees the jump as a reader-initiated scroll up.
- *  - The virtual window's scroll compensation while the destination is
- *    mounted and its measured height replaces the estimate.
- *
- * Re-aiming outlasts both: through each geometry change, and once more if a still
+ * What moves the transcript out from under a jump is the virtual window: the
+ * destination mounts, its measured height replaces the estimate, and everything
+ * below shifts. Releasing the tail (`onNavigateStart`) does not answer that —
+ * only re-aiming does, through each geometry change, and once more if a still
  * frame finds the target off the top edge, which is what a scroll cancelled
  * part-way leaves behind. A frame where nothing moved and the target is where
  * the click asked costs one `getBoundingClientRect` and nothing else.
  *
- * `releaseAutoFollow` runs on every frame of the hold rather than once at the
- * click, because Astryx re-locks on any `scrollend` that settles near the
- * bottom. A jump from the initial tail can otherwise undo a single release
- * while the destination window is mounting.
+ * `onNavigateStart` is re-asserted on every frame of the hold rather than once
+ * at the click. It is idempotent, and a jump that starts from the tail would
+ * otherwise be re-pinned by the first scroll the mounting window produces.
  *
  * The hold ends after the mounted destination is still for a few frames, or
  * the moment the reader takes the transcript back.
@@ -101,7 +95,7 @@ const browserFrameScheduler: PromptRailFrameScheduler = {
 export function holdJumpDestination(input: {
   root: Element;
   readTargetId: () => string | null;
-  /** Astryx's auto-follow release, re-asserted for the life of the hold. */
+  /** The tail release, re-asserted for the life of the hold. */
   releaseAutoFollow?: (() => void) | undefined;
   onSettled: () => void;
   scheduler?: PromptRailFrameScheduler;
@@ -162,7 +156,7 @@ export function holdJumpDestination(input: {
     // Quiet means nothing moved at all — not the content, not the position.
     // Height alone was not enough: with the transcript already mounted there
     // is nothing to re-aim through, and the hold released three frames in,
-    // handing the highlight and the auto-follow release back while the jump's
+    // handing the highlight and the tail release back while the jump’s
     // own scroll was still in flight.
     if (
       !grew &&
@@ -216,20 +210,38 @@ export interface PromptAnchorRailTurn {
   sequence?: number;
 }
 
+export function mergePromptAnchorRailTurns(
+  loadedTurns: ReadonlyArray<{ turnId: string; label: string; reply: string }>,
+  index?: ReadonlyArray<{ turnId: string; sequence: number; label: string }>,
+): PromptAnchorRailTurn[] {
+  if (!index || index.length === 0) {
+    return loadedTurns.map((turn) => ({ ...turn }));
+  }
+  const loadedByTurnId = new Map(loadedTurns.map((turn) => [turn.turnId, turn]));
+  return index.map((landmark) => {
+    const loaded = loadedByTurnId.get(landmark.turnId);
+    return {
+      ...(loaded ?? {
+        turnId: landmark.turnId,
+        label: landmark.label,
+        reply: '',
+      }),
+      sequence: landmark.sequence,
+    };
+  });
+}
+
 export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
   /** When the bounded virtual window has not placed the turn in the DOM. */
   onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
   /**
-   * Release Astryx's auto-follow before a jump scrolls.
+   * Stop following the tail, before a jump scrolls.
    *
-   * ChatLayout keeps the transcript pinned to the bottom while a turn streams
-   * and unlocks when the reader scrolls up, which it detects by comparing
-   * scrollTop between scroll events — but it discards any scroll event that
-   * arrives with a changed scrollHeight, since Chrome fires those on content
-   * resize and they are not the reader moving. A jump to an unmounted turn
-   * changes the virtual window's height, so auto-follow must be released first.
+   * A tick is the reader choosing where to look, which outranks the tail. It
+   * has to be said before the scroll, not after: released afterwards, the
+   * release lands on a viewport the pin has already written back to the bottom.
    */
   onNavigateStart?: (() => void) | undefined;
 }
@@ -468,9 +480,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
     const turnId = turn.turnId;
     const root = scrollRef.current;
     const el = root?.querySelector(`[data-turn-id="${CSS.escape(turnId)}"]`);
-    // Before the scroll, not after: auto-follow has to be released while the
+    // Before the scroll, not after: the tail has to be released while the
     // transcript is still where the reader left it, or the release lands after
-    // it has already pulled the view back to the bottom.
+    // the next growth has already written the view back to the bottom.
     onNavigateStart?.();
     // Claimed before the scroll starts: a same-frame `scroll` event would
     // otherwise reach the observer while the highlight is still unowned.
@@ -480,8 +492,8 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // teleport the reader asked for, not a journey — and an animated one
       // does not survive this surface: traced against a 30-prompt session, the
       // smooth scroll was cancelled by the mount's own scroll compensation and
-      // by auto-follow's spring, and stalled two pixels from where it started.
-      // Landing reliably beats animating unreliably.
+      // stalled two pixels from where it started. Landing reliably beats
+      // animating unreliably.
       (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
     } else if (!el) {
       onNavigateFallback?.(turn);

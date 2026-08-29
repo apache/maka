@@ -27,7 +27,12 @@ remounted when the active session changes.
 ## Dependency direction
 
 - Consumers import production APIs from `features/workbar`.
-- Tests and stories may additionally import `features/workbar/testing`.
+- Node test suites may additionally import `features/workbar/testing`.
+- Storybook may additionally import `features/workbar/stories`, which exposes
+  `WorkbarSurface`. It stays out of the production entry because `workbar-host`
+  reaches the surface through `lazy()`, and out of `testing` because that entry
+  is loaded by `node --test` against tsc output while the surface and its tool
+  panels use extensionless relative specifiers only a bundler resolves.
 - Workbar may use shared renderer primitives, core types and Maka UI.
 - Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read

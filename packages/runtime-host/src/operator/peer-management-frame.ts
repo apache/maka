@@ -37,6 +37,7 @@ const STATUS_SCHEMA = z
       .optional(),
     routeHints: z.array(ADDRESS_SCHEMA).max(16),
     coordinationRelays: z.array(ADDRESS_SCHEMA).max(16),
+    automaticRelayDiscovery: z.boolean().optional(),
   })
   .strict();
 

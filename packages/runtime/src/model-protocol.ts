@@ -393,6 +393,10 @@ export type ModelStreamEvent =
       kind: 'thinking';
       text: string;
       providerOptions?: ProviderOptions;
+      /** Bounded item identity used only while grouping one streamed reasoning item. */
+      reasoningItemId?: string;
+      /** Final provider summary, compared before only its part boundaries are persisted. */
+      reasoningSummaryText?: string;
       /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
       providerOptionsOrigin?: 'maka_transport';
     }

@@ -20,6 +20,7 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
+  PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
   TURN_SESSION_ID,
@@ -143,6 +144,48 @@ export function promptRailMessages(now: number): StoredMessage[] {
       turnId,
       ts: ts + 1_000,
       text: `第 ${index} 段回答。`.repeat(40),
+      modelId: 'glm-5.1',
+    });
+  }
+  return messages;
+}
+
+export function partialHistorySession(now: number): SessionHeader {
+  return header({
+    id: PARTIAL_HISTORY_SESSION_ID,
+    name: '超长对话历史范围示例',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 60_000,
+  });
+}
+
+/**
+ * Eight turns whose durable transcript is well over the Desktop range budget.
+ * The whitespace is stored but collapses when rendered, keeping this a useful
+ * visual fixture while forcing the initial open to contain only the latest
+ * contiguous range.
+ */
+export function partialHistoryMessages(now: number): StoredMessage[] {
+  const messages: StoredMessage[] = [];
+  const rangePadding = ' '.repeat(180 * 1024);
+  for (let index = 1; index <= 8; index += 1) {
+    const turnId = `turn-partial-history-${index}`;
+    const ts = now - (9 - index) * 60_000;
+    messages.push({
+      type: 'user',
+      id: `msg-partial-history-user-${index}`,
+      turnId,
+      ts,
+      text: `第 ${index} 个问题：请概括这一阶段的实现进展。`,
+    });
+    messages.push({
+      type: 'assistant',
+      id: `msg-partial-history-assistant-${index}`,
+      turnId,
+      ts: ts + 1_000,
+      text: `第 ${index} 阶段已经完成关键实现，并通过了对应验证。${rangePadding}`,
       modelId: 'glm-5.1',
     });
   }

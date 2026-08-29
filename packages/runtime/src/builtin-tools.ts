@@ -180,8 +180,6 @@ export interface BuildBuiltinToolsOptions {
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
-  /** Host-surface gate for Edit. Defaults to enabled. */
-  includeEdit?: boolean;
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
@@ -600,7 +598,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       },
     },
   ];
-  return tools.filter((tool) => options.includeEdit !== false || tool.name !== 'Edit');
+  return tools;
 }
 
 /** The per-call context every file tool hands to the filesystem authority. */

@@ -217,6 +217,151 @@ test('startup recovery replays an admitted regenerate with its source lineage', 
   });
 });
 
+test('startup recovery materializes legacy terminal Root sources exactly once', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts();
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+  });
+});
+
+test('startup recovery replays a legacy Root without a Run before materializing its sources', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.terminalEvents.length, 1);
+  });
+});
+
+test('startup recovery closes a legacy non-terminal Run before materializing its sources', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('created');
+
+    const firstHost = await fixture.startHost();
+    await fixture.stopHost(firstHost);
+    const secondHost = await fixture.startHost();
+    await fixture.stopHost(secondHost);
+
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages())
+        .filter((message) => legacy.sources.some((source) => source.messageId === message.id))
+        .map(({ id, turnId, ts, text }) => ({ id, turnId, ts, text })),
+      legacy.sources.map((source) => ({
+        id: source.messageId,
+        turnId: legacy.turnId,
+        ts: source.admittedAt,
+        text: source.content.text,
+      })),
+    );
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.terminalEvents.length, 1);
+  });
+});
+
+test('startup recovery rejects an unproven legacy Root without creating its missing Run', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('missing');
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    assert.deepEqual(await fixture.readTurnRuns(legacy.turnId), []);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+  });
+});
+
+test('startup recovery rejects an unproven legacy non-terminal Run before closing it', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts('created');
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    const ledger = await fixture.readTurn(legacy.turnId);
+    assert.equal(ledger.runs.length, 1);
+    assert.equal(ledger.runs[0]?.status, 'created');
+    assert.equal(ledger.terminalEvents.length, 0);
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+  });
+});
+
+test('startup recovery rejects a legacy terminal Root source without its durable receipt', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const legacy = await fixture.seedLegacyRootWithoutSourceTranscripts();
+    fixture.deleteRootSourceProof(legacy.sources[1].messageId);
+
+    await fixture.expectHostStartupFailure();
+    await fixture.assertOwnerAvailable();
+    assert.deepEqual(
+      (await fixture.readSessionUserMessages()).filter((message) =>
+        legacy.sources.some((source) => source.messageId === message.id),
+      ),
+      [],
+    );
+  });
+});
+
 test('a fresh quoted Turn preserves durable and Runtime handoff content', async () => {
   await withExecutionRoot(async (fixture) => {
     const host = await fixture.startHost();

@@ -280,7 +280,7 @@ export class SqliteRuntimeStore
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
       if (!options.readOnly) {
-        this.registerWorkspaceBaselineAuthorityWriter(options.databaseLease.databasePath);
+        this.registerWorkspaceBaselineAuthorityWriter();
         this.refreshToolLedgerHealth();
       }
       return;
@@ -306,7 +306,7 @@ export class SqliteRuntimeStore
       assertContinuationAuthorityCapability(this.db);
       assertWorkspaceVersionAuthorityCapability(this.db);
       if (!options.readOnly) {
-        this.registerWorkspaceBaselineAuthorityWriter(path);
+        this.registerWorkspaceBaselineAuthorityWriter();
         this.refreshToolLedgerHealth();
       }
     } catch (error) {
@@ -1230,11 +1230,10 @@ export class SqliteRuntimeStore
     });
   }
 
-  private registerWorkspaceBaselineAuthorityWriter(databasePath: string): void {
+  private registerWorkspaceBaselineAuthorityWriter(): void {
     const readWorkspaceHead = this.readWorkspaceHead.bind(this);
     registerWorkspaceBaselineAuthorityWriterInternal(
       this,
-      databasePath,
       (input, rootId) => this.#commitWorkspaceBaseline(input, rootId),
       (rootId) => this.#bindWorkspaceStorageRoot(rootId),
       readWorkspaceHead,

@@ -23,10 +23,12 @@ import { parseHTML } from 'linkedom';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SessionEvent } from '@maka/core/events';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
 import {
   createFakeWorkbarServices,
   useQuoteCompanion,
+  sessionHasExactModelChoice,
   WorkbarServicesProvider,
   type CompanionQuoteSnapshot,
   type StagedCompanionQuote,
@@ -132,6 +134,7 @@ async function renderProbe(
   options: {
     ownership?: boolean;
     sourceSession?: SessionSummary;
+    modelChoices?: readonly ChatModelChoice[];
     ready?: (container: Element) => boolean;
     onSend?: (send: (text: string) => Promise<boolean>) => void;
     onSteer?: (steer: (text: string) => Promise<boolean>) => void;
@@ -160,8 +163,13 @@ async function renderProbe(
         onStop: options.onStop,
         pendingQuotes: options.pendingQuotes,
         onQuotesConsumed: options.onQuotesConsumed,
+        sourceSession: options.sourceSession,
+        modelChoices: options.modelChoices,
       })
-    : createElement(QuoteCompanionProbe, { sourceSession: options.sourceSession });
+    : createElement(QuoteCompanionProbe, {
+        sourceSession: options.sourceSession,
+        modelChoices: options.modelChoices,
+      });
 
   await act(async () => {
     root.render(createElement(WorkbarServicesProvider, { services, children }));
@@ -180,6 +188,8 @@ async function renderOwnershipProbe(
   options: {
     pendingQuotes?: readonly StagedCompanionQuote[];
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+    sourceSession?: SessionSummary;
+    modelChoices?: readonly ChatModelChoice[];
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
@@ -217,6 +227,70 @@ async function renderOwnershipProbe(
       eventHandler(event);
     },
   };
+}
+
+const REBOUND_MODEL: Partial<SessionSummary> = {
+  llmConnectionId: 'connection-2',
+  llmConnectionSlug: 'openai-2',
+  model: 'model-2',
+};
+
+function exactModelRebindScenario() {
+  const sourceA = session('source-session');
+  const sourceB = session('source-session', REBOUND_MODEL);
+  return {
+    sourceA,
+    sourceB,
+    forkB: session('side-conversation-b', REBOUND_MODEL),
+  };
+}
+
+function probeTree(
+  services: WorkbarServices,
+  sourceSession: SessionSummary,
+  modelChoices: readonly ChatModelChoice[] = [choiceFor(sourceSession)],
+) {
+  return createElement(WorkbarServicesProvider, {
+    services,
+    children: createElement(QuoteCompanionProbe, { sourceSession, modelChoices }),
+  });
+}
+
+async function rerenderProbeSource(
+  rendered: { root: Root; services: WorkbarServices },
+  sourceSession: SessionSummary,
+  modelChoices: readonly ChatModelChoice[] = [choiceFor(sourceSession)],
+) {
+  await act(async () => {
+    rendered.root.render(probeTree(rendered.services, sourceSession, modelChoices));
+    await Promise.resolve();
+  });
+}
+
+function ownershipProbeTree(
+  services: WorkbarServices,
+  sourceSession: SessionSummary,
+  onSend: (send: (text: string) => Promise<boolean>) => void,
+) {
+  return createElement(WorkbarServicesProvider, {
+    services,
+    children: createElement(QuoteCompanionOwnershipProbe, {
+      onSend,
+      sourceSession,
+      modelChoices: [choiceFor(sourceSession)],
+    }),
+  });
+}
+
+async function rerenderOwnershipSource(
+  rendered: { root: Root; services: WorkbarServices },
+  sourceSession: SessionSummary,
+  onSend: (send: (text: string) => Promise<boolean>) => void,
+) {
+  await act(async () => {
+    rendered.root.render(ownershipProbeTree(rendered.services, sourceSession, onSend));
+    await Promise.resolve();
+  });
 }
 
 afterEach(async () => {
@@ -332,6 +406,329 @@ test('does not restart foreground setup when the source Session object refreshes
 
   assert.equal(branchCount, 1);
   assert.equal(probe.getAttribute('data-preparing'), 'false');
+});
+
+test('waits for the source model to become available before forking', async () => {
+  let branchCount = 0;
+  const { container, root, services } = await renderProbe(
+    {
+      listTurns: async () => [settledTurn('settled-turn')],
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return { ok: true as const, session: session('side-conversation') };
+      },
+    },
+    {
+      sourceSession: session('source-session'),
+      modelChoices: [],
+      ready: (current) =>
+        current.firstElementChild?.getAttribute('data-preparing') === 'false',
+    },
+  );
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+  assert.equal(branchCount, 0);
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+
+  await rerenderProbeSource({ root, services }, session('source-session'));
+  await waitUntil(() => probe.getAttribute('data-companion-id') === 'side-conversation');
+
+  assert.equal(branchCount, 1);
+});
+
+test('replaces an empty companion whose exact model is no longer available', async () => {
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
+  let branchCount = 0;
+  const cleaned: string[] = [];
+  const { container, root, services } = await renderProbe(
+    {
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return {
+          ok: true as const,
+          session: branchCount === 1 ? session('side-conversation-a') : forkB,
+        };
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+    },
+    {
+      sourceSession: sourceA,
+      modelChoices: [choiceFor(sourceA)],
+      ready: (current) =>
+        current.firstElementChild?.getAttribute('data-companion-id') ===
+        'side-conversation-a',
+    },
+  );
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+
+  await rerenderProbeSource({ root, services }, sourceB);
+  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
+
+  assert.equal(branchCount, 2);
+  assert.deepEqual(cleaned, ['side-conversation-a']);
+});
+
+test('does not commit a fork whose model becomes unavailable during setup', async () => {
+  const source = session('source-session');
+  const pendingFork = deferred<SessionSummary>();
+  const cleaned: string[] = [];
+  let branchCount = 0;
+  const { container, root, services } = await renderProbe(
+    {
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return { ok: true as const, session: await pendingFork.promise };
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+    },
+    {
+      sourceSession: source,
+      modelChoices: [choiceFor(source)],
+      ready: () => branchCount === 1,
+    },
+  );
+  const probe = container.firstElementChild;
+  assert.ok(probe);
+
+  await act(async () => {
+    root.render(probeTree(services, source, []));
+    pendingFork.resolve(session('side-conversation-a'));
+    await pendingFork.promise;
+  });
+  await waitUntil(() => probe.getAttribute('data-preparing') === 'false');
+
+  assert.equal(probe.getAttribute('data-companion-id'), '');
+  assert.deepEqual(cleaned, ['side-conversation-a']);
+});
+
+test('does not replace a fork while its send waits for observation readiness', async () => {
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
+  let branchCount = 0;
+  let seedA: (() => void) | undefined;
+  const cleaned: string[] = [];
+  const sendTargets: string[] = [];
+  let currentSend!: (text: string) => Promise<boolean>;
+  const rendered = await renderOwnershipProbe(
+    {
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return {
+          ok: true as const,
+          session: branchCount === 1 ? session('side-conversation') : forkB,
+        };
+      },
+      subscribeEvents: (sessionId, _handler, onSeeded) => {
+        if (sessionId === 'side-conversation') seedA = onSeeded;
+        else onSeeded?.();
+        return () => undefined;
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+      send: async (sessionId) => {
+        sendTargets.push(sessionId);
+        return { ok: false as const, reason: 'not configured' };
+      },
+    },
+    {
+      sourceSession: sourceA,
+      modelChoices: [choiceFor(sourceA)],
+    },
+  );
+  currentSend = rendered.send;
+
+  let firstSend!: Promise<boolean>;
+  await act(async () => {
+    firstSend = currentSend('waiting send');
+    await Promise.resolve();
+    rendered.root.render(ownershipProbeTree(rendered.services, sourceB, (send) => {
+      currentSend = send;
+    }));
+    await Promise.resolve();
+  });
+  assert.deepEqual(cleaned, [], 'the send lock must retain its fork');
+
+  await act(async () => {
+    seedA?.();
+    assert.equal(await firstSend, false);
+  });
+  assert.deepEqual(sendTargets, ['side-conversation']);
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
+  assert.deepEqual(cleaned, ['side-conversation']);
+  assert.equal(branchCount, 2);
+
+  await act(async () => {
+    assert.equal(await currentSend('retry after rebind'), false);
+  });
+  assert.deepEqual(sendTargets, ['side-conversation', 'side-conversation-b']);
+});
+
+test('replaces an empty stale fork after its pending admission is retracted', async () => {
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
+  const pendingSend = deferred<{
+    ok: true;
+    steered: true;
+    turnId: string;
+    messageId: string;
+  }>();
+  let admissionId: string | undefined;
+  let branchCount = 0;
+  const cleaned: string[] = [];
+  let currentSend!: (text: string) => Promise<boolean>;
+  const rendered = await renderOwnershipProbe(
+    {
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return {
+          ok: true as const,
+          session: branchCount === 1 ? session('side-conversation') : forkB,
+        };
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+      send: async (_sessionId, command) => {
+        admissionId = command.turnId;
+        return pendingSend.promise;
+      },
+    },
+    {
+      sourceSession: sourceA,
+      modelChoices: [choiceFor(sourceA)],
+    },
+  );
+  currentSend = rendered.send;
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = currentSend('pending send');
+    await Promise.resolve();
+  });
+  await waitUntil(() => admissionId !== undefined);
+  await rerenderOwnershipSource(rendered, sourceB, (send) => { currentSend = send; });
+  assert.deepEqual(cleaned, [], 'pending admission must retain its fork');
+
+  await act(async () => {
+    rendered.emit({
+      type: 'message_admission',
+      id: 'retracted-after-rebind',
+      turnId: 'old-turn',
+      ts: 1,
+      messageId: admissionId as string,
+      outcome: 'retracted',
+    });
+    await Promise.resolve();
+  });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
+  assert.deepEqual(cleaned, ['side-conversation']);
+  assert.equal(branchCount, 2);
+
+  await act(async () => {
+    pendingSend.resolve({
+      ok: true,
+      steered: true,
+      turnId: 'old-turn',
+      messageId: admissionId as string,
+    });
+    assert.equal(await sendResult, false);
+  });
+});
+
+test('retains an admitted fork interrupted before send settles when its model changes', async () => {
+  const { sourceA, sourceB } = exactModelRebindScenario();
+  const pendingSend = deferred<{ ok: true; turnId: string }>();
+  const pendingStop = deferred<undefined>();
+  const cleaned: string[] = [];
+  let admissionId: string | undefined;
+  let branchCount = 0;
+  let currentSend!: (text: string) => Promise<boolean>;
+  const rendered = await renderOwnershipProbe(
+    {
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return { ok: true as const, session: session('side-conversation') };
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+      send: async (_sessionId, command) => {
+        admissionId = command.turnId;
+        return pendingSend.promise;
+      },
+      stop: async (_sessionId, target) => {
+        assert.deepEqual(target, { kind: 'admission', messageId: admissionId });
+        return pendingStop.promise;
+      },
+    },
+    {
+      sourceSession: sourceA,
+      modelChoices: [choiceFor(sourceA)],
+    },
+  );
+  currentSend = rendered.send;
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = currentSend('persisted before interruption');
+    await Promise.resolve();
+  });
+  await waitUntil(() => admissionId !== undefined);
+  let stopResult!: Promise<void>;
+  await act(async () => {
+    stopResult = rendered.stop();
+    await Promise.resolve();
+    pendingSend.resolve({ ok: true, turnId: 'admitted-turn' });
+    await Promise.resolve();
+  });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  await waitUntil(() => probe.getAttribute('data-live-turn-id') === 'admitted-turn');
+
+  await act(async () => {
+    pendingStop.resolve(undefined);
+    await stopResult;
+    assert.equal(await sendResult, false);
+  });
+  await act(async () => {
+    rendered.emit(completeEvent('interrupted-complete', 'admitted-turn', 1));
+    await Promise.resolve();
+  });
+  await waitUntil(() => probe.getAttribute('data-live-turn-id') === '');
+
+  await rerenderOwnershipSource(rendered, sourceB, (send) => { currentSend = send; });
+  assert.equal(probe.getAttribute('data-companion-id'), 'side-conversation');
+  assert.deepEqual(cleaned, [], 'Host-admitted content must never be replaced implicitly');
+  assert.equal(branchCount, 1);
+});
+
+test('source model readiness requires the exact Connection id, slug, and model', () => {
+  const source = session('source-session');
+  assert.equal(sessionHasExactModelChoice(source, [choiceFor(source)]), true);
+  const legacy = { ...source };
+  delete legacy.llmConnectionId;
+  assert.equal(sessionHasExactModelChoice(legacy, [choiceFor(source)]), false);
+  assert.equal(sessionHasExactModelChoice(source, []), false);
+  assert.equal(
+    sessionHasExactModelChoice(source, [choiceFor(source, { connectionId: 'other' })]),
+    false,
+  );
+  assert.equal(
+    sessionHasExactModelChoice(source, [choiceFor(source, { connectionSlug: 'other' })]),
+    false,
+  );
+  assert.equal(
+    sessionHasExactModelChoice(source, [choiceFor(source, { model: 'other' })]),
+    false,
+  );
 });
 
 test('keeps Side Conversation events owned by the Host-admitted turn across an admission race', async () => {
@@ -1111,11 +1508,16 @@ test('releases a send waiting for observation when the Side Conversation is disp
   mountedRoot = undefined;
 });
 
-function QuoteCompanionProbe(props: { sourceSession?: SessionSummary }) {
+function QuoteCompanionProbe(props: {
+  sourceSession?: SessionSummary;
+  modelChoices?: readonly ChatModelChoice[];
+}) {
+  const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'retry-panel',
     pendingQuotes: [],
-    sourceSession: props.sourceSession ?? SOURCE_SESSION,
+    sourceSession,
+    modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],
     locale: 'en',
     onQuotesConsumed: () => undefined,
   });
@@ -1132,11 +1534,15 @@ function QuoteCompanionOwnershipProbe(props: {
   onStop?: (stop: () => Promise<void>) => void;
   pendingQuotes?: readonly StagedCompanionQuote[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
+  sourceSession?: SessionSummary;
+  modelChoices?: readonly ChatModelChoice[];
 }) {
+  const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'ownership-panel',
     pendingQuotes: props.pendingQuotes ?? [],
-    sourceSession: SOURCE_SESSION,
+    sourceSession,
+    modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],
     locale: 'en',
     onQuotesConsumed: props.onQuotesConsumed ?? (() => undefined),
   });
@@ -1153,7 +1559,7 @@ function QuoteCompanionOwnershipProbe(props: {
   });
 }
 
-function session(id: string): SessionSummary {
+function session(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id,
     name: id,
@@ -1163,10 +1569,30 @@ function session(id: string): SessionSummary {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test',
     connectionLocked: false,
     model: 'test-model',
     permissionMode: 'ask',
+    ...overrides,
+  };
+}
+
+function choiceFor(
+  source: SessionSummary,
+  overrides: Partial<ChatModelChoice> = {},
+): ChatModelChoice {
+  assert.ok(source.llmConnectionId);
+  return {
+    connectionId: source.llmConnectionId,
+    connectionSlug: source.llmConnectionSlug,
+    providerType: 'openai',
+    providerLabel: 'OpenAI',
+    model: source.model,
+    label: source.model,
+    isDefault: true,
+    thinkingLevels: [],
+    ...overrides,
   };
 }
 

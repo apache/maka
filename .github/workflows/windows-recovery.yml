@@ -192,20 +192,3 @@ jobs:
             Write-Error 'Runtime Host recovery gate did not run exactly two passing tests'
             exit 1
           }
-
-      - name: Verify managed workspace crash recovery
-        shell: pwsh
-        run: |
-          $env:MAKA_STORAGE_STRESS = '1'
-          node.exe --test --test-reporter=tap --test-concurrency=1 `
-            --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" `
-            packages/storage/dist/__tests__/managed-workspace-baseline.test.js `
-            packages/storage/dist/__tests__/git-workspace-service.test.js `
-            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -ne 0) { exit $exitCode }
-          $output = Get-Content "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          if ($output -notcontains '# tests 12' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Managed workspace recovery gate did not run exactly twelve passing tests'
-            exit 1
-          }

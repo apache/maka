@@ -330,26 +330,30 @@ function sessionConnectionIdentityNotice(
   locale: UiLocale,
 ): string | undefined {
   if (!identities) return undefined;
+  const emptyChoiceRecovery =
+    locale === 'zh'
+      ? '如果 /model 没有可选项，请先添加或启用连接（API Key 连接可运行 /setup）。'
+      : 'If /model has no choices, add or enable a connection first (run /setup for API-key connections).';
   if (!session.llmConnectionId) {
     return locale === 'zh'
-      ? '此任务尚未绑定具体账号，请显式选择账号后继续。'
-      : 'This task is not bound to an exact account. Explicitly choose an account to continue.';
+      ? `此任务来自旧版本，需要确认一次账号。运行 /model 选择现有账号和模型。${emptyChoiceRecovery}`
+      : `This task comes from an older version and needs a one-time account confirmation. Run /model and choose an existing account and model. ${emptyChoiceRecovery}`;
   }
   const identified = identities.find((entry) => entry.connectionId === session.llmConnectionId);
   if (!identified) {
     return locale === 'zh'
-      ? '原账号已删除；请显式选择新账号后继续。'
-      : 'The original account was deleted. Explicitly choose a new account to continue.';
+      ? `原账号已删除；运行 /model 选择新账号和模型后继续。${emptyChoiceRecovery}`
+      : `The original account was deleted. Run /model and choose a new account and model to continue. ${emptyChoiceRecovery}`;
   }
   if (identified.connectionSlug !== session.llmConnectionSlug) {
     return locale === 'zh'
-      ? '任务保存的账号身份与当前连接不一致，请显式重新选择账号。'
-      : 'The saved account identity no longer matches its connection. Explicitly choose an account.';
+      ? `任务保存的账号身份与当前连接不一致；运行 /model 重新选择账号和模型。${emptyChoiceRecovery}`
+      : `The saved account identity no longer matches its connection. Run /model and choose an account and model again. ${emptyChoiceRecovery}`;
   }
   if (!identified.enabled) {
     return locale === 'zh'
-      ? '原账号已停用；请启用该账号或显式选择新账号后继续。'
-      : 'The original account is disabled. Enable it or explicitly choose a new account.';
+      ? `原账号已停用；请启用该账号，或运行 /model 选择新账号和模型。${emptyChoiceRecovery}`
+      : `The original account is disabled. Enable it, or run /model and choose a new account and model. ${emptyChoiceRecovery}`;
   }
   return undefined;
 }

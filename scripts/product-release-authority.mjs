@@ -36,10 +36,12 @@ const execFileAsync = promisify(execFile);
 
 function expectedReleaseIdentity(tag) {
   const { prerelease, version } = parseProductTag(tag);
+  if (prerelease.length > 0) {
+    throw new Error('Formal product releases require a stable product tag');
+  }
   return {
     tag,
     version,
-    isPrerelease: prerelease.length > 0,
     attestationName: `Maka-${version}-attestation.sigstore.json`,
   };
 }
@@ -57,19 +59,19 @@ export function assertDraftProductRelease(release, tag) {
   if (release.draft !== true) {
     throw new Error(`GitHub Release ${tag} must remain a Draft`);
   }
-  if (release.prerelease !== expected.isPrerelease) {
-    throw new Error(`GitHub Release ${tag} prerelease state must be ${expected.isPrerelease}`);
+  if (release.prerelease !== false) {
+    throw new Error(`GitHub Release ${tag} must not be a prerelease`);
   }
   return release;
 }
 
 export function assertPublishedProductRelease(release, tag, releaseId, expectedAssets) {
-  const expected = expectedReleaseIdentity(tag);
+  expectedReleaseIdentity(tag);
   if (!release || release.id !== releaseId || release.tag !== tag || release.draft !== false) {
     throw new Error(`GitHub Release ${tag} was not published`);
   }
-  if (release.prerelease !== expected.isPrerelease) {
-    throw new Error(`GitHub Release ${tag} prerelease state must be ${expected.isPrerelease}`);
+  if (release.prerelease !== false) {
+    throw new Error(`GitHub Release ${tag} must not be a prerelease`);
   }
   if (JSON.stringify(release.assets) !== JSON.stringify(expectedAssets)) {
     throw new Error(`GitHub Release ${tag} assets changed during publication`);
@@ -242,7 +244,6 @@ export async function publishDraftProductRelease({
     throw new Error('Draft GitHub Release does not contain the exact attestation bundle');
   }
 
-  const isPrerelease = releaseIdentity.isPrerelease;
   const published = await run(
     'gh',
     [
@@ -255,9 +256,9 @@ export async function publishDraftProductRelease({
       '-F',
       'draft=false',
       '-F',
-      `prerelease=${isPrerelease}`,
+      'prerelease=false',
       '-f',
-      `make_latest=${isPrerelease ? 'false' : 'true'}`,
+      'make_latest=true',
     ],
     { cwd },
   );
@@ -269,23 +270,21 @@ export async function publishDraftProductRelease({
   }
   assertPublishedProductRelease(record, tag, draft.id, expectedAssets);
 
-  if (!isPrerelease) {
-    let latestTag;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        const latest = await run('gh', ['api', `repos/${repository}/releases/latest`], { cwd });
-        latestTag = JSON.parse(latest.stdout).tag_name;
-      } catch (error) {
-        if (attempt === 4) {
-          throw new Error('GitHub returned an invalid Latest release record', { cause: error });
-        }
+  let latestTag;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      const latest = await run('gh', ['api', `repos/${repository}/releases/latest`], { cwd });
+      latestTag = JSON.parse(latest.stdout).tag_name;
+    } catch (error) {
+      if (attempt === 4) {
+        throw new Error('GitHub returned an invalid Latest release record', { cause: error });
       }
-      if (latestTag === tag) break;
-      if (attempt < 4) await pause(1_000);
     }
-    if (latestTag !== tag) {
-      throw new Error(`Stable release ${tag} was published but Latest points to ${latestTag}`);
-    }
+    if (latestTag === tag) break;
+    if (attempt < 4) await pause(1_000);
+  }
+  if (latestTag !== tag) {
+    throw new Error(`Stable release ${tag} was published but Latest points to ${latestTag}`);
   }
   return record;
 }

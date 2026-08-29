@@ -125,11 +125,10 @@ export function lookupModelProviderOverride(
 /**
  * The request wire a model served over the OpenAI adapter must use.
  *
- * OpenAI's `gpt-5*` families and xAI's `grok-4.5` are served only over the
- * Responses API; every other model on the native OpenAI adapter uses Chat
- * Completions. This is the single declared source of that protocol split,
- * expressed through the {@link ModelInfo.apiProtocol} seam. It is consumed by
- * the runtime model factory and the conformance matrix.
+ * Provider/model routing facts live here even when the concrete Responses SDK
+ * and replay policy are delegated to a Runtime profile. This is the single
+ * declared source of the default protocol split, expressed through the
+ * {@link ModelInfo.apiProtocol} seam.
  */
 export function openAiAdapterApiProtocol(
   modelId: string,
@@ -138,6 +137,8 @@ export function openAiAdapterApiProtocol(
   const id = modelId.trim();
   return (providerType === 'deepseek' && deepSeekModelSupportsResponses(id)) ||
     (providerType === 'opencode-go' && id === 'muse-spark-1.2-contributor') ||
+    ((providerType === 'alibaba-token-plan-cn' || providerType === 'alibaba-token-plan') &&
+      id === 'qwen3.8-max') ||
     /^gpt-5/i.test(id) ||
     ((providerType === 'xai' || providerType === 'xai-oauth') && id === 'grok-4.5')
     ? 'openai-responses'

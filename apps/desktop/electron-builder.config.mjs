@@ -17,25 +17,49 @@
  * under the License.
  */
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  DESKTOP_NIGHTLY_FEED_URL,
+  resolveDesktopBuildVersion,
+  resolveRuntimeHostSetupPackage,
+} from '../../scripts/desktop-nightly.mjs';
+import { workspaceReleaseManifest } from '../../scripts/release-cli-file-policy.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
 }
 
+async function stageReleaseManifests({ packager }) {
+  const stage = await packager.info.tempDirManager.createTempDir({
+    prefix: 'maka-release-manifests',
+  });
+  for (const name of ['mcp', 'runtime', 'runtime-host']) {
+    const directory = join(stage, name);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      join(directory, 'package.json'),
+      `${JSON.stringify(workspaceReleaseManifest(readManifest(`../../packages/${name}/package.json`)), null, 2)}\n`,
+    );
+  }
+  packager.config.files.push({ from: stage, to: 'node_modules/@maka' });
+}
+
+const rootManifest = readManifest('../../package.json');
 const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
-  rootManifest: readManifest('../../package.json'),
+  rootManifest,
   desktopManifest: readManifest('./package.json'),
   cliManifest: readManifest('../../packages/cli/package.json'),
 });
 
-export default {
+const baseDesktopBuilderConfig = {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
-  extraMetadata: { runtimeHostSetupPackage },
+  beforePack: stageReleaseManifests,
+  extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
   directories: {
     output: 'release',
   },
@@ -52,6 +76,7 @@ export default {
     'dist/**/*',
     'dist-renderer/**/*',
     'package.json',
+    '!node_modules/@maka/{mcp,runtime,runtime-host}/package.json',
     '!**/__tests__/**',
     // FakeBackend and the Desktop E2E candidate bootstrap live under
     // `test-only/`; they must not reach a packaged app.
@@ -249,3 +274,21 @@ export default {
     },
   ],
 };
+
+export function resolveDesktopBuilderConfig(environment = process.env) {
+  const nightlyVersion = environment.MAKA_DESKTOP_NIGHTLY_VERSION?.trim();
+  if (!nightlyVersion) return baseDesktopBuilderConfig;
+  const version = resolveDesktopBuildVersion(rootManifest.version, environment);
+  return {
+    ...baseDesktopBuilderConfig,
+    extraMetadata: {
+      ...baseDesktopBuilderConfig.extraMetadata,
+      version,
+      runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
+      makaUpdateChannel: 'nightly',
+    },
+    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL }],
+  };
+}
+
+export default resolveDesktopBuilderConfig();

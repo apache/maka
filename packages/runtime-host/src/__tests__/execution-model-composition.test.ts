@@ -21,8 +21,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
@@ -270,8 +270,9 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
   const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
   const root = join(base, 'interactive');
   const project = join(base, 'project');
+  let outsideRoot: string | undefined;
+  let sandboxPaths: ManagedSandboxPaths | undefined;
   const provider = await startProvider();
-  provider.configureManagedBashFlow();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -284,6 +285,16 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
   };
   let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
   try {
+    if (process.platform === 'darwin') {
+      outsideRoot = await mkdtemp(join(homedir(), '.maka-host-sandbox-boundary-'));
+      sandboxPaths = {
+        outsideBash: join(outsideRoot, 'bash-denied.txt'),
+        outsideWrite: join(outsideRoot, 'write-denied.txt'),
+        workspaceBash: join(project, 'bash-allowed.txt'),
+        workspaceWrite: join(project, 'write-allowed.txt'),
+      };
+    }
+    provider.configureManagedBashFlow(sandboxPaths);
     await mkdir(project);
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const created = await policy.connectionCatalog.create({
@@ -450,6 +461,77 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     const refreshedRequestText = JSON.stringify(refreshedRequests[2]?.body);
     assert.match(refreshedRequestText, /<sandbox_context>/u);
     assert.match(refreshedRequestText, /Network: enabled/u);
+
+    if (sandboxPaths) {
+      const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
+      const sandboxTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        sandboxTurnId,
+        await startTurn(
+          composition,
+          session.id,
+          sandboxTurnId,
+          'Exercise the enforced filesystem boundary.',
+          context,
+        ),
+        context,
+      );
+      assert.equal(sandboxTerminal.status, 'completed');
+
+      const sandboxRequests = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(sandboxRequests.length, 8);
+      assert.match(latestToolResultText(sandboxRequests[4]!.body) ?? '', /macos-seatbelt/u);
+      assert.match(
+        latestToolResultText(sandboxRequests[4]!.body) ?? '',
+        /Operation not permitted/u,
+      );
+      assert.match(
+        latestToolResultText(sandboxRequests[5]!.body) ?? '',
+        /sandbox_boundary_required/u,
+      );
+      assert.equal(await fileExists(sandboxPaths.outsideBash), false);
+      assert.equal(await fileExists(sandboxPaths.outsideWrite), false);
+      assert.equal(await readFile(sandboxPaths.workspaceBash, 'utf8'), 'bash allowed');
+      assert.equal(await readFile(sandboxPaths.workspaceWrite, 'utf8'), 'write allowed');
+
+      const sandboxEvents = await execution.runtimeEventStore.readRuntimeEvents(
+        session.id,
+        sandboxTerminal.runId,
+      );
+      const sandboxResponses = sandboxEvents.filter(
+        (event) => event.content?.kind === 'function_response',
+      );
+      assert.deepEqual(
+        sandboxResponses.map((event) =>
+          event.content?.kind === 'function_response'
+            ? {
+                name: event.content.name,
+                isError: event.content.isError === true,
+              }
+            : undefined,
+        ),
+        [
+          { name: 'Bash', isError: true },
+          { name: 'Write', isError: true },
+          { name: 'Bash', isError: false },
+          { name: 'Write', isError: false },
+        ],
+      );
+      assert.equal(
+        sandboxEvents.some(
+          (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
+        ),
+        false,
+      );
+      assert.deepEqual(
+        await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
+        [],
+      );
+      const sandboxBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+      assert.equal(sandboxBoundary.kind, 'managed');
+      assert.equal(sandboxBoundary.revision, expanded.boundary.revision);
+    }
   } finally {
     try {
       await composition?.close();
@@ -457,8 +539,15 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
       try {
         await owner.close();
       } finally {
-        await provider.close();
-        await rm(base, { recursive: true, force: true });
+        try {
+          await provider.close();
+        } finally {
+          try {
+            await rm(base, { recursive: true, force: true });
+          } finally {
+            if (outsideRoot) await rm(outsideRoot, { recursive: true, force: true });
+          }
+        }
       }
     }
   }
@@ -1484,40 +1573,21 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     // Tavily is selected but no web-search credential exists, so the provider
-    // must never see WebSearch in the effective root tool surface.
+    // must never see WebSearch in the effective root tool surface. Non-direct
+    // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
       'ArchiveRead',
       'AskUserQuestion',
       'Bash',
       'Edit',
-      'ExploreAgent',
-      'FormatJson',
       'Glob',
-      'GoalClear',
-      'GoalPause',
-      'GoalResume',
-      'GoalSet',
-      'GoalStatus',
       'Grep',
-      'MakaSettingsGet',
-      'MakaSettingsUpdate',
       'Read',
-      'ReadHistory',
-      'ScheduledTask',
-      'SearchHistory',
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
       'WebFetch',
       'Write',
-      'WriteStdin',
-      'memory_extract',
-      'memory_remember',
-      'request_sandbox_boundary',
-      'task_create',
-      'task_get',
-      'task_list',
-      'task_update',
       'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
@@ -3257,7 +3327,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
 
   assert.deepEqual(composition.tools, [boundTool]);
   assert.equal(
-    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    composition.toolAvailability?.groups?.some((group) => group.id === 'client_fixture') ?? false,
     false,
   );
 });
@@ -3291,7 +3361,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     composition.tools.map(({ name }) => name),
     ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
   );
-  assert.deepEqual(composition.toolAvailability.groups, []);
+  assert.equal(composition.toolAvailability, undefined);
   assert.equal(
     (
       await composition.resolveSystemPrompt({
@@ -3891,9 +3961,19 @@ interface ProviderRequest {
   readonly body: Record<string, unknown>;
 }
 
+interface ManagedSandboxPaths {
+  readonly outsideBash: string;
+  readonly outsideWrite: string;
+  readonly workspaceBash: string;
+  readonly workspaceWrite: string;
+}
+
 type ProviderFlow =
   | { readonly kind: 'default' }
-  | { readonly kind: 'managed_bash' }
+  | {
+      readonly kind: 'managed_bash';
+      readonly sandboxPaths?: ManagedSandboxPaths;
+    }
   | {
       readonly kind: 'client_capability';
       readonly groupId: string;
@@ -3910,7 +3990,7 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
-  configureManagedBashFlow(): void;
+  configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
@@ -3930,9 +4010,12 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
-    configureManagedBashFlow: () => {
+    configureManagedBashFlow: (sandboxPaths) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
-      flow = { kind: 'managed_bash' };
+      flow = {
+        kind: 'managed_bash',
+        ...(sandboxPaths ? { sandboxPaths } : {}),
+      };
     },
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -4024,6 +4107,34 @@ async function handleProviderRequest(
         },
         network: { enabled: true },
       },
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf denied > ${JSON.stringify(flow.sandboxPaths.outsideBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 5) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.outsideWrite,
+      content: 'write denied',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 6) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf 'bash allowed' > ${JSON.stringify(flow.sandboxPaths.workspaceBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 7) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.workspaceWrite,
+      content: 'write allowed',
     });
     return;
   }

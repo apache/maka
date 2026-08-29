@@ -233,6 +233,11 @@ export class DesktopTranscriptReplica {
     });
     await this.#withDecodedPage(page, (decoded) => {
       this.#assertOpen();
+      // Same post-await `#resident` invariant as `#replaceWithRange` and the
+      // paged catch-up: a concurrent `discard()` may have reclaimed this
+      // replica while the older page was in flight. Installing the page here
+      // would repopulate durable state and undo the eviction.
+      if (!this.#resident) return;
       this.#acceptRange(decoded.messages);
       if (
         anchor !== null &&
@@ -275,6 +280,13 @@ export class DesktopTranscriptReplica {
     });
     await this.#withDecodedPage(page, (decoded) => {
       this.#assertOpen();
+      // `#resident` can flip to false across the `await` above (a concurrent
+      // `discard()` reclaims memory for a non-visible session while the page is
+      // in flight). Re-anchoring here would repopulate durable state and undo
+      // the eviction, resurrecting a deliberately discarded replica past its
+      // memory budget. The paged catch-up guards its own post-await callback
+      // the same way; mirror it before mutating or publishing.
+      if (!this.#resident) return;
       this.#acceptRange(decoded.messages);
       if (
         decoded.messages.length > 0 &&
@@ -359,8 +371,16 @@ export class DesktopTranscriptReplica {
         return;
       }
       if (this.#hasNewer) {
-        this.#durableThrough = target;
-        this.#publish([], [], []);
+        // The resident window was trimmed off the tail (e.g. after loading
+        // older history, `#evictToBudget(..., 'newest')` set `#hasNewer`), so
+        // `target` cannot be appended contiguously to what is resident. Bumping
+        // the watermark and publishing an empty change here silently dropped
+        // the freshly persisted message: an already-open consumer never learned
+        // about it and only a fresh subscription (the user switching sessions
+        // and back) re-read it. Re-anchor to the newest window instead — the
+        // same recovery a fresh subscription performs — so the append reaches
+        // open consumers live.
+        await this.#replaceWithRange(target, target, 512 * 1024);
         return;
       }
       let cursor: string | null = null;
@@ -398,6 +418,14 @@ export class DesktopTranscriptReplica {
           cursor = decoded.nextCursor;
         });
       } while (cursor !== null);
+      // A concurrent `discard()` (LRU reclaim for another observed session) can
+      // flip `#resident` to false across any page `await` above. The per-page
+      // callback already returns early in that case, so `expectedSequence` is
+      // left short of the watermark. Without this guard the check below would
+      // turn a benign memory reclaim into a fatal `correlation_changed` that
+      // drives the session terminal. A discarded replica has no watermark to
+      // meet, so return cleanly and let a later resume re-catch-up.
+      if (!this.#resident) return;
       if (expectedSequence !== target + 1) {
         throw correlationError('Desktop transcript catch-up ended before its watermark');
       }

@@ -106,7 +106,6 @@
     "./tavily-search": "./dist/tavily-search.js",
     "./terminal-run-commit": "./dist/terminal-run-commit.js",
     "./tool-availability": "./dist/tool-availability.js",
-    "./tool-catalog-derive": "./dist/tool-catalog-derive.js",
     "./tool-free-model-call": "./dist/tool-free-model-call.js",
     "./tool-result-archive": "./dist/tool-result-archive.js",
     "./tool-result-archive-capability": "./dist/tool-result-archive-capability.js",
@@ -117,8 +116,10 @@
     "./xai-oauth-enrollment": "./dist/xai-oauth-enrollment.js"
   },
   "scripts": {
-    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
+    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/telemetry/model-pricing.generated.ts",
+    "prebuild": "npm --prefix ../.. run sync:model-metadata",
     "build": "tsc -p tsconfig.json && node scripts/build-filesystem-worker.mjs",
+    "pretypecheck": "npm --prefix ../.. run sync:model-metadata",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
@@ -128,7 +129,7 @@
     "@ai-sdk/code-mode": "1.0.27",
     "@ai-sdk/cohere": "4.0.28",
     "@ai-sdk/google": "4.0.47",
-    "@ai-sdk/open-responses": "2.0.29",
+    "@ai-sdk/open-responses": "2.0.34",
     "@ai-sdk/openai": "4.0.44",
     "@ai-sdk/openai-compatible": "3.0.32",
     "@larksuiteoapi/node-sdk": "1.73.0",

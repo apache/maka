@@ -30,7 +30,7 @@ Runtime Host in one command. Linux uses a systemd user service; macOS uses a Lau
 requires an active GUI login session for that user.
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -42,7 +42,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@latest maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup
@@ -131,8 +131,15 @@ service uninstall removes its key while retaining the State Root. Pass
 `peer enable --clear-coordination-relays` to remove every configured coordination relay.
 
 This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
-does not replace an existing TLS, SSH, or overlay-network fallback and does not use a public relay
-unless one is explicitly configured with `peer enable --coordination-relay`.
+does not replace an existing TLS, SSH, or overlay-network fallback. By default, the Host uses a
+bounded client-only view of the public IPFS DHT to discover Circuit Relay v2 candidates and fills a
+target of two accepted reservations after accounting for manual relays. Manually configured relays
+remain preferred. Disable or restore this
+best-effort discovery with `peer enable --no-automatic-relay-discovery` or
+`peer enable --automatic-relay-discovery`; disabling it leaves manual relays intact. Public peers can
+observe the discovery connection and may refuse or drop reservations. Only accepted reservations
+are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
+connection instead of carrying Session traffic through the relay.
 
 ### Direct TLS
 

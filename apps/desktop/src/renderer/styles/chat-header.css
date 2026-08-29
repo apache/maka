@@ -41,12 +41,10 @@
 
    #1629: the boundary-unreadable notice stands in for the composer it replaces,
    so it is the same kind of peer and shares the formula rather than restating
-   it. `.maka-session-health-notice` stays last in each group — the
-   session-health-notice layout contract reads its rule body by matching the
-   selector immediately before the brace. */
+   it. Composer-adjacent recovery notices share one wrapper and Banner action
+   treatment so task, workspace, and Session recovery cannot drift. */
 .maka-boundary-unreadable-notice,
-.maka-workspace-readiness-notice,
-.maka-session-health-notice {
+.maka-chat-recovery-notice {
   width: min(
     var(--maka-reading-measure),
     calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
@@ -57,8 +55,7 @@
 }
 
 .maka-boundary-unreadable-notice-alert,
-.maka-workspace-readiness-notice-alert,
-.maka-session-health-notice-alert {
+.maka-chat-recovery-notice-alert {
   width: 100%;
   box-sizing: border-box;
 }

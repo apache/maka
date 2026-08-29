@@ -98,6 +98,7 @@ transcripts, such as:
 delegationId
 coordinationTurnId
 targetSessionId
+targetMessageId
 targetTurnId
 disposition
 ```
@@ -131,6 +132,22 @@ so WorkHub does not own a second recovery state machine or compensation chain.
 The `delegation_assigned` record itself projects the visible WorkHub turn; the
 renderer does not append a second summary.
 
+The first-response contract is hybrid. The atomic `delegation_assigned` record is
+an immediate durable acknowledgement, so WorkHub confirms acceptance without
+waiting for target execution. The target Message is the stable delegation
+identity; `targetTurnId` records only its admission location. WorkHub asks the
+target Message authority which Turn durably consumed or admitted that Message,
+then joins the resolved Turn's recorded lifecycle and the target Session's exact
+live-Turn membership to project `running`, `waiting_for_user`, `completed`,
+`failed`, and `aborted`. This remains correct when an unconsumed steering Message
+is folded into a successor Turn or recovery aggregates several pending Messages
+under one new Turn. A durable cancellation tombstone for a retracted queued
+Message resolves the delegation to `aborted`. If the target authority is
+temporarily unreadable, WorkHub projects `recovering` rather than inventing a
+terminal result. These execution states are never appended as mutable Coordination
+records; Session change notifications invalidate the projection and opening
+WorkHub after restart rebuilds it from the same link and target facts.
+
 The renderer persists only a Host-scoped action id until acknowledgement. Composer
 draft text uses a separate storage key and lifecycle. A reload therefore preserves
 idempotency without freezing old text or coupling draft edits to Host authority.
@@ -156,7 +173,8 @@ been committed.
 - Coordination Session role representation, lazy creation, durable lookup,
   recovery, per-Host UI resolution, persistent transcript, closed dispositions,
   and the Action Gate are implemented. Durable delegation linkage is encoded in
-  that transcript; target lifecycle projection, linked correction, and destructive
+  that transcript; target lifecycle projection and the hybrid first-response
+  contract are implemented as rebuildable reads. Linked correction and destructive
   replacement/Stop recovery remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub

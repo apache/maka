@@ -17,16 +17,13 @@
  * under the License.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import {
-  formatAbsoluteTimestamp,
-  formatTurnDuration,
-  turnAbortMarkerLabel,
-} from './chat-display-helpers.js';
+import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
+import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
@@ -75,6 +72,8 @@ import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
+import { useAttachmentImageSource } from './attachment-image.js';
+import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -93,19 +92,6 @@ export function LocalizedChatMessage({
   );
 }
 
-/**
- * Injected host capability that reads a session attachment's bytes. @maka/ui is
- * host-agnostic: it never reaches into the desktop preload or any other host
- * global. The desktop renderer threads its attachment reader through this prop;
- * non-desktop hosts (Storybook, tests, a future web shell) can omit it or supply
- * their own reader,
- * in which case an image attachment stays in its pending skeleton.
- */
-export type ReadAttachmentBytes = (
-  sessionId: string,
-  relativePath: string,
-) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
-
 function legacySentSkillTokens(text: string) {
   const values = new Set(
     [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
@@ -113,32 +99,27 @@ function legacySentSkillTokens(text: string) {
   return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
-function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const [src, setSrc] = useState<string | undefined>(undefined);
-  const { onReadAttachmentBytes } = props;
-  useEffect(() => {
-    if (props.attachment.ref.kind !== 'session_file') return;
-    // No host reader (non-desktop host, or the capability wasn't wired): leave the
-    // thumbnail in its pending skeleton rather than reaching into a host global.
-    if (!onReadAttachmentBytes) return;
-    let cancelled = false;
-    onReadAttachmentBytes(props.attachment.ref.sessionId, props.attachment.ref.relativePath)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        setSrc(`data:${result.mimeType};base64,${result.base64}`);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [props.attachment, onReadAttachmentBytes]);
+function AttachmentImage(props: { attachment: AttachmentRef }) {
+  const preview = resolvePreviewKind({
+    name: props.attachment.name,
+    kind: 'image',
+    mimeType: props.attachment.mimeType,
+    sizeBytes: props.attachment.bytes,
+  });
+  const ref = preview.kind === 'image' && props.attachment.ref.kind === 'session_file'
+    ? {
+        sessionId: props.attachment.ref.sessionId,
+        artifactId: props.attachment.ref.relativePath,
+      }
+    : undefined;
+  const src = useAttachmentImageSource(ref);
   if (!src) {
     return (
       <Thumbnail
         className="maka-user-attachment-thumbnail"
         alt={props.attachment.name}
         label={props.attachment.name}
-        isLoading
+        isLoading={preview.kind === 'image'}
       />
     );
   }
@@ -176,7 +157,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   quotes?: readonly QuoteRef[];
   directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   inlineReferences?: readonly InlineReference[];
-  onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
   editDisabled?: boolean;
@@ -266,7 +246,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <AttachmentImage
               key={`${attachment.name}-${index}`}
               attachment={attachment}
-              onReadAttachmentBytes={props.onReadAttachmentBytes}
             />
           ))}
         </HStack>
@@ -289,7 +268,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -308,7 +286,6 @@ export function TransientUserMessage(props: {
           quotes={message.quotes}
           directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
-          onReadAttachmentBytes={props.onReadAttachmentBytes}
         />
       </LocalizedChatMessage>
     </div>
@@ -469,13 +446,6 @@ export const TurnView = memo(function TurnView(props: {
     initialLiveContent?: ReadonlyMap<string, string>;
   };
   /**
-   * Injected host reader for image attachment bytes. Threaded down to the user
-   * message's `AttachmentImage` thumbnails; absent on non-desktop hosts, where
-   * image thumbnails stay in their pending skeleton. Keeps @maka/ui from
-   * reaching into the desktop preload directly.
-   */
-  onReadAttachmentBytes?: ReadAttachmentBytes;
-  /**
    * Open a linked subagent child session in the main chat column. Threaded into
    * linked subagent tool rows; omitted when the host has no navigation.
    */
@@ -594,7 +564,6 @@ export const TurnView = memo(function TurnView(props: {
             quotes={turn.user.quotes}
             directoryReferences={turn.user.directoryReferences}
             inlineReferences={turn.user.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
@@ -651,33 +620,26 @@ export const TurnView = memo(function TurnView(props: {
                 quotes={message.quotes}
                 directoryReferences={message.directoryReferences}
                 inlineReferences={message.inlineReferences}
-                onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             </LocalizedChatMessage>
           );
         }
         const ownsTurnChrome = segmentIndex === conversationSegments.length - 1;
+        // Disjoint namespaces: a steering id is any string, so a bare
+        // sentinel could collide with a real one.
+        const assistantKey =
+          segment.repliesTo === undefined
+            ? 'assistant-opening'
+            : `assistant-after-${segment.repliesTo}`;
         return (
-          <LocalizedChatMessage
-            // Disjoint namespaces: a steering id is any string, so a bare
-            // sentinel could collide with a real one.
-            key={
-              segment.repliesTo === undefined
-                ? 'assistant-opening'
-                : `assistant-after-${segment.repliesTo}`
-            }
-            accessibleLabel={copy.assistantAriaLabel}
-            sender="assistant"
-            data-turn-status={turn.status}
-            className="maka-chat-message maka-assistant-answer"
-          >
+          <Fragment key={assistantKey}>
+            <LocalizedChatMessage
+              accessibleLabel={copy.assistantAriaLabel}
+              sender="assistant"
+              data-turn-status={turn.status}
+              className="maka-chat-message maka-assistant-answer"
+            >
             <div className="maka-assistant-answer-content">
-              {ownsTurnChrome && turn.status === 'aborted' && (
-                <Marker variant="aborted" role="status">
-                  <Ban size={ICON_SIZE.meta} aria-hidden="true" />
-                  <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
-                </Marker>
-              )}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -711,12 +673,9 @@ export const TurnView = memo(function TurnView(props: {
                   />
                 ),
               )}
-              {/* A failed turn's banner states the OUTCOME, so it belongs after
-                  the work it is the outcome of. It used to render above the
-                  timeline, where it read as a header on reasoning and tool
-                  calls that had in fact all succeeded.
-
-                  `description` carries the parked-resume diagnostic when there
+              {/* A failed turn's banner states the OUTCOME of the turn, so it
+                  belongs after the work it is the outcome of. `description`
+                  carries the parked-resume diagnostic when there
                   is one — it explains why the button did nothing, which
                   outranks execution state on the one turn that can have both. */}
               {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
@@ -811,7 +770,16 @@ export const TurnView = memo(function TurnView(props: {
                   />
                 )
               ))}
-          </LocalizedChatMessage>
+            </LocalizedChatMessage>
+            {/* An abort is a short, settled status change rather than sender
+                content or a recovery error. Keep Astryx's system notice as a
+                sibling of the assistant message, after the work it closes. */}
+            {ownsTurnChrome && turn.status === 'aborted' && (
+              <ChatSystemMessage icon={<Ban size={ICON_SIZE.meta} aria-hidden="true" />}>
+                {turnAbortStatusLabel(turn.abortSource, locale)}
+              </ChatSystemMessage>
+            )}
+          </Fragment>
         );
       })}
     </section>

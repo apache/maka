@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
   activateRuntimeHostManagedDeployment,
   connectRemoteRuntimeHost,
@@ -47,6 +48,7 @@ import {
   prepareRuntimeHostAccessCredential,
   replaceRuntimeHostAccessCredential,
   revokeRuntimeHostAccessCredential,
+  RuntimeHostAccessUnavailableError,
   type RuntimeHostAccessPreset,
 } from './runtime-host-access-command.js';
 import {
@@ -118,6 +120,8 @@ import {
 import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
 const SETUP_LOCK_TIMEOUT_MS = 5 * 60_000;
+const PAIRING_AVAILABILITY_TIMEOUT_MS = 10_000;
+const PAIRING_AVAILABILITY_POLL_MS = 100;
 
 export interface RuntimeHostSetupCliOptions {
   readonly json: boolean;
@@ -132,6 +136,7 @@ export interface RuntimeHostSetupCliOptions {
   readonly deferPairingCommit?: boolean;
   readonly bindPairingToClient?: boolean;
   readonly repairRootAfterRemount?: true;
+  readonly updateExisting?: boolean;
   readonly rootPath?: string;
   readonly projectDirectoryRoots?: readonly {
     readonly label: string;
@@ -650,6 +655,7 @@ async function prepareSupervisedDirectPeer(
     coordinationRelays: [
       ...(options.directPeer?.coordinationRelays ?? current?.coordinationRelays ?? []),
     ],
+    automaticRelayDiscovery: current?.automaticRelayDiscovery ?? true,
   };
 }
 
@@ -743,7 +749,8 @@ async function runRuntimeHostOnDemandSetupLocked(
   const serviceId = capability.rootId;
   const deploymentRoot =
     current?.deploymentRoot ?? resolveRuntimeHostManagedDeploymentRoot(serviceId);
-  if (current && !sameExactPackage(current, candidate)) {
+  const packageChanged = current !== undefined && !sameExactPackage(current, candidate);
+  if (current && packageChanged && !options.updateExisting) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
@@ -801,27 +808,30 @@ async function runRuntimeHostOnDemandSetupLocked(
   await resolvedPackage.use(async (packageRoot) => {
     let committed = false;
     const created = !current;
+    let deployment: Awaited<ReturnType<typeof deps.prepareDeployment>> | undefined;
     try {
       emit({ kind: 'progress', phase: 'installing_package' });
-      const deployment = current
-        ? await deps.openDeployment({
-            serviceId,
-            clientDataRoot: options.clientDataRoot,
-            deploymentRoot,
-            cliPath: resolveRuntimeHostManagedPackageCliPath(
+      deployment =
+        current && !packageChanged
+          ? await deps.openDeployment({
+              serviceId,
+              clientDataRoot: options.clientDataRoot,
               deploymentRoot,
-              candidate.version,
-              candidate.integrity,
-            ),
-            version: candidate.version,
-          })
-        : await deps.prepareDeployment({
-            serviceId,
-            clientDataRoot: options.clientDataRoot,
-            sourcePackageRoot: packageRoot,
-            version: candidate.version,
-            packageIntegrity: candidate.integrity,
-          });
+              cliPath: resolveRuntimeHostManagedPackageCliPath(
+                deploymentRoot,
+                candidate.version,
+                candidate.integrity,
+              ),
+              version: candidate.version,
+            })
+          : await deps.prepareDeployment({
+              serviceId,
+              clientDataRoot: options.clientDataRoot,
+              sourcePackageRoot: packageRoot,
+              version: candidate.version,
+              packageIntegrity: candidate.integrity,
+              ...(current ? { deploymentRoot } : {}),
+            });
       const desiredConfig: RuntimeHostManagedDeploymentConfig = current
         ? config
         : { ...config, deploymentRoot: deployment.root };
@@ -839,11 +849,13 @@ async function runRuntimeHostOnDemandSetupLocked(
         const replacement = await deps.replaceLifecycle({
           operation: legacyToMigrate
             ? 'legacy_migration'
-            : current
-              ? isDeepStrictEqual(current.lifecycle, config.lifecycle)
-                ? 'configure'
-                : 'lifecycle_change'
-              : 'install',
+            : packageChanged
+              ? 'update'
+              : current
+                ? isDeepStrictEqual(current.lifecycle, config.lifecycle)
+                  ? 'configure'
+                  : 'lifecycle_change'
+                : 'install',
           ...(current ? { current } : {}),
           desired: desiredConfig,
           ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
@@ -867,8 +879,13 @@ async function runRuntimeHostOnDemandSetupLocked(
         (await resolveRuntimeHostManagedDeployment(capability.rootId)).config,
       );
     } catch (error) {
-      if (created && !committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
-        await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(() => undefined);
+      if (!committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
+        if (packageChanged && deployment) await deployment.rollback().catch(() => undefined);
+        else if (created) {
+          await removeRuntimeHostManagedDeployment(deploymentRoot, serviceId).catch(
+            () => undefined,
+          );
+        }
       }
       throw error;
     }
@@ -1062,20 +1079,35 @@ async function pairAndVerifyRuntimeHostSetup(
     const pairCredential = options.deferPairingCommit
       ? deps.prepareCredential
       : deps.replaceCredential;
-    paired = await pairCredential({
+    const credentialInput = {
       rootPath: target.rootPath,
-      principalKind: 'remote_owner',
+      principalKind: 'remote_owner' as const,
       principalId: options.principalId,
       operationGrants: [],
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
       preset: options.preset,
       ...(options.bindPairingToClient ? { bindClientInstance: true } : {}),
-    });
+    };
+    const deadline = Date.now() + PAIRING_AVAILABILITY_TIMEOUT_MS;
+    while (true) {
+      try {
+        paired = await pairCredential(credentialInput);
+        break;
+      } catch (error) {
+        if (!(error instanceof RuntimeHostAccessUnavailableError) || Date.now() >= deadline) {
+          throw error;
+        }
+        await new Promise<void>((resolveWait) =>
+          setTimeout(resolveWait, Math.min(PAIRING_AVAILABILITY_POLL_MS, deadline - Date.now())),
+        );
+      }
+    }
   } catch (error) {
+    const reason = generalizedErrorMessage(error, 'Runtime Host access service is unavailable');
     throw new RuntimeHostSetupError(
       'pairing_failed',
-      'Runtime Host could not pair the requested Client identity',
+      `Runtime Host could not pair the requested Client identity: ${reason}`,
       { cause: error },
     );
   }

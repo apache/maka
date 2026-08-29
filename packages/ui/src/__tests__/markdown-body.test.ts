@@ -283,6 +283,8 @@ it('never loads non-allowlisted Markdown image sources', () => {
       '',
       'caption ![inline](custom://private-resource)',
       '',
+      '![data](data:image/png;base64,aW1n)',
+      '',
       '![reference][avatar]',
       '',
       '[avatar]: file:///Users/example/private.png',
@@ -299,6 +301,8 @@ it('does not treat navigation and communication schemes as image resources', () 
     'MAKA://auth/login',
     'maka://settings/models',
     'maka://compose?text=hello',
+    'maka://runtime/attachments/attachment-123?session=other',
+    'maka://runtime/attachments/not-an-artifact',
     'mailto:user@example.com',
   ]) {
     const markup = renderToStaticMarkup(createElement(MarkdownBody, {
@@ -308,6 +312,16 @@ it('does not treat navigation and communication schemes as image resources', () 
     assert.doesNotMatch(markup, /<img\b/, src);
     assert.doesNotMatch(markup, /\bsrc=/, src);
   }
+});
+
+it('shows an attachment placeholder when no session reader is installed', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: '![preview](maka://runtime/attachments/attachment-123)',
+  }));
+
+  assert.match(markup, />\[preview\]</);
+  assert.doesNotMatch(markup, /maka:\/\/runtime\/attachments/);
+  assert.doesNotMatch(markup, /<img\b/);
 });
 
 it('defers Mermaid fences beyond the per-Markdown automatic diagram budget', () => {

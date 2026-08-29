@@ -165,15 +165,24 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#refreshResidency();
   }
 
-  async assertRecoveryAdmission(admission: RootTurnAdmission): Promise<void> {
+  async assertRecoveryAdmission(
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ): Promise<void> {
     if (!this.#prepared) {
       throw new Error('ScheduledTask recovery admission was inspected before Store recovery');
     }
     if (admission.execution.kind !== 'scheduled_task') return;
     const scheduledTaskId = admission.execution.scheduledTaskId;
     const claims = await this.#store.listPendingFires();
-    const claim = claims.find((candidate) => candidate.task.id === scheduledTaskId);
+    const claim = claims.find(
+      (candidate) =>
+        candidate.task.id === scheduledTaskId &&
+        candidate.execution?.sessionId === admission.sessionId &&
+        candidate.execution.turnId === admission.turnId,
+    );
     const execution = claim?.execution;
+    if (!claim && state === 'run_recorded') return;
     if (
       !claim ||
       !execution ||

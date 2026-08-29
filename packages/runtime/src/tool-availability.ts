@@ -33,7 +33,7 @@ export const TOOL_SEARCH_DEFAULT_LIMIT = 8;
 export const TOOL_SEARCH_MAX_LIMIT = 20;
 export const TOOL_SEARCH_MAX_SCHEMA_CHARS = 64 * 1024;
 
-/** Frequent baseline that a group declaration may never defer. */
+/** Tools that remain visible whenever they are bound. */
 const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Bash',
   'Read',
@@ -45,9 +45,14 @@ const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
   'WebFetch',
   'AskUserQuestion',
   'StopBackgroundTask',
+  // Existing carve-out pending the separate skill-discovery decision.
+  'Skill',
+  'SkillSearch',
+  // Provider-routed equivalent of the direct Write/Edit surface.
+  'apply_patch',
 ]);
 
-/** A discoverable source whose members are searched and activated individually. */
+/** Optional search metadata for a subset of the bound deferred tools. */
 export interface ToolGroup {
   id: string;
   toolNames: readonly string[];
@@ -56,7 +61,11 @@ export interface ToolGroup {
 }
 
 export interface ToolAvailabilityConfig {
-  /** Search-space presentation metadata derived from the current bound tools. */
+  /**
+   * Search-space presentation metadata derived from the current bound tools.
+   * Supplying this config enables default deferral; omitting it keeps every
+   * bound tool direct for an explicit wire-schema ceiling.
+   */
   groups?: readonly ToolGroup[];
 }
 
@@ -69,9 +78,12 @@ export interface ToolSearchResult {
   };
 }
 
-export function toolAvailabilityHash(config: ToolAvailabilityConfig): `sha256:${string}` {
+export function toolAvailabilityHash(
+  config: ToolAvailabilityConfig | undefined,
+): `sha256:${string}` {
   return stableHash({
-    groups: (config.groups ?? []).map((group) => ({
+    mode: config === undefined ? 'full' : 'search',
+    groups: (config?.groups ?? []).map((group) => ({
       id: group.id,
       toolNames: [...new Set(group.toolNames)].sort(compareExactString),
       ...(group.label !== undefined ? { label: group.label } : {}),
@@ -102,7 +114,7 @@ export interface ToolAvailabilityPlan {
   ) => ToolAvailabilityDiagnostic | undefined;
 }
 
-interface CatalogGroup {
+interface SearchGroup {
   id: string;
   toolNames: string[];
   label?: string;
@@ -116,7 +128,7 @@ interface SearchDocument {
 }
 
 /**
- * Immutable, backend-scoped bound-tool catalog and MiniSearch index.
+ * Immutable, backend-scoped bound-tool inventory and MiniSearch index.
  *
  * Mutable activation belongs to the per-send TurnScope and is passed to
  * prepare(). Constructing one AiSdkBackend therefore constructs one index; all
@@ -125,7 +137,7 @@ interface SearchDocument {
 export class ToolAvailabilityRuntime {
   private readonly tools: readonly MakaTool[];
   private readonly toolsByName: ReadonlyMap<string, MakaTool>;
-  private readonly groups: readonly CatalogGroup[];
+  private readonly groups: readonly SearchGroup[];
   private readonly searchableNames: ReadonlySet<string>;
   private readonly directNames: ReadonlySet<string>;
   private readonly searchIndex?: MiniSearch<SearchDocument>;
@@ -145,14 +157,18 @@ export class ToolAvailabilityRuntime {
     this.toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
     const known = new Set(this.toolsByName.keys());
+    const searchable =
+      config === undefined
+        ? new Set<string>()
+        : new Set([...known].filter((name) => !DIRECT_TOOL_NAMES.has(name)));
     const claimed = new Set<string>();
-    const groups: CatalogGroup[] = [];
+    const groups: SearchGroup[] = [];
     for (const group of config?.groups ?? []) {
       if (!group.id) continue;
       const members: string[] = [];
       for (const name of group.toolNames) {
         // The first source to claim a currently bound tool owns its inventory row.
-        if (!known.has(name) || claimed.has(name) || DIRECT_TOOL_NAMES.has(name)) continue;
+        if (!searchable.has(name) || claimed.has(name)) continue;
         claimed.add(name);
         members.push(name);
       }
@@ -165,11 +181,20 @@ export class ToolAvailabilityRuntime {
         ...(group.description !== undefined ? { description: group.description } : {}),
       });
     }
+    const ungrouped = [...searchable].filter((name) => !claimed.has(name)).sort(compareExactString);
+    if (ungrouped.length > 0) {
+      const fallback = groups.find((group) => group.id === 'other');
+      if (fallback) {
+        fallback.toolNames = [...fallback.toolNames, ...ungrouped].sort(compareExactString);
+      } else {
+        groups.push({ id: 'other', toolNames: ungrouped });
+      }
+    }
     this.groups = groups;
-    this.searchableNames = claimed;
-    this.directNames = new Set([...known].filter((name) => !claimed.has(name)));
+    this.searchableNames = searchable;
+    this.directNames = new Set([...known].filter((name) => !searchable.has(name)));
 
-    if (claimed.size > 0) {
+    if (searchable.size > 0) {
       const groupByToolName = new Map(
         groups.flatMap((group) => group.toolNames.map((name) => [name, group] as const)),
       );
@@ -185,7 +210,7 @@ export class ToolAvailabilityRuntime {
         },
       });
       index.addAll(
-        [...claimed].map((name) => {
+        [...searchable].map((name) => {
           const tool = this.toolsByName.get(name)!;
           const group = groupByToolName.get(name);
           return {
@@ -356,7 +381,7 @@ export class ToolAvailabilityRuntime {
   }
 }
 
-function renderInventory(groups: readonly CatalogGroup[]): string {
+function renderInventory(groups: readonly SearchGroup[]): string {
   const lines = groups.flatMap((group) => [
     `${group.id}:`,
     ...group.toolNames.map((name) => `- ${name}`),
@@ -372,7 +397,7 @@ function renderInventory(groups: readonly CatalogGroup[]): string {
   ].join('\n');
 }
 
-function groupToolNamesById(groups: readonly CatalogGroup[]): Record<string, string[]> {
+function groupToolNamesById(groups: readonly SearchGroup[]): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const group of [...groups].sort((a, b) => compareExactString(a.id, b.id))) {
     out[group.id] = [...group.toolNames].sort(compareExactString);

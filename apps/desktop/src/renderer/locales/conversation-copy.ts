@@ -57,6 +57,7 @@ export interface DesktopConversationCopy {
     modelReboundTitle: string;
     modelReboundDescription: (modelId?: string) => string;
     messageReadFailedTitle: string;
+    partialHistoryTitle: string;
     returnLatest: string;
     scrollMainToBottom: string;
   };
@@ -203,6 +204,7 @@ export interface DesktopConversationCopy {
     costUnavailable: string;
     costEstimateHelp: string;
     loadEarlier: string;
+    hideEarlier: string;
     loadingEarlier: string;
     loadingTrace: string;
     loadingSummary: string;
@@ -323,8 +325,14 @@ export interface DesktopConversationCopy {
   health: {
     blocked: Record<
       Extract<SessionSendProjection, { kind: 'blocked' }>['reason'],
-      { label: string; tooltip: (connection: string, model: string) => string }
+      {
+        label: string;
+        tooltip: (connection: string, model: string) => string;
+        actionLabel?: string;
+        settingsTooltip?: (connection: string, model: string) => string;
+      }
     >;
+    connectionChoicesLoading: { tooltip: string; actionLabel: string };
     reauth: { label: string; tooltip: string };
     testError: { label: string; tooltip: string };
   };
@@ -420,7 +428,7 @@ function enDetail(parts: readonly string[]): string {
 
 const COPY = {
   zh: {
-    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '包含已展开上下文的历史消息暂不支持编辑并重发，请复制文字后重新添加上下文。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', returnLatest: '返回最新消息', scrollMainToBottom: '滚动主对话到底部' },
+    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', regenerateStartedTitle: '已发起重新生成', regenerateStartedDescription: '正在生成新的一轮回答', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；修改后发送将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；编辑后发送即可', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '包含附件的历史消息暂不支持编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', revisionUnchanged: '内容没有变化。如需重新回答，请使用“重新生成”。', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', partialHistoryTitle: '正在查看较早的消息', returnLatest: '返回最新消息', scrollMainToBottom: '滚动主对话到底部' },
     attachments: { tooMany: '附件数量超过 8 个', tooLarge: '附件大小超过 50MB', duplicate: '附件来源重复，请勿重复添加同一文件。' },
     model: {
       fakeBackendLabel: '本地模拟连接',
@@ -554,6 +562,7 @@ const COPY = {
       costUnavailable: '费用未知',
       costEstimateHelp: '基于已记录用量和定价估算；缺失或未定价的调用可能未计入。',
       loadEarlier: '加载更早记录',
+      hideEarlier: '隐藏所有更早记录',
       loadingEarlier: '正在加载…',
       loadingTrace: '正在读取时间线…',
       loadingSummary: '正在估算完整会话用量…',
@@ -631,9 +640,9 @@ const COPY = {
         fake_backend: { label: '任务已过期 · 请先配置真实模型', tooltip: () => '原任务使用旧的本地模拟连接，需要先到 设置 · 模型 添加并启用一个真实模型才能发送。' },
         provider_retired: { label: '登录方式已停用', tooltip: (name) => `任务绑定的连接 "${name}" 使用的登录方式已从 Maka 移除，发送会失败。请到 设置 · 模型 改用其他连接。` },
         missing_default_connection: { label: '未配置可用模型', tooltip: () => '当前任务没有可用的模型连接，发送会失败。请到 设置 · 模型 添加并启用一个模型。' },
-        legacy_connection_identity: { label: '需要选择账号', tooltip: () => '此任务创建于账号实体绑定之前。请显式选择一个账号后再继续。' },
-        connection_missing: { label: '原账号已删除', tooltip: () => '此任务绑定的原账号已被删除。只有显式选择新账号后才能继续。' },
-        connection_identity_mismatch: { label: '账号身份不匹配', tooltip: () => '此任务保存的账号身份与当前连接不一致。请显式选择一个账号后再继续。' },
+        legacy_connection_identity: { label: '需要选择模型连接', tooltip: () => '此任务来自旧版本，请选择要使用的连接和模型。', actionLabel: '选择连接和模型', settingsTooltip: () => '当前没有可用连接，请先到 设置 · 模型 添加或启用连接。' },
+        connection_missing: { label: '原连接已删除', tooltip: () => '请选择新的连接和模型后继续。', actionLabel: '选择连接和模型', settingsTooltip: () => '当前没有可用连接，请先到 设置 · 模型 添加或启用连接。' },
+        connection_identity_mismatch: { label: '连接身份不匹配', tooltip: () => '请重新选择要使用的连接和模型。', actionLabel: '选择连接和模型', settingsTooltip: () => '当前没有可用连接，请先到 设置 · 模型 添加或启用连接。' },
         connection_disabled: { label: '连接已禁用', tooltip: (name) => `任务绑定的连接 "${name}" 已禁用，发送会失败。请到 设置 · 模型 启用它或选择其他连接。` },
         missing_api_key: { label: '连接缺少密钥', tooltip: (name) => `连接 "${name}" 未填写 API key 或未完成登录，发送会失败。请到 设置 · 模型 补齐凭据。` },
         missing_model: { label: '连接未选择模型', tooltip: (name) => `连接 "${name}" 没有默认模型，发送会失败。请到 设置 · 模型 选择一个模型。` },
@@ -641,13 +650,14 @@ const COPY = {
         model_not_enabled: { label: '任务模型未启用', tooltip: (name, model) => `模型 "${model}" 不在连接 "${name}" 的启用列表中，发送会失败。请到 设置 · 模型 重新选择。` },
         model_not_chat_capable: { label: '任务模型不支持聊天', tooltip: (name, model) => `模型 "${model}" 不能用于聊天，发送会失败。请到 设置 · 模型 选择支持聊天的模型。` },
       },
+      connectionChoicesLoading: { tooltip: '连接列表尚未加载完成。', actionLabel: '重新加载连接' },
       reauth: { label: '上次连接测试鉴权失败', tooltip: '最近一次连接测试返回鉴权失败（401 / 403），密钥可能已过期或被吊销。这不会拦截发送，但若发送失败请到 设置 · 模型 重新登录。' },
       testError: { label: '上次连接测试失败', tooltip: '最近一次连接测试因网络 / 超时 / 5xx 失败。这不会拦截发送，但若问题持续请到 设置 · 模型 检查 Base URL / 代理。' },
     },
     turnError: { unknown: '出错了，原因不明。重新发消息重试。', contextOverflow: '上下文超出模型窗口限制，减少附件或开启新任务。', contextBudgetExhausted: '上下文已达上限，这个任务无法继续。换模型或开启新任务。', malformedSummary: '上下文压缩未能生成有效摘要。请检查模型的上下文窗口设置、切换模型，或开启新任务。', timeout: '模型请求超时，重新发消息重试。', auth: '模型鉴权失败，请到设置里重新连接或登录。', providerBilling: '模型服务计费受限，请检查账号余额或订阅状态。', providerCapacity: '模型服务暂时满载，等几分钟重试，或换一个模型。', rateLimit: '模型请求太频繁被限流了，等一会儿再发消息重试。', network: '网络连接失败，检查网络后重新发消息。', provider: '模型服务返回错误，稍后重试或换一个模型。', stepCap: '达到工具调用步数上限，任务可能没做完。发消息让它继续。', tool: '工具调用失败，看一下上面的工具结果再决定要不要重试。', permission: '这一轮在等权限确认时结束了，重新发消息会再问一次。', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启时，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭。重新发消息可以再决定一次。', executionState: { erroredTool: '这一轮有工具执行出错，先看它的结果，再决定要不要重发。', toolRan: '这一轮已经执行过工具，可能已经产生实际改动，重发前先看工具结果。', partialOutput: '这一轮已经产生了部分回答，重发前可以先看看。' } },
   },
   en: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages with expanded context. Copy the text and add the context again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', regenerateStartedTitle: 'Regeneration started', regenerateStartedDescription: 'Generating a new response', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; edit and send when ready', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: 'Edit & resend does not yet support historical attachments. Copy the text into a new message instead.', revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', revisionUnchanged: 'Nothing changed. Use Regenerate if you only want a new answer.', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', partialHistoryTitle: 'Viewing earlier messages', returnLatest: 'Return to latest', scrollMainToBottom: 'Scroll main conversation to bottom' },
     attachments: { tooMany: 'You can attach at most 8 files', tooLarge: 'Attachments must be 50 MB or smaller', duplicate: 'This attachment was already added.' },
     model: {
       fakeBackendLabel: 'Local simulation',
@@ -783,6 +793,7 @@ const COPY = {
       costUnavailable: 'cost unknown',
       costEstimateHelp: 'Estimated from recorded usage and pricing; missing or unpriced calls may be excluded.',
       loadEarlier: 'Load earlier records',
+      hideEarlier: 'Hide all earlier records',
       loadingEarlier: 'Loading…',
       loadingTrace: 'Loading timeline…',
       loadingSummary: 'Estimating full-session usage…',
@@ -864,9 +875,9 @@ const COPY = {
         fake_backend: { label: 'Stale task · Configure a real model', tooltip: () => 'This task used the retired local simulation. Add and enable a real model in Settings · Models before sending.' },
         provider_retired: { label: 'Sign-in retired', tooltip: (name) => `The sign-in that connection "${name}" uses was removed from Maka, so sending fails. Switch to another connection in Settings · Models.` },
         missing_default_connection: { label: 'No model configured', tooltip: () => 'This task has no available model connection. Add and enable one in Settings · Models.' },
-        legacy_connection_identity: { label: 'Choose an account', tooltip: () => 'This task predates account entity binding. Explicitly choose an account to continue.' },
-        connection_missing: { label: 'Original account deleted', tooltip: () => 'The original account bound to this task was deleted. Explicitly choose a new account to continue.' },
-        connection_identity_mismatch: { label: 'Account identity mismatch', tooltip: () => 'This task\'s saved account identity no longer matches its connection. Explicitly choose an account to continue.' },
+        legacy_connection_identity: { label: 'Choose a model connection', tooltip: () => 'This task comes from an older version. Choose the connection and model to use.', actionLabel: 'Choose connection and model', settingsTooltip: () => 'No connections are currently available. Add or enable one in Settings · Models first.' },
+        connection_missing: { label: 'Original connection deleted', tooltip: () => 'Choose a new connection and model to continue.', actionLabel: 'Choose connection and model', settingsTooltip: () => 'No connections are currently available. Add or enable one in Settings · Models first.' },
+        connection_identity_mismatch: { label: 'Connection identity mismatch', tooltip: () => 'Choose the connection and model to use again.', actionLabel: 'Choose connection and model', settingsTooltip: () => 'No connections are currently available. Add or enable one in Settings · Models first.' },
         connection_disabled: { label: 'Connection disabled', tooltip: (name) => `Connection "${name}" is disabled. Enable it or choose another connection in Settings · Models.` },
         missing_api_key: { label: 'Connection credentials missing', tooltip: (name) => `Connection "${name}" has no API key or completed sign-in. Add credentials in Settings · Models.` },
         missing_model: { label: 'No model selected', tooltip: (name) => `Connection "${name}" has no default model. Select one in Settings · Models.` },
@@ -874,6 +885,7 @@ const COPY = {
         model_not_enabled: { label: 'Task model disabled', tooltip: (name, model) => `Model "${model}" is not enabled for connection "${name}". Choose another model in Settings · Models.` },
         model_not_chat_capable: { label: 'Task model cannot chat', tooltip: (_name, model) => `Model "${model}" cannot be used for chat. Choose a chat-capable model in Settings · Models.` },
       },
+      connectionChoicesLoading: { tooltip: 'The connection list has not loaded yet.', actionLabel: 'Reload connections' },
       reauth: { label: 'Last connection test failed authentication', tooltip: 'The latest test returned 401 / 403. Sending is not blocked, but sign in again under Settings · Models if it fails.' },
       testError: { label: 'Last connection test failed', tooltip: 'The latest test failed because of a network, timeout, or 5xx error. Sending is not blocked; check Base URL or proxy settings if it persists.' },
     },

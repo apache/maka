@@ -25,9 +25,14 @@ import { LocaleProvider } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeSessionNavigationServices,
+  createSessionOpenCommand,
+  deriveSessionRail,
+  sessionMatchesRail,
   SessionNavigationServicesProvider,
   useSessionNavigationController,
+  useSessionNavigationReads,
   type SessionNavigationController,
+  type SessionNavigationPorts,
   type SessionNavigationSession,
   type UseSessionNavigationControllerInput,
 } from '../../renderer/features/session-navigation/testing.js';
@@ -63,6 +68,10 @@ const project: ProjectRecord = {
   available: true,
 };
 
+const hiddenSessionIds = new Set(['hidden']);
+
+const fakeServices = createFakeSessionNavigationServices();
+
 let latestController: SessionNavigationController | undefined;
 
 function ControllerProbe(props: UseSessionNavigationControllerInput) {
@@ -79,7 +88,7 @@ function renderController(
       locale: 'en',
       children: createElement(
         SessionNavigationServicesProvider,
-        { services: createFakeSessionNavigationServices() },
+        { services: fakeServices },
         createElement(ControllerProbe, input),
       ),
     }),
@@ -91,24 +100,19 @@ function controller(): SessionNavigationController {
   return latestController;
 }
 
-function input(
+function ports(
   sessions: SessionNavigationSession[],
   activeSessionId: string | undefined,
   calls: string[] = [],
-  targets: unknown[] = [],
-): UseSessionNavigationControllerInput {
+): SessionNavigationPorts {
   return {
-    sessions,
-    activeSessionId,
-    hiddenSessionIds: new Set(['hidden']),
-    projects: [project],
+    activeIdRef: { current: activeSessionId },
+    sessionsRef: { current: sessions },
+    pendingSessionRowActionsRef: { current: new Set<string>() },
     activateSession: (sessionId) => calls.push(`activate:${sessionId ?? 'none'}`),
     clearActiveMessages: () => calls.push('clear-messages'),
     clearSessionRendererState: (sessionId) => calls.push(`clear:${sessionId}`),
-    exitWorkHub: () => calls.push('exit-workhub'),
     refreshSessions: async () => sessions,
-    selectSessionSurface: () => calls.push('select-sessions'),
-    setSearchTarget: (target) => targets.push(target),
     toastApi: {
       success: () => undefined,
       error: () => undefined,
@@ -117,72 +121,135 @@ function input(
   };
 }
 
+function input(
+  sessions: SessionNavigationSession[],
+  activeSessionId: string | undefined,
+  calls: string[] = [],
+): UseSessionNavigationControllerInput {
+  return {
+    rail: deriveSessionRail(
+      sessions,
+      activeSessionId,
+      (candidate) => !hiddenSessionIds.has(candidate.id) && sessionMatchesRail(candidate),
+    ),
+    projects: [project],
+    ports: ports(sessions, activeSessionId, calls),
+  };
+}
+
+const linkedCatalog = [
+  session('root', { projectId: 'project', cwd: '/repo' }),
+  session('child', {
+    parentSessionId: 'root',
+    subagentParent: {
+      kind: 'subagent',
+      parentSessionId: 'root',
+      spawnedBy: {
+        parentRunId: 'run',
+        parentTurnId: 'turn',
+        toolCallId: 'tool',
+      },
+      lifecycle: 'foreground',
+    },
+  }),
+  session('remote', {
+    profileId: 'remote-profile',
+    profileName: 'Remote Mac',
+    profileKind: 'remote',
+  }),
+  session('environment', {
+    profileId: 'wsl-ubuntu',
+    profileName: 'Ubuntu',
+    profileKind: 'environment',
+  }),
+  session('archived', { isArchived: true }),
+  session('hidden'),
+];
+
 afterEach(() => {
   latestController = undefined;
   cleanupFakeDom();
 });
 
 describe('useSessionNavigationController', () => {
-  it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {
+  it('groups the rail by Project and Runtime Host, and names Host-workspace rows', async () => {
     const { root } = installReactRenderer();
-    const sessions = [
-      session('root', { projectId: 'project', cwd: '/repo' }),
-      session('child', {
-        parentSessionId: 'root',
-        subagentParent: {
-          kind: 'subagent',
-          parentSessionId: 'root',
-          spawnedBy: {
-            parentRunId: 'run',
-            parentTurnId: 'turn',
-            toolCallId: 'tool',
-          },
-          lifecycle: 'foreground',
-        },
-      }),
-      session('remote', {
-        profileId: 'remote-profile',
-        profileName: 'Remote Mac',
-        profileKind: 'remote',
-      }),
-      session('environment', {
-        profileId: 'wsl-ubuntu',
-        profileName: 'Ubuntu',
-        profileKind: 'environment',
-      }),
-      session('archived', { isArchived: true }),
-      session('hidden'),
-    ];
+    await act(async () => renderController(root, input(linkedCatalog, 'child')));
 
-    await act(async () => renderController(root, input(sessions, 'child')));
-
-    assert.deepEqual(
-      controller().selectors.visibleSessions.map(({ id }) => id),
-      ['root', 'remote', 'environment'],
-    );
-    assert.equal(controller().selectors.activeRowId, 'root');
-    assert.equal(controller().selectors.activeParentSession?.id, 'root');
-    assert.deepEqual(controller().selectors.branchBanner, {
-      parentSessionId: 'root',
-      parentSessionName: 'root',
-    });
     assert.deepEqual(
       controller().selectors.groups.map(({ id }) => id),
       ['project:project', 'runtime-host:remote-profile', 'runtime-host:wsl-ubuntu'],
     );
-    assert.equal(controller().selectors.sessionMeta(sessions[2]!), 'Remote Mac');
-    assert.equal(controller().selectors.sessionMeta(sessions[3]!), 'Ubuntu');
+    assert.equal(controller().selectors.sessionMeta(linkedCatalog[2]!), 'Remote Mac');
+    assert.equal(controller().selectors.sessionMeta(linkedCatalog[3]!), 'Ubuntu');
   });
 
-  it('owns Session jumps and preserves turn-target clearing semantics', async () => {
+  it('builds row mutations once, so the rail below it is not rebuilt per render', async () => {
     const { root } = installReactRenderer();
+    const stableInput = input(linkedCatalog, 'child');
+    await act(async () => renderController(root, stableInput));
+    const first = controller().commands;
+    await act(async () => renderController(root, { ...stableInput }));
+
+    assert.equal(controller().commands, first);
+  });
+});
+
+describe('useSessionNavigationReads', () => {
+  let latestReads: ReturnType<typeof useSessionNavigationReads> | undefined;
+
+  function ReadsProbe(props: Parameters<typeof useSessionNavigationReads>[0]) {
+    latestReads = useSessionNavigationReads(props);
+    return null;
+  }
+
+  afterEach(() => {
+    latestReads = undefined;
+  });
+
+  it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {
+    const { root } = installReactRenderer();
+    await act(async () =>
+      root.render(
+        createElement(LocaleProvider, {
+          locale: 'en',
+          children: createElement(ReadsProbe, {
+            sessions: linkedCatalog,
+            activeSessionId: 'child',
+            activeSession: linkedCatalog[1],
+            hiddenSessionIds,
+          }),
+        }),
+      ),
+    );
+
+    assert.ok(latestReads);
+    assert.deepEqual(
+      latestReads.rail.sessions.map(({ id }) => id),
+      ['root', 'remote', 'environment'],
+    );
+    assert.equal(latestReads.rail.activeRowId, 'root');
+    assert.equal(latestReads.rail.activeParentSession?.id, 'root');
+    assert.deepEqual(latestReads.branchBanner, {
+      parentSessionId: 'root',
+      parentSessionName: 'root',
+    });
+  });
+});
+
+describe('createSessionOpenCommand', () => {
+  it('orders the jump and preserves turn-target clearing semantics', () => {
     const calls: string[] = [];
     const targets: unknown[] = [];
-    const sessions = [session('a')];
-    await act(async () => renderController(root, input(sessions, undefined, calls, targets)));
+    const openSession = createSessionOpenCommand({
+      activateSession: (sessionId) => calls.push(`activate:${sessionId}`),
+      exitWorkHub: () => calls.push('exit-workhub'),
+      selectSessionSurface: () => calls.push('select-sessions'),
+      setSearchTarget: (target) => targets.push(target),
+    });
 
-    await act(async () => controller().commands.openSession('a', 'turn-2', 9));
-    await act(async () => controller().commands.openSession('a'));
+    openSession('a', 'turn-2', 9);
+    openSession('a');
 
     assert.deepEqual(calls, [
       'exit-workhub',

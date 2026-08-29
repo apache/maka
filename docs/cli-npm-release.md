@@ -21,7 +21,7 @@
 
 [简体中文](./cli-npm-release.zh-CN.md)
 
-This runbook is the operational authority for publishing the `maka-agent` npm installation channel. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from the exact tarball validated by the Stage workflow.
+This runbook is the operational authority for publishing the `maka-agent` npm installation channels. The root `package.json` remains the sole Maka product-version authority, and `packages/cli/package.json` must match it. Every public npm version must come from an exact tarball validated by the shared package workflow.
 
 The IPMC-approved source archive on ASF distribution infrastructure is the Apache release. npm,
 Desktop installers, and GitHub Release assets are convenience packages built from that approved
@@ -36,26 +36,32 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 ## Release invariants
 
 - Dispatch the product Release workflow only from the exact approved ASF source candidate tag.
-  Dispatch npm Stage from the resulting product `v<version>` tag and product Finalize from `main`.
-- Publish prereleases under `next` and stable versions under `latest`. `next` must never resolve to
-  a version older than `latest`; when no newer prerelease exists, both tags point to the stable
-  version.
+  Dispatch both npm Stage and product Finalize from `main`; Stage accepts the resulting product
+  `v<version>` tag only as verified release data.
+- Publish approved stable versions under `latest`. Publish developer snapshots under `nightly`.
+  There is no `next` channel, and `nightly` must never modify `latest`.
 - Do not create an npm-specific Git tag or GitHub Release. The `Release` workflow creates the
   product `v<version>` tag and Draft before npm staging; Finalize is the sole publisher of that Draft.
 - Keep that GitHub Release in Draft until npm Finalize and Desktop remote Runtime Host acceptance
   succeed. The Draft supplies npm's product identity; its publication is the final product action.
-- Do not run `npm publish`. GitHub Actions may only run `npm stage publish`; a human package
-  maintainer approves the staged package with npm 2FA.
+- Formal publication may only run `npm stage publish`; a human package maintainer approves the
+  staged package with npm 2FA. Product Nightly alone may run `npm publish --tag nightly` directly.
 - Do not rebuild between validation, staging, approval, and finalization.
-- Never reuse a public version. Fixes require a new prerelease, patch, minor, or major version.
+- Never reuse a public version. Formal product fixes require a new patch, minor, or major version.
 
-The two workflow boundaries are:
+The workflow boundaries are:
 
-1. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
-   tag and GitHub Release, checks out that exact product commit, builds and validates one immutable
-   tarball, records that single tag commit and workflow run, enters the protected `npm-release`
-   Environment, and submits it to npm staging through OIDC.
-2. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
+1. [npm publication](../.github/workflows/npm-publication.yml) is the only Trusted Publisher caller.
+   It runs exclusively from `main`, routes formal publication for an exact product tag supplied as
+   data, and publishes npm Nightly.
+2. [Stage CLI npm release](../.github/workflows/release-cli-stage.yml) resolves the existing product
+   tag and GitHub Release. Jobs without OIDC build and validate one immutable tarball from that
+   product commit. The OIDC job executes only reviewed `main` publisher code, records the separate
+   product-source and publisher identities, and submits the validated bytes to npm staging.
+3. [Desktop Nightly](../.github/workflows/desktop-nightly.yml) starts only after a successful npm
+   Nightly run, consumes only its immutable version file, and takes the source commit and upstream
+   run identity from the authenticated `workflow_run` event.
+4. [Finalize product release](../.github/workflows/release-cli-finalize.yml) accepts only the exact
    successful Stage run, Release build run, and self-contained publication record. The current
    reviewed verifier on `main` checks the public registry bytes, signature, provenance, dist-tag,
    immutable build artifacts, and live Draft digests, then waits at the protected `product-release`
@@ -67,14 +73,14 @@ The two workflow boundaries are:
 
 ### GitHub Environment
 
-The checked-in `.asf.yaml` is the authority for the `npm-release` and `product-release`
+The checked-in `.asf.yaml` is the authority for the `npm-publication` and `product-release`
 Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
-- a selected `v*` tag rule for `npm-release` and a selected `main` branch rule for
-  `product-release`;
-- `M4n5ter` as the required reviewer;
-- self-review disabled;
+- a selected `main` branch rule for `npm-publication`, with no approval gate so the
+  scheduled Nightly can publish automatically;
+- a selected `main` branch rule for `product-release`, with `M4n5ter` as required reviewer and
+  self-review disabled;
 - administrator bypass disabled where repository policy permits it.
 
 Repository administration permission is required to inspect or repair reconciliation. Do not maintain
@@ -90,24 +96,64 @@ In the `maka-agent` package settings, configure one GitHub Actions trusted publi
 | --- | --- |
 | Organization or user | `apache` |
 | Repository | `maka` |
-| Workflow filename | `release-cli-stage.yml` |
-| Environment name | `npm-release` |
-| Allowed actions | `npm stage publish` only |
+| Workflow filename | `npm-publication.yml` |
+| Environment name | `npm-publication` |
+| Allowed actions | `npm publish` and `npm stage publish` |
 
-The workflow filename is case-sensitive and contains no `.github/workflows/` prefix. Keep
-`npm publish` disabled for this trust relationship.
+The workflow filename is case-sensitive and contains no `.github/workflows/` prefix. Both formal
+staging and direct Nightly publication use the same `npm-publication` Environment. Its deployment
+rules admit only `main`. It has no GitHub approval gate because the
+scheduled Nightly is automatic; formal publication still requires human npm 2FA approval after
+staging. Do not configure a second publisher or npm token.
 
 After the first OIDC Stage succeeds, set package publishing access to **Require two-factor
 authentication and disallow tokens**, then revoke obsolete publish tokens. Do not remove the human
 package owner or recovery access as part of that change.
+
+Keep the repository variable `NPM_NIGHTLY_ENABLED` unset until `.asf.yaml` has reconciled the
+Environment and the Trusted Publisher matches it. Then set it to `true` and run one manual Nightly
+before relying on the schedule. This variable controls npm only; Desktop has its own independent
+`DESKTOP_NIGHTLY_ENABLED` rollout gate.
+
+## Product Nightly
+
+The scheduled `npm-publication.yml` run creates one immutable version such as
+`0.2.0-dev.42.20260829` from the exact scheduled `main` commit, validates the four-platform
+`maka-agent` tarball, and publishes it under `nightly`. Only after the exact version and dist-tag are
+public does the successful workflow trigger `desktop-nightly.yml`. Desktop consumes only that
+version; the authenticated upstream event supplies the exact source commit. The packaged Desktop
+records the exact Runtime Host setup specifier, for example `maka-agent@0.2.0-dev.42.20260829`; it
+never installs the mutable `nightly` tag.
+
+The two workflows publish in this order:
+
+1. require the candidate npm run number to be newer than the current `nightly` tag;
+2. publish the exact npm tarball with provenance under `nightly`;
+3. require both the exact version and `nightly` tag to be readable from the public registry;
+4. require the candidate Desktop run number to be newer than every existing platform feed;
+5. append the immutable Desktop payloads to `nightlies.apache.org`;
+6. advance the mutable Desktop update feed last.
+
+This ordering prevents Desktop from advertising a Runtime Host version that npm does not have and
+lets npm Nightly operate before Desktop's Infra transport is enabled. A failed npm or Desktop run is
+never rerun in place because npm versions and the Nightlies version directory are immutable; start
+a fresh npm Nightly run instead:
+
+```sh
+gh workflow run npm-publication.yml --ref main -f channel=nightly
+```
+
+Nightly is a developer snapshot, not an Apache release. Do not promote it from end-user download
+pages. Developers may install the moving channel explicitly with `maka-agent@nightly`; product
+automation must use the exact version recorded by Desktop.
 
 ## Prepare a release
 
 1. Merge all intended package, documentation, and release changes to `main`, prepare the ASF source
    candidate, and complete both the podling and Incubator PMC votes.
 2. Confirm the root product version, `apps/desktop/package.json`, and
-   `packages/cli/package.json` have the same unused target version at the approved source commit.
-   The npm channel maps prerelease versions to `next` and stable versions to `latest`.
+   `packages/cli/package.json` have the same unused stable target version at the approved source
+   commit. Formal npm publication only advances `latest`.
 3. Dispatch the product `Release` workflow from the exact approved
    `v<version>-incubating-rc<rc>` tag, supplying that same tag as `source_reference_tag`. Confirm its
    Draft `v<version>` Release points to the approved commit. npm staging consumes this identity and
@@ -115,31 +161,34 @@ package owner or recovery access as part of that change.
 4. Confirm the target version is absent from both public and staged package state:
 
    ```sh
-   version=0.1.0-beta.1
+   version=0.2.0
    npm view "maka-agent@$version" version --registry https://registry.npmjs.org/
    npm stage list maka-agent --registry https://registry.npmjs.org/
    ```
 
    The first command should report that the target version is not present. Resolve any existing
    stage instead of submitting the same version again.
-5. Confirm the `npm-release` Environment and Trusted Publisher still match the values above and the
+5. Confirm the `npm-publication` Environment and Trusted Publisher still match the values above and the
    approving npm account has 2FA enabled.
 
 ## Stage the candidate
 
-1. Dispatch the workflow with the exact product tag as its GitHub ref:
+1. Dispatch the workflow from reviewed `main`, supplying the exact product version:
 
    ```sh
-   version=0.1.0-beta.1
-   gh workflow run release-cli-stage.yml --ref "v$version" -f version="$version"
+   version=0.2.0
+   gh workflow run npm-publication.yml --ref main \
+     -f channel=formal \
+     -f version="$version"
    ```
 
-2. Confirm the created run uses `v<version>`. The workflow requires its GitHub ref, checkout, product tag, Release, source commit, and npm provenance to identify that one tag commit, and requires the commit to remain an ancestor of `main`.
+2. Confirm the created run uses `main`. The workflow resolves `v<version>` and its Draft as data,
+   requires that tag commit to remain an ancestor of `main`, builds the candidate without OIDC, and
+   binds npm provenance to the reviewed `main` publisher workflow and exact run.
 3. Wait for the reusable package validation jobs to pass. They build one tarball and validate the
    installed CLI on Linux x64/arm64, macOS arm64, and Windows x64, plus real Harbor and Pier
    Docker cells on Linux x64.
-4. Review and approve the `npm-release` Environment deployment.
-5. Record the successful Stage workflow run ID, run attempt, source commit, version, and staged
+4. Record the successful Stage workflow run ID, run attempt, source commit, version, and staged
    artifact checksum from the run summary and `cli-staged-release-<attempt>` artifact.
 
 Do not approve anything on npm if the Stage workflow did not finish successfully.
@@ -173,7 +222,7 @@ node scripts/product-release-authority.mjs verify-draft \
 ```
 
 The verifier must succeed. Stop if the tag is absent, moved, no longer on `main`, the matching
-GitHub Release is no longer a Draft, or its prerelease classification does not match the version.
+GitHub Release is no longer a stable Draft, or is marked as a prerelease.
 
 Approve only that stage ID. npm requires 2FA and makes the package public as part of approval:
 
@@ -184,23 +233,14 @@ npm stage approve "$stage_id" --registry https://registry.npmjs.org/
 The same review and approval can be performed from the package's **Staged Packages** page on
 npmjs.com.
 
-For a stable release, inspect the public tags after approval:
+Inspect the public tags after approval:
 
 ```sh
 version=0.1.0
 npm view maka-agent dist-tags --json --registry https://registry.npmjs.org/
 ```
 
-If `next` is absent or older than `latest`, authenticate interactively as an npm package owner and
-advance it to the new stable version before running Finalize:
-
-```sh
-npm dist-tag add "maka-agent@$version" next --registry https://registry.npmjs.org/
-```
-
-Do not change `next` when it already points to a newer version such as `0.2.0-beta.1`. This step is
-intentionally manual: npm Trusted Publishing authenticates `npm publish` and `npm stage publish`,
-not dist-tag mutations, and the release workflows must not gain a long-lived npm token.
+`latest` must identify the approved version. `nightly`, when present, remains independent.
 
 ## Finalize the product release
 
@@ -210,7 +250,7 @@ After npm reports the version as public:
 2. Enter the successful Stage run ID and attempt, the successful Release build run ID and attempt,
    and the version.
 3. Let the inspection job verify the public tarball bytes, checksum, inventory, npm signature,
-   Trusted Publishing provenance, the release dist-tag, and that `next` is not older than `latest`.
+   Trusted Publishing provenance, and the exact `latest` dist-tag.
 4. While the publication job waits for `product-release` approval, complete the product checklist's
    cross-machine acceptance against the Draft.
 5. Approve the Environment. Confirm the workflow matches every live Draft digest to the exact
@@ -221,7 +261,7 @@ After npm reports the version as public:
 Check the resulting registry state:
 
 ```sh
-version=0.1.0-beta.1
+version=0.2.0
 npm view "maka-agent@$version" version dist.tarball dist.integrity --json
 npm view maka-agent dist-tags --json
 ```
@@ -277,18 +317,16 @@ must not be repeated.
 First move the affected dist-tag back to a previously verified version:
 
 ```sh
-known_good=0.1.0-beta.1
-npm dist-tag add "maka-agent@$known_good" next
-# For a stable release incident, use latest instead of next.
+known_good=0.2.0
+npm dist-tag add "maka-agent@$known_good" latest
 ```
 
 Then deprecate only the defective version and direct users to the recovered dist-tag, which already
 points to the verified version:
 
 ```sh
-bad_version=0.1.0-beta.2
-recovery_tag=next
-# For a stable release incident, use latest instead of next.
+bad_version=0.2.1
+recovery_tag=latest
 npm deprecate "maka-agent@$bad_version" "Known issue; install maka-agent@$recovery_tag."
 ```
 
@@ -296,10 +334,14 @@ Verify the tags, fix the defect, and release a new version through the complete 
 flow. Do not use `npm unpublish` as routine rollback: removing immutable dependency bytes can break
 existing installations and does not restore the reviewed release chain.
 
+For a defective Nightly, dispatch a fresh run so a new immutable version advances `nightly`. If an
+immediate rollback is required, a human package owner may move `nightly` to a previously verified
+Nightly version and deprecate only the defective exact version. Never point `latest` at a Nightly.
+
 ## Ownership and emergency recovery
 
-- GitHub repository admins own the `npm-release` Environment configuration. The release maintainer
-  owns dispatch, Environment review, staged-package inspection, npm 2FA approval, and final
+- GitHub repository admins own the `npm-publication` Environment configuration. The release maintainer
+  owns dispatch, staged-package inspection, npm 2FA approval, and final
   acceptance.
 - npm package owners own Trusted Publisher, publishing-access, maintainer, and dist-tag recovery.
 - Keep at least one 2FA-protected human owner while trusted publishing is active. Before removing the

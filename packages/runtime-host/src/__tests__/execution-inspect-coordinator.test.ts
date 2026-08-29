@@ -143,47 +143,12 @@ describe('HostExecutionInspectCoordinator', () => {
     });
   });
 
-  test('resolves duplicate AgentRun identities and returns canonical evidence documents', async () => {
+  test('returns canonical evidence documents for duplicate AgentRun identities', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const first = await stores.sessionStore.create(sessionInput('First'));
       const second = await stores.sessionStore.create(sessionInput('Second'));
       await stores.agentRunStore.createRun(runHeader(first.id, 'shared-run', 1));
       await stores.agentRunStore.createRun(runHeader(second.id, 'shared-run', 2));
-      await stores.agentRunStore.createRun(runHeader(second.id, first.id, 3));
-
-      const crossKind = await coordinator.handlers['execution.inspect.resolve'](
-        { id: first.id },
-        connectionContext(),
-      );
-      assert.equal(crossKind.ok, true);
-      if (!crossKind.ok) return;
-      assert.equal(crossKind.result.status, 'ambiguous');
-      assert.deepEqual(
-        crossKind.result.candidates.map((candidate) => candidate.kind),
-        ['agent_run', 'session'],
-      );
-
-      const ambiguous = await coordinator.handlers['execution.inspect.resolve'](
-        { id: 'shared-run', requestedKind: 'agent_run' },
-        connectionContext(),
-      );
-      assert.equal(ambiguous.ok, true);
-      if (!ambiguous.ok) return;
-      assert.equal(ambiguous.result.status, 'ambiguous');
-      assert.deepEqual(
-        ambiguous.result.candidates.map((candidate) =>
-          candidate.kind === 'agent_run' ? candidate.sessionId : undefined,
-        ),
-        [first.id, second.id].sort(),
-      );
-
-      const resolved = await coordinator.handlers['execution.inspect.resolve'](
-        { id: 'shared-run', requestedKind: 'agent_run', sessionId: second.id },
-        connectionContext(),
-      );
-      assert.equal(resolved.ok, true);
-      if (!resolved.ok) return;
-      assert.equal(resolved.result.status, 'resolved');
 
       const run = await coordinator.handlers['execution.inspect.query'](
         { kind: 'agent_run', sessionId: second.id, agentRunId: 'shared-run' },

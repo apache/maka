@@ -80,7 +80,7 @@ and they are NOT equally load-bearing.
   user's OS account: filesystem, network, OS permissions
   (Keychain / Microphone / Screen recording).
 
-### 2.2 The boundary: the OS user account
+### 2.2 OS enforcement boundaries
 
 **The only enforcement boundary against an adversarial LLM is the
 operating system.** Nothing inside the agent process constitutes
@@ -94,11 +94,28 @@ because they are useful UX safety nets — they catch accidental
 output and slow down adversarial output enough for a human to
 notice — but we do not ship them as guarantees.
 
-Maka does not run tools in a separate process or container by default. The
-runtime exposes a macOS Seatbelt command transformer for restricted profiles,
-but current product compositions do not yet route command execution through
-it, so it is not a product boundary today. Externally isolated runtimes may
-supply their own boundary. See
+The OS user account is Maka's outer trust envelope. Inside that envelope,
+Runtime Host also routes selected agent tool effects through OS-enforced child
+process sandboxes when the active session has a restricted managed
+`ExecutionBoundary`. On macOS and Linux, non-PTY Bash commands and the
+filesystem worker run through Seatbelt and bubblewrap respectively. On
+Windows, the AppContainer boundary currently covers the purpose-built
+filesystem worker only; arbitrary-shell Bash is unavailable and fails closed
+when the active profile requires a command sandbox.
+
+This is not universal tool containment. Bypass boundaries and unrestricted,
+disabled, or external profiles do not add a Maka-managed local sandbox;
+external environments may supply their own isolation. Managed PTY Bash is
+refused when the active profile requires sandboxing. Client-launched
+integrated terminals are host PTYs outside the managed agent execution
+boundary, and runtime or attachment resource reads do not execute through the
+local filesystem worker. The standard `workspace-write` profile permits the
+workspace roots and the configured temporary roots.
+
+Seatbelt, bubblewrap, and AppContainer are OS enforcement mechanisms. The
+in-process checks that decide whether to request or invoke them remain
+heuristics, not containment. The exact product coverage and fail-closed
+selection rules are documented in
 [`packages/runtime/src/sandbox/README.md`](./packages/runtime/src/sandbox/README.md).
 
 ### 2.3 Boundaries we DO treat as load-bearing
@@ -106,7 +123,14 @@ supply their own boundary. See
 1. **OS user account.** Tools run with the user's privileges. The
    user is expected to run Maka as a non-admin account on systems
    where that matters.
-2. **Credential-at-rest boundaries.** The provider credential store
+2. **Restricted managed tool sandboxes.** For the product surfaces listed in
+   §2.2, the active session `ExecutionBoundary` is compiled into a per-command
+   Seatbelt, bubblewrap, or AppContainer policy. Required enforcement fails
+   closed rather than silently retrying on the host. This boundary is limited
+   to the documented tool and platform matrix; it does not include bypass,
+   unrestricted, disabled, external, managed PTY, or integrated-terminal
+   execution.
+3. **Credential-at-rest boundaries.** The provider credential store
    writes `credentials.json` as versioned plaintext JSON under the
    user's workspace directory. Its load-bearing boundary is the OS
    user account plus filesystem controls: directory mode 0o700,
@@ -119,21 +143,21 @@ supply their own boundary. See
    this boundary anymore. Pre-existing safeStorage-encrypted credential
    or token files are not imported; users with only those copies must
    re-authenticate.
-3. **Renderer process sandbox + preload IPC bridge.** The
+4. **Renderer process sandbox + preload IPC bridge.** The
    renderer cannot reach files, network, or shell directly. Every
    IPC handler in `apps/desktop/src/main/main.ts` is the trust
    boundary between renderer-controlled input and main-process
    action. Renderer code is treated as semi-trusted: it can read
    masked / sanitized data, but cleartext secrets never cross the
    boundary in the main-to-renderer direction (see §4).
-4. **Settings sensitive masking.** Tokens, API keys, and proxy
+5. **Settings sensitive masking.** Tokens, API keys, and proxy
    passwords are masked at the IPC store boundary
    (`maskAppSettings` in `apps/desktop/src/main/settings-ipc-helpers.ts`).
    Re-submitting the mask sentinel `••••••` is interpreted as
    "keep current" by the merge logic; an empty string is
    interpreted as an explicit clear. The Tavily API key follows the
    same boundary.
-5. **Network egress through user-configured proxies.** The
+6. **Network egress through user-configured proxies.** The
    `network.proxy` settings drive Electron's session proxy. Tools
    that bypass `proxiedFetch` (Tavily lives in main, uses
    standard fetch) are individually audited.
@@ -156,8 +180,10 @@ are welcome as ordinary issues, not security advisories.
    URLs out of agent tool results before they reach a renderer
    `<a href>`.
 4. **`PermissionMode.ask`** as default. Mode names are UX controls,
-   not security boundaries; even permissive modes remain subject to
-   the current policy table and OS isolation boundary.
+   not security boundaries. `ask` and `explore` establish restricted
+   managed profiles, while `bypass` explicitly does not promise a
+   Maka-managed local sandbox; the active `ExecutionBoundary` is the
+   execution authority.
 5. **Modal-lifecycle contract test.** Catches the React
    `useEffect`-before-`if (!open) return null` pattern that can
    violate React hook ordering. Static analysis only.
@@ -204,6 +230,10 @@ boundary in §2.3 was crossed. Examples:
   result envelopes, log lines).
 - A tool intended to be permission-gated bypasses the
   PermissionEngine.
+- A non-PTY Bash command or local-path filesystem operation under a
+  restricted managed boundary escapes its effective Seatbelt,
+  bubblewrap, or supported AppContainer policy, or silently falls
+  back to host execution when required enforcement is unavailable.
 
 Reports against the §2.4 heuristics are out of scope as security
 advisories. They are welcome as ordinary issues or pull requests.

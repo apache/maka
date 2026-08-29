@@ -26,6 +26,7 @@ import type {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
 import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
@@ -196,6 +197,12 @@ export function rewriteConversationCopyMessage(
   message: StoredMessage,
   references: ConversationCopyMessageReferenceMap,
 ): StoredMessage {
+  if (message.type === 'assistant' && references.mode === 'exact') {
+    return {
+      ...message,
+      text: rewriteAttachmentResourceRefs(message.text, references.artifactIds),
+    };
+  }
   if (message.type === 'user' && message.attachments) {
     return {
       ...message,
@@ -222,6 +229,17 @@ export function rewriteConversationCopyMessage(
     };
   }
   return message;
+}
+
+function rewriteAttachmentResourceRefs(
+  text: string,
+  artifactIds: ReadonlyMap<string, string>,
+): string {
+  return text.replace(/maka:\/\/runtime\/attachments\/[^\s)\]}>`'",;:!]+/g, (candidate) => {
+    const parsed = parseAttachmentResourceRef(candidate);
+    const artifactId = parsed ? artifactIds.get(parsed.artifactId) : undefined;
+    return artifactId ? `maka://runtime/attachments/${artifactId}` : candidate;
+  });
 }
 
 export async function prepareConversationRuntimeLedgerCopy(input: {
@@ -1071,13 +1089,20 @@ function rewriteRuntimeEventReferences(
   references: ConversationCopyReferenceMap,
 ): RuntimeEvent {
   const content =
-    event.content?.kind === 'text' && event.content.attachments
+    event.content?.kind === 'text'
       ? {
           ...event.content,
-          attachments: event.content.attachments.map((attachment) => ({
-            ...attachment,
-            ref: rewriteStorageRef(attachment.ref, references),
-          })),
+          ...(references.mode === 'exact'
+            ? { text: rewriteAttachmentResourceRefs(event.content.text, references.artifactIds) }
+            : {}),
+          ...(event.content.attachments
+            ? {
+                attachments: event.content.attachments.map((attachment) => ({
+                  ...attachment,
+                  ref: rewriteStorageRef(attachment.ref, references),
+                })),
+              }
+            : {}),
         }
       : event.content?.kind === 'function_response'
         ? {
@@ -1487,6 +1512,14 @@ function rewriteStorageRef(
 ): StorageRef {
   if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
   if (references.mode === 'preserve_external') return ref;
+  const artifactId = references.artifactIds.get(ref.relativePath);
+  if (artifactId) {
+    return {
+      ...ref,
+      sessionId: references.targetSessionId,
+      relativePath: artifactId,
+    };
+  }
   const relativePath = references.relativePaths.get(ref.relativePath);
   if (!relativePath) {
     throw new Error(`Conversation copy is missing Session file ${ref.relativePath}`);

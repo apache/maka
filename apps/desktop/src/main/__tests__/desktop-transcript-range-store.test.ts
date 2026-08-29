@@ -25,7 +25,10 @@ import {
   encodeDesktopTranscriptChange,
   encodeDesktopTranscriptSnapshot,
 } from '../desktop-transcript-ipc.js';
-import { DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES } from '../../preload/transcript-contract.js';
+import {
+  DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
+} from '../../preload/transcript-contract.js';
 import {
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
@@ -256,6 +259,305 @@ test('keeps a bounded contiguous window while moving between history and the tai
   assert.ok(replica.residentBytes <= maxResidentBytes);
 });
 
+test('delivers a mid-session tail append even while a history window is resident', async () => {
+  // Reproduces the "active session does not show the newest message until you
+  // switch away and back" bug. Once the resident window has been trimmed off
+  // the tail (hasNewer === true, e.g. after loading older history), a Host
+  // `transcript_advanced` for a freshly persisted message must still reach an
+  // already-open consumer. Before the fix, `advance()` short-circuited on
+  // hasNewer and published an empty change, so the append was silently dropped
+  // and only a fresh subscription (session switch) re-read it.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page('older');
+  // The tail reload after the append: a fresh newest window ending at seq 5,
+  // with older history still available below it.
+  const tailPage = { ...page('older'), throughSequence: 5 };
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(3), nextCursor: 'older' }
+      : candidate === tailPage
+        ? { messages: [appended], nextCursor: 'older' }
+        : { messages: messages.slice(2, 4), nextCursor: 'older' },
+    loadTranscriptPage: async (input) => input.throughSequence === 5 ? tailPage : olderPage,
+    async close() {},
+  });
+  const maxResidentBytes = Buffer.byteLength(JSON.stringify(messages[0]!.message), 'utf8') + 1;
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  await replica.loadBefore(4, 128 * 1024);
+  assert.equal(replica.snapshot().hasNewer, true);
+  changes.splice(0);
+
+  // The Host persists a new assistant message (sequence 5) and advances.
+  await replica.advance(5);
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(upserts.includes(5), 'the tail append must be delivered to open consumers');
+  assert.equal(replica.durableThrough, 5);
+});
+
+test('does not resurrect a discarded replica when a tail re-anchor is in flight', async () => {
+  // Guards the concurrency edge introduced by re-anchoring on `hasNewer`: the
+  // re-anchor now awaits a page load, and `discard()` (memory reclaim for a
+  // non-visible session) can run during that await. When the page resolves the
+  // replica must stay non-resident and empty — repopulating durable state here
+  // would undo the eviction and blow the memory bound.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page('older');
+  const tailPage = { ...page('older'), throughSequence: 5 };
+  let releaseTail: () => void = () => {};
+  const tailGate = new Promise<void>((resolve) => {
+    releaseTail = resolve;
+  });
+  let signalTailEntered: () => void = () => {};
+  const tailEntered = new Promise<void>((resolve) => {
+    signalTailEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(3), nextCursor: 'older' }
+      : candidate === tailPage
+        ? { messages: [appended], nextCursor: 'older' }
+        : { messages: messages.slice(2, 4), nextCursor: 'older' },
+    loadTranscriptPage: async (input) => {
+      if (input.throughSequence === 5) {
+        // Signal that catch-up is now parked inside the re-anchor's page await,
+        // so the test can `discard()` at exactly that point.
+        signalTailEntered();
+        await tailGate;
+        return tailPage;
+      }
+      return olderPage;
+    },
+    async close() {},
+  });
+  const maxResidentBytes = Buffer.byteLength(JSON.stringify(messages[0]!.message), 'utf8') + 1;
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  await replica.loadBefore(4, 128 * 1024);
+  assert.equal(replica.snapshot().hasNewer, true);
+  changes.splice(0);
+
+  // Start the tail re-anchor; wait until catch-up is parked inside its page
+  // await, then reclaim memory before the page resolves.
+  const advancing = replica.advance(5);
+  await tailEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseTail();
+  await advancing;
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(!upserts.includes(5), 'a discarded replica must not be repopulated by an in-flight re-anchor');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
+test('does not resurrect a discarded replica when a history load is in flight', async () => {
+  // Same post-await `#resident` invariant, exercised through `loadBefore`: a
+  // history page is in flight when `discard()` reclaims the replica. The
+  // resolved older page must not repopulate durable state or publish.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const page = (nextCursor: string | null) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'older' as const,
+    throughSequence: 4,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page('older');
+  const olderPage = page(null);
+  let releaseOlder: () => void = () => {};
+  const olderGate = new Promise<void>((resolve) => {
+    releaseOlder = resolve;
+  });
+  let signalEntered: () => void = () => {};
+  const olderEntered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages: messages.slice(4), nextCursor: 'older' }
+      : { messages: messages.slice(2, 4), nextCursor: null },
+    loadTranscriptPage: async () => {
+      signalEntered();
+      await olderGate;
+      return olderPage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1024 * 1024,
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  // Load older history; reclaim memory while its page is pending.
+  const loading = replica.loadBefore(4, 128 * 1024);
+  await olderEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseOlder();
+  await loading;
+
+  assert.equal(changes.length, 0, 'a discarded replica must not publish an in-flight history page');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
+test('does not drive a discarded replica terminal when a contiguous catch-up is in flight', async () => {
+  // Same post-await `#resident` invariant on the ordinary contiguous catch-up
+  // path: another observed session's LRU `discard()` reclaims this replica while
+  // a `direction: 'newer'` page is pending. The per-page callback already returns
+  // early, but without the post-loop guard the watermark check would throw
+  // `correlation_changed` and drive the session terminal. A discarded replica has
+  // no watermark to meet — catch-up must return cleanly, not reject.
+  const messages = [0, 1, 2, 3, 4].map((sequence) => ({
+    identity: sequence,
+    message: assistantMessage(String(sequence), `assistant-${sequence}`),
+  }));
+  const appended = { identity: 5, message: assistantMessage('5', 'assistant-5') };
+  const page = (nextCursor: string | null, throughSequence: number) => ({
+    kind: 'page' as const,
+    sessionId: 'session-1',
+    source: 'durable' as const,
+    direction: 'newer' as const,
+    throughSequence,
+    rawBytes: 1,
+    fragments: [],
+    nextCursor,
+  });
+  const bootstrapPage = page(null, 4);
+  const newerPage = page(null, 5);
+  let releaseNewer: () => void = () => {};
+  const newerGate = new Promise<void>((resolve) => {
+    releaseNewer = resolve;
+  });
+  let signalEntered: () => void = () => {};
+  const newerEntered = new Promise<void>((resolve) => {
+    signalEntered = resolve;
+  });
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 4,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...page(null, 4), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (candidate) => candidate === bootstrapPage
+      ? { messages, nextCursor: null }
+      : { messages: [appended], nextCursor: null },
+    loadTranscriptPage: async () => {
+      // Park catch-up inside the contiguous newer-page await so the test can
+      // reclaim memory at exactly that point.
+      signalEntered();
+      await newerGate;
+      return newerPage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    maxResidentBytes: 1024 * 1024,
+    onChange: (_replica, change) => changes.push(change),
+  });
+  // A large budget keeps the whole bootstrap resident, so the tail is contiguous
+  // (`hasNewer` false) and `advance` takes the paged catch-up, not the re-anchor.
+  assert.equal(replica.snapshot().hasNewer, false);
+
+  // Advance the watermark contiguously; reclaim memory while the newer page is
+  // pending. Before the fix `advancing` rejects with `correlation_changed`.
+  const advancing = replica.advance(5);
+  await newerEntered;
+  replica.discard();
+  assert.equal(replica.resident, false);
+  releaseNewer();
+  await advancing;
+
+  const upserts = changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence));
+  assert.ok(!upserts.includes(5), 'a discarded replica must not be repopulated by an in-flight catch-up');
+  assert.equal(replica.resident, false);
+  assert.equal(replica.residentBytes, 0);
+});
+
 test('loads a history target with newer messages available below it', async () => {
   const messages = [0, 1, 2, 3, 4].map((sequence) => ({
     identity: sequence,
@@ -295,6 +597,100 @@ test('loads a history target with newer messages available below it', async () =
   assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0, 1, 2]);
   assert.equal(replica.snapshot().hasOlder, false);
   assert.equal(replica.snapshot().hasNewer, true);
+});
+
+test('keeps an oversized transcript sparse while moving between indexed prompts', async () => {
+  const messages = syntheticLargeTranscript();
+  const totalBytes = messages.reduce(
+    (total, entry) => total + Buffer.byteLength(JSON.stringify(entry.message), 'utf8'),
+    0,
+  );
+  assert.ok(totalBytes > DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES * 2);
+
+  const bootstrapPage = transcriptPage('older', 'older', 15);
+  const historicalPage = transcriptPage('newer', 'newer', 15);
+  const intermediatePage = transcriptPage('newer', 'newer', 15);
+  const latestPage = transcriptPage('older', 'older', 15);
+  const requests: Array<{
+    direction: 'older' | 'newer';
+    anchorSequence: number | null;
+    maxBytes: number;
+  }> = [];
+  const rendererStore = transcriptStore();
+  const generation = 'oversized-range';
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 15,
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...transcriptPage('older', null, 15), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (page) => page === bootstrapPage || page === latestPage
+      ? { messages: messages.slice(12, 16), nextCursor: 'older' }
+      : page === historicalPage
+        ? { messages: messages.slice(0, 5), nextCursor: 'newer' }
+        : { messages: messages.slice(6, 11), nextCursor: 'newer' },
+    loadTranscriptPage: async (input) => {
+      requests.push({
+        direction: input.direction,
+        anchorSequence: input.anchorSequence,
+        maxBytes: input.maxBytes,
+      });
+      if (input.direction === 'older') return latestPage;
+      return input.anchorSequence === null ? historicalPage : intermediatePage;
+    },
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    generation,
+    onChange: (_current, change) => {
+      for (const batch of encodeDesktopTranscriptChange({
+        sessionId: 'session-1',
+        generation,
+        hostEpoch: 'host-1',
+      }, change)) rendererStore.accept(batch);
+    },
+  });
+  for (const batch of encodeDesktopTranscriptSnapshot(replica.snapshot())) {
+    rendererStore.accept(batch);
+  }
+
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [12, 13, 14, 15]);
+  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 7', 'Prompt 8']);
+  assert.equal(rendererStore.range().hasNewer, false);
+  assertRangeFitsBudget(rendererStore);
+
+  await replica.loadAround(0, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0, 1, 2, 3, 4]);
+  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 1', 'Prompt 2', 'Prompt 3']);
+  assert.equal(rendererStore.range().hasOlder, false);
+  assert.equal(rendererStore.range().hasNewer, true);
+  assertRangeFitsBudget(rendererStore);
+
+  await replica.loadAround(6, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [6, 7, 8, 9, 10]);
+  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 4', 'Prompt 5', 'Prompt 6']);
+  assert.equal(rendererStore.range().hasOlder, true);
+  assert.equal(rendererStore.range().hasNewer, true);
+  assertRangeFitsBudget(rendererStore);
+
+  await replica.loadAround(15, DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [12, 13, 14, 15]);
+  assert.deepEqual(renderedUserPrompts(rendererStore), ['Prompt 7', 'Prompt 8']);
+  assert.equal(rendererStore.range().hasOlder, true);
+  assert.equal(rendererStore.range().hasNewer, false);
+  assertRangeFitsBudget(rendererStore);
+
+  assert.deepEqual(requests, [
+    { direction: 'newer', anchorSequence: null, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
+    { direction: 'newer', anchorSequence: 5, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
+    { direction: 'older', anchorSequence: 16, maxBytes: DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES },
+  ]);
+  replica.close();
 });
 
 test('rejects an overlay that exceeds its cache budget', async () => {
@@ -560,6 +956,43 @@ function transcriptPage(
     fragments: [],
     nextCursor,
   };
+}
+
+function syntheticLargeTranscript(): Array<{ identity: number; message: StoredMessage }> {
+  return Array.from({ length: 8 }, (_, index) => {
+    const number = index + 1;
+    const turnId = `turn-${number}`;
+    return [
+      {
+        identity: index * 2,
+        message: {
+          ...userMessage(`Prompt ${number}`, `user-${number}`),
+          turnId,
+        },
+      },
+      {
+        identity: index * 2 + 1,
+        message: {
+          ...assistantMessage('x'.repeat(180 * 1024), `assistant-${number}`),
+          turnId,
+        },
+      },
+    ];
+  }).flat();
+}
+
+function renderedUserPrompts(store: DesktopTranscriptRangeStore): string[] {
+  return store.snapshot().messages.flatMap((message) =>
+    message.type === 'user' ? [message.text] : [],
+  );
+}
+
+function assertRangeFitsBudget(store: DesktopTranscriptRangeStore): void {
+  const bytes = store.snapshot().messages.reduce(
+    (total, message) => total + Buffer.byteLength(JSON.stringify(message), 'utf8'),
+    0,
+  );
+  assert.ok(bytes <= DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
 }
 
 function continuitySnapshot() {

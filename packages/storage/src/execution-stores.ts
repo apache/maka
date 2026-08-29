@@ -111,6 +111,7 @@ export type {
   RuntimeEventScanResult,
 } from './agent-run-store.js';
 export type {
+  MarkMessagesHandedOffInput,
   MessageAdmissionStore,
   PendingMessageAdmission,
 } from './message-admission-store.js';
@@ -173,7 +174,6 @@ export interface ExecutionSessionReader {
 
 export interface ExecutionAgentRunReader {
   readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
-  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
@@ -471,7 +471,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       updateRun: (sessionId, runId, patch, options) =>
         run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
       listSessionRunsBounded: (sessionId, limit) =>
         run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
@@ -616,7 +615,6 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
     },
     agentRunStore: {
       readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      findRunsById: (runId, limit) => run(() => agentRunStore.findRunsById(runId, limit)),
       listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
       listSessionRunsBounded: (sessionId, limit) =>
         run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),

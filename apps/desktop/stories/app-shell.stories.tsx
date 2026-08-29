@@ -27,10 +27,10 @@ import {
   ChatView,
   Composer,
   deriveTitlebarProjectName,
-  SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
+import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
@@ -60,7 +60,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 type ChatViewProps = ComponentProps<typeof ChatView>;
 type ComposerProps = ComponentProps<typeof Composer>;
-type SessionListPanelProps = ComponentProps<typeof SessionListPanel>;
+type SessionListPanelProps = SessionRailStoryProps;
 type SessionGroup = NonNullable<SessionListPanelProps['groups']>[number];
 
 const noop = () => undefined;
@@ -422,7 +422,7 @@ function ComposedShell(props: {
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
         sideNav={
-          <SessionListPanel
+          <SessionRail
             collapsed={collapsed}
             onCollapsedChange={setCollapsed}
             width={sidebarWidth}
@@ -456,6 +456,7 @@ function ComposedShell(props: {
             (<div className="maka-detail-with-artifacts">
               <div className="mainColumn">
               <ChatSurfaceLayout
+                scrollOwner="host"
                 composer={
                   <Composer
                     {...baseComposerProps}

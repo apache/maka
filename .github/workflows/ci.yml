@@ -84,8 +84,20 @@ jobs:
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
-      - name: Test AX tree audit contract
-        run: node --test scripts/ax-tree-audit.test.mjs
+      - name: Test Computer Use script contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+
+      - name: Test script entrypoint contracts
+        run: node --test scripts/script-entrypoints.test.mjs
+
+      # Install-free like its neighbours: the gate reads one source file and
+      # compares it to a hand-edited inventory, so a hook that silently widens
+      # its scope to the whole tree fails here rather than in a profile (#4109).
+      - name: Check the hooks scoped to the whole shell
+        run: npm run check:app-shell-hooks
+
+      - name: Test the app-shell hook gate
+        run: node --test --test-concurrency=1 scripts/check-app-shell-hooks.test.mjs
 
       - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm

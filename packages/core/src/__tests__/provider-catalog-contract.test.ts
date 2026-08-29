@@ -78,6 +78,19 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       );
     }
   });
+
+  it('delegates Alibaba Token Plan execution through one explicit Runtime profile', () => {
+    const delegated = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapter = definition.runtimeAdapter;
+      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
+        ? [{ providerType, runtimeProfile: adapter.runtimeProfile }]
+        : [];
+    });
+    assert.deepEqual(delegated, [
+      { providerType: 'alibaba-token-plan-cn', runtimeProfile: 'alibaba-token-plan' },
+      { providerType: 'alibaba-token-plan', runtimeProfile: 'alibaba-token-plan' },
+    ]);
+  });
 });
 
 describe('retired provider contract', () => {

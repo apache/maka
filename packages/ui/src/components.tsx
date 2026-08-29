@@ -28,7 +28,12 @@ export { ModuleHubSelector } from './module-hub-selector.js';
 export type { ModuleHubHeader } from './module-hub-selector.js';
 export { SearchModal } from './search-modal.js';
 export { SessionListPanel } from './session-list-panel.js';
-export type { SessionViewMode } from './session-list-panel.js';
+export { SessionRailProvider } from './session-rail-context.js';
+export type {
+  SessionRailChrome,
+  SessionRailData,
+  SessionViewMode,
+} from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
 export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';

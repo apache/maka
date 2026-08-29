@@ -28,7 +28,7 @@ Maka Desktop、TUI 和 CLI 可以通过 TLS、SSH 或明确启用的明文 WebSo
 在具备 Node.js 22.19 或更新版本的机器上，发布版 CLI 可以用一个命令安装并验证持久 Runtime Host。Linux 使用 systemd user service；macOS 使用 LaunchAgent，并要求该用户存在活跃的 GUI 登录会话：
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -37,7 +37,7 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 
 `--principal` 应使用稳定标识；重复执行会替换该 Client 的 credential，不会不断累积 credential。命令会把当前精确版本的 Maka 安装到托管目录，启动仅监听 loopback 的服务，验证新 credential，然后只显示一次连接信息。TUI 或 CLI 使用 `terminal-client`。
 
-在 Host 上运行 `npx --yes --package maka-agent@next maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
+在 Host 上运行 `npx --yes --package maka-agent@latest maka runtime-host service uninstall` 会删除 service 与托管 package，但保留 State Root 和 Project 数据。
 
 ## 手动设置 Host
 
@@ -117,8 +117,12 @@ PeerId 和 listener 配置；`peer rotate` 会明确更换 PeerId；卸载 servi
 Root。执行 `peer enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
 
 Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中可能失败。它不会替代已有的 TLS、SSH
-或 overlay network fallback；除非用户在 `peer enable` 时明确传入 `--coordination-relay`，否则不会使用
-公共 relay。
+或 overlay network fallback。Host 默认通过公共 IPFS DHT 的有界 client-only 视图发现 Circuit Relay v2
+候选；扣除手动 relay 后，自动池会补足两个已接受 reservation 的目标。手动配置的 relay 始终优先。使用
+`peer enable --no-automatic-relay-discovery` 可以关闭这项尽力而为的发现，使用
+`peer enable --automatic-relay-discovery` 可以重新开启；关闭不会删除手动 relay。公网 Peer 能观察到发现
+连接，也可能拒绝或中止 reservation。只有已接受的 reservation 才会向 Mesh Peer 发布，Maka 仍要求
+application stream 升级为直连，不会通过 relay 传输 Session traffic。
 
 ### Direct TLS
 

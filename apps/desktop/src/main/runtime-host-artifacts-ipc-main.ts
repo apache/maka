@@ -21,8 +21,12 @@ import { randomUUID } from "node:crypto";
 import { open, mkdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
-import { type ArtifactSaveResult } from '@maka/core/artifacts';
+import {
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  normalizeArtifactImagePreviewMime,
+  resolveArtifactImagePreview,
+  type ArtifactSaveResult,
+} from '@maka/core/artifacts';
 import { sanitizeArtifactName } from "@maka/storage/artifact-stores";
 import {
   handleReconnectableRead,
@@ -39,6 +43,8 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly showItemInFolder: (path: string) => void;
   readonly presentationRoot?: string;
 }
+
+const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
 
 export function registerRuntimeHostArtifactsIpc(
   deps: RuntimeHostArtifactsIpcDeps,
@@ -93,27 +99,42 @@ export function registerRuntimeHostArtifactsIpc(
       const artifact = await deps.client.getArtifact(sessionId, artifactId);
       if (
         !artifact ||
-        artifact.status === "deleted" ||
-        artifact.sizeBytes > MAX_ATTACHMENT_BYTES
+        artifact.status === "deleted"
       ) {
         return { ok: false as const, reason: "not_found" };
       }
+      const preview = resolveArtifactImagePreview(artifact);
+      if (preview.kind === "unsupported") {
+        return {
+          ok: false as const,
+          reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
+        };
+      }
+      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
+      if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
       const chunks: Buffer[] = [];
       let received = 0;
-      await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
-        received += chunk.byteLength;
-        if (received > MAX_ATTACHMENT_BYTES) {
-          throw new Error("Attachment exceeds the renderer byte limit");
+      try {
+        await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
+          received += chunk.byteLength;
+          if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
+          }
+          chunks.push(Buffer.from(chunk));
+        });
+      } catch (error) {
+        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
+          return { ok: false as const, reason: "too_large" };
         }
-        chunks.push(Buffer.from(chunk));
-      });
+        throw error;
+      }
       if (received !== artifact.sizeBytes) {
         return { ok: false as const, reason: "read_failed" };
       }
       return {
         ok: true as const,
         base64: Buffer.concat(chunks, received).toString("base64"),
-        mimeType: artifact.mimeType ?? "application/octet-stream",
+        mimeType,
       };
     },
   );

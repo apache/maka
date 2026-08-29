@@ -117,11 +117,6 @@ export interface UserMessageInput extends MessageContent {
   turnOrchestration?: TurnOrchestration;
   /** Trusted host-supplied tool protocol override for this run only. */
   toolMode?: ToolMode;
-  parentRunId?: string;
-  /** Child AgentRun whose durable conversation this child continues. */
-  resumedFromRunId?: string;
-  /** Immediate child AgentRun retried without appending another user prompt. */
-  retriedFromRunId?: string;
   agentId?: string;
   agentName?: string;
   parentTurnId?: string;
@@ -131,21 +126,6 @@ export interface UserMessageInput extends MessageContent {
   parentSessionId?: string;
   /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
-}
-
-export interface AgentSpec {
-  id: string;
-  name: string;
-  systemPrompt: string;
-}
-
-export interface ChildAgentTurnInput {
-  turnId: string;
-  parentRunId: string;
-  spec: AgentSpec;
-  prompt: string;
-  /** Trusted, preflighted child AgentRun whose RuntimeEvent history is replayed. */
-  resumedFromRunId?: string;
 }
 
 export interface RegenerateTurnInput {

@@ -29,11 +29,15 @@ export { SessionNavigationServicesProvider } from './services-context.js';
 export {
   createSessionNavigationRowActions,
 } from './controller/session-row-actions.js';
+export { createSessionOpenCommand } from './controller/session-open-command.js';
 export {
   useSessionNavigationController,
   type SessionNavigationController,
+  type SessionNavigationPorts,
   type UseSessionNavigationControllerInput,
 } from './controller/use-session-navigation-controller.js';
+export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
+export { sessionMatchesRail } from './model/session-nav-filter.js';
 export { deriveBranchBanner } from './model/branch-banner.js';
 export { deriveSessionRail } from './model/session-rail.js';
 export { deriveSessionRevisionNavigation } from './model/session-revisions.js';
@@ -41,6 +45,7 @@ export {
   readSessionListViewMode,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
+export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
 
 export function createFakeSessionNavigationServices(
   overrides: Partial<SessionNavigationServices> = {},

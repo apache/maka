@@ -1829,6 +1829,82 @@ test('rejoin seeds tool_result_preview at the open nextSequence without sequence
   coordinator.close();
 });
 
+test('live tool_start projects intent and a bounded args preview, never full args', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-tool-start', sink);
+  const opened = await open(coordinator, 'connection-tool-start');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-1',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-1',
+    toolName: 'Bash',
+    intent: '只读探索:检查渲染入口',
+    args: { command: 'git status --porcelain', content: 'x'.repeat(100 * 1024) },
+  });
+  await delayImmediate();
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.ok(frame && frame.kind === 'subscription.session_event');
+  const event = frame.event;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.intent, '只读探索:检查渲染入口');
+  assert.deepEqual(event.argsPreview, { command: 'git status --porcelain' });
+  assert.equal('args' in event, false);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('live tool_start never forwards a generic input payload as argsPreview', async () => {
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+  );
+  const sink = new RecordingSink();
+  const connection = coordinator.attachConnection('connection-tool-input', sink);
+  const opened = await open(coordinator, 'connection-tool-input');
+  connection.activate(opened.subscriptionId);
+
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'tool_start',
+    id: 'start-input',
+    turnId: 'turn-1',
+    ts: 1,
+    toolUseId: 'tool-input',
+    toolName: 'third_party_tool',
+    args: {
+      input: 'short private body',
+      inputPreview: { text: 'forged private body', bytes: 19, truncated: false },
+      size: { cols: 80, rows: 24 },
+      questions: [{ question: 'forged private question' }],
+    },
+  });
+  await delayImmediate();
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.ok(frame && frame.kind === 'subscription.session_event');
+  const event = frame.event;
+  assert.equal(event.type, 'tool_start');
+  if (event.type !== 'tool_start') return;
+  assert.equal(event.argsPreview, undefined);
+  assert.doesNotMatch(JSON.stringify(event), /private body/);
+  assert.doesNotMatch(JSON.stringify(event), /private question/);
+
+  connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
 test('tool_result clears retained tool_result_preview so a later open does not seed it', async () => {
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,

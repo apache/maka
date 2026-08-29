@@ -529,6 +529,59 @@ describe('subagent tools', () => {
     expect(output.at(-1)).toBe('Child agent Local Read: completed\n');
   });
 
+  test('agent_spawn bounds projected child tool activity by characters', async () => {
+    const tool = buildSubagentSpawnTool();
+    const output: string[] = [];
+
+    await tool.impl(
+      {
+        profile: LOCAL_READ_AGENT_PROFILE,
+        task: 'Inspect verbose tool activity.',
+      },
+      {
+        sessionId: 'session-1',
+        turnId: 'parent-turn',
+        cwd: '/tmp',
+        toolCallId: 'tool-1',
+        abortSignal: new AbortController().signal,
+        emitOutput: (_stream, chunk) => output.push(chunk),
+        spawnChildSession: async (input) => {
+          input.onEvent?.({
+            type: 'tool_start',
+            id: 'start-1',
+            turnId: 'child-turn',
+            ts: 1,
+            toolUseId: 'child-tool-1',
+            toolName: 'x'.repeat(10_000),
+            args: {},
+          });
+          input.onEvent?.({
+            type: 'provider_retry',
+            id: 'retry-1',
+            turnId: 'child-turn',
+            ts: 2,
+            phase: 'scheduled',
+            attempt: 1,
+            maxAttempts: 2,
+            delayMs: 100,
+            reason: 'rate_limit',
+          });
+          return {
+            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
+            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
+            turnId: 'child-turn',
+            status: 'completed',
+            permissionMode: 'explore',
+            summary: 'done',
+            artifactIds: [],
+          };
+        },
+      },
+    );
+
+    expect(output.slice(1, -1).join('')).toHaveLength(8_192);
+  });
+
   test('agent_spawn bounds projected startup failures', async () => {
     const tool = buildSubagentSpawnTool();
     const output: string[] = [];

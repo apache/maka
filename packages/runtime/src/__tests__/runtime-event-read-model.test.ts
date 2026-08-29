@@ -258,6 +258,39 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('exposes a session image ref as a Markdown image source to the model', () => {
+    const replay = buildRuntimeEventModelReplayPlan([
+      ev({
+        role: 'user',
+        author: 'user',
+        content: {
+          kind: 'text',
+          text: 'show this',
+          attachments: [
+            {
+              kind: 'image',
+              name: 'preview.png',
+              mimeType: 'image/png',
+              bytes: 3,
+              ref: {
+                kind: 'session_file',
+                sessionId,
+                relativePath: 'attachment-123',
+              },
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const item = replay.items[0];
+    assert.equal(item?.kind, 'text');
+    assert.match(
+      item?.kind === 'text' ? item.content : '',
+      /Markdown image source: "maka:\/\/runtime\/attachments\/attachment-123"/,
+    );
+  });
+
   test('projects user displayText from RuntimeEvent text content', () => {
     const typed = '/skill:alpha 帮我整理';
     const envelope = 'The user explicitly invoked…\n\n<user-message>\n帮我整理\n</user-message>';

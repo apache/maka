@@ -85,9 +85,11 @@ github:
       restrict_force_push: true
 
   environments:
-    # These environments are the external human gates around signing secrets
-    # and npm OIDC. Naming an environment here replaces its settings wholesale,
-    # so keep every protection rule in this declarative authority.
+    # These environments are the deployment boundaries around signing secrets
+    # and npm OIDC. Release publication adds human review; scheduled npm
+    # Nightly relies on exact ref admission instead. Naming an environment here
+    # replaces its settings wholesale, so keep every protection rule in this
+    # declarative authority.
     release:
       required_reviewers:
         - id: M4n5ter
@@ -99,17 +101,15 @@ github:
         policies:
           - name: "v*-incubating-rc*"
             type: tag
-    npm-release:
-      required_reviewers:
-        - id: M4n5ter
-          type: User
+    npm-publication:
+      required_reviewers: []
       wait_timer: 0
-      prevent_self_review: true
+      prevent_self_review: false
       deployment_branch_policy:
         protected_branches: false
         policies:
-          - name: "v*"
-            type: tag
+          - name: main
+            type: branch
     product-release:
       required_reviewers:
         - id: M4n5ter

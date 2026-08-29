@@ -84,6 +84,8 @@ import {
   type RuntimeHostListenerSetFactory,
 } from './listener-set.js';
 import { HostResidencyRegistry } from './host-residency-registry.js';
+import type { PeerMeshNode } from '../peer-mesh/node.js';
+import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
 
 const DEFAULT_IDLE_GRACE_MS = 30_000;
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 5_000;
@@ -141,6 +143,7 @@ interface RuntimeHostKernelCommonOptions {
   composition: RuntimeHostCompositionSource;
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
+  peerMesh?: PeerMeshNode;
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
@@ -689,6 +692,9 @@ export class RuntimeHostKernel {
             ),
           ),
       },
+      createPeerMeshOperationHandlers(this.#options.peerMesh, {
+        requestDrain: () => this.#requestDrain(),
+      }),
       domainHandlers,
     );
   }

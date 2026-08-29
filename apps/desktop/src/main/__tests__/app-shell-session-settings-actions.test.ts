@@ -23,6 +23,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
+import type { SessionPendingClaim } from '../../renderer/app-shell-session-ui-state.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -56,6 +57,20 @@ function session(id: string): DesktopSessionSummary {
   };
 }
 
+/** The store's claim semantics over a plain map the assertions can read. */
+function pendingClaimOver(state: Record<string, boolean>): SessionPendingClaim {
+  return {
+    claim(key) {
+      if (state[key] === true) return false;
+      state[key] = true;
+      return true;
+    },
+    release(key) {
+      delete state[key];
+    },
+  };
+}
+
 function createHarness(options: {
   confirm?: () => Promise<boolean>;
   connections?: LlmConnection[];
@@ -65,12 +80,13 @@ function createHarness(options: {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
   const sessionsRef = { current: sessions };
-  const pending = new Set<string>();
-  const pendingBySession: Record<string, boolean> = {};
+  const permissionModePending: Record<string, boolean> = {};
+  const sessionModelPending: Record<string, boolean> = {};
   const modelCalls: string[] = [];
   const permissionCalls: string[] = [];
   const thinkingCalls: string[] = [];
   const errors: string[] = [];
+  const errorDescriptions: Array<string | undefined> = [];
   const errorTargets: Array<{ sessionId: string } | undefined> = [];
   const successes: Array<{ title: string; description?: string }> = [];
   const newTaskPermissionModes: string[] = [];
@@ -107,22 +123,17 @@ function createHarness(options: {
     activeIdRef,
     connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E' }] as LlmConnection[]),
     messages: options.messages ?? [],
-    pendingPermissionModeChangesRef: { current: new Set() },
-    pendingSessionModelChangesRef: { current: pending },
+    permissionModePending: pendingClaimOver(permissionModePending),
+    sessionModelPending: pendingClaimOver(sessionModelPending),
     refreshSessions: async () => sessions,
     saveComposerDefaults: () => undefined,
     sessionsRef,
     setNewTaskPermissionMode: (mode) => void newTaskPermissionModes.push(mode),
-    setPendingPermissionModeBySession: () => undefined,
-    setPendingSessionModelBySession: (update) => {
-      const next = update(pendingBySession);
-      for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
-      Object.assign(pendingBySession, next);
-    },
     toastApi: {
       success: (title, description) => successes.push({ title, description }),
-      error: (title, _description, _details, target) => {
+      error: (title, description, _details, target) => {
         errors.push(title);
+        errorDescriptions.push(description);
         errorTargets.push(target);
       },
       confirm: options.confirm ?? (async () => true),
@@ -133,12 +144,13 @@ function createHarness(options: {
     actions,
     activeIdRef,
     errors,
+    errorDescriptions,
     errorTargets,
     modelCalls,
     modelResult,
     newTaskPermissionModes,
-    pending,
-    pendingBySession,
+    permissionModePending,
+    sessionModelPending,
     permissionCalls,
     sessionsRef,
     thinkingCalls,
@@ -225,7 +237,7 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
     assert.deepEqual(harness.thinkingCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
+    assert.equal(harness.sessionModelPending['session-a'], true);
 
     harness.modelResult.resolve(session('session-a'));
     await modelChange;
@@ -312,7 +324,7 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
     assert.deepEqual(harness.thinkingCalls, ['session-b']);
-    assert.deepEqual(harness.pending, new Set(['session-a', 'session-b']));
+    assert.deepEqual(Object.keys(harness.sessionModelPending), ['session-a', 'session-b']);
 
     harness.thinkingResult.resolve(session('session-b'));
     await thinkingChange;
@@ -332,11 +344,11 @@ describe('AppShell session settings actions', () => {
 
     assert.deepEqual(harness.thinkingCalls, ['session-a']);
     assert.deepEqual(harness.modelCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
+    assert.equal(harness.sessionModelPending['session-a'], true);
 
     harness.thinkingResult.resolve(session('session-a'));
     await thinkingChange;
-    assert.equal(harness.pendingBySession['session-a'], undefined);
+    assert.equal(harness.sessionModelPending['session-a'], undefined);
   });
 
   it('releases the session owner after a failed mutation so the next action can run', async () => {
@@ -346,8 +358,7 @@ describe('AppShell session settings actions', () => {
     harness.thinkingResult.reject(new Error('fixture failure'));
     await thinkingChange;
 
-    assert.equal(harness.pending.has('session-a'), false);
-    assert.equal(harness.pendingBySession['session-a'], undefined);
+    assert.equal(harness.sessionModelPending['session-a'], undefined);
     assert.equal(harness.errors.length, 1);
     assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
 
@@ -359,5 +370,20 @@ describe('AppShell session settings actions', () => {
     assert.deepEqual(harness.modelCalls, ['session-a']);
     harness.modelResult.resolve(session('session-a'));
     await modelChange;
+  });
+
+  it('points a failed account-and-model switch at credential recovery', async () => {
+    const harness = createHarness();
+
+    const modelChange = harness.actions.setSessionModel({
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'e2e',
+      model: 'claude-opus',
+    });
+    harness.modelResult.reject(new Error('fixture failure'));
+    await modelChange;
+
+    assert.match(harness.errorDescriptions[0] ?? '', /设置 · 模型/);
+    assert.match(harness.errorDescriptions[0] ?? '', /登录或 API Key/);
   });
 });

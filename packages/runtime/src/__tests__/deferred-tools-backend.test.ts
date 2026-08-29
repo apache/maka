@@ -79,6 +79,7 @@ function backend(input: {
   durable?: ReturnType<typeof createDurableTurnHarness>;
   traces?: RunTraceEvent[];
   toolAvailability?: ToolAvailabilityConfig;
+  fullSurface?: boolean;
 }): AiSdkBackend {
   let id = 0;
   return createTestAiSdkBackend({
@@ -90,7 +91,7 @@ function backend(input: {
     modelId: 'mock-model-id',
     modelFactory: () => input.model,
     tools: boundTools(input.calls),
-    toolAvailability: input.toolAvailability ?? availability,
+    ...(input.fullSurface ? {} : { toolAvailability: input.toolAvailability ?? availability }),
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     ...(input.traces ? { recordRunTrace: (event) => input.traces!.push(event) } : {}),
     newId: () => `id-${++id}`,
@@ -195,10 +196,10 @@ describe('AiSdkBackend tool_search activation', () => {
     assert.ok(!captured[0]?.includes('browser_click'));
   });
 
-  test('an empty search-space config keeps the complete bound surface direct', async () => {
+  test('omitting search availability keeps the complete bound surface direct', async () => {
     const captured: string[][] = [];
     await drain(
-      backend({ model: capturingModel(captured), calls: [], toolAvailability: {} }).send({
+      backend({ model: capturingModel(captured), calls: [], fullSurface: true }).send({
         turnId: 'turn-1',
         text: 'hi',
         context: [],

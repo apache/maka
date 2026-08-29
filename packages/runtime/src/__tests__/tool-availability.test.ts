@@ -60,6 +60,10 @@ test('tool availability hash canonicalizes group members', () => {
   assert.equal(grouped, reordered);
 });
 
+test('tool availability hash distinguishes full and search-enabled bindings', () => {
+  assert.notEqual(toolAvailabilityHash(undefined), toolAvailabilityHash({}));
+});
+
 function runtime() {
   return new ToolAvailabilityRuntime(
     [
@@ -104,6 +108,24 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.ok(plan.activeTools.includes('Read'));
     assert.ok(!plan.activeTools.includes('browser_click'));
     assert.doesNotMatch(searchTool(plan).description, /- Read/);
+  });
+
+  test('skill discovery tools stay direct while search is enabled', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Skill'), tool('SkillSearch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Skill', 'SkillSearch', TOOL_SEARCH_NAME]);
+  });
+
+  test('provider-routed apply_patch inherits direct editing visibility', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('apply_patch'), tool('custom')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['apply_patch', TOOL_SEARCH_NAME]);
   });
 
   test('inventory contains group and canonical names without tool descriptions', () => {
@@ -303,10 +325,23 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.ok(!secondPlan.activeTools.includes('browser_click'));
   });
 
-  test('without searchable groups every bound tool stays directly visible', () => {
-    const plan = new ToolAvailabilityRuntime([tool('Read'), tool('custom')], {}, invalid).prepare(
-      new Map(),
-    );
+  test('an ungrouped bound tool is deferred by default', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('future_tool')],
+      {},
+      invalid,
+    ).prepare(new Map());
+    assert.deepEqual(plan.activeTools, ['Read', TOOL_SEARCH_NAME]);
+    assert.match(searchTool(plan).description, /- future_tool/);
+    assert.ok(plan.gating?.gatedNames.has('future_tool'));
+  });
+
+  test('omitting availability keeps an explicit binding fully visible', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [tool('Read'), tool('custom')],
+      undefined,
+      invalid,
+    ).prepare(new Map());
     assert.deepEqual(plan.activeTools, ['custom', 'Read']);
     assert.ok(!plan.providerTools.some((candidate) => candidate.name === TOOL_SEARCH_NAME));
     assert.equal(plan.gating, undefined);

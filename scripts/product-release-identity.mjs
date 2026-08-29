@@ -59,7 +59,8 @@ export function parseAsfSourceReferenceTag(tag) {
     throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
   }
   try {
-    parseProductReleaseVersion(match[1]);
+    const product = parseProductReleaseVersion(match[1]);
+    if (product.prerelease.length > 0) throw new Error('prerelease');
   } catch {
     throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
   }
@@ -68,9 +69,8 @@ export function parseAsfSourceReferenceTag(tag) {
 
 export function resolveProductManifestIdentity({ rootManifest, desktopManifest, cliManifest }) {
   const { version, prerelease } = parseProductReleaseVersion(rootManifest.version);
-  const channel = prerelease[0];
-  if (channel !== undefined && channel !== 'alpha' && channel !== 'beta') {
-    throw new Error('Product prerelease channel must be alpha or beta');
+  if (prerelease.length > 0) {
+    throw new Error('Formal product releases require a stable version');
   }
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
@@ -88,7 +88,6 @@ export function resolveProductManifestIdentity({ rootManifest, desktopManifest, 
 
   return {
     version,
-    isPrerelease: prerelease.length > 0,
     runtimeHostSetupPackage: `maka-agent@${version}`,
     publicCommands: ['maka'],
   };
@@ -151,24 +150,25 @@ export function resolveProductReleaseIdentity({
   };
 }
 
-async function readProductManifests() {
+async function readProductManifests(root = repoRoot) {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
-    readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
-    readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
-    readFile(join(repoRoot, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
   ]);
   return { rootManifest, desktopManifest, cliManifest };
 }
 
-export async function readProductManifestIdentity() {
-  return resolveProductManifestIdentity(await readProductManifests());
+export async function readProductManifestIdentity({ root = repoRoot } = {}) {
+  return resolveProductManifestIdentity(await readProductManifests(root));
 }
 
 export async function readProductReleaseIdentity({
   sha,
   sourceReferenceTag = process.env.SOURCE_REFERENCE_TAG,
+  root = process.env.PRODUCT_MANIFEST_ROOT ?? repoRoot,
 } = {}) {
-  const { rootManifest, desktopManifest, cliManifest } = await readProductManifests();
+  const { rootManifest, desktopManifest, cliManifest } = await readProductManifests(root);
   const sourceCommit =
     sha ??
     process.env.GITHUB_SHA ??
@@ -185,7 +185,6 @@ export async function readProductReleaseIdentity({
 function githubOutputEntries(identity) {
   return {
     version: identity.version,
-    is_prerelease: identity.isPrerelease,
     tag: identity.tag,
     source_commit: identity.sourceCommit,
     source_reference_tag: identity.sourceReferenceTag,

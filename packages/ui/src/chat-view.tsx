@@ -25,7 +25,11 @@ import {
 } from './icons.js';
 import { DeepResearchEmptyHero, EmptyChatHero } from './chat-empty-hero.js';
 import type { ChatModelChoice } from './chat-model-helpers.js';
-import { PromptAnchorRail, type PromptAnchorRailTurn } from './prompt-anchor-rail.js';
+import {
+  mergePromptAnchorRailTurns,
+  PromptAnchorRail,
+  type PromptAnchorRailTurn,
+} from './prompt-anchor-rail.js';
 import { useMessageSelectionQuote } from './use-message-selection-quote.js';
 import type { DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type { ProviderType } from '@maka/core/llm-connections';
@@ -37,7 +41,7 @@ import type {
   ShellRunUpdate,
 } from '@maka/core/events';
 import { isDeepResearchSession } from '@maka/core/explore-agent';
-import { Button, ButtonGroup, ChatMessageList, EmptyState, Spinner } from '@astryxdesign/core';
+import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
 import { materializeChat } from './materialize.js';
@@ -49,20 +53,63 @@ import {
   TurnRunningStatus,
   TurnView,
   TransientUserMessage,
-  type ReadAttachmentBytes,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
+import {
+  SessionAttachmentProvider,
+  type ReadAttachmentBytes,
+} from './attachment-image.js';
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
   entries: ReadonlyMap<string, string>;
+}
+
+export interface TranscriptHistoryNoticeProps {
+  title: string;
+  actionLabel: string;
+  isPending: boolean;
+  onReturnToLatest(): Promise<void> | void;
+}
+
+/** Persistent navigation position with a direct path back to the transcript tail. */
+export function TranscriptHistoryNotice({
+  title,
+  actionLabel,
+  isPending,
+  onReturnToLatest,
+}: TranscriptHistoryNoticeProps) {
+  return (
+    <HStack
+      className="maka-transcript-history-controls"
+      gap={2}
+      hAlign="center"
+      vAlign="center"
+      wrap="wrap"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <Text type="supporting" color="secondary">{title}</Text>
+      <Button
+        label={actionLabel}
+        variant="ghost"
+        size="sm"
+        isDisabled={isPending}
+        onClick={() => {
+          void onReturnToLatest();
+        }}
+      />
+    </HStack>
+  );
 }
 
 /**
@@ -218,9 +265,9 @@ export function ChatView(props: {
   scrollTargetTurn?: { turnId: string; nonce: number };
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  historyLoadPending?: boolean;
   onLoadEarlierHistory?(): Promise<void> | void;
   returnToLatest?: {
+    title: string;
     label: string;
     isPending: boolean;
     onClick(): Promise<void> | void;
@@ -256,12 +303,9 @@ export function ChatView(props: {
   };
   onRevisionNavigate?: (sessionId: string) => void;
   /**
-   * Host reader for image attachment bytes, threaded to each turn's user-message
-   * thumbnails. The desktop shell passes its preload `attachments.readBytes`;
-   * non-desktop hosts omit it and image thumbnails stay in their pending
-   * skeleton. Keeps @maka/ui host-agnostic with no direct host-global access.
-   * Pass an identity-stable reference so the memoized TurnViews keep skipping
-   * reconciliation on the hot streaming path.
+   * Host reader for image attachment bytes. The desktop shell passes its preload
+   * `attachments.readBytes`; non-desktop hosts may omit it. Keeps @maka/ui
+   * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
@@ -405,19 +449,10 @@ export function ChatView(props: {
     promptRailTurnsRef.current = next;
     return next;
   }, [turns]);
-  const promptRailTurns = useMemo(() => {
-    const index = props.transcriptTurnIndex;
-    if (!index || index.length === 0) return loadedPromptRailTurns;
-    const loadedByTurnId = new Map(loadedPromptRailTurns.map((turn) => [turn.turnId, turn]));
-    return index.map((turn) => ({
-        ...(loadedByTurnId.get(turn.turnId) ?? {
-          turnId: turn.turnId,
-          label: turn.label,
-          reply: '',
-        }),
-        sequence: turn.sequence,
-      }));
-  }, [loadedPromptRailTurns, props.transcriptTurnIndex]);
+  const promptRailTurns = useMemo(
+    () => mergePromptAnchorRailTurns(loadedPromptRailTurns, props.transcriptTurnIndex),
+    [loadedPromptRailTurns, props.transcriptTurnIndex],
+  );
   // Stable event wrappers (advanced-use-latest): parent handlers are
   // recreated per render upstream; routing through refs keeps the
   // memoized TurnView's function props identity-stable without
@@ -470,7 +505,7 @@ export function ChatView(props: {
     throw new Error('ChatView must be rendered inside ChatSurfaceLayout');
   }
   const scrollRef = chatLayout.scrollContainerRef;
-  const [latestNavigationNonce, setLatestNavigationNonce] = useState(0);
+  const scrollAuthority = useTranscriptScrollAuthority();
   const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
   const sessionId = props.activeSession?.id;
   const {
@@ -517,14 +552,11 @@ export function ChatView(props: {
   const { highlightedTurnId } = useChatScroll({
     scrollRef,
     sessionId: props.activeSession?.id,
-    hasTurns: turns.length > 0,
     messages: props.messages,
     target: props.scrollTargetTurn,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
-    historyLoadPending: props.historyLoadPending,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
-    latestNavigationNonce,
   });
   const { quote: selectionQuote, clear: clearSelectionQuote } = useMessageSelectionQuote(
     scrollRef,
@@ -626,25 +658,29 @@ export function ChatView(props: {
         );
 
   return (
-    <section
-      className="maka-main agents-chat-panel agents-chat-view-root"
-      role="region"
-      aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+    <SessionAttachmentProvider
+      sessionId={props.activeSession.id}
+      readBytes={props.onReadAttachmentBytes}
     >
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+      >
       {props.returnToLatest ? (
-        <div className="maka-transcript-history-controls">
-          <Button
-            label={props.returnToLatest.label}
-            variant="ghost"
-            size="sm"
-            isDisabled={props.returnToLatest.isPending}
-            onClick={() => {
-              void Promise.resolve(props.returnToLatest?.onClick()).then(() => {
-                setLatestNavigationNonce((nonce) => nonce + 1);
-              });
-            }}
-          />
-        </div>
+        <TranscriptHistoryNotice
+          title={props.returnToLatest.title}
+          actionLabel={props.returnToLatest.label}
+          isPending={props.returnToLatest.isPending}
+          onReturnToLatest={async () => {
+            // Loading the latest range is the shell's job; putting the viewport
+            // on it is this view's, and setting the pin is the whole of it —
+            // the range that arrives afterwards is growth, and growth is
+            // already followed.
+            await props.returnToLatest?.onClick();
+            scrollAuthority.pinToTail();
+          }}
+        />
       ) : null}
       <SessionContextLayer
         sessionName={props.activeSession.name}
@@ -673,7 +709,7 @@ export function ChatView(props: {
           turns={promptRailTurns}
           scrollRef={scrollRef}
           onNavigateFallback={navigatePromptRailFallback}
-          onNavigateStart={chatLayout.unlockAutoFollow}
+          onNavigateStart={scrollAuthority.releasePin}
         />
         <ChatMessageList
           className="maka-chat-message-list maka-chatContent"
@@ -703,7 +739,6 @@ export function ChatView(props: {
                           <TransientUserMessage
                             key={message.id}
                             message={message}
-                            onReadAttachmentBytes={props.onReadAttachmentBytes}
                           />
                         ))
                       : null}
@@ -727,7 +762,6 @@ export function ChatView(props: {
                         : undefined}
                       lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
                       onLineageBadgeClick={stableLineageBadgeClick}
-                      onReadAttachmentBytes={props.onReadAttachmentBytes}
                       onOpenLinkedSession={
                         props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
                       }
@@ -770,7 +804,6 @@ export function ChatView(props: {
                 <TransientUserMessage
                   key={message.id}
                   message={message}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
                 />
               ))}
               {/* #642 fallback: streaming began before the optimistic user turn
@@ -860,7 +893,8 @@ export function ChatView(props: {
           )
         ) : null}
       </div>
-    </section>
+      </section>
+    </SessionAttachmentProvider>
   );
 }
 

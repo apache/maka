@@ -17,57 +17,26 @@
  * under the License.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type Dispatch,
-  type RefObject,
-  type SetStateAction,
-} from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
-import { useUiLocale, type SessionHistoryGroup, type SessionViewMode } from '@maka/ui';
-import { safeLocalStorageSet } from '../../../browser-storage.js';
-import { useStableActions } from '../../../use-stable-actions.js';
-import type { BranchBanner } from '../model/branch-banner.js';
-import { deriveBranchBanner } from '../model/branch-banner.js';
-import {
-  readSessionListCollapsed,
-  readSessionListViewMode,
-  readSessionListWidth,
-  SESSION_LIST_EXPANDED_MAX_WIDTH,
-  SESSION_LIST_EXPANDED_MIN_WIDTH,
-  writeSessionListViewMode,
-} from '../model/session-list-layout.js';
+import { useUiLocale, type SessionHistoryGroup } from '@maka/ui';
+import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
-import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
-import { deriveSessionRail } from '../model/session-rail.js';
+import type { SessionRailProjection } from '../model/session-rail.js';
 import {
-  deriveSessionRevisionNavigation,
-  type SessionRevisionNavigation,
-} from '../model/session-revisions.js';
+  selectRailLayout,
+  sessionRailLayoutStore,
+  type SessionRailLayoutState,
+} from '../model/session-rail-layout-store.js';
 import type { SessionNavigationSession } from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
 import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
-
-const LAYOUT_PERSIST_DEBOUNCE_MS = 200;
-
-export type SessionNavigationSearchTarget = {
-  sessionId: string;
-  turnId: string;
-  sequence?: number;
-  nonce: number;
-};
 
 export type SessionNavigationToastApi = {
   success(title: string, description?: string): void;
@@ -86,131 +55,108 @@ export type SessionNavigationToastApi = {
   }): Promise<boolean>;
 };
 
-export interface UseSessionNavigationControllerInput {
-  sessions: readonly SessionNavigationSession[];
-  activeSessionId: string | undefined;
-  hiddenSessionIds: ReadonlySet<string>;
-  projects: readonly ProjectRecord[];
+type RefBox<T> = { current: T };
+
+/**
+ * What the rail asks of the rest of the shell, named one by one.
+ *
+ * Switching a session also clears the active messages and leaves the Work Hub.
+ * Those are commands the shell issues, and they stay commands: the rail calls
+ * them, it does not subscribe to them. Nothing here has to be identity-stable —
+ * the controller reads them through a ref published on commit — so the shell
+ * may build this object inline, and no ordinary `function` declaration upstream
+ * can quietly put the rail back on every AppShell render (#4109).
+ */
+export interface SessionNavigationPorts {
+  activeIdRef: RefBox<string | undefined>;
+  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
+  pendingSessionRowActionsRef: RefBox<Set<string>>;
   activateSession(sessionId: string | undefined): void;
   clearActiveMessages(): void;
   clearSessionRendererState(sessionId: string): void;
-  exitWorkHub(): void;
-  refreshSessions(): Promise<ReadonlyArray<SessionNavigationSession>>;
-  selectSessionSurface(): void;
-  setSearchTarget(target: SessionNavigationSearchTarget | null): void;
+  refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
   toastApi: SessionNavigationToastApi;
 }
 
-export interface SessionNavigationLayout {
-  collapsed: boolean;
-  width: number;
-  viewMode: SessionViewMode;
-  collapseHandleRef: RefObject<SideNavImperativeCollapseHandle | null>;
-  setCollapsed: Dispatch<SetStateAction<boolean>>;
-  setWidth(width: number): void;
-  setViewMode(mode: SessionViewMode): void;
+export interface UseSessionNavigationControllerInput {
+  /**
+   * The rail projection, derived once by its owner. The command palette lists
+   * the same visible sessions, so deriving it here as well would be two
+   * derivations of one reading.
+   */
+  rail: SessionRailProjection<SessionNavigationSession>;
+  projects: readonly ProjectRecord[];
+  ports: SessionNavigationPorts;
 }
 
 export interface SessionNavigationSelectors {
-  visibleSessions: SessionNavigationSession[];
-  activeRowId: string | undefined;
-  activeParentSession: SessionNavigationSession | undefined;
-  branchBanner: BranchBanner | undefined;
-  revisionNavigation: SessionRevisionNavigation | undefined;
   groups: SessionHistoryGroup[];
   worktreeSessionIds: ReadonlySet<string>;
   sessionMeta(session: SessionSummary): string | undefined;
 }
 
-export interface SessionNavigationCommands extends SessionNavigationRowActions {
-  openSession(sessionId: string, turnId?: string, sequence?: number): void;
-}
-
 export interface SessionNavigationController {
-  layout: SessionNavigationLayout;
+  layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
-  commands: SessionNavigationCommands;
+  commands: SessionNavigationRowActions;
 }
 
-/** Owns Session rail projection, layout persistence, jumps, and row mutations. */
+/**
+ * Owns the Session rail's projections, its geometry, and its row mutations.
+ *
+ * Called by `SessionNavigationProvider`, which sits directly above the rail.
+ * It used to be called in AppShell's render body, and that one fact — not the
+ * size of any file — put the rail's state above the whole tree (#4109).
+ */
 export function useSessionNavigationController(
   input: UseSessionNavigationControllerInput,
 ): SessionNavigationController {
   const locale = useUiLocale();
   const { sessions: service } = useSessionNavigationServices();
-  const [width, setWidth] = useState(readSessionListWidth);
-  const [collapsed, setCollapsed] = useState(readSessionListCollapsed);
-  const [viewMode, setViewMode] = useState(readSessionListViewMode);
-  const collapseHandleRef = useRef<SideNavImperativeCollapseHandle | null>(null);
-  const activeIdRef = useRef(input.activeSessionId);
-  const sessionsRef = useRef<ReadonlyArray<SessionNavigationSession>>(input.sessions);
-  const pendingSessionRowActionsRef = useRef(new Set<string>());
+  const { ports, rail } = input;
 
-  // Row actions can settle after the render that created them. Publish the
-  // catalog/selection pair only when that render commits so an interrupted
-  // concurrent render cannot leak an uncommitted snapshot to a live action.
+  // One subscription, not one per field: every field here is read, so a split
+  // would buy no granularity, and the store replaces its state only when a
+  // field actually moved — the identity IS the comparison.
+  const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
+
+  // The ports are commands, so their identity is not information. Published on
+  // commit and called through the ref, they can carry whatever the shell
+  // rebuilt this render without the rail hearing about it — which is what lets
+  // the row actions below be built once, per locale, instead of per render.
+  //
+  // This is one indirection in one place, and it replaces the alternative the
+  // shell was drifting towards: hand-stabilising every function that happens to
+  // be upstream of the rail, where a single ordinary `function` declaration
+  // anywhere in the chain silently undoes the whole thing (#4109).
+  const portsRef = useRef(ports);
   useLayoutEffect(() => {
-    activeIdRef.current = input.activeSessionId;
-    sessionsRef.current = input.sessions;
-  }, [input.activeSessionId, input.sessions]);
-
-  useEffect(() => {
-    const handle = window.setTimeout(() => {
-      safeLocalStorageSet('maka-chat-list-width-v1', String(width));
-    }, LAYOUT_PERSIST_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [width]);
-
-  useEffect(() => {
-    safeLocalStorageSet(
-      'maka-chat-list-collapsed-v1',
-      collapsed ? 'true' : 'false',
-    );
-  }, [collapsed]);
-
-  useEffect(() => {
-    writeSessionListViewMode(viewMode);
-  }, [viewMode]);
-
-  const rowActions = useStableActions(createSessionNavigationRowActions, {
-    uiLocale: locale,
-    activeIdRef,
-    clearActiveMessages: input.clearActiveMessages,
-    clearSessionRendererState: input.clearSessionRendererState,
-    pendingSessionRowActionsRef,
-    refreshSessions: input.refreshSessions,
-    service,
-    sessionsRef,
-    setActiveId: input.activateSession,
-    toastApi: input.toastApi,
+    portsRef.current = ports;
   });
 
-  const openSession = useCallback(
-    (sessionId: string, turnId?: string, sequence?: number): void => {
-      input.exitWorkHub();
-      input.selectSessionSurface();
-      input.activateSession(sessionId);
-      input.setSearchTarget(
-        turnId
-          ? { sessionId, turnId, sequence, nonce: Date.now() }
-          : null,
-      );
-    },
-    [
-      input.activateSession,
-      input.exitWorkHub,
-      input.selectSessionSurface,
-      input.setSearchTarget,
-    ],
+  const commands = useMemo(
+    () =>
+      createSessionNavigationRowActions({
+        uiLocale: locale,
+        activeIdRef: portsRef.current.activeIdRef,
+        clearActiveMessages: () => portsRef.current.clearActiveMessages(),
+        clearSessionRendererState: (sessionId) =>
+          portsRef.current.clearSessionRendererState(sessionId),
+        pendingSessionRowActionsRef: portsRef.current.pendingSessionRowActionsRef,
+        refreshSessions: () => portsRef.current.refreshSessions(),
+        service,
+        sessionsRef: portsRef.current.sessionsRef,
+        setActiveId: (sessionId) => portsRef.current.activateSession(sessionId),
+        toastApi: {
+          success: (title, description) => portsRef.current.toastApi.success(title, description),
+          error: (title, description, details, target) =>
+            portsRef.current.toastApi.error(title, description, details, target),
+          confirm: (options) => portsRef.current.toastApi.confirm(options),
+        },
+      }),
+    [locale, service],
   );
 
-  const rail = useMemo(
-    () =>
-      deriveSessionRail(input.sessions, input.activeSessionId, (session) =>
-        !input.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
-      ),
-    [input.activeSessionId, input.hiddenSessionIds, input.sessions],
-  );
   const groups = useMemo(
     () => deriveSessionNavigationGroups(rail.sessions, input.projects, locale),
     [locale, input.projects, rail.sessions],
@@ -225,24 +171,13 @@ export function useSessionNavigationController(
       ),
     [input.projects, rail.sessions],
   );
-  const activeSession = input.sessions.find(
-    (session) => session.id === input.activeSessionId,
-  );
-  const branchBanner = useMemo(
-    () => deriveBranchBanner(activeSession, input.sessions),
-    [activeSession, input.sessions],
-  );
-  const revisionNavigation = useMemo(
-    () => deriveSessionRevisionNavigation(input.sessions, input.activeSessionId),
-    [input.activeSessionId, input.sessions],
-  );
   const sessionById = useMemo(
-    () => new Map(input.sessions.map((session) => [session.id, session])),
-    [input.sessions],
+    () => new Map(rail.sessions.map((session) => [session.id, session])),
+    [rail.sessions],
   );
   const sessionMeta = useCallback(
     (session: SessionSummary): string | undefined => {
-      const projected = sessionById.get(session.id);
+      const projected: SessionNavigationSession | undefined = sessionById.get(session.id);
       return projected && runtimeHostProfileUsesHostWorkspace(projected.profileKind)
         ? projected.profileName
         : undefined;
@@ -250,37 +185,9 @@ export function useSessionNavigationController(
     [sessionById],
   );
 
-  const layout = useMemo<SessionNavigationLayout>(
-    () => ({
-      collapsed,
-      width,
-      viewMode,
-      collapseHandleRef,
-      setCollapsed,
-      setWidth,
-      setViewMode,
-    }),
-    [collapsed, viewMode, width],
-  );
   const selectors = useMemo<SessionNavigationSelectors>(
-    () => ({
-      visibleSessions: rail.sessions,
-      activeRowId: rail.activeRowId,
-      activeParentSession: rail.activeParentSession,
-      branchBanner,
-      revisionNavigation,
-      groups,
-      worktreeSessionIds,
-      sessionMeta,
-    }),
-    [branchBanner, groups, rail, revisionNavigation, sessionMeta, worktreeSessionIds],
-  );
-  const commands = useMemo<SessionNavigationCommands>(
-    () => ({
-      ...rowActions,
-      openSession,
-    }),
-    [openSession, rowActions],
+    () => ({ groups, worktreeSessionIds, sessionMeta }),
+    [groups, sessionMeta, worktreeSessionIds],
   );
 
   return useMemo(

@@ -85,7 +85,11 @@ import {
   type UserMessage,
   type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
-import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
+import type {
+  MarkMessagesHandedOffInput,
+  MessageAdmissionStore,
+  PendingMessageAdmission,
+} from './message-admission-store.js';
 import {
   isVisibleSessionMessage,
   lastMessagePreviewForMessages,
@@ -976,11 +980,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.listMessageAdmissions(sessionId);
   }
 
-  async markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void> {
+  async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
     await this.ensureReady();
     await this.metadata.markMessagesHandedOff(input);
     for (const listener of this.transcriptChangeListeners) listener(input.sessionId);

@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process';
 import { access, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
@@ -81,8 +82,9 @@ export async function packageMacosArm64({
   }
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const dmgPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.dmg`);
-  const zipPath = join(releaseDirectory, `Maka-${manifest.version}-mac-arm64.zip`);
+  const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
+  const dmgPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.dmg`);
+  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.zip`);
   const updateMetadataPath = join(releaseDirectory, 'latest-mac.yml');
 
   for (const path of requiredElectronLicensePaths) {

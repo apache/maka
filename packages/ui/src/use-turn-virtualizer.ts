@@ -26,7 +26,6 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chat-scroll-anchor.js';
 import { createTurnHeightIndex, turnLayoutGap, turnLayoutKey } from './turn-height-index.js';
 import {
   buildTurnVirtualLayout,
@@ -132,7 +131,6 @@ export function useTurnVirtualizer(input: {
 
   const layoutRef = useRef(layout);
   const stateRef = useRef(current);
-  const pendingAnchor = useRef<ReturnType<typeof captureChatScrollAnchor>>(undefined);
   const pendingReveal = useRef<string | undefined>(undefined);
 
   useLayoutEffect(() => {
@@ -147,10 +145,9 @@ export function useTurnVirtualizer(input: {
     }
   }, [current, ensureIndex, layout, targetKey]);
 
-  const installWindow = useCallback((next: TurnVirtualWindow, anchor = true): boolean => {
+  const installWindow = useCallback((next: TurnVirtualWindow): boolean => {
     const root = input.scrollRef.current;
     if (sameWindow(stateRef.current.window, next)) return false;
-    if (anchor && root) pendingAnchor.current = captureChatScrollAnchor(root);
     if (root) handOffExcludedInteraction(root, stateRef.current.turnIds, next);
     setState((previous) => sameWindow(previous.window, next)
       ? previous
@@ -183,10 +180,6 @@ export function useTurnVirtualizer(input: {
   useLayoutEffect(() => {
     const root = input.scrollRef.current;
     if (!root) return;
-    if (pendingAnchor.current) {
-      restoreChatScrollAnchor(root, pendingAnchor.current);
-      pendingAnchor.current = undefined;
-    }
     const reveal = pendingReveal.current;
     pendingReveal.current = undefined;
     if (reveal) {
@@ -201,7 +194,7 @@ export function useTurnVirtualizer(input: {
             ensureIndex: targetIndex < 0 ? undefined : targetIndex,
             preferredTurns: MIN_TURN_WINDOW_SIZE,
           },
-        ), false);
+        ));
       }
     }
   }, [current.window, input.scrollRef, installWindow]);
@@ -236,7 +229,6 @@ export function useTurnVirtualizer(input: {
       const nextGap = turnLayoutGap(root, DEFAULT_TURN_GAP);
       const nextLayoutKey = turnLayoutKey(root, nextGap);
       let changed = nextLayoutKey !== layoutKey;
-      const anchor = virtualizationRequired ? captureChatScrollAnchor(root) : undefined;
       for (const entry of entries) {
         const element = entry.target as HTMLElement;
         const turnId = element.dataset.virtualTurnId;
@@ -250,10 +242,7 @@ export function useTurnVirtualizer(input: {
           ) || changed;
         }
       }
-      if (changed) {
-        if (anchor) pendingAnchor.current = anchor;
-        setGeometryRevision((revision) => revision + 1);
-      }
+      if (changed) setGeometryRevision((revision) => revision + 1);
       scheduleWindow();
     });
     const observeTree = (node: Node): void => {

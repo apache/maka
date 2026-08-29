@@ -34,6 +34,7 @@ export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
 export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
+export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
 /** Exceeds both the 64-tick rail and 100-turn mounted-window bounds. */
 export const PROMPT_RAIL_PROMPT_COUNT = 120;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';

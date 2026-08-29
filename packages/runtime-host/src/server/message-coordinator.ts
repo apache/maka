@@ -40,6 +40,7 @@ import {
   normalizeRootTurnAdmissionPayload,
   submittedTurnIntentsEqual,
   type ImmutableSteeringMessageProof,
+  type MarkMessagesHandedOffInput,
   type MessageAdmissionStore,
   type PendingMessageAdmission,
   type RootTurnSourceMessage,
@@ -338,6 +339,7 @@ const HOST_EPOCH_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 export class HostMessageCoordinator implements RuntimeMessageAuthority {
   readonly handlers: MessageOperationHandlerMap = {
     'turn.message.query': (input) => this.queryMessages(input),
+    'turn.message.execution.query': (input) => this.queryMessageExecutions(input),
     'turn.message.submit': (input, context) => this.submit(input, context),
     'queue.retract': (input) => this.retract(input),
     'queue.entry.retract': (input) => this.retractQueuedEntry(input),
@@ -409,6 +411,71 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
     }
     return success({ cancelledMessageIds });
+  }
+
+  async queryMessageExecutions(input: {
+    sessionId: string;
+    messageIds: readonly string[];
+  }): Promise<
+    MessageOutcome<{
+      resolutions: Array<
+        | { messageId: string; state: 'pending' }
+        | { messageId: string; state: 'cancelled' }
+        | { messageId: string; state: 'owned'; turnId: string; runId: string }
+      >;
+    }>
+  > {
+    const resolutions: Array<
+      | { messageId: string; state: 'pending' }
+      | { messageId: string; state: 'cancelled' }
+      | { messageId: string; state: 'owned'; turnId: string; runId: string }
+    > = [];
+    for (const messageId of input.messageIds) {
+      const receipt = await this.#durableProof.readRootTurnSourceMessageReceipt(
+        input.sessionId,
+        messageId,
+      );
+      if (
+        receipt?.admission.sessionId === input.sessionId &&
+        receipt.sourceMessage.messageId === messageId
+      ) {
+        // A root source receipt is the latest durable ownership proof and
+        // therefore outranks the steering location from which a Message may
+        // have been folded into this successor.
+        resolutions.push({
+          messageId,
+          state: 'owned',
+          turnId: receipt.admission.turnId,
+          runId: receipt.admission.runId,
+        });
+        continue;
+      }
+      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
+        input.sessionId,
+        messageId,
+      );
+      if (
+        steering?.event.sessionId === input.sessionId &&
+        steering.event.refs?.providerEventId === messageId
+      ) {
+        resolutions.push({
+          messageId,
+          state: 'owned',
+          turnId: steering.event.turnId,
+          runId: steering.event.runId,
+        });
+        continue;
+      }
+      if (await this.#admissions.hasCancelledMessageAdmission(input.sessionId, messageId)) {
+        resolutions.push({ messageId, state: 'cancelled' });
+        continue;
+      }
+      const pending = await this.#admissions.readMessageAdmission(input.sessionId, messageId);
+      if (pending?.sessionId === input.sessionId && pending.messageId === messageId) {
+        resolutions.push({ messageId, state: 'pending' });
+      }
+    }
+    return success({ resolutions });
   }
 
   retireSessions(sessionIds: readonly string[]): void {
@@ -573,27 +640,18 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     messageIds: readonly string[];
   }): Promise<void> {
     const handoff: string[] = [];
+    const provenRootMessages: Array<
+      NonNullable<MarkMessagesHandedOffInput['provenRootMessages']>[number]
+    > = [];
     for (const messageId of new Set(input.messageIds)) {
-      const proof = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        input.sessionId,
-        messageId,
-      );
-      if (
-        !proof ||
-        proof.admission.turnId !== input.turnId ||
-        proof.admission.runId !== input.runId ||
-        proof.sourceMessage.messageId !== messageId
-      ) {
-        throw new RuntimeMessageAuthorityInvariantError(
-          `Root admission does not prove Message handoff ${messageId}`,
-        );
-      }
       handoff.push(messageId);
+      provenRootMessages.push(await this.#readProvenRootMessage(input, messageId));
     }
     await this.#admissions.markMessagesHandedOff({
       sessionId: input.sessionId,
       messageIds: handoff,
       turnId: input.turnId,
+      ...(provenRootMessages.length > 0 ? { provenRootMessages } : {}),
     });
   }
 
@@ -605,19 +663,13 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     messageIds: readonly string[];
   }): Promise<void> {
     const messageIds = new Set<string>();
+    const provenRootMessages: Array<
+      NonNullable<MarkMessagesHandedOffInput['provenRootMessages']>[number]
+    > = [];
     const admissions = await this.#admissions.listMessageAdmissions(input.sessionId);
     for (const messageId of new Set(input.messageIds)) {
-      const proof = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        input.sessionId,
-        messageId,
-      );
-      if (
-        proof?.admission.turnId === input.turnId &&
-        proof.admission.runId === input.runId &&
-        proof.sourceMessage.messageId === messageId
-      ) {
-        messageIds.add(messageId);
-      }
+      messageIds.add(messageId);
+      provenRootMessages.push(await this.#readProvenRootMessage(input, messageId));
     }
     for (const admission of admissions) {
       if (
@@ -639,7 +691,34 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       sessionId: input.sessionId,
       messageIds: [...messageIds],
       turnId: input.turnId,
+      ...(provenRootMessages.length > 0 ? { provenRootMessages } : {}),
     });
+  }
+
+  async #readProvenRootMessage(
+    input: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+    messageId: string,
+  ): Promise<NonNullable<MarkMessagesHandedOffInput['provenRootMessages']>[number]> {
+    const proof = await this.#durableProof.readRootTurnSourceMessageReceipt(
+      input.sessionId,
+      messageId,
+    );
+    if (
+      !proof ||
+      proof.admission.sessionId !== input.sessionId ||
+      proof.admission.turnId !== input.turnId ||
+      proof.admission.runId !== input.runId ||
+      proof.sourceMessage.messageId !== messageId
+    ) {
+      throw new RuntimeMessageAuthorityInvariantError(
+        `Root admission does not prove Message handoff ${messageId}`,
+      );
+    }
+    return {
+      messageId,
+      content: proof.sourceMessage.content,
+      admittedAt: proof.admission.admittedAt,
+    };
   }
 
   async cancelMessages(sessionId: string, messageIds: readonly string[]): Promise<void> {
@@ -695,7 +774,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
             sessionId,
             turnId: admission.turnId,
             runId: admission.runId,
-            messageIds: [admission.messageId],
+            messageIds: [],
           });
         } else {
           pending.push(admission);

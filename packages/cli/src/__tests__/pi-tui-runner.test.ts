@@ -7238,6 +7238,49 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('tells a legacy Session exactly how to choose an account', async () => {
+    const terminal = new FakeTerminal(160, 24);
+    const { llmConnectionId: _legacyConnectionId, ...legacy } = fakeSessionSummary('session-2');
+    const driver = new SlashCommandDriver([legacy]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: legacy.model,
+      connectionSlug: legacy.llmConnectionSlug,
+      connectionIdentities: [
+        { connectionId: 'connection-openrouter', connectionSlug: 'openrouter', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-openrouter',
+          connectionSlug: 'openrouter',
+          connectionName: 'OpenRouter',
+          providerType: 'openrouter',
+          model: legacy.model,
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: legacy.id,
+    });
+
+    await waitFor(() => driver.sessionIds.length === 1);
+    await waitForTuiPaint(terminal);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('one-time account confirmation'),
+    );
+    const output = plainTerminalOutput(terminal.screenOutput());
+    assert.match(output, /one-time account confirmation/);
+    assert.match(output, /Run \/model/);
+    assert.match(output, /run \/setup for API-key connections/);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('reports a deleted original account and recovers only through an exact model pick', async () => {
     const terminal = new FakeTerminal();
     const deleted = {
@@ -7278,6 +7321,9 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes('The original account was deleted'),
     );
+    const recoveryNotice = plainTerminalOutput(terminal.screenOutput());
+    assert.match(recoveryNotice, /Run \/model/);
+    assert.match(recoveryNotice, /run \/setup for API-key connections/);
     terminal.input('/model');
     terminal.input('\r');
     await waitFor(() => terminal.output().includes('Replacement'));

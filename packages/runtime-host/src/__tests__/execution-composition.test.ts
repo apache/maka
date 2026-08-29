@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
-import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,10 +54,6 @@ import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
 } from '../server/execution-composition.js';
-import {
-  createManagedWorkspaceExecutionProfile,
-  RuntimeHostWorkspaceExecutionError,
-} from '../server/workspace-execution-composition.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -66,34 +61,6 @@ const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 test('filesystem worker follows the candidate executable runtime', () => {
   assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
   assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
-});
-
-test('production composition never discovers PATH Git when no runtime is admitted', async () => {
-  await new Promise<void>((resolve, reject) => {
-    execFile('git', ['--version'], (error) => (error ? reject(error) : resolve()));
-  });
-
-  await withCompositionRoot(async ({ owner }) => {
-    const composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
-    try {
-      assert.equal(composition.workspaceExecution.state, 'ready');
-      const managed = createManagedWorkspaceExecutionProfile(
-        Object.freeze({ kind: 'managed_workspace_execution_handle_v1' }),
-      );
-      await assert.rejects(
-        () =>
-          composition.workspaceExecution.executeReadOnly(managed, {
-            kind: 'read',
-            path: 'README.md',
-          }),
-        (error) =>
-          error instanceof RuntimeHostWorkspaceExecutionError &&
-          error.code === 'managed_workspace_profile_unavailable',
-      );
-    } finally {
-      await composition.close();
-    }
-  });
 });
 
 test('production composition owns the long-term memory database lifecycle', async () => {

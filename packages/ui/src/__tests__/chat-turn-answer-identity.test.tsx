@@ -106,6 +106,34 @@ const RUNNING_TOOL: TurnTimelineItem = {
   items: [{ toolUseId: 'tool-1', toolName: 'read', status: 'running', args: {} }],
 };
 
+test('renders an aborted turn outcome as an inline system status notice', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+    abortSource: 'renderer.stop_button',
+  });
+
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(outcome, 'the aborted outcome is announced through the Chat status-notice primitive');
+  assert.equal(outcome.getAttribute('data-variant'), 'default');
+  assert.equal(outcome.textContent, 'Interrupted \u00b7 Stop button');
+});
+
+test('places the aborted turn outcome after its timeline content', async () => {
+  const { container, root } = domRoot();
+  await renderTurn(root, {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'aborted',
+  });
+
+  const answer = container.querySelector('.maka-chat-message-bubble-assistant');
+  const assistantMessage = container.querySelector('.maka-assistant-answer');
+  const outcome = container.querySelector('.astryx-chat-system-message[role="status"]');
+  assert.ok(answer && assistantMessage && outcome);
+  assert.equal(assistantMessage.nextElementSibling?.isSameNode(outcome), true);
+});
+
 /**
  * Keying the answer by its first timeline entry made the key change whenever
  * that entry did, so React unmounted the answer and mounted a copy — taking

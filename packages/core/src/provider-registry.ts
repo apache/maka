@@ -31,6 +31,13 @@ export type ProviderCatalogGroup = 'recommended' | 'plans' | 'api' | 'aggregator
 
 export type ApplyPatchProtocol = 'openai-structured' | 'codex-v4a-freeform';
 
+/**
+ * Stable reference to provider execution policy implemented by `@maka/runtime`.
+ * Core owns only this protocol-level delegation; SDK selection, replay
+ * carriers, and request mutation remain Runtime implementation details.
+ */
+export type ProviderRuntimeProfileId = 'alibaba-token-plan';
+
 export type ProviderResponsesContract =
   | {
       readonly adapter: 'openai';
@@ -40,6 +47,29 @@ export type ProviderResponsesContract =
       readonly adapter: 'open-responses';
       readonly reasoningReplay: 'plaintext-content';
     };
+
+type OpenAiCompatibleRuntimeAdapterBase = {
+  kind: 'openai-compatible';
+  name: 'provider' | 'connection';
+  includeUsage?: boolean;
+  requireBaseUrl?: boolean;
+  replayAssistantReasoningAs?: 'reasoning';
+  replayAssistantReasoningDetails?: true;
+};
+
+type OpenAiCompatibleRuntimeAdapter = OpenAiCompatibleRuntimeAdapterBase &
+  (
+    | {
+        /** Presence enables a complete Core-owned Responses contract. */
+        responses?: ProviderResponsesContract;
+        runtimeProfile?: never;
+      }
+    | {
+        responses?: never;
+        /** Explicitly delegates concrete execution policy to `@maka/runtime`. */
+        runtimeProfile: ProviderRuntimeProfileId;
+      }
+  );
 
 type ProviderRuntimeAdapterDefinition =
   | { kind: 'anthropic'; auth: 'api-key' | 'bearer'; normalizeBaseUrl: boolean }
@@ -53,16 +83,7 @@ type ProviderRuntimeAdapterDefinition =
   | { kind: 'google'; normalizeBaseUrl?: boolean }
   | { kind: 'github-copilot' }
   | { kind: 'cohere' }
-  | {
-      kind: 'openai-compatible';
-      name: 'provider' | 'connection';
-      includeUsage?: boolean;
-      requireBaseUrl?: boolean;
-      /** Presence enables Responses and fixes the only supported SDK/replay pairing. */
-      responses?: ProviderResponsesContract;
-      replayAssistantReasoningAs?: 'reasoning';
-      replayAssistantReasoningDetails?: true;
-    };
+  | OpenAiCompatibleRuntimeAdapter;
 
 export type ProviderRuntimeAdapter = ProviderRuntimeAdapterDefinition & {
   /** Provider wire contract for ApplyPatch. Model support is resolved separately. */
@@ -1664,7 +1685,11 @@ const providerRegistry = {
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      runtimeProfile: 'alibaba-token-plan',
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'domestic',
     catalogGroup: 'plans',
@@ -1684,7 +1709,11 @@ const providerRegistry = {
     fallbackModels: [...alibabaTokenPlanModelIds],
     status: 'ready',
     protocol: 'openai',
-    runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
+    runtimeAdapter: {
+      kind: 'openai-compatible',
+      name: 'provider',
+      runtimeProfile: 'alibaba-token-plan',
+    },
     modelDiscovery: { kind: 'protocol' },
     category: 'overseas',
     catalogGroup: 'plans',

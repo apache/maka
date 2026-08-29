@@ -530,6 +530,38 @@ describe('AiSdkBackend ApplyPatch routing', () => {
   });
 });
 
+/** Deferred memory triggers need one tool_search step before the model may call them. */
+function memorySearchChunks(searchToolName: string): LanguageModelV4StreamPart[] {
+  return [
+    { type: 'stream-start', warnings: [] },
+    {
+      type: 'tool-call',
+      toolCallId: 'memory-search',
+      toolName: searchToolName,
+      input: JSON.stringify({ query: 'memory' }),
+    },
+    {
+      type: 'finish',
+      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      usage: emptyUsage(),
+    },
+  ];
+}
+
+function memoryFinishTextChunks(delta: string): LanguageModelV4StreamPart[] {
+  return [
+    { type: 'stream-start', warnings: [] },
+    { type: 'text-start', id: 'text-1' },
+    { type: 'text-delta', id: 'text-1', delta },
+    { type: 'text-end', id: 'text-1' },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: emptyUsage(),
+    },
+  ];
+}
+
 describe('AiSdkBackend Memory Extraction triggers', () => {
   test('dispatches a pre-turn Compaction recipe without projecting history or awaiting it', async () => {
     const model = completionModel();
@@ -832,8 +864,30 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
   });
 
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
-    const model = completionModel();
+    let modelCalls = 0;
     let memoryCalled = false;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: (modelCalls === 1
+              ? memorySearchChunks('maka_tool_search')
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ]) as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'hello');
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -843,6 +897,8 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'gpt-5.4',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
         remember: async () => {
@@ -857,14 +913,20 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       now: monotonicClock(),
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hello', context: [] }));
-
-    assert.equal(
-      model.doStreamCalls[0]?.tools?.some(
-        (tool) => tool.name === 'memory_remember' || tool.name === 'memory_extract',
-      ) ?? false,
-      true,
+    await drainDurably(
+      backend.send(durable.input({ runId: 'run-1', invocationId: 'invocation-1' })),
+      durable,
     );
+
+    const stepZeroToolNames = model.doStreamCalls[0]?.tools?.map((tool) => tool.name) ?? [];
+    assert.equal(
+      stepZeroToolNames.some((name) => name === 'memory_remember' || name === 'memory_extract'),
+      false,
+    );
+    assert.ok(stepZeroToolNames.includes('maka_tool_search'));
+    const searchedToolNames = model.doStreamCalls[1]?.tools?.map((tool) => tool.name) ?? [];
+    assert.ok(searchedToolNames.includes('memory_remember'));
+    assert.ok(searchedToolNames.includes('memory_extract'));
     assert.equal(memoryCalled, false);
   });
 
@@ -877,31 +939,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
         return {
           stream: simulateReadableStream({
             chunks: (modelCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'remember-call',
-                    toolName: 'memory_remember',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Remembered.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ]) as LanguageModelV4StreamPart[],
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'remember-call',
+                      toolName: 'memory_remember',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Remembered.')) as LanguageModelV4StreamPart[],
             initialDelayInMs: null,
             chunkDelayInMs: null,
           }),
@@ -918,6 +972,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -946,7 +1001,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     );
     assert.ok(sourceUserEvent);
     assert.deepEqual(snapshot?.sourceEventMessagePositions?.[sourceUserEvent.id], [0]);
-    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /User prefers concise Chinese/);
+    assert.match(JSON.stringify(model.doStreamCalls[2]?.prompt), /User prefers concise Chinese/);
   });
 
   test('keeps the complete frozen provider context while evidence authority remains user-only', async () => {
@@ -972,31 +1027,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
                 },
               ]
             : modelCalls === 2
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'remember-call',
-                    toolName: 'memory_remember',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Remembered.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ];
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 3
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'remember-call',
+                      toolName: 'memory_remember',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Remembered.');
         return {
           stream: simulateReadableStream({
             chunks,
@@ -1023,6 +1070,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
           impl: async () => ({ value: 'TOOL-ONLY-SECRET' }),
         },
       ],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -1065,31 +1113,23 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
         return {
           stream: simulateReadableStream({
             chunks: (modelCalls === 1
-              ? [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'tool-call',
-                    toolCallId: 'extract-call',
-                    toolName: 'memory_extract',
-                    input: '{}',
-                  },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
-                    usage: emptyUsage(),
-                  },
-                ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  { type: 'text-start', id: 'text-1' },
-                  { type: 'text-delta', id: 'text-1', delta: 'Done.' },
-                  { type: 'text-end', id: 'text-1' },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: emptyUsage(),
-                  },
-                ]) as LanguageModelV4StreamPart[],
+              ? memorySearchChunks(TOOL_SEARCH_NAME)
+              : modelCalls === 2
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'extract-call',
+                      toolName: 'memory_extract',
+                      input: '{}',
+                    },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: emptyUsage(),
+                    },
+                  ]
+                : memoryFinishTextChunks('Done.')) as LanguageModelV4StreamPart[],
             initialDelayInMs: null,
             chunkDelayInMs: null,
           }),
@@ -1106,6 +1146,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
+      toolAvailability: {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       memoryExtraction: {
         gate: async () => ({ allowed: true }),
@@ -1124,7 +1165,7 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(modelCalls, 2);
+    assert.equal(modelCalls, 3);
     assert.ok(
       durable.ledger.some(
         (event) =>
@@ -7262,6 +7303,99 @@ describe('AiSdkBackend error surfaces', () => {
   });
 });
 
+describe('AiSdkBackend Plan tool boundaries', () => {
+  test('continues to a final response after update_plan completes execution', async () => {
+    const { calls, events } = await runPlanToolBoundary({
+      turnId: 'turn-plan-complete',
+      prompt: 'execute the approved plan',
+      toolName: 'update_plan',
+      toolInput: { steps: [{ id: 'change', status: 'completed' }] },
+      toolResult: {
+        kind: 'plan_execution_completed',
+        execution: planExecution('completed'),
+        storeVersion: 2,
+      },
+      finalText: 'Implementation complete.',
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.find((event) => event.type === 'text_complete')?.text,
+      'Implementation complete.',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('continues to an acknowledgement after cancel_plan cancels execution', async () => {
+    const { calls, events } = await runPlanToolBoundary({
+      turnId: 'turn-plan-cancel',
+      prompt: 'cancel the approved plan',
+      toolName: 'cancel_plan',
+      toolInput: { reason: 'User cancelled the execution.' },
+      toolResult: {
+        kind: 'plan_execution_cancelled',
+        execution: planExecution('cancelled'),
+        storeVersion: 2,
+      },
+      finalText: 'Plan execution cancelled.',
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.find((event) => event.type === 'text_complete')?.text,
+      'Plan execution cancelled.',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('keeps SubmitPlan as a one-step plan handoff', async () => {
+    const { calls, events } = await runPlanToolBoundary({
+      turnId: 'turn-plan-submit',
+      prompt: 'prepare an implementation plan',
+      toolName: 'SubmitPlan',
+      toolInput: {
+        title: 'Implementation plan',
+        steps: [
+          {
+            id: 'change',
+            title: 'Change implementation',
+            description: 'Change code',
+          },
+        ],
+      },
+      toolResult: {
+        kind: 'plan_submitted',
+        proposal: {
+          planId: 'plan-1',
+          proposalId: 'proposal-1',
+          sessionId: 'session-1',
+          turnId: 'turn-plan-submit',
+          revision: 1,
+          title: 'Implementation plan',
+          steps: [
+            {
+              id: 'change',
+              title: 'Change implementation',
+              description: 'Change code',
+            },
+          ],
+          status: 'pending_approval',
+          submittedAt: 2,
+        },
+        storeVersion: 1,
+      },
+    });
+
+    assert.equal(calls, 1);
+    assert.equal(events.filter((event) => event.type === 'plan_submitted').length, 1);
+    assert.equal(
+      events.some((event) => event.type === 'text_complete'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'plan_handoff');
+  });
+});
+
 describe('AiSdkBackend usage telemetry', () => {
   test('records provider-reported usage for a content-filter terminal', async () => {
     const model = new MockLanguageModelV4({
@@ -10136,6 +10270,164 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
   });
 
+  test('retries post-tool continuation once without re-running the durable tool result', async () => {
+    const timers = manualWatchdogTimer();
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    let providerCalls = 0;
+    let toolCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: hangingProviderStream(
+            [{ type: 'stream-start', warnings: [] }],
+            options.abortSignal,
+          ),
+        };
+      },
+    });
+    const readTool: MakaTool = {
+      name: 'Read',
+      description: 'Read notes',
+      parameters: z.object({ path: z.string() }),
+      impl: async () => {
+        toolCalls += 1;
+        return 'notes contents';
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [readTool],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(backend.send(durable.input()), events, durable.record);
+    await waitFor(() => providerCalls === 2);
+    timers.fire();
+    await waitFor(() => providerCalls === 3);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(providerCalls, 3);
+    assert.equal(toolCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(
+      durable.ledger.filter((event) => event.content?.kind === 'function_response').length,
+      1,
+    );
+    assert.equal(
+      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
+        .length,
+      1,
+    );
+    assert.equal(
+      events.find((event) => event.type === 'error')?.reason,
+      'model_after_tool_timeout',
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('keeps a projection timeout as a generic timeout before continuation dispatch', async () => {
+    const durable = durableTurnHarness('turn-1', 'read notes');
+    let providerCalls = 0;
+    let toolCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: 'read-1',
+                toolName: 'Read',
+                input: JSON.stringify({ path: 'notes.md' }),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read notes',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => {
+            toolCalls += 1;
+            return 'notes contents';
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: async (turnId) => {
+        if (durable.ledger.some((event) => event.content?.kind === 'function_response')) {
+          throw Object.assign(new Error('durable projection timeout'), { name: 'TimeoutError' });
+        }
+        return durable.loadTurnRuntimeEvents(turnId);
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(backend.send(durable.input()), events, durable.record);
+
+    assert.equal(providerCalls, 1);
+    assert.equal(toolCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'timeout');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('does not retry an idle watchdog timeout after partial answer text', async () => {
     const timers = manualWatchdogTimer();
     const traces: RunTraceEvent[] = [];
@@ -12478,6 +12770,852 @@ describe('AiSdkBackend thinking persistence', () => {
     );
   });
 
+  test('Alibaba Responses keeps multiple streamed reasoning items distinct through replay', async () => {
+    const tokenPlanConnection = {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    } as const;
+    let sequenceNumber = 0;
+    const responseEvents: Array<Record<string, unknown>> = [
+      { type: 'response.created', sequence_number: sequenceNumber++, response: { id: 'r' } },
+    ];
+    for (const [outputIndex, item] of [
+      { id: 'reasoning-item-1', deltas: ['first ', 'summary'] },
+      { id: 'reasoning-item-2', deltas: ['second summary'] },
+      { id: 'reasoning-item-empty', deltas: [] },
+    ].entries()) {
+      responseEvents.push({
+        type: 'response.output_item.added',
+        sequence_number: sequenceNumber++,
+        output_index: outputIndex,
+        item: { type: 'reasoning', id: item.id, status: 'in_progress', content: [], summary: [] },
+      });
+      for (const delta of item.deltas) {
+        responseEvents.push({
+          type: 'response.reasoning_summary_text.delta',
+          sequence_number: sequenceNumber++,
+          item_id: item.id,
+          output_index: outputIndex,
+          summary_index: 0,
+          delta,
+        });
+      }
+      if (item.deltas.length > 0) {
+        responseEvents.push({
+          type: 'response.reasoning_summary_text.done',
+          sequence_number: sequenceNumber++,
+          item_id: item.id,
+          output_index: outputIndex,
+          summary_index: 0,
+          text: item.deltas.join(''),
+        });
+      }
+      responseEvents.push({
+        type: 'response.output_item.done',
+        sequence_number: sequenceNumber++,
+        output_index: outputIndex,
+        item: {
+          type: 'reasoning',
+          id: item.id,
+          status: 'completed',
+          content: [],
+          summary:
+            item.deltas.length > 0 ? [{ type: 'summary_text', text: item.deltas.join('') }] : [],
+        },
+      });
+    }
+    responseEvents.push(
+      {
+        type: 'response.output_item.added',
+        sequence_number: sequenceNumber++,
+        output_index: 3,
+        item: {
+          type: 'message',
+          id: 'message-item',
+          status: 'in_progress',
+          role: 'assistant',
+          content: [],
+        },
+      },
+      {
+        type: 'response.output_text.delta',
+        sequence_number: sequenceNumber++,
+        item_id: 'message-item',
+        output_index: 3,
+        content_index: 0,
+        delta: 'answer',
+      },
+      {
+        type: 'response.output_item.done',
+        sequence_number: sequenceNumber++,
+        output_index: 3,
+        item: {
+          type: 'message',
+          id: 'message-item',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'answer', annotations: [] }],
+        },
+      },
+      {
+        type: 'response.completed',
+        sequence_number: sequenceNumber++,
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 0,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 3, total_tokens: 4 },
+        },
+      },
+    );
+    const rawSse = `${responseEvents
+      .map((event) => `data: ${JSON.stringify(event)}`)
+      .join('\n\n')}\n\ndata: [DONE]\n\n`;
+    const fetch = (async () =>
+      new Response(rawSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })) as unknown as typeof globalThis.fetch;
+    const firstBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: tokenPlanConnection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const firstEvents: SessionEvent[] = [];
+    for await (const event of firstBackend.send({
+      turnId: 'turn-prev',
+      text: 'question',
+      context: [],
+    })) {
+      firstEvents.push(event);
+    }
+    const thinkingCompletes = firstEvents.filter(
+      (event): event is Extract<SessionEvent, { type: 'thinking_complete' }> =>
+        event.type === 'thinking_complete',
+    );
+    assert.deepEqual(
+      thinkingCompletes.map((event) => [
+        event.text,
+        (event.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+      ]),
+      [
+        ['first summary', 'reasoning-item-1'],
+        ['second summary', 'reasoning-item-2'],
+        ['', 'reasoning-item-empty'],
+      ],
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as RuntimeEventMapContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = firstEvents.map((event) =>
+      mapSessionEventToRuntimeEvent(event, ctx, memory),
+    );
+    let replayRequestBody: Record<string, unknown> | undefined;
+    const replayFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      replayRequestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const completed = {
+        type: 'response.completed',
+        response: {
+          id: 'response-replay',
+          object: 'response',
+          created_at: 1,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      };
+      return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const secondBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: tokenPlanConnection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch: replayFetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      secondBackend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const replayInput = replayRequestBody?.input;
+    assert.ok(Array.isArray(replayInput));
+    assert.deepEqual(
+      replayInput.filter((item) => item?.type === 'reasoning'),
+      [
+        {
+          type: 'reasoning',
+          id: 'reasoning-item-1',
+          summary: [{ type: 'summary_text', text: 'first summary' }],
+        },
+        {
+          type: 'reasoning',
+          id: 'reasoning-item-2',
+          summary: [{ type: 'summary_text', text: 'second summary' }],
+        },
+        { type: 'reasoning', id: 'reasoning-item-empty', summary: [] },
+      ],
+    );
+  });
+
+  test('Alibaba Responses fails when streamed reasoning differs from the final summary', async (t) => {
+    // The early stop tears down the SDK stream while its settlement promises
+    // are still in flight; when those rejections land is scheduler-owned (on
+    // Windows they were observed after the test boundary). Trap unhandled
+    // rejections for the lifetime of this turn and assert the mismatch path
+    // leaves none behind, on every event loop, not just the one that raced.
+    const leakedRejections: unknown[] = [];
+    const trapUnhandledRejection = (reason: unknown): void => {
+      leakedRejections.push(reason);
+    };
+    process.on('unhandledRejection', trapUnhandledRejection);
+    t.after(() => {
+      process.off('unhandledRejection', trapUnhandledRejection);
+    });
+    const appended: AssistantMessage[] = [];
+    const mismatchEvents = [
+      { type: 'response.created', response: { id: 'r' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'reasoning-item', summary: [] },
+      },
+      {
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'reasoning-item',
+        summary_index: 0,
+        delta: 'streamed text',
+      },
+      {
+        type: 'response.reasoning_summary_text.done',
+        item_id: 'reasoning-item',
+        summary_index: 0,
+        text: 'streamed text',
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning-item',
+          summary: [{ type: 'summary_text', text: 'different final summary' }],
+        },
+      },
+    ];
+    const mismatchSse = `${mismatchEvents
+      .map((event) => `data: ${JSON.stringify(event)}`)
+      .join('\n\n')}\n\ndata: [DONE]\n\n`;
+    const mismatchFetch = (async () =>
+      new Response(mismatchSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })) as unknown as typeof globalThis.fetch;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch: mismatchFetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'question', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      true,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as RuntimeEventMapContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const recoveryModel = completionModel();
+    const recoveryBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => recoveryModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      recoveryBackend.send({
+        turnId: 'turn-2',
+        text: 'recover',
+        context: [],
+        runtimeContext,
+      }),
+    );
+    assert.ok(compactPrompt(recoveryModel));
+    // Let SDK teardown settle across macrotask cycles so a leaked rejection
+    // is caught before the trap comes off.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(
+      leakedRejections,
+      [],
+      'reasoning-mismatch teardown must not leak unhandled rejections',
+    );
+  });
+
+  test('Alibaba Responses preserves live compatibility reasoning across abrupt transport failure', async () => {
+    const partialEvents = [
+      { type: 'response.created', response: { id: 'r' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'reasoning-partial', summary: [] },
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        item_id: 'reasoning-partial',
+        content_index: 0,
+        delta: 'partial compatibility reasoning',
+      },
+    ];
+    const bytes = new TextEncoder().encode(
+      `${partialEvents.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`,
+    );
+    const fetch = (async () => {
+      let emitted = false;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!emitted) {
+              emitted = true;
+              controller.enqueue(bytes);
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            controller.error(new Error('transport boom'));
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const appended: AssistantMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'question', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'thinking_delta' && event.text === 'partial compatibility reasoning',
+      ),
+      true,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(JSON.stringify(appended).includes('makaResponses'), false);
+  });
+
+  test('Alibaba Responses keeps a finalized item valid when the next item id is unsafe', async () => {
+    const invalidItemId = 'invalid\nreasoning-item';
+    const rawEvents = [
+      { type: 'response.created', response: { id: 'r' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'reasoning-item-a', summary: [] },
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        item_id: 'reasoning-item-a',
+        content_index: 0,
+        delta: 'valid summary',
+      },
+      {
+        type: 'response.reasoning_text.done',
+        item_id: 'reasoning-item-a',
+        content_index: 0,
+        text: 'valid summary',
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning-item-a',
+          summary: [{ type: 'summary_text', text: 'valid summary' }],
+        },
+      },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: invalidItemId, summary: [] },
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        item_id: invalidItemId,
+        content_index: 0,
+        delta: 'unsafe item summary',
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'reasoning',
+          id: invalidItemId,
+          summary: [{ type: 'summary_text', text: 'unsafe item summary' }],
+        },
+      },
+    ];
+    const rawSse = `${rawEvents
+      .map((event) => `data: ${JSON.stringify(event)}`)
+      .join('\n\n')}\n\ndata: [DONE]\n\n`;
+    const fetch = (async () =>
+      new Response(rawSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })) as unknown as typeof globalThis.fetch;
+    const appended: AssistantMessage[] = [];
+    const connection = {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    } as const;
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'question', context: [] })) {
+      events.push(event);
+    }
+
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    const parts = appended[0]?.thinking?.parts;
+    assert.deepEqual(
+      parts?.map((part) => [
+        part.text,
+        (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+      ]),
+      [
+        ['valid summary', 'reasoning-item-a'],
+        ['unsafe item summary', undefined],
+      ],
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as RuntimeEventMapContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const recoveryModel = completionModel();
+    const recoveryBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => recoveryModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      recoveryBackend.send({
+        turnId: 'turn-2',
+        text: 'recover',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(recoveryModel) as ModelMessage[];
+    const assistant = prompt.find(
+      (message) => message.role === 'assistant' && Array.isArray(message.content),
+    );
+    assert.ok(assistant && Array.isArray(assistant.content));
+    assert.deepEqual(
+      assistant.content
+        .filter((part) => part.type === 'reasoning')
+        .map((part) => [
+          part.text,
+          (part.providerOptions?.['alibaba-token-plan-cn'] as { itemId?: unknown } | undefined)
+            ?.itemId,
+        ]),
+      [['valid summary', 'reasoning-item-a']],
+    );
+  });
+
+  test('Alibaba Responses isolates a same-id delta that arrives after item completion', async () => {
+    const connection = {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    } as const;
+    const rawEvents = [
+      { type: 'response.created', response: { id: 'r' } },
+      {
+        type: 'response.output_item.added',
+        item: { type: 'reasoning', id: 'reasoning-item-a', summary: [] },
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        item_id: 'reasoning-item-a',
+        content_index: 0,
+        delta: 'valid summary',
+      },
+      {
+        type: 'response.reasoning_text.done',
+        item_id: 'reasoning-item-a',
+        content_index: 0,
+        text: 'valid summary',
+      },
+      {
+        type: 'response.output_item.done',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning-item-a',
+          summary: [{ type: 'summary_text', text: 'valid summary' }],
+        },
+      },
+      {
+        type: 'response.reasoning_text.delta',
+        item_id: 'reasoning-item-a',
+        content_index: 0,
+        delta: 'late duplicate',
+      },
+      {
+        type: 'response.completed',
+        response: {
+          id: 'r',
+          object: 'response',
+          created_at: 0,
+          model: 'qwen3.8-max',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+        },
+      },
+    ];
+    const rawSse = `${rawEvents
+      .map((event) => `data: ${JSON.stringify(event)}`)
+      .join('\n\n')}\n\ndata: [DONE]\n\n`;
+    const fetch = (async () =>
+      new Response(rawSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      })) as unknown as typeof globalThis.fetch;
+    const appended: AssistantMessage[] = [];
+    const firstBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') appended.push(message);
+      },
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: (input) => getAIModel({ ...input, fetch }),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const events: SessionEvent[] = [];
+    for await (const event of firstBackend.send({
+      turnId: 'turn-1',
+      text: 'question',
+      context: [],
+    })) {
+      events.push(event);
+    }
+
+    assert.deepEqual(
+      appended[0]?.thinking?.parts?.map((part) => [
+        part.text,
+        (part.providerOptions?.makaResponses as { itemId?: unknown } | undefined)?.itemId,
+      ]),
+      [
+        ['valid summary', 'reasoning-item-a'],
+        ['late duplicate', undefined],
+      ],
+    );
+
+    const ctx = {
+      sessionId: 'session-1',
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      now: () => 7,
+      newId: idGenerator(),
+    } as unknown as RuntimeEventMapContext;
+    const memory = createSessionEventMapMemory();
+    const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
+    const recoveryModel = completionModel();
+    const recoveryBackend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection,
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => recoveryModel,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      recoveryBackend.send({
+        turnId: 'turn-2',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+    const prompt = compactPrompt(recoveryModel) as ModelMessage[];
+    assert.equal(
+      prompt.some(
+        (message) =>
+          message.role === 'assistant' &&
+          Array.isArray(message.content) &&
+          message.content.some(
+            (part) => part.type === 'reasoning' && part.text === 'valid summary',
+          ),
+      ),
+      true,
+    );
+  });
+
+  test('Alibaba Responses skips reasoning it cannot safely replay', async () => {
+    const foreignSummary = 'summary issued by a different provider profile';
+    const futureSummary = 'summary issued by a future durable state version';
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'e1',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'summary without a provider item identity',
+        },
+        refs: { providerEventId: 'm1' },
+      }),
+      runtimeEvent({
+        id: 'e2',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: foreignSummary,
+          providerOptions: {
+            makaResponses: {
+              version: 1,
+              profile: 'alibaba-token-plan',
+              itemId: 'foreign-reasoning-item',
+              summaryPartLengths: [foreignSummary.length],
+            },
+          },
+        },
+        refs: { providerEventId: 'm2' },
+      }),
+      runtimeEvent({
+        id: 'e3',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: futureSummary,
+          providerOptions: {
+            makaResponses: {
+              version: 2,
+              profile: 'alibaba-token-plan-cn',
+              itemId: 'future-reasoning-item',
+              summaryPartLengths: [futureSummary.length],
+            },
+          },
+        },
+        refs: { providerEventId: 'm3' },
+      }),
+    ];
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'follow up',
+        context: [],
+        runtimeContext,
+      }),
+    );
+
+    const prompt = compactPrompt(model) as ModelMessage[];
+    assert.equal(
+      prompt.some(
+        (message) =>
+          message.role === 'assistant' &&
+          Array.isArray(message.content) &&
+          message.content.some((part) => part.type === 'reasoning'),
+      ),
+      false,
+    );
+  });
+
+  test('Alibaba Responses rejects malformed state owned by its profile', async () => {
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const runtimeContext: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'e1',
+        turnId: 'turn-prev',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'current-profile reasoning with a widened state',
+          providerOptions: {
+            makaResponses: {
+              version: 1,
+              profile: 'alibaba-token-plan-cn',
+              itemId: 'reasoning-item',
+              raw: 'must not persist',
+            },
+          },
+        },
+        refs: { providerEventId: 'm1' },
+      }),
+    ];
+
+    await assert.rejects(
+      drain(
+        backend.send({
+          turnId: 'turn-current',
+          text: 'follow up',
+          context: [],
+          runtimeContext,
+        }),
+      ),
+      /Malformed durable plaintext Responses reasoning state/,
+    );
+  });
+
   test('passes DeepSeek max reasoning through as the provider-native effort', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -14636,6 +15774,110 @@ function imageReplayInput(): BackendSendInput {
         },
       }),
     ],
+  };
+}
+
+async function runPlanToolBoundary(input: {
+  turnId: string;
+  prompt: string;
+  toolName: string;
+  toolInput: unknown;
+  toolResult: unknown;
+  finalText?: string;
+}): Promise<{ calls: number; events: SessionEvent[] }> {
+  const durable = durableTurnHarness(input.turnId, input.prompt);
+  let calls = 0;
+  const model = new MockLanguageModelV4({
+    doStream: async () => {
+      calls += 1;
+      const chunks: LanguageModelV4StreamPart[] =
+        calls === 1
+          ? [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'tool-call',
+                toolCallId: `${input.toolName}-call`,
+                toolName: input.toolName,
+                input: JSON.stringify(input.toolInput),
+              },
+              {
+                type: 'finish',
+                finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                usage: emptyUsage(),
+              },
+            ]
+          : [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-final' },
+              {
+                type: 'text-delta',
+                id: 'text-final',
+                delta: input.finalText ?? 'Unexpected continuation.',
+              },
+              { type: 'text-end', id: 'text-final' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ];
+      return {
+        stream: simulateReadableStream({
+          chunks,
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      };
+    },
+  });
+  const backend = createTestAiSdkBackend({
+    sessionId: 'session-1',
+    header: header(),
+    appendMessage: async () => {},
+    connection: connection(),
+    apiKey: 'sk-test',
+    modelId: 'mock-model-id',
+    modelFactory: () => model,
+    tools: [
+      {
+        name: input.toolName,
+        description: `${input.toolName} test tool`,
+        parameters: z.object({}).passthrough(),
+        impl: async () => input.toolResult,
+      },
+    ],
+    loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+    newId: idGenerator(),
+    now: monotonicClock(),
+  });
+  const events = await drainDurably(backend.send(durable.input()), durable);
+  return { calls, events };
+}
+
+function planExecution(status: 'completed' | 'cancelled') {
+  return {
+    executionId: 'execution-1',
+    planId: 'plan-1',
+    proposalId: 'proposal-1',
+    sessionId: 'session-1',
+    status,
+    steps: [
+      {
+        id: 'change',
+        title: 'Change implementation',
+        description: 'Change code',
+        status: status === 'completed' ? ('completed' as const) : ('in_progress' as const),
+        updatedAt: 2,
+      },
+    ],
+    startedAt: 1,
+    updatedAt: 2,
+    ...(status === 'completed'
+      ? { completedAt: 2 }
+      : {
+          cancelledAt: 2,
+          cancelReason: 'User cancelled the execution.',
+        }),
   };
 }
 

@@ -461,6 +461,17 @@
   color: var(--foreground-secondary);
 }
 
+/* Astryx hands custom images no inline/block placement or spacing wrapper.
+   Session artifacts are content previews rather than sentence badges, so they
+   own a bounded block presentation; compact transcript rhythm resets the
+   top-level margin above through the shared adjacency rules. */
+.maka-markdown-attachment-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-block: var(--space-3) var(--space-4);
+}
+
 /* Markdown code renderers are custom components so Mermaid can be loaded only
    for settled Mermaid fences. Astryx skips its own spacing wrapper when
    `components.code` is set, so the custom block sits directly in the document
@@ -752,7 +763,6 @@
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
-.maka-turn-aborted-marker,
 .maka-turn-host-origin {
   font: var(--maka-text-supporting);
   display: inline-flex;
@@ -761,17 +771,6 @@
   margin-inline: 0;
   border-radius: var(--radius-control);
 }
-
-.maka-turn-aborted-marker {
-  gap: var(--space-1);
-  margin-block: var(--space-0-5) var(--space-1);
-  padding: var(--space-0-5) var(--space-1-5);
-  background: var(--foreground-5);
-  color: var(--foreground-secondary);
-  font-style: italic;
-}
-
-.maka-turn-aborted-marker em { font-style: italic; }
 
 .maka-turn-host-origin {
   align-self: flex-end;

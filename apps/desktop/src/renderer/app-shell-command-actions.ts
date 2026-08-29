@@ -74,7 +74,7 @@ export interface AppShellCommandListOptions {
   newTaskProfileId: string | undefined;
   settingsOpen: boolean;
   settingsProfileId: string | undefined;
-  sessions: SessionSummary[];
+  sessions: readonly SessionSummary[];
   themePref: ThemePreference;
   visibleSessions: SessionSummary[];
   captureComposerImportOwner: () => ComposerImportOwner;

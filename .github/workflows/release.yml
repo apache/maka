@@ -38,7 +38,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
-      is_prerelease: ${{ steps.identity.outputs.is_prerelease }}
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
       source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
@@ -451,7 +450,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-identity.outputs.version }}
-          IS_PRERELEASE: ${{ needs.release-identity.outputs.is_prerelease }}
           TAG: ${{ needs.release-identity.outputs.tag }}
           SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
           SOURCE_REFERENCE_TAG: ${{ needs.release-identity.outputs.source_reference_tag }}
@@ -464,15 +462,7 @@ jobs:
 
           These files are convenience binaries built from the approved ASF source release; they are not ASF release artifacts.
 
-          Known limitations: Computer Use and managed-workspace execution are not included in this release. The Desktop convenience artifacts do not distribute a Git runtime."
-
-          classification=(--prerelease=false --latest=false)
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            classification=(--prerelease --latest=false)
-          elif [[ "$IS_PRERELEASE" != "false" ]]; then
-            echo "Product prerelease classification must be true or false; found $IS_PRERELEASE" >&2
-            exit 1
-          fi
+          Known limitations: Computer Use and Gitoxide-backed workspace execution are not included in this release. The Desktop convenience artifacts do not distribute a Git runtime."
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
@@ -484,7 +474,8 @@ jobs:
             gh release create "$TAG" \
               --draft \
               --verify-tag \
-              "${classification[@]}" \
+              --prerelease=false \
+              --latest=false \
               --title "Maka ${VERSION}" \
               --notes "$notes"
           fi
@@ -494,12 +485,13 @@ jobs:
             exit 1
           fi
           gh release edit "$TAG" \
-            "${classification[@]}" \
+            --prerelease=false \
+            --latest=false \
             --title "Maka ${VERSION}" \
             --notes "$notes"
           actual_prerelease="$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)"
-          if [[ "$actual_prerelease" != "$IS_PRERELEASE" ]]; then
-            echo "Release ${TAG} prerelease state is ${actual_prerelease}, expected ${IS_PRERELEASE}." >&2
+          if [[ "$actual_prerelease" != "false" ]]; then
+            echo "Release ${TAG} must not be a prerelease." >&2
             exit 1
           fi
           asset_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
@@ -532,7 +524,7 @@ jobs:
             fi
           done
           release_state="$(gh release view "$TAG" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | map(tostring) | join(" ")')"
-          if [[ "$release_state" != "true $IS_PRERELEASE" ]]; then
+          if [[ "$release_state" != "true false" ]]; then
             echo "Release ${TAG} changed state while assets were checked: ${release_state}." >&2
             exit 1
           fi

@@ -24,6 +24,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
+import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -125,6 +126,7 @@ export async function verifyPackagedWindowsApp(
     workingDirectory = appDirectory,
     expectedVersion,
     artifactContract = 'current',
+    environment = process.env,
   } = {},
 ) {
   if (artifactContract !== 'current' && artifactContract !== 'legacy-baseline') {
@@ -150,7 +152,9 @@ export async function verifyPackagedWindowsApp(
     requireDirectPeerArtifact: requiresCurrentContract,
   });
   if (requiresCurrentContract) {
-    await assertPackagedUpdateConfiguration(resources);
+    await assertPackagedUpdateConfiguration(resources, {
+      channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
+    });
     await assertPackagedDependencyClosure(resources);
   } else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
 
@@ -240,13 +244,18 @@ export async function verifyPackagedWindowsApp(
     run,
     `(Get-Item -LiteralPath ${powerShellLiteral(executable)}).VersionInfo.ProductVersion`,
   );
-  assertWindowsProductVersion(stdout, expectedVersion ?? product.version);
+  assertWindowsProductVersion(
+    stdout,
+    expectedVersion ?? resolveDesktopBuildVersion(product.version, environment),
+  );
 
   step('smoking node-pty through conpty');
   const ptyProbe = makePtyProbe(
     process.env.ComSpec || 'cmd.exe',
     ['/c', 'echo', 'maka-node-pty-ok'],
-    requiresCurrentContract ? product.runtimeHostSetupPackage : undefined,
+    requiresCurrentContract
+      ? resolveRuntimeHostSetupPackage(product.version, environment)
+      : undefined,
   );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {

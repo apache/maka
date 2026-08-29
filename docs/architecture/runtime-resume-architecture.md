@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-29
 owners:
   - maka-backend
 ---
@@ -776,18 +776,6 @@ Layer responsibilities:
 ### Runtime host
 
 The Runtime host uses strict recovery stores. It does not silently turn an unreadable ledger into best-effort fallback before admitting new writes.
-
-### Managed workspace execution admission and read bridge (M1.1–M1.2)
-
-The workspace plane now has storage-owned execution admission and an owner-bound, read-only Runtime Host bridge:
-
-- baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
-- every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
-- one admission issues one callback-scoped opaque scope with `workspaceEffect: none`; the same handle may have multiple concurrent read-only scopes;
-- `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
-- the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
-
-M1.2 wires that authority into the owner-bound storage worker bridge and Runtime Host lifecycle composition. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
 ### Eval
 

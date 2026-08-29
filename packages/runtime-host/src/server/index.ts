@@ -25,6 +25,11 @@ export { defineInteractiveRuntimeHostComposition } from './host-composition.js';
 export { createUnavailableDomainOperationHandlers } from './operation-dispatcher.js';
 export { startExecutionRuntimeHostService } from './execution-service.js';
 export { runRuntimeHostProcessLifecycle } from './process-lifecycle.js';
+export {
+  createPeerMeshOperationHandlers,
+  projectPeerMeshQuery,
+  projectPeerMeshStatus,
+} from './peer-mesh-authority.js';
 export { installRuntimeHostLogCapture } from '../process-diagnostics.js';
 export {
   readRuntimeHostAccessCredentialMetadata,

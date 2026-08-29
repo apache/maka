@@ -142,9 +142,14 @@ export async function manageRuntimeHostManagedLifecycle(
         rootPath: config.root.path,
         rootId,
         supervisor: provider.supervisor,
-        allowInterruptActiveTasks: true,
+        allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
       });
-      if (retirement.kind === 'active_tasks') throw new Error('Unexpected active-task refusal');
+      if (retirement.kind === 'active_tasks') {
+        throw new RuntimeHostServiceManagerError(
+          'active_tasks',
+          'Runtime Host still owns active work; it was not restarted',
+        );
+      }
       await retirement.owner.close();
     }
     try {

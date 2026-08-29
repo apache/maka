@@ -147,6 +147,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
     `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
+    `  ${cliCommand} runtime-host service mesh status|create|invite|join|remove|leave|close|reconcile [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
     `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
     `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
@@ -211,6 +212,13 @@ function helpText(cliCommand: string): string {
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit framed machine-readable progress and result records',
+    '',
+    'Managed Runtime Host direct-peer options:',
+    '  --listen <multiaddr>          Persist a listener address (repeatable)',
+    '  --coordination-relay <addr>   Prefer a Circuit Relay v2 address (repeatable)',
+    '  --clear-coordination-relays   Remove every manually configured relay',
+    '  --automatic-relay-discovery   Enable best-effort public relay discovery',
+    '  --no-automatic-relay-discovery  Disable public discovery and retain manual relays',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
@@ -316,6 +324,8 @@ export async function runMakaCli(
                   expectedPeerId: peer.peerId,
                   listenAddresses: peer.listenAddresses,
                   coordinationRelays: peer.coordinationRelays,
+                  automaticRelayDiscovery: peer.automaticRelayDiscovery,
+                  meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
                 },
               }
             : {}),
@@ -410,6 +420,7 @@ export async function runMakaCli(
         deferPairingCommit: command.deferPairingCommit,
         bindPairingToClient: command.bindPairingToClient,
         ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+        updateExisting: command.updateExisting,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
@@ -472,8 +483,28 @@ export async function runMakaCli(
         operatorDeploymentId: command.operatorDeploymentId,
         listenAddresses: command.listenAddresses,
         ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
+        ...(command.automaticRelayDiscovery === undefined
+          ? {}
+          : { automaticRelayDiscovery: command.automaticRelayDiscovery }),
+        ...(command.relayDiscoveryStatus ? { relayDiscoveryStatus: true } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-peer-mesh': {
+      const { runRuntimeHostPeerMeshManagementCli } = await import(
+        './runtime-host-peer-mesh-management-command.js'
+      );
+      return runRuntimeHostPeerMeshManagementCli({
+        action: command.action,
+        json: command.json,
+        framed: command.framed ?? false,
+        managedRootId: command.managedRootId,
+        operatorDeploymentId: command.operatorDeploymentId,
+        cliPath: process.argv[1] ?? '',
+        expectedTarget: command.expectedTarget,
+        ...(command.meshId !== undefined ? { meshId: command.meshId } : {}),
+        ...(command.peerId ? { peerId: command.peerId } : {}),
       });
     }
     case 'runtime-host-service-update': {

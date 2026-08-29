@@ -18,8 +18,9 @@
  */
 
 use std::{
+    collections::HashSet,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -32,6 +33,8 @@ use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
+const MAX_TRANSIT_PEERS: usize = 64;
+const MAX_TRANSIT_RELAY_ADDRESSES: usize = 256;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -39,6 +42,7 @@ pub struct StartPeerEndpointOptions {
     pub expected_peer_id: Option<String>,
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
+    pub automatic_relay_discovery: Option<bool>,
 }
 
 #[napi(object)]
@@ -47,7 +51,32 @@ pub struct ConnectPeerOptions {
     pub peer_id: String,
     pub route_hints: Vec<String>,
     pub coordination_relays: Option<Vec<String>>,
+    pub transit_relay_peer_ids: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
+}
+
+#[napi(object)]
+pub struct ConfigurePeerTransitOptions {
+    pub allowed_peer_ids: Vec<String>,
+    pub relay_candidates: Vec<PeerTransitRelayCandidate>,
+}
+
+#[napi(object)]
+pub struct PeerTransitRelayCandidate {
+    pub peer_id: String,
+    pub addresses: Vec<String>,
+}
+
+#[napi(object)]
+pub struct PeerTransitSnapshot {
+    pub allowed_peer_count: u32,
+    pub active_reservation_count: u32,
+    pub active_circuit_count: u32,
+    pub max_reservation_count: u32,
+    pub max_circuit_count: u32,
+    pub max_circuits_per_peer: u32,
+    pub max_circuit_duration_seconds: u32,
+    pub max_circuit_bytes: u32,
 }
 
 #[napi(object)]
@@ -60,6 +89,8 @@ pub struct PeerIdentitySignature {
 pub struct PeerEndpoint {
     peer_id: String,
     listen_addresses: Vec<String>,
+    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
+    transit_snapshot: Arc<RwLock<engine::TransitSnapshot>>,
     commands: mpsc::Sender<EngineCommand>,
     incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
     mesh_incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
@@ -77,6 +108,62 @@ impl PeerEndpoint {
     #[napi(getter)]
     pub fn listen_addresses(&self) -> Vec<String> {
         self.listen_addresses.clone()
+    }
+
+    #[napi(getter)]
+    pub fn active_coordination_relays(&self) -> Vec<String> {
+        self.active_coordination_relays
+            .read()
+            .map(|addresses| addresses.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    #[napi(getter)]
+    pub fn transit_snapshot(&self) -> PeerTransitSnapshot {
+        let snapshot = self
+            .transit_snapshot
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default();
+        PeerTransitSnapshot {
+            allowed_peer_count: snapshot.allowed_peer_count as u32,
+            active_reservation_count: snapshot.active_reservation_count as u32,
+            active_circuit_count: snapshot.active_circuit_count as u32,
+            max_reservation_count: snapshot.max_reservation_count as u32,
+            max_circuit_count: snapshot.max_circuit_count as u32,
+            max_circuits_per_peer: snapshot.max_circuits_per_peer as u32,
+            max_circuit_duration_seconds: snapshot.max_circuit_duration_seconds as u32,
+            max_circuit_bytes: snapshot.max_circuit_bytes as u32,
+        }
+    }
+
+    #[napi]
+    pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
+        let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
+        let relays = parse_transit_relay_candidates(options.relay_candidates)?;
+        let trusted_relays = relays
+            .iter()
+            .filter_map(|address| engine::transit_relay_peer_id(address).ok())
+            .collect::<HashSet<_>>();
+        let local_peer_id = parse_peer_id(&self.peer_id)?;
+        if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "peer endpoint cannot configure itself as a transit peer",
+            ));
+        }
+        let (result_tx, result_rx) = oneshot::channel();
+        self.commands
+            .send(EngineCommand::ConfigureTransit {
+                policy: engine::TransitPolicy {
+                    allowed_peers,
+                    relays,
+                },
+                result: result_tx,
+            })
+            .await
+            .map_err(|_| native_closed_error())?;
+        result_rx.await.map_err(|_| native_closed_error())
     }
 
     #[napi]
@@ -163,6 +250,8 @@ async fn connect_peer(
         options.coordination_relays.unwrap_or_default(),
         "coordination relay",
     )?;
+    let transit_relay_peers =
+        parse_peer_id_list(options.transit_relay_peer_ids.unwrap_or_default())?;
     if !(1..=120_000).contains(&options.direct_deadline_ms) {
         return Err(Error::new(
             Status::InvalidArg,
@@ -178,6 +267,7 @@ async fn connect_peer(
                 peer_id,
                 route_hints,
                 coordination_relays,
+                transit_relay_peers,
                 deadline: Duration::from_millis(u64::from(options.direct_deadline_ms)),
             },
             stream_kind,
@@ -283,6 +373,7 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             options.coordination_relays.unwrap_or_default(),
             "coordination relay",
         )?,
+        automatic_relay_discovery: options.automatic_relay_discovery.unwrap_or(false),
     })
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
@@ -292,6 +383,8 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             .into_iter()
             .map(|address| address.to_string())
             .collect(),
+        active_coordination_relays: started.active_coordination_relays,
+        transit_snapshot: started.transit_snapshot,
         commands: started.commands,
         incoming: Arc::new(AsyncMutex::new(started.incoming)),
         mesh_incoming: Arc::new(AsyncMutex::new(started.mesh_incoming)),
@@ -366,6 +459,58 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
         .collect()
 }
 
+fn parse_transit_relay_candidates(
+    candidates: Vec<PeerTransitRelayCandidate>,
+) -> Result<Vec<Multiaddr>> {
+    let address_count = candidates.iter().try_fold(0usize, |count, candidate| {
+        count.checked_add(candidate.addresses.len())
+    });
+    if address_count.is_none_or(|count| count > MAX_TRANSIT_RELAY_ADDRESSES) {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "transit policy cannot contain more than 256 relay addresses",
+        ));
+    }
+    let mut relays = Vec::new();
+    for candidate in candidates {
+        let Ok(expected_peer) = candidate.peer_id.parse::<PeerId>() else {
+            continue;
+        };
+        for value in candidate.addresses {
+            let Ok(address) = value.parse::<Multiaddr>() else {
+                continue;
+            };
+            if engine::transit_relay_peer_id(&address).ok() == Some(expected_peer) {
+                relays.push(address);
+            }
+        }
+    }
+    relays.sort_unstable_by_key(ToString::to_string);
+    relays.dedup();
+    Ok(relays)
+}
+
+fn parse_peer_ids(values: Vec<String>) -> Result<HashSet<PeerId>> {
+    Ok(parse_peer_id_list(values)?.into_iter().collect())
+}
+
+fn parse_peer_id_list(values: Vec<String>) -> Result<Vec<PeerId>> {
+    if values.len() > MAX_TRANSIT_PEERS {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "transit policy cannot contain more than 64 peers",
+        ));
+    }
+    let mut peers = Vec::new();
+    for value in values {
+        let peer = parse_peer_id(&value)?;
+        if !peers.contains(&peer) {
+            peers.push(peer);
+        }
+    }
+    Ok(peers)
+}
+
 fn validate_identity_payload(payload: &[u8]) -> Result<()> {
     if payload.is_empty() || payload.len() > IDENTITY_PAYLOAD_MAX_BYTES {
         return Err(Error::new(
@@ -388,4 +533,27 @@ fn native_closed_error() -> Error {
         code: "peer_native_failed",
         message: "peer stream is closed".to_owned(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transit_relay_addresses_are_bound_to_the_declared_peer() {
+        let expected = PeerId::random();
+        let other = PeerId::random();
+        let accepted = format!("/ip4/192.0.2.1/tcp/4001/p2p/{expected}");
+        let relays = parse_transit_relay_candidates(vec![PeerTransitRelayCandidate {
+            peer_id: expected.to_string(),
+            addresses: vec![
+                accepted.clone(),
+                format!("/ip4/192.0.2.2/tcp/4001/p2p/{other}"),
+                "not-a-multiaddr".to_owned(),
+            ],
+        }])
+        .expect("candidate policy");
+
+        assert_eq!(relays, vec![accepted.parse().expect("accepted multiaddr")]);
+    }
 }

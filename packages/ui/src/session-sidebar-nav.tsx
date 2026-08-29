@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } from './icons.js';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+import { useSessionRailChrome } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -27,18 +26,8 @@ import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
-export function SessionSidebarNav(props: {
-  selection: NavSelection;
-  scheduledTasks?: readonly ScheduledTask[];
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onNew(): void;
-  workHubEntry?: {
-    active: boolean;
-    label: string;
-    onSelect(): void;
-  };
-}) {
+export function SessionSidebarNav() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const extensionsActive = props.selection.section === 'extensions';
@@ -122,11 +111,8 @@ export type SidebarUpdateReminder = {
   latestVersion: string;
 };
 
-export function SessionSidebarFooter(props: {
-  updateReminder?: SidebarUpdateReminder;
-  onOpenSettings(): void;
-  onOpenUpdate?(): void;
-}) {
+export function SessionSidebarFooter() {
+  const props = useSessionRailChrome();
   const locale = useUiLocale();
   const copy = getShellControlsCopy(locale).navigation;
   const reminder = props.updateReminder;

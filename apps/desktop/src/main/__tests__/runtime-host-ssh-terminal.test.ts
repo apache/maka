@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,8 +28,10 @@ import { type RuntimeHostSshProcessFactory } from '@maka/runtime-host/client';
 import {
   encodeRuntimeHostActivationFrame,
   encodeRuntimeHostAccessManagementFrame,
+  encodeRuntimeHostPeerManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  encodeRuntimeHostPeerMeshManagementFrame,
   runtimeHostAccessCredentialFingerprint,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
@@ -637,6 +640,112 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
+test('requests relay-discovery status only on the peer-management frame', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runPeerManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'status',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /peer.*status.*--framed.*--relay-discovery-status/u);
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerManagementFrame({
+      kind: 'result',
+      action: 'status',
+      status: {
+        state: 'enabled',
+        serviceState: 'running',
+        peerId: '12D3KooWpeer',
+        rootId: 'a'.repeat(64),
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: [],
+        automaticRelayDiscovery: true,
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
+  await harness.terminal.close();
+});
+
+test('sends a Mesh invitation only after the authenticated remote operator requests it', async () => {
+  const harness = createHarness('pending');
+  const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
+  const management = harness.terminal.runPeerMeshManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'join',
+    invitation,
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /mesh.*join.*--framed/u);
+  assert.doesNotMatch(command, /one-time-mesh-secret/u);
+  assert.deepEqual(harness.pty.writes, []);
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({ kind: 'input', action: 'join' }),
+  );
+  assert.deepEqual(harness.pty.writes, [`${invitation}\r`]);
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({
+      kind: 'result',
+      action: 'join',
+      result: {
+        localPeerId: 'peer-b',
+        available: true,
+        transit: {
+          meshId: null,
+          allowedMemberCount: 0,
+          activeReservationCount: 0,
+          activeCircuitCount: 0,
+          maxReservationCount: 32,
+          maxCircuitCount: 8,
+          maxCircuitsPerPeer: 2,
+          maxCircuitDurationSeconds: 7_200,
+          maxCircuitBytes: 256 * 1024 * 1024,
+        },
+        meshes: [
+          {
+            meshId: 'mesh-id',
+            role: 'member',
+            authorityPeerId: 'peer-a',
+            revision: 2,
+            closed: false,
+            members: [
+              { peerId: 'peer-a', state: 'route_available', expiresAt: Date.now() + 60_000 },
+              { peerId: 'peer-b', state: 'local' },
+            ],
+            pendingInvitationCount: 0,
+          },
+        ],
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await management).kind, 'result');
+  assert.doesNotMatch(JSON.stringify(harness.events), /one-time-mesh-secret/u);
+  await harness.terminal.close();
+});
+
 test('rejects a framed service result for a different action', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
@@ -764,6 +873,7 @@ test('uploads a development release archive before running the same remote setup
   t.after(() => rm(directory, { recursive: true, force: true }));
   const archive = join(directory, 'maka-agent-development.tgz');
   await writeFile(archive, 'development package');
+  const integrity = `sha512-${createHash('sha512').update('development package').digest('base64')}`;
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const launches: Array<{ file: string; args: string[]; pty: FakePty }> = [];
   const terminal = createDesktopRuntimeHostSshTerminal({
@@ -782,7 +892,11 @@ test('uploads a development release archive before running the same remote setup
 
   const setupInput = {
     destination: 'operator@example.com',
-    setupPackage: { kind: 'development_archive', path: archive } as const,
+    setupPackage: {
+      kind: 'development_archive',
+      path: archive,
+      integrity,
+    } as const,
     principalId: 'desktop:stable-client',
   };
   const setup = terminal.runSetup(setupInput, () => undefined);
@@ -799,6 +913,8 @@ test('uploads a development release archive before running the same remote setup
   assert.equal(launches[1]?.file, 'ssh');
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY=/u);
+  assert.ok(remoteCommand.includes(integrity));
   assert.match(remoteCommand, /--defer-pairing-commit/u);
   assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
@@ -886,6 +1002,7 @@ class FakePty {
   deferKill = false;
   exitOnForceKill = false;
   readonly killSignals: Array<string | undefined> = [];
+  readonly writes: string[] = [];
   readonly #dataListeners = new Set<(data: string) => void>();
   readonly #exitListeners = new Set<(event: { exitCode: number; signal: number }) => void>();
   #resolveExit!: () => void;
@@ -922,7 +1039,9 @@ class FakePty {
     this.#resolveExit();
   }
 
-  write(): void {}
+  write(data: string): void {
+    this.writes.push(data);
+  }
   resize(): void {}
   kill(signal?: string): void {
     this.killSignals.push(signal);

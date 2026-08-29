@@ -630,6 +630,45 @@ test('returns Host-owned cancellation proof to the renderer', async () => {
   );
 });
 
+test('returns Host-owned Message execution resolutions to the renderer', async () => {
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        queryMessageExecutions: async (input) => ({
+          resolutions: input.messageIds.map((messageId) => messageId === 'message-cancelled'
+            ? { messageId, state: 'cancelled' as const }
+            : {
+                messageId,
+                state: 'owned' as const,
+                turnId: 'successor-turn',
+                runId: 'successor-run',
+              }),
+        }),
+      }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('sessions:queryMessageExecutions', 'session-1', [
+      'message-delegated',
+      'message-cancelled',
+    ]),
+    {
+      resolutions: [
+        {
+          messageId: 'message-delegated',
+          state: 'owned',
+          turnId: 'successor-turn',
+          runId: 'successor-run',
+        },
+        { messageId: 'message-cancelled', state: 'cancelled' },
+      ],
+    },
+  );
+});
+
 test('submits a slash Skill message and reports the Host Skill outcome', async () => {
   const submits: unknown[] = [];
   const ipc = ipcHarness();
@@ -1502,6 +1541,7 @@ function executionClient(overrides: Partial<ExecutionClient>): ExecutionClient {
     interruptTurn: unavailable,
     listSessionTurnLandmarks: unavailable,
     listSessionTurns: unavailable,
+    queryMessageExecutions: unavailable,
     queryMessages: unavailable,
     queryTurnResume: unavailable,
     readExecutionBoundary: unavailable,

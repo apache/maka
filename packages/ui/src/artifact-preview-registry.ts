@@ -19,54 +19,27 @@
 
 /** Safe raster-image preview classification for renderer data URLs. */
 
-import type { ArtifactBinaryReadResult, ArtifactKind } from '@maka/core/artifacts';
+import {
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  normalizeArtifactImagePreviewMime,
+  resolveArtifactImagePreview,
+  type ArtifactBinaryReadResult,
+  type ArtifactImagePreviewInput,
+  type ArtifactImagePreviewResolution,
+} from '@maka/core/artifacts';
 
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 
 /** Path and ownership fields are intentionally outside this boundary. */
-export interface ArtifactPreviewInput {
-  name: string;
-  kind: ArtifactKind;
-  mimeType?: string;
-  sizeBytes?: number;
-}
-
+export type ArtifactPreviewInput = ArtifactImagePreviewInput;
 export type PreviewResolution =
-  | {
-      kind: 'image';
-      reason: 'mime_match' | 'ext_fallback';
-    }
-  | {
-      kind: 'unsupported';
-      reason: 'kind_disallowed' | 'mime_disallowed' | 'no_mime_no_ext' | 'oversize' | 'read_failed';
-    };
-
-/** Maximum decoded image payload allowed into renderer state. */
-export const IMAGE_PAYLOAD_MAX_BYTES = 2 * 1024 * 1024;
+  | ArtifactImagePreviewResolution
+  | { kind: 'unsupported'; reason: 'read_failed' };
 
 /** Encoded-length cap, including base64 padding. */
-const IMAGE_PAYLOAD_MAX_BASE64_LENGTH = Math.ceil((IMAGE_PAYLOAD_MAX_BYTES * 4) / 3) + 2;
-
-/**
- * MIME allowlist shared by metadata and post-load validation. SVG is
- * intentionally absent.
- */
-const ALLOWED_IMAGE_MIMES: ReadonlySet<string> = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'image/avif',
-]);
-
-/** Return a normalized allowlisted MIME for constructing an image data URL. */
-function normalizeAllowedImageMime(mimeType: string | undefined): string | null {
-  if (typeof mimeType !== 'string') return null;
-  const mime = mimeType.trim().toLowerCase();
-  if (mime === '') return null;
-  return ALLOWED_IMAGE_MIMES.has(mime) ? mime : null;
-}
+const IMAGE_PAYLOAD_MAX_BASE64_LENGTH =
+  Math.ceil((ARTIFACT_IMAGE_PREVIEW_MAX_BYTES * 4) / 3) + 2;
 
 /** Post-load decision after payload size and sniffed MIME validation. */
 export type ImagePostLoadOutcome =
@@ -80,7 +53,7 @@ function decideImagePostLoad(input: {
   if (exceedsImagePayloadCap(input.base64)) {
     return { kind: 'unsupported', reason: 'oversize' };
   }
-  const safeMime = normalizeAllowedImageMime(input.mimeType);
+  const safeMime = normalizeArtifactImagePreviewMime(input.mimeType);
   if (!safeMime) {
     return { kind: 'unsupported', reason: 'mime_disallowed' };
   }
@@ -98,37 +71,8 @@ export function decideImageReadOutcome(readResult: ArtifactBinaryReadResult): Im
   return decideImagePostLoad({ base64: readResult.base64, mimeType: readResult.mimeType });
 }
 
-/** Safe extension fallback when MIME metadata is absent. */
-const ALLOWED_IMAGE_EXTS: ReadonlySet<string> = new Set([
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.webp',
-  '.avif',
-]);
-
 export function resolvePreviewKind(input: ArtifactPreviewInput): PreviewResolution {
-  if (input.kind !== 'image') {
-    return { kind: 'unsupported', reason: 'kind_disallowed' };
-  }
-  // Reject by metadata before materializing base64.
-  if (input.sizeBytes !== undefined && input.sizeBytes > IMAGE_PAYLOAD_MAX_BYTES) {
-    return { kind: 'unsupported', reason: 'oversize' };
-  }
-  // A present MIME is authoritative; extension fallback cannot override it.
-  if (input.mimeType) {
-    const mime = input.mimeType.trim().toLowerCase();
-    if (ALLOWED_IMAGE_MIMES.has(mime)) {
-      return { kind: 'image', reason: 'mime_match' };
-    }
-    return { kind: 'unsupported', reason: 'mime_disallowed' };
-  }
-  const ext = lowercaseExt(input.name);
-  if (ext && ALLOWED_IMAGE_EXTS.has(ext)) {
-    return { kind: 'image', reason: 'ext_fallback' };
-  }
-  return { kind: 'unsupported', reason: 'no_mime_no_ext' };
+  return resolveArtifactImagePreview(input);
 }
 
 /** Enforce the post-load cap using encoded length without decoding. */
@@ -142,11 +86,4 @@ export function formatPreviewSize(sizeBytes: number | undefined, locale: UiLocal
   if (sizeBytes < 1024) return `${sizeBytes} B`;
   if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function lowercaseExt(name: string): string | null {
-  if (typeof name !== 'string') return null;
-  const idx = name.lastIndexOf('.');
-  if (idx <= 0 || idx === name.length - 1) return null;
-  return name.slice(idx).toLowerCase();
 }

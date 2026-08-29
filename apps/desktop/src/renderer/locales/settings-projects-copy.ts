@@ -42,10 +42,6 @@ export type SettingsProjectsCopy = {
     revokeSharedAccessConfirm: string;
     revokeSharedAccessDescription: string;
     revokeSharedAccessDone: string;
-    uninstallLocalService: string;
-    uninstallLocalServiceConfirm: string;
-    uninstallLocalServiceDescription: string;
-    uninstallLocalServiceDone: string;
     createConnectionCode: string;
     connectionCodeTitle: string;
     connectionCodeDescription: string;
@@ -134,10 +130,16 @@ export type SettingsProjectsCopy = {
     directPeerRoutes: string;
     directPeerCoordinationRelays: string;
     directPeerCoordinationRelaysPlaceholder: string;
+    directPeerAdvancedCoordination: string;
+    directPeerAutomaticRelayDiscovery: string;
+    directPeerAutomaticRelayDiscoveryHelp: string;
     directPeerEnable: string;
     directPeerDisable: string;
     directPeerAddProfile: string;
     directPeerActionFailed: string;
+    peerMesh: string;
+    peerMeshHelp: string;
+    managePeerMesh: string;
     installedVersion: string;
     operatingSystem: string;
     processId: string;
@@ -161,6 +163,8 @@ export type SettingsProjectsCopy = {
     refresh: string;
     startService: string;
     restartService: string;
+    restartActiveTasksDescription: string;
+    restartInterrupt: string;
     repairService: string;
     updateService: string;
     updatePolicy: string;
@@ -295,7 +299,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       useConnectionCode: '使用连接码',
       configureManually: '手动配置',
       thisComputerRemoteAccess: '远程访问',
-      thisComputerRemoteAccessHelp: '让其他 Maka Desktop 通过实验性 Direct peer 连接此 Host',
+      thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
       remoteAccessOn: '已开启',
       remoteAccessOff: '未开启',
       enableRemoteAccess: '开启',
@@ -306,10 +310,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       revokeSharedAccessConfirm: '撤销共享访问？',
       revokeSharedAccessDescription: '已连接的 Desktop 将断开，尚未使用的连接码也会失效。',
       revokeSharedAccessDone: '共享访问已撤销',
-      uninstallLocalService: '移除后台服务',
-      uninstallLocalServiceConfirm: '移除 Runtime Host 后台服务？',
-      uninstallLocalServiceDescription: '数据和已授予的共享访问会保留；Local Host 将恢复为仅在 Maka Desktop 运行时启动。',
-      uninstallLocalServiceDone: '后台服务已移除',
       createConnectionCode: '新建连接码',
       connectionCodeTitle: '连接这台电脑',
       connectionCodeDescription: '连接码将在 15 分钟后过期且只能使用一次。对方将获得 Owner 权限；Direct peer 无后备连接。',
@@ -404,7 +404,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: '启动失败',
       },
       directPeer: 'Direct peer（实验性）',
-      directPeerDescription: '创建独立的实验性 Direct profile。受限 NAT 或被阻止的 UDP 可能使其不可达，且不会自动回退；保留 SSH profile 用于手动恢复。',
+      directPeerDescription: '创建独立的实验性 Direct profile。可自动发现或手动指定协调节点来辅助打洞；受限 NAT 或被阻止的 UDP 仍可能使其不可达，且不会回退到中继传输。保留 SSH profile 用于手动恢复。',
       directPeerState: {
         unsupported: '需要更新',
         not_configured: '未配置',
@@ -420,10 +420,17 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: '可用路径',
       directPeerCoordinationRelays: '连接协调节点（可选）',
       directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
+      directPeerAdvancedCoordination: '手动设置协调节点',
+      directPeerAutomaticRelayDiscovery: '自动发现协调节点',
+      directPeerAutomaticRelayDiscoveryHelp:
+        '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
       directPeerEnable: '启用并添加',
       directPeerDisable: '停用',
       directPeerAddProfile: '添加到 Desktop',
       directPeerActionFailed: 'Direct peer 操作失败',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: '管理本 Desktop peer 的私有 Mesh membership 和邀请',
+      managePeerMesh: '管理 Peer Mesh',
       installedVersion: '版本',
       operatingSystem: '系统',
       processId: '进程 ID',
@@ -447,6 +454,8 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       refresh: '刷新',
       startService: '启动',
       restartService: '重启',
+      restartActiveTasksDescription: '重启会停止当前任务。是否中断这些任务并继续？',
+      restartInterrupt: '中断任务并重启',
       repairService: '修复',
       updateService: '安装配套版本',
       updatePolicy: '更新策略',
@@ -495,7 +504,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       showLogs: '查看日志',
       noLogs: '没有服务日志',
       uninstallService: '卸载服务',
-      uninstallConfirmTitle: '卸载远程 Runtime Host？',
+      uninstallConfirmTitle: '卸载此 Runtime Host？',
       uninstallConfirmBody: '这会停止并移除 Maka 管理的服务与程序，但保留 State Root、项目和任务数据。当前 Desktop Profile 不会被删除。',
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
@@ -581,7 +590,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       useConnectionCode: 'Use connection code',
       configureManually: 'Configure manually',
       thisComputerRemoteAccess: 'Remote access',
-      thisComputerRemoteAccessHelp: 'Let another Maka Desktop reach this Host through experimental Direct peer',
+      thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
       remoteAccessOn: 'On',
       remoteAccessOff: 'Off',
       enableRemoteAccess: 'Enable',
@@ -592,10 +601,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       revokeSharedAccessConfirm: 'Revoke shared access?',
       revokeSharedAccessDescription: 'The connected Desktop will be disconnected, and unused connection codes will stop working.',
       revokeSharedAccessDone: 'Shared access revoked',
-      uninstallLocalService: 'Remove background service',
-      uninstallLocalServiceConfirm: 'Remove the Runtime Host background service?',
-      uninstallLocalServiceDescription: 'Data and granted shared access are retained. The Local Host will return to running only while Maka Desktop is open.',
-      uninstallLocalServiceDone: 'Background service removed',
       createConnectionCode: 'New connection code',
       connectionCodeTitle: 'Connect to this computer',
       connectionCodeDescription: 'Expires in 15 minutes and can be used once. The other Desktop receives Owner access. Direct peer has no fallback.',
@@ -690,7 +695,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         failed: 'Failed',
       },
       directPeer: 'Direct peer (experimental)',
-      directPeerDescription: 'Create an independent experimental Direct profile. Restrictive NAT or blocked UDP may make it unreachable, and it does not fall back automatically; keep the SSH profile for manual recovery.',
+      directPeerDescription: 'Create an independent experimental Direct profile. Discover coordination peers automatically or provide them manually to assist hole punching; restrictive NAT or blocked UDP may still make it unreachable, and traffic does not fall back to a relay. Keep the SSH profile for manual recovery.',
       directPeerState: {
         unsupported: 'Update required',
         not_configured: 'Not configured',
@@ -706,10 +711,17 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerRoutes: 'Routes',
       directPeerCoordinationRelays: 'Connection coordination peers (optional)',
       directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
+      directPeerAdvancedCoordination: 'Set coordination peers manually',
+      directPeerAutomaticRelayDiscovery: 'Discover coordination peers automatically',
+      directPeerAutomaticRelayDiscoveryHelp:
+        'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',
       directPeerEnable: 'Enable and add',
       directPeerDisable: 'Disable',
       directPeerAddProfile: 'Add to Desktop',
       directPeerActionFailed: 'Direct peer action failed',
+      peerMesh: 'Peer Mesh',
+      peerMeshHelp: 'Manage private Mesh memberships and invitations for this Desktop peer',
+      managePeerMesh: 'Manage Peer Mesh',
       installedVersion: 'Version',
       operatingSystem: 'System',
       processId: 'Process ID',
@@ -733,6 +745,8 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       refresh: 'Refresh',
       startService: 'Start',
       restartService: 'Restart',
+      restartActiveTasksDescription: 'Restarting stops the current tasks. Interrupt them and continue?',
+      restartInterrupt: 'Interrupt tasks and restart',
       repairService: 'Repair',
       updateService: 'Install matching version',
       updatePolicy: 'Update policy',
@@ -784,7 +798,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       showLogs: 'View logs',
       noLogs: 'No service logs were found',
       uninstallService: 'Uninstall service',
-      uninstallConfirmTitle: 'Uninstall the remote Runtime Host?',
+      uninstallConfirmTitle: 'Uninstall this Runtime Host?',
       uninstallConfirmBody: 'This stops and removes the Maka-managed service and program, while preserving the State Root, projects, and task data. The Desktop profile is not removed.',
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,

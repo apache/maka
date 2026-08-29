@@ -62,6 +62,28 @@ export type WorkHubSessionSummary = Omit<WorkHubSessionFacts, 'kind' | 'runningT
 
 export type WorkHubProjectedTurnState = 'running' | 'completed' | 'aborted' | 'failed';
 
+export type WorkHubDelegationExecutionState =
+  | 'accepted'
+  | 'running'
+  | 'waiting_for_user'
+  | 'completed'
+  | 'failed'
+  | 'aborted'
+  | 'recovering';
+
+export interface WorkHubDelegationReference {
+  readonly delegationId: string;
+  readonly targetSessionId: string;
+  /** Stable delegated work identity; targetTurnId is only its admission location. */
+  readonly targetMessageId: string;
+  readonly targetTurnId: string;
+}
+
+export interface WorkHubDelegationFeedback {
+  readonly delegationId: string;
+  readonly state: WorkHubDelegationExecutionState;
+}
+
 export interface WorkHubProjectedTurn {
   messageId: string;
   target: WorkHubSessionTarget;
@@ -79,8 +101,12 @@ export interface WorkHubCoordinationTurn {
   state: WorkHubProjectedTurnState;
   result?: string;
   assignment?: {
+    readonly delegationId: string;
     readonly targetSessionId: string;
     readonly targetSessionName: string;
+    readonly targetMessageId: string;
+    readonly targetTurnId: string;
+    readonly feedbackState: WorkHubDelegationExecutionState;
   };
   updatedAt: number;
 }
@@ -158,18 +184,18 @@ export type WorkHubSubmission = (
 export interface WorkHubSessionPort {
   list(): Promise<WorkHubSessionFacts[]>;
   /**
-   * Lists Sessions with per-target catalog coverage. A target missing from a
-   * partial multi-Host list is not authoritatively absent.
-   */
-  listCatalog?(): Promise<{
-    sessions: WorkHubSessionFacts[];
-    isCompleteFor(target: WorkHubSessionTarget): boolean;
-  }>;
-  /**
    * Rebuilds a bounded recent conversation from the authoritative Session
    * transcripts. Missing transcripts are omitted rather than copied elsewhere.
    */
   recentTurns(targets: readonly WorkHubSessionTarget[]): Promise<WorkHubProjectedTurn[]>;
+  /**
+   * Rebuilds exact target-Turn execution facts for durable delegation links.
+   * The target Session remains authoritative; results are read-only and may
+   * conservatively report `recovering` while that authority is unavailable.
+   */
+  delegationFeedback(
+    references: readonly WorkHubDelegationReference[],
+  ): Promise<readonly WorkHubDelegationFeedback[]>;
   /**
    * Returns rebuildable routing evidence read from the authoritative Session
    * log. Implementations must not persist a second writable copy of it.
@@ -177,22 +203,6 @@ export interface WorkHubSessionPort {
   routingEvidence(
     targets: readonly WorkHubSessionTarget[],
   ): Promise<Array<{ target: WorkHubSessionTarget; originPrompt?: string }>>;
-  create(input: { name: string }): Promise<WorkHubSessionFacts>;
-  reserveTurnId(): string;
-  submit(
-    target: WorkHubSessionTarget,
-    text: string,
-    turnId: string,
-  ): Promise<{ turnId: string; steered?: true }>;
-  reconcileSubmission(
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-  ): Promise<
-    | { kind: 'root'; turnId: string }
-    | { kind: 'steered' }
-    | { kind: 'unknown' }
-  >;
-  stop(target: WorkHubSessionTarget, expectedTurnId: string): Promise<void>;
   subscribe(handler: () => void): () => void;
 }
 
@@ -201,7 +211,6 @@ export interface WorkHubCoordinationPort {
     handler: (turns: readonly WorkHubCoordinationTurn[]) => void,
     onError: (error: unknown) => void,
   ): Promise<{ close(): Promise<void> }>;
-  answer(input: { turnId: string; text: string }): Promise<{ turnId: string }>;
   record(input: {
     turnId: string;
     userText: string;
@@ -209,17 +218,6 @@ export interface WorkHubCoordinationPort {
   }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
   act(input: Omit<WorkHubCoordinationActInput, 'create'>): Promise<WorkHubCoordinationActResult>;
-}
-
-export class WorkHubSessionSubmitError extends Error {
-  constructor(
-    message: string,
-    readonly admission: 'rejected' | 'unknown',
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'WorkHubSessionSubmitError';
-  }
 }
 
 export interface WorkHubController {
@@ -239,50 +237,14 @@ export interface WorkHubController {
   resetVisitContext(): void;
 }
 
-const MAX_TRACKED_WORKHUB_ROOTS = 32;
-
-interface WorkHubRootOwnership {
-  order: number;
-  turnId: string;
-}
-
-interface WorkHubPendingAdmission extends WorkHubRootOwnership {
-  state: 'in_flight' | 'uncertain';
-}
-
-interface WorkHubOwnershipTombstone {
-  order: number;
-  stoppedTurnIds: Set<string>;
-}
-
 export function createWorkHubController(deps: {
   sessions: WorkHubSessionPort;
   coordination: WorkHubCoordinationPort;
 }): WorkHubController {
-  return createWorkHubControllerImplementation(deps);
-}
-
-/** @internal Transitional R2.4 regression harness; application code must use the Action Gate. */
-export function createLegacyWorkHubControllerForTests(deps: {
-  sessions: WorkHubSessionPort;
-}): WorkHubController {
-  return createWorkHubControllerImplementation(deps);
-}
-
-function createWorkHubControllerImplementation(deps: {
-  sessions: WorkHubSessionPort;
-  coordination?: WorkHubCoordinationPort;
-}): WorkHubController {
-  const coordination = deps.coordination ?? legacyTestCoordinationPort();
+  const { coordination } = deps;
   let routePolicy = createWorkHubRoutePolicy();
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
-  const confirmedOwnershipBySessionId = new Map<string, WorkHubRootOwnership>();
-  const pendingAdmissionsBySessionId = new Map<string, WorkHubPendingAdmission[]>();
-  const ownershipTombstoneBySessionId = new Map<string, WorkHubOwnershipTombstone>();
-  const stopAttemptByTurn = new Map<string, Promise<void>>();
-  const stopOperationCountBySessionId = new Map<string, number>();
-  let ownershipRevision = 0;
   const reconcileFocus = (
     policy: ReturnType<typeof createWorkHubRoutePolicy>,
     sessions: readonly WorkHubSessionFacts[],
@@ -292,323 +254,77 @@ function createWorkHubControllerImplementation(deps: {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map((session) => session.target));
   };
-  const correctionFor = (from: WorkHubSessionTarget): WorkHubCorrectionContext => {
-    const confirmed = confirmedOwnershipBySessionId.get(from.sessionId);
-    const pending = pendingAdmissionsBySessionId.get(from.sessionId);
-    const turnId = confirmed?.turnId ?? pending?.at(-1)?.turnId;
-    if (!turnId) return { from };
-    return {
-      from,
-      turnId,
-    };
-  };
-  const pendingAdmissions = (sessionId: string): WorkHubPendingAdmission[] =>
-    pendingAdmissionsBySessionId.get(sessionId) ?? [];
-  const setPendingAdmissions = (
-    sessionId: string,
-    pending: WorkHubPendingAdmission[],
-  ) => {
-    ownershipRevision += 1;
-    if (pending.length === 0) {
-      pendingAdmissionsBySessionId.delete(sessionId);
-      return;
-    }
-    pendingAdmissionsBySessionId.set(
-      sessionId,
-      [...pending].sort((left, right) => left.order - right.order),
-    );
-  };
-  const trackedRootCount = () => {
-    let pendingCount = 0;
-    for (const pending of pendingAdmissionsBySessionId.values()) {
-      pendingCount += pending.length;
-    }
-    return confirmedOwnershipBySessionId.size + pendingCount;
-  };
-  const maybeRetireTombstone = (sessionId: string) => {
-    const tombstone = ownershipTombstoneBySessionId.get(sessionId);
-    if (!tombstone) return;
-    if ((stopOperationCountBySessionId.get(sessionId) ?? 0) > 0) return;
-    if (pendingAdmissions(sessionId).some((candidate) => candidate.order <= tombstone.order)) {
-      return;
-    }
-    ownershipTombstoneBySessionId.delete(sessionId);
-  };
-  const readCatalog = async () => {
-    const revisionAtStart = ownershipRevision;
-    const catalog = deps.sessions.listCatalog
-      ? await deps.sessions.listCatalog()
-      : {
-          sessions: await deps.sessions.list(),
-          isCompleteFor: () => false,
-        };
-    return {
-      catalog,
-      // A catalog request that overlapped an ownership mutation may describe
-      // the state before that mutation. It remains useful for projection, but
-      // it must not authoritatively prune newer ownership or admissions.
-      allowAuthoritativePruning: revisionAtStart === ownershipRevision,
-    };
-  };
-  const reconcileConfirmedOwnership = (catalog: {
-    sessions: readonly WorkHubSessionFacts[];
-    isCompleteFor(target: WorkHubSessionTarget): boolean;
-  }, allowAuthoritativePruning: boolean) => {
-    if (!allowAuthoritativePruning) return;
-    const { sessions } = catalog;
-    const sessionById = new Map(sessions.map((session) => [session.target.sessionId, session]));
-    for (const [sessionId, ownership] of confirmedOwnershipBySessionId) {
-      const session = sessionById.get(sessionId);
-      if (
-        (!session && catalog.isCompleteFor({ sessionId })) ||
-        session?.archived ||
-        (session?.runningTurnIds !== undefined &&
-          !session.runningTurnIds.includes(ownership.turnId))
-      ) {
-        if (confirmedOwnershipBySessionId.delete(sessionId)) {
-          ownershipRevision += 1;
-        }
-      }
-    }
-  };
-  const storeOwnershipTombstone = (
-    sessionId: string,
-    order: number,
-    stoppedTurnIds: Iterable<string> = [],
-  ) => {
-    const existing = ownershipTombstoneBySessionId.get(sessionId);
-    if (existing && existing.order > order) return;
-    const stopped = new Set(existing?.order === order ? existing.stoppedTurnIds : []);
-    for (const turnId of stoppedTurnIds) stopped.add(turnId);
-    ownershipTombstoneBySessionId.set(sessionId, {
-      order,
-      stoppedTurnIds: stopped,
-    });
-  };
-  const reserveOwnedRoot = (
-    target: WorkHubSessionTarget,
-    turnId: string,
-    order: number,
-  ) => {
-    if (trackedRootCount() >= MAX_TRACKED_WORKHUB_ROOTS) {
-      throw new Error('WorkHub has too many unresolved root submissions');
-    }
-    setPendingAdmissions(target.sessionId, [
-      ...pendingAdmissions(target.sessionId),
-      { order, turnId, state: 'in_flight' },
-    ]);
-  };
-  const removePendingRoot = (
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-    order: number,
-  ) => {
-    setPendingAdmissions(
-      target.sessionId,
-      pendingAdmissions(target.sessionId).filter((candidate) =>
-        candidate.order !== order || candidate.turnId !== reservedTurnId),
-    );
-  };
-  const markPendingRootUncertain = (
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-    order: number,
-  ) => {
-    setPendingAdmissions(
-      target.sessionId,
-      pendingAdmissions(target.sessionId).map((candidate) =>
-        candidate.order === order && candidate.turnId === reservedTurnId
-          ? { ...candidate, state: 'uncertain' }
-          : candidate),
-    );
-  };
-  const attemptStop = (
-    target: WorkHubSessionTarget,
-    turnId: string,
-  ): Promise<void> => {
-    const key = `${target.sessionId}\0${turnId}`;
-    const existing = stopAttemptByTurn.get(key);
-    if (existing) return existing;
-    stopOperationCountBySessionId.set(
-      target.sessionId,
-      (stopOperationCountBySessionId.get(target.sessionId) ?? 0) + 1,
-    );
-    const stopping = deps.sessions.stop(target, turnId).finally(() => {
-      stopAttemptByTurn.delete(key);
-      const remaining = (stopOperationCountBySessionId.get(target.sessionId) ?? 1) - 1;
-      if (remaining === 0) {
-        stopOperationCountBySessionId.delete(target.sessionId);
-      } else {
-        stopOperationCountBySessionId.set(target.sessionId, remaining);
-      }
-    });
-    stopAttemptByTurn.set(key, stopping);
-    return stopping;
-  };
-  const settleOwnedRoot = async (
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-    turn: { turnId: string; steered?: true },
-    order: number,
-  ) => {
-    const tombstone = ownershipTombstoneBySessionId.get(target.sessionId);
-    let stopped = false;
-    let stopFailure: unknown;
-    if (!turn.steered && tombstone && tombstone.order >= order) {
-      stopped = tombstone.stoppedTurnIds.has(turn.turnId);
-      if (!stopped) {
-        try {
-          const priorStopAttempt = stopAttemptByTurn.get(
-            `${target.sessionId}\0${turn.turnId}`,
-          );
-          if (priorStopAttempt) {
-            try {
-              await priorStopAttempt;
-            } catch {
-              // Admission is new evidence. Retry against the admitted root even
-              // when the earlier pre-admission Stop failed or observed nothing.
-            }
-          }
-          await attemptStop(target, turn.turnId);
-          const currentBarrier = ownershipTombstoneBySessionId.get(target.sessionId);
-          if (currentBarrier && currentBarrier.order >= order) {
-            storeOwnershipTombstone(target.sessionId, currentBarrier.order, [turn.turnId]);
-          }
-          stopped = true;
-        } catch (error) {
-          stopFailure = error;
-        }
-      }
-    }
-    removePendingRoot(target, reservedTurnId, order);
-    if (!turn.steered && !stopped) {
-      const confirmed = confirmedOwnershipBySessionId.get(target.sessionId);
-      if (!confirmed || confirmed.order <= order) {
-        confirmedOwnershipBySessionId.set(target.sessionId, {
-          order,
-          turnId: turn.turnId,
-        });
-        ownershipRevision += 1;
-      }
-    }
-    maybeRetireTombstone(target.sessionId);
-    if (stopFailure) throw stopFailure;
-  };
-  const releasePendingRoot = (
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-    order: number,
-  ) => {
-    removePendingRoot(target, reservedTurnId, order);
-    maybeRetireTombstone(target.sessionId);
-  };
-  const reconcilePendingRoot = async (
-    target: WorkHubSessionTarget,
-    reservedTurnId: string,
-    order: number,
-  ): Promise<boolean> => {
-    const reconciliation = await deps.sessions.reconcileSubmission(target, reservedTurnId);
-    if (reconciliation.kind === 'unknown') return false;
-    await settleOwnedRoot(
-      target,
-      reservedTurnId,
-      reconciliation.kind === 'steered'
-        ? { turnId: reservedTurnId, steered: true }
-        : { turnId: reconciliation.turnId },
-      order,
-    );
-    return true;
-  };
-  const reconcileUncertainAdmissions = (catalog: {
-    sessions: readonly WorkHubSessionFacts[];
-    isCompleteFor(target: WorkHubSessionTarget): boolean;
-  }, allowAuthoritativePruning: boolean): Promise<void> | undefined => {
-    const sessionById = new Map(
-      catalog.sessions.map((session) => [session.target.sessionId, session]),
-    );
-    const uncertain = [...pendingAdmissionsBySessionId.entries()]
-      .flatMap(([sessionId, pending]) => pending
-        .filter((candidate) => candidate.state === 'uncertain')
-        .map((candidate) => ({
-          target: { sessionId },
-          ...candidate,
-        })));
-    if (uncertain.length === 0) return undefined;
-    return Promise.all(uncertain.map(async ({ target, turnId, order }) => {
-      const session = sessionById.get(target.sessionId);
-      if (
-        allowAuthoritativePruning &&
-        (session?.archived || (!session && catalog.isCompleteFor(target)))
-      ) {
-        releasePendingRoot(target, turnId, order);
-        return;
-      }
-      try {
-        await reconcilePendingRoot(target, turnId, order);
-      } catch {
-        // Failed reconciliation preserves the pending or confirmed ownership.
-      }
-    })).then(() => undefined);
-  };
-  const assertSubmissionBarrierOpen = (target: WorkHubSessionTarget) => {
-    maybeRetireTombstone(target.sessionId);
-    const tombstone = ownershipTombstoneBySessionId.get(target.sessionId);
-    const stopCount = stopOperationCountBySessionId.get(target.sessionId) ?? 0;
-    const pendingBarrier = tombstone && pendingAdmissions(target.sessionId)
-      .some((candidate) => candidate.order <= tombstone.order);
-    if (stopCount > 0 || pendingBarrier) {
-      throw new Error('WorkHub is still reconciling a correction for this Session');
-    }
-  };
-  const stopOwnedRoots = async (
-    correction: WorkHubCorrectionContext,
-    order: number,
-  ) => {
-    if (correction.steered) return;
-    const confirmed = confirmedOwnershipBySessionId.get(correction.from.sessionId);
-    const pending = pendingAdmissions(correction.from.sessionId);
-    const turnIds = new Set<string>();
-    const unconfirmedTurnIds = new Set<string>();
-    if (correction.turnId) turnIds.add(correction.turnId);
-    if (confirmed && confirmed.order < order) {
-      turnIds.add(confirmed.turnId);
-    }
-    for (const candidate of pending) {
-      if (candidate.order < order) {
-        turnIds.add(candidate.turnId);
-        unconfirmedTurnIds.add(candidate.turnId);
-      }
-    }
-    if (turnIds.size === 0) return;
-    // Publish only the order barrier before awaiting Host acknowledgements.
-    // Individual IDs become tombstoned only after their Stop succeeds.
-    storeOwnershipTombstone(correction.from.sessionId, order);
-    const failures: unknown[] = [];
-    await Promise.all([...turnIds].map(async (turnId) => {
-      try {
-        await attemptStop(correction.from, turnId);
-        const barrier = ownershipTombstoneBySessionId.get(correction.from.sessionId);
-        if (barrier && barrier.order >= order && !unconfirmedTurnIds.has(turnId)) {
-          storeOwnershipTombstone(correction.from.sessionId, barrier.order, [turnId]);
-        }
-        const owned = confirmedOwnershipBySessionId.get(correction.from.sessionId);
-        if (owned && owned.order < order && owned.turnId === turnId) {
-          confirmedOwnershipBySessionId.delete(correction.from.sessionId);
-          ownershipRevision += 1;
-        }
-      } catch (error) {
-        failures.push(error);
-      }
-    }));
-    maybeRetireTombstone(correction.from.sessionId);
-    if (failures.length > 0) throw failures[0];
-  };
   return {
-    openConversation(handler, onError) {
-      return coordination.open(handler, onError);
+    async openConversation(handler, onError) {
+      let disposed = false;
+      let generation = 0;
+      let latestTurns: readonly WorkHubCoordinationTurn[] = [];
+
+      const refreshFeedback = async () => {
+        const refreshGeneration = ++generation;
+        const turns = latestTurns;
+        const references = turns.flatMap((turn) =>
+          turn.assignment
+            ? [{
+                delegationId: turn.assignment.delegationId,
+                targetSessionId: turn.assignment.targetSessionId,
+                targetMessageId: turn.assignment.targetMessageId,
+                targetTurnId: turn.assignment.targetTurnId,
+              }]
+            : [],
+        );
+        if (references.length === 0) return;
+        let feedback: readonly WorkHubDelegationFeedback[];
+        try {
+          feedback = await deps.sessions.delegationFeedback(references);
+        } catch {
+          feedback = references.map(({ delegationId }) => ({
+            delegationId,
+            state: 'recovering',
+          }));
+        }
+        if (disposed || refreshGeneration !== generation || turns !== latestTurns) return;
+        const feedbackByDelegationId = new Map(
+          feedback.map((entry) => [entry.delegationId, entry]),
+        );
+        handler(turns.map((turn) => {
+          if (!turn.assignment) return turn;
+          const next = feedbackByDelegationId.get(turn.assignment.delegationId);
+          return next
+            ? { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } }
+            : turn;
+        }));
+      };
+
+      const unsubscribe = deps.sessions.subscribe(() => {
+        void refreshFeedback();
+      });
+      let handle: { close(): Promise<void> } | undefined;
+      try {
+        handle = await coordination.open((turns) => {
+          if (disposed) return;
+          latestTurns = turns;
+          generation += 1;
+          // The atomic assignment is already durable acknowledgement, so emit
+          // it immediately before enriching it with target-owned lifecycle.
+          handler(turns);
+          void refreshFeedback();
+        }, onError);
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+      return {
+        async close() {
+          disposed = true;
+          generation += 1;
+          unsubscribe();
+          await handle?.close();
+        },
+      };
     },
     async recordConversationTurn(input) {
-      if (deps.coordination && input.disposition === 'clarify') {
+      if (input.disposition === 'clarify') {
         const result = await coordination.act({
           actionId: input.turnId,
           userText: input.userText,
@@ -640,15 +356,7 @@ function createWorkHubControllerImplementation(deps: {
         readPolicy.rememberTarget(input.focus);
       }
       try {
-        const { catalog, allowAuthoritativePruning } =
-          await readCatalog();
-        reconcileConfirmedOwnership(catalog, allowAuthoritativePruning);
-        const reconciliation = reconcileUncertainAdmissions(
-          catalog,
-          allowAuthoritativePruning,
-        );
-        if (reconciliation) await reconciliation;
-        const facts = catalog.sessions;
+        const facts = await deps.sessions.list();
         const ordinary = facts
           .filter((session) => session.kind === 'ordinary')
           .sort((left, right) => right.updatedAt - left.updatedAt);
@@ -674,31 +382,17 @@ function createWorkHubControllerImplementation(deps: {
     },
     async submit(input) {
       const submissionPolicy = routePolicy;
-      // Reserve the order synchronously, before any await. Corrections are
-      // learned only after successful delivery, but their precedence follows
-      // user submission order rather than network completion order.
-      const submissionOrder = submissionPolicy.reserveSubmissionOrder();
-      if (deps.coordination && input.correction) {
+      if (input.correction) {
         throw new Error(
           'WorkHub linked correction requires persistent delegation support',
         );
       }
-      const { catalog, allowAuthoritativePruning } =
-        await readCatalog();
-      reconcileConfirmedOwnership(catalog, allowAuthoritativePruning);
-      const reconciliation = reconcileUncertainAdmissions(
-        catalog,
-        allowAuthoritativePruning,
-      );
-      if (reconciliation) await reconciliation;
-      const sessions = catalog.sessions;
+      const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
-      const candidateSet = deps.coordination
-        ? await coordination.candidates()
-        : undefined;
+      const candidateSet = await coordination.candidates();
       const candidateBySessionId = new Map(
-        candidateSet?.candidates.map((candidate) => [candidate.sessionId, candidate]),
+        candidateSet.candidates.map((candidate) => [candidate.sessionId, candidate]),
       );
       // Archived Sessions remain visible as historical work, but Runtime Host
       // rejects new root Turns for them. In production the Runtime-owned
@@ -706,7 +400,7 @@ function createWorkHubControllerImplementation(deps: {
       const routable = ordinary.filter(
         (session) =>
           !session.archived &&
-          (!candidateSet || candidateBySessionId.has(session.target.sessionId)),
+          candidateBySessionId.has(session.target.sessionId),
       );
       const routingEvidence = input.explicitTarget
         ? []
@@ -720,14 +414,11 @@ function createWorkHubControllerImplementation(deps: {
         ...(input.explicitTarget ? { explicitTarget: input.explicitTarget } : {}),
       });
       if (decision.kind === 'clarification') {
-        if (deps.coordination && decision.correctedFrom) {
+        if (decision.correctedFrom) {
           throw new Error(
             'WorkHub linked correction requires persistent delegation support',
           );
         }
-        const correction = decision.correctedFrom
-          ? correctionFor(decision.correctedFrom)
-          : undefined;
         return {
           kind: 'clarification',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,
@@ -738,22 +429,14 @@ function createWorkHubControllerImplementation(deps: {
             projectName: session.projectName,
             sessionName: session.sessionName,
           })),
-          ...(correction ? { correction } : {}),
         };
       }
       if (decision.kind === 'discussion') {
-        if (candidateSet) {
-          await coordination.act({
-            actionId: input.requestId,
-            userText: input.text,
-            proposal: { disposition: 'answer_here' },
-          });
-        } else {
-          await coordination.answer({
-            turnId: input.requestId,
-            text: input.text,
-          });
-        }
+        await coordination.act({
+          actionId: input.requestId,
+          userText: input.text,
+          proposal: { disposition: 'answer_here' },
+        });
         return {
           kind: 'discussion',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,
@@ -761,17 +444,12 @@ function createWorkHubControllerImplementation(deps: {
           text: input.text,
         };
       }
-      let target: WorkHubSessionTarget;
-      let evidence: Extract<WorkHubSubmission, { kind: 'submitted' }>['evidence'];
-      const correction = input.correction ?? (decision.kind === 'target' && decision.correctedFrom
-        ? correctionFor(decision.correctedFrom)
-        : undefined);
-      if (deps.coordination && correction) {
+      if (decision.kind === 'target' && decision.correctedFrom) {
         throw new Error(
           'WorkHub linked correction requires persistent delegation support',
         );
       }
-      if (candidateSet && decision.kind === 'new_session') {
+      if (decision.kind === 'new_session') {
         const admitted = await coordination.act({
           actionId: input.requestId,
           userText: input.text,
@@ -783,7 +461,7 @@ function createWorkHubControllerImplementation(deps: {
         if (admitted.disposition !== 'create_new') {
           throw new Error('WorkHub Action Gate returned an unexpected disposition');
         }
-        target = { sessionId: admitted.targetSessionId };
+        const target = { sessionId: admitted.targetSessionId };
         submissionPolicy.rememberTarget(target);
         return {
           kind: 'submitted',
@@ -795,21 +473,11 @@ function createWorkHubControllerImplementation(deps: {
           evidence: 'new_session',
         };
       }
-      if (decision.kind === 'new_session') {
-        const created = await deps.sessions.create({ name: workHubNewSessionName(input.text) });
-        if (created.kind !== 'ordinary') {
-          throw new Error('WorkHub can only create ordinary Sessions');
-        }
-        target = created.target;
-        evidence = 'new_session';
-      } else {
-        target = decision.target;
-        evidence = correction ? 'route_correction' : decision.evidence;
-      }
+      const target = decision.target;
       const targetSession = routable.find(
         (session) => session.target.sessionId === target.sessionId,
       );
-      if (!targetSession && evidence !== 'new_session') {
+      if (!targetSession) {
         throw new Error('WorkHub target Session is unavailable');
       }
       if (targetSession?.state === 'waiting_for_user' && !input.retryAction) {
@@ -821,103 +489,39 @@ function createWorkHubControllerImplementation(deps: {
           target,
         };
       }
-      if (candidateSet) {
-        const candidate = candidateBySessionId.get(target.sessionId);
-        if (!candidate) {
-          throw new Error('WorkHub target Session is unavailable');
-        }
-        const action: WorkHubCoordinationActInput = {
-          actionId: input.requestId,
-          userText: input.text,
-          candidateSetId: candidateSet.candidateSetId,
-          proposal: {
-            disposition: 'delegate_existing',
-            candidateRef: candidate.candidateRef,
-          },
-        };
-        const admitted = await coordination.act(action);
-        if (admitted.disposition !== 'delegate_existing') {
-          throw new Error('WorkHub Action Gate returned an unexpected disposition');
-        }
-        target = { sessionId: admitted.targetSessionId };
-        submissionPolicy.rememberTarget(target);
-        return {
-          kind: 'submitted',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
-          turnId: admitted.targetTurnId,
-          ...(admitted.steered ? { steered: true as const } : {}),
-          evidence,
-        };
+      const candidate = candidateBySessionId.get(target.sessionId);
+      if (!candidate) {
+        throw new Error('WorkHub target Session is unavailable');
       }
-      if (correction) {
-        await stopOwnedRoots(correction, submissionOrder);
+      const action: WorkHubCoordinationActInput = {
+        actionId: input.requestId,
+        userText: input.text,
+        candidateSetId: candidateSet.candidateSetId,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: candidate.candidateRef,
+        },
+      };
+      const admitted = await coordination.act(action);
+      if (admitted.disposition !== 'delegate_existing') {
+        throw new Error('WorkHub Action Gate returned an unexpected disposition');
       }
-      assertSubmissionBarrierOpen(target);
-      const reservedTurnId = deps.sessions.reserveTurnId();
-      reserveOwnedRoot(target, reservedTurnId, submissionOrder);
-      let turn: { turnId: string; steered?: true };
-      try {
-        turn = await deps.sessions.submit(target, input.text, reservedTurnId);
-      } catch (error) {
-        if (
-          error instanceof WorkHubSessionSubmitError &&
-          error.admission === 'rejected'
-        ) {
-          releasePendingRoot(target, reservedTurnId, submissionOrder);
-        } else {
-          markPendingRootUncertain(target, reservedTurnId, submissionOrder);
-          try {
-            await reconcilePendingRoot(target, reservedTurnId, submissionOrder);
-          } catch {
-            // The original delivery error remains primary. Reconciliation keeps
-            // any unresolved admission reachable for a later read/correction.
-          }
-        }
-        throw error;
-      }
-      await settleOwnedRoot(target, reservedTurnId, turn, submissionOrder);
-      submissionPolicy.rememberTarget(target);
-      if (correction) {
-        submissionPolicy.rememberCorrection(input.text, target, submissionOrder);
-      }
+      const admittedTarget = { sessionId: admitted.targetSessionId };
+      submissionPolicy.rememberTarget(admittedTarget);
       return {
         kind: 'submitted',
         strategyId: WORKHUB_ROUTING_STRATEGY_ID,
         requestId: input.requestId,
-        target,
-        turnId: turn.turnId,
-        ...(turn.steered ? { steered: true as const } : {}),
-        evidence,
-        ...(correction ? { correctedFrom: correction.from } : {}),
+        target: admittedTarget,
+        turnId: admitted.targetTurnId,
+        ...(admitted.steered ? { steered: true as const } : {}),
+        evidence: decision.evidence,
       };
     },
     resetVisitContext() {
       focusReadVersion += 1;
       pendingFocusReadVersion = undefined;
       routePolicy = routePolicy.newVisit();
-    },
-  };
-}
-
-function legacyTestCoordinationPort(): WorkHubCoordinationPort {
-  return {
-    async open(handler) {
-      handler([]);
-      return { close: async () => undefined };
-    },
-    async answer(input) {
-      return { turnId: input.turnId };
-    },
-    async record(input) {
-      return { turnId: input.turnId };
-    },
-    async candidates() {
-      throw new Error('The legacy WorkHub test adapter does not expose Action Gate candidates');
-    },
-    async act() {
-      throw new Error('The legacy WorkHub test adapter does not expose Action Gate actions');
     },
   };
 }

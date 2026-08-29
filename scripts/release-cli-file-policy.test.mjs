@@ -38,6 +38,7 @@ import {
   orderWorkspaceBuilds,
   renderNpmReadme,
   resolveWorkspaceReleaseFiles,
+  workspaceReleaseManifest,
   workspaceReleaseFiles,
 } from './release-cli-file-policy.mjs';
 
@@ -51,6 +52,62 @@ test('the npm README receives the canonical WIP disclaimer exactly once', () => 
 });
 
 describe('CLI release file policy', () => {
+  test('release manifests omit exports whose targets are excluded from Maka artifacts', () => {
+    const repoRoot = resolve(import.meta.dirname, '..');
+    for (const [directory, omitted] of Object.entries({
+      mcp: ['./test-only/stdio-server'],
+      'runtime-host': [
+        './test-only/client-capability-host',
+        './test-only/execution-candidate-e2e-main',
+      ],
+      runtime: ['./test-only/fake-backend', './test-only/observation-text-reader'],
+    })) {
+      const manifestPath = join(repoRoot, 'packages', directory, 'package.json');
+      const source = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      const projected = workspaceReleaseManifest(source);
+
+      assert.deepEqual(
+        Object.keys(source.exports).filter((subpath) => !Object.hasOwn(projected.exports, subpath)),
+        omitted,
+      );
+      assert.deepEqual(JSON.parse(readFileSync(manifestPath, 'utf8')), source);
+    }
+  });
+
+  test('release manifests project conditional exports leaf by leaf', () => {
+    const source = {
+      exports: {
+        '.': {
+          types: './dist/index.d.ts',
+          default: './dist/index.js',
+        },
+        './fallback': [
+          './dist/__tests__/fixture.js',
+          { types: './dist/fallback.d.ts', default: './dist/fallback.js' },
+        ],
+      },
+    };
+    const original = structuredClone(source);
+
+    assert.deepEqual(workspaceReleaseManifest(source).exports, {
+      '.': { default: './dist/index.js' },
+      './fallback': [{ default: './dist/fallback.js' }],
+    });
+    assert.deepEqual(source, original);
+  });
+
+  test('release manifests preserve a top-level export target array', () => {
+    assert.deepEqual(
+      workspaceReleaseManifest({
+        exports: [
+          './dist/__tests__/fixture.js',
+          { types: './dist/index.d.ts', default: './dist/index.js' },
+        ],
+      }).exports,
+      [{ default: './dist/index.js' }],
+    );
+  });
+
   test('derives the runtime workspace build order from production dependencies', () => {
     const manifests = new Map([
       ['maka-agent', { name: 'maka-agent', dependencies: { '@maka/eval': '0.1.0' } }],

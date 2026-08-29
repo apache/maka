@@ -4249,6 +4249,122 @@ describe('Maka Pi TUI transcript', () => {
     }
   });
 
+  test('names a live quiet Bash row from the wire args preview', () => {
+    const state = createMakaPiTranscriptState();
+    // Runtime Host live tool_start omits full args; the bounded preview is all
+    // the compact row has until the turn-end reconcile.
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-preview',
+        toolName: 'Bash',
+        args: undefined,
+        argsPreview: { command: 'git status --porcelain' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-preview',
+        isError: false,
+        content: {
+          kind: 'terminal',
+          cwd: '/repo',
+          cmd: 'git status --porcelain',
+          status: 'completed',
+          exitCode: 0,
+          output: { mode: 'pipes', stdout: '', stderr: '' },
+        },
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(rendered, /\$ git status --porcelain/);
+    // Once the row names the call, the quiet-success disclaimer is noise.
+    assert.doesNotMatch(rendered, /\(no output\)/);
+  });
+
+  test('prefers a redacted runtime intent for a live compact row', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'explore-intent',
+        toolName: 'ExploreAgent',
+        args: undefined,
+        intent: '  inspect   render entry with sk-1234567890abcdef  ',
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.match(rendered, /inspect render entry with <redacted>/);
+    assert.doesNotMatch(rendered, /sk-1234567890abcdef/);
+  });
+
+  test('never renders a secret Bash command from the durable shell_run result', () => {
+    const state = createMakaPiTranscriptState();
+    const secret = 'super-secret-token-value';
+    const command = `# preserve the multiline result-side path\ncurl -H \"Authorization: Bearer ${secret}\" https://example.com`;
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'bash-durable-redaction',
+        toolName: 'Bash',
+        args: { command },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-durable-redaction',
+        isError: false,
+        content: shellRun({
+          cmd: command,
+          status: 'completed',
+          completedAt: 2_000,
+          exitCode: 0,
+        }),
+      }),
+    );
+    assert.equal(toggleAllToolExpansion(state), true);
+
+    const rendered = renderMakaPiTranscript(state, meta(), 100).map(stripAnsi).join('\n');
+    assert.doesNotMatch(rendered, new RegExp(secret));
+    assert.match(rendered, /redacted/i);
+  });
+
+  test('keeps the no-output placeholder when the row cannot name the call', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({ type: 'tool_start', toolUseId: 'bash-blind', toolName: 'Bash', args: undefined }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'bash-blind',
+        isError: false,
+        content: {
+          kind: 'terminal',
+          cwd: '/repo',
+          cmd: 'true',
+          status: 'completed',
+          exitCode: 0,
+          output: { mode: 'pipes', stdout: '', stderr: '' },
+        },
+      }),
+    );
+
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(rendered, /\(no output\)/);
+  });
+
   test('orders and de-dupes tool_output_delta by seq and marks redacted chunks', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

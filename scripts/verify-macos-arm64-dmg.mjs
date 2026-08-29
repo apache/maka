@@ -33,6 +33,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
+import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -126,6 +127,7 @@ export async function verifyPackagedMacApp(
     smokeRenderer = smokePackagedRenderer,
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
     workingDirectory = dirname(appPath),
+    environment = process.env,
   } = {},
 ) {
   const product = await readProductManifestIdentity();
@@ -138,8 +140,9 @@ export async function verifyPackagedMacApp(
     throw new Error(`Expected app id ${expectedAppId}, found ${appId}.`);
   }
   const version = await readPlistValue(run, infoPlist, 'CFBundleShortVersionString');
-  if (version !== product.version) {
-    throw new Error(`Expected app version ${product.version}, found ${version}.`);
+  const expectedVersion = resolveDesktopBuildVersion(product.version, environment);
+  if (version !== expectedVersion) {
+    throw new Error(`Expected app version ${expectedVersion}, found ${version}.`);
   }
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
@@ -148,7 +151,9 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
-  await assertPackagedUpdateConfiguration(resources);
+  await assertPackagedUpdateConfiguration(resources, {
+    channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
+  });
   await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
@@ -157,7 +162,11 @@ export async function verifyPackagedMacApp(
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
 
-  const ptyProbe = makePtyProbe('/bin/echo', ['maka-node-pty-ok'], product.runtimeHostSetupPackage);
+  const ptyProbe = makePtyProbe(
+    '/bin/echo',
+    ['maka-node-pty-ok'],
+    resolveRuntimeHostSetupPackage(product.version, environment),
+  );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
       ELECTRON_RUN_AS_NODE: '1',

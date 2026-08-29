@@ -33,8 +33,8 @@ Phase 1 requires:
 - checksums generated after each artifact reaches its final form.
 
 The convenience Desktop artifacts must not contain a Git runtime, a bundled-Git manifest, or Git/Dugite
-redistribution notices. Managed-workspace execution remains unavailable until a separately reviewed,
-ASF-compatible verified runtime is connected before admission/T1.
+redistribution notices. The retired Git executable-backed managed-workspace path must not be restored;
+future workspace execution requires a separately reviewed Gitoxide production composition before admission/T1.
 
 The first product release also requires the exact `maka-agent@<version>` npm package. The product
 tag and Draft must exist before npm staging, but the Draft must remain unpublished until npm is
@@ -61,8 +61,12 @@ must never be exposed to fork or ordinary pull-request jobs.
 Before the first product release, confirm the checked-in `.asf.yaml` has reconciled the live repository:
 
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
-- the `release` and `npm-release` Environments accept only their declared tag patterns,
-  `product-release` accepts only `main`, and each requires a reviewer other than the triggering user.
+- the `release` Environment accepts only its declared source-candidate tag pattern and requires a
+  reviewer other than the triggering user;
+- `npm-publication` and `product-release` accept only `main`; `product-release` requires a reviewer
+  other than the triggering user. `npm-publication` has no GitHub
+  approval gate because scheduled Nightly publication is automatic; formal npm publication still
+  requires human 2FA approval after staging.
 
 These controls close the check-to-upload and check-to-stage windows. Finalize uses GitHub Actions
 OIDC rather than a stored signing key to attest every convenience artifact. Keep the Release in
@@ -83,8 +87,8 @@ bytes and expected filename are not covered by that protected workflow identity.
 5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, and
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
-   reference in its notes, is marked as a GitHub prerelease exactly when the product version is a
-   prerelease, is not marked Latest while it remains a Draft, and contains exactly the manifest
+   reference in its notes, is not marked as a GitHub prerelease or Latest while it remains a Draft,
+   and contains exactly the manifest
    reported by `node scripts/product-release-artifacts.mjs list`. The manifest covers both Desktop
    platforms and update metadata, the standalone CLI/TUI, and their required checksums.
 7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
@@ -111,7 +115,8 @@ then rerun. If only the tag exists, the retry creates the missing Draft.
 Follow [the npm release runbook](../docs/cli-npm-release.md) against the exact product tag and Draft:
 
 1. Record the successful **Release** workflow run ID and attempt that built the Draft assets. Run
-   **Stage CLI npm release** from `v<version>` and record its successful run ID and attempt.
+   **npm publication** with `channel=formal` from `main` and record its successful run ID and
+   attempt.
 2. Inspect the staged tarball and provenance, then approve that exact stage with npm 2FA.
 3. Run **Finalize product release** from `main`. Its first job verifies the public package
    bytes, provenance, signature, and release dist-tag.
@@ -122,7 +127,7 @@ Keep the GitHub Release in Draft throughout this sequence. The final workflow jo
 has passed. It verifies the live Draft digests against the immutable publication record from the
 exact successful Release run, creates Sigstore provenance and an offline
 `Maka-<version>-attestation.sigstore.json` bundle, then publishes the convenience Release and makes a
-stable release Latest in the same GitHub operation; prereleases remain non-Latest. Do not publish or
+stable release Latest in the same GitHub operation. Do not publish or
 change the Latest designation manually. A failed or rejected npm candidate requires a new product
 version; never publish the Draft to work around npm state.
 

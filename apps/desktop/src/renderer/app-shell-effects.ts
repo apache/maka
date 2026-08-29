@@ -159,10 +159,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
   openSettings: () => void;
-  pendingPermissionModeChangesRef: RefBox<Set<string>>;
-  pendingSessionModelChangesRef: RefBox<Set<string>>;
-  pendingTurnActionTimersRef: RefBox<Map<string, ReturnType<typeof setTimeout>>>;
-  pendingTurnActionsRef: RefBox<Set<string>>;
+  clearPendingTurnActions: () => void;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
   refreshConnections: () => Promise<void>;
@@ -288,13 +285,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.rendererMountedRef.current = false;
     options.projectPickerRequestRef.current += 1;
     options.projectPickerPendingRef.current = false;
-    for (const timeoutHandle of options.pendingTurnActionTimersRef.current.values()) {
-      clearTimeout(timeoutHandle);
-    }
-    options.pendingTurnActionTimersRef.current.clear();
-    options.pendingTurnActionsRef.current.clear();
-    options.pendingPermissionModeChangesRef.current.clear();
-    options.pendingSessionModelChangesRef.current.clear();
+    options.clearPendingTurnActions();
   });
 
   useEffect(() => {

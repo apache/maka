@@ -106,6 +106,7 @@ const LICENSE_METADATA_OVERRIDES = new Map([
 // Keyed by exact version so a bump re-checks the license rather than inheriting this.
 const APACHE_TEXT_OVERRIDE_KEYS = new Set([
   '@ai-sdk/provider-utils@5.0.28',
+  '@ai-sdk/provider-utils@5.0.32',
   '@sigstore/verify@4.1.2',
 ]);
 const EMBEDDED_COMPONENT_LICENSES = new Map([

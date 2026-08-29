@@ -17,9 +17,9 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 |---|---:|
 | windows-backend-gap | 25 |
 | portable-candidate | 10 |
-| platform-contract | 35 |
+| platform-contract | 31 |
 
-Total Windows-excluded declarations: **70**
+Total Windows-excluded declarations: **66**
 
 ## Inventory
 
@@ -74,10 +74,6 @@ Total Windows-excluded declarations: **70**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects an authority database whose file identity changes after registration | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database to replace its file identity' : false` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database during the verification race' : false` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
 | platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |

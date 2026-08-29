@@ -58,10 +58,13 @@ import {
   type ToastDiagnosticTarget,
   type ToastErrorAction,
   type NavSelection,
+  type ProjectRowActions,
+  SessionListPanel,
   TitlebarSessionIdentity,
   type TurnFooterActionMeta,
   useToast,
   activeInteractionFor,
+  deriveComposerModelSwitchAvailability,
   deriveTitlebarProjectName,
   enqueueInteraction,
   reconcileInteractions,
@@ -91,8 +94,12 @@ import {
 import { GoalHost, useGoalController } from './features/goals';
 import { ModuleHubHost, useModuleHubController } from './features/module-hub';
 import {
-  SessionNavigationHost,
-  useSessionNavigationController,
+  SessionNavigationProvider,
+  createSessionOpenCommand,
+  sessionRailLayoutStore,
+  useSessionNavigationReads,
+  type SessionNavigationPorts,
+  type SessionNavigationRowActions,
 } from './features/session-navigation';
 import {
   TaskEntryHost,
@@ -183,6 +190,7 @@ import {
 import { createAppShellSessionStartActions } from './app-shell-session-start-actions';
 import { createAppShellSessionSettingsActions } from './app-shell-session-settings-actions';
 import { createAppShellStopAction } from './app-shell-stop-action';
+import { useExternalStoreSelector } from './use-external-store-selector';
 import { useStableActions } from './use-stable-actions';
 import {
   useActiveSessionEvents,
@@ -201,11 +209,11 @@ import {
   type LiveContentSeed,
 } from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
-import { useKeyedPendingRegistry } from './use-pending-action-registry';
+import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
 import { useComposerDirectories } from './use-composer-directories';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
-import { useComposerMentions } from './use-composer-mentions';
+import { ComposerMentionsProvider, type ComposerMentionsSurface } from './composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
@@ -312,6 +320,17 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
   );
 }
 
+/**
+ * The Session rail, as one element built once.
+ *
+ * AppShell re-renders about fourteen times per session switch. Written inline
+ * in the JSX below, each of those rebuilt this element and re-rendered the
+ * rail's ~1,000 fibers with it; hoisted here, React sees the same element and
+ * skips the subtree, and what reaches the rail is the two rail contexts alone.
+ * The panel takes no props for exactly this reason (#4109).
+ */
+const SESSION_RAIL = <SessionListPanel />;
+
 function AppShellContent({
   initialOnboardingSnapshot = null,
   uiLocale,
@@ -354,22 +373,7 @@ function AppShellContent({
     transcriptRangeRef,
     messageLoadPending,
     setMessageLoadPending,
-    messageRetryPendingRef,
-    stopPendingRef,
     sessionUiController,
-    liveTurnBySessionRef,
-    sessionEventHealthBySessionRef,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
-    setStopPendingBySession,
-    setLiveTurnBySession,
-    confirmLiveTurn,
-    setShellRunUpdatesBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
-    setSessionEventHealthBySession,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
   } = useAppShellSessionWorkspace(toastApi);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -387,6 +391,10 @@ function AppShellContent({
   const taskEntry = useTaskEntryController({
     reportError: reportTaskEntryError,
   });
+  // Named on its own because the rail depends on it: `taskEntry.commands` is a
+  // fresh object every render, so depending on the bag rather than the command
+  // would rebuild the rail's Project rows on every AppShell commit (#4109).
+  const { selectLocalProject } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
   // the composer the user is looking at, and an in-flight send needs an owner
@@ -420,6 +428,11 @@ function AppShellContent({
   const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
+  // The state above is what the transcript renders; this is what the guard
+  // reads. A scroller can ask twice in one task — two scroll events before
+  // React has re-rendered anything — and a state read is still the old value
+  // for both of them.
+  const historyLoadPendingRef = useRef(false);
   const [transcriptTurnIndex, setTranscriptTurnIndex] = useState<{
     sessionId: string;
     throughSequence: number | null;
@@ -550,10 +563,10 @@ function AppShellContent({
     initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
   const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
   let newTaskConnectionSnapshot = newTaskConnections.snapshot;
-  if (!newTaskConnections.hasSnapshot && newTaskUsesDefaultHost) {
-    newTaskConnectionSnapshot = defaultHostConnections.hasSnapshot
+  if (newTaskConnections.projection.status !== 'ready' && newTaskUsesDefaultHost) {
+    newTaskConnectionSnapshot = defaultHostConnections.projection.status === 'ready'
       ? defaultHostConnections.snapshot
-      : startupConnectionSnapshot
+      : defaultHostConnections.projection.status === 'unrequested' && startupConnectionSnapshot
         ? {
             connections: startupConnectionSnapshot.connections,
             defaultConnection: startupConnectionSnapshot.defaultSlug,
@@ -759,6 +772,9 @@ function AppShellContent({
   const [helpOpen, closeHelp, openHelp] = useKeyboardHelp();
   const [paletteOpen, openPalette, closePalette] = useCommandPalette();
   const composerRef = useRef<ComposerHandle>(null);
+  const openComposerModelPicker = useCallback(() => {
+    composerRef.current?.openModelPicker();
+  }, []);
   const retractedWorkspaceReferencesRef = useRef<Record<string, InlineReference[]>>({});
   const [revisionDraft, setRevisionDraft] = useState<TurnRevisionDraft | null>(null);
   const revisionDraftRef = useRef<TurnRevisionDraft | null>(null);
@@ -870,6 +886,14 @@ function AppShellContent({
   const modelSettingsOwnsComposerHost =
     composerProfileId !== undefined &&
     composerProfileId === taskEntry.selectors.defaultProfileId;
+  const modelChangePending = activeId
+    ? pendingSessionModelBySession[activeId] === true
+    : false;
+  const modelSwitchAvailability = deriveComposerModelSwitchAvailability({
+    streaming: turnActive || activeStreamingLive,
+    sessionStatus: activeSession?.status,
+    pending: modelChangePending,
+  });
   const {
     chatModelChoices,
     activeConnection,
@@ -900,7 +924,13 @@ function AppShellContent({
     persistedComposerDefaults,
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
     defaultThinkingLevel: taskEntry.selectors.selectedHost?.chatDefaults.thinkingLevel,
+    connectionSnapshotReady: activeId
+      ? sessionHostConnections.projection.status === 'ready'
+      : true,
+    modelPickerDisabled: !modelSwitchAvailability.available,
     openSettingsSection,
+    openModelPicker: openComposerModelPicker,
+    refreshModelChoices: sessionHostConnections.refreshConnections,
   });
   const newChatProviderType = newChatModel
     ? connections.find((connection) => connection.slug === newChatModel.llmConnectionSlug)?.providerType
@@ -911,53 +941,24 @@ function AppShellContent({
   // mask. Per @kenji PR109d review: pending state prevents double-click
   // duplicate sibling turns by disabling the action button between
   // click and `sessions:changed turn-status-change` arriving.
-  // These de-dup registries (turn-footer actions and per-session permission-mode
-  // / model changes) share the same keyed-Set shape; see
-  // useKeyedPendingRegistry. Session-row mutations live in Session Navigation.
-  const turnActionRegistry = useKeyedPendingRegistry({
-    trackState: true,
-    autoClearMs: 5000,
-  });
+  // Session-row mutations live in Session Navigation; the per-session mode and
+  // model claims live in the session UI store.
+  const turnActionRegistry = useTurnActionRegistry();
   const pendingTurnActions = turnActionRegistry.keys;
-  const permissionModeChangeRegistry = useKeyedPendingRegistry();
-  const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
-  function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
-    if (!(sessionId in current)) return current;
-    const next = { ...current };
-    delete next[sessionId];
-    return next;
-  }
 
-  function addPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): boolean {
-    if (pendingRef.current.has(sessionId)) return false;
-    pendingRef.current.add(sessionId);
-    setPendingBySession?.((current) => ({ ...current, [sessionId]: true }));
-    return true;
-  }
-
-  function clearPendingSessionAction(
-    sessionId: string,
-    pendingRef: { current: Set<string> },
-    setPendingBySession?: (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void,
-  ): void {
-    if (!pendingRef.current.has(sessionId)) return;
-    pendingRef.current.delete(sessionId);
-    setPendingBySession?.((current) => omitSessionKey(current, sessionId));
-  }
-
+  // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
+  // hundreds of lines below, and the rail does not need this identity held
+  // still — the rail's controller reads it through `portsRef`.
   function clearSessionRendererState(sessionId: string): void {
+    dropDisplayEvents(sessionId);
+    // `clearOwnedSessionState` ends in `clearSessionUiState`, which drops this
+    // session from every session-UI map — the four pending claims included.
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
-    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
     planModeIntent.clear(sessionId);
     orchestrationModeIntent.clear(sessionId);
-    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
   const {
@@ -969,14 +970,12 @@ function AppShellContent({
     activeIdRef,
     connections,
     messages,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
+    permissionModePending: sessionUiController.permissionModePending,
+    sessionModelPending: sessionUiController.sessionModelPending,
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
     toastApi,
   });
 
@@ -1014,6 +1013,8 @@ function AppShellContent({
     },
   });
 
+  // Stable: the rail's row actions are built from it, and it only reaches
+  // registries and refs that are themselves stable (#4109).
   /**
    * Enter or leave Plan for one Session — the only path that writes
    * `collaborationMode`, and it writes nothing else.
@@ -1255,22 +1256,22 @@ function AppShellContent({
         ) {
           return;
         }
-        setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
+        sessionUiController.setInteractionBySession((current) => reconcileInteractions(current, activeId, requests));
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeId, setInteractionBySession]);
+  }, [activeId, sessionUiController.setInteractionBySession]);
   useEffect(
     () =>
       window.maka.sessions.subscribeActiveInteractions(({ sessionId, interactions }) => {
         markInteractionChanged(sessionId);
-        setInteractionBySession((current) =>
+        sessionUiController.setInteractionBySession((current) =>
           reconcileInteractions(current, sessionId, interactions),
         );
       }),
-    [markInteractionChanged, setInteractionBySession],
+    [markInteractionChanged, sessionUiController.setInteractionBySession],
   );
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
@@ -1508,8 +1509,6 @@ function AppShellContent({
       coordination: createDesktopWorkHubCoordinationPort({
         sessionId: workHubCoordinationSessionId ?? 'workhub-coordination-unresolved',
         transcripts: window.maka.transcripts,
-        answer: (input) =>
-          window.maka.workHub.answer(workHubCoordinationSessionId!, input),
         record: (input) =>
           window.maka.workHub.record(workHubCoordinationSessionId!, input),
         candidates: () =>
@@ -1526,13 +1525,10 @@ function AppShellContent({
               workHubCoordinationGenerationRef.current === workHubCoordinationGeneration &&
               workHubCoordinationSessionIdRef.current === workHubCoordinationSessionId,
           },
-          (coordinationSessionId, input) =>
-            window.maka.workHub.createSession(coordinationSessionId, input),
         ),
         transcripts: window.maka.transcripts,
         projectName: (projectId) =>
           workHubProjectsRef.current.find((project) => project.id === projectId)?.name,
-        newTurnId: () => crypto.randomUUID(),
       }),
     }),
     [workHubCoordinationGeneration, workHubCoordinationSessionId],
@@ -1581,28 +1577,70 @@ function AppShellContent({
     showModelSetupToast,
     toastApi,
   });
+  const openNewTaskSurface = useCallback(() => {
+    startNewSession();
+    // Only Plan resets: a new task starts out of Plan, in whatever
+    // orchestration the last one was set to.
+    setNewChatPlanModeActive(false);
+    setNavSelection({ section: 'sessions' });
+    setSearchScrollTarget(null);
+    // New-task affordances reset to the empty-state composer; move focus
+    // there so the user can start typing immediately.
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  }, [setNavSelection, setSearchScrollTarget, startNewSession]);
+
+  const createSession = useCallback(async () => {
+    openNewTaskSurface();
+  }, [openNewTaskSurface]);
+
+  // Stable, because the rail's Project rows carry it: a fresh identity here
+  // rebuilt the whole list on every AppShell commit (#4109).
+  const createSessionInProject = useCallback(
+    async (projectId: string) => {
+      if (!selectLocalProject(projectId)) return;
+      openNewTaskSurface();
+    },
+    [openNewTaskSurface, selectLocalProject],
+  );
+
   // Sidebar Project groups are Local. Their catalog mutations remain on the
   // default-scoped bridge until Settings receives its own Host selector.
-  const projectRowActions: ComponentProps<typeof SessionNavigationHost>['projectActions'] =
-    projectCapabilities.setLocalDefault
-      ? {
-          onNew: createSessionInProject,
-          onRename: renameProject,
-          onArchive: archiveProject,
-          onRestore: restoreProject,
-          ...(projectCapabilities.chooseClientDirectory
-            ? {
-                onRelink: (projectId: string) =>
-                  relinkProject(projectId).then(() => undefined),
-              }
-            : {}),
-        }
-      : undefined;
+  //
+  // Memoized because the rail reads it: rebuilt per render, this one object
+  // would put the whole list back on every AppShell commit (#4109).
+  const projectRowActions = useMemo<ProjectRowActions | undefined>(
+    () =>
+      projectCapabilities.setLocalDefault
+        ? {
+            onNew: createSessionInProject,
+            onRename: renameProject,
+            onArchive: archiveProject,
+            onRestore: restoreProject,
+            ...(projectCapabilities.chooseClientDirectory
+              ? {
+                  onRelink: (projectId: string) =>
+                    relinkProject(projectId).then(() => undefined),
+                }
+              : {}),
+          }
+        : undefined,
+    [
+      archiveProject,
+      createSessionInProject,
+      projectCapabilities.chooseClientDirectory,
+      projectCapabilities.setLocalDefault,
+      relinkProject,
+      renameProject,
+      restoreProject,
+    ],
+  );
 
   // Composer mention popups: `/` uses Runtime's session/project-aware,
   // host-compatible projection; `@` uses workspace file search. Keep the
-  // resolved project path as a refresh key for new-chat project changes.
-  const { mentionSkills, mentionSkillsUnavailable, mentionSkillsLoading, searchMentionFiles } = useComposerMentions({
+  // resolved project path as a refresh key for new-chat project changes. Only
+  // the SURFACE is named here — the projection itself is owned by
+  // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
+  const composerMentionsSurface: ComposerMentionsSurface = {
     skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
     sessionId: activeId,
     projectPath: activeId ? projectInfo?.projectPath : taskEntry.selectors.projectPath,
@@ -1612,7 +1650,7 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode: newTaskPermissionMode,
-  });
+  };
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen;
   const shellObscured = hasModalOpen || settingsOpen;
@@ -1645,10 +1683,6 @@ function AppShellContent({
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
-    mentionSkills,
-    mentionSkillsUnavailable,
-    mentionSkillsLoading,
-    searchMentionFiles,
     reportError: reportWorkbarError,
   });
 
@@ -1658,48 +1692,70 @@ function AppShellContent({
     [setNavSelection],
   );
   const clearActiveMessages = useCallback(() => setMessages([]), [setMessages]);
-  const sessionNavigation = useSessionNavigationController({
-    sessions,
-    activeSessionId: activeId,
-    hiddenSessionIds: workbar.selectors.hiddenSessionIds,
-    projects: localProjects,
+  const openSession = useMemo(
+    () =>
+      createSessionOpenCommand({
+        activateSession: setActiveId,
+        exitWorkHub,
+        selectSessionSurface,
+        setSearchTarget: setSearchScrollTarget,
+      }),
+    [exitWorkHub, selectSessionSurface, setActiveId, setSearchScrollTarget],
+  );
+  useLayoutEffect(() => {
+    openSessionInChatRef.current = openSession;
+  }, [openSession]);
+  const pendingSessionRowActionsRef = useRef(new Set<string>());
+  const sessionNavigationCommandsRef = useRef<SessionNavigationRowActions | null>(null);
+  // Built inline: the rail reads these through a ref published on commit, so
+  // their identity carries no information and this object never has to be
+  // held still by hand (#4109).
+  const sessionNavigationPorts: SessionNavigationPorts = {
+    activeIdRef,
+    sessionsRef,
+    pendingSessionRowActionsRef,
     activateSession: setActiveId,
     clearActiveMessages,
     clearSessionRendererState,
-    exitWorkHub,
     refreshSessions,
-    selectSessionSurface,
-    setSearchTarget: setSearchScrollTarget,
     toastApi,
+  };
+  const {
+    rail: sessionRail,
+    branchBanner,
+    revisionNavigation,
+    layout: railLayout,
+  } = useSessionNavigationReads({
+    sessions,
+    activeSessionId: activeId,
+    activeSession,
+    hiddenSessionIds: workbar.selectors.hiddenSessionIds,
   });
-  useLayoutEffect(() => {
-    openSessionInChatRef.current = sessionNavigation.commands.openSession;
-  }, [sessionNavigation.commands.openSession]);
-  const visibleSessions = sessionNavigation.selectors.visibleSessions;
-  const sessionListCollapsed = sessionNavigation.layout.collapsed;
-  const sessionListWidth = sessionNavigation.layout.width;
-  const sessionSideNavHandleRef = sessionNavigation.layout.collapseHandleRef;
+  const visibleSessions = sessionRail.sessions;
+  const sessionListCollapsed = railLayout.collapsed;
+  const sessionListWidth = railLayout.width;
+  const sessionSideNavHandleRef = sessionRailLayoutStore.collapseHandleRef;
   const titlebarParentSession = useMemo(() => {
-    const parent = sessionNavigation.selectors.activeParentSession;
+    const parent = sessionRail.activeParentSession;
     if (!parent) return undefined;
     const parentId = parent.id;
     return {
       name: parent.name,
       onOpen: () => openSessionInChatRef.current(parentId),
     };
-  }, [sessionNavigation.selectors.activeParentSession]);
+  }, [sessionRail.activeParentSession]);
   const archivedTasksBridge = useMemo<ArchivedTasksBridge>(
     () => ({
       sessions,
       projects: localProjects,
       onRestore: (sessionId) =>
-        void sessionNavigation.commands.unarchiveSession(sessionId),
+        void sessionNavigationCommandsRef.current?.unarchiveSession(sessionId),
       onDelete: (sessionId) =>
-        void sessionNavigation.commands.deleteSession(sessionId),
+        void sessionNavigationCommandsRef.current?.deleteSession(sessionId),
       onPurge: (sessionIds) =>
-        sessionNavigation.commands.purgeSessions(sessionIds),
+        sessionNavigationCommandsRef.current!.purgeSessions(sessionIds),
     }),
-    [sessions, localProjects, sessionNavigation.commands],
+    [sessions, localProjects],
   );
 
   const firstSendObservationWaitersRef = useRef(
@@ -1750,7 +1806,7 @@ function AppShellContent({
     setActiveId,
     setNavSelection,
     setSearchModalOpen,
-    setSessionListCollapsed: sessionNavigation.layout.setCollapsed,
+    setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
       rightCollapsed: workbar.selectors.rightCollapsed,
       toggleRight: workbar.commands.toggleRight,
@@ -1770,25 +1826,22 @@ function AppShellContent({
   } = useStableActions(createAppShellChatActions, {
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
-    clearPendingSessionAction,
     isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
-    messageRetryPendingRef,
+    messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
     activateSessionForFirstSend,
     setActiveId,
-    setMessageLoadErrorBySession,
-    setMessageRetryPendingBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessages,
     addTransientMessage,
     updateTransientMessage,
     removeTransientMessage,
     transcriptRangeRef,
-    setLiveTurnBySession,
-    setInteractionBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
     showModelSetupToast,
@@ -1932,7 +1985,7 @@ function AppShellContent({
       metadata?.workspaceFileReferences,
       sessionId ? retractedWorkspaceReferencesRef.current[sessionId] : undefined,
     );
-    const liveTurn = sessionId ? liveTurnBySessionRef.current[sessionId] : undefined;
+    const liveTurn = sessionId ? sessionUiController.liveTurnBySessionRef.current[sessionId] : undefined;
     const runningTurnIds = sessionId
       ? sessionsRef.current.find((session) => session.id === sessionId)?.runningTurnIds
       : undefined;
@@ -2202,10 +2255,7 @@ function AppShellContent({
   const stop = createAppShellStopAction({
     uiLocale,
     activeIdRef,
-    addPendingSessionAction,
-    clearPendingSessionAction,
-    setStopPendingBySession,
-    stopPendingRef,
+    stopPending: sessionUiController.stopPending,
     removeTransientMessage,
     toastApi,
   });
@@ -2216,17 +2266,18 @@ function AppShellContent({
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
+    dropDisplayEvents,
     markDisplayPending,
     markDisplayReady,
   } = useStableActions(createAppShellSessionEventHandlers, {
     uiLocale,
     activeIdRef,
-    liveTurnBySessionRef,
+    liveTurnBySessionRef: sessionUiController.liveTurnBySessionRef,
     refreshMessages,
     refreshSessions,
-    setLiveTurnBySession,
-    setInteractionBySession,
-    setMessageQueueBySession,
+    setLiveTurnBySession: sessionUiController.setLiveTurnBySession,
+    setInteractionBySession: sessionUiController.setInteractionBySession,
+    setMessageQueueBySession: sessionUiController.setMessageQueueBySession,
     projectQueuedTransientMessages,
     removeTransientMessage,
     displayBatch: sessionDisplayBatch,
@@ -2274,16 +2325,13 @@ function AppShellContent({
     applyE2eFixture,
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
-    confirmLiveTurn,
+    confirmLiveTurn: sessionUiController.confirmLiveTurn,
     clearSessionRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
     openSettings,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
-    pendingTurnActionTimersRef: turnActionRegistry.timersRef,
-    pendingTurnActionsRef: turnActionRegistry.keysRef,
+    clearPendingTurnActions: turnActionRegistry.clearAll,
     projectPickerPendingRef,
     projectPickerRequestRef,
     refreshConnections: refreshConnectionProjections,
@@ -2295,7 +2343,7 @@ function AppShellContent({
     rendererMountedRef,
     setActiveId,
     setMessages,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   useAppShellPersistenceEffects({
@@ -2337,11 +2385,11 @@ function AppShellContent({
     handleEvent,
     beginObservationSeed,
     completeObservationSeed,
-    setMessageLoadErrorBySession,
+    setMessageLoadErrorBySession: sessionUiController.setMessageLoadErrorBySession,
     setMessageLoadPending,
     setMessages,
     transcriptRangeRef,
-    setSessionEventHealthBySession,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
   let newestDurablePromptSequence: number | null = null;
@@ -2400,7 +2448,7 @@ function AppShellContent({
       })
       .catch((error) => {
         if (disposed || activeIdRef.current !== target.sessionId) return;
-        setMessageLoadErrorBySession((current) => ({
+        sessionUiController.setMessageLoadErrorBySession((current) => ({
           ...current,
           [target.sessionId]: localizedShellErrorMessage(
             error,
@@ -2413,7 +2461,10 @@ function AppShellContent({
       disposed = true;
     };
   }, [activeId, searchScrollTarget?.nonce]);
-  useShellRunUpdates({ activeId, setShellRunUpdatesBySession });
+  useShellRunUpdates({
+    activeId,
+    setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
+  });
   useSessionEventHealthPolling({
     activeId,
     activeInteraction,
@@ -2422,8 +2473,8 @@ function AppShellContent({
     hasInFlightLiveTools,
     refreshMessages,
     refreshSessions,
-    sessionEventHealthBySessionRef,
-    setSessionEventHealthBySession,
+    sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
+    setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
   function captureComposerImportOwner(): ComposerImportOwner {
     return {
@@ -2468,27 +2519,6 @@ function AppShellContent({
     const next = await refreshSessions();
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
     bootstrapSelectionLease.release();
-  }
-
-  function openNewTaskSurface() {
-    startNewSession();
-    // Only Plan resets: a new task starts out of Plan, in whatever
-    // orchestration the last one was set to.
-    setNewChatPlanModeActive(false);
-    setNavSelection({ section: 'sessions' });
-    setSearchScrollTarget(null);
-    // New-task affordances reset to the empty-state composer; move focus
-    // there so the user can start typing immediately.
-    window.requestAnimationFrame(() => composerRef.current?.focus());
-  }
-
-  async function createSession() {
-    openNewTaskSurface();
-  }
-
-  async function createSessionInProject(projectId: string) {
-    if (!taskEntry.commands.selectLocalProject(projectId)) return;
-    openNewTaskSurface();
   }
 
   /**
@@ -2595,7 +2625,8 @@ function AppShellContent({
   async function loadTranscriptHistory(target: 'earlier' | 'latest') {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
-    if (!controller || !sessionId || historyLoadPendingSessionId) return;
+    if (!controller || !sessionId || historyLoadPendingRef.current) return;
+    historyLoadPendingRef.current = true;
     setHistoryLoadPendingSessionId(sessionId);
     try {
       if (target === 'earlier') {
@@ -2620,6 +2651,7 @@ function AppShellContent({
         ),
       );
     } finally {
+      historyLoadPendingRef.current = false;
       setHistoryLoadPendingSessionId((current) => current === sessionId ? undefined : current);
     }
   }
@@ -2681,6 +2713,10 @@ function AppShellContent({
         : 'im_hub';
 
   return (
+    // Wraps the whole frame rather than each composer, so one projection serves
+    // the main composer and every side-chat panel. Left un-indented on purpose:
+    // re-indenting 500 lines of JSX would bury the change that matters.
+    <ComposerMentionsProvider {...composerMentionsSurface}>
     <div
       className="appFrame agents-layout-root"
       data-agents-page
@@ -2755,7 +2791,7 @@ function AppShellContent({
                 key={activeSessionForView.id}
                 sessionName={activeSessionForView.name}
                 onRenameSession={(name) => {
-                  void sessionNavigation.commands.renameSession(activeSessionForView.id, name);
+                  void sessionNavigationCommandsRef.current?.renameSession(activeSessionForView.id, name);
                 }}
                 project={
                   titlebarProjectName
@@ -2793,14 +2829,18 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={shellObscured ? true : undefined}
         sideNav={
-          <SessionNavigationHost
-            controller={sessionNavigation}
+          <SessionNavigationProvider
+            rail={sessionRail}
+            projects={localProjects}
+            streamingSessionIds={streamingSessionIds}
+            staleSessionIds={staleSessionIds}
+            ports={sessionNavigationPorts}
+            commandsRef={sessionNavigationCommandsRef}
             onExitWorkHub={exitWorkHub}
+            onSelectSession={openSession}
             workHubActive={workHubActive}
             selection={navSelection}
             scheduledTasks={moduleHub.selectors.scheduledTasks}
-            streamingSessionIds={streamingSessionIds}
-            staleSessionIds={staleSessionIds}
             moduleMemory={navigationState.moduleMemory}
             onSelect={setNavSelection}
             onOpenSettings={openSettings}
@@ -2813,7 +2853,9 @@ function AppShellContent({
               onSelect: openWorkHub,
             } : undefined}
             projectActions={projectRowActions}
-          />
+          >
+            {SESSION_RAIL}
+          </SessionNavigationProvider>
         }
       >
         <AppShellDetailPanel agentsView={agentsView}>
@@ -2848,9 +2890,11 @@ function AppShellContent({
                 )
               ) : (
               <ChatSurfaceLayout
-                // Reset conversation-owned scroll state without remounting the
-                // composer: its contenteditable DOM carries the live draft.
-                conversationKey={activeId}
+                // ChatView positions this transcript: switching conversations,
+                // following the tail and the moves the reader asks for are one
+                // authority there, and the composer never remounts for any of
+                // them — its contenteditable DOM carries the live draft.
+                scrollOwner="host"
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
@@ -2928,11 +2972,7 @@ function AppShellContent({
                         }
                       : undefined
                   }
-                  mentionSkills={mentionSkills}
-                  mentionSkillsUnavailable={mentionSkillsUnavailable}
-                  mentionSkillsLoading={mentionSkillsLoading}
                   slashCommands={desktopSlashCommands}
-                  onSearchMentionFiles={searchMentionFiles}
                   pendingDirectories={pendingDirectories}
                   onRemoveDirectory={removeDirectory}
                   onPickDirectory={
@@ -2964,8 +3004,9 @@ function AppShellContent({
                   activeProviderType={activeConnection?.providerType}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
+                  hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                  modelSwitchAvailability={modelSwitchAvailability}
                   onModelChange={(input) => setSessionModel(input)}
                   activeThinkingLevels={activeThinkingLevels}
                   activeThinkingLevel={activeThinkingLevel}
@@ -3069,7 +3110,7 @@ function AppShellContent({
                 activeProviderType={activeConnection?.providerType}
                 renderProviderMark={(type) => <ProviderLogo type={type} compact />}
                 modelChoices={chatModelChoices}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
+                modelChangePending={modelChangePending}
                 onModelChange={(input) => setSessionModel(input)}
                 userLabel={userLabel}
                 memoryActive={memoryActive}
@@ -3107,9 +3148,9 @@ function AppShellContent({
                   ? (target) => openSessionInChat(activeId, target.turnId, target.sequence)
                   : undefined}
                 scrollBehavior={readScrollMotionBehavior()}
-                branchBanner={sessionNavigation.selectors.branchBanner}
+                branchBanner={branchBanner}
                 onBranchBannerClick={openSessionInChat}
-                revisionNavigation={sessionNavigation.selectors.revisionNavigation}
+                revisionNavigation={revisionNavigation}
                 onRevisionNavigate={openSessionInChat}
                 onNew={createSession}
                 onPromptSuggestion={(prompt) => composerRef.current?.appendText(prompt)}
@@ -3139,6 +3180,9 @@ function AppShellContent({
                   });
                 }}
                 sessionHealthNotice={sessionHealthNotice}
+                sessionHealthModelPickerAvailable={
+                  activeBoundarySurface.localInteractionAvailable
+                }
                 workspaceReadinessRecovery={workspaceReadinessRecovery}
                 taskReadinessNotice={taskReadinessNotice}
                 onTaskReadinessAction={
@@ -3253,5 +3297,6 @@ function AppShellContent({
         onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
       />
     </div>
+    </ComposerMentionsProvider>
   );
 }

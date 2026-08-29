@@ -24,15 +24,21 @@ const NATIVE_FILE = 'maka_runtime_host_peer.node';
 
 export async function configureDesktopRuntimeHostPeerClient(input: {
   readonly isPackaged: boolean;
+  readonly enableDevelopmentPeer?: boolean;
   readonly appPath: string;
   readonly resourcesPath: string;
   readonly clientDataRoot: string;
   readonly environment?: NodeJS.ProcessEnv;
-}): Promise<boolean> {
+}): Promise<{ readonly nativePath: string; readonly keyPath: string } | undefined> {
   const environment = input.environment ?? process.env;
   const explicitNativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH?.trim();
   const explicitKeyPath = environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH?.trim();
-  if (explicitNativePath || explicitKeyPath) return Boolean(explicitNativePath && explicitKeyPath);
+  if (explicitNativePath || explicitKeyPath) {
+    return explicitNativePath && explicitKeyPath
+      ? { nativePath: explicitNativePath, keyPath: explicitKeyPath }
+      : undefined;
+  }
+  if (!input.isPackaged && !input.enableDevelopmentPeer) return undefined;
   const nativePath = input.isPackaged
     ? join(input.resourcesPath, 'runtime-host-peer', NATIVE_FILE)
     : join(
@@ -48,12 +54,10 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
   try {
     await access(nativePath);
   } catch {
-    return false;
+    return undefined;
   }
   environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH = nativePath;
-  environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH = join(
-    input.clientDataRoot,
-    'runtime-host-client.peer.key',
-  );
-  return true;
+  const keyPath = join(input.clientDataRoot, 'runtime-host-client.peer.key');
+  environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH = keyPath;
+  return { nativePath, keyPath };
 }

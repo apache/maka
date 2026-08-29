@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-29
 owners:
   - maka-backend
 ---
@@ -802,18 +802,6 @@ flowchart LR
 ### Runtime host
 
 Runtime host 使用 strict recovery stores 执行 startup repair。严格模式不会把 unreadable ledger 吞成 best-effort fallback，适合服务端 composition 在接收新写入前建立清楚的恢复边界。
-
-### Managed workspace execution admission 与只读桥（M1.1–M1.2）
-
-Resume 的 workspace plane 已经有 storage-owned execution admission，并已接入 owner-bound、只读的 Runtime Host bridge：
-
-- baseline open 只返回绑定 `ManagedWorkspaceOwner` 的 opaque handle，不公开 raw cwd；
-- 每次 admission 都重新证明 storage-root identity、exact SQLite canonical head 和 exact Git receipt/binding/HEAD/tree/ownership；普通路径先完成一次慢速 Git verification，再以 immutable SQLite head 作为最后一次 durable reread，随后只执行 DB identity guard 与纯内存比较；
-- 一次 admission 签发一个 callback-scoped、`workspaceEffect: none` 的 opaque scope；同一 handle 可以并发多个只读 scope；
-- `close()` 拒绝新 admission，并等待所有 active scope drain；callback 退出后 scope 立即失效，伪造与过期分别返回 typed `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；
-- crash harness 可配置 preliminary-verification failpoint，但该测试路径仍须再次通过 final verification 才能签发 scope。
-
-M1.2 已完成 owner-bound storage worker bridge 与 Runtime Host lifecycle composition：只允许 Read/Glob/Grep，把无 owner 校验的 inspect 降为显式 test support，拒绝 active callback 内 reentrant `owner.close()`，用不可混淆的 attached/managed typed profile 阻止 silent fallback，并固定 tool operations → managed owner → root owner 的关闭顺序。Desktop/CLI 仍不默认开启 managed execution；Write/Edit/Format/Bash/未知工具必须 fail closed。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 ### Eval
 

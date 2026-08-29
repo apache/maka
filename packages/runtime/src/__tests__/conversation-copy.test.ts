@@ -695,6 +695,33 @@ test('conversation copy rewrites owned references without changing opaque tool p
     sessionId: 'session-target',
     relativePath: 'session-target/artifact-target-file.txt',
   });
+  const userMessage = messages[0];
+  assert.equal(userMessage?.type, 'user');
+  if (userMessage?.type !== 'user') return;
+  const canonicalAttachment = userMessage.attachments?.[0];
+  assert.ok(canonicalAttachment);
+  const canonical = rewriteConversationCopyMessage(
+    {
+      ...userMessage,
+      attachments: [
+        {
+          ...canonicalAttachment,
+          ref: {
+            kind: 'session_file',
+            sessionId: 'session-source',
+            relativePath: 'artifact-source',
+          },
+        },
+      ],
+    },
+    references,
+  );
+  assert.equal(
+    canonical.type === 'user' && canonical.attachments?.[0]?.ref.kind === 'session_file'
+      ? canonical.attachments[0].ref.relativePath
+      : undefined,
+    'artifact-target',
+  );
   assert.deepEqual(
     rewritten[1]?.type === 'tool_call' ? rewritten[1].args : undefined,
     messages[1]?.type === 'tool_call' ? messages[1].args : undefined,
@@ -1648,12 +1675,20 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       completedAt: 3,
     };
     await runStore.createRun(sourceRun);
+    const sourceAttachmentText = [
+      '![chart](maka://runtime/attachments/artifact-source)',
+      'maka://runtime/attachments/artifact-source?session=other',
+    ].join('\n');
+    const targetAttachmentText = [
+      '![chart](maka://runtime/attachments/artifact-target)',
+      'maka://runtime/attachments/artifact-source?session=other',
+    ].join('\n');
     const sourceEvents: RuntimeEvent[] = [
       runtimeEvent({
         id: 'event-user',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'hello' },
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: sourceAttachmentText },
         refs: { artifactId: 'artifact-source' },
       }),
       runtimeEvent({
@@ -1977,6 +2012,14 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       ),
     );
     assert.equal(targetEvents[0]?.refs?.artifactId, 'artifact-target');
+    assert.equal(
+      targetEvents[0]?.content?.kind === 'text' ? targetEvents[0].content.text : undefined,
+      targetAttachmentText,
+    );
+    assert.equal(
+      copied.copiedMessages.find((message) => message.type === 'assistant')?.text,
+      targetAttachmentText,
+    );
     assert.equal(targetEvents[1]?.refs?.sourceInvocationId, 'invocation-target');
     assert.deepEqual(
       targetEvents[1]?.content?.kind === 'function_call' ? targetEvents[1].content.args : undefined,

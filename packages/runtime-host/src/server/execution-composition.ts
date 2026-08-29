@@ -41,10 +41,10 @@ import {
   type BackendFactory,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
-import { buildHostCapabilitiesFromBinding } from '@maka/runtime/tool-catalog-derive';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
+import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
 import {
   createBuiltinSandboxManager,
   createSandboxDiagnosticsProvider,
@@ -86,7 +86,6 @@ import { runWithStorageRootLease } from '@maka/storage/root-authority';
 import { openStorageWriterComposition } from '@maka/storage/storage-writer-composition';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
-import { type ManagedWorkspaceFilesystemWorker } from '@maka/storage/managed-workspace-owner';
 import { CanonicalSessionProjectionReader } from './canonical-session-projection.js';
 import {
   bindHostChildAgentBackend,
@@ -190,6 +189,7 @@ import {
   createRuntimeHostWorkspaceExecutionComposition,
   RuntimeHostWorkspaceExecutionError,
   type RuntimeHostWorkspaceExecutionComposition,
+  type RuntimeHostWorkspaceFilesystemWorker,
 } from './workspace-execution-composition.js';
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
@@ -328,11 +328,11 @@ export async function createExecutionRuntimeHostComposition(
             getLaunchSpec: filesystemWorkerLaunchSpecProvider,
           })
         : undefined;
-    const managedFilesystemWorker = filesystemWorker
-      ? adaptManagedWorkspaceFilesystemWorker(filesystemWorker)
+    const workspaceFilesystemWorker = filesystemWorker
+      ? adaptWorkspaceFilesystemWorker(filesystemWorker)
       : undefined;
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
-      ...(managedFilesystemWorker ? { filesystemWorker: managedFilesystemWorker } : {}),
+      ...(workspaceFilesystemWorker ? { filesystemWorker: workspaceFilesystemWorker } : {}),
     });
     const taskLedger = new HostTaskLedgerCoordinator(
       taskLedgerStore,
@@ -1092,7 +1092,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       clientCapabilities,
       () => requireGoal(goal),
-      (admission) => requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission),
+      (admission, state) =>
+        requireScheduledTasks(scheduledTasks).assertRecoveryAdmission(admission, state),
       artifacts,
       async ({ sessionId, text, skillIds }) => {
         const header = await stores.sessionStore.readHeaderSnapshot(sessionId);
@@ -1817,9 +1818,9 @@ function requireWorkspaceExecution(
   return composition;
 }
 
-function adaptManagedWorkspaceFilesystemWorker(
+function adaptWorkspaceFilesystemWorker(
   worker: Pick<FilesystemWorkerClient, 'execute'>,
-): ManagedWorkspaceFilesystemWorker {
+): RuntimeHostWorkspaceFilesystemWorker {
   return {
     async execute(input) {
       // Read-only operations never participate in CAS; the adapter says so

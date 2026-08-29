@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { CONTEXT_BUDGET_EXHAUSTED_DETAILS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
   decodeClientFrame,
@@ -231,6 +232,15 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
   });
 
+  test('publishes a new compatibility epoch for the removed execution.inspect.resolve operation', () => {
+    // Epoch 63 peers still know execution.inspect.resolve and would send it
+    // only to fail mid-connection now that it is gone, so its removal must
+    // fail the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 63);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.resolve'), false);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.query'), true);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
@@ -323,14 +333,18 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
   });
 
+  test('publishes a new compatibility epoch for Message execution ownership', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 61);
+  });
+
   test('publishes a new compatibility epoch for exact Session Connection identity', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
   });
 
   test('publishes a new compatibility epoch for Host-bound directory references', () => {
-    // Epoch 61 already belongs to exact Session Connection identity on main.
+    // Epoch 67 already belongs to durable Message lifecycle ownership on main.
     // Directory references widen closed message inputs and need a later boundary.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 61);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 67);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -497,6 +511,13 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       {
         ...identity,
+        type: 'tool_start',
+        toolName: 'Bash',
+        intent: '只读探索:定位渲染入口',
+        argsPreview: { command: 'git status --porcelain' },
+      },
+      {
+        ...identity,
         type: 'tool_output_delta',
         seq: 0,
         stream: 'stdout',
@@ -534,6 +555,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_start',
         toolName: 'read',
         args: { path: '/private' },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        argsPreview: { command: 'x'.repeat(9 * 1024) },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        intent: 42,
       },
       {
         ...identity,
@@ -805,6 +838,35 @@ describe('Runtime Host bootstrap protocol', () => {
       () =>
         exportCredentials.decodeOutput({
           credential: { locator: apiKeyLocator, secretBase64 },
+        }),
+      isInvalidFrame,
+    );
+  });
+
+  test('keeps the connection update model limit aligned with the catalog', () => {
+    const updateConnection = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.update'];
+    const enabledModelIds = Array.from(
+      { length: CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS },
+      (_, index) => `model-${index}`,
+    );
+    const input = {
+      expected: { connectionId: '00000000-0000-4000-8000-000000000001', revision: 1 },
+      changes: {
+        name: 'OpenRouter',
+        enabled: true,
+        enabledModelIds,
+      },
+    };
+
+    assert.doesNotThrow(() => updateConnection.decodeInput(input));
+    assert.throws(
+      () =>
+        updateConnection.decodeInput({
+          ...input,
+          changes: {
+            ...input.changes,
+            enabledModelIds: [...enabledModelIds, 'model-too-many'],
+          },
         }),
       isInvalidFrame,
     );
@@ -1133,8 +1195,13 @@ describe('Runtime Host bootstrap protocol', () => {
       operation: 'turn.message.query' as const,
       input: {
         sessionId: 'session-1',
-        messageIds: ['message-1', 'message-2'],
+        messageIds: ['message-1', 'message-2', 'message-3'],
       },
+    };
+    const executionQuery = {
+      requestId: 'execution-query-request-1',
+      operation: 'turn.message.execution.query' as const,
+      input: query.input,
     };
     const submit = {
       requestId: 'submit-request-1',
@@ -1164,6 +1231,36 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeClientFrame(query), query);
+    assert.deepEqual(decodeClientFrame(executionQuery), executionQuery);
+    const queried = {
+      requestId: executionQuery.requestId,
+      operation: executionQuery.operation,
+      ok: true as const,
+      result: {
+        resolutions: [
+          { messageId: 'message-1', state: 'pending' as const },
+          {
+            messageId: 'message-2',
+            state: 'owned' as const,
+            turnId: 'turn-2',
+            runId: 'run-2',
+          },
+          { messageId: 'message-3', state: 'cancelled' as const },
+        ],
+      },
+    };
+    assert.deepEqual(decodeHostFrame(queried), queried);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...queried,
+          result: {
+            ...queried.result,
+            resolutions: [...queried.result.resolutions, ...queried.result.resolutions],
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);

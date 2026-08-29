@@ -38,6 +38,14 @@ export {
   type RuntimeHostAccessManagementFrame,
 } from './access-management-frame.js';
 export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
+export {
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
+  decodeRuntimeHostPeerMeshManagementFrame,
+  encodeRuntimeHostPeerMeshManagementFrame,
+  type RuntimeHostPeerMeshManagementAction,
+  type RuntimeHostPeerMeshManagementFrame,
+} from './peer-mesh-management-frame.js';
 export { resolveRuntimeHostManagedServiceId } from './managed-service-target.js';
 export {
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
@@ -51,6 +59,7 @@ export {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,

@@ -55,6 +55,7 @@ import {
   withProcessLifetimeFileUpdateLock,
 } from '@maka/storage/process-lifetime-file-update-lock';
 import {
+  discoverMarkedStorageRoot,
   resolveExistingStorageRoot,
   tryAcquireInteractiveRootOwner,
   type InteractiveRootOwner,
@@ -287,6 +288,7 @@ export class RuntimeHostServiceManagerError extends Error {
       | 'target_mismatch'
       | 'configuration_changed'
       | 'configuration_incomplete'
+      | 'active_tasks'
       | 'retirement_failed'
       | 'update_requires_retirement'
       | 'update_incomplete'
@@ -686,11 +688,28 @@ async function manageRuntimeHostServiceLocked(
       'Runtime Host service is not installed',
     );
   }
-  await resolveExpectedServiceRoot(config, input);
+  const expectedRoot = await resolveExpectedServiceRoot(config, input);
   if (input.action === 'start' || input.action === 'restart') {
+    if (config.schemaVersion === 2) await backend.verifyDeployment(config);
+    if (input.action === 'restart') {
+      const root = expectedRoot ?? (await discoverMarkedStorageRoot({ path: config.rootPath }));
+      const service = await readServiceStatus(configPath, backend);
+      const retired = await retireManagedRuntimeHostService(
+        { ...service, config },
+        root,
+        backend,
+        deps,
+        input.allowInterruptActiveTasks ?? false,
+      );
+      if (retired.retirement.kind === 'active_tasks') {
+        throw new RuntimeHostServiceManagerError(
+          'active_tasks',
+          'Runtime Host still owns active work; it was not restarted',
+        );
+      }
+    }
     try {
-      if (config.schemaVersion === 2) await backend.verifyDeployment(config);
-      await backend[input.action]();
+      await backend.start();
       await deps.waitForReady(config, backend);
     } catch (error) {
       try {

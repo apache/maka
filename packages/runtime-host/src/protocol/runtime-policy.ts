@@ -78,7 +78,6 @@ export const CONNECTION_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
 export const RUNTIME_POLICY_SNAPSHOT_MAX_BYTES = 48 * 1024;
 export const CREDENTIAL_SECRET_MAX_BYTES = 10 * 1024;
 
-const CONNECTION_MUTATION_MAX_ENABLED_MODEL_IDS = 64;
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -1073,7 +1072,7 @@ function modelSource(value: unknown): 'fetched' | 'fallback' {
 }
 
 function assertMutationEnabledModelIds(values: readonly string[]): void {
-  if (values.length > CONNECTION_MUTATION_MAX_ENABLED_MODEL_IDS) {
+  if (values.length > CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS) {
     throw invalidProtocolFrame('Invalid enabled model ids');
   }
 }

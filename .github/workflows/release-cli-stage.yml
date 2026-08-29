@@ -18,7 +18,7 @@
 name: Stage CLI npm release
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
         description: Exact maka-agent version from packages/cli/package.json
@@ -41,20 +41,28 @@ jobs:
       source_commit: ${{ steps.product.outputs.source_commit }}
       product_tag: ${{ steps.product.outputs.product_tag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Require the exact product tag
+
+      - name: Require the Apache main publisher
         env:
           RELEASE_REF: ${{ github.ref }}
-          PRODUCT_TAG: v${{ inputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
-          if [[ "$RELEASE_REF" != "refs/tags/$PRODUCT_TAG" ]]; then
-            echo "CLI releases must be dispatched from $PRODUCT_TAG; found $RELEASE_REF" >&2
-            exit 1
-          fi
+          test "$RELEASE_REPOSITORY" = apache/maka
+          test "$RELEASE_REF" = refs/heads/main
+
+      - name: Check out the approved product source as data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ inputs.version }}
+          path: product-source
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Resolve the exact product release
         id: product
@@ -62,8 +70,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRODUCT_TAG: v${{ inputs.version }}
         run: |
-          source_commit="$(git rev-parse HEAD)"
-          test "$source_commit" = "$GITHUB_SHA"
+          source_commit="$(git -C product-source rev-parse HEAD)"
           node scripts/product-release-authority.mjs verify-draft \
             "$PRODUCT_TAG" "$source_commit" "$GITHUB_REPOSITORY"
           echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
@@ -73,6 +80,7 @@ jobs:
         env:
           GITHUB_SHA: ${{ steps.product.outputs.source_commit }}
           EXPECTED_PRODUCT_VERSION: ${{ inputs.version }}
+          PRODUCT_MANIFEST_ROOT: ${{ github.workspace }}/product-source
         run: node scripts/product-release-identity.mjs
 
   validate:
@@ -88,15 +96,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment:
-      name: npm-release
+      name: npm-publication
       url: https://www.npmjs.com/package/maka-agent
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out trusted staging code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.authorize.outputs.source_commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -119,14 +128,16 @@ jobs:
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
-          RELEASE_SHA: ${{ github.sha }}
-          RELEASE_WORKFLOW: .github/workflows/release-cli-stage.yml
+          PRODUCT_SOURCE_SHA: ${{ needs.authorize.outputs.source_commit }}
+          PUBLISHER_SHA: ${{ github.sha }}
+          RELEASE_WORKFLOW: .github/workflows/npm-publication.yml
         run: |
           node scripts/release-cli-publication.mjs prepare-stage \
             packages/cli/release \
             "$EXPECTED_VERSION" \
             "$PRODUCT_TAG" \
-            "$RELEASE_SHA" \
+            "$PRODUCT_SOURCE_SHA" \
+            "$PUBLISHER_SHA" \
             "$RELEASE_RUN_ID" \
             "$RELEASE_RUN_ATTEMPT" \
             "$RELEASE_REPOSITORY" \
@@ -160,12 +171,6 @@ jobs:
             echo "- stage run ID: \`$RELEASE_RUN_ID\`"
             echo "- stage run attempt: \`$RELEASE_RUN_ATTEMPT\`"
             echo "- version: \`$RELEASE_VERSION\`"
-            if [[ "$RELEASE_DIST_TAG" == "latest" ]]; then
-              echo
-              echo "Before finalizing this stable release, inspect npm dist-tags. If \`next\` is older than \`latest\`, authenticate interactively with npm and run:"
-              echo
-              echo "\`npm dist-tag add \"maka-agent@$RELEASE_VERSION\" next --registry https://registry.npmjs.org/\`"
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Submit the candidate to npm staging
         env:
