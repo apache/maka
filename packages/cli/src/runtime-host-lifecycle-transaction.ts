@@ -204,6 +204,7 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
       readonly rootId: string;
       readonly deploymentId?: string;
     };
+    readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
     readonly ensureAvailable?: boolean;
   } = {},
 ): Promise<RuntimeHostRecoverableDeployment> {
@@ -227,6 +228,7 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
       : previousProvider
         ? { supervisor: previousProvider.supervisor }
         : {}),
+    ...(options.expectedOwner ? { expectedOwner: options.expectedOwner } : {}),
     retireIdleSupervisor: false,
   });
   if (retirement.kind === 'active_tasks') {

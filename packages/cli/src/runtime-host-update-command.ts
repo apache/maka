@@ -598,7 +598,10 @@ async function runCanonicalRuntimeHostUpdate(
         const recovered = await resolveRecoverableRuntimeHostManagedDeployment(
           options.managedRootId,
           lifecycleDeps,
-          { expectedTarget: options.expectedTarget },
+          {
+            expectedTarget: options.expectedTarget,
+            ...(options.expectedHost ? { expectedOwner: options.expectedHost } : {}),
+          },
         );
         if (recovered.kind === 'absent') {
           throw new RuntimeHostServiceManagerError(
