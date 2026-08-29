@@ -19,6 +19,7 @@
 
 import {
   launchDetachedRuntimeHostCandidate,
+  launchOwnedRuntimeHostCandidate,
   type DetachedCandidateInput,
 } from '../../client/launcher.js';
 
@@ -45,5 +46,8 @@ const launchInput = {
     ? { env: { MAKA_TEST_STDERR_AFTER_PARENT_EXIT_MARKER: stderrMarkerPath } }
     : {}),
 } satisfies DetachedCandidateInput;
-const attempt = await launchDetachedRuntimeHostCandidate(launchInput).spawned;
+const launch = closeOnLauncherExit
+  ? launchOwnedRuntimeHostCandidate(launchInput)
+  : launchDetachedRuntimeHostCandidate(launchInput);
+const attempt = await launch.spawned;
 process.send?.({ type: 'launched', pid: attempt.pid });

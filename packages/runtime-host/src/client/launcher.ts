@@ -104,7 +104,8 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
   const startupAttemptId = randomUUID();
-  const guarded = input.inheritableAuthorityLeaseFd !== undefined;
+  const guarded =
+    input.inheritableAuthorityLeaseFd !== undefined || input.closeOnLauncherExit === true;
   const child = spawnCandidate(input, false, startupAttemptId, guarded);
   const exited = observeCandidateExit(child);
   notifyCandidateExit(child, exited, input.onExit);
