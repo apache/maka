@@ -154,7 +154,6 @@ impl Default for TransitSnapshot {
     fn default() -> Self {
         Self {
             allowed_peer_count: 0,
-            trusted_relay_count: 0,
             active_reservation_count: 0,
             active_circuit_count: 0,
             max_reservation_count: MAX_TRANSIT_RESERVATIONS,

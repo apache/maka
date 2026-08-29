@@ -1059,14 +1059,9 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
   const needsMesh =
-    action === 'invite' ||
-    action === 'remove' ||
-    action === 'leave' ||
-    action === 'close';
+    action === 'invite' || action === 'remove' || action === 'leave' || action === 'close';
   if (needsMesh && typeof meshId !== 'string') {
-    return error(
-      `runtime-host service mesh ${action} requires --mesh`,
-    );
+    return error(`runtime-host service mesh ${action} requires --mesh`);
   }
   if (!needsMesh && action !== 'transit' && typeof meshId === 'string') {
     return error('--mesh is only valid with mesh invite, remove, leave, close, or transit');

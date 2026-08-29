@@ -131,7 +131,6 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
     verifyIdentity: () => false,
     transitSnapshot: () => ({
       allowedPeerCount: 0,
-      trustedRelayCount: 0,
       activeReservationCount: 0,
       activeCircuitCount: 0,
       maxReservationCount: 32,
