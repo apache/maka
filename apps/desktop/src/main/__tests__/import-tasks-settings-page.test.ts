@@ -993,6 +993,123 @@ describe('ImportTasksSettingsPage source switching', () => {
 
     await act(async () => harness.root.unmount());
   });
+
+  it('does not start a second catalog read when revisiting a still-importing source', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const importing = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [{ sessions: [importing], nextCursor: null }],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+    assert.equal(harness.listCalls(), 1, 'codex loaded once on mount');
+
+    // Load claude-code (now cached), then return to the still-importing codex.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(harness.listCalls(), 2, 'claude-code loaded');
+
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The cache hit shows the importing rows again, but must NOT kick off its own
+    // background readCatalogWindow: the 1s import poll is the single refresher for
+    // an importing selection, and a second concurrent read shares the same request
+    // generation and can land a stale pre-import page on top of a newer poll
+    // result (the timer is deliberately left un-fired here).
+    assert.match(harness.container.textContent, /Codex conv/, 'cached codex rows shown');
+    assert.equal(
+      harness.listCalls(),
+      2,
+      'revisiting an importing source starts no second catalog read',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('updates the cache for a recovered import even after switching away', async () => {
+    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      settleImport = resolve;
+    });
+    const codexRecovered = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
+    });
+    // The revisit's background refresh never resolves, so the returned view is the
+    // cache alone — proving the cache itself holds the recovered state.
+    const codexRevisitPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [mount, recovery readCatalogWindow, revisit background refresh]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
+          { sessions: [codexRecovered], nextCursor: null },
+          codexRevisitPending,
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+      importResult,
+    });
+
+    // Start an import on codex, then switch to claude-code before the (unknown)
+    // outcome resolves.
+    const importButton = harness.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Import Codex conv"]',
+    );
+    assert.ok(importButton);
+    await act(async () => importButton.click());
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    // The import comes back unknown; recovery confirms it landed while codex is not
+    // the current selection.
+    await act(async () => {
+      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /The imported task is available now/);
+    assert.match(harness.container.textContent, /CC conv/, 'the current view is untouched by recovery');
+
+    // Returning to codex must show the recovered "imported" state straight from
+    // the cache — not the stale pre-import row that would invite a duplicate
+    // import — even though the background refresh has not landed.
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+    assert.match(
+      harness.container.textContent,
+      /Imported once/,
+      'the cache reflects the recovered import on return',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
 });
 
 function externalSession(

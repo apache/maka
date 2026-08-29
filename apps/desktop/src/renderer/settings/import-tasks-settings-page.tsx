@@ -322,6 +322,15 @@ export function ImportTasksSettingsPage(props: {
       setImportError(null);
       try {
         if (cached !== undefined) {
+          // While a revisited selection still shows an import in flight, the 1s
+          // import poll owns refreshing it. Starting our own readCatalogWindow
+          // here would run a second read under the *same* request generation as
+          // that poll, and a pre-import page read started here can land after a
+          // newer poll result and snap "Imported once" back to "Importing…".
+          // Leave the poll as the single refresher and keep the cached rows up.
+          if (cached.sessions.some((session) => session.importState.isImporting)) {
+            return;
+          }
           // Refresh a revisited selection by re-reading the *whole* loaded
           // window, not just page one: the cache can be several pages deep from
           // Load More, and a bare first-page read here would overwrite it and
@@ -475,6 +484,21 @@ export function ImportTasksSettingsPage(props: {
           throw new Error('External Session source disappeared during import recovery');
         }
 
+        const recoveredState: CatalogState = {
+          sessions: result.sessions,
+          nextCursor: result.nextCursor,
+        };
+        // Always refresh the cache for the selection this attempt came from, even
+        // if the user has since switched source or filter. Recovery has confirmed
+        // the import landed; leaving the pre-import rows in the cache would greet
+        // the user with an "Import" button (not "Import again") when they return,
+        // inviting a duplicate import until a later background refresh corrects it.
+        writeCatalogCache(
+          catalogCacheRef.current,
+          catalogSelectionKey(attempt.adapterId, attempt.includeArchived, attempt.text),
+          recoveredState,
+        );
+
         const currentSelection = catalogSelectionRef.current;
         if (
           currentSelection.adapterId === attempt.adapterId &&
@@ -484,15 +508,6 @@ export function ImportTasksSettingsPage(props: {
           // Recovery is the newest authoritative read for this exact catalog
           // selection. Retire an older poll/load-more response before publishing
           // it so that response cannot put pre-import state back on screen.
-          const recoveredState: CatalogState = {
-            sessions: result.sessions,
-            nextCursor: result.nextCursor,
-          };
-          writeCatalogCache(
-            catalogCacheRef.current,
-            catalogSelectionKey(attempt.adapterId, attempt.includeArchived, attempt.text),
-            recoveredState,
-          );
           requestGeneration.current += 1;
           setCatalogLoading(false);
           setLoadingMore(false);
