@@ -162,6 +162,7 @@ apps/desktop/src/renderer/work-board-panel.tsx
 apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
+packages/ui/src/attachment-image.tsx
 packages/ui/src/attachment-kinds.tsx
 packages/ui/src/bot-brand-logo.tsx
 packages/ui/src/capability-audit-strip.tsx
