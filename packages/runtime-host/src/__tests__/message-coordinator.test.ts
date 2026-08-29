@@ -1369,6 +1369,92 @@ test('entry promote moves a follow-up into the steering queue', async () => {
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('a carried follow-up promoted in its successor requeues after nack', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const firstOwner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'first-successor', 'first', 'next_turn');
+  await submit(fixture, 'carried-followup', 'second', 'next_turn');
+  firstOwner.release();
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  const successor = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(firstBatch, successor);
+  fixture.setRootState({ kind: 'active', ...successor });
+
+  const owner = fixture.coordinator.bindRun(successor);
+  const entryId = fixture.coordinator.projection(ROOT.sessionId).followup[0]?.entryId;
+  assert.ok(entryId);
+  const promoted = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId,
+      promoteId: 'promote-carried-for-nack',
+    },
+    operationContext(),
+  );
+  assert.equal(promoted.ok, true);
+  const leases = owner.pull();
+  assert.deepEqual(
+    leases.map((lease) => lease.messageId),
+    ['carried-followup'],
+  );
+  owner.nack(leases.map((lease) => lease.id));
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
+    ['carried-followup'],
+  );
+});
+
+test('an acked carried follow-up is not redelivered after restart', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const firstOwner = fixture.coordinator.bindRun(ROOT);
+  await submit(fixture, 'first-successor', 'first', 'next_turn');
+  await submit(fixture, 'carried-followup', 'second', 'next_turn');
+  firstOwner.release();
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  const successor = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(firstBatch, successor);
+  fixture.setRootState({ kind: 'active', ...successor });
+
+  const owner = fixture.coordinator.bindRun(successor);
+  const entryId = fixture.coordinator.projection(ROOT.sessionId).followup[0]?.entryId;
+  assert.ok(entryId);
+  const promoted = await fixture.coordinator.handlers['queue.entry.promote'](
+    {
+      originHostEpoch: 'epoch-1',
+      sessionId: ROOT.sessionId,
+      entryId,
+      promoteId: 'promote-carried-for-ack',
+    },
+    operationContext(),
+  );
+  assert.equal(promoted.ok, true);
+  const leases = owner.pull();
+  assert.equal(leases.length, 1);
+  owner.ack(leases.map((lease) => lease.id));
+  fixture.events.push({
+    ...steeringEvent('carried-followup', 'second'),
+    turnId: successor.turnId,
+    runId: successor.runId,
+  });
+
+  await fixture.coordinator.materializeMessageHandoffsForRun({
+    ...successor,
+    messageIds: [],
+  });
+  assert.equal(fixture.readMessageAdmission('carried-followup'), undefined);
+  await fixture.admissions.markMessagesHandedOff({
+    sessionId: ROOT.sessionId,
+    messageIds: ['first-successor'],
+    turnId: successor.turnId,
+  });
+  fixture.setRootState({ kind: 'idle' });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+  assert.deepEqual(fixture.recoveredBatches, []);
+});
+
 test('editing a promoted entry preserves its original submitted placement', async () => {
   const fixture = createFixture();
   fixture.coordinator.reserveRootTurn(ROOT);

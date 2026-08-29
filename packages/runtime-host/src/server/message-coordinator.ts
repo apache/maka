@@ -224,15 +224,15 @@ export type CandidateSnapshotPreflight = (
 interface LiveEntry {
   readonly entryId: string;
   readonly messageId: string;
-  readonly turnId: string;
-  readonly runId: string;
+  readonly admissionTurnId: string;
+  readonly admissionRunId: string;
   readonly admittedAt: number;
   content: MessageContent;
   modelContent: MessageContent;
   submittedContentDigest: `sha256:${string}`;
   readonly placement: MessagePlacement;
   readonly disposition: 'steering' | 'followup';
-  readonly generation: number;
+  generation: number;
   readonly residency: RuntimeHostResidency;
   state: 'queued' | 'in_flight' | 'released';
   leaseId?: string;
@@ -609,6 +609,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
     this.#commitTransition(state);
     state.generation += 1;
+    for (const entry of allLiveEntries(state)) entry.generation = state.generation;
     state.reservedRoot = { ...identity };
     state.phase = 'open';
     this.#mutated(state);
@@ -674,11 +675,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       provenRootMessages.push(await this.#readProvenRootMessage(input, messageId));
     }
     for (const admission of admissions) {
-      if (
-        admission.turnId !== input.turnId ||
-        admission.runId !== input.runId ||
-        admission.disposition !== 'steering'
-      ) {
+      if (admission.disposition !== 'steering') {
         continue;
       }
       const proof = await this.#durableProof.readImmutableSteeringMessageProof(
@@ -778,14 +775,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           sessionId,
           admission.messageId,
         );
-        if (
-          steering?.event.turnId === admission.turnId &&
-          steering.event.runId === admission.runId
-        ) {
+        if (steering) {
           await this.materializeMessageHandoffsForRun({
             sessionId,
-            turnId: admission.turnId,
-            runId: admission.runId,
+            turnId: steering.event.turnId,
+            runId: steering.event.runId,
             messageIds: [],
           });
         } else {
@@ -859,8 +853,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       const entry: LiveEntry = {
         entryId: this.#createId(),
         messageId: admission.messageId,
-        turnId: admission.turnId,
-        runId: admission.runId,
+        admissionTurnId: admission.turnId,
+        admissionRunId: admission.runId,
         admittedAt: admission.admittedAt,
         content: submittedProjectionContent(admission.content),
         modelContent: admission.content,
@@ -1184,8 +1178,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         const entry: LiveEntry = {
           entryId,
           messageId: input.messageId,
-          turnId: rootState.turnId,
-          runId: rootState.runId,
+          admissionTurnId: rootState.turnId,
+          admissionRunId: rootState.runId,
           admittedAt: messageAdmission.admittedAt,
           content: payload.content,
           modelContent: prepared.content,
@@ -1490,8 +1484,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     }
     await this.#admissions.updateMessageAdmission({
       sessionId: input.sessionId,
-      turnId: entry.turnId,
-      runId: entry.runId,
+      turnId: entry.admissionTurnId,
+      runId: entry.admissionRunId,
       messageId: entry.messageId,
       content: entry.modelContent,
       submittedContentDigest: entry.submittedContentDigest,
@@ -1591,8 +1585,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     );
     await this.#admissions.updateMessageAdmission({
       sessionId: input.sessionId,
-      turnId: queued.entry.turnId,
-      runId: queued.entry.runId,
+      turnId: queued.entry.admissionTurnId,
+      runId: queued.entry.admissionRunId,
       messageId: queued.entry.messageId,
       content: modelContent,
       submittedContentDigest: messageContentDigest(content),
