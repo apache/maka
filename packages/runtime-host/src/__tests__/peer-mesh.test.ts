@@ -221,6 +221,53 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
   }
 });
 
+test('reconciles one selected Mesh into signed transit routes and native policy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-transit-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberBPeer = network.create('peer-b');
+  const memberCPeer = network.create('peer-c');
+  const authority = await openPeerMeshNode({ dataRoot: join(root, 'a'), peer: authorityPeer });
+  const memberB = await openPeerMeshNode({ dataRoot: join(root, 'b'), peer: memberBPeer });
+  const memberC = await openPeerMeshNode({ dataRoot: join(root, 'c'), peer: memberCPeer });
+  const serving = [authority.serve(), memberB.serve(), memberC.serve()];
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await memberB.join(await authority.invite(meshId));
+    await memberC.join(await authority.invite(meshId));
+
+    await authority.setTransitMesh(meshId);
+    await memberB.reconcile();
+    assert.equal(authority.status()[0]?.transitEnabled, true);
+    assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-b', 'peer-c']);
+    assert.deepEqual(memberBPeer.transitPolicy.trustedRelayPeerIds, ['peer-a']);
+    assert.deepEqual(memberBPeer.transitPolicy.reservationRelays, ['/memory/peer-a']);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelays, ['/memory/peer-a']);
+
+    await authority.remove(meshId, 'peer-b');
+    assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-c']);
+    await memberB.reconcile();
+    assert.deepEqual(memberBPeer.transitPolicy, {
+      allowedPeerIds: [],
+      trustedRelayPeerIds: [],
+      reservationRelays: [],
+    });
+
+    await authority.closeMesh(meshId);
+    assert.equal(authority.status()[0]?.transitEnabled, false);
+    assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, []);
+  } finally {
+    await Promise.allSettled([authority.close(), memberB.close(), memberC.close()]);
+    await Promise.allSettled([
+      ...serving,
+      authorityPeer.close(),
+      memberBPeer.close(),
+      memberCPeer.close(),
+    ]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('closed Mesh records do not permanently consume membership capacity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-capacity-'));
   const peer = new MemoryPeerNetwork().create('peer-a');
@@ -363,6 +410,11 @@ class MemoryPeerClient implements PeerMeshTransport {
   #responseDelayMs = 0;
   #reachable = true;
   #routeHints: readonly string[];
+  transitPolicy = {
+    allowedPeerIds: [] as readonly string[],
+    trustedRelayPeerIds: [] as readonly string[],
+    reservationRelays: [] as readonly string[],
+  };
 
   constructor(
     private readonly peerId: string,
@@ -407,6 +459,28 @@ class MemoryPeerClient implements PeerMeshTransport {
       proof.publicKey.toString() === peerId &&
       proof.signature.equals(memorySignature(peerId, payload))
     );
+  }
+
+  transitSnapshot() {
+    return {
+      allowedPeerCount: this.transitPolicy.allowedPeerIds.length,
+      trustedRelayCount: this.transitPolicy.trustedRelayPeerIds.length,
+      activeReservationCount: 0,
+      activeCircuitCount: 0,
+    };
+  }
+
+  configureTransit(input: {
+    readonly allowedPeerIds: readonly string[];
+    readonly trustedRelayPeerIds: readonly string[];
+    readonly reservationRelays: readonly string[];
+  }): Promise<void> {
+    this.transitPolicy = {
+      allowedPeerIds: [...input.allowedPeerIds],
+      trustedRelayPeerIds: [...input.trustedRelayPeerIds],
+      reservationRelays: [...input.reservationRelays],
+    };
+    return Promise.resolve();
   }
 
   async connectMeshControl(input: {

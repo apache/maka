@@ -34,6 +34,7 @@ use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
 const MAX_TRANSIT_PEERS: usize = 32;
+const MAX_TRANSIT_RELAY_ADDRESSES: usize = 128;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -58,6 +59,7 @@ pub struct ConnectPeerOptions {
 pub struct ConfigurePeerTransitOptions {
     pub allowed_peer_ids: Vec<String>,
     pub trusted_relay_peer_ids: Vec<String>,
+    pub reservation_relays: Vec<String>,
 }
 
 #[napi(object)]
@@ -124,6 +126,13 @@ impl PeerEndpoint {
     pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
         let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
         let trusted_relays = parse_peer_ids(options.trusted_relay_peer_ids)?;
+        if options.reservation_relays.len() > MAX_TRANSIT_RELAY_ADDRESSES {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "transit policy cannot contain more than 128 relay addresses",
+            ));
+        }
+        let reservation_relays = parse_addresses(options.reservation_relays, "transit relay")?;
         let local_peer_id = parse_peer_id(&self.peer_id)?;
         if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
             return Err(Error::new(
@@ -134,8 +143,11 @@ impl PeerEndpoint {
         let (result_tx, result_rx) = oneshot::channel();
         self.commands
             .send(EngineCommand::ConfigureTransit {
-                allowed_peers,
-                trusted_relays,
+                policy: engine::TransitPolicy {
+                    allowed_peers,
+                    trusted_relays,
+                    reservation_relays,
+                },
                 result: result_tx,
             })
             .await
