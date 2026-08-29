@@ -66,6 +66,8 @@ export {
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
   type RuntimeHostCapabilityProviderCredentialStore,
+  RuntimeHostProfileConnectionError,
+  type RuntimeHostProfileConnectionFailureReason,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {

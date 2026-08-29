@@ -68,6 +68,28 @@ describe('MCP management overlay', () => {
     assert.doesNotMatch(text, /尚未配置/u);
   });
 
+  test('surfaces remote provider credential state without rendering a secret value', () => {
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: surface({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'credential_rejected',
+        canManagePublicationCredential: true,
+        toolCount: 0,
+        servers: [],
+      }),
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    const text = overlay.render(160).map(stripAnsi).join('\n');
+    assert.match(text, /provider credential rejected/u);
+    assert.match(text, /p Set provider credential/u);
+    assert.doesNotMatch(text, /maka_rh_/u);
+  });
+
   test('localizes manager states without changing their source values', () => {
     const overlay = new McpManagementOverlay({
       locale: 'zh',

@@ -52,6 +52,7 @@ interface TuiMcpStatusCopy {
     readonly back: string;
     readonly readOnly: string;
     readonly manage: string;
+    readonly managePublication: string;
   };
   readonly unavailableTitle: string;
   readonly unavailableDetail: string;
@@ -92,7 +93,8 @@ type InputKind =
   | 'env'
   | 'headers'
   | 'edit'
-  | 'import';
+  | 'import'
+  | 'publication_credential';
 
 type McpOverlayPhase =
   | { kind: 'list' }
@@ -109,6 +111,7 @@ type McpOverlayPhase =
   | { kind: 'confirm_add'; draft: GuidedDraft }
   | { kind: 'confirm_import'; preview: TuiMcpImportPreview }
   | { kind: 'confirm_remove'; serverId: string }
+  | { kind: 'confirm_remove_publication_credential' }
   | { kind: 'busy'; label: string };
 
 /** One in-frame state machine for status, editing, confirmation, and errors.
@@ -187,6 +190,11 @@ export class McpManagementOverlay implements Component {
       void this.runAction({ kind: 'commit_import', previewId: this.phase.preview.previewId });
     } else if (this.phase.kind === 'confirm_remove' && matchesKey(data, 'y')) {
       void this.runAction({ kind: 'remove', serverId: this.phase.serverId });
+    } else if (
+      this.phase.kind === 'confirm_remove_publication_credential' &&
+      matchesKey(data, 'y')
+    ) {
+      void this.runAction({ kind: 'remove_publication_credential' });
     }
   }
 
@@ -222,7 +230,8 @@ export class McpManagementOverlay implements Component {
   }
 
   private handleListInput(data: string): void {
-    const servers = this.input.surface?.snapshot().servers ?? [];
+    const snapshot = this.input.surface?.snapshot();
+    const servers = snapshot?.servers ?? [];
     if (matchesKey(data, Key.up)) {
       this.selected = clamp(this.selected - 1, 0, servers.length - 1);
     } else if (matchesKey(data, Key.down)) {
@@ -234,7 +243,19 @@ export class McpManagementOverlay implements Component {
     } else if (matchesKey(data, Key.home)) this.selected = 0;
     else if (matchesKey(data, Key.end)) this.selected = Math.max(0, servers.length - 1);
     else if (matchesKey(data, 'a') && this.management()) this.phase = { kind: 'add_choice' };
-    else {
+    else if (
+      matchesKey(data, 'p') &&
+      this.management() &&
+      snapshot?.canManagePublicationCredential
+    ) {
+      this.startInput('publication_credential');
+    } else if (
+      matchesKey(data, 'x') &&
+      this.management() &&
+      snapshot?.canManagePublicationCredential
+    ) {
+      this.phase = { kind: 'confirm_remove_publication_credential' };
+    } else {
       const server = servers[this.selected];
       if (!server || !this.management()) return;
       if (matchesKey(data, Key.enter)) this.startEdit(server.serverId);
@@ -367,6 +388,10 @@ export class McpManagementOverlay implements Component {
           expectedRevision: phase.revision,
           config,
         });
+      } else if (phase.input === 'publication_credential') {
+        if (!trimmed) throw new Error();
+        this.clearEditor();
+        void this.runAction({ kind: 'set_publication_credential', credential: trimmed });
       } else {
         const preview = this.management()?.previewImport(value);
         if (!preview || preview.status !== 'ready') throw new Error();
@@ -454,6 +479,21 @@ export class McpManagementOverlay implements Component {
         confirmCopy(this.input.locale),
       ];
     }
+    if (this.phase.kind === 'confirm_remove_publication_credential') {
+      return [
+        heading(
+          this.input.locale,
+          'Remove the remote provider credential?',
+          '删除远程 Provider 凭据？',
+        ),
+        '',
+        this.input.locale === 'zh'
+          ? '这会停止向所选 Runtime Host 发布 MCP 工具。'
+          : 'This stops publishing MCP tools to the selected Runtime Host.',
+        '',
+        confirmCopy(this.input.locale),
+      ];
+    }
     if (this.phase.kind === 'busy') return [ansi.yellow(this.phase.label)];
     const lines = [publicationLine(snapshot, this.input.locale)];
     if (snapshot.configuration !== 'ready') {
@@ -497,7 +537,9 @@ export class McpManagementOverlay implements Component {
     const copy = MCP_STATUS_COPY[this.input.locale].footer;
     if (this.phase.kind !== 'list') return copy.back;
     if (!this.management()) return copy.readOnly;
-    return copy.manage;
+    return this.input.surface?.snapshot().canManagePublicationCredential
+      ? copy.managePublication
+      : copy.manage;
   }
 
   private backToList(clearNotice = true): void {
@@ -669,6 +711,7 @@ function copy(locale: UiLocale, key: string): string {
     'invalid-config': 'The server configuration is invalid.',
     'credential-cleanup-failed':
       'Stored credentials could not be removed; the configuration was not changed.',
+    'publication-credential-failed': 'The provider credential could not be stored or applied.',
     'persist-failed': 'The configuration could not be saved.',
     'manager-failed': 'The MCP connection action failed.',
     turn_active: 'MCP cannot be changed while a turn or another control action is running.',
@@ -691,6 +734,7 @@ function copy(locale: UiLocale, key: string): string {
     closed: 'MCP 控制器已关闭。',
     'invalid-config': '服务器配置无效。',
     'credential-cleanup-failed': '无法删除旧凭据，配置未修改。',
+    'publication-credential-failed': '无法保存或应用 Provider 凭据。',
     'persist-failed': '无法保存配置。',
     'manager-failed': 'MCP 连接操作失败。',
     turn_active: 'Turn 或其他控制操作运行期间不能修改 MCP。',
@@ -749,6 +793,7 @@ function inputLabel(kind: InputKind, locale: UiLocale): string {
     headers: ['Request headers', '请求头'],
     edit: ['Edit server JSON', '编辑服务器 JSON'],
     import: ['Paste MCP JSON', '粘贴 MCP JSON'],
+    publication_credential: ['Provider credential', 'Provider 凭据'],
   };
   return labels[kind][locale === 'zh' ? 1 : 0];
 }
@@ -758,6 +803,11 @@ function inputHint(kind: InputKind, locale: UiLocale): string {
   if (kind === 'args') return `JSON string array, ${optional}`;
   if (kind === 'env' || kind === 'headers') return `JSON string map, ${optional}`;
   if (kind === 'cwd') return optional;
+  if (kind === 'publication_credential') {
+    return locale === 'zh'
+      ? '仅保存到本机凭据存储；不会写入 profile、参数或对话 · Enter 提交 · Esc 返回'
+      : 'Stored only in the local credential store; never written to profiles, arguments, or chat · Enter submit · Esc back';
+  }
   return locale === 'zh' ? 'Enter 提交 · Esc 返回' : 'Enter submit · Esc back';
 }
 

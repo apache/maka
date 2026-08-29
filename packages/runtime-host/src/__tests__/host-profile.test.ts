@@ -34,6 +34,7 @@ import {
   createRuntimeHostProfileCredentialStore,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+  RuntimeHostProfileConnectionError,
   sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostProfileCredentialStore,
@@ -714,7 +715,11 @@ describe('Runtime Host profiles', () => {
             connect: async () => ({ kind: 'unavailable', reason: 'root_mismatch' }),
           },
         ),
-      RuntimeHostPermanentReconnectError,
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'target_mismatch');
+        return true;
+      },
     );
   });
 
@@ -898,6 +903,8 @@ describe('Runtime Host profiles', () => {
         ),
       (error: unknown) => {
         assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'credential_rejected');
         assert.match(error.message, /rejected its access credential/u);
         return true;
       },

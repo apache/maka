@@ -1,0 +1,295 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import {
+  connectRuntimeHostProfile,
+  createClientRuntimeHostCredentialStore,
+  createRuntimeHostCapabilityProviderCredentialStore,
+  createRuntimeHostPeerClientFromEnvironment,
+  createRuntimeHostReconnectingConnection,
+  loadOrCreateRuntimeHostClientInstanceId,
+  RuntimeHostPermanentReconnectError,
+  RuntimeHostProfileConnectionError,
+  RuntimeHostRemoteCompatibilityError,
+  runtimeHostProfileTargetFingerprint,
+  type RemoteRuntimeHostProfile,
+  type RuntimeHostCapabilityProviderCredentialStore,
+  type RuntimeHostConnection,
+  type RuntimeHostPeerClient,
+  type RuntimeHostReconnectingConnection,
+} from '@maka/runtime-host/client';
+import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
+import type {
+  TuiMcpPublicationAvailability,
+  TuiMcpPublicationTarget,
+  TuiMcpPublicationUnavailableReason,
+} from './tui-mcp-control.js';
+
+interface RemoteTuiMcpPublicationDeps {
+  readonly credentials: RuntimeHostCapabilityProviderCredentialStore;
+  readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
+  readonly connectProfile: typeof connectRuntimeHostProfile;
+  readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
+}
+
+export function createRemoteTuiMcpPublicationTarget(
+  input: {
+    readonly clientDataRoot: string;
+    readonly profile: RemoteRuntimeHostProfile;
+    readonly ownerClientInstanceId: string;
+  },
+  overrides: Partial<RemoteTuiMcpPublicationDeps> = {},
+): TuiMcpPublicationTarget {
+  const deps: RemoteTuiMcpPublicationDeps = {
+    credentials: createRuntimeHostCapabilityProviderCredentialStore(
+      createClientRuntimeHostCredentialStore(input.clientDataRoot),
+    ),
+    loadClientInstanceId: loadOrCreateRuntimeHostClientInstanceId,
+    connectProfile: connectRuntimeHostProfile,
+    createPeerClient: createRuntimeHostPeerClientFromEnvironment,
+    ...overrides,
+  };
+  return new RemoteTuiMcpPublicationTarget(input, deps);
+}
+
+class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
+  readonly #input: {
+    readonly clientDataRoot: string;
+    readonly profile: RemoteRuntimeHostProfile;
+    readonly ownerClientInstanceId: string;
+  };
+  readonly #deps: RemoteTuiMcpPublicationDeps;
+  readonly #listeners = new Set<(availability: TuiMcpPublicationAvailability) => void>();
+  #availability: TuiMcpPublicationAvailability = {
+    kind: 'unavailable',
+    reason: 'credential_required',
+  };
+  #connection: RuntimeHostReconnectingConnection | undefined;
+  #disposeAvailability: (() => void) | undefined;
+  #peerClient: RuntimeHostPeerClient | undefined;
+  #operation = Promise.resolve();
+  #generation = 0;
+  #closed = false;
+  #closeTask: Promise<void> | undefined;
+
+  constructor(
+    input: {
+      readonly clientDataRoot: string;
+      readonly profile: RemoteRuntimeHostProfile;
+      readonly ownerClientInstanceId: string;
+    },
+    deps: RemoteTuiMcpPublicationDeps,
+  ) {
+    this.#input = input;
+    this.#deps = deps;
+    void this.#serialize(async () => {
+      const credential = await deps.credentials.get(input.profile, input.ownerClientInstanceId);
+      if (this.#closed) return;
+      if (!credential) {
+        this.#setUnavailable('credential_required');
+        return;
+      }
+      await this.#connect(credential);
+    });
+  }
+
+  replaceClientCapabilities(provider: ClientCapabilityProvider, timeoutMs?: number) {
+    return this.#requireConnection().replaceClientCapabilities(provider, timeoutMs);
+  }
+
+  unregisterClientCapabilities(timeoutMs?: number) {
+    return this.#requireConnection().unregisterClientCapabilities(timeoutMs);
+  }
+
+  subscribeConnectionAvailability(
+    listener: (availability: TuiMcpPublicationAvailability) => void,
+  ): () => void {
+    this.#listeners.add(listener);
+    try {
+      listener(this.#availability);
+    } catch {
+      // Presentation cannot invalidate the companion lifecycle.
+    }
+    return () => this.#listeners.delete(listener);
+  }
+
+  setCredential(credential: string): Promise<void> {
+    return this.#serialize(async () => {
+      if (this.#closed) throw new Error('Remote MCP publication is closed');
+      await this.#deps.credentials.set(
+        this.#input.profile,
+        this.#input.ownerClientInstanceId,
+        credential,
+      );
+      await this.#disconnect();
+      await this.#connect(credential);
+    });
+  }
+
+  removeCredential(): Promise<void> {
+    return this.#serialize(async () => {
+      if (this.#closed) throw new Error('Remote MCP publication is closed');
+      await this.#disconnect();
+      await this.#deps.credentials.delete(this.#input.profile, this.#input.ownerClientInstanceId);
+      this.#setUnavailable('credential_required');
+    });
+  }
+
+  closePublication(): Promise<void> {
+    this.#closeTask ??= this.#close();
+    return this.#closeTask;
+  }
+
+  #serialize<T>(work: () => Promise<T>): Promise<T> {
+    const pending = this.#operation.then(work, work);
+    this.#operation = pending.then(
+      () => undefined,
+      () => undefined,
+    );
+    return pending;
+  }
+
+  async #connect(credential: string): Promise<void> {
+    const generation = ++this.#generation;
+    this.#setUnavailable('host_unavailable');
+    try {
+      const clientInstanceId = await this.#deps.loadClientInstanceId(
+        providerIdentityPath(this.#input),
+      );
+      const peerClient =
+        this.#input.profile.transport.kind === 'libp2p-direct'
+          ? this.#deps.createPeerClient()
+          : undefined;
+      this.#peerClient = peerClient;
+      const connect = (signal?: AbortSignal): Promise<RuntimeHostConnection> =>
+        this.#deps.connectProfile({
+          profile: this.#input.profile,
+          credential,
+          clientInstanceId,
+          sshInteraction: 'batch',
+          ...(peerClient ? { peerClient } : {}),
+          ...(signal ? { signal } : {}),
+        });
+      const initial = await connect();
+      if (this.#closed || generation !== this.#generation) {
+        await initial.close().catch(() => undefined);
+        await peerClient?.close().catch(() => undefined);
+        return;
+      }
+      const connection = await createRuntimeHostReconnectingConnection({
+        initialConnection: initial,
+        connect,
+        onFatalError: (error) => {
+          if (!this.#closed && generation === this.#generation) {
+            this.#setUnavailable(classifyUnavailable(error));
+          }
+        },
+      });
+      if (this.#closed || generation !== this.#generation) {
+        await connection.close().catch(() => undefined);
+        await peerClient?.close().catch(() => undefined);
+        return;
+      }
+      this.#connection = connection;
+      this.#disposeAvailability = connection.subscribeConnectionAvailability((availability) => {
+        if (this.#closed || generation !== this.#generation) return;
+        this.#setAvailability(
+          availability.kind === 'connected'
+            ? availability
+            : { kind: 'unavailable', reason: 'host_unavailable' },
+        );
+      });
+    } catch (error) {
+      if (!this.#closed && generation === this.#generation) {
+        this.#setUnavailable(classifyUnavailable(error));
+      }
+      await this.#peerClient?.close().catch(() => undefined);
+      this.#peerClient = undefined;
+    }
+  }
+
+  async #disconnect(): Promise<void> {
+    this.#generation += 1;
+    this.#disposeAvailability?.();
+    this.#disposeAvailability = undefined;
+    const connection = this.#connection;
+    this.#connection = undefined;
+    await connection?.close().catch(() => undefined);
+    await this.#peerClient?.close().catch(() => undefined);
+    this.#peerClient = undefined;
+    if (!this.#closed) this.#setUnavailable('host_unavailable');
+  }
+
+  async #close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    await this.#operation.catch(() => undefined);
+    await this.#disconnect();
+    this.#listeners.clear();
+  }
+
+  #requireConnection(): RuntimeHostReconnectingConnection {
+    if (this.#connection && this.#availability.kind === 'connected') return this.#connection;
+    throw new RuntimeHostPermanentReconnectError('Remote MCP publication is unavailable');
+  }
+
+  #setUnavailable(reason: TuiMcpPublicationUnavailableReason): void {
+    this.#setAvailability({ kind: 'unavailable', reason });
+  }
+
+  #setAvailability(availability: TuiMcpPublicationAvailability): void {
+    this.#availability = availability;
+    for (const listener of this.#listeners) {
+      try {
+        listener(availability);
+      } catch {
+        // Presentation cannot invalidate the companion lifecycle.
+      }
+    }
+  }
+}
+
+function providerIdentityPath(input: {
+  readonly clientDataRoot: string;
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly ownerClientInstanceId: string;
+}): string {
+  const identity = createHash('sha256')
+    .update('tui-mcp-capability-provider')
+    .update('\0')
+    .update(runtimeHostProfileTargetFingerprint(input.profile))
+    .update('\0')
+    .update(input.ownerClientInstanceId)
+    .digest('hex')
+    .slice(0, 24);
+  return join(
+    input.clientDataRoot,
+    'runtime-host-client',
+    'capability-provider-identities',
+    `${identity}.json`,
+  );
+}
+
+function classifyUnavailable(error: unknown): TuiMcpPublicationUnavailableReason {
+  if (error instanceof RuntimeHostProfileConnectionError) return error.reason;
+  if (error instanceof RuntimeHostRemoteCompatibilityError) return 'target_mismatch';
+  return 'host_unavailable';
+}

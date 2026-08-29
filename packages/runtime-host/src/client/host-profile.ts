@@ -231,6 +231,21 @@ export interface RuntimeHostCapabilityProviderCredentialStore {
   delete(profile: RemoteRuntimeHostProfile, ownerClientInstanceId: string): Promise<void>;
 }
 
+export type RuntimeHostProfileConnectionFailureReason =
+  | 'credential_required'
+  | 'credential_rejected'
+  | 'target_mismatch';
+
+export class RuntimeHostProfileConnectionError extends RuntimeHostPermanentReconnectError {
+  constructor(
+    readonly reason: RuntimeHostProfileConnectionFailureReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RuntimeHostProfileConnectionError';
+  }
+}
+
 export function createFileRuntimeHostProfileCatalog(
   path: string,
   credentials: RuntimeHostProfileCredentialStore,
@@ -354,7 +369,8 @@ export async function connectRuntimeHostProfile(
     );
   }
   if (!input.credential) {
-    throw new RuntimeHostPermanentReconnectError(
+    throw new RuntimeHostProfileConnectionError(
+      'credential_required',
       `Runtime Host profile ${input.profile.id} has no access credential`,
     );
   }
@@ -465,6 +481,20 @@ export async function connectRemoteRuntimeHostProfile(
       if (connected.kind === 'draining') {
         throw new Error(`Runtime Host profile ${input.profile.id} is draining`);
       }
+      if (connected.reason === 'authentication_failed') {
+        throw new RuntimeHostProfileConnectionError(
+          'credential_rejected',
+          `Runtime Host profile ${input.profile.id} rejected its access credential`,
+        );
+      }
+      if (connected.reason === 'root_mismatch' || connected.reason === 'composition_mismatch') {
+        throw new RuntimeHostProfileConnectionError(
+          'target_mismatch',
+          connected.reason === 'root_mismatch'
+            ? `Runtime Host profile ${input.profile.id} connected to an unexpected State Root`
+            : `Runtime Host profile ${input.profile.id} has an incompatible Host composition`,
+        );
+      }
       throw remoteRuntimeHostUnavailableError(
         `Runtime Host profile ${input.profile.id}`,
         connected.reason,
@@ -535,7 +565,8 @@ export async function connectPeerRuntimeHost(input: {
       input.handshakeTimeoutMs,
     );
     if (!authentication.accepted) {
-      throw new RuntimeHostPermanentReconnectError(
+      throw new RuntimeHostProfileConnectionError(
+        'credential_rejected',
         `Runtime Host profile ${input.profileId} rejected its access credential`,
       );
     }
@@ -561,6 +592,14 @@ export async function connectPeerRuntimeHost(input: {
     }
     if (result.kind === 'draining') throw new Error('Runtime Host direct peer is draining');
     if (result.kind === 'unavailable') {
+      if (result.reason === 'root_mismatch' || result.reason === 'composition_mismatch') {
+        throw new RuntimeHostProfileConnectionError(
+          'target_mismatch',
+          result.reason === 'root_mismatch'
+            ? `Runtime Host profile ${input.profileId} connected to an unexpected State Root`
+            : `Runtime Host profile ${input.profileId} has an incompatible Host composition`,
+        );
+      }
       throw remoteRuntimeHostUnavailableError('Runtime Host direct peer', result.reason);
     }
     transferred = true;
