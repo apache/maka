@@ -48,10 +48,16 @@ export const SCHEDULED_TASK_MAX_DELAY_MS = 366 * 24 * 60 * 60 * 1000;
 export const SCHEDULED_TASK_MIN_INTERVAL_SECONDS = 10;
 export const SCHEDULED_TASK_MAX_INTERVAL_SECONDS = 366 * 86_400;
 export const SCHEDULED_TASK_SESSION_LABEL_PREFIX = 'scheduled-task:';
+export const SCHEDULED_TASK_PRESET_SESSION_LABEL_PREFIX = 'scheduled-task-preset:';
 
 /** Stable Session-catalog relation for ordinary Sessions started by a task. */
 export function scheduledTaskSessionLabel(taskId: string): string {
   return `${SCHEDULED_TASK_SESSION_LABEL_PREFIX}${taskId}`;
+}
+
+/** Stable Session-catalog relation for runs of a system or product preset. */
+export function scheduledTaskPresetSessionLabel(presetId: string): string {
+  return `${SCHEDULED_TASK_PRESET_SESSION_LABEL_PREFIX}${presetId}`;
 }
 
 export const SCHEDULED_TASK_STATUSES = ['active', 'paused', 'completed', 'expired'] as const;

@@ -19,6 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
+import type { SessionSummary } from '@maka/core/session';
 import type { DesktopRuntimeHostProfileChangedEvent } from '../../preload/bridge-contract.js';
 import type { ModuleHubRuntimeHostRef } from '../../renderer/features/module-hub/testing.js';
 import {
@@ -43,6 +44,25 @@ function methodRecorder(calls: Call[], prefix: string) {
   );
 }
 
+function session(
+  input: Partial<SessionSummary> & { id: string; runtimeHostId: string },
+): SessionSummary & { runtimeHostId: string } {
+  return {
+    name: input.id,
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    hasUnread: false,
+    status: 'active',
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'fixture',
+    connectionLocked: true,
+    model: 'fixture-model',
+    permissionMode: 'ask',
+    ...input,
+  };
+}
+
 describe('createDesktopModuleHubServices', () => {
   it('projects Daily Review from the ordinary Session catalog and shared usage ledger', async () => {
     const host: ModuleHubRuntimeHostRef = {
@@ -50,14 +70,23 @@ describe('createDesktopModuleHubServices', () => {
       hostId: 'host-a',
     };
     const sessions = [
-      { id: 'local-session', runtimeHostId: 'host-a' },
-      { id: 'other-session', runtimeHostId: 'host-b' },
+      session({ id: 'local-session', runtimeHostId: 'host-a', lastMessageAt: 10 }),
+      session({
+        id: 'local-session-revision',
+        runtimeHostId: 'host-a',
+        revisionRootSessionId: 'local-session',
+        revisionParentSessionId: 'local-session',
+        revisionState: 'committed',
+        lastMessageAt: 20,
+      }),
+      session({ id: 'other-session', runtimeHostId: 'host-b' }),
     ];
     const ranges: unknown[] = [];
     const usageHosts: unknown[] = [];
     let sessionChanged: (() => void) | undefined;
     let notifications = 0;
     const bridge = {
+      contract: { version: 1 },
       runtimeHostProfiles: {
         getDefaultHost: async () => host,
         subscribeChanges: () => () => undefined,
@@ -68,7 +97,10 @@ describe('createDesktopModuleHubServices', () => {
       }),
       scheduledTasks: methodRecorder([], 'scheduledTasks'),
       sessions: {
-        list: async () => sessions,
+        listWithCoverage: async () => ({
+          sessions,
+          completeHostIds: ['host-a', 'host-b'],
+        }),
         subscribeChanges(handler: () => void) {
           sessionChanged = handler;
           return () => undefined;
@@ -91,7 +123,8 @@ describe('createDesktopModuleHubServices', () => {
     const services = createDesktopModuleHubServices(bridge);
     const range = { from: 100, to: 200 };
 
-    assert.deepEqual(await services.dailyReview.listSessions(host), [sessions[0]]);
+    assert.equal(services.dailyReview.supported, true);
+    assert.deepEqual(await services.dailyReview.listSessions(host), [sessions[1]]);
     assert.deepEqual(await services.dailyReview.readUsage(range, host), {
       totalRequests: 5,
       totalTokens: 500,
@@ -103,6 +136,66 @@ describe('createDesktopModuleHubServices', () => {
     assert.deepEqual(ranges, [range]);
     assert.deepEqual(usageHosts, [host]);
     assert.equal(notifications, 1);
+  });
+
+  it('rejects Daily Review when the target Host catalog is incomplete', async () => {
+    const host = { profileId: 'remote-a', hostId: 'host-a' };
+    const bridge = {
+      contract: { version: 1 },
+      runtimeHostProfiles: {
+        getDefaultHost: async () => host,
+        subscribeChanges: () => () => undefined,
+      },
+      skills: Object.assign(methodRecorder([], 'skills'), {
+        sources: methodRecorder([], 'skills.sources'),
+        catalog: methodRecorder([], 'skills.catalog'),
+      }),
+      scheduledTasks: methodRecorder([], 'scheduledTasks'),
+      sessions: {
+        listWithCoverage: async () => ({ sessions: [], completeHostIds: ['host-b'] }),
+        subscribeChanges: () => () => undefined,
+      },
+      settings: {
+        usageStats: async () => ({
+          summary: { totalRequests: 0, totalTokens: 0, totalCostUsd: 0 },
+        }),
+      },
+    } as unknown as DesktopModuleHubBridge;
+
+    await assert.rejects(
+      createDesktopModuleHubServices(bridge).dailyReview.listSessions(host),
+      /Session catalog is unavailable/,
+    );
+  });
+
+  it('gates Daily Review when the renderer is paired with an older preload', async () => {
+    const bridge = {
+      runtimeHostProfiles: {
+        getDefaultHost: async () => ({ profileId: 'local', hostId: 'local' }),
+        subscribeChanges: () => () => undefined,
+      },
+      skills: Object.assign(methodRecorder([], 'skills'), {
+        sources: methodRecorder([], 'skills.sources'),
+        catalog: methodRecorder([], 'skills.catalog'),
+      }),
+      scheduledTasks: methodRecorder([], 'scheduledTasks'),
+      sessions: {
+        listWithCoverage: async () => ({ sessions: [], completeHostIds: ['local'] }),
+        subscribeChanges: () => () => undefined,
+      },
+      settings: {
+        usageStats: async () => ({
+          summary: { totalRequests: 0, totalTokens: 0, totalCostUsd: 0 },
+        }),
+      },
+    } as unknown as DesktopModuleHubBridge;
+    const service = createDesktopModuleHubServices(bridge).dailyReview;
+
+    assert.equal(service.supported, false);
+    await assert.rejects(
+      service.listSessions({ profileId: 'local', hostId: 'local' }),
+      /newer Desktop bridge/,
+    );
   });
 
   it('maps host-scoped Skills and Scheduled Tasks operations', async () => {

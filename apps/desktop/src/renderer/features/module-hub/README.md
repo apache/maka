@@ -72,8 +72,9 @@ only selects and mounts that leaf; moving MCP internals is a separate change.
   reject for the panel's optimistic revert.
 - Daily Review recognizes its system-owned migration task or a user-created
   `presetId: daily-review` task. It reads activity from the ordinary Session
-  catalog, reads model totals from the shared usage ledger, and recognizes
-  report Sessions through the generic `scheduled-task:<taskId>` relation.
+  catalog, collapses physical revisions, reads model totals from the shared
+  usage ledger, and recognizes completed report Sessions through the stable
+  `scheduled-task-preset:daily-review` relation.
 - Daily Review owns no scheduler, resident configuration, model execution,
   transcript, artifact storage, archive store, or IPC protocol. Its setup and
   run actions delegate to Scheduled Tasks; manage selects the backing task's
@@ -87,7 +88,9 @@ only selects and mounts that leaf; moving MCP internals is a separate change.
   Daily Review export protocol.
 - Session and default-Host changes invalidate the view. A read is rejected if
   the default Host changes mid-flight so results from two authorities cannot be
-  mixed on one page.
+  mixed on one page, or if that Host is absent from the catalog coverage. An
+  older preload without this projection's bridge version is gated instead of
+  receiving newer range or manual-intent arguments.
 - Opening Scheduled Task creation selects the page and increments the request
   nonce; an optional preset id pre-fills the same dialog and the page
   acknowledgement resets the request to zero.

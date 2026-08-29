@@ -100,9 +100,11 @@ export function createFakeModuleHubHostModel(
       delete: async () => undefined,
     },
     dailyReview: {
+      supported: true,
       bridge: {
         load: async () => ({
           totals: { sessionCount: 0, totalRequests: 0, totalTokens: 0, totalCostUsd: 0 },
+          sessions: [],
           reports: [],
           hasMigratedReports: false,
         }),
@@ -158,6 +160,7 @@ export function createFakeModuleHubServices(
       subscribeDue: noopSubscription,
     },
     dailyReview: {
+      supported: true,
       listSessions: async () => [],
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: noopSubscription,

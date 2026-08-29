@@ -677,6 +677,7 @@ function ModuleHubHostSurface(props: {
       scheduledTasks: [...CONFIGURED_TASKS, DAILY_REVIEW_TASK],
     },
     dailyReview: {
+      supported: true,
       bridge: {
         load: async () => ({
           totals: {
@@ -685,6 +686,22 @@ function ModuleHubHostSurface(props: {
             totalTokens: 128_400,
             totalCostUsd: 1.23,
           },
+          sessions: [
+            {
+              sessionId: 'ordinary-today',
+              title: '修复 Scheduled Task 恢复流程',
+              activityAt: NOW - 1_800_000,
+              preview: '迁移与恢复测试已经通过。',
+              status: 'active' as const,
+            },
+            {
+              sessionId: 'report-today',
+              title: 'Daily Review · 7月1日',
+              activityAt: NOW - 3_600_000,
+              preview: '合并了三个 PR，并保留两个待跟进事项。',
+              status: 'active' as const,
+            },
+          ],
           reports: [
             {
               sessionId: 'report-today',

@@ -244,6 +244,34 @@ export function DailyReviewPanel(props: {
               </div>
             </section>
 
+            <section className="maka-daily-review-history" aria-labelledby="maka-daily-review-activity-title">
+              <div className="maka-daily-review-section-heading">
+                <Heading level={2} id="maka-daily-review-activity-title">{copy.activity.title}</Heading>
+                <Text type="supporting" color="secondary">{copy.activity.count(view.sessions.length)}</Text>
+              </div>
+              {view.sessions.length === 0 ? (
+                <EmptyState isCompact title={copy.activity.emptyTitle} />
+              ) : (
+                <List density="balanced" hasDividers className="maka-module-page-rows" aria-label={copy.activity.title}>
+                  {view.sessions.map((session) => (
+                    <ListItem
+                      key={session.sessionId}
+                      label={session.title}
+                      description={session.preview}
+                      endContent={(
+                        <Text type="supporting" color="secondary">
+                          {dateFormatter.format(session.activityAt)}
+                        </Text>
+                      )}
+                      onClick={props.onSelectSession
+                        ? () => props.onSelectSession?.(session.sessionId)
+                        : undefined}
+                    />
+                  ))}
+                </List>
+              )}
+            </section>
+
             <section className="maka-daily-review-history" aria-labelledby="maka-daily-review-history-title">
               <div className="maka-daily-review-section-heading">
                 <div>

@@ -714,6 +714,7 @@ test('production Host starts ScheduledTask Agent runs in an ordinary Session', {
       const created = await desktop.request('scheduled-task.mutate', {
         kind: 'create',
         input: {
+          presetId: 'daily-review',
           title: 'scheduled agent-run Session proof',
           intentBody: 'Run through the ordinary Session authority.',
           schedule: { kind: 'once', runAt: Date.now() + 60_000 },
@@ -756,6 +757,7 @@ test('production Host starts ScheduledTask Agent runs in an ordinary Session', {
       assert.deepEqual(session.session?.labels, [
         'scheduled-task',
         `scheduled-task:${created.task.id}`,
+        'scheduled-task-preset:daily-review',
       ]);
     } finally {
       await desktop.close();

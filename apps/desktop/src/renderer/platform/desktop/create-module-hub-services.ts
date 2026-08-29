@@ -18,6 +18,7 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import type { ModuleHubServices } from '../../features/module-hub/index.js';
 
 type DesktopModuleHubSettingsBridge = Partial<
@@ -28,6 +29,8 @@ export type DesktopModuleHubBridge = Pick<
   MakaBridge,
   'runtimeHostProfiles' | 'scheduledTasks' | 'sessions' | 'skills'
 > & {
+  /** Optional at runtime while a loaded renderer still has an older preload. */
+  readonly contract?: MakaBridge['contract'];
   /** Optional at runtime so a renderer can coexist with an older preload. */
   readonly settings?: DesktopModuleHubSettingsBridge;
 };
@@ -43,6 +46,7 @@ export function createDesktopModuleHubServices(
   const clientSettingsSupported =
     typeof getClientSettings === 'function' &&
     typeof updateClientSettings === 'function';
+  const dailyReviewSupported = bridge.contract?.version === 1;
 
   return {
     runtimeHosts: {
@@ -95,11 +99,23 @@ export function createDesktopModuleHubServices(
       subscribeDue: (handler) => bridge.scheduledTasks.subscribeDue(handler),
     },
     dailyReview: {
+      supported: dailyReviewSupported,
       async listSessions(host) {
-        const sessions = await bridge.sessions.list();
-        return sessions.filter((session) => session.runtimeHostId === host.hostId);
+        if (!dailyReviewSupported) {
+          throw new Error('Daily Review requires a newer Desktop bridge');
+        }
+        const catalog = await bridge.sessions.listWithCoverage();
+        if (!catalog.completeHostIds.includes(host.hostId)) {
+          throw new Error('The Runtime Host Session catalog is unavailable');
+        }
+        return collapseSessionRevisions(
+          catalog.sessions.filter((session) => session.runtimeHostId === host.hostId),
+        );
       },
       async readUsage(range, host) {
+        if (!dailyReviewSupported) {
+          throw new Error('Daily Review requires a newer Desktop bridge');
+        }
         if (!readUsageStats) throw new Error('Usage statistics are unavailable');
         const stats = await readUsageStats.call(bridge.settings, range, host);
         return {

@@ -23,6 +23,7 @@ import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { messageContentsEqual } from '@maka/core/events';
 import {
   scheduledTaskSessionLabel,
+  scheduledTaskPresetSessionLabel,
   type ScheduledTask,
   type ScheduledTaskExecutionTemplate,
 } from '@maka/core/scheduled-task';
@@ -689,7 +690,11 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           ? { kind: 'project', projectId: execution.projectId }
           : { kind: 'host_path', path: execution.cwd },
       name: task.title,
-      labels: ['scheduled-task', scheduledTaskSessionLabel(task.id)],
+      labels: [
+        'scheduled-task',
+        scheduledTaskSessionLabel(task.id),
+        ...(task.presetId ? [scheduledTaskPresetSessionLabel(task.presetId)] : []),
+      ],
       modelTarget: {
         kind: 'explicit',
         connectionId: connection.connectionId,

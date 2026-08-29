@@ -706,7 +706,8 @@ export interface MakaBridge {
       decision: 'approve' | 'reject',
     ): Promise<CollaborationTurnRequestDecideResult>;
   };
-
+  /** Renderer/preload compatibility marker; absent in older loaded documents. */
+  readonly contract: { readonly version: 1 };
   runtimeHost: {
     query<K extends RendererRuntimeHostQueryOperation>(
       operation: K,

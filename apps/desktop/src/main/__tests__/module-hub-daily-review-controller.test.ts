@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import {
-  scheduledTaskSessionLabel,
+  scheduledTaskPresetSessionLabel,
   type ScheduledTask,
 } from '@maka/core/scheduled-task';
 import type { SessionSummary } from '@maka/core/session';
@@ -83,7 +83,7 @@ test('projects the Daily Review preset from ordinary Session and usage services'
     session({
       id: 'report',
       name: 'Daily Review report',
-      labels: [scheduledTaskSessionLabel(task.id)],
+      labels: [scheduledTaskPresetSessionLabel('daily-review')],
       lastMessageAt: Date.now() - 1_000,
       lastMessagePreview: 'Review body',
     }),
@@ -99,6 +99,7 @@ test('projects the Daily Review preset from ordinary Session and usage services'
       subscribeChanges: () => () => undefined,
     },
     dailyReview: {
+      supported: true,
       listSessions: async (host) => {
         hosts.push(`sessions:${host.hostId}`);
         return sessions;
@@ -128,6 +129,10 @@ test('projects the Daily Review preset from ordinary Session and usage services'
     totalCostUsd: 0.25,
   });
   assert.deepEqual(view.reports.map((report) => report.sessionId), ['report']);
+  assert.deepEqual(view.sessions.map((candidate) => candidate.sessionId), [
+    'report',
+    'ordinary',
+  ]);
 });
 
 test('invalidates the projection for ordinary Session and Runtime Host changes', async () => {
@@ -149,6 +154,7 @@ test('invalidates the projection for ordinary Session and Runtime Host changes',
       },
     },
     dailyReview: {
+      supported: true,
       listSessions: async () => [],
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: (handler) => {
@@ -205,6 +211,7 @@ test('rejects a projection if the default Runtime Host changes mid-read', async 
       subscribeChanges: () => () => undefined,
     },
     dailyReview: {
+      supported: true,
       listSessions: async () => pendingSessions.promise,
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: () => () => undefined,

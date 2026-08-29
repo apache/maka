@@ -88,12 +88,12 @@ export function ModuleHubHost(props: { model: ModuleHubHostModel }) {
           bridge={dailyReview.bridge}
           revision={dailyReview.revision}
           task={task}
-          canSetUp={model.agentRunTemplateEffect !== undefined}
-          onSetUp={model.agentRunTemplateEffect
+          canSetUp={dailyReview.supported && model.agentRunTemplateEffect !== undefined}
+          onSetUp={dailyReview.supported && model.agentRunTemplateEffect
             ? () => model.scheduledTasks.openCreate('daily-review')
             : undefined}
           onManageSchedule={task ? () => model.scheduledTasks.openInspect(task.id) : undefined}
-          onRunNow={task
+          onRunNow={task && dailyReview.supported
             ? (intentBody) => model.scheduledTasks.triggerNow(task.id, intentBody)
             : undefined}
           onSelectSession={model.openSession}

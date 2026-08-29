@@ -31,6 +31,7 @@ import {
 } from './default-runtime-host.js';
 
 export interface DailyReviewController {
+  readonly supported: boolean;
   readonly bridge: DailyReviewProjectionBridge;
   readonly revision: number;
   readonly task?: ScheduledTask;
@@ -78,7 +79,6 @@ export function useDailyReviewController(input: {
         throw new Error('The default Runtime Host changed while loading Daily Review');
       }
       return projectDailyReviewView({
-        task: findDailyReviewTask(input.tasks),
         sessions: result.value.sessions,
         usage: result.value.usage,
         ...bounds,
@@ -86,5 +86,5 @@ export function useDailyReviewController(input: {
     },
   }), [input.services, input.tasks]);
 
-  return { bridge, revision, task };
+  return { bridge, revision, task, supported: input.services.dailyReview.supported };
 }

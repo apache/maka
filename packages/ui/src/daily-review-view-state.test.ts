@@ -19,32 +19,15 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { scheduledTaskSessionLabel, type ScheduledTask } from '@maka/core/scheduled-task';
+import {
+  scheduledTaskPresetSessionLabel,
+} from '@maka/core/scheduled-task';
 import type { SessionSummary } from '@maka/core/session';
 import {
   dailyReviewManualIntent,
   dailyReviewRangeBounds,
   projectDailyReviewView,
 } from './daily-review-view-state.js';
-
-const task = {
-  id: 'system-daily-review',
-  title: 'Daily Review',
-  intent: { kind: 'text', body: 'Review ordinary Session history.' },
-  schedule: { kind: 'calendar', recurrence: 'daily', anchorAt: 1_000 },
-  effect: { kind: 'notify', channel: 'local' },
-  status: 'active',
-  nextFireAt: 2_000,
-  lastFireAt: null,
-  fireCount: 0,
-  maxFires: null,
-  expiresAt: null,
-  createdBy: { kind: 'system' },
-  createdAt: 100,
-  updatedAt: 100,
-  runs: [],
-  lastError: null,
-} satisfies ScheduledTask;
 
 function session(input: Partial<SessionSummary> & Pick<SessionSummary, 'id' | 'name'>): SessionSummary {
   return {
@@ -62,12 +45,12 @@ function session(input: Partial<SessionSummary> & Pick<SessionSummary, 'id' | 'n
   };
 }
 
-test('projects task-linked and migrated ordinary Sessions as Daily Review history', () => {
+test('projects stable preset and migrated completed Sessions as Daily Review history', () => {
   const sessions = [
     session({
       id: 'scheduled-report',
       name: 'Daily Review · August 29',
-      labels: [scheduledTaskSessionLabel(task.id)],
+      labels: [scheduledTaskPresetSessionLabel('daily-review')],
       lastMessageAt: 9_000,
       lastMessagePreview: 'Completed work and follow-ups.',
     }),
@@ -91,18 +74,26 @@ test('projects task-linked and migrated ordinary Sessions as Daily Review histor
     session({
       id: 'other-scheduled-task',
       name: 'Other scheduled report',
-      labels: [scheduledTaskSessionLabel('another-task')],
+      labels: [scheduledTaskPresetSessionLabel('another-preset')],
       lastMessageAt: 6_000,
     }),
     session({
-      id: 'pending-scheduled-report',
-      name: 'Daily Review · pending',
-      labels: [scheduledTaskSessionLabel(task.id)],
+      id: 'running-scheduled-report',
+      name: 'Daily Review · running',
+      labels: [scheduledTaskPresetSessionLabel('daily-review')],
+      lastMessageAt: 9_500,
+      status: 'running',
+    }),
+    session({
+      id: 'failed-scheduled-report',
+      name: 'Daily Review · failed',
+      labels: [scheduledTaskPresetSessionLabel('daily-review')],
+      lastMessageAt: 9_400,
+      status: 'blocked',
     }),
   ];
 
   const view = projectDailyReviewView({
-    task,
     sessions,
     from: 5_000,
     to: 10_000,
@@ -113,7 +104,18 @@ test('projects task-linked and migrated ordinary Sessions as Daily Review histor
     },
   });
 
-  assert.equal(view.totals.sessionCount, 4);
+  assert.equal(view.totals.sessionCount, 6);
+  assert.deepEqual(
+    view.sessions.map((candidate) => candidate.sessionId),
+    [
+      'running-scheduled-report',
+      'failed-scheduled-report',
+      'scheduled-report',
+      'migrated-report',
+      'ordinary-work',
+      'other-scheduled-task',
+    ],
+  );
   assert.deepEqual(view.reports, [
     {
       sessionId: 'scheduled-report',

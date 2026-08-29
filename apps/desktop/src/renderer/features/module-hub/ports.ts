@@ -209,6 +209,7 @@ export interface ModuleHubClientSettingsService {
 }
 
 export interface ModuleHubDailyReviewService {
+  readonly supported: boolean;
   listSessions(host: ModuleHubRuntimeHostRef): Promise<SessionSummary[]>;
   readUsage(
     range: { readonly from: number; readonly to: number },

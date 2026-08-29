@@ -18,10 +18,9 @@
  */
 
 import {
-  scheduledTaskSessionLabel,
-  type ScheduledTask,
+  scheduledTaskPresetSessionLabel,
 } from '@maka/core/scheduled-task';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionStatus, SessionSummary } from '@maka/core/session';
 
 export type DailyReviewRange = 1 | 7 | 30;
 
@@ -39,8 +38,17 @@ export interface DailyReviewReportSummary {
   readonly migrated: boolean;
 }
 
+export interface DailyReviewSessionSummary {
+  readonly sessionId: string;
+  readonly title: string;
+  readonly activityAt: number;
+  readonly preview?: string;
+  readonly status: SessionStatus;
+}
+
 export interface DailyReviewViewState {
   readonly totals: DailyReviewUsageSummary & { readonly sessionCount: number };
+  readonly sessions: readonly DailyReviewSessionSummary[];
   readonly reports: readonly DailyReviewReportSummary[];
   readonly hasMigratedReports: boolean;
 }
@@ -77,7 +85,6 @@ export function dailyReviewManualIntent(
 }
 
 export function projectDailyReviewView(input: {
-  readonly task?: ScheduledTask;
   readonly sessions: readonly SessionSummary[];
   readonly from: number;
   readonly to: number;
@@ -87,13 +94,23 @@ export function projectDailyReviewView(input: {
     const activityAt = session.lastMessageAt;
     return activityAt !== undefined && activityAt >= input.from && activityAt < input.to;
   });
-  const taskLabel = input.task ? scheduledTaskSessionLabel(input.task.id) : undefined;
+  const sessions = sessionsInRange
+    .map((session): DailyReviewSessionSummary => ({
+      sessionId: session.id,
+      title: session.name,
+      activityAt: session.lastMessageAt!,
+      ...(session.lastMessagePreview ? { preview: session.lastMessagePreview } : {}),
+      status: session.status,
+    }))
+    .sort((left, right) => right.activityAt - left.activityAt);
+  const presetLabel = scheduledTaskPresetSessionLabel('daily-review');
   const reports = input.sessions
     .filter(
       (session) =>
         session.lastMessageAt !== undefined &&
+        session.status === 'active' &&
         (session.labels.includes('migrated:daily-review') ||
-          (taskLabel !== undefined && session.labels.includes(taskLabel))),
+          session.labels.includes(presetLabel)),
     )
     .map((session): DailyReviewReportSummary => ({
       sessionId: session.id,
@@ -105,6 +122,7 @@ export function projectDailyReviewView(input: {
     .sort((left, right) => right.generatedAt - left.generatedAt);
   return {
     totals: { ...input.usage, sessionCount: sessionsInRange.length },
+    sessions,
     reports,
     hasMigratedReports: reports.some((report) => report.migrated),
   };
