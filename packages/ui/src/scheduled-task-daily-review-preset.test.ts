@@ -22,7 +22,9 @@ import test from 'node:test';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { getScheduledTaskCopy } from './scheduled-task-copy.js';
 import {
+  scheduledTaskDuplicateSeed,
   scheduledTaskEditableRunAt,
+  scheduledTaskTemplateAvailable,
   scheduledTaskTemplateSeed,
 } from './scheduled-task-helpers.js';
 
@@ -52,6 +54,7 @@ test('Daily Review preset freezes an ordinary Agent run execution', () => {
   assert.equal((seed as { presetId?: string }).presetId, 'daily-review');
   assert.equal(seed.recurrence, 'cron');
   assert.equal(seed.cronExpression, '0 18 * * *');
+  assert.equal(seed.calendarCatchUp, undefined);
   assert.equal(seed.deliveryMethod, 'agent_run');
   assert.deepEqual(seed.lockedEffect, effect);
   assert.match(seed.note, /ordinary Session history/u);
@@ -84,4 +87,11 @@ test('paused calendar editing preserves its local execution time', () => {
   assert.equal(editable.getDate(), 30);
   assert.equal(editable.getHours(), 8);
   assert.equal(editable.getMinutes(), 30);
+
+  assert.equal(scheduledTaskDuplicateSeed(task, 'en').presetId, undefined);
+  const template = getScheduledTaskCopy('en').templates.find(
+    (candidate) => candidate.id === 'daily-review',
+  );
+  assert.ok(template);
+  assert.equal(scheduledTaskTemplateAvailable(template, [task]), false);
 });

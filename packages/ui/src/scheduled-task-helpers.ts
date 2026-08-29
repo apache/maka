@@ -354,12 +354,22 @@ export function scheduledTaskTemplateSeed(
     note: template.note,
     recurrence: template.recurrence,
     cronExpression: template.cronExpression,
-    ...(template.id === 'daily-review' ? { calendarCatchUp: 'once' as const } : {}),
     runAtLocal: toScheduledTaskLocalDateTimeValue(scheduledTaskTemplateNextRunAt(template, now)),
     ...(template.agentRun
       ? { deliveryMethod: 'agent_run' as const, lockedEffect: agentRunEffect }
       : {}),
   };
+}
+
+/** Daily Review is a singular product preset; ordinary templates may be reused freely. */
+export function scheduledTaskTemplateAvailable(
+  template: ScheduledTaskExampleTemplate,
+  tasks: readonly ScheduledTask[],
+): boolean {
+  if (template.id !== 'daily-review') return true;
+  return !tasks.some(
+    (task) => task.id === 'system-daily-review' || task.presetId === 'daily-review',
+  );
 }
 
 function scheduledTaskFormSeedFromTask(task: ScheduledTask): ScheduledTaskFormSeed {
@@ -393,6 +403,7 @@ export function scheduledTaskDuplicateSeed(task: ScheduledTask, locale: UiLocale
   return {
     ...scheduledTaskFormSeedFromTask(task),
     editingId: null,
+    presetId: undefined,
     title: duplicateScheduledTaskTitle(task.title, locale),
   };
 }

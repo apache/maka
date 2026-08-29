@@ -50,6 +50,7 @@ import {
   formatScheduledTaskDeliveryProviderList,
   scheduledTaskFormValidation,
   scheduledTaskPresetRunAt,
+  scheduledTaskTemplateAvailable,
   scheduledTaskTemplateSeed,
   toScheduledTaskLocalDateTimeValue,
 } from './scheduled-task-helpers.js';
@@ -271,7 +272,11 @@ export function ScheduledTaskFormDialog(props: {
                 menuWidth={240}
               >
                 {templates
-                  .filter((template) => !template.agentRun || props.agentRunTemplateEffect)
+                  .filter(
+                    (template) =>
+                      (!template.agentRun || props.agentRunTemplateEffect) &&
+                      scheduledTaskTemplateAvailable(template, props.tasks),
+                  )
                   .map((template) => (
                   <DropdownMenuItem
                     key={template.id}

@@ -174,6 +174,25 @@ test('invalidates the projection for ordinary Session and Runtime Host changes',
   assert.equal(disposed, 2);
 });
 
+test('prefers the migrated system task over another Daily Review preset task', async () => {
+  const { root } = installReactRenderer();
+  const systemTask = {
+    ...task,
+    id: 'system-daily-review',
+    createdBy: { kind: 'system' as const },
+  };
+  const services = createFakeModuleHubServices();
+  let controller: DailyReviewController | undefined;
+
+  function Probe() {
+    controller = useDailyReviewController({ services, tasks: [task, systemTask] });
+    return null;
+  }
+
+  await act(async () => root.render(createElement(Probe)));
+  assert.equal(controller?.task, systemTask);
+});
+
 test('rejects a projection if the default Runtime Host changes mid-read', async () => {
   const { root } = installReactRenderer();
   const hostA = { profileId: 'profile-a', hostId: 'host-a' };

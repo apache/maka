@@ -40,12 +40,16 @@ function isDailyReviewTask(task: ScheduledTask): boolean {
   return task.id === 'system-daily-review' || task.presetId === 'daily-review';
 }
 
+function findDailyReviewTask(tasks: readonly ScheduledTask[]): ScheduledTask | undefined {
+  return tasks.find((task) => task.id === 'system-daily-review') ?? tasks.find(isDailyReviewTask);
+}
+
 export function useDailyReviewController(input: {
   readonly services: ModuleHubServices;
   readonly tasks: readonly ScheduledTask[];
 }): DailyReviewController {
   const [revision, setRevision] = useState(0);
-  const task = input.tasks.find(isDailyReviewTask);
+  const task = findDailyReviewTask(input.tasks);
 
   useEffect(() => {
     const invalidate = () => setRevision((value) => value + 1);
@@ -74,7 +78,7 @@ export function useDailyReviewController(input: {
         throw new Error('The default Runtime Host changed while loading Daily Review');
       }
       return projectDailyReviewView({
-        task: input.tasks.find(isDailyReviewTask),
+        task: findDailyReviewTask(input.tasks),
         sessions: result.value.sessions,
         usage: result.value.usage,
         ...bounds,
