@@ -198,6 +198,66 @@ test('revokes the one Local sharing authority without changing peer connectivity
   ]);
 });
 
+test('reconciles a committed handoff when Local discovery finds a managed root gap', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-prestart-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeFile(
+    join(clientDataRoot, 'runtime-host-local-service.json'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      state: 'handoff',
+      rootPath,
+      rootId,
+      coordinationRelays: [],
+      allowInterruptActiveTasks: true,
+    })}\n`,
+  );
+  let setupCalls = 0;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => assert.fail('pre-start reconciliation must not require the Local manager'),
+    hasManagedDeploymentAuthority: async () => true,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runSetup() {
+        setupCalls += 1;
+        return {
+          serviceId: rootId,
+          operatorPath: join(base, 'operator'),
+          rootPath,
+          rootId,
+          deploymentId: '22222222-2222-4222-8222-222222222222',
+          credential: 'unused-pending-credential',
+          directPeer: {
+            peerId: '12D3KooWpeer',
+            routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+            coordinationRelays: [],
+          },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  assert.equal(await service.recoverManagedHostForConnect(), true);
+
+  assert.equal(setupCalls, 1);
+  assert.equal(
+    JSON.parse(await readFile(join(clientDataRoot, 'runtime-host-local-service.json'), 'utf8'))
+      .state,
+    'managed',
+  );
+});
+
 test('an interrupted Local Host handoff converges to its exact managed service', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-recovery-'));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -235,6 +295,7 @@ test('an interrupted Local Host handoff converges to its exact managed service',
           return change();
         },
       }) as unknown as RuntimeHostDesktopManager,
+    hasManagedDeploymentAuthority: async () => false,
     resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
     operator: {
       async runSetup() {
@@ -258,6 +319,8 @@ test('an interrupted Local Host handoff converges to its exact managed service',
   });
   t.after(() => service.close());
 
+  assert.equal(await service.recoverManagedHostForConnect(), false);
+  assert.equal(setupCalls, 0);
   await service.recover();
 
   assert.equal(setupCalls, 1);

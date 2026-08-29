@@ -201,6 +201,7 @@ export interface DesktopRuntimeHostCandidate {
   readonly closed: Promise<void>;
   readonly hostOwnership: DesktopRuntimeHostOwnership;
   readonly hostPid?: number;
+  readonly ownedProcess?: RuntimeHostSpawnedProcess;
   stopSession(sessionId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -211,6 +212,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
   readonly closed: Promise<void>;
   readonly hostOwnership: DesktopRuntimeHostOwnership;
   readonly hostPid: number | undefined;
+  readonly ownedProcess: RuntimeHostSpawnedProcess | undefined;
   readonly #client: DesktopRuntimeHostClient;
   readonly #observer: RuntimeHostSessionObserver;
   readonly #ipc: ScopedIpcMain;
@@ -237,6 +239,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     connectionClosed: Promise<void>;
     hostOwnership: DesktopRuntimeHostOwnership;
     hostPid?: number;
+    ownedProcess?: RuntimeHostSpawnedProcess;
     hasRegisteredCapabilities: () => boolean;
     stopSession: (sessionId: string) => Promise<void>;
   }) {
@@ -255,6 +258,7 @@ class DesktopRuntimeHostCandidateImpl implements DesktopRuntimeHostCandidate {
     this.botIncoming = input.botIncoming;
     this.hostOwnership = input.hostOwnership;
     this.hostPid = input.hostPid;
+    this.ownedProcess = input.ownedProcess;
     this.closed = input.connectionClosed.then(() => this.close());
   }
 
@@ -323,6 +327,7 @@ export async function startDesktopRuntimeHostCandidate(
           : 'supervised',
         "local",
         connection.registration.pid,
+        connection.spawnedProcess,
       ),
     };
   } catch (error) {
@@ -432,6 +437,7 @@ export async function createDesktopRuntimeHostCandidate(
   hostOwnership: DesktopRuntimeHostOwnership,
   targetKind: DesktopRuntimeHostTargetPolicy["kind"],
   hostPid?: number,
+  ownedProcess?: RuntimeHostSpawnedProcess,
 ): Promise<DesktopRuntimeHostCandidate> {
   const target: DesktopRuntimeHostTargetPolicy = {
     kind: targetKind,
@@ -760,6 +766,7 @@ export async function createDesktopRuntimeHostCandidate(
       connectionClosed: connection.closed,
       hostOwnership,
       ...(hostPid === undefined ? {} : { hostPid }),
+      ...(ownedProcess === undefined ? {} : { ownedProcess }),
       hasRegisteredCapabilities: () => capabilitiesRegistered,
       stopSession,
     });

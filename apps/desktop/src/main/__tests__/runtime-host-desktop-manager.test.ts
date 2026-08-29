@@ -23,6 +23,7 @@ import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSpawnedProcess,
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -894,8 +895,33 @@ test('keeps reconnecting through transient startup failures until the Desktop ad
   await owner.close();
 });
 
+test('reconciles an interrupted managed handoff before retrying Local discovery', async () => {
+  const managed = candidateHarness({ ownership: 'supervised' });
+  const events: string[] = [];
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      events.push(`discover:${starts}`);
+      return starts === 1
+        ? { kind: 'failed', reason: 'managed_root_requires_operator' }
+        : ready(managed.candidate);
+    },
+    recoverManagedLocalHost: async () => {
+      events.push('reconcile');
+      return true;
+    },
+  });
+
+  assert.deepEqual(events, ['discover:1', 'reconcile', 'discover:2']);
+  assert.equal(owner.current('local')?.candidate?.hostOwnership, 'supervised');
+  await owner.close();
+});
+
 test('stops reconnecting when the replacement Host is incompatible', async () => {
-  const first = candidateHarness();
+  const first = candidateHarness({
+    ownedProcess: { pid: 42, exited: new Promise(() => undefined) },
+  });
   let reportFatal!: (error: Error) => void;
   const fatalReported = new Promise<Error>((resolve) => {
     reportFatal = resolve;
@@ -918,6 +944,33 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
       error.facts.pid === 42 &&
       error.cause === fatal,
   );
+  await owner.close();
+});
+
+test('does not retain manual-stop authority after the owned Host process exits', async () => {
+  const first = candidateHarness({
+    ownedProcess: {
+      pid: 42,
+      exited: Promise.resolve({ code: 0, signal: null, stderr: '', stderrTruncated: false }),
+    },
+  });
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () =>
+      first.closeCalls === 0
+        ? ready(first.candidate)
+        : incompatibleHost('wait_for_idle_exit'),
+    onFatalError: reportFatal,
+  });
+
+  await first.candidate.close();
+  await fatalReported;
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
   await owner.close();
 });
 
@@ -1189,6 +1242,7 @@ function candidateHarness(
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean | 'always';
     ownership?: 'owned_ephemeral' | 'supervised' | 'external';
+    ownedProcess?: RuntimeHostSpawnedProcess;
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
@@ -1213,6 +1267,7 @@ function candidateHarness(
     closed,
     hostOwnership: options.ownership ?? 'owned_ephemeral',
     hostPid: 42,
+    ...(options.ownedProcess ? { ownedProcess: options.ownedProcess } : {}),
     client: {
       hostId: options.hostId ?? 'test-host',
       hostEpoch: options.hostEpoch ?? 'test-host-epoch',

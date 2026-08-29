@@ -186,9 +186,14 @@ interface DesktopRuntimeHostTargetGeneration {
     readonly hostId: string;
     readonly hostEpoch: string;
     readonly ownership: DesktopRuntimeHostOwnership;
-    readonly pid?: number;
+    readonly ownedProcess?: DesktopOwnedProcessEvidence;
   };
   valid: boolean;
+}
+
+interface DesktopOwnedProcessEvidence {
+  readonly pid: number;
+  state: 'running' | 'exited' | 'unknown';
 }
 
 export async function startRuntimeHostDesktopManager(
@@ -205,6 +210,7 @@ export async function startRuntimeHostDesktopManager(
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>;
+    recoverManagedLocalHost?: (signal: AbortSignal) => Promise<boolean>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     pairingFinalizationTimeoutMs?: number;
     onTargetStateChanged?: (state: RuntimeHostDesktopTargetState) => void;
@@ -220,6 +226,7 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
+    options.recoverManagedLocalHost,
     options.reconnectBackoff,
     options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
     options.onTargetStateChanged,
@@ -259,6 +266,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>,
+    private readonly recoverManagedLocalHost:
+      | ((signal: AbortSignal) => Promise<boolean>)
+      | undefined,
     private readonly reconnectBackoff: RuntimeHostReconnectBackoff | undefined,
     private readonly pairingFinalizationTimeoutMs: number,
     private readonly onTargetStateChanged:
@@ -650,13 +660,16 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     if (target.state.readiness !== 'unavailable') return undefined;
     const last = target.lastCandidate;
     if (!last || last.ownership !== 'owned_ephemeral') return { kind: 'not_owned' };
+    if (last.ownedProcess?.state === 'exited') return { kind: 'not_owned' };
     throw new DesktopLocalHostRetirementError(
       {
         hostId: last.hostId,
         hostEpoch: last.hostEpoch,
         lifecycleMode: 'ephemeral',
         rootPath: this.#baseInput.rootPath,
-        ...(last.pid === undefined ? {} : { pid: last.pid }),
+        ...(last.ownedProcess?.state === 'running'
+          ? { pid: last.ownedProcess.pid }
+          : {}),
       },
       { cause: cause instanceof Error ? cause : new Error(String(cause)) },
     );
@@ -755,6 +768,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     sshInteraction: RuntimeHostSshInteraction | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
+    let managedRecoveryAttempted = false;
     const inheritedExit = target.input.onExit;
     while (true) {
       const result = await this.startCandidate(
@@ -779,11 +793,24 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
       if (result.kind === 'ready') {
         target.hostId = result.candidate.client.hostId;
+        const previous = target.lastCandidate;
+        const retainedOwnedProcess =
+          previous?.hostId === result.candidate.client.hostId &&
+          previous.hostEpoch === result.candidate.client.hostEpoch &&
+          previous.ownership === 'owned_ephemeral' &&
+          result.candidate.hostOwnership === 'owned_ephemeral' &&
+          previous.ownedProcess?.pid === result.candidate.hostPid
+            ? previous.ownedProcess
+            : undefined;
         target.lastCandidate = {
           hostId: result.candidate.client.hostId,
           hostEpoch: result.candidate.client.hostEpoch,
           ownership: result.candidate.hostOwnership,
-          ...(result.candidate.hostPid === undefined ? {} : { pid: result.candidate.hostPid }),
+          ...(result.candidate.ownedProcess
+            ? { ownedProcess: trackOwnedProcess(result.candidate.ownedProcess) }
+            : retainedOwnedProcess
+              ? { ownedProcess: retainedOwnedProcess }
+              : {}),
         };
         return result.candidate;
       }
@@ -816,6 +843,15 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         takeoverHostEpoch = undefined;
         await this.waitForHostRetirement(result.registration, signal);
         continue;
+      }
+      if (
+        !target.input.profileTarget &&
+        result.reason === 'managed_root_requires_operator' &&
+        !managedRecoveryAttempted &&
+        this.recoverManagedLocalHost
+      ) {
+        managedRecoveryAttempted = true;
+        if (await this.recoverManagedLocalHost(signal)) continue;
       }
       throw runtimeHostStartupError(result.reason, result.diagnostic);
     }
@@ -1015,6 +1051,21 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
     }
   }
+}
+
+function trackOwnedProcess(
+  process: NonNullable<DesktopRuntimeHostCandidate['ownedProcess']>,
+): DesktopOwnedProcessEvidence {
+  const evidence: DesktopOwnedProcessEvidence = { pid: process.pid, state: 'running' };
+  void process.exited.then(
+    () => {
+      evidence.state = 'exited';
+    },
+    () => {
+      evidence.state = 'unknown';
+    },
+  );
+  return evidence;
 }
 
 function pairingFinalizeRetry(error: unknown): boolean {

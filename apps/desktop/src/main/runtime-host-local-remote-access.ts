@@ -26,6 +26,7 @@ import {
   consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
+import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
 import { REMOTE_OWNER_OPERATION_GRANTS } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
@@ -110,7 +111,12 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
     signal?: AbortSignal,
   ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
   readonly operator: DesktopRuntimeHostLocalOperator;
-}): { recover(): Promise<void>; close(): Promise<void> } {
+  readonly hasManagedDeploymentAuthority?: (rootId: string) => Promise<boolean>;
+}): {
+  recoverManagedHostForConnect(signal?: AbortSignal): Promise<boolean>;
+  recover(): Promise<void>;
+  close(): Promise<void>;
+} {
   const lifecyclePath = join(input.clientDataRoot, LIFECYCLE_FILE);
   const closing = new AbortController();
   let mutation = Promise.resolve();
@@ -245,31 +251,47 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       await removeDocument(lifecyclePath);
       throw new Error('The Local Runtime Host is already managed outside this Desktop');
     }
-    let target: LocalServiceTarget | undefined;
     try {
-      const runSetup = () =>
-        input.operator.runSetup(
-          {
-            setupPackage,
-            clientDataRoot: input.clientDataRoot,
-            rootPath: handoff.rootPath,
-            principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-            coordinationRelays: handoff.coordinationRelays,
-            expectedTarget: {
-              serviceId: handoff.rootId,
-              rootPath: handoff.rootPath,
-              rootId: handoff.rootId,
-            },
-            signal: closing.signal,
-          },
-          () => undefined,
-        );
+      const reconcile = () => reconcileHandoff(handoff, setupPackage);
       // Recovery may find that the operator already owns the root. Its setup
       // can still restart that Host, so keep Desktop reconnect quiesced across
       // the entire reconciliation just like every other managed-service change.
-      const complete = retirement.kind === 'not_owned'
-        ? await manager.runManagedLocalHostChange(runSetup)
-        : await runSetup();
+      return retirement.kind === 'not_owned'
+        ? await manager.runManagedLocalHostChange(reconcile)
+        : await reconcile();
+    } finally {
+      if (retirement.kind === 'retired') retirement.resume();
+    }
+  };
+
+  const reconcileHandoff = async (
+    handoff: LocalServiceHandoff,
+    setupPackage: DesktopRuntimeHostSetupPackage,
+    signal: AbortSignal = closing.signal,
+  ): Promise<{
+    readonly kind: 'complete';
+    readonly managed: LocalServiceManaged;
+    readonly peer: LocalPeerDescriptor;
+    readonly credential: string;
+  }> => {
+    let target: LocalServiceTarget | undefined;
+    try {
+      const complete = await input.operator.runSetup(
+        {
+          setupPackage,
+          clientDataRoot: input.clientDataRoot,
+          rootPath: handoff.rootPath,
+          principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+          coordinationRelays: handoff.coordinationRelays,
+          expectedTarget: {
+            serviceId: handoff.rootId,
+            rootPath: handoff.rootPath,
+            rootId: handoff.rootId,
+          },
+          signal,
+        },
+        () => undefined,
+      );
       if (
         complete.serviceId !== handoff.rootId ||
         complete.rootPath !== handoff.rootPath ||
@@ -291,10 +313,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         handoff.rootPath,
       );
       const peer = requireEnabledPeer({ state: 'enabled', ...complete.directPeer });
-      const managed: LocalServiceManaged = {
-        ...target,
-        state: 'managed',
-      };
+      const managed: LocalServiceManaged = { ...target, state: 'managed' };
       await writeDocument(lifecyclePath, managed);
       return { kind: 'complete', managed, peer, credential: complete.credential };
     } catch (error) {
@@ -309,8 +328,6 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         );
       }
       throw error;
-    } finally {
-      if (retirement.kind === 'retired') retirement.resume();
     }
   };
 
@@ -493,6 +510,23 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
   input.ipcMain.handle(channels[5], (_event, value: unknown) => uninstall(value));
 
   return {
+    recoverManagedHostForConnect: (signal) =>
+      serialize(async () => {
+        if (!supported(input.directPeerAvailable)) return false;
+        const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
+        if (lifecycle?.state !== 'handoff') return false;
+        const hasAuthority =
+          input.hasManagedDeploymentAuthority ??
+          (async (rootId: string) =>
+            (await resolveRuntimeHostManagedDeploymentAuthority(rootId)) !== undefined);
+        if (!(await hasAuthority(lifecycle.rootId))) return false;
+        const operationSignal = signal
+          ? AbortSignal.any([signal, closing.signal])
+          : closing.signal;
+        const setupPackage = await input.resolveSetupPackage(operationSignal);
+        await reconcileHandoff(lifecycle, setupPackage, operationSignal);
+        return true;
+      }),
     recover: () =>
       serialize(async () => {
         if (!supported(input.directPeerAvailable)) return;

@@ -991,6 +991,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         isDefault: true,
       });
     },
+    recoverManagedLocalHost: (signal) =>
+      localRuntimeHostRemoteAccess.recoverManagedHostForConnect(signal),
     onFatalError: (error, target) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
