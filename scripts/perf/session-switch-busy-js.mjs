@@ -23,12 +23,11 @@
  * Usage, against a running dev app with `--remote-debugging-port=9334`:
  *
  *   node scripts/perf/session-switch-busy-js.mjs [port] [trials]
- *   node scripts/perf/session-switch-busy-js.mjs --ab [port] [repetitions]
  *
- * `--ab` is the measurement that means something. It alternates the renderer's
- * `__makaRailScopeDefeated` flag inside the one running instance, so both the
- * rail-scoped and the shell-scoped configuration are measured under the same
- * JIT state, the same window, and the same catalog, and reports paired medians.
+ * This reports one configuration: whatever the running build does. A before/
+ * after needs both configurations reachable from ONE running instance — see the
+ * README for how to get that from a throwaway worktree instead of from a switch
+ * carried in product code.
  *
  * Sampling at 100µs. Busy time is every sample that is not `(idle)` or
  * `(program)`; the top-8 self-time list is there to show WHERE the time is, and
@@ -43,15 +42,10 @@
 
 import { clickSessionRow, connectRenderer, median, sleep, DEFAULT_PORT } from './cdp-client.mjs';
 
-const args = process.argv.slice(2);
-const ab = args.includes('--ab');
-const positional = args.filter((arg) => !arg.startsWith('--'));
+const positional = process.argv.slice(2).filter((arg) => !arg.startsWith('--'));
 const port = Number(positional[0] ?? DEFAULT_PORT);
-const trials = Number(positional[1] ?? (ab ? 3 : 5));
+const trials = Number(positional[1] ?? 5);
 const SETTLE_MS = 2000;
-
-/** The renderer flag that reproduces a rail scoped to the whole shell (#4109). */
-const DEFEAT_FLAG = '__makaRailScopeDefeated';
 
 const client = await connectRenderer(port);
 await client.ready;
@@ -95,48 +89,14 @@ function printTop(selfTime) {
   }
 }
 
-const setDefeated = (on) => client.evaluate(`globalThis.${DEFEAT_FLAG} = ${on ? 'true' : 'false'}`);
-
-if (ab) {
-  // Alternating, paired, inside this one instance. Each repetition clicks two
-  // different rows so both configurations pay for a real switch, and the
-  // configurations swap order between repetitions so a drift in the app's
-  // background work does not land on one of them.
-  const shellScoped = [];
-  const railScoped = [];
-  for (let trial = 0; trial < trials; trial++) {
-    const rows = [2 + trial * 2, 3 + trial * 2];
-    const order = trial % 2 === 0 ? [true, false] : [false, true];
-    for (let i = 0; i < order.length; i++) {
-      const defeated = order[i];
-      await setDefeated(defeated);
-      const { busy, idle } = await measureSwitch(rows[i]);
-      (defeated ? shellScoped : railScoped).push(busy);
-      console.log(
-        `trial ${trial + 1} ${defeated ? 'shell-scoped' : 'rail-scoped '} row ${rows[i]}: ` +
-          `busyJS=${busy.toFixed(0)}ms idle=${idle.toFixed(0)}ms`,
-      );
-    }
-  }
-  await setDefeated(false);
-  const a = median(shellScoped);
-  const b = median(railScoped);
-  console.log(`\nmedian busy JS per switch`);
-  console.log(`  rail scoped to the shell (defect): ${a.toFixed(0)}ms`);
-  console.log(`  rail scoped to itself            : ${b.toFixed(0)}ms`);
-  console.log(
-    `  difference                       : ${(a - b).toFixed(0)}ms (${(100 * (1 - b / a)).toFixed(0)}%)`,
-  );
-} else {
-  const busyPerSwitch = [];
-  for (let trial = 0; trial < trials; trial++) {
-    const row = 2 + trial;
-    const { busy, idle, selfTime } = await measureSwitch(row);
-    busyPerSwitch.push(busy);
-    console.log(`row ${row}: busyJS=${busy.toFixed(0)}ms idle=${idle.toFixed(0)}ms`);
-    printTop(selfTime);
-  }
-  console.log(`\nmedian busy JS per switch = ${median(busyPerSwitch).toFixed(0)}ms`);
+const busyPerSwitch = [];
+for (let trial = 0; trial < trials; trial++) {
+  const row = 2 + trial;
+  const { busy, idle, selfTime } = await measureSwitch(row);
+  busyPerSwitch.push(busy);
+  console.log(`row ${row}: busyJS=${busy.toFixed(0)}ms idle=${idle.toFixed(0)}ms`);
+  printTop(selfTime);
 }
+console.log(`\nmedian busy JS per switch = ${median(busyPerSwitch).toFixed(0)}ms`);
 
 client.close();

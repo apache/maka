@@ -39,20 +39,14 @@ Then, with a populated sidebar (about 30 rows is what the #4109 numbers used):
 ```bash
 node scripts/perf/session-switch-commits.mjs before
 node scripts/perf/session-switch-busy-js.mjs
-node scripts/perf/session-switch-busy-js.mjs --ab
 ```
 
 - `session-switch-commits.mjs` — React commits per switch, how many are
   full-tree renders, and how many fibers actually re-rendered. Reloads the page
   first, so `react-commit-probe.js` is in place before React boots.
 - `session-switch-busy-js.mjs` — renderer busy JS per switch, with the top
-  self-time entries. With `--ab` it runs the paired comparison described below:
-  it toggles `globalThis.__makaRailScopeDefeated`, which makes the renderer hand
-  the Session rail its data the way a rail scoped to the whole shell did, so
-  both configurations are measured in the one instance. On a 32-row sidebar the
-  paired medians were 585ms with the rail on the shell's scope against 397–430ms
-  with the rail on its own, and the same switch wrote 1,696–2,086 inline styles
-  in the rail against 168–424.
+  self-time entries. It reports the running build, one configuration. A
+  before/after needs both configurations in one instance; see below.
 - `react-commit-probe.js` — the in-page half: a minimal
   `__REACT_DEVTOOLS_GLOBAL_HOOK__` plus a `Function.prototype.bind` wrapper that
   catches React creating a `dispatchSetState`, so a commit can be attributed to
@@ -67,6 +61,14 @@ instance is small. An A/B means: one instance, a `globalThis` switch to select
 the configuration, at least three repetitions per configuration, alternating,
 compared pairwise. Two runs of "before" and "after" against two launches will
 produce a confident number that means nothing.
+
+The switch is a throwaway, not a shipped affordance. Branch a worktree, put a
+`globalThis` flag in the one place that reads it — one that restores the old
+behaviour when set, so the regressed configuration is reachable without
+rebuilding the defect by hand — alternate the flag inside the running instance,
+then delete the worktree. Measurement discipline is ours; product code carries
+none of it. A flag that reaches `main` is a branch nothing executes and a
+defect replica that has to be maintained against the code it replicates.
 
 Two smaller ones that cost time to rediscover:
 

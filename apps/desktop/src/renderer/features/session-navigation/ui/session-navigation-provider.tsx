@@ -40,7 +40,6 @@ import {
   SESSION_LIST_EXPANDED_MIN_WIDTH,
 } from '../model/session-list-layout.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
-import { applyRailScopeProbe } from '../model/rail-scope-probe.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
 import type { SessionNavigationSession } from '../ports.js';
 
@@ -210,7 +209,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   };
 
   return (
-    <SessionRailProvider data={applyRailScopeProbe(data)} chrome={chrome}>
+    <SessionRailProvider data={data} chrome={chrome}>
       {props.children}
     </SessionRailProvider>
   );
