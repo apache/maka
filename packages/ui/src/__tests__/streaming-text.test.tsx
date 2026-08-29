@@ -23,6 +23,8 @@ import { useStreamingText } from '@astryxdesign/core';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
+import { LocaleProvider } from '../locale-context.js';
+import { MarkdownBody } from '../markdown-body.js';
 
 const originalGlobals = {
   document: globalThis.document,
@@ -106,6 +108,120 @@ test('never reveals half of a Unicode code point', async () => {
   assert.ok(frame);
   await act(() => frame?.(100));
   assert.equal(container.textContent, 'a123456789😀');
+
+  await act(() => root.unmount());
+});
+
+test('keeps settled math stable while the live Markdown tail grows and flushes', async () => {
+  const frames: FrameRequestCallback[] = [];
+  const { container, root } = streamingRoot((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  const settled = [
+    'Before',
+    '',
+    '\\( \\texttt{https://example.com} + \\text{person@example.com} \\)',
+    '',
+    '',
+  ].join('\n');
+
+  function render(text: string, streaming: boolean) {
+    return root.render(
+      <LocaleProvider locale="en">
+        <MarkdownBody
+          text={text}
+          settledText={streaming ? settled : undefined}
+          streaming={streaming}
+        />
+      </LocaleProvider>,
+    );
+  }
+
+  await act(() => render(`${settled}growing`, true));
+  const math = container.querySelector('.maka-math');
+  assert.ok(math);
+  assert.ok(math.querySelector('.katex'));
+  assert.equal(container.querySelector('a'), null);
+
+  const firstFrame = frames.shift();
+  assert.ok(firstFrame);
+  await act(() => firstFrame(100));
+  assert.equal(container.querySelector('.maka-math'), math);
+
+  await act(() => render(`${settled}growing live tail`, true));
+  const secondFrame = frames.shift();
+  assert.ok(secondFrame);
+  await act(() => secondFrame(200));
+  assert.equal(container.querySelector('.maka-math'), math);
+  assert.equal(container.querySelector('a'), null);
+
+  await act(() => render(`${settled}final tail`, false));
+  assert.ok(container.querySelector('.maka-math .katex'));
+  assert.equal(container.querySelector('a'), null);
+  assert.match(container.textContent ?? '', /final tail/);
+
+  await act(() => root.unmount());
+});
+
+test('never exposes math transport syntax as a formula crosses the display cursor', async () => {
+  const frames: FrameRequestCallback[] = [];
+  const { container, root } = streamingRoot((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  const target = 'Before \\(x + 1\\) after';
+
+  await act(() => root.render(
+    <LocaleProvider locale="en">
+      <MarkdownBody text={target} settledText="Before " streaming />
+    </LocaleProvider>,
+  ));
+
+  for (let tick = 1; tick <= 8 && container.querySelector('.maka-math') === null; tick++) {
+    const frame = frames.shift();
+    assert.ok(frame);
+    await act(() => frame(tick * 100));
+    assert.doesNotMatch(container.textContent ?? '', /MAKA_MATH|\uE000|\uE001/);
+  }
+
+  assert.ok(container.querySelector('.maka-math .katex'));
+  assert.match(container.textContent ?? '', /Before/);
+  await act(() => root.unmount());
+});
+
+test('keeps a restored prefix inside math visible and handles a formula rewrite', async () => {
+  const frames: FrameRequestCallback[] = [];
+  const { container, root } = streamingRoot((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  const first = 'Before \\(x + 1\\) after';
+  const second = 'Before \\(x + 2\\) after';
+
+  await act(() => root.render(
+    <LocaleProvider locale="en">
+      <MarkdownBody text={first} settledText={'Before \\(x'} streaming />
+    </LocaleProvider>,
+  ));
+  assert.match(container.textContent ?? '', /Before \(x/);
+  assert.doesNotMatch(container.textContent ?? '', /MAKA_MATH|\uE000|\uE001/);
+
+  await act(() => root.render(
+    <LocaleProvider locale="en">
+      <MarkdownBody text={second} settledText={first} streaming />
+    </LocaleProvider>,
+  ));
+  assert.doesNotMatch(container.textContent ?? '', /MAKA_MATH|\uE000|\uE001/);
+
+  for (let tick = 1; tick <= 8 && container.querySelector('.maka-math') === null; tick++) {
+    const frame = frames.shift();
+    assert.ok(frame);
+    await act(() => frame(tick * 100));
+    assert.doesNotMatch(container.textContent ?? '', /MAKA_MATH|\uE000|\uE001/);
+  }
+  assert.ok(container.querySelector('.maka-math .katex'));
+  assert.match(container.textContent ?? '', /2/);
 
   await act(() => root.unmount());
 });
