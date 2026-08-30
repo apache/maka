@@ -223,7 +223,7 @@ function savedOnboardingResult(
       slug: 'openai',
       providerType: 'openai',
     },
-    refresh: { kind: 'ok', modelChoices },
+    refresh: { kind: 'ok', modelChoices, connectionIdentities: [] },
   };
 }
 
@@ -7759,6 +7759,109 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => driver.modelConnectionIds.length === 1);
     assert.deepEqual(driver.modelConnectionIds, ['connection-b']);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('refreshes connection identities after setup before adopting the new model', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    driver.hostSummary = {
+      llmConnectionId: 'connection-b',
+      llmConnectionSlug: 'new-account',
+      model: 'gpt-5.5',
+    };
+    const newConnectionChoice: ModelChoice = {
+      connectionId: 'connection-b',
+      connectionSlug: 'new-account',
+      connectionName: 'New account',
+      providerType: 'openai',
+      model: 'gpt-5.5',
+      isDefaultConnection: true,
+    };
+    const saveCalls: OnboardingSaveInput[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionId: 'connection-a',
+      connectionSlug: 'existing-account',
+      providerType: 'anthropic',
+      connectionIdentities: [
+        { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-a',
+          connectionSlug: 'existing-account',
+          connectionName: 'Existing account',
+          providerType: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        verify: async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }] }),
+        save: async (input) => {
+          saveCalls.push(input);
+          const refresh = {
+            kind: 'ok' as const,
+            modelChoices: [newConnectionChoice],
+            connectionIdentities: [
+              { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
+              { connectionId: 'connection-b', connectionSlug: 'new-account', enabled: true },
+            ],
+          };
+          return {
+            kind: 'ok' as const,
+            connection: {
+              connectionId: 'connection-b',
+              revision: 1,
+              slug: 'new-account',
+              providerType: 'openai' as const,
+            },
+            refresh,
+          };
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-test');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Models enabled'));
+    terminal.input('\r');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Models enabled'));
+
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('New account'));
+    terminal.input('\r');
+    await waitFor(() => driver.modelConnectionIds.length === 1);
+    assert.deepEqual(driver.modelConnectionIds, ['connection-b']);
+
+    terminal.input('hello');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1 && driver.streamPulls === 1);
+    await waitForTuiPaint(terminal);
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /The original account was deleted/,
+    );
 
     exitMaka(terminal);
     await run;

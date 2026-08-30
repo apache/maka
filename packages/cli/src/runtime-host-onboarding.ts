@@ -25,6 +25,7 @@ import {
 } from '@maka/runtime-host/client';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
+  ConnectionIdentity,
   MakaOnboardingSurface,
   ModelChoice,
   OnboardingProviderEntry,
@@ -61,14 +62,14 @@ export function createRuntimeHostOnboardingSurface(
           return result;
         }
         try {
+          const catalog = await readRuntimeHostConnectionCatalog(connection);
           return {
             kind: 'ok',
             connection: result.connection,
             refresh: {
               kind: 'ok',
-              modelChoices: projectRuntimeHostModelChoices(
-                await readRuntimeHostConnectionCatalog(connection),
-              ),
+              modelChoices: projectRuntimeHostModelChoices(catalog),
+              connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
             },
           };
         } catch {
@@ -118,6 +119,16 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
     }
   }
   return choices;
+}
+
+export function projectRuntimeHostConnectionIdentities(
+  catalog: ConnectionCatalogSnapshot,
+): ConnectionIdentity[] {
+  return catalog.connections.map((connection) => ({
+    connectionId: connection.connectionId,
+    connectionSlug: connection.slug,
+    enabled: connection.enabled,
+  }));
 }
 
 export function projectProviders(catalog: ConnectionCatalogSnapshot): OnboardingProviderEntry[] {
