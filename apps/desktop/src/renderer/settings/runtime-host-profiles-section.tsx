@@ -56,7 +56,13 @@ import {
   type RuntimeHostManagementTarget,
 } from './runtime-host-management-dialog.js';
 import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
-import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
+import {
+  PeerMeshPeerIdButton,
+  RuntimeHostPairingRecoveryButton,
+  RuntimeHostPeerMeshDialog,
+  RuntimeHostProfileMoreMenu,
+  type RuntimeHostPairingActionCopy,
+} from '../features/runtime-host-management';
 import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
 import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
@@ -83,6 +89,15 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const pairingActionCopy: RuntimeHostPairingActionCopy = {
+    retry: copy.resolvePairingRecovery,
+    retryFailed: copy.resolvePairingRecoveryFailed,
+    discard: copy.discardPairing,
+    discardConfirmTitle: copy.discardPairingConfirmTitle,
+    discardConfirmBody: copy.discardPairingConfirmBody,
+    discardFailed: copy.discardPairingFailed,
+    cancel: copy.cancel,
+  };
   const collaborationCopy = getSessionCollaborationCopy(locale);
   const mountedRef = useMountedRef();
   const toast = useToast();
@@ -107,19 +122,7 @@ export function RuntimeHostProfilesSection(props: {
     readonly name: string;
   }>();
 
-  async function copyPeerId(peerId: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(peerId);
-      toast.success(locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied');
-    } catch (error) {
-      toast.error(
-        locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID',
-        settingsActionErrorMessage(error, locale),
-      );
-    }
-  }
   const [switching, setSwitching] = useState(false);
-  const [pairingWorking, setPairingWorking] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -252,60 +255,6 @@ export function RuntimeHostProfilesSection(props: {
       }
     } finally {
       if (mountedRef.current) setSwitching(false);
-    }
-  }
-
-  async function resolvePairingRecovery(profileId?: string) {
-    setSwitching(true);
-    setPairingWorking(true);
-    try {
-      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery(profileId);
-      if (mountedRef.current) setSnapshot(next);
-    } catch (error) {
-      if (mountedRef.current) {
-        await reload().catch(() => undefined);
-        toast.error(
-          copy.resolvePairingRecoveryFailed,
-          settingsActionErrorMessage(error, locale),
-        );
-      }
-    } finally {
-      if (mountedRef.current) {
-        setSwitching(false);
-        setPairingWorking(false);
-      }
-    }
-  }
-
-  async function discardPairing(profileId: string) {
-    const confirmed = await toast.confirm({
-      title: copy.discardPairingConfirmTitle,
-      description: copy.discardPairingConfirmBody,
-      confirmLabel: copy.discardPairing,
-      cancelLabel: copy.cancel,
-      destructive: true,
-    });
-    if (!confirmed) return;
-    setSwitching(true);
-    setPairingWorking(true);
-    try {
-      const next = await window.maka.runtimeHostProfiles.discardPairing(profileId);
-      if (mountedRef.current) setSnapshot(next);
-    } catch (error) {
-      if (mountedRef.current) {
-        await reload().catch(() => undefined);
-        toast.error(
-          copy.discardPairingFailed,
-          settingsActionErrorMessage(error, locale),
-          undefined,
-          { profileId },
-        );
-      }
-    } finally {
-      if (mountedRef.current) {
-        setSwitching(false);
-        setPairingWorking(false);
-      }
     }
   }
 
@@ -583,13 +532,12 @@ export function RuntimeHostProfilesSection(props: {
             label={copy.pairingRecoveryTitle}
             description={copy.pairingRecoveryDescription}
             end={(
-              <Button
-                variant="secondary"
-                size="sm"
-                label={copy.resolvePairingRecovery}
+              <RuntimeHostPairingRecoveryButton
                 isDisabled={switching}
-                isLoading={pairingWorking}
-                onClick={() => void resolvePairingRecovery()}
+                copy={pairingActionCopy}
+                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                onChanged={() => void reload()}
+                onWorkingChange={setSwitching}
               />
             )}
           />
@@ -706,29 +654,17 @@ export function RuntimeHostProfilesSection(props: {
                         ? profile.transport.destination
                         : profile.transport.kind === "libp2p-direct"
                           ? (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                label={
-                                  locale.startsWith('zh')
-                                    ? `复制完整 Peer ID：${profile.transport.peerId}`
-                                    : `Copy full Peer ID: ${profile.transport.peerId}`
-                                }
+                              <PeerMeshPeerIdButton
+                                peerId={profile.transport.peerId}
+                                displayValue={abbreviatePeerId(profile.transport.peerId)}
+                                copyLabel={locale.startsWith('zh')
+                                  ? `复制完整 Peer ID：${profile.transport.peerId}`
+                                  : `Copy full Peer ID: ${profile.transport.peerId}`}
+                                copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
+                                failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
+                                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
                                 className="settingsRuntimeHostPeerId"
-                                tooltip={
-                                  locale.startsWith('zh')
-                                    ? `复制完整 Peer ID：${profile.transport.peerId}`
-                                    : `Copy full Peer ID: ${profile.transport.peerId}`
-                                }
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  if (profile.transport.kind === 'libp2p-direct') {
-                                    void copyPeerId(profile.transport.peerId);
-                                  }
-                                }}
-                              >
-                                {abbreviatePeerId(profile.transport.peerId)}
-                              </Button>
+                              />
                             )
                           : profile.transport.url
                   }
@@ -762,24 +698,16 @@ export function RuntimeHostProfilesSection(props: {
                             : undefined}
                         onChange={(enabled) => void setEnabled(profile.id, enabled)}
                       />
-                      <MoreMenu
+                      <RuntimeHostProfileMoreMenu
                         label={copy.moreActions(profile.name)}
-                        size="sm"
+                        profileId={profile.id}
+                        pairingPending={entry.pairingPending === true}
+                        isDisabled={switching}
+                        copy={pairingActionCopy}
+                        errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                        onChanged={() => void reload()}
+                        onWorkingChange={setSwitching}
                         items={[
-                          ...(entry.pairingPending
-                            ? [
-                                {
-                                  label: copy.resolvePairingRecovery,
-                                  isDisabled: switching,
-                                  onClick: () => void resolvePairingRecovery(profile.id),
-                                },
-                                {
-                                  label: copy.discardPairing,
-                                  isDisabled: switching,
-                                  onClick: () => void discardPairing(profile.id),
-                                },
-                              ]
-                            : []),
                           ...(managedSshDestination && !entry.pairingPending
                             ? [{
                                 label: copy.manage,

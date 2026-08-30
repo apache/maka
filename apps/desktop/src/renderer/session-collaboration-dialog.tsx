@@ -389,14 +389,18 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [code, setCode] = useState('');
-  const [working, setWorking] = useState(false);
-  const [failure, setFailure] = useState<string>();
-  const [pairingPending, setPairingPending] = useState(false);
+  const [joinState, setJoinState] = useState<
+    | { readonly kind: 'idle' }
+    | { readonly kind: 'working' }
+    | { readonly kind: 'pairing_pending' }
+    | { readonly kind: 'failed'; readonly message: string }
+  >({ kind: 'idle' });
+  const working = joinState.kind === 'working';
+  const pairingPending = joinState.kind === 'pairing_pending';
+  const failure = joinState.kind === 'failed' ? joinState.message : undefined;
 
   async function join(allowInsecure = false): Promise<void> {
-    setWorking(true);
-    setFailure(undefined);
-    setPairingPending(false);
+    setJoinState({ kind: 'working' });
     try {
       const result = await window.maka.sessionCollaboration.importInvitation({
         code: code.trim(),
@@ -415,12 +419,12 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
       }
       if (result.kind === 'error') {
         const message = importError(copy, result.reason, result.message);
-        setFailure(message);
+        setJoinState({ kind: 'failed', message });
         toast.error(copy.joinTitle, message);
         return;
       }
       if (result.kind === 'pairing_pending') {
-        setPairingPending(true);
+        setJoinState({ kind: 'pairing_pending' });
         props.onImported();
         return;
       }
@@ -428,10 +432,10 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
       props.onClose();
     } catch (error) {
       const message = errorMessage(error);
-      setFailure(message);
+      setJoinState({ kind: 'failed', message });
       toast.error(copy.joinTitle, message);
     } finally {
-      setWorking(false);
+      setJoinState((current) => current.kind === 'working' ? { kind: 'idle' } : current);
     }
   }
 

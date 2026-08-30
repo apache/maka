@@ -178,7 +178,6 @@
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
     "src/renderer/settings/runtime-host-onboarding-dialog.tsx",
-    "src/renderer/settings/runtime-host-peer-mesh-dialog.tsx",
     "src/renderer/settings/runtime-host-profiles-section.tsx",
     "src/renderer/settings/runtime-host-project-directory-editor.tsx",
     "src/renderer/settings/runtime-host-settings-bridge.ts",
@@ -3911,34 +3910,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/runtime-host-peer-mesh-dialog.tsx": {
-        "bridgePaths": {
-          "window.maka.runtimeHostPeerMesh.execute": 6
-        },
-        "environmentCapabilities": {
-          "navigator.clipboard.writeText": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 5,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../../preload/bridge-contract.js": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@astryxdesign/core/Stack": 1,
-          "@maka/runtime-host/protocol": 2,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
-        }
-      },
       "src/renderer/settings/runtime-host-profiles-section.tsx": {
         "bridgePaths": {
           "window.maka.localRuntimeHostRemoteAccess.createConnectionCode": 1,
@@ -3949,7 +3920,6 @@
           "window.maka.runtimeHostProfiles.addAndEnable": 1,
           "window.maka.runtimeHostProfiles.getSnapshot": 1,
           "window.maka.runtimeHostProfiles.remove": 1,
-          "window.maka.runtimeHostProfiles.resolvePairingRecovery": 1,
           "window.maka.runtimeHostProfiles.setDefault": 1,
           "window.maka.runtimeHostProfiles.setEnabled": 1,
           "window.maka.runtimeHostProfiles.subscribeChanges": 1
@@ -3969,6 +3939,7 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../../preload/bridge-contract.js": 1,
+          "../features/runtime-host-management": 1,
           "../locales/session-collaboration-copy.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "../session-collaboration-dialog.js": 1,
@@ -3976,7 +3947,6 @@
           "./runtime-host-connection-code-dialog.js": 1,
           "./runtime-host-management-dialog.js": 1,
           "./runtime-host-onboarding-dialog.js": 1,
-          "./runtime-host-peer-mesh-dialog.js": 1,
           "./settings-error-copy.js": 1,
           "./settings-section.js": 1,
           "@astryxdesign/core": 1,
@@ -5570,7 +5540,7 @@
       "nonTriviaTokens": 206
     },
     "src/renderer/main.tsx": {
-      "importDeclarations": 17,
+      "importDeclarations": 8,
       "bridgePaths": {
         "window.maka.onboarding.getSnapshot": 2
       },
@@ -5586,23 +5556,14 @@
         "../preload/bridge-contract.js": 1,
         "./app": 1,
         "./cached-theme-bootstrap": 1,
-        "./features/goals": 1,
-        "./features/module-hub": 1,
-        "./features/session-navigation": 1,
-        "./features/task-entry": 1,
-        "./features/workbar": 1,
-        "./platform/desktop/create-goal-services": 1,
-        "./platform/desktop/create-module-hub-services": 1,
-        "./platform/desktop/create-session-navigation-services": 1,
-        "./platform/desktop/create-task-entry-services": 1,
-        "./platform/desktop/create-workbar-services": 1,
+        "./composition/desktop-feature-services": 1,
         "./styles.css": 1,
         "./use-system-ui-locale": 1,
         "@maka/ui": 1,
         "react-dom/client": 1
       },
-      "importSpecifiers": 16,
-      "nonTriviaTokens": 412
+      "importSpecifiers": 8,
+      "nonTriviaTokens": 268
     }
   },
   "rootDebtClosure": {
