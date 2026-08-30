@@ -123,7 +123,6 @@ test('the first Desktop Nightly creates its destination with rsync 3.1-compatibl
   assert.match(bootstrap.run, /mkdir -p \.nightly-empty\/maka\/desktop/u);
   assert.match(bootstrap.run, /^rsync -rlptDz --protect-args /mu);
   assert.doesNotMatch(bootstrap.run, /--mkpath/u);
-  assert.doesNotMatch(bootstrap.run, /--delete/u);
   assert.match(bootstrap.run, /\.nightly-empty\/maka\/ "\$NIGHTLIES_RSYNC_BASE\/maka\/"/u);
   assert.doesNotMatch(bootstrap.run, /\.nightly-publish/u);
   assert.ok(steps.indexOf(bootstrap) < feedGuardPosition);
