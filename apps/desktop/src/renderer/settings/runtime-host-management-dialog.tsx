@@ -90,6 +90,7 @@ export interface RuntimeHostManagementTarget {
 export function RuntimeHostManagementDialog(props: {
   readonly target: RuntimeHostManagementTarget | undefined;
   readonly onClose: () => void;
+  readonly onManagePeerMesh?: (target: RuntimeHostManagementTarget) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -813,6 +814,15 @@ export function RuntimeHostManagementDialog(props: {
                             />
                           </details>
                           <div className="settingsRuntimeHostUpdatePolicyActions">
+                            {target && props.onManagePeerMesh ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.managePeerMesh}
+                                isDisabled={loading}
+                                onClick={() => props.onManagePeerMesh?.(target)}
+                              />
+                            ) : null}
                             <Button
                               variant="secondary"
                               size="sm"

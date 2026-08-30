@@ -170,9 +170,11 @@ test('keeps setup credentials out of the interactive terminal projection', async
   assert.deepEqual(progress, ['installing_service']);
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token|MAKA_RUNTIME/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /mktemp -d/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /--prefix/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /mktemp -d/u);
+  assert.match(remoteCommand, /--prefix/u);
+  assert.match(remoteCommand, /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  assert.doesNotMatch(remoteCommand, /--update-existing/u);
   await harness.terminal.close();
 });
 
@@ -914,6 +916,7 @@ test('uploads a development release archive before running the same remote setup
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY=/u);
   assert.ok(remoteCommand.includes(integrity));
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /--update-existing/u);
   assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.match(remoteCommand, /exec \/bin\/sh -c/u);

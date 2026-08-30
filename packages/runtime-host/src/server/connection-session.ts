@@ -231,6 +231,9 @@ export class RuntimeHostConnectionSession {
         ...(this.#options.connection.authority.credentialId
           ? { credentialId: this.#options.connection.authority.credentialId }
           : {}),
+        ...(this.#options.connection.authority.clientInstanceId
+          ? { credentialClientInstanceId: this.#options.connection.authority.clientInstanceId }
+          : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
       admission.seal();

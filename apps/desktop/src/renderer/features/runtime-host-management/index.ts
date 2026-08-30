@@ -17,19 +17,12 @@
  * under the License.
  */
 
-import { generalizedErrorMessageChinese } from '@maka/core/redaction';
-import { type UiLocale } from '@maka/core/ui-locale';
-import { redactSecrets } from '@maka/ui';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
-
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
-  const raw = error instanceof Error
-    ? error.message
-    : typeof error === 'string'
-      ? error
-      : '';
-  const classified = locale === 'zh' ? generalizedErrorMessageChinese(new Error(raw), '') : '';
-  if (classified) return classified;
-  const redacted = redactSecrets(raw).trim();
-  return redacted || getSettingsSharedCopy(locale).unknownError;
-}
+export { RuntimeHostPeerMeshDialog } from './ui/runtime-host-peer-mesh-dialog';
+export { PeerMeshPeerIdButton } from './ui/peer-mesh-peer-id-button';
+export {
+  RuntimeHostPairingRecoveryButton,
+  RuntimeHostProfileMoreMenu,
+} from './ui/runtime-host-profile-pairing-actions';
+export type { RuntimeHostPairingActionCopy } from './ui/runtime-host-profile-pairing-actions';
+export { RuntimeHostManagementServicesProvider } from './services-context';
+export type { RuntimeHostManagementServices } from './ports';

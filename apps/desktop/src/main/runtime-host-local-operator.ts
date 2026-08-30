@@ -29,6 +29,7 @@ import {
 import {
   decodeRuntimeHostAccessManagementFrame,
   decodeRuntimeHostPeerManagementFrame,
+  decodeRuntimeHostPeerMeshManagementFrame,
   decodeRuntimeHostServiceManagementFrame,
   decodeRuntimeHostSetupFrame,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
@@ -36,12 +37,16 @@ import {
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementFrame,
+  type RuntimeHostPeerMeshManagementAction,
+  type RuntimeHostPeerMeshManagementFrame,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
   type RuntimeHostSetupFrame,
@@ -170,6 +175,16 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly allowInterruptActiveTasks?: boolean;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostPeerManagementFrame>;
+  runPeerMesh(input: {
+    readonly operatorPath: string;
+    readonly action: RuntimeHostPeerMeshManagementAction;
+    readonly target: DesktopRuntimeHostLocalServiceTarget;
+    readonly meshId?: string | null;
+    readonly peerId?: string;
+    readonly displayName?: string | null;
+    readonly invitation?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }>>;
   runAccess(input: {
     readonly operatorPath: string;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
@@ -283,6 +298,39 @@ export function createDesktopRuntimeHostLocalOperator(input: {
         signal: combinedSignal(command.signal, closing.signal),
         active,
       }).then((frame) => requirePeerFrame(frame, command.action, command.target));
+    },
+    runPeerMesh(command) {
+      if (closed) throw new Error('Local Runtime Host operator is closed');
+      return runPeerMeshFrameProcess({
+        command: {
+          executable: command.operatorPath,
+          args: [
+            'mesh',
+            command.action,
+            '--framed',
+            ...(typeof command.meshId === 'string'
+              ? ['--mesh', command.meshId]
+              : command.meshId === null
+                ? ['--off']
+                : []),
+            ...(command.peerId ? ['--peer', command.peerId] : []),
+            ...(command.displayName === null
+              ? ['--clear-name']
+              : command.displayName
+                ? ['--name', command.displayName]
+                : []),
+            ...managedTargetArgs(command.target),
+          ],
+        },
+        environment: input.environment ?? process.env,
+        spawnProcess: input.spawnProcess ?? spawn,
+        timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
+        terminate,
+        signal: combinedSignal(command.signal, closing.signal),
+        active,
+        ...(command.invitation ? { inputLine: command.invitation } : {}),
+        action: command.action,
+      });
     },
     runAccess(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
@@ -572,6 +620,42 @@ function runServiceFrameProcess(input: {
   });
 }
 
+function runPeerMeshFrameProcess(input: {
+  readonly command: DesktopRuntimeHostLocalSetupCommand;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly spawnProcess: typeof spawn;
+  readonly timeoutMs: number;
+  readonly terminate: typeof terminateChildProcessTree;
+  readonly signal?: AbortSignal;
+  readonly active: Set<ChildProcess>;
+  readonly action: RuntimeHostPeerMeshManagementAction;
+  readonly inputLine?: string;
+}): Promise<Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }>> {
+  let result: Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }> | undefined;
+  let failure: Error | undefined;
+  return runFramedProcess({
+    ...input,
+    prefix: RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
+    decode: decodeRuntimeHostPeerMeshManagementFrame,
+    label: 'Local Runtime Host Peer Mesh management',
+    onFrame(frame) {
+      if (frame.action !== input.action) {
+        failure = new Error('Local Runtime Host Peer Mesh management returned an unrelated result');
+      } else if (frame.kind !== 'input') {
+        if (result) {
+          failure = new Error('Local Runtime Host Peer Mesh management returned multiple results');
+        } else {
+          result = frame;
+        }
+      }
+    },
+    result: () => result,
+    failure: () => failure,
+    acceptNonzeroResult: true,
+    pendingMaxBytes: RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
+  });
+}
+
 function combinedSignal(
   operation: AbortSignal | undefined,
   closing: AbortSignal,
@@ -613,6 +697,7 @@ function runSingleFrameProcess<Frame>(input: {
   readonly terminate: typeof terminateChildProcessTree;
   readonly signal?: AbortSignal;
   readonly active: Set<ChildProcess>;
+  readonly inputLine?: string;
 }): Promise<Frame> {
   let result: Frame | undefined;
   let failure: Error | undefined;
@@ -693,6 +778,8 @@ function runFramedProcess<Frame, Result>(input: {
   readonly result: () => Result | undefined;
   readonly failure: () => Error | undefined;
   readonly acceptNonzeroResult?: boolean;
+  readonly inputLine?: string;
+  readonly pendingMaxBytes?: number;
 }): Promise<Result> {
   input.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -700,17 +787,18 @@ function runFramedProcess<Frame, Result>(input: {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       detached: process.platform !== 'win32',
       env: input.environment,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input.inputLine === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     input.active.add(child);
+    if (input.inputLine !== undefined) child.stdin?.end(`${input.inputLine}\n`);
     let filterFailure: Error | undefined;
     let stopFailure: Error | undefined;
     let stderr = '';
     let settled = false;
     const filter = createRuntimeHostFramedOutputFilter({
       prefix: input.prefix,
-      pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
+      pendingMaxBytes: input.pendingMaxBytes ?? SETUP_FRAME_PENDING_MAX,
       decode: input.decode,
       label: input.label,
       onFrame: (frame) => {

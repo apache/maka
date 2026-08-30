@@ -23,6 +23,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
   Button,
+  Banner,
   FormLayout,
   Text,
   TextArea,
@@ -388,10 +389,18 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [code, setCode] = useState('');
-  const [working, setWorking] = useState(false);
+  const [joinState, setJoinState] = useState<
+    | { readonly kind: 'idle' }
+    | { readonly kind: 'working' }
+    | { readonly kind: 'pairing_pending' }
+    | { readonly kind: 'failed'; readonly message: string }
+  >({ kind: 'idle' });
+  const working = joinState.kind === 'working';
+  const pairingPending = joinState.kind === 'pairing_pending';
+  const failure = joinState.kind === 'failed' ? joinState.message : undefined;
 
   async function join(allowInsecure = false): Promise<void> {
-    setWorking(true);
+    setJoinState({ kind: 'working' });
     try {
       const result = await window.maka.sessionCollaboration.importInvitation({
         code: code.trim(),
@@ -409,15 +418,24 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         return;
       }
       if (result.kind === 'error') {
-        toast.error(copy.joinTitle, importError(copy, result.reason, result.message));
+        const message = importError(copy, result.reason, result.message);
+        setJoinState({ kind: 'failed', message });
+        toast.error(copy.joinTitle, message);
+        return;
+      }
+      if (result.kind === 'pairing_pending') {
+        setJoinState({ kind: 'pairing_pending' });
+        props.onImported();
         return;
       }
       props.onImported();
       props.onClose();
     } catch (error) {
-      toast.error(copy.joinTitle, errorMessage(error));
+      const message = errorMessage(error);
+      setJoinState({ kind: 'failed', message });
+      toast.error(copy.joinTitle, message);
     } finally {
-      setWorking(false);
+      setJoinState((current) => current.kind === 'working' ? { kind: 'idle' } : current);
     }
   }
 
@@ -428,12 +446,15 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         content={(
           <LayoutContent padding={4}>
             <FormLayout>
+              {working ? <Banner status="info" title={copy.joining} /> : null}
+              {pairingPending ? <Banner status="warning" title={copy.pairingPending} /> : null}
+              {failure ? <Banner status="error" title={copy.connectionFailed} description={failure} /> : null}
               <TextArea
                 label={copy.code}
                 value={code}
                 rows={6}
                 hasSpellCheck={false}
-                isDisabled={working}
+                isDisabled={working || pairingPending}
                 onChange={setCode}
               />
             </FormLayout>
@@ -442,7 +463,13 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         footer={(
           <LayoutFooter>
             <Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} />
-            <Button variant="primary" label={copy.join} isDisabled={working || !code.trim()} onClick={() => void join()} />
+            <Button
+              variant="primary"
+              label={copy.join}
+              isDisabled={working || pairingPending || !code.trim()}
+              isLoading={working}
+              onClick={() => void join()}
+            />
           </LayoutFooter>
         )}
       />
@@ -459,10 +486,12 @@ function importError(
   reason:
     | 'invalid_code'
     | 'insecure_confirmation_required'
+    | 'peer_path_unavailable'
     | 'connection_failed',
   message?: string,
 ): string {
   if (reason === 'invalid_code') return copy.invalidCode;
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
+  if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
   return message ?? copy.connectionFailed;
 }

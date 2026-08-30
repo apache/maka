@@ -248,6 +248,11 @@ export type SettingsProjectsCopy = {
     pairingRecoveryDescription: string;
     resolvePairingRecovery: string;
     resolvePairingRecoveryFailed: string;
+    pairingPendingBadge: string;
+    discardPairing: string;
+    discardPairingConfirmTitle: string;
+    discardPairingConfirmBody: string;
+    discardPairingFailed: string;
     moreActions(name: string): string;
   };
   section: string;
@@ -538,9 +543,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       saveFailed: '无法保存 Runtime Host profile',
       removeFailed: '无法移除 Runtime Host profile',
       pairingRecoveryTitle: '有未完成的配对',
-      pairingRecoveryDescription: '远程 Host 恢复连接后，可在此继续完成配对。',
+      pairingRecoveryDescription: '可在对应 Host 的菜单中重试；如果不再需要，也可以放弃配对并清理未完成的连接。',
       resolvePairingRecovery: '重试配对',
       resolvePairingRecoveryFailed: '无法处理配对恢复',
+      pairingPendingBadge: '配对未完成',
+      discardPairing: '放弃配对',
+      discardPairingConfirmTitle: '放弃这次配对？',
+      discardPairingConfirmBody: '将删除未完成的连接并清理本机保存的临时凭据。之后仍可使用新的邀请码重新加入。',
+      discardPairingFailed: '无法放弃配对',
       moreActions: (name: string) => `更多操作：${name}`,
     },
     section: '工作区',
@@ -832,9 +842,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       saveFailed: 'Could not save the Runtime Host profile',
       removeFailed: 'Could not remove the Runtime Host profile',
       pairingRecoveryTitle: 'Pairing is unfinished',
-      pairingRecoveryDescription: 'Retry when the remote Host is reachable to finish pairing.',
+      pairingRecoveryDescription: 'Retry from the affected Host menu, or discard the pairing to clean up the unfinished connection.',
       resolvePairingRecovery: 'Retry pairing',
       resolvePairingRecoveryFailed: 'Could not resolve pairing recovery',
+      pairingPendingBadge: 'Pairing unfinished',
+      discardPairing: 'Discard pairing',
+      discardPairingConfirmTitle: 'Discard this pairing?',
+      discardPairingConfirmBody: 'This removes the unfinished connection and its locally saved temporary credential. You can join again with a new invitation.',
+      discardPairingFailed: 'Could not discard pairing',
       moreActions: (name: string) => `More actions for ${name}`,
     },
     section: 'Workspace',

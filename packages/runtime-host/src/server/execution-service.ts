@@ -98,6 +98,7 @@ export async function startExecutionRuntimeHostService(
         peerOwner = await openRuntimeHostPeerMeshOwner({
           ...options.peer,
           dataRoot: options.peer.meshDataRoot,
+          endpointKind: 'host',
         });
       } catch (error) {
         console.error(

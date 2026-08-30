@@ -17,19 +17,17 @@
  * under the License.
  */
 
-import { generalizedErrorMessageChinese } from '@maka/core/redaction';
-import { type UiLocale } from '@maka/core/ui-locale';
-import { redactSecrets } from '@maka/ui';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
+export const PEER_MESH_DISPLAY_NAME_MAX_LENGTH = 80;
 
-export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'zh'): string {
-  const raw = error instanceof Error
-    ? error.message
-    : typeof error === 'string'
-      ? error
-      : '';
-  const classified = locale === 'zh' ? generalizedErrorMessageChinese(new Error(raw), '') : '';
-  if (classified) return classified;
-  const redacted = redactSecrets(raw).trim();
-  return redacted || getSettingsSharedCopy(locale).unknownError;
+export function canonicalPeerMeshDisplayName(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('Invalid Peer Mesh display name');
+  const displayName = value.trim();
+  if (
+    displayName.length === 0 ||
+    displayName.length > PEER_MESH_DISPLAY_NAME_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(displayName)
+  ) {
+    throw new Error('Invalid Peer Mesh display name');
+  }
+  return displayName;
 }

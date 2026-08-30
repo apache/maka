@@ -187,7 +187,9 @@ export type RuntimeHostCliCommand =
         | 'leave'
         | 'close'
         | 'reconcile'
-        | 'transit';
+        | 'transit'
+        | 'rename'
+        | 'rename-mesh';
       json: boolean;
       framed?: true;
       managedRootId: string;
@@ -195,6 +197,7 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       meshId?: string | null;
       peerId?: string;
+      displayName?: string | null;
     }
   | {
       kind: 'runtime-host-service-check-update';
@@ -1043,20 +1046,29 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     action !== 'leave' &&
     action !== 'close' &&
     action !== 'reconcile' &&
-    action !== 'transit'
+    action !== 'transit' &&
+    action !== 'rename' &&
+    action !== 'rename-mesh'
   ) {
     return error(
       action
         ? `Unexpected runtime-host service mesh command: ${action}`
-        : 'runtime-host service mesh requires status, create, invite, join, remove, leave, close, reconcile, or transit',
+        : 'runtime-host service mesh requires status, create, invite, join, remove, leave, close, reconcile, transit, rename, or rename-mesh',
     );
   }
   let meshId: string | null | undefined;
   let peerId: string | undefined;
+  let displayName: string | null | undefined;
+  let clientDataRoot: string | undefined;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
     valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
       '--mesh': (value) => {
         if (meshId !== undefined) return error('Duplicate --mesh');
         if (!value || value.length > 128) return error('--mesh requires a valid Mesh ID');
@@ -1067,11 +1079,22 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         if (!value || value.length > 256) return error('--peer requires a valid Peer ID');
         peerId = value;
       },
+      '--name': (value) => {
+        if (displayName !== undefined) return error('Duplicate --name');
+        if (!value.trim() || value.trim().length > 80) {
+          return error('--name requires a display name of at most 80 characters');
+        }
+        displayName = value.trim();
+      },
     },
     flagOptions: {
       '--off': () => {
         if (meshId !== undefined) return error('mesh transit accepts either --mesh or --off');
         meshId = null;
+      },
+      '--clear-name': () => {
+        if (displayName !== undefined) return error('mesh rename accepts --name or --clear-name');
+        displayName = null;
       },
     },
   });
@@ -1082,7 +1105,11 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     );
   }
   const needsMesh =
-    action === 'invite' || action === 'remove' || action === 'leave' || action === 'close';
+    action === 'invite' ||
+    action === 'remove' ||
+    action === 'leave' ||
+    action === 'close' ||
+    action === 'rename-mesh';
   if (needsMesh && typeof meshId !== 'string') {
     return error(`runtime-host service mesh ${action} requires --mesh`);
   }
@@ -1102,6 +1129,13 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
   if (action === 'transit' && meshId === undefined) {
     return error('runtime-host service mesh transit requires --mesh or --off');
   }
+  if ((action === 'rename' || action === 'rename-mesh') !== (displayName !== undefined)) {
+    return error(
+      action === 'rename'
+        ? 'runtime-host service mesh rename requires --name or --clear-name'
+        : '--name and --clear-name are only valid with mesh rename or rename-mesh',
+    );
+  }
   return {
     kind: 'runtime-host-service-peer-mesh',
     action,
@@ -1112,6 +1146,7 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     expectedTarget: options.expectedTarget,
     ...(meshId !== undefined ? { meshId } : {}),
     ...(peerId ? { peerId } : {}),
+    ...(displayName !== undefined ? { displayName } : {}),
   };
 }
 

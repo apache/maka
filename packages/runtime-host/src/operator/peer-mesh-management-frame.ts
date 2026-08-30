@@ -39,6 +39,8 @@ const ACTION_SCHEMA = z.enum([
   'close',
   'reconcile',
   'transit',
+  'rename',
+  'rename-mesh',
 ]);
 const FRAME_SCHEMA = z.union([
   z.object({ kind: z.literal('input'), action: z.literal('join') }).strict(),
@@ -66,7 +68,9 @@ export type RuntimeHostPeerMeshManagementAction =
   | 'leave'
   | 'close'
   | 'reconcile'
-  | 'transit';
+  | 'transit'
+  | 'rename'
+  | 'rename-mesh';
 export type RuntimeHostPeerMeshManagementFrame =
   | { readonly kind: 'input'; readonly action: 'join' }
   | {
@@ -79,7 +83,9 @@ export type RuntimeHostPeerMeshManagementFrame =
         | 'leave'
         | 'close'
         | 'reconcile'
-        | 'transit';
+        | 'transit'
+        | 'rename'
+        | 'rename-mesh';
       readonly result: PeerMeshQueryResult;
     }
   | {
@@ -143,6 +149,18 @@ function decodeFrame(value: unknown): RuntimeHostPeerMeshManagementFrame {
       return {
         kind: 'result',
         action: 'transit',
+        result: decodePeerMeshQueryResult(frame.result),
+      };
+    case 'rename':
+      return {
+        kind: 'result',
+        action: 'rename',
+        result: decodePeerMeshQueryResult(frame.result),
+      };
+    case 'rename-mesh':
+      return {
+        kind: 'result',
+        action: 'rename-mesh',
         result: decodePeerMeshQueryResult(frame.result),
       };
     case 'invite':

@@ -64,7 +64,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
     ]);
     const credentialId = authority.authenticate(invitation.credential)?.credentialId;
     assert.ok(credentialId);
-    await authority.finalize(credentialId, 'guest-client');
+    await authority.finalize(credentialId, 'guest-client', false);
     const activeGuest = authority.authenticate(invitation.credential);
     assert.deepEqual(activeGuest?.operationGrants, [
       'host.status',
@@ -78,6 +78,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
       'subscription.close',
       'session.transcript.page',
       'session.transcript.overlay.release',
+      'access.credential.finalize',
     ]);
     assert.ok(activeGuest);
     const unidentifiedQuery = queryCollaborationTurnRequests(
@@ -599,6 +600,6 @@ async function activateTurnGuest(authority: RuntimeHostAccessAuthority): Promise
   const invitation = decodeCollaborationInvitationCode(prepared.invitationCode);
   const credentialId = authority.authenticate(invitation.credential)?.credentialId;
   assert.ok(credentialId);
-  await authority.finalize(credentialId, 'guest-client');
+  await authority.finalize(credentialId, 'guest-client', false);
   return prepared.principalId;
 }
