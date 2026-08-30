@@ -40,6 +40,7 @@ import {
   type InteractiveUsageStoresFailureClassification,
   type InteractiveUsageStoresWriter,
 } from '@maka/storage/usage-stores';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import {
   encodePricingQueryResult,
   encodeUsageQueryResult,
@@ -75,6 +76,10 @@ export class HostUsagePricingCoordinator {
   readonly #requestDrain: () => void;
   readonly #activation: RuntimePolicyActivationGate;
   readonly #onCommittedPricingMutation: () => void;
+  // Resolves a session's human-readable title for the Task column. Reads the
+  // durable session header directly (unfiltered, in-process), so it covers
+  // reserved-role, coordination, and legacy sessions the catalog omits.
+  readonly #readSessionTitle?: (sessionId: string) => Promise<string | undefined>;
   #poisonDrainRequested = false;
 
   constructor(
@@ -82,11 +87,42 @@ export class HostUsagePricingCoordinator {
     requestDrain: () => void,
     activation: RuntimePolicyActivationGate,
     onCommittedPricingMutation: () => void = () => {},
+    readSessionTitle?: (sessionId: string) => Promise<string | undefined>,
   ) {
     this.#stores = authenticateInteractiveUsageStoresWriter(stores);
     this.#requestDrain = requestDrain;
     this.#activation = activation;
     this.#onCommittedPricingMutation = onCommittedPricingMutation;
+    this.#readSessionTitle = readSessionTitle;
+  }
+
+  // Resolve titles for exactly the sessions on this page. A session that no
+  // longer exists is simply left untitled — one deleted session never blanks
+  // the rest. Store lifecycle, persistence, and malformed-header failures are
+  // *not* swallowed: they propagate so #queryUsage maps them to host_draining/
+  // persistence_failed and the Desktop keeps its normal reconnect path.
+  async #resolveSessionTitles(
+    rows: ReadonlyArray<{ readonly sessionId?: string }>,
+  ): Promise<ReadonlyMap<string, string>> {
+    const titles = new Map<string, string>();
+    const read = this.#readSessionTitle;
+    if (!read) return titles;
+    const ids = [
+      ...new Set(rows.map((row) => row.sessionId).filter((id): id is string => id !== undefined)),
+    ];
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const title = (await read(id))?.trim();
+          if (title) titles.set(id, title);
+        } catch (error) {
+          // A genuinely missing session is left untitled so the UI falls back;
+          // any other failure is a store problem and must reach #queryUsage.
+          if (!isSessionNotFoundError(error)) throw error;
+        }
+      }),
+    );
+    return titles;
   }
 
   /**
@@ -154,10 +190,17 @@ export class HostUsagePricingCoordinator {
       if (input.source === 'tool') {
         const page = await this.#stores.telemetry.toolLogs(input.query, offset, limit);
         if (offset > page.total) return invalidUsageOffset();
+        const titles = await this.#resolveSessionTitles(page.rows);
         return {
           ok: true,
           result: encodeUsageQueryResult(
-            usageLogPage('tool', page.rows.map(projectToolUsageLog), page.total, offset, limit),
+            usageLogPage(
+              'tool',
+              page.rows.map((row) => projectToolUsageLog(row, titles)),
+              page.total,
+              offset,
+              limit,
+            ),
           ),
         };
       }
@@ -174,12 +217,13 @@ export class HostUsagePricingCoordinator {
         limit,
       );
       if (offset > merged.total) return invalidUsageOffset();
+      const titles = await this.#resolveSessionTitles(merged.rows);
       return {
         ok: true,
         result: encodeUsageQueryResult(
           usageLogPage(
             'llm',
-            merged.rows.map(projectUsageLog),
+            merged.rows.map((row) => projectUsageLog(row, titles)),
             merged.total,
             offset,
             limit,
@@ -547,9 +591,13 @@ function projectUsageBucket(bucket: UsageBucket): UsageBucket {
   };
 }
 
-function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
+function projectUsageLog(
+  row: UsageLogRow,
+  titles: ReadonlyMap<string, string>,
+): LlmUsageLogProjection {
   const cacheMissInputSource = (row as UsageLogRow & { readonly cacheMissInputSource?: unknown })
     .cacheMissInputSource;
+  const title = row.sessionId === undefined ? undefined : titles.get(row.sessionId);
   return {
     source: 'llm',
     id: projectIdentity(row.id),
@@ -577,6 +625,7 @@ function projectUsageLog(row: UsageLogRow): LlmUsageLogProjection {
     status: row.status,
     ...(row.errorClass === undefined ? {} : { errorClass: projectText(row.errorClass) }),
     ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(title === undefined ? {} : { sessionTitle: projectText(title) }),
     ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
 }
@@ -588,7 +637,9 @@ function projectToolUsageLog(
     readonly bytesOut: number;
     readonly ts: number;
   },
+  titles: ReadonlyMap<string, string>,
 ): ToolUsageLogProjection {
+  const title = row.sessionId === undefined ? undefined : titles.get(row.sessionId);
   return {
     source: 'tool',
     id: projectIdentity(row.id),
@@ -616,6 +667,7 @@ function projectToolUsageLog(
     bytesOut: row.bytesOut,
     startedAt: row.startedAt,
     ...(row.sessionId === undefined ? {} : { sessionId: projectIdentity(row.sessionId) }),
+    ...(title === undefined ? {} : { sessionTitle: projectText(title) }),
     ...(row.turnId === undefined ? {} : { turnId: projectIdentity(row.turnId) }),
   };
 }
