@@ -18,8 +18,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
@@ -2516,6 +2517,46 @@ export function checkRendererArchitecture({
   return violations.sort();
 }
 
+// The monotonic-debt ratchet must measure debt against what the base commit's
+// source tree *actually* contained, not against the numbers its ledger happened
+// to record. A ledger that under-reports its own tree (for example, one
+// generated on a branch that predated files already merged into main) would
+// otherwise make a faithful baseline correction look like brand-new debt and
+// wedge the ledger permanently. We materialize the base tree and re-derive its
+// debt, keeping the base ledger only as the source of policy fields (hook
+// transitions, growth directories, root-debt key set, ownership).
+function deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig) {
+  const scratch = mkdtempSync(join(tmpdir(), 'renderer-arch-base-'));
+  const worktreePath = join(scratch, 'tree');
+  try {
+    execFileSync('git', ['worktree', 'add', '--detach', worktreePath, base], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const baseDesktopRoot = resolve(worktreePath, relative(repoRoot, desktopRoot));
+    return generateArchitectureConfig(baseDesktopRoot, baseCommittedConfig);
+  } finally {
+    try {
+      execFileSync('git', ['worktree', 'remove', '--force', worktreePath], {
+        cwd: repoRoot,
+        stdio: 'ignore',
+      });
+    } catch {
+      try {
+        execFileSync('git', ['worktree', 'prune'], { cwd: repoRoot, stdio: 'ignore' });
+      } catch {
+        // Ignore prune failures; the scratch removal below is the real cleanup.
+      }
+    }
+    try {
+      rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup of the scratch directory.
+    }
+  }
+}
+
 function loadBaseConfig(repoRoot, desktopRoot, base) {
   if (!base) return { baseConfig: undefined, introducedLedger: false };
   const relativeConfig = normalizePath(relative(repoRoot, join(desktopRoot, 'renderer-architecture.json')));
@@ -2557,12 +2598,29 @@ function loadBaseConfig(repoRoot, desktopRoot, base) {
     throw new Error(`base ledger is missing at ${base}:${relativeConfig}`);
   }
 
+  let baseCommittedConfig;
   try {
-    return { baseConfig: JSON.parse(source), introducedLedger: false };
+    baseCommittedConfig = JSON.parse(source);
   } catch (error) {
     throw new Error(
       `base ledger is invalid JSON at ${base}:${relativeConfig}: ${error instanceof Error ? error.message : String(error)}`,
     );
+  }
+
+  try {
+    return {
+      baseConfig: deriveBaseTreeConfig(repoRoot, desktopRoot, base, baseCommittedConfig),
+      introducedLedger: false,
+    };
+  } catch (error) {
+    // If the base tree cannot be materialized or analyzed (e.g. git worktree is
+    // unavailable), fall back to the committed base ledger so the ratchet still
+    // runs. This restores the pre-fix behavior rather than crashing the check.
+    console.warn(
+      `Renderer architecture check: could not derive base tree debt at ${base}; ` +
+        `falling back to the committed base ledger. (${error instanceof Error ? error.message : String(error)})`,
+    );
+    return { baseConfig: baseCommittedConfig, introducedLedger: false };
   }
 }
 
