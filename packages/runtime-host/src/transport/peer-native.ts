@@ -105,6 +105,7 @@ export interface RuntimeHostPeerTransitSnapshot {
 export interface RuntimeHostPeerTransitRelayCandidate {
   readonly peerId: string;
   readonly addresses: readonly string[];
+  readonly coordinationRelays: readonly string[];
 }
 
 interface RuntimeHostPeerNativeModule {

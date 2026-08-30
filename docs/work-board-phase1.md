@@ -33,7 +33,7 @@ A compact Work Board tab in the session workbar, next to Tasks, with:
 
 - The Desktop main process owns `WorkBoardStore`; the renderer is a read-only
   IPC projection that reloads on the `workBoard:changed` signal.
-- No Runtime Host involvement, no model-visible tools, no turn-tail injection.
+- No Runtime Host involvement, model-visible tools, or automatic prompt injection.
 - `linkedSessions` and the linked-session projection remain deferred to Phase 3.
 
 ## Why a dedicated store instead of a project file

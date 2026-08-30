@@ -37,10 +37,90 @@ import {
 import type { UserQuestionOption } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import {
+  defineUiMessageCatalog,
+  formatUiMessage,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
-import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
+import type {
+  ModelChoice,
+  OnboardingFailure,
+  OnboardingFailureClass,
+  OnboardingProviderEntry,
+  OnboardingRejectionReason,
+} from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
+
+interface TuiPickerCopy {
+  readonly modelPickerTitle: string;
+  readonly modelSwitchCacheWarning: string;
+  readonly modelSearchHint: string;
+  readonly searchLabel: string;
+  readonly noMatchingModels: string;
+  readonly selectPickerHint: string;
+  readonly providerConfigured: string;
+  readonly addAccount: string;
+  readonly thinkingLevels: Readonly<Record<ThinkingLevel, string>>;
+  readonly defaultThinkingLevel: string;
+  readonly thinkingPickerTitle: string;
+  readonly currentMarker: string;
+  readonly defaultMarker: string;
+  readonly setupTitle: string;
+  readonly baseUrlLabel: string;
+  readonly apiKeyLabel: string;
+  readonly onboardingUnavailable: string;
+  readonly onboardingRequestFailed: string;
+  readonly onboardingRejections: Readonly<Record<OnboardingRejectionReason, string>>;
+  readonly onboardingFailures: Readonly<Record<OnboardingFailureClass, string>>;
+  readonly accountSavedRefreshFailed: string;
+  readonly listProvidersFailed: string;
+  readonly noConfigurableProviders: string;
+  readonly baseUrlRequired: string;
+  readonly baseUrlInvalid: string;
+  readonly baseUrlProtocol: string;
+  readonly baseUrlCredentials: string;
+  readonly baseUrlQuery: string;
+  readonly baseUrlTooLong: string;
+  readonly selectModelBeforeSaving: string;
+  readonly reuseBaseUrlHint: string;
+  readonly enterBaseUrlHint: string;
+  readonly continueAction: string;
+  readonly providerSearchHint: string;
+  readonly noMatchingProviders: string;
+  readonly keyHints: Readonly<
+    Record<'reuse' | 'enter', Readonly<Record<'baseUrl' | 'provider', string>>>
+  >;
+  readonly submitAction: string;
+  readonly verifyingKey: string;
+  readonly modelSelectionHint: string;
+  readonly selectedModels: string;
+  readonly selectedModelsAndSave: string;
+  readonly saving: string;
+  readonly complete: string;
+  readonly enabledModels: string;
+  readonly closeAction: string;
+  readonly thinkingUnsupported: string;
+}
+
+const TUI_PICKER_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPickerCopy>()(TUI_COPY_RESOURCES.pickers),
+);
+
+export function onboardingFailureMessage(failure: OnboardingFailure, locale: UiLocale): string {
+  const copy = TUI_PICKER_COPY[locale];
+  switch (failure.kind) {
+    case 'rejected':
+      return copy.onboardingRejections[failure.reason];
+    case 'failed':
+      return copy.onboardingFailures[failure.errorClass];
+    case 'unavailable':
+      return copy.onboardingRequestFailed;
+  }
+}
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
   private readonly fileProvider: CombinedAutocompleteProvider | undefined;
@@ -342,7 +422,7 @@ export class PickerOverlay implements Component {
     private readonly input: {
       title: string;
       rightLabel: string;
-      hint?: string;
+      hint: string;
       notice?: string;
       onInput?: (data: string) => boolean;
     },
@@ -361,7 +441,7 @@ export class PickerOverlay implements Component {
     const safeWidth = Math.max(1, width);
     return [
       padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
-      padLine(ansi.dim(this.input.hint ?? 'enter select / esc close'), safeWidth),
+      padLine(ansi.dim(this.input.hint), safeWidth),
       ...(this.input.notice ? [padLine(ansi.yellow(this.input.notice), safeWidth)] : []),
       padLine('', safeWidth),
       ...this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth)),
@@ -569,7 +649,9 @@ export class UserQuestionOverlay implements Component {
 export function modelPickerItems(
   currentModel: string,
   models: readonly string[] | undefined,
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   const ids: string[] = [];
   const seen = new Set<string>();
   for (const candidate of [currentModel, ...(models ?? [])]) {
@@ -581,7 +663,7 @@ export function modelPickerItems(
   return ids.map((id) => ({
     value: id,
     label: id,
-    ...(id === currentModel ? { description: 'current' } : {}),
+    ...(id === currentModel ? { description: copy.currentMarker } : {}),
   }));
 }
 
@@ -634,6 +716,7 @@ export function modelChoiceConnectionLabels(choices: readonly ModelChoice[]): Ma
 function modelChoicePickerItems(
   choices: readonly ModelChoice[],
   current: { model: string; connectionId?: string; connectionSlug: string },
+  copy: TuiPickerCopy,
 ): SelectItem[] {
   const connectionLabels = modelChoiceConnectionLabels(choices);
   return choices.map((choice, index) => {
@@ -642,8 +725,8 @@ function modelChoicePickerItems(
       choice.connectionId === current.connectionId &&
       choice.connectionSlug === current.connectionSlug;
     const tags = [connectionLabels.get(choice.connectionSlug) ?? choice.connectionSlug];
-    if (isCurrent) tags.push('current');
-    else if (choice.isDefaultConnection) tags.push('default');
+    if (isCurrent) tags.push(copy.currentMarker);
+    else if (choice.isDefaultConnection) tags.push(copy.defaultMarker);
     return {
       value: String(index),
       label: choice.displayName?.trim() || choice.model,
@@ -669,6 +752,7 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
 }
 
 export interface ModelSearchOverlayInput {
+  locale: UiLocale;
   choices: readonly ModelChoice[];
   current: { model: string; connectionId?: string; connectionSlug: string };
   showCacheWarning?: boolean;
@@ -676,8 +760,9 @@ export interface ModelSearchOverlayInput {
   onCancel: () => void;
 }
 
-export const MODEL_SWITCH_CACHE_WARNING =
-  '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。';
+export function getTuiPickerCopy(locale: UiLocale): TuiPickerCopy {
+  return TUI_PICKER_COPY[locale];
+}
 
 /**
  * One bottom search field + a bounded single-select list, for the cross-
@@ -693,11 +778,13 @@ export class ModelSearchOverlay implements Component {
   private filtered: readonly ModelChoice[];
   private list: SelectList;
   private readonly initialIndex: number;
+  private readonly copy: TuiPickerCopy;
 
   constructor(
     private readonly tui: TUI,
     private readonly input: ModelSearchOverlayInput,
   ) {
+    this.copy = getTuiPickerCopy(input.locale);
     this.filtered = [...input.choices];
     this.initialIndex = input.choices.findIndex(
       (choice) =>
@@ -713,7 +800,7 @@ export class ModelSearchOverlay implements Component {
 
   private buildList(): SelectList {
     const list = new SelectList(
-      modelChoicePickerItems(this.filtered, this.input.current),
+      modelChoicePickerItems(this.filtered, this.input.current, this.copy),
       10,
       selectListTheme(),
       { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
@@ -765,16 +852,19 @@ export class ModelSearchOverlay implements Component {
     const safeWidth = Math.max(1, width);
     this.searchEditor.focused = true;
     return [
-      padLine(`Select Model ${ansi.accent(String(this.filtered.length))}`, safeWidth),
-      padLine(ansi.dim('搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消'), safeWidth),
+      padLine(
+        `${this.copy.modelPickerTitle} ${ansi.accent(String(this.filtered.length))}`,
+        safeWidth,
+      ),
+      padLine(ansi.dim(this.copy.modelSearchHint), safeWidth),
       ...(this.input.showCacheWarning
-        ? [padLine(ansi.yellow(MODEL_SWITCH_CACHE_WARNING), safeWidth)]
+        ? [padLine(ansi.yellow(this.copy.modelSwitchCacheWarning), safeWidth)]
         : []),
       padLine('', safeWidth),
-      ...this.renderFieldRow(this.searchEditor, '搜索', safeWidth),
+      ...this.renderFieldRow(this.searchEditor, this.copy.searchLabel, safeWidth),
       padLine('', safeWidth),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim('没有匹配的模型'), safeWidth)]
+        ? [padLine(ansi.dim(this.copy.noMatchingModels), safeWidth)]
         : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
     ];
@@ -832,18 +922,19 @@ export function skillPickerItems(skills: readonly InvocableSkillEntry[]): Select
   }));
 }
 
-/** Provider search items for `/setup`, marking connections that already exist
- *  `已设置` so a re-onboard reads as edit/rotate rather than create. */
+/** Provider search items for `/setup`, distinguishing existing connections. */
 export function onboardingProviderPickerItems(
   providers: readonly OnboardingProviderEntry[],
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   return providers.map((provider) => ({
     value: onboardingProviderKey(provider),
     label: provider.label,
     description:
       'connectionSlug' in provider
-        ? `${provider.providerType} · ${provider.connectionSlug} · 已设置`
-        : `${provider.providerType} · 添加账号`,
+        ? `${provider.providerType} · ${provider.connectionSlug} · ${copy.providerConfigured}`
+        : `${provider.providerType} · ${copy.addAccount}`,
   }));
 }
 
@@ -853,30 +944,22 @@ function onboardingProviderKey(provider: OnboardingProviderEntry): string {
     : `create:${provider.target.providerType}`;
 }
 
-const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
-  off: '关',
-  minimal: '最小',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '超高',
-  max: '最高',
-};
-
 export function thinkingLevelPickerItems(
   levels: readonly ThinkingLevel[],
   current: ThinkingLevel | undefined,
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   return [
     {
       value: 'default',
-      label: '默认',
-      ...(current === undefined ? { description: 'current' } : {}),
+      label: copy.defaultThinkingLevel,
+      ...(current === undefined ? { description: copy.currentMarker } : {}),
     },
     ...levels.map((level) => ({
       value: level,
-      label: THINKING_LEVEL_LABELS[level],
-      ...(level === current ? { description: 'current' } : {}),
+      label: copy.thinkingLevels[level],
+      ...(level === current ? { description: copy.currentMarker } : {}),
     })),
   ];
 }
@@ -892,6 +975,16 @@ function padLine(text: string, width: number): string {
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
+function keyEntryHint(
+  copy: TuiPickerCopy,
+  hasConnection: boolean,
+  returnsToBaseUrl: boolean,
+): string {
+  const action = hasConnection ? 'reuse' : 'enter';
+  const destination = returnsToBaseUrl ? 'baseUrl' : 'provider';
+  return copy.keyHints[action][destination];
+}
+
 export type OnboardingWizardPhase = 'search' | 'baseUrl' | 'key' | 'models' | 'success';
 
 export type OnboardingWizardStatus =
@@ -901,6 +994,7 @@ export type OnboardingWizardStatus =
   | { kind: 'saving' };
 
 export interface OnboardingWizardInput {
+  locale: UiLocale;
   providers: readonly OnboardingProviderEntry[];
   /** search→key: the user picked a provider. The runner records it — and the
    *   existing connection's identity, when the catalog resolved one — for
@@ -954,11 +1048,13 @@ export class OnboardingWizard implements Component {
   private modelScroll = 0;
   private successCount = 0;
   private successWarning: string | undefined;
+  private readonly copy: TuiPickerCopy;
 
   constructor(
     private readonly tui: TUI,
     private readonly input: OnboardingWizardInput,
   ) {
+    this.copy = getTuiPickerCopy(input.locale);
     this.filtered = input.providers;
     this.list = this.buildList();
     this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
@@ -986,7 +1082,7 @@ export class OnboardingWizard implements Component {
 
   private buildList(): SelectList {
     const list = new SelectList(
-      onboardingProviderPickerItems(this.filtered),
+      onboardingProviderPickerItems(this.filtered, this.input.locale),
       10,
       selectListTheme(),
       { minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 32 },
@@ -1042,21 +1138,21 @@ export class OnboardingWizard implements Component {
    */
   private validateBaseUrl(trimmed: string): string | null {
     if (!trimmed) {
-      return this.picked?.target.kind === 'existing' ? null : '需要填写 Base URL';
+      return this.picked?.target.kind === 'existing' ? null : this.copy.baseUrlRequired;
     }
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
     } catch {
-      return 'Base URL 不是有效的 URL';
+      return this.copy.baseUrlInvalid;
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return 'Base URL 必须使用 http 或 https';
+      return this.copy.baseUrlProtocol;
     }
-    if (parsed.username || parsed.password) return 'Base URL 不能包含账号密码';
-    if (trimmed.includes('?') || trimmed.includes('#')) return 'Base URL 不能包含查询串或片段';
+    if (parsed.username || parsed.password) return this.copy.baseUrlCredentials;
+    if (trimmed.includes('?') || trimmed.includes('#')) return this.copy.baseUrlQuery;
     if (new TextEncoder().encode(parsed.toString()).byteLength > 2_048) {
-      return 'Base URL 不能超过 2048 字节';
+      return this.copy.baseUrlTooLong;
     }
     return null;
   }
@@ -1270,7 +1366,7 @@ export class OnboardingWizard implements Component {
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
       if (isKeyRepeat(data)) return;
       if (this.selectedIds.size === 0) {
-        this.status = { kind: 'error', text: '至少选择一个模型再保存' };
+        this.status = { kind: 'error', text: this.copy.selectModelBeforeSaving };
         return;
       }
       this.input.onSubmitModels([...this.selectedIds]);
@@ -1310,7 +1406,6 @@ export class OnboardingWizard implements Component {
     if (!model) return;
     if (this.selectedIds.has(model.id)) this.selectedIds.delete(model.id);
     else this.selectedIds.add(model.id);
-    // Clear a stale "至少选择一个模型" error once a selection exists.
     if (this.status.kind === 'error' && this.selectedIds.size > 0) {
       this.status = { kind: 'prompt' };
     }
@@ -1340,16 +1435,21 @@ export class OnboardingWizard implements Component {
     const label = this.picked?.label ?? '';
     const hint =
       this.picked?.target.kind === 'existing'
-        ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
-        : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
+        ? this.copy.reuseBaseUrlHint
+        : this.copy.enterBaseUrlHint;
     return [
-      padLine(`Set Up Provider ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`, width),
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`,
+        width,
+      ),
       padLine(ansi.dim(hint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.baseUrlEditor, 'Base URL', width),
+      ...this.renderFieldRow(this.baseUrlEditor, this.copy.baseUrlLabel, width),
       padLine('', width),
       padLine(
-        this.status.kind === 'error' ? ansi.red(`✗ ${this.status.text}`) : ansi.dim('Enter 继续'),
+        this.status.kind === 'error'
+          ? ansi.red(`✗ ${this.status.text}`)
+          : ansi.dim(this.copy.continueAction),
         width,
       ),
       padLine(ansi.accent('-'.repeat(width)), width),
@@ -1363,15 +1463,15 @@ export class OnboardingWizard implements Component {
     this.modelsSearchEditor.focused = false;
     return [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
         width,
       ),
-      padLine(ansi.dim('搜索服务商，↑↓ 选择 · Enter 确认 · Esc 取消'), width),
+      padLine(ansi.dim(this.copy.providerSearchHint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.searchEditor, '搜索', width),
+      ...this.renderFieldRow(this.searchEditor, this.copy.searchLabel, width),
       padLine('', width),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim('没有匹配的服务商'), width)]
+        ? [padLine(ansi.dim(this.copy.noMatchingProviders), width)]
         : this.list.render(width).map((line) => formatPickerItemLine(line, width))),
       padLine(ansi.accent('-'.repeat(width)), width),
     ];
@@ -1383,19 +1483,19 @@ export class OnboardingWizard implements Component {
     this.keyEditor.focused = this.status.kind === 'prompt' || this.status.kind === 'error';
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
-    const backTarget = this.picked?.requiresBaseUrl ? 'Esc 返回 Base URL' : 'Esc 返回选择服务商';
-    const hint =
-      this.picked?.target.kind === 'existing'
-        ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
-        : `输入 API key · 仅本机存储 · ${backTarget}`;
+    const hint = keyEntryHint(
+      this.copy,
+      this.picked?.target.kind === 'existing',
+      this.picked?.requiresBaseUrl === true,
+    );
     return [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
         width,
       ),
       padLine(ansi.dim(hint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.keyEditor, 'API key', width),
+      ...this.renderFieldRow(this.keyEditor, this.copy.apiKeyLabel, width),
       padLine('', width),
       padLine(this.renderKeyStatusLine(), width),
       padLine(ansi.accent('-'.repeat(width)), width),
@@ -1405,13 +1505,13 @@ export class OnboardingWizard implements Component {
   private renderKeyStatusLine(): string {
     switch (this.status.kind) {
       case 'prompt':
-        return ansi.dim('Enter 提交');
+        return ansi.dim(this.copy.submitAction);
       case 'verifying':
-        return `${ansi.yellow('⠋')} 正在验证 key…`;
+        return `${ansi.yellow('⠋')} ${this.copy.verifyingKey}`;
       case 'error':
         return ansi.red(`✗ ${this.status.text}`);
       case 'saving':
-        return ansi.dim('Enter 提交');
+        return ansi.dim(this.copy.submitAction);
     }
   }
 
@@ -1423,16 +1523,16 @@ export class OnboardingWizard implements Component {
     const label = this.picked?.label ?? '';
     const lines = [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
         width,
       ),
-      padLine(ansi.dim('搜索模型，↑↓ 选择 · Space 切换 · Enter 保存 · Esc 返回'), width),
+      padLine(ansi.dim(this.copy.modelSelectionHint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.modelsSearchEditor, '搜索', width),
+      ...this.renderFieldRow(this.modelsSearchEditor, this.copy.searchLabel, width),
       padLine('', width),
     ];
     if (this.filteredModels.length === 0) {
-      lines.push(padLine(ansi.dim('没有匹配的模型'), width));
+      lines.push(padLine(ansi.dim(this.copy.noMatchingModels), width));
     } else {
       const end = Math.min(
         this.modelScroll + ONBOARDING_MODELS_MAX_VISIBLE,
@@ -1455,11 +1555,23 @@ export class OnboardingWizard implements Component {
   private renderModelsStatusLine(): string {
     switch (this.status.kind) {
       case 'prompt':
-        return ansi.dim(`已选 ${this.selectedIds.size} · Enter 保存`);
+        return ansi.dim(
+          formatUiMessage(
+            this.copy.selectedModelsAndSave,
+            { count: this.selectedIds.size },
+            this.input.locale,
+          ),
+        );
       case 'verifying':
-        return ansi.dim(`已选 ${this.selectedIds.size}`);
+        return ansi.dim(
+          formatUiMessage(
+            this.copy.selectedModels,
+            { count: this.selectedIds.size },
+            this.input.locale,
+          ),
+        );
       case 'saving':
-        return `${ansi.yellow('⠋')} 正在保存…`;
+        return `${ansi.yellow('⠋')} ${this.copy.saving}`;
       case 'error':
         return ansi.red(`✗ ${this.status.text}`);
     }
@@ -1472,11 +1584,23 @@ export class OnboardingWizard implements Component {
     this.modelsSearchEditor.focused = false;
     const label = this.picked?.label ?? '';
     return [
-      padLine(`Set Up Provider ${ansi.dim('· 完成')} ${ansi.accent(label)}`, width),
-      padLine(ansi.green(`✓ 已启用 ${this.successCount} 个模型`), width),
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.copy.complete}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(
+        ansi.green(
+          `✓ ${formatUiMessage(
+            this.copy.enabledModels,
+            { count: this.successCount },
+            this.input.locale,
+          )}`,
+        ),
+        width,
+      ),
       ...(this.successWarning ? [padLine(ansi.yellow(this.successWarning), width)] : []),
       padLine('', width),
-      padLine(ansi.dim('Enter 关闭'), width),
+      padLine(ansi.dim(this.copy.closeAction), width),
       padLine(ansi.accent('-'.repeat(width)), width),
     ];
   }

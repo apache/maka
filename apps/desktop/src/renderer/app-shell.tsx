@@ -2618,7 +2618,7 @@ function AppShellContent({
   } catch {
     activeTranscriptRange = undefined;
   }
-  async function loadTranscriptHistory(target: 'earlier' | 'latest') {
+  async function loadTranscriptHistory(target: 'earlier' | 'latest', anchorTurnId?: string) {
     const controller = transcriptRangeRef.current;
     const sessionId = activeId;
     if (!controller || !sessionId || historyLoadPendingRef.current) return;
@@ -2626,7 +2626,7 @@ function AppShellContent({
     setHistoryLoadPendingSessionId(sessionId);
     try {
       if (target === 'earlier') {
-        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES);
+        await controller.loadBefore(DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES, anchorTurnId);
       } else {
         await controller.loadLatest();
       }
@@ -2902,6 +2902,7 @@ function AppShellContent({
                 // authority there, and the composer never remounts for any of
                 // them — its contenteditable DOM carries the live draft.
                 scrollOwner="host"
+                data-maka-onboarding={showOnboardingHero ? 'true' : undefined}
                 scrollToBottomLabel={
                   desktopConversationCopy.actions.scrollMainToBottom
                 }
@@ -3098,7 +3099,8 @@ function AppShellContent({
                 hasOlderHistory={activeTranscriptRange?.hasOlder === true}
                 hasNewerHistory={activeTranscriptRange?.hasNewer === true}
                 historyLoadPending={historyLoadPendingSessionId === activeId}
-                onLoadEarlierHistory={() => loadTranscriptHistory('earlier')}
+                onLoadEarlierHistory={(anchorTurnId) =>
+                  loadTranscriptHistory('earlier', anchorTurnId)}
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
                 liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}

@@ -29,21 +29,141 @@ For the main/preload/renderer split and the IPC contract, see `apps/desktop/READ
 
 `styles.css` is the **only** bundled style entry: it imports Astryx, fonts, `maka-tokens.css`, `reference-shell.css`, and every `styles/*.css`. It contains only top-level orchestration; real selector rules go in `styles/*.css`. One contract-pinned exception: `index.html` carries an inline `.maka-preload` skeleton with hardcoded colors (no CSS variables — `maka-tokens.css` hasn't loaded yet) so there's no blank window during the CSS + JS load gap; `createRoot` replaces it on mount.
 
-## AppShell + the action modules
+## Renderer ownership boundary
 
-`app-shell.tsx` is the shell component: it owns session state and wires the
-`@maka/ui` conversation surfaces. The right/bottom Workbar is the vertical
-feature under `features/workbar`; its own README defines the state and lifecycle
-boundary for Review, Terminal, Tasks, Browser, Files, Inspector and Side Chat.
-The shell is supported by a set of `app-shell-*` modules, each a narrow slice of
-shell logic split by one concern (e.g. `app-shell-session-events.ts`,
-`app-shell-chat-actions.ts`, `app-shell-effects.ts`, and
-`app-shell-overlays.tsx`). Keep a slice to one concern; if it grows, split along
-the same seam.
+`app-shell.tsx`, `app-shell-*`, and `use-app-shell-*` are a **frozen legacy
+boundary**, not a pattern for new renderer code. They temporarily retain
+ownership that predates the composition-root migration. Do not add another
+file to this family or move new state, effects, subscriptions, bridge calls, or
+feature view-model construction into it. Its recorded debt may only decrease as
+each capability moves to its target owner.
 
-Autonomous Goal state, controls, dialog lifecycle, and Desktop I/O live under
-`features/goals`; AppShell supplies the active Session boundary and consumes
-the feature's host, commands, and selectors.
+The target dependency direction is:
+
+```text
+bootstrap -> composition -> shell + application contracts + feature public entries
+platform/desktop -> injected feature/application ports
+features -> own internals + shared contracts/core/UI
+application -> shared contracts + injected ports
+```
+
+- `shell/` owns only the fixed frame, regions, and mount/visibility policy. It
+  has no Desktop bridge access, feature implementation imports, or business
+  state/effects. Direct storage, timers, fetches, and DOM/global subscriptions
+  are environment ownership too and are forbidden here.
+- `bootstrap/` owns one-shot startup and React mount sequencing. Apart from
+  locating the DOM mount point, it owns no React state/class lifecycle,
+  storage, timers, subscriptions, or network access.
+- `composition/` assembles providers, adapters, and public feature hosts. It is
+  wiring, not another lifecycle or browser-environment owner.
+- `application/` owns explicitly shared renderer authorities. It must not
+  depend on feature, shell, Desktop adapter, preload, or main-process
+  implementations.
+- `features/<name>/` owns one vertical capability. A feature cannot access
+  `window.maka`, import another feature's internals, or depend on AppShell,
+  preload, main, or `platform/desktop`. Consumers use its public `index` entry;
+  `testing` is test/Storybook-only.
+- `platform/desktop/` is the outer adapter zone for the preload bridge. It
+  implements narrow inward-facing ports rather than exporting the whole bridge;
+  composition and adapters consume application public entries, not deep
+  implementation modules. Adapters may own bridge and browser-environment
+  access, but never React UI/hooks/class lifecycle, Electron/Node imports, or
+  non-static dependency loading.
+
+The right/bottom Workbar and the other extracted features define their detailed
+state and lifecycle boundaries in their own READMEs. Cross-feature behavior
+uses explicit contracts and intents, not private imports or a service locator.
+
+### Architecture guardrail and migration ledger
+
+`apps/desktop/scripts/check-renderer-architecture.mjs` parses renderer imports,
+bridge aliases, browser-environment access, and stateful-hook ownership and
+enforces the zones above, including imported/local hook aliases, React 19 state
+hooks, React component class state/lifecycle, and non-static global access. It
+also rejects Electron/Node imports from inward zones, deep/cross-feature
+imports, `import.meta.glob` escape hatches, production use of feature testing
+entries, and application contracts that re-export application implementation.
+`apps/desktop/renderer-architecture.json` records the exact legacy/root debt and
+maps every AppShell/root path to its intended owner. It freezes every
+unclassified legacy renderer source and every non-owner Desktop source
+transitively reachable from AppShell. The graph crosses explicit feature,
+application, and platform owners while recording legacy renderer, shared,
+preload, and other non-owner intermediaries in the debt closure. The ledger
+traverses declarations for dependency resolution without treating them as
+runtime debt; explicit owner nodes remain governed by their zone rules. It also
+freezes the separate root-entry closure and each transitional
+feature/platform import of legacy code. The AppShell-family and root-entry
+files are full ratchets: dependency paths, imported bindings,
+bridge/hooks/browser capabilities, action factories, and non-trivia tokens may
+not grow. Their transitive support closures ratchet only architectural
+capabilities and dependencies, so ordinary implementation can evolve without
+token-count ledger noise. A support entry may move one way from the AppShell
+closure to the root closure without resetting its budget; the reverse move is
+rejected. Legacy import allowlists may only shrink relative to the base branch. Same-count
+dependency replacement is allowed only when it moves ownership behind a shell,
+feature public, or application public/contract boundary.
+
+`ownership[].targetZone` is migration-roadmap metadata in this foundation: its
+shape and legacy path coverage are validated, but it does not claim to prove
+that a capability has reached its final owner. The directory dependency rules
+remain executable. A later owner contract can add verifiable owner paths and
+public entries once each mixed legacy capability has been split precisely.
+
+Exact Hook names remain visible in the generated ledger. A legitimate Hook
+replacement must use a one-time `hookTransitions` entry: the new call count has
+to be paid one-for-one by removal of the named old Hook in the same debt file,
+the total Hook budget may not grow, and historical transitions cannot be reused.
+The separate AppShell render-scope inventory tracks which calls still execute
+above the whole renderer tree; this architecture checker governs the broader
+root and transitive capability debt.
+
+New flat renderer modules are forbidden; new code belongs in an explicit zone.
+The existing `settings`, `locales`, `astryx-theme`, and
+`computer-use-overlay` directories may still add scoped legacy files, but those
+files cannot become newly reachable from AppShell/root or a feature/Desktop
+adapter without passing the corresponding ratchet.
+
+Run the current-tree check locally with:
+
+```sh
+npm run check:renderer-architecture
+```
+
+Before opening a PR, also verify that debt did not grow relative to main:
+
+```sh
+npm run check:renderer-architecture -- --base upstream/main
+```
+
+After a legitimate debt-reducing move, regenerate the mechanical counts and
+then run the base comparison; regeneration cannot hide growth from CI:
+
+```sh
+npm run check:renderer-architecture -- --write --base upstream/main
+```
+
+`main.tsx` and `app.tsx` are permanent guarded root entries while those files
+exist. Their recorded debt can fall to zero as they become thin mounts, but the
+ledger entries remain so that a later PR cannot add bridge, hook,
+browser-environment, dynamic-import, or legacy dependency ownership back into
+them. A root entry guard may be removed only when the guarded source file is
+deleted.
+
+The production entry chain is part of the same root contract. The main process
+delegates its one renderer navigation to `main-renderer-loader.ts`, which loads
+only `dist-renderer/index.html`; Vite must build that document from
+`src/renderer`; and the source HTML must keep a single external module entry at
+`/main.tsx`. A build-time Vite attestation also inspects the final module graph,
+and a post-build verifier binds the emitted HTML's sole script to that exact
+entry chunk while preserving the fixed CSP and rejecting extra executable or
+navigation surfaces. An HTML-transform plugin therefore cannot silently
+replace or augment the canonical entry after the source check. `main.tsx`
+remains under the permanent root guard. Moving any part of this chain requires
+an explicit architecture change instead of routing around the ledger.
+
+This initial guardrail is source-policy and migration metadata only. It does not
+change runtime behavior, provider order, IPC/storage contracts, bootstrap,
+Composer mount semantics, Session switching, or Workbar resource lifecycles.
 
 `settings/` holds the settings pages and the `SettingsModal` shell — one page per `SettingsSection` (defined in `@maka/core`); the models/providers page is `ProvidersPanel`. Plus the `provider-*` files and the shared `settings-rows` / `settings-skeleton` / `settings-surface` helpers.
 

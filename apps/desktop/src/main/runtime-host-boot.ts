@@ -246,6 +246,7 @@ if (runtimeHostPeerConfiguration) {
     runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
+      endpointKind: 'client',
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
     runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
@@ -595,6 +596,8 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
 const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
   ipcMain,
   localMesh: () => runtimeHostPeerMesh,
+  localHost: localRuntimeHostRemoteAccess,
+  runLocal: localRuntimeHostOperator.runPeerMesh,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });
@@ -934,6 +937,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
     resolveLocalCollaborationConnectionTarget: () =>
       localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
+    resolveProfileCollaborationConnectionTarget: (profile) =>
+      runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(

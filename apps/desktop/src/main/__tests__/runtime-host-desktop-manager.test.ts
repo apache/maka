@@ -562,6 +562,29 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
   await manager.close();
 });
 
+test('keeps independent shared-session credentials active for the same Host', async () => {
+  const candidates = [
+    candidateHarness({ hostId: 'host-local' }).candidate,
+    candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' }).candidate,
+    candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' }).candidate,
+  ];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(candidates.shift()!) },
+  );
+
+  await manager.enable(remoteTarget('shared-one', 'shared', 'session_guest'));
+  await manager.enable(remoteTarget('shared-two', 'shared', 'session_guest'));
+
+  assert.deepEqual(manager.entries().map(({ target }) => target.profile.id), [
+    'local',
+    'shared-one',
+    'shared-two',
+  ]);
+  assert.notEqual(manager.current('shared-one')?.epoch, manager.current('shared-two')?.epoch);
+  await manager.close();
+});
+
 test('replays pairing finalization after an unknown commit and reconnect', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);
@@ -1442,6 +1465,7 @@ function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandid
 function remoteTarget(
   id: string,
   target = 'default',
+  access?: 'session_guest',
 ): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
@@ -1450,6 +1474,7 @@ function remoteTarget(
       kind: 'remote',
       transport: { kind: 'tls', url: `wss://${target}.example.com/` },
       rootId: 'a'.repeat(64),
+      ...(access ? { access } : {}),
     },
     credential: `credential-${target}`,
   };

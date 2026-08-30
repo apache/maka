@@ -210,6 +210,8 @@ function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: null,
   };
 }

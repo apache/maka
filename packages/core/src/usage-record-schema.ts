@@ -186,6 +186,7 @@ const PROMPT_SEGMENT_KINDS = new Set([
   'tool_schema',
   'prior_history',
   'current_user',
+  // Read compatibility for historical usage rows; current writers do not emit it.
   'turn_tail',
 ]);
 

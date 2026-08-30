@@ -63,11 +63,12 @@ workflow 边界分别是：
 
 ### GitHub Environment
 
-仓库中的 `.asf.yaml` 是 `npm-publication` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
+仓库中的 `.asf.yaml` 是 `npm-publication`、`nightly` 和 `product-release` Environment 的权威。该配置进入 `main` 后，确认 ASF
 同步出的 live 配置满足：
 
 - `npm-publication` 只允许 selected `main` branch；为保证 Nightly 自动运行，不设置
   approval gate；
+- `nightly` 只允许 selected `main` branch；为保证 Desktop Nightly 自动运行，不设置 approval gate；
 - `product-release` 只允许 selected `main` branch，required reviewer 为 `M4n5ter`，并禁止
   self-review；
 - 仓库策略允许时禁用 administrator bypass。

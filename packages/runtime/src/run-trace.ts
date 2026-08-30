@@ -27,7 +27,6 @@ import type {
   ToolSchemaChangeReason,
   ToolAvailabilityDiagnostic,
 } from '@maka/core/usage-stats/types';
-import type { SandboxRunTraceProjection } from './sandbox/diagnostics.js';
 
 export type RunTracePhase =
   | 'turn'
@@ -43,8 +42,6 @@ export type RunTracePhase =
 
 export type RunTraceEventType =
   | 'turn_started'
-  | 'sandbox_context_resolved'
-  | 'sandbox_context_failed'
   | 'plan_context_resolved'
   | 'plan_submitted'
   | 'plan_execution_started'
@@ -144,23 +141,6 @@ export class RunTrace {
       modelId: this.input.modelId,
       ...extra,
     });
-  }
-
-  sandboxContextResolved(snapshot: SandboxRunTraceProjection): void {
-    this.emit('sandbox', 'sandbox_context_resolved', 'Sandbox context resolved', { snapshot });
-  }
-
-  sandboxContextFailed(stage: 'resolve' | 'render', error: unknown): void {
-    this.emit(
-      'sandbox',
-      'sandbox_context_failed',
-      'Sandbox context unavailable; continuing without prompt context',
-      {
-        stage,
-        error: explainError(error),
-        ...diagnoseError(error),
-      },
-    );
   }
 
   modelResolved(): void {

@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 25 |
+| windows-backend-gap | 27 |
 | portable-candidate | 10 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **66**
+Total Windows-excluded declarations: **68**
 
 ## Inventory
 
@@ -36,10 +36,12 @@ Total Windows-excluded declarations: **66**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` recovers a durable onboarding intent instead of rolling back a partial publication | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/control-endpoint.test.ts` runtime host control endpoint | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/execution-inspect-uds.test.ts` a live Host serves Interactive inspection over its real endpoint while retaining exclusive ownership | `process.platform === 'win32' ? 'Windows execution Host startup lifecycle' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/execution-model-composition.test.ts` production Host executes current-boundary Bash and refreshes live sandbox context | `process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/execution-model-composition.test.ts` production Host executes Bash against the current live sandbox boundary | `process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` applies the import deadline and terminates the helper process tree | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects an import response that does not match the requested baseline ref | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects an import response that does not match the requested source HEAD | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects a candidate response whose blob identity does not match the requested bytes | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/gitoxide-helper-invocation-internal.test.ts` rejects a direct-read response whose blob identity does not match its content | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` an automatic failed liveness check is connection-fatal and Client close stays local | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` bounded election does not launch a Candidate after handshake exhausts the deadline | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a non-reading Client overload is isolated to its connection | `process.platform === 'win32'` |

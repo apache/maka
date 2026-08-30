@@ -43,6 +43,54 @@ const live = {
 } as const;
 
 describe('createRuntimeHostOnboardingSurface', () => {
+  test('preserves Host failure codes without projecting backend text', async () => {
+    const connection = {
+      request: async (operation: string) => {
+        if (operation === 'connection.onboarding.verify') {
+          return { kind: 'rejected', reason: 'connection_not_found' };
+        }
+        if (operation === 'connection.onboarding.save') {
+          return { kind: 'failed', errorClass: 'network' };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+    const surface = createRuntimeHostOnboardingSurface(connection);
+
+    assert.deepEqual(
+      await surface.verify({
+        target: { kind: 'existing', connectionId: 'gone-id' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'rejected', reason: 'connection_not_found' },
+    );
+    assert.deepEqual(
+      await surface.save({
+        target: { kind: 'existing', connectionId: 'live-id' },
+        apiKey: 'sk-test',
+        enabledModelIds: ['gpt-5-mini'],
+        models: [{ id: 'gpt-5-mini' }],
+      }),
+      { kind: 'failed', errorClass: 'network' },
+    );
+  });
+
+  test('classifies transport exceptions without exposing their message', async () => {
+    const connection = {
+      request: async () => {
+        throw new Error('Host transport leaked this English detail');
+      },
+    } as unknown as RuntimeHostConnection;
+
+    assert.deepEqual(
+      await createRuntimeHostOnboardingSurface(connection).verify({
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'unavailable' },
+    );
+  });
+
   test('keeps the committed Connection when the follow-up catalog refresh fails', async () => {
     const committed = {
       connectionId: 'committed-openai-id',
@@ -74,7 +122,7 @@ describe('createRuntimeHostOnboardingSurface', () => {
       connection: committed,
       refresh: {
         kind: 'failed',
-        warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+        reason: 'catalog_unavailable',
       },
     });
   });
@@ -147,6 +195,10 @@ describe('projectProviders', () => {
       kind: 'create',
       providerType: 'openai-compatible',
     });
+    assert.equal(
+      entries.find(({ target }) => target.kind === 'create')?.label,
+      'Custom relay (OpenAI Chat-compatible)',
+    );
   });
 
   test('several non-canonical connections remain independently editable', () => {

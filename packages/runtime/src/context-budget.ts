@@ -120,7 +120,6 @@ export interface PromptSegmentInput {
   priorMessages: readonly ModelMessage[];
   priorRuntimeEventCount?: number;
   currentUserContent: string;
-  turnTailPrompt?: string;
   charsPerToken?: number;
 }
 
@@ -208,7 +207,6 @@ export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSe
         : {}),
     },
     segment('current_user', input.currentUserContent.length, charsPerToken),
-    segment('turn_tail', input.turnTailPrompt?.length ?? 0, charsPerToken),
   ];
 }
 

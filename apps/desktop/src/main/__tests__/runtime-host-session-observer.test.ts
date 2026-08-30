@@ -586,6 +586,8 @@ test('fences transcript range failures across same-source replica recovery', asy
           throughSequence: 1,
           rawBytes: 1,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: 'older',
         };
         return runtimeHostSessionFixture({
@@ -726,6 +728,8 @@ test('broadcasts durable admission and transcript changes from the same message'
             throughSequence: 0,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async () => ({
@@ -898,6 +902,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: 0,
               rawBytes: 1,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: 'older',
             },
             overlay: {
@@ -908,6 +914,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: null,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             },
           },
@@ -927,6 +935,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: input.throughSequence,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },
@@ -1070,6 +1080,8 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1170,6 +1182,8 @@ test('does not let one backpressured transcript consumer block another', async (
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1275,6 +1289,8 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => ({
@@ -1781,6 +1797,8 @@ test("recovers when transcript paging loses the active subscription", async () =
               throughSequence: 0,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },

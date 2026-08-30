@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   createClientRuntimeHostCredentialStore,
@@ -69,6 +69,7 @@ import {
   type DesktopRuntimeHostManagedServiceStore,
 } from "./runtime-host-managed-services.js";
 import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
+import type { DesktopCollaborationConnectionTarget } from './runtime-host-collaboration-invitation.js';
 
 const PREFERENCES_SCHEMA_VERSION = 2;
 const PREFERENCES_FILE = "runtime-host-profile-selection.json";
@@ -109,6 +110,10 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
+  resolveCollaborationConnectionTarget(
+    profile: PersistedRuntimeHostProfile,
+  ): Promise<DesktopCollaborationConnectionTarget>;
+  assertPairingComplete(profileId: string): void;
   resolveManagedAccess(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedAccess | undefined>;
@@ -137,7 +142,8 @@ export interface DesktopRuntimeHostProfileService {
     credential: string,
   ): Promise<void>;
   startEnabledProfiles(): Promise<void>;
-  resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
+  resolvePairingRecovery(profileId?: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+  discardPairing(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
   setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
   reconnect(profileId: string, expectedRootId: string): Promise<void>;
   setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
@@ -310,6 +316,7 @@ export function createDesktopRuntimeHostProfileService(input: {
 
   const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
     mutate(async () => {
+      await recoverAbandonedProfileLock(profilePath);
       assertPreferencesWritable();
       if (pairingReadFailure) {
         throw new Error(
@@ -335,7 +342,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     await persistPairingIntents(new Map(pairingIntents).set(profileId, intent));
   };
 
-  const assertPairingComplete = (profileId: string): void => {
+  const requirePairingComplete = (profileId: string): void => {
     if (pairingIntents.has(profileId)) {
       throw new Error('Resolve this Runtime Host\'s unfinished pairing before changing it');
     }
@@ -363,6 +370,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           findDesktopRuntimeHostManagedServiceBinding(managedDocument, profile)
             ? { managedService: true as const }
             : {}),
+          ...(pairingIntents.has(profile.id) ? { pairingPending: true as const } : {}),
           enabled: isEnabled,
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
@@ -384,12 +392,17 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
-  const clearPairingIntentBestEffort = async (profileId: string): Promise<void> => {
+  const clearPairingIntent = async (profileId: string): Promise<void> => {
     const next = new Map(pairingIntents);
     next.delete(profileId);
-    await persistPairingIntents(next).catch((error) =>
-      console.error("[runtime-host] completed pairing recovery could not be cleared:", error),
-    );
+    try {
+      await persistPairingIntents(next);
+    } catch (error) {
+      // Keep the in-memory recovery lock when neither deletion nor an empty
+      // journal can be persisted. Retrying is safe and prevents a stale intent
+      // from becoming ambiguous after restart.
+      throw new RuntimeHostPairingFinalizationInterruptedError({ cause: error });
+    }
   };
 
   const ensureEnabled = async (target: ResolvedRuntimeHostProfile): Promise<void> => {
@@ -494,7 +507,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     await ensureEnabled(target);
     await activateTarget(target, "terminal");
     await input.finalizePairing(target.profile.id);
-    await clearPairingIntentBestEffort(target.profile.id);
+    await clearPairingIntent(target.profile.id);
   };
 
   const rollbackPairingIntent = async (
@@ -514,10 +527,11 @@ export function createDesktopRuntimeHostProfileService(input: {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
-      await clearPairingIntentBestEffort(intent.target.profile.id);
+      await clearPairingIntent(intent.target.profile.id);
       return;
     }
     const rollbackFailures: unknown[] = [];
+    let reactivationFailure: Error | undefined;
     await input.disable(current.profile.id).catch((error) => rollbackFailures.push(error));
     if (intent.previous) {
       const restored = await catalog
@@ -549,9 +563,9 @@ export function createDesktopRuntimeHostProfileService(input: {
             (error) => rollbackFailures.push(error),
           );
           if (intent.wasEnabled) {
-            await activateTarget(previousTarget, "terminal").catch((error) =>
-              rollbackFailures.push(error),
-            );
+            await activateTarget(previousTarget, "terminal").catch((error) => {
+              reactivationFailure = asError(error);
+            });
           }
         }
       }
@@ -588,8 +602,9 @@ export function createDesktopRuntimeHostProfileService(input: {
         "Runtime Host pairing failed and its previous profile could not be restored",
       );
     }
-    unavailable.delete(current.profile.id);
-    await clearPairingIntentBestEffort(intent.target.profile.id);
+    if (reactivationFailure) unavailable.set(current.profile.id, reactivationFailure);
+    else unavailable.delete(current.profile.id);
+    await clearPairingIntent(intent.target.profile.id);
   };
 
   const recoverPairingIntent = async (
@@ -607,7 +622,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
-      await clearPairingIntentBestEffort(intent.target.profile.id);
+      await clearPairingIntent(intent.target.profile.id);
       if (
         current &&
         (preferences.defaultProfileId === current.profile.id ||
@@ -679,11 +694,13 @@ export function createDesktopRuntimeHostProfileService(input: {
     requireSaveInput(value);
     return mutateProfiles(async () => {
       const currentDocument = await catalog.read();
-      const existing = currentDocument.profiles.find((profile) =>
-        profile.kind === 'remote' &&
-        profile.rootId === value.profile.rootId &&
-        sameRemoteRuntimeHostProfileTarget(profile, value.profile),
-      );
+      const existing = value.profile.access === 'session_guest'
+        ? undefined
+        : currentDocument.profiles.find((profile) =>
+            profile.kind === 'remote' &&
+            profile.rootId === value.profile.rootId &&
+            sameRemoteRuntimeHostProfileTarget(profile, value.profile),
+          );
       const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
       const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
       const target = { profile, credential: value.credential } as const;
@@ -787,10 +804,11 @@ export function createDesktopRuntimeHostProfileService(input: {
       if (bundle.target.transport.kind === 'plaintext' && !allowInsecure) {
         return { kind: 'error', reason: 'insecure_confirmation_required' };
       }
+      const profileId = `shared-${randomUUID()}`;
       try {
         await addAndEnableVerified({
           profile: {
-            id: `shared-${randomUUID()}`,
+            id: profileId,
             name: `${bundle.target.name} · Shared`,
             kind: 'remote',
             rootId: invitation.rootId,
@@ -801,9 +819,12 @@ export function createDesktopRuntimeHostProfileService(input: {
         });
         return { kind: 'connected' };
       } catch (error) {
+        if (pairingIntents.has(profileId)) {
+          return { kind: 'pairing_pending', profileId };
+        }
         return {
           kind: 'error',
-          reason: 'connection_failed',
+          reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
           message: asError(error).message,
         };
       }
@@ -871,6 +892,30 @@ export function createDesktopRuntimeHostProfileService(input: {
         return binding;
       });
     },
+    resolveCollaborationConnectionTarget(profile) {
+      return mutate(async () => {
+        if (profile.kind !== 'remote') {
+          throw new Error('This Runtime Host does not expose a shareable peer endpoint');
+        }
+        if (profile.transport.kind !== 'ssh') {
+          return { name: profile.name, transport: profile.transport };
+        }
+        const direct = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
+        );
+        if (
+          !direct ||
+          direct.kind !== 'remote' ||
+          direct.rootId !== profile.rootId ||
+          direct.transport.kind !== 'libp2p-direct'
+        ) {
+          throw new Error(
+            'Enable Direct peer access for this Runtime Host before sharing its Sessions',
+          );
+        }
+        return { name: profile.name, transport: direct.transport };
+      });
+    },
     resolveManagedAccess(profileId) {
       return mutate(async () => {
         if (pairingReadFailure || pairingIntents.has(profileId)) {
@@ -894,6 +939,9 @@ export function createDesktopRuntimeHostProfileService(input: {
           : undefined;
       });
     },
+    assertPairingComplete(profileId) {
+      requirePairingComplete(profileId);
+    },
     resolveManagedDirectPeerProfile(profileId) {
       return mutate(async () => {
         const peerProfileId = managedDirectPeerProfileId(profileId);
@@ -905,7 +953,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     upsertManagedDirectPeerProfile(profileId, peer) {
       return mutateProfiles(async () => {
-        assertPairingComplete(profileId);
+        requirePairingComplete(profileId);
         const source = await catalog.resolve(profileId);
         if (
           source.profile.kind !== 'remote' ||
@@ -959,7 +1007,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     removeManagedDirectPeerProfile(profileId) {
       return mutateProfiles(async () => {
-        assertPairingComplete(profileId);
+        requirePairingComplete(profileId);
         const peerProfileId = managedDirectPeerProfileId(profileId);
         if (preferences.enabledRemoteProfileIds.includes(peerProfileId)) {
           throw new Error('Disable the Direct peer profile before changing its listener');
@@ -992,7 +1040,7 @@ export function createDesktopRuntimeHostProfileService(input: {
             'Re-onboard this Runtime Host before uninstalling it; its legacy binding has no deployment generation',
           );
         }
-        assertPairingComplete(expected.profile.id);
+        requirePairingComplete(expected.profile.id);
         const document = await catalog.read();
         const current = document.profiles.find(
           (profile) => profile.id === expected.profile.id,
@@ -1021,7 +1069,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     markManagedServiceCleanupPending(expected) {
       return mutateProfiles(async () => {
-        assertPairingComplete(expected.profile.id);
+        requirePairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
@@ -1038,7 +1086,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     clearManagedServiceBinding(expected) {
       return mutateProfiles(async () => {
-        assertPairingComplete(expected.profile.id);
+        requirePairingComplete(expected.profile.id);
         const current = (await catalog.read()).profiles.find(
           (profile) => profile.id === expected.profile.id,
         );
@@ -1075,7 +1123,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       }
       return Promise.all(tasks).then(() => undefined);
     },
-    resolvePairingRecovery() {
+    resolvePairingRecovery(profileId) {
       return mutate(async () => {
         assertPreferencesWritable();
         if (pairingReadFailure) {
@@ -1094,9 +1142,32 @@ export function createDesktopRuntimeHostProfileService(input: {
             pairingReadFailure = undefined;
           }
         }
-        for (const intent of [...pairingIntents.values()]) {
-          await recoverPairingIntent(intent);
+        const intents = profileId === undefined
+          ? [...pairingIntents.values()]
+          : [pairingIntents.get(profileId)].filter(
+              (intent): intent is DesktopRuntimeHostPairingIntent => intent !== undefined,
+            );
+        const failures: Error[] = [];
+        for (const intent of intents) {
+          const failure = await recoverPairingIntent(intent);
+          if (failure) failures.push(failure);
         }
+        if (failures.length > 0) {
+          throw failures.length === 1
+            ? failures[0]
+            : new AggregateError(failures, 'Some Runtime Hosts are still unreachable');
+        }
+        return snapshot();
+      });
+    },
+    discardPairing(profileId) {
+      return mutateProfiles(async () => {
+        const intent = pairingIntents.get(profileId);
+        if (!intent) return snapshot();
+        await rollbackPairingIntent(
+          intent,
+          new Error('Runtime Host pairing was discarded'),
+        );
         return snapshot();
       });
     },
@@ -1110,7 +1181,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           await enable(profileId);
           return snapshot();
         }
-        assertPairingComplete(profileId);
+        requirePairingComplete(profileId);
         if (preferences.defaultProfileId === profileId) {
           throw new Error("Choose another default Runtime Host before disabling this one");
         }
@@ -1123,7 +1194,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     },
     reconnect(profileId, expectedRootId) {
       return mutateProfiles(async () => {
-        assertPairingComplete(profileId);
+        requirePairingComplete(profileId);
         if (!preferences.enabledRemoteProfileIds.includes(profileId)) {
           throw new Error('Enable this Runtime Host before reconnecting it');
         }
@@ -1160,7 +1231,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
           throw new Error("Local Runtime Host cannot be removed");
         }
-        assertPairingComplete(profileId);
+        requirePairingComplete(profileId);
         if (preferences.enabledRemoteProfileIds.includes(profileId)) {
           throw new Error("Disable a Runtime Host before removing it");
         }
@@ -1255,11 +1326,38 @@ function assertRootIsNotEnabled(
     return stateRootId === rootId;
   });
   const duplicate = duplicateProfile ?? duplicateState?.target.profile;
-  if (duplicate) {
+  if (duplicate && !(isSessionGuestProfile(target.profile) && isSessionGuestProfile(duplicate))) {
     throw new Error(
       `Runtime Host profile "${duplicate.name}" is already connected to this computer; disable it before adding another connection`,
     );
   }
+}
+
+async function recoverAbandonedProfileLock(profilePath: string): Promise<void> {
+  const lockPath = `${profilePath}.lock`;
+  const lock = await lstat(lockPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (
+    !lock ||
+    !lock.isDirectory() ||
+    lock.isSymbolicLink()
+  ) {
+    return;
+  }
+  // Electron's single-instance authority excludes another Desktop writer for
+  // this client data root. Legacy directory locks contain no owner identity,
+  // so only reclaim an old, empty marker; unexpected contents still fail loud.
+  await rmdir(lockPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  });
+}
+
+function isSessionGuestProfile(
+  profile: ResolvedRuntimeHostProfile['profile'],
+): boolean {
+  return profile.kind === 'remote' && profile.access === 'session_guest';
 }
 
 async function persistIfCurrentTarget(
@@ -1301,6 +1399,7 @@ export function registerDesktopRuntimeHostProfileIpc(
     "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
     "runtime-host-profiles:resolve-pairing-recovery",
+    "runtime-host-profiles:discard-pairing",
     'session-collaboration:import',
   ] as const;
   ipcMain.handle(channels[0], () => service.getSnapshot());
@@ -1313,8 +1412,13 @@ export function registerDesktopRuntimeHostProfileIpc(
   );
   ipcMain.handle(channels[4], (_event, profileId: string) => service.setDefault(profileId));
   ipcMain.handle(channels[5], (_event, profileId: string) => service.remove(profileId));
-  ipcMain.handle(channels[6], () => service.resolvePairingRecovery());
-  ipcMain.handle(channels[7], (_event, code: string, allowInsecure: boolean) =>
+  ipcMain.handle(channels[6], (_event, profileId?: string) =>
+    service.resolvePairingRecovery(profileId),
+  );
+  ipcMain.handle(channels[7], (_event, profileId: string) =>
+    service.discardPairing(profileId),
+  );
+  ipcMain.handle(channels[8], (_event, code: string, allowInsecure: boolean) =>
     service.importCollaborationInvitation(code, allowInsecure),
   );
   return () => {
@@ -1350,6 +1454,16 @@ function connectionCodeImportFailure(
     }
   }
   return 'unknown';
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+function isPeerPathUnavailable(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'direct_path_unavailable' || code === 'transit_unavailable';
 }
 
 function requireSaveInput(value: unknown): asserts value is {

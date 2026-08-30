@@ -50,7 +50,7 @@ const MAX_PROMPT_RAIL_TICKS = 64;
 const JUMP_SETTLE_QUIET_FRAMES = 3;
 /**
  * Frames a hold may run before it gives up regardless. Only a backstop against
- * a destination that never mounts; this is ~4s at 60Hz.
+ * a destination that never becomes available; this is ~4s at 60Hz.
  */
 const JUMP_HOLD_FRAME_BUDGET = 240;
 /** How close to the scrollport's top edge counts as landed. */
@@ -77,13 +77,12 @@ const browserFrameScheduler: PromptRailFrameScheduler = {
 /**
  * Hold a jump's destination while the transcript grows under it.
  *
- * What moves the transcript out from under a jump is the virtual window: the
- * destination mounts, its measured height replaces the estimate, and everything
- * below shifts. Releasing the tail (`onNavigateStart`) does not answer that —
+ * Content can still resolve while a jump is moving, changing geometry under its
+ * destination. Releasing the tail (`onNavigateStart`) does not answer that —
  * only re-aiming does, through each geometry change, and once more if a still
- * frame finds the target off the top edge, which is what a scroll cancelled
- * part-way leaves behind. A frame where nothing moved and the target is where
- * the click asked costs one `getBoundingClientRect` and nothing else.
+ * frame finds the target off the top edge. A frame where nothing moved and the
+ * target is where the click asked costs one `getBoundingClientRect` and nothing
+ * else.
  *
  * `onNavigateStart` is re-asserted on every frame of the hold rather than once
  * at the click. It is idempotent, and a jump that starts from the tail would
@@ -146,7 +145,7 @@ export function holdJumpDestination(input: {
     const moved = root.scrollTop !== lastTop;
     lastHeight = root.scrollHeight;
     lastTop = root.scrollTop;
-    // Growth is the virtual window replacing estimates; re-aim through it.
+    // Growth can move the destination while content resolves; re-aim through it.
     // A still frame that is nonetheless off-target is the other failure: a
     // scroll that was cancelled part-way and will never resume on its own,
     // which is what happens when the mount's compensation lands on top of one.
@@ -234,7 +233,7 @@ export function mergePromptAnchorRailTurns(
 export interface PromptAnchorRailProps {
   turns: readonly PromptAnchorRailTurn[];
   scrollRef: RefObject<HTMLElement | null>;
-  /** When the bounded virtual window has not placed the turn in the DOM. */
+  /** When the indexed Turn is outside the Host's active transcript range. */
   onNavigateFallback?: (turn: PromptAnchorRailTurn) => void;
   /**
    * Stop following the tail, before a jump scrolls.
@@ -455,7 +454,7 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
   // started cannot walk the active tick through every prompt on the way. Keyed
   // on the jump sequence so a second click starts its own claim.
   //
-  // The hold re-aims through virtual-window geometry changes and reports back
+  // The hold re-aims through content geometry changes and reports back
   // when the mounted destination is still, or when the reader takes it back.
   useEffect(() => {
     if (!jump) return;
@@ -492,9 +491,9 @@ export const PromptAnchorRail = memo(function PromptAnchorRail({ turns, scrollRe
       // Instant, whatever the app's scroll-motion policy says. A jump is a
       // teleport the reader asked for, not a journey — and an animated one
       // does not survive this surface: traced against a 30-prompt session, the
-      // smooth scroll was cancelled by the mount's own scroll compensation and
-      // stalled two pixels from where it started. Landing reliably beats
-      // animating unreliably.
+      // smooth scroll was cancelled by concurrent content growth and stalled
+      // two pixels from where it started. Landing reliably beats animating
+      // unreliably.
       (el as HTMLElement).scrollIntoView({ behavior: 'auto', block: 'start' });
     } else if (!el) {
       onNavigateFallback?.(turn);

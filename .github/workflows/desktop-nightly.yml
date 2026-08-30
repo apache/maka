@@ -293,14 +293,12 @@ jobs:
         env:
           NIGHTLIES_RSYNC_HOST: ${{ secrets.NIGHTLIES_RSYNC_HOST }}
           NIGHTLIES_RSYNC_KEY: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
-          NIGHTLIES_RSYNC_KNOWN_HOSTS: ${{ secrets.NIGHTLIES_RSYNC_KNOWN_HOSTS }}
           NIGHTLIES_RSYNC_PATH: ${{ secrets.NIGHTLIES_RSYNC_PATH }}
           NIGHTLIES_RSYNC_PORT: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
           NIGHTLIES_RSYNC_USER: ${{ secrets.NIGHTLIES_RSYNC_USER }}
         run: |
           test -n "$NIGHTLIES_RSYNC_HOST"
           test -n "$NIGHTLIES_RSYNC_KEY"
-          test -n "$NIGHTLIES_RSYNC_KNOWN_HOSTS"
           test -n "$NIGHTLIES_RSYNC_PATH"
           test -n "$NIGHTLIES_RSYNC_USER"
           [[ "$NIGHTLIES_RSYNC_PORT" =~ ^[0-9]{1,5}$ ]]
@@ -309,11 +307,16 @@ jobs:
           install -m 700 -d "$ssh_directory"
           umask 077
           printf '%s\n' "$NIGHTLIES_RSYNC_KEY" > "$ssh_directory/key"
-          printf '%s\n' "$NIGHTLIES_RSYNC_KNOWN_HOSTS" > "$ssh_directory/known_hosts"
           {
+            echo "NIGHTLIES_RSYNC_BASE=$NIGHTLIES_RSYNC_USER@$NIGHTLIES_RSYNC_HOST:${NIGHTLIES_RSYNC_PATH%/}"
             echo "NIGHTLIES_RSYNC_TARGET=$NIGHTLIES_RSYNC_USER@$NIGHTLIES_RSYNC_HOST:${NIGHTLIES_RSYNC_PATH%/}/maka/desktop"
-            echo "RSYNC_RSH=ssh -i $ssh_directory/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$ssh_directory/known_hosts -p $NIGHTLIES_RSYNC_PORT"
+            echo "RSYNC_RSH=ssh -i $ssh_directory/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $NIGHTLIES_RSYNC_PORT"
           } >> "$GITHUB_ENV"
+
+      - name: Ensure the Nightly destination exists
+        run: |
+          mkdir -p .nightly-empty/maka/desktop
+          rsync -rlptDz --protect-args .nightly-empty/maka/ "$NIGHTLIES_RSYNC_BASE/maka/"
 
       - name: Require the Desktop Nightly feed to advance
         env:
@@ -338,4 +341,4 @@ jobs:
 
       - name: Remove the temporary Nightlies credentials
         if: always()
-        run: rm -f "$RUNNER_TEMP/nightlies-ssh/key" "$RUNNER_TEMP/nightlies-ssh/known_hosts"
+        run: rm -f "$RUNNER_TEMP/nightlies-ssh/key"

@@ -544,6 +544,90 @@ test('decodes one bounded page without walking the remaining transcript', async 
   assert.deepEqual(requests, []);
 });
 
+test('assembles the complete edge Turn while paging newer transcript', async () => {
+  const prompt = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'prompt',
+  };
+  const answer = {
+    type: 'assistant' as const,
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'answer',
+    modelId: 'model-1',
+  };
+  const promptBytes = Buffer.from(JSON.stringify(prompt), 'utf8');
+  const answerBytes = Buffer.from(JSON.stringify(answer), 'utf8');
+  const requests: string[] = [];
+  const initial: SessionTranscriptPage = {
+    ...transcriptPage({
+      rawBytes: promptBytes.byteLength,
+      fragments: [
+        {
+          kind: 'durable',
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: promptBytes.byteLength,
+          payloadDigest: null,
+          data: promptBytes.toString('base64'),
+        },
+      ],
+      nextCursor: 'answer',
+    }),
+    direction: 'newer',
+    throughSequence: 1,
+    rangeBoundarySequence: 1,
+    protectedTurnSequence: 1,
+  };
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-newer-turn', {
+      throughSequence: 1,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: initial,
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push(input.cursor!);
+      return {
+        ...transcriptPage({
+          rawBytes: answerBytes.byteLength,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 1,
+              byteOffset: 0,
+              totalBytes: answerBytes.byteLength,
+              payloadDigest: null,
+              data: answerBytes.toString('base64'),
+            },
+          ],
+        }),
+        direction: 'newer',
+        throughSequence: 1,
+        rangeBoundarySequence: 1,
+        protectedTurnSequence: 1,
+      };
+    },
+  );
+
+  const decoded = await subscription.decodeTranscriptPage(initial, decodeStoredMessage);
+
+  assert.deepEqual(
+    decoded.messages.map(({ identity, message }) => [identity, message.id]),
+    [
+      [0, 'user-1'],
+      [1, 'assistant-1'],
+    ],
+  );
+  assert.deepEqual(requests, ['answer']);
+});
+
 test('loads and releases only the active overlay', async () => {
   const overlay = {
     type: 'user' as const,
@@ -1409,6 +1493,8 @@ function transcriptPage(
     throughSequence: 0,
     rawBytes: options.rawBytes ?? 0,
     fragments: options.fragments ?? [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: options.nextCursor ?? null,
   };
 }

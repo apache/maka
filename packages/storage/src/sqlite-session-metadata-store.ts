@@ -102,10 +102,12 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   normalizePendingMessageAdmission,
   normalizeProvenRootMessageHandoff,
+  normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
   type MarkMessagesHandedOffInput,
   type PendingMessageAdmission,
   type ProvenRootMessageHandoff,
+  type ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
 import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import {
@@ -1903,6 +1905,24 @@ export class SqliteSessionMetadataStore {
       }
       provenRootMessages.set(normalized.messageId, normalized);
     }
+    const provenSteeringMessages = new Map<string, ProvenSteeringMessageHandoff>();
+    for (const proof of input.provenSteeringMessages ?? []) {
+      const normalized = normalizeProvenSteeringMessageHandoff(proof);
+      if (!requestedMessageIds.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Message identity is not present in messageIds',
+        );
+      }
+      if (provenSteeringMessages.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Messages contain duplicate identities',
+        );
+      }
+      if (normalized.executionTurnId !== input.turnId) {
+        throw new SessionMetadataConflictError('Proven steering execution Turn conflict');
+      }
+      provenSteeringMessages.set(normalized.messageId, normalized);
+    }
     this.transaction(() => {
       const lastSequenceRow = this.db
         .prepare(
@@ -1929,6 +1949,7 @@ export class SqliteSessionMetadataStore {
       const existingSequences = new Map<string, number>();
       for (const messageId of unique) {
         const fallback = provenRootMessages.get(messageId);
+        const steeringProof = provenSteeringMessages.get(messageId);
         const admissionRow = this.db
           .prepare(
             `
@@ -1943,10 +1964,22 @@ export class SqliteSessionMetadataStore {
         const admission = admissionRow
           ? decodeMessageAdmissionRow(input.sessionId, admissionRow)
           : undefined;
+        const provenCrossTurnSteering =
+          admission !== undefined &&
+          steeringProof !== undefined &&
+          admission.disposition === 'steering' &&
+          admission.turnId === steeringProof.admissionTurnId &&
+          admission.runId === steeringProof.admissionRunId &&
+          admission.admittedAt === steeringProof.admittedAt &&
+          messageContentsEqual(admission.content, steeringProof.content);
+        if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
+          throw new SessionMetadataConflictError('Proven steering admission identity conflict');
+        }
         if (
           admission !== undefined &&
           admission.turnId !== input.turnId &&
-          admission.disposition !== 'followup'
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering
         ) {
           throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
@@ -1998,9 +2031,9 @@ export class SqliteSessionMetadataStore {
             type: 'user',
             id: messageId,
             turnId: input.turnId,
-            ts: source.admittedAt,
+            ts: steeringProof?.eventTs ?? source.admittedAt,
             ...source.content,
-            steeringEventId: messageId,
+            steeringEventId: steeringProof?.eventId ?? messageId,
           });
           const json = JSON.stringify(message);
           (historicalMessageIdSet.has(messageId)
@@ -2015,14 +2048,12 @@ export class SqliteSessionMetadataStore {
           const row = rows[0]!;
           const recordJson = readStoredMessageRecordJson(this.db, input.sessionId, sequence, row);
           const message = decodeStoredMessage(JSON.parse(recordJson) as unknown);
+          const expectedSource = admission ?? fallback ?? steeringProof;
           if (
             message.type !== 'user' ||
             message.id !== messageId ||
-            ((admission !== undefined || fallback !== undefined) &&
-              !messageContentsEqual(
-                normalizeMessageContent(message),
-                (admission ?? fallback)!.content,
-              ))
+            (expectedSource !== undefined &&
+              !messageContentsEqual(normalizeMessageContent(message), expectedSource.content))
           ) {
             throw new SessionMetadataConflictError(
               'Message admission transcript identity conflict',
@@ -2030,6 +2061,14 @@ export class SqliteSessionMetadataStore {
           }
           if (message.turnId !== input.turnId) {
             throw new SessionMetadataConflictError('Message admission transcript Turn conflict');
+          }
+          if (
+            steeringProof !== undefined &&
+            (message.ts !== steeringProof.eventTs ||
+              message.turnId !== steeringProof.executionTurnId ||
+              message.steeringEventId !== steeringProof.eventId)
+          ) {
+            throw new SessionMetadataConflictError('Proven steering transcript identity conflict');
           }
           existingSequences.set(messageId, sequence);
         }

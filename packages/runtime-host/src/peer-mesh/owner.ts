@@ -39,6 +39,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
   readonly keyPath: string;
   readonly expectedPeerId?: string;
   readonly dataRoot: string;
+  readonly endpointKind: 'client' | 'host';
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
@@ -61,6 +62,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
         : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
       routeResolver: {
         resolveRoutes: (peerId) => resolverMesh?.resolveRoutes(peerId),
+        prepareRoutes: async (peerId, signal) => resolverMesh?.prepareRoutes(peerId, signal),
       },
     });
   } catch (error) {
@@ -72,6 +74,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
     mesh = await openPeerMeshNode({
       dataRoot: join(input.dataRoot, client.identity().peerId),
       peer: client,
+      endpointKind: input.endpointKind,
     });
     resolverMesh = mesh;
   } catch (error) {

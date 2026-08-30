@@ -108,7 +108,7 @@ describe('SQLite recovery persistence authority', () => {
       dispatch.ts,
     );
     db.exec(
-      'DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+      'DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
     );
     db.close();
 
@@ -204,7 +204,7 @@ describe('SQLite recovery persistence authority', () => {
       2,
     );
     db.exec(
-      'DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
+      'DROP TABLE runtime_session_event_ordinals; DROP TABLE runtime_partial_segments; DROP TABLE runtime_storage_root_binding; DROP TABLE runtime_managed_mutation_reservations; DROP TABLE runtime_workspace_heads; DROP TABLE runtime_workspace_versions; DROP TABLE runtime_workspace_epochs; DROP TABLE runtime_continuation_claims; DROP TABLE runtime_capabilities; PRAGMA user_version = 4;',
     );
     db.close();
 

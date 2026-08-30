@@ -412,7 +412,7 @@ export class HostBedrockSsoCoordinator {
           return failure('persistence_failed', 'Amazon Bedrock connection could not be committed');
         }
         const connection = committed.snapshot.connections.find(
-          (candidate) => candidate.providerType === 'amazon-bedrock',
+          (candidate) => candidate.connectionId === begun.candidate.connectionId,
         );
         if (!connection) {
           this.activation.poison();

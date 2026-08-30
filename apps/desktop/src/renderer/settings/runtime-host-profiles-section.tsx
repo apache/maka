@@ -56,7 +56,13 @@ import {
   type RuntimeHostManagementTarget,
 } from './runtime-host-management-dialog.js';
 import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
-import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
+import {
+  PeerMeshPeerIdButton,
+  RuntimeHostPairingRecoveryButton,
+  RuntimeHostPeerMeshDialog,
+  RuntimeHostProfileMoreMenu,
+  type RuntimeHostPairingActionCopy,
+} from '../features/runtime-host-management';
 import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
 import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
@@ -83,6 +89,15 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const pairingActionCopy: RuntimeHostPairingActionCopy = {
+    retry: copy.resolvePairingRecovery,
+    retryFailed: copy.resolvePairingRecoveryFailed,
+    discard: copy.discardPairing,
+    discardConfirmTitle: copy.discardPairingConfirmTitle,
+    discardConfirmBody: copy.discardPairingConfirmBody,
+    discardFailed: copy.discardPairingFailed,
+    cancel: copy.cancel,
+  };
   const collaborationCopy = getSessionCollaborationCopy(locale);
   const mountedRef = useMountedRef();
   const toast = useToast();
@@ -106,6 +121,7 @@ export function RuntimeHostProfilesSection(props: {
     readonly target: DesktopRuntimeHostPeerMeshTarget;
     readonly name: string;
   }>();
+
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -235,23 +251,6 @@ export function RuntimeHostProfilesSection(props: {
           settingsActionErrorMessage(error, locale),
           undefined,
           { profileId },
-        );
-      }
-    } finally {
-      if (mountedRef.current) setSwitching(false);
-    }
-  }
-
-  async function resolvePairingRecovery() {
-    setSwitching(true);
-    try {
-      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
-      if (mountedRef.current) setSnapshot(next);
-    } catch (error) {
-      if (mountedRef.current) {
-        toast.error(
-          copy.resolvePairingRecoveryFailed,
-          settingsActionErrorMessage(error, locale),
         );
       }
     } finally {
@@ -533,12 +532,12 @@ export function RuntimeHostProfilesSection(props: {
             label={copy.pairingRecoveryTitle}
             description={copy.pairingRecoveryDescription}
             end={(
-              <Button
-                variant="secondary"
-                size="sm"
-                label={copy.resolvePairingRecovery}
+              <RuntimeHostPairingRecoveryButton
                 isDisabled={switching}
-                onClick={() => void resolvePairingRecovery()}
+                copy={pairingActionCopy}
+                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                onChanged={() => void reload()}
+                onWorkingChange={setSwitching}
               />
             )}
           />
@@ -654,7 +653,19 @@ export function RuntimeHostProfilesSection(props: {
                       : profile.transport.kind === "ssh"
                         ? profile.transport.destination
                         : profile.transport.kind === "libp2p-direct"
-                          ? abbreviatePeerId(profile.transport.peerId)
+                          ? (
+                              <PeerMeshPeerIdButton
+                                peerId={profile.transport.peerId}
+                                displayValue={abbreviatePeerId(profile.transport.peerId)}
+                                copyLabel={locale.startsWith('zh')
+                                  ? `复制完整 Peer ID：${profile.transport.peerId}`
+                                  : `Copy full Peer ID: ${profile.transport.peerId}`}
+                                copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
+                                failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
+                                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                                className="settingsRuntimeHostPeerId"
+                              />
+                            )
                           : profile.transport.url
                   }
                   startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
@@ -669,6 +680,9 @@ export function RuntimeHostProfilesSection(props: {
                       {isSharedAccess ? (
                         <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
                       ) : null}
+                      {entry.pairingPending ? (
+                        <Badge variant="warning" label={copy.pairingPendingBadge} />
+                      ) : null}
                       {entry.readiness === "unavailable" ? (
                         <Badge variant="neutral" label={copy.unavailable} />
                       ) : null}
@@ -676,15 +690,25 @@ export function RuntimeHostProfilesSection(props: {
                         label={profile.name}
                         isLabelHidden
                         value={entry.enabled}
-                        isDisabled={switching || entry.isDefault}
-                        disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
+                        isDisabled={switching || entry.isDefault || entry.pairingPending}
+                        disabledMessage={entry.pairingPending
+                          ? copy.pairingRecoveryDescription
+                          : entry.isDefault
+                            ? copy.defaultDisableHelp
+                            : undefined}
                         onChange={(enabled) => void setEnabled(profile.id, enabled)}
                       />
-                      <MoreMenu
+                      <RuntimeHostProfileMoreMenu
                         label={copy.moreActions(profile.name)}
-                        size="sm"
+                        profileId={profile.id}
+                        pairingPending={entry.pairingPending === true}
+                        isDisabled={switching}
+                        copy={pairingActionCopy}
+                        errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                        onChanged={() => void reload()}
+                        onWorkingChange={setSwitching}
                         items={[
-                          ...(managedSshDestination
+                          ...(managedSshDestination && !entry.pairingPending
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,
@@ -736,11 +760,21 @@ export function RuntimeHostProfilesSection(props: {
           setManagedTarget(undefined);
           void reload();
         }}
+        onManagePeerMesh={(target) => {
+          setManagedTarget(undefined);
+          setPeerMeshTarget({
+            target: { kind: 'managed_host', profileId: target.id },
+            name: target.name,
+          });
+        }}
       />
       {peerMeshTarget ? (
         <RuntimeHostPeerMeshDialog
           target={peerMeshTarget.target}
           targetName={peerMeshTarget.name}
+          offerLocalHost={
+            peerMeshTarget.target.kind === 'desktop' && localAccess?.state === 'on'
+          }
           onClose={() => setPeerMeshTarget(undefined)}
         />
       ) : null}

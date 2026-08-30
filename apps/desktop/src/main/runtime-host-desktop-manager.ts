@@ -489,7 +489,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       const rootId = target.target.profile.kind !== 'local'
         ? target.target.profile.rootId
         : target.hostId;
-      if (rootId === profileTarget.profile.rootId) {
+      if (
+        rootId === profileTarget.profile.rootId &&
+        !(
+          isSessionGuestProfile(target.target.profile) &&
+          isSessionGuestProfile(profileTarget.profile)
+        )
+      ) {
         throw new Error(`Runtime Host ${profileTarget.profile.rootId} is already enabled`);
       }
     }
@@ -1148,6 +1154,12 @@ function withRuntimeHostTarget(
 ): DesktopRuntimeHostCandidateStartInput {
   const { profileTarget: _previousProfileTarget, ...base } = input;
   return profileTarget ? { ...base, profileTarget } : base;
+}
+
+function isSessionGuestProfile(
+  profile: ResolvedRuntimeHostProfile['profile'],
+): boolean {
+  return profile.kind === 'remote' && profile.access === 'session_guest';
 }
 
 function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {

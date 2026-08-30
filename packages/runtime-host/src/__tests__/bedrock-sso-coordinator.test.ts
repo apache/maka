@@ -42,7 +42,15 @@ function fixture(input?: {
   let activeResidencies = 0;
   const stores = {
     operations: {
-      beginConnectionOnboarding: async () => ({ kind: 'ready', ticket: {} }),
+      beginConnectionOnboarding: async () => ({
+        kind: 'ready',
+        ticket: {},
+        candidate: {
+          connectionId: 'bedrock-connection',
+          slug: 'amazon-bedrock',
+          providerType: 'amazon-bedrock',
+        },
+      }),
       completeConnectionOnboarding: async () => {
         commits += 1;
         return {

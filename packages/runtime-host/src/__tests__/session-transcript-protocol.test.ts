@@ -58,6 +58,8 @@ const page = {
       data: Buffer.from('test').toString('base64'),
     },
   ],
+  rangeBoundarySequence: 2,
+  protectedTurnSequence: 2,
   nextCursor: 'opaque-cursor',
 };
 
@@ -81,6 +83,8 @@ test('Session transcript protocol accepts bounded correlated pages and bootstrap
       throughSequence: 3,
       rawBytes: 0,
       fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
   };
@@ -160,6 +164,27 @@ test('a maximum multi-message page remains transport safe', () => {
 test('Session transcript protocol rejects malformed and uncorrelated values', () => {
   assert.throws(
     () => decodeSessionTranscriptPageInput({ ...input, cursor: 'cursor', anchorSequence: 2 }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionTranscriptPage({ ...page, rangeBoundarySequence: 4 }),
+    isProtocolError,
+  );
+  assert.throws(
+    () => decodeSessionTranscriptPage({ ...page, protectedTurnSequence: 4 }),
+    isProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeSessionTranscriptPage({
+        ...page,
+        source: 'overlay',
+        rawBytes: 0,
+        fragments: [],
+        rangeBoundarySequence: null,
+        protectedTurnSequence: 2,
+        nextCursor: null,
+      }),
     isProtocolError,
   );
   assert.throws(

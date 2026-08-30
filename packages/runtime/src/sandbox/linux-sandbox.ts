@@ -29,7 +29,6 @@ import {
 } from './linux-capability.js';
 import type {
   SandboxBackend,
-  SandboxCapabilityProbeResult,
   SandboxCommand,
   SandboxPathContext,
   SandboxTransformRequest,
@@ -100,18 +99,6 @@ export class LinuxBubblewrapBackend implements SandboxBackend {
 
   canEnforceProfile(profile: PermissionProfile): boolean {
     return validateLinuxProfile(profile, this.options.arch ?? process.arch).ok;
-  }
-
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
-    const plan = this.plan(request);
-    if (!plan.ok) return plan;
-    return {
-      ok: true,
-      executable: plan.bwrapPath,
-      sandboxType: 'linux',
-      requiresSandbox: true,
-      preference: plan.preference,
-    };
   }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {

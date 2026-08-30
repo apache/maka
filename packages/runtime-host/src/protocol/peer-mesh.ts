@@ -25,6 +25,7 @@ import {
   requireString,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+import { canonicalPeerMeshDisplayName } from '../peer-mesh/display-name.js';
 import {
   PEER_MESH_MAX_MEMBERS,
   PEER_MESH_MAX_MESHES,
@@ -48,6 +49,7 @@ export interface PeerMeshInvitationV1 {
 
 export interface PeerMeshProjection {
   readonly meshId: string;
+  readonly displayName?: string;
   readonly role: 'authority' | 'member';
   readonly authorityPeerId: string;
   readonly revision: number;
@@ -58,6 +60,8 @@ export interface PeerMeshProjection {
 
 export interface PeerMeshMemberProjection {
   readonly peerId: string;
+  readonly endpointKind?: 'client' | 'host';
+  readonly displayName?: string;
   readonly state: 'local' | 'route_available' | 'coordination_only' | 'stale' | 'unknown';
   readonly expiresAt?: number;
 }
@@ -65,6 +69,7 @@ export interface PeerMeshMemberProjection {
 export interface PeerMeshQueryResult {
   readonly available: boolean;
   readonly localPeerId?: string;
+  readonly localDisplayName?: string;
   readonly meshes: readonly PeerMeshProjection[];
   readonly transit?: PeerMeshTransitProjection;
 }
@@ -97,6 +102,14 @@ export interface PeerMeshRemoveInput extends PeerMeshTargetInput {
 
 export interface PeerMeshTransitSetInput {
   readonly meshId: string | null;
+}
+
+export interface PeerMeshDisplayNameSetInput {
+  readonly displayName: string | null;
+}
+
+export interface PeerMeshRenameInput extends PeerMeshTargetInput {
+  readonly displayName: string | null;
 }
 
 export interface PeerMeshInvitationResult {
@@ -176,6 +189,20 @@ export const PEER_MESH_OPERATION_SPECS = {
     decodeInput: decodePeerMeshTransitSetInput,
     decodeOutput: decodePeerMeshQueryResult,
   }),
+  'peer.mesh.display-name.set': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodePeerMeshDisplayNameSetInput,
+    decodeOutput: decodePeerMeshQueryResult,
+  }),
+  'peer.mesh.rename': defineOperation({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodePeerMeshRenameInput,
+    decodeOutput: decodePeerMeshQueryResult,
+  }),
 } as const;
 
 function decodeEmptyInput(value: unknown): Record<string, never> {
@@ -187,6 +214,23 @@ function decodePeerMeshTargetInput(value: unknown): PeerMeshTargetInput {
   const record = requireExactRecord(value, 'Peer Mesh target input', ['meshId']);
   return {
     meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
+  };
+}
+
+function decodePeerMeshDisplayNameSetInput(value: unknown): PeerMeshDisplayNameSetInput {
+  const record = requireExactRecord(value, 'Peer Mesh display name input', ['displayName']);
+  return {
+    displayName:
+      record.displayName === null ? null : canonicalPeerMeshDisplayName(record.displayName),
+  };
+}
+
+function decodePeerMeshRenameInput(value: unknown): PeerMeshRenameInput {
+  const record = requireExactRecord(value, 'Peer Mesh rename input', ['meshId', 'displayName']);
+  return {
+    meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
+    displayName:
+      record.displayName === null ? null : canonicalPeerMeshDisplayName(record.displayName),
   };
 }
 
@@ -277,7 +321,13 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
     'Peer Mesh query result',
     record.localPeerId === undefined
       ? ['available', 'meshes']
-      : ['available', 'localPeerId', 'meshes', 'transit'],
+      : [
+          'available',
+          'localPeerId',
+          ...(record.localDisplayName === undefined ? [] : ['localDisplayName']),
+          'meshes',
+          'transit',
+        ],
   );
   if (
     typeof record.available !== 'boolean' ||
@@ -296,6 +346,9 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
       ? {}
       : {
           localPeerId: requireString(localPeerId, 'Peer Mesh localPeerId', PEER_ID_MAX_BYTES),
+          ...(record.localDisplayName === undefined
+            ? {}
+            : { localDisplayName: canonicalPeerMeshDisplayName(record.localDisplayName) }),
           transit: decodePeerMeshTransitProjection(record.transit),
         }),
     meshes: Object.freeze(record.meshes.map(decodePeerMeshProjection)),
@@ -303,8 +356,10 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
 }
 
 export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
+  const valueRecord = requireRecord(value, 'Peer Mesh projection');
   const record = requireExactRecord(value, 'Peer Mesh projection', [
     'meshId',
+    ...(valueRecord.displayName === undefined ? [] : ['displayName']),
     'role',
     'authorityPeerId',
     'revision',
@@ -326,6 +381,9 @@ export function decodePeerMeshProjection(value: unknown): PeerMeshProjection {
   }
   return {
     meshId: requireString(record.meshId, 'Peer Mesh meshId', MESH_ID_MAX_BYTES),
+    ...(record.displayName === undefined
+      ? {}
+      : { displayName: canonicalPeerMeshDisplayName(record.displayName) }),
     role: record.role,
     authorityPeerId: requireString(
       record.authorityPeerId,
@@ -375,11 +433,13 @@ function decodePeerMeshTransitProjection(value: unknown): PeerMeshTransitProject
 
 function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjection {
   const record = requireRecord(value, 'Peer Mesh member route');
-  assertExactKeys(
-    record,
-    'Peer Mesh member route',
-    record.expiresAt === undefined ? ['peerId', 'state'] : ['peerId', 'state', 'expiresAt'],
-  );
+  assertExactKeys(record, 'Peer Mesh member route', [
+    'peerId',
+    'state',
+    ...(record.endpointKind === undefined ? [] : ['endpointKind']),
+    ...(record.displayName === undefined ? [] : ['displayName']),
+    ...(record.expiresAt === undefined ? [] : ['expiresAt']),
+  ]);
   if (
     record.state !== 'local' &&
     record.state !== 'route_available' &&
@@ -389,8 +449,19 @@ function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjectio
   ) {
     throw new Error('Invalid Peer Mesh member route state');
   }
+  if (
+    record.endpointKind !== undefined &&
+    record.endpointKind !== 'client' &&
+    record.endpointKind !== 'host'
+  ) {
+    throw new Error('Invalid Peer Mesh member endpoint kind');
+  }
   return {
     peerId: requireString(record.peerId, 'Peer Mesh member route peerId', PEER_ID_MAX_BYTES),
+    ...(record.endpointKind === undefined ? {} : { endpointKind: record.endpointKind }),
+    ...(record.displayName === undefined
+      ? {}
+      : { displayName: canonicalPeerMeshDisplayName(record.displayName) }),
     state: record.state,
     ...(record.expiresAt === undefined
       ? {}

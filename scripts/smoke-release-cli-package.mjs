@@ -400,8 +400,8 @@ function validateInstalledRuntimeFiles(packageRoot) {
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/index.js',
-    'packages/eval/harbor/relay_agent.py',
-    'packages/eval/harbor/egress-proxy/network-policy',
+    'node_modules/@maka/eval/harbor/relay_agent.py',
+    'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
   ]) {
     if (!existsSync(join(packageRoot, path))) {
       throw new Error(`Installed runtime file is missing: ${path}`);

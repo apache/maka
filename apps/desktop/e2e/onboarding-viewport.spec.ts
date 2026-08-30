@@ -41,6 +41,7 @@ test('first-run onboarding stays within the chat viewport', async ({ onboardingW
       surfaceBottom: surfaceRect.bottom,
       viewportTop: scrollRect.top,
       viewportBottom: scrollRect.bottom,
+      onboardingLayout: scrollContainer.dataset.makaOnboarding,
       cardTop: cardRect.top,
       cardBottom: cardRect.bottom,
     };
@@ -50,6 +51,7 @@ test('first-run onboarding stays within the chat viewport', async ({ onboardingW
     geometry.pageClientHeight,
   );
   expect(geometry.scrollHeight, JSON.stringify(geometry, null, 2)).toBe(geometry.clientHeight);
+  expect(geometry.onboardingLayout).toBe('true');
   expect(geometry.surfaceTop).toBeGreaterThanOrEqual(geometry.viewportTop);
   expect(geometry.surfaceBottom).toBeLessThanOrEqual(geometry.viewportBottom);
   expect(geometry.cardTop).toBeGreaterThanOrEqual(geometry.viewportTop);

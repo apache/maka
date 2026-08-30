@@ -148,18 +148,28 @@ describe('CLI release file policy', () => {
     }
   });
 
-  test('release file declarations reject directories other than dist', () => {
+  test('release file declarations accept a declared directory and reject non-regular entries', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'maka-release-files-'));
     try {
       mkdirSync(join(workspace, 'dist'));
       mkdirSync(join(workspace, 'runtime-assets'));
+      writeFileSync(join(workspace, 'runtime-assets', 'profile.yml'), 'a: 1');
+      // A declared directory is allowed (the whole tree ships) ...
+      assert.deepEqual(
+        resolveWorkspaceReleaseFiles(workspace, {
+          name: '@maka/example',
+          releaseFiles: ['dist', 'runtime-assets'],
+        }),
+        ['dist', 'runtime-assets'],
+      );
+      // ... but a missing entry is still rejected.
       assert.throws(
         () =>
           resolveWorkspaceReleaseFiles(workspace, {
             name: '@maka/example',
-            releaseFiles: ['dist', 'runtime-assets'],
+            releaseFiles: ['dist', 'absent'],
           }),
-        /must be a regular file/u,
+        /release file is missing/u,
       );
     } finally {
       rmSync(workspace, { recursive: true, force: true });

@@ -61,6 +61,7 @@ export interface RuntimeHostPeerMeshManagementCliOptions {
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
   readonly meshId?: string | null;
   readonly peerId?: string;
+  readonly displayName?: string | null;
 }
 
 interface RuntimeHostPeerMeshManagementCliDeps {
@@ -208,6 +209,23 @@ async function executePeerMeshAction(
         action: 'transit',
         result: await request('peer.mesh.transit.set', {
           meshId: requiredOption(options.meshId, 'Mesh ID'),
+        }),
+      };
+    case 'rename':
+      return {
+        kind: 'result',
+        action: 'rename',
+        result: await request('peer.mesh.display-name.set', {
+          displayName: requiredOption(options.displayName, 'Display name'),
+        }),
+      };
+    case 'rename-mesh':
+      return {
+        kind: 'result',
+        action: 'rename-mesh',
+        result: await request('peer.mesh.rename', {
+          meshId: requiredMeshId(options.meshId),
+          displayName: requiredOption(options.displayName, 'Display name'),
         }),
       };
   }

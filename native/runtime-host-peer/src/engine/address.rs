@@ -50,7 +50,7 @@ pub(super) fn peer_id_from_address(address: &Multiaddr) -> Option<PeerId> {
     })
 }
 
-pub(super) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
+pub(crate) fn coordination_relay_peer_id(address: &Multiaddr) -> Result<PeerId, PeerError> {
     base_relay_peer_id(address, "coordination_unavailable", "coordination relay")
 }
 

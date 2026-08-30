@@ -1042,17 +1042,34 @@ export class RuntimePolicyCoordinator {
         const providerType = decodeConnectionInput(() =>
           decodeProviderType(requestedTarget.providerType),
         );
-        target = {
-          kind: 'create',
-          candidate: {
-            connectionId: randomUUID(),
-            slug: deriveConnectionSlug(
-              providerType,
-              catalog.connections.map((connection) => connection.slug),
-            ),
-            providerType,
-          },
-        };
+        // Bedrock has one canonical catalog identity. Treat another enrollment as
+        // re-authorization of that identity rather than deriving an unreadable
+        // `amazon-bedrock-2` slug and orphaning its credential.
+        existing =
+          providerType === 'amazon-bedrock'
+            ? catalog.connections.find((connection) => connection.providerType === providerType)
+            : undefined;
+        target = existing
+          ? {
+              kind: 'existing',
+              candidate: {
+                connectionId: existing.connectionId,
+                slug: existing.slug,
+                providerType: existing.providerType,
+              },
+              revision: existing.revision,
+            }
+          : {
+              kind: 'create',
+              candidate: {
+                connectionId: randomUUID(),
+                slug: deriveConnectionSlug(
+                  providerType,
+                  catalog.connections.map((connection) => connection.slug),
+                ),
+                providerType,
+              },
+            };
       } else if (requestedTarget.kind === 'existing') {
         const connectionId = decodeConnectionInput(() =>
           decodeRuntimePolicyEntityId(requestedTarget.connectionId),

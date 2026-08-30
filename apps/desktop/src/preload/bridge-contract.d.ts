@@ -311,6 +311,7 @@ export type AppUpdateInstallResult =
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
   readonly managedService?: true;
+  readonly pairingPending?: true;
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
@@ -327,11 +328,13 @@ export interface DesktopRuntimeHostProfileSnapshot {
 
 export type DesktopSessionCollaborationImportResult =
   | { readonly kind: 'connected' }
+  | { readonly kind: 'pairing_pending'; readonly profileId: string }
   | {
       readonly kind: 'error';
       readonly reason:
         | 'invalid_code'
         | 'insecure_confirmation_required'
+        | 'peer_path_unavailable'
         | 'connection_failed';
       readonly message?: string;
     };
@@ -557,6 +560,7 @@ export interface DesktopRuntimeHostDirectPeerSnapshot {
 
 export type DesktopRuntimeHostPeerMeshTarget =
   | { readonly kind: 'desktop' }
+  | { readonly kind: 'local_host' }
   | { readonly kind: 'managed_host'; readonly profileId: string };
 
 export type DesktopRuntimeHostPeerMeshAction =
@@ -733,9 +737,10 @@ export interface MakaBridge {
     ): Promise<DesktopRuntimeHostProfileAddResult>;
     importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    discardPairing(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
-    resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    resolvePairingRecovery(profileId?: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
     ): () => void;
@@ -817,8 +822,11 @@ export interface MakaBridge {
         readonly meshId?: string | null;
         readonly peerId?: string;
         readonly invitation?: string;
+        readonly displayName?: string | null;
+        readonly operationId?: string;
       },
     ): Promise<DesktopRuntimeHostPeerMeshResult>;
+    cancel(operationId: string): Promise<void>;
   };
 
   newTasks: {

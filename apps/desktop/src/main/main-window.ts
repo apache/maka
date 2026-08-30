@@ -20,7 +20,6 @@
 import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
@@ -29,6 +28,7 @@ import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
 import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
@@ -265,15 +265,10 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // disagrees with the persisted in-app preference.
     nativeTheme.themeSource = toNativeThemeSource(themePref);
 
-    const rendererEntryPath = join(
+    const rendererEntry = resolveMainRendererEntry(
       import.meta.dirname,
-      '..',
-      '..',
-      'dist-renderer',
-      'index.html',
+      process.env.VITE_DEV_SERVER_URL,
     );
-    const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
-      ?? pathToFileURL(rendererEntryPath).href;
 
     // Re-arm the reveal gate for this window's lifecycle (macOS keeps the app
     // alive after close-all; the next createWindow starts hidden again and a
@@ -394,7 +389,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
           });
       },
     });
-    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
+    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
     // links to docs / GitHub / provider sign-up pages. Without these guards
@@ -496,11 +491,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       void writeSavedBounds(workspaceRoot, final);
     });
 
-    if (process.env.VITE_DEV_SERVER_URL) {
-      await mainWindow.loadURL(rendererEntryUrl);
-    } else {
-      await mainWindow.loadFile(rendererEntryPath);
-    }
+    await loadMainRenderer(mainWindow, rendererEntry);
 
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once
     // the renderer document has loaded. Starting it before loadURL/loadFile
