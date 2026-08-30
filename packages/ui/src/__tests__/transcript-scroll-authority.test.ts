@@ -38,30 +38,42 @@ interface FakeRoot {
   clientHeight: number;
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
-  addEventListener(type: string, listener: () => void): void;
-  removeEventListener(type: string, listener: () => void): void;
+  addEventListener(type: string, listener: (event?: unknown) => void): void;
+  removeEventListener(type: string, listener: (event?: unknown) => void): void;
   /** Dispatch the scroll event the browser would, one frame later. */
   emitScroll(): void;
+  /** Dispatch an upward wheel whose default action can move this root. */
+  emitUpwardWheel(): void;
   grow(by: number): void;
   /** Take height away from the viewport, as a resize or a taller dock does. */
   shrinkViewport(by: number): void;
 }
 
 function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): FakeRoot {
-  const listeners = new Set<() => void>();
+  const listeners = new Map<string, Set<(event?: unknown) => void>>();
   const root: FakeRoot = {
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
     children: [{}],
     addEventListener(type, listener) {
-      if (type === 'scroll') listeners.add(listener);
+      const bucket = listeners.get(type) ?? new Set();
+      bucket.add(listener);
+      listeners.set(type, bucket);
     },
-    removeEventListener(_type, listener) {
-      listeners.delete(listener);
+    removeEventListener(type, listener) {
+      listeners.get(type)?.delete(listener);
     },
     emitScroll() {
-      for (const listener of [...listeners]) listener();
+      for (const listener of [...(listeners.get('scroll') ?? [])]) listener();
+    },
+    emitUpwardWheel() {
+      const eventTarget = this;
+      const event = {
+        deltaY: -120,
+        composedPath: () => [eventTarget],
+      };
+      for (const listener of [...(listeners.get('wheel') ?? [])]) listener(event);
     },
     grow(by) {
       root.scrollHeight += by;
@@ -161,6 +173,31 @@ test('a scroll this authority did not write is the reader, and releases the tail
     root.grow(4_000);
     resize();
     assert.equal(root.scrollTop, 1_000);
+  });
+});
+
+test('reader movement releases the tail when content grows before the scroll event', () => {
+  withObservers((resize) => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    authority.attach(root as unknown as HTMLElement);
+    assert.equal(root.scrollTop, 2_400);
+
+    // A skipped block materializes in the same rendering opportunity as the
+    // reader moves upward. The scroll event therefore observes both a changed
+    // offset and a changed scrollHeight; geometry movement must not erase the
+    // reader's intent merely because it arrived in the same delivery window.
+    root.emitUpwardWheel();
+    root.scrollTop = 1_900;
+    root.grow(500);
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(authority.getSnapshot().awayFromTail, true);
+
+    // The resize notification for that materialization arrives afterwards.
+    // Once released, it must not write the reader back to the new tail.
+    resize();
+    assert.equal(root.scrollTop, 1_900);
   });
 });
 

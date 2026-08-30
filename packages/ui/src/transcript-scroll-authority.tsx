@@ -33,12 +33,13 @@
  * and "the reader is dragging" is also just don't touch it — so both of those
  * are the same instruction to this code: stay out of the way.
  *
- * Being the only writer is what makes the state exact rather than guessed. It
- * remembers the offset it wrote, so a scroll event that finds the scroller
- * still on that offset is its own echo and any other offset is the reader — by
- * construction, and with no dependence on when the event arrives. Astryx had to
- * infer that from scroll direction, height deltas and wheel events, and every
- * one of those signals has more than one cause.
+ * Being the only writer is what makes the ordinary state exact rather than
+ * guessed. It remembers the offset it wrote, so a scroll event that finds the
+ * scroller still on that offset is its own echo and any other stable-geometry
+ * offset is the reader — by construction, with no timing heuristic. The one
+ * ambiguous delivery is an upward wheel that materializes intrinsic geometry
+ * before its scroll event; a scoped wheel listener releases early only when no
+ * nested scroller can consume that input.
  */
 
 import {
@@ -84,6 +85,31 @@ export interface TranscriptScrollAuthority {
   subscribeToReaderScroll(listener: () => void): () => void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): TranscriptScrollSnapshot;
+}
+
+/**
+ * A wheel dispatched below the transcript also crosses the transcript listener,
+ * even when a nested tool output or terminal will consume it. Only a nested
+ * scroller that can still move in the requested direction owns the gesture.
+ * At its boundary Chromium may chain the wheel to the transcript unless the
+ * nested surface explicitly contains overscroll.
+ */
+export function nestedScrollerConsumesWheel(event: WheelEvent, root: HTMLElement): boolean {
+  for (const target of event.composedPath()) {
+    if (target === root) break;
+    if (!(target instanceof HTMLElement)) continue;
+    const style = getComputedStyle(target);
+    const overflowY = style.overflowY;
+    if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
+    if (target.scrollHeight <= target.clientHeight) continue;
+    if (event.deltaY < 0 && target.scrollTop > 0) return true;
+    if (
+      event.deltaY > 0
+      && target.scrollTop + target.clientHeight < target.scrollHeight
+    ) return true;
+    if (['contain', 'none'].includes(style.overscrollBehaviorY)) return true;
+  }
+  return false;
 }
 
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
@@ -135,6 +161,12 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     publish();
   };
 
+  const releaseTail = (): void => {
+    pinned = false;
+    awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
+    publish();
+  };
+
   return {
     attach(next) {
       root = next;
@@ -145,8 +177,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // put it on is the echo of that write, however late it arrives; any
         // other offset is the reader, exactly, and not by inference. Nested
         // scrollers (a tool output box, a terminal) never reach here at all:
-        // `scroll` does not bubble, and there is no `wheel` listener to catch
-        // instead.
+        // `scroll` does not bubble. The narrow wheel listener below separately
+        // rejects those nested paths before it can release this authority.
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
           lastScrollHeight = target.scrollHeight;
           lastClientHeight = target.clientHeight;
@@ -178,6 +210,19 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;
       target.addEventListener('scroll', onScroll, { passive: true });
+      // Ordinarily the non-bubbling scroll event is the exact reader signal.
+      // One combined case needs intent one step earlier: content-visibility can
+      // replace intrinsic geometry before Chromium delivers the scroll caused
+      // by this wheel. `onScroll` must then classify the changed geometry as
+      // content movement, so release synchronously while the input ownership
+      // is still unambiguous. A wheel consumed by a nested scroller is not an
+      // outer-transcript gesture and leaves the pin untouched.
+      const onWheel = (event: WheelEvent): void => {
+        if (event.deltaY >= 0 || target.scrollTop <= 0) return;
+        if (nestedScrollerConsumesWheel(event, target)) return;
+        releaseTail();
+      };
+      target.addEventListener('wheel', onWheel, { passive: true });
       // Everything that moves the tail without the reader asking, watched in
       // one place: the scroller's own box, because the tail also moves when the
       // viewport shrinks (a window resize, a composer that gains a line), and
@@ -212,6 +257,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         childList.disconnect();
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
+        target.removeEventListener('wheel', onWheel);
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
@@ -222,9 +268,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       publish();
     },
     releasePin() {
-      pinned = false;
-      awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
-      publish();
+      releaseTail();
     },
     subscribeToReaderScroll(listener) {
       readerListeners.add(listener);

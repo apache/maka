@@ -34,7 +34,10 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
+import {
+  nestedScrollerConsumesWheel,
+  useTranscriptScrollAuthority,
+} from './transcript-scroll-authority.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
@@ -103,13 +106,7 @@ export function useChatScroll(input: {
     // is below.
     const onWheel = (event: WheelEvent): void => {
       if (event.deltaY >= 0 || !nearStart()) return;
-      for (const target of event.composedPath()) {
-        if (target === root) break;
-        if (!(target instanceof HTMLElement)) continue;
-        const overflowY = getComputedStyle(target).overflowY;
-        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
-        if (target.scrollHeight > target.clientHeight && target.scrollTop > 0) return;
-      }
+      if (nestedScrollerConsumesWheel(event, root)) return;
       authority.releasePin();
       requestEarlier();
     };
