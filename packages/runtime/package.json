@@ -97,7 +97,6 @@
     "./subscription-credentials": "./dist/subscription-credentials.js",
     "./subscription-model-fetch": "./dist/subscription-model-fetch.js",
     "./system-prompt/main-session-prompt": "./dist/system-prompt/main-session-prompt.js",
-    "./system-prompt/auto-tool-guidance": "./dist/system-prompt/auto-tool-guidance.js",
     "./system-prompt/personalization-prompt": "./dist/system-prompt/personalization-prompt.js",
     "./system-prompt/project-context": "./dist/system-prompt/project-context.js",
     "./system-prompt/session-environment-prompt": "./dist/system-prompt/session-environment-prompt.js",
