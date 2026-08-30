@@ -20,6 +20,9 @@ export async function discoverBedrockModels(input: {
   readonly signal?: AbortSignal;
 }): Promise<ModelInfo[]> {
   const client = new BedrockClient({
+    // This catalog is identity-bound to the explicit Host SSO provider. Do not
+    // let AWS_BEARER_TOKEN_BEDROCK select the SDK's bearer auth scheme.
+    authSchemePreference: ['aws.auth#sigv4'],
     region: input.region,
     credentials: async () => await input.credentialProvider(),
     requestHandler: new ScopedFetchHttpHandler(input.fetchFn),

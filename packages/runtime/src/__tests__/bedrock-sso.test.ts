@@ -5,7 +5,7 @@ import {
   serializeBedrockSsoSession,
   type BedrockSsoSession,
 } from '../bedrock-sso.js';
-import { manualBedrockModel } from '../bedrock-model-discovery.js';
+import { discoverBedrockModels, manualBedrockModel } from '../bedrock-model-discovery.js';
 import { getAIModel } from '../model-factory.js';
 import { buildPricingLookup, withBedrockSourcePricing } from '../telemetry/pricing.js';
 
@@ -29,6 +29,37 @@ test('Bedrock SSO session round-trips only its versioned bounded schema', () => 
     parseBedrockSsoSession(JSON.stringify({ ...session, roleSecret: 'forbidden' })),
     null,
   );
+});
+
+test('Bedrock discovery forces SigV4 when an ambient bearer token exists', async () => {
+  const previous = process.env.AWS_BEARER_TOKEN_BEDROCK;
+  process.env.AWS_BEARER_TOKEN_BEDROCK = 'ambient-wrong-identity';
+  let credentialCalls = 0;
+  let authorization = '';
+  try {
+    await assert.rejects(() =>
+      discoverBedrockModels({
+        region: 'us-east-1',
+        credentialProvider: async () => {
+          credentialCalls += 1;
+          return {
+            accessKeyId: 'AKIATEST',
+            secretAccessKey: 'test-secret',
+            sessionToken: 'test-session',
+          };
+        },
+        fetchFn: (async (_input, init) => {
+          authorization = new Headers(init?.headers).get('authorization') ?? '';
+          return new Response('provider unavailable', { status: 503 });
+        }) as typeof fetch,
+      }),
+    );
+    assert.ok(credentialCalls > 0, 'discovery must invoke the explicit Host SSO provider');
+    assert.match(authorization, /^AWS4-HMAC-SHA256 /);
+  } finally {
+    if (previous === undefined) delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+    else process.env.AWS_BEARER_TOKEN_BEDROCK = previous;
+  }
 });
 
 test('explicit SSO credentials cannot be overridden by AWS_BEARER_TOKEN_BEDROCK', async () => {
