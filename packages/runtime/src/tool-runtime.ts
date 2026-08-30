@@ -91,6 +91,7 @@ import {
   type ToolRecoveryMode,
 } from './runtime-commit-sink.js';
 import { AdmissionLimiter } from './admission-limiter.js';
+import { parseToolParameters } from './tool-parameters.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
@@ -151,7 +152,7 @@ export interface MakaTool<P = any, R = unknown> {
   name: string;
   /** Human-readable description shown to the model. */
   description: string;
-  /** Zod schema describing the tool's argument shape. */
+  /** Declared schema describing and validating the tool's argument shape. */
   parameters: unknown;
   /** Optional UI display name. */
   displayName?: string;
@@ -2846,52 +2847,7 @@ export class ToolRuntime {
 }
 
 async function validateDeclaredToolArgs(parameters: unknown, args: unknown): Promise<void> {
-  if (!parameters || (typeof parameters !== 'object' && typeof parameters !== 'function')) {
-    return;
-  }
-  const schema = parameters as {
-    safeParseAsync?: (
-      value: unknown,
-    ) => PromiseLike<{ success: true; data: unknown } | { success: false; error: unknown }>;
-    safeParse?: (
-      value: unknown,
-    ) => { success: true; data: unknown } | { success: false; error: unknown };
-    validate?: (
-      value: unknown,
-    ) =>
-      | { success: true; value: unknown }
-      | { success: false; error: unknown }
-      | PromiseLike<{ success: true; value: unknown } | { success: false; error: unknown }>;
-    '~standard'?: {
-      validate?: (
-        value: unknown,
-      ) =>
-        | { value: unknown }
-        | { issues: readonly unknown[] }
-        | PromiseLike<{ value: unknown } | { issues: readonly unknown[] }>;
-    };
-  };
-
-  if (typeof schema.safeParseAsync === 'function') {
-    const parsed = await schema.safeParseAsync(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema.safeParse === 'function') {
-    const parsed = schema.safeParse(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema.validate === 'function') {
-    const parsed = await schema.validate(args);
-    if (parsed.success) return;
-    throw parsed.error;
-  }
-  if (typeof schema['~standard']?.validate === 'function') {
-    const parsed = await schema['~standard'].validate(args);
-    if ('value' in parsed) return;
-    throw new Error('Tool arguments failed declared schema validation', { cause: parsed.issues });
-  }
+  await parseToolParameters(parameters, args);
 }
 
 function isInteractionControlError(error: unknown): boolean {

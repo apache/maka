@@ -23,6 +23,7 @@ import type { McpToolBinding } from '@maka/core/mcp';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { buildMcpTools, type McpToolProvider } from '@maka/runtime/mcp-tools';
+import { ToolParameterValidationError } from '@maka/runtime/tool-parameters';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
@@ -183,9 +184,18 @@ test('publishes and invokes MCP JSON Schema tools through Desktop native capabil
             name: 'echo',
             description: 'Echo one value',
             inputSchema: {
+              $schema: 'https://json-schema.org/draft/2020-12/schema',
               type: 'object',
-              properties: { value: { type: 'string' } },
-              required: ['value'],
+              properties: {
+                mode: { enum: ['echo', 'silent'] },
+                value: { type: 'string' },
+              },
+              required: ['mode'],
+              if: {
+                properties: { mode: { const: 'echo' } },
+                required: ['mode'],
+              },
+              then: { required: ['value'] },
               additionalProperties: false,
             },
           },
@@ -216,9 +226,18 @@ test('publishes and invokes MCP JSON Schema tools through Desktop native capabil
   const offer = provider.offers()[0];
   assert.equal(offer?.offerId, 'desktop_mcp');
   assert.deepEqual(offer?.tools[0]?.inputSchema, {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
     type: 'object',
-    properties: { value: { type: 'string' } },
-    required: ['value'],
+    properties: {
+      mode: { enum: ['echo', 'silent'] },
+      value: { type: 'string' },
+    },
+    required: ['mode'],
+    if: {
+      properties: { mode: { const: 'echo' } },
+      required: ['mode'],
+    },
+    then: { required: ['value'] },
     additionalProperties: false,
   });
   assert.deepEqual(
@@ -228,12 +247,12 @@ test('publishes and invokes MCP JSON Schema tools through Desktop native capabil
         offerId: 'desktop_mcp',
         serverId: 'desktop_mcp',
         toolName: 'mcp__fixture__echo',
-        arguments: { value: 'ok' },
+        arguments: { mode: 'echo', value: 'ok' },
       }),
     ),
     { content: [{ type: 'text', text: 'echo:ok' }] },
   );
-  assert.deepEqual(receivedArguments, { value: 'ok' });
+  assert.deepEqual(receivedArguments, { mode: 'echo', value: 'ok' });
 
   let admitted = false;
   await assert.rejects(
@@ -244,13 +263,13 @@ test('publishes and invokes MCP JSON Schema tools through Desktop native capabil
           offerId: 'desktop_mcp',
           serverId: 'desktop_mcp',
           toolName: 'mcp__fixture__echo',
-          arguments: { value: 1 },
+          arguments: { mode: 'echo' },
         }),
         () => {
           admitted = true;
         },
       ),
-    (error: unknown) => error instanceof z.ZodError,
+    (error: unknown) => error instanceof ToolParameterValidationError,
   );
   assert.equal(admitted, false);
 });

@@ -122,13 +122,12 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
-import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
-import Ajv2019 from 'ajv/dist/2019.js';
-import Ajv2020 from 'ajv/dist/2020.js';
+import type { ErrorObject } from 'ajv';
 import { z } from 'zod';
 
 import { AsyncEventQueue } from './async-queue.js';
 import { AdmissionLimiter } from './admission-limiter.js';
+import { parseToolParameters } from './tool-parameters.js';
 import {
   type CodeModeExecutionResult,
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
@@ -579,70 +578,12 @@ function nestableToolSnapshot(
   );
 }
 
-const codeModeJsonSchemaOptions = {
-  allErrors: true,
-  strict: false,
-  validateFormats: false,
-} as const;
-const codeModeDraft7Validator = new Ajv(codeModeJsonSchemaOptions);
-const codeModeDraft2019Validator = new Ajv2019(codeModeJsonSchemaOptions);
-const codeModeDraft2020Validator = new Ajv2020(codeModeJsonSchemaOptions);
-const codeModeCompiledSchemas = new WeakMap<object, ValidateFunction>();
-
 async function validateCodeModeToolInput(tool: MakaTool, input: unknown): Promise<unknown> {
-  const parameters = tool.parameters as {
-    safeParseAsync?: (
-      value: unknown,
-    ) => Promise<{ success: true; data: unknown } | { success: false; error: unknown }>;
-    safeParse?: (
-      value: unknown,
-    ) => { success: true; data: unknown } | { success: false; error: unknown };
-    validate?: (
-      value: unknown,
-    ) =>
-      | { success: true; value: unknown }
-      | { success: false; error: unknown }
-      | Promise<{ success: true; value: unknown } | { success: false; error: unknown }>;
-    jsonSchema?: unknown;
-  };
-  const parserResult = parameters.safeParseAsync
-    ? await parameters.safeParseAsync(input)
-    : parameters.safeParse?.(input);
-  if (parserResult) {
-    if (parserResult.success) return parserResult.data;
-    throw invalidCodeModeToolArguments(tool.name, parserResult.error);
+  try {
+    return await parseToolParameters(tool.parameters, input);
+  } catch (error) {
+    throw invalidCodeModeToolArguments(tool.name, error);
   }
-
-  if (parameters.validate) {
-    const validationResult = await parameters.validate(input);
-    if (validationResult.success) return validationResult.value;
-    throw invalidCodeModeToolArguments(tool.name, validationResult.error);
-  }
-
-  const schema = await parameters.jsonSchema;
-  const validator = compileCodeModeJsonSchema(schema ?? tool.parameters);
-  if (!validator || validator(input)) return input;
-  throw invalidCodeModeToolArguments(tool.name, validator.errors);
-}
-
-function compileCodeModeJsonSchema(schema: unknown): ValidateFunction | undefined {
-  if (typeof schema === 'boolean') return codeModeDraft2020Validator.compile(schema);
-  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return undefined;
-  const cached = codeModeCompiledSchemas.get(schema);
-  if (cached) return cached;
-  const declaredDialect = (schema as { readonly $schema?: unknown }).$schema;
-  const dialect = typeof declaredDialect === 'string' ? declaredDialect : '';
-  const validator = dialect.includes('draft-07')
-    ? codeModeDraft7Validator
-    : dialect.includes('2019-09')
-      ? codeModeDraft2019Validator
-      : codeModeDraft2020Validator;
-  const schemaForCompile = dialect.startsWith('https://json-schema.org/draft-07/schema')
-    ? { ...schema, $schema: dialect.replace('https://', 'http://') }
-    : schema;
-  const compiled = validator.compile(schemaForCompile as AnySchema);
-  codeModeCompiledSchemas.set(schema, compiled);
-  return compiled;
 }
 
 function invalidCodeModeToolArguments(toolName: string, error: unknown): Error {

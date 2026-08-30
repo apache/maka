@@ -18,6 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { jsonSchema } from 'ai';
 import type { ToolActivityKind } from '@maka/core/events';
 import type {
   McpCallResult,
@@ -27,7 +28,6 @@ import type {
 } from '@maka/core/mcp';
 import type { ToolCategory } from '@maka/core/permission';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
-import { z } from 'zod';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
 
@@ -96,9 +96,9 @@ export function buildMcpTools(
       // ordinary MCP servers retain the side-effecting network default.
       categoryHint: options.categoryHint ?? 'network_send',
       ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
-      // Client capabilities publish and validate Zod schemas before admission.
-      // Preserve that boundary when an MCP descriptor starts as JSON Schema.
-      parameters: z.fromJSONSchema(descriptor.inputSchema),
+      // Preserve the MCP server's complete JSON Schema. Callers validate it through
+      // the shared tool-parameter boundary instead of a partial schema conversion.
+      parameters: jsonSchema(descriptor.inputSchema),
       impl: async (args: unknown, context) => {
         // Managed network authority applies equally to Direct and nested CodeMode dispatch.
         if (
