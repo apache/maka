@@ -2244,6 +2244,52 @@ describe('renderer architecture checker fixtures', () => {
     );
   });
 
+  it('allows legacy AppShell dependency replacement with a Desktop adapter', async () => {
+    const appShellPath = 'src/renderer/app-shell.tsx';
+    const appShellSource = `
+      import { readSetting } from './platform/desktop/read-setting.js';
+      export const AppShell = readSetting;
+    `;
+    const currentDebt = debtForSource(appShellSource, appShellPath);
+    const baseDebt = {
+      ...currentDebt,
+      dependencyPaths: { './legacy-setting-owner.js': 1 },
+    };
+    const ownership = [
+      {
+        capability: 'fixture-app-shell',
+        targetZone: 'shell',
+        legacyPaths: [appShellPath],
+      },
+    ];
+    const currentConfig = architectureConfig({
+      legacyFiles: { [appShellPath]: currentDebt },
+      legacyRendererFiles: [appShellPath],
+      ownership,
+    });
+    const baseConfig = architectureConfig({
+      legacyFiles: { [appShellPath]: baseDebt },
+      legacyRendererFiles: [appShellPath],
+      ownership,
+    });
+
+    await withDesktopFixture(
+      {
+        [appShellPath]: appShellSource,
+        // A Desktop adapter is the only zone allowed to own the bridge, so
+        // handing a capability to one is how legacy renderer debt gets paid off.
+        'src/renderer/platform/desktop/read-setting.ts': `
+          export function readSetting(): string | undefined {
+            return window.maka.settings.getClient === undefined ? undefined : 'set';
+          }
+        `,
+      },
+      (desktopRoot) => {
+        assert.deepEqual(violationsFor(desktopRoot, currentConfig, baseConfig), []);
+      },
+    );
+  });
+
   it('rejects replacing legacy AppShell debt with a feature private import', async () => {
     const appShellPath = 'src/renderer/app-shell.tsx';
     const appShellSource = `

@@ -2178,7 +2178,17 @@ function allowsMigrationDependency({ base, current, dependency, desktopRoot, pat
   const targetRelative = normalizePath(relative(desktopRoot, target));
   const targetZone = zoneFor(targetRelative);
   if (section === 'legacyAppShell' || section === 'legacyAppShellClosure') {
-    if (targetZone.kind === 'shell' || isPublicApplicationPath(targetRelative)) return true;
+    // `platform` counts for the same reason the root closure already accepts it:
+    // a Desktop adapter is the only zone allowed to own bridge and browser
+    // capabilities, so moving a capability out of legacy renderer code and
+    // behind an adapter is a debt-reducing move, not new debt.
+    if (
+      targetZone.kind === 'shell' ||
+      targetZone.kind === 'platform' ||
+      isPublicApplicationPath(targetRelative)
+    ) {
+      return true;
+    }
     const targetFeature = featureForAbsolutePath(desktopRoot, target);
     return Boolean(targetFeature && isPublicFeaturePath(targetFeature.subpath));
   }

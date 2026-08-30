@@ -56,14 +56,10 @@ import {
   useToast,
   useUiLocale,
   Banner,
+  getConversationCopy,
 } from "@maka/ui";
-import {
-  DefaultWorkingDirectoryRow,
-  useLocalDefaultCapability,
-} from "./default-working-directory-row";
 import { ProviderBrandMark } from "./provider-brand-marks";
 import { PasswordInput } from "./password-input";
-import { getConversationCopy } from '@maka/ui';
 import { settingsActionErrorMessage } from "./settings-error-copy";
 import { useActionGuard, useKeyedActionGuard } from "./use-action-guard";
 import { useOptimisticSettingsDraft } from "./use-optimistic-settings-draft";
@@ -93,6 +89,13 @@ export function GeneralSettingsPage(props: {
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
+  // The default-working-directory row is gated on the same capability the
+  // Projects page uses for its own local-only default: remote targets advertise
+  // `setLocalDefault: false` and their ProjectRootController never receives
+  // `defaultWorkingDirectory`, so the control stays hidden there. The surface
+  // owns the project-snapshot read; this page stays free of bridge access.
+  canSetLocalDefault: boolean;
+  onSaveWorkingDirectory(action: 'choose' | 'clear'): Promise<void>;
   onRefreshConnections(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
 }) {
@@ -152,14 +155,6 @@ export function GeneralSettingsPage(props: {
     runtimeHostConnectionsAvailable ||
     showRuntimeHostSettingsPlaceholder ||
     showRuntimeHostConnectionsPlaceholder;
-  // The default-working-directory row is gated on the same capability the
-  // Projects page uses for its own local-only default: remote targets
-  // advertise `setLocalDefault: false`. Reading the project snapshot here
-  // avoids inventing a second capability channel for one row.
-  const canSetLocalDefault = useLocalDefaultCapability(
-    host,
-    runtimeHostTargetVerified,
-  );
   return (
     <SettingsPage>
       {runtimeHostError ? (
@@ -313,7 +308,8 @@ export function GeneralSettingsPage(props: {
           permissionMode={props.settings.chatDefaults.permissionMode}
           thinkingLevel={props.settings.chatDefaults.thinkingLevel}
           defaultWorkingDirectory={props.settings.projects.defaultWorkingDirectory}
-          canSetLocalDefault={canSetLocalDefault}
+          canSetLocalDefault={props.canSetLocalDefault}
+          onSaveWorkingDirectory={props.onSaveWorkingDirectory}
           onUpdate={props.onUpdate}
         />
       ) : null}
@@ -512,6 +508,7 @@ function GeneralDefaultsCard(props: {
   thinkingLevel?: ThinkingLevel;
   defaultWorkingDirectory?: string;
   canSetLocalDefault: boolean;
+  onSaveWorkingDirectory(action: 'choose' | 'clear'): Promise<void>;
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -527,11 +524,14 @@ function GeneralDefaultsCard(props: {
   const toast = useToast();
   const mountedRef = useMountedRef();
   const persistGuard = useKeyedActionGuard<
-    "default-model" | "permission-mode" | "thinking-level"
+    "default-model" | "permission-mode" | "thinking-level" | "working-directory"
   >();
   const [saving, setSaving] = useState(false);
   const [savingPermissionMode, setSavingPermissionMode] = useState(false);
   const [savingThinkingLevel, setSavingThinkingLevel] = useState(false);
+  // The working-directory row reuses `saving`: `persistGuard` already makes the
+  // card's async actions mutually exclusive, so a second boolean would only
+  // duplicate the latch it already owns.
 
   const modelChoices = useMemo(
     () => buildChatModelChoices(props.connections),
@@ -660,18 +660,77 @@ function GeneralDefaultsCard(props: {
     }
   }
 
+  // Inlined into this card rather than extracted into its own settings module:
+  // the renderer architecture ratchet forbids a new legacy-zone file becoming
+  // reachable from AppShell, and the row needs no capability this card does not
+  // already own.
+  async function persistWorkingDirectory(action: 'choose' | 'clear') {
+    const releaseSave = persistGuard.begin('working-directory');
+    if (!releaseSave) return;
+    setSaving(true);
+    try {
+      await props.onSaveWorkingDirectory(action);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.saveDefaultWorkingDirectoryFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          host ? { profileId: host.profileId } : undefined,
+        );
+      }
+    } finally {
+      releaseSave();
+      if (mountedRef.current) setSaving(false);
+    }
+  }
+
   return (
     <SettingsSection
       title={sections.chatDefaults}
       description={sections.chatDefaultsHelp}
     >
       {/* Local-only and client-owned: gated on the same capability the
-          Projects page uses for its own default. */}
+          Projects page uses for its own default. The row only reports and edits
+          the preference; which directory a session actually gets is decided in
+          one place in the main process (`resolveUnassociatedRoot`: selected
+          Project → configured default → fallback roots). Nothing here
+          re-derives a path. The value lives in the client-owned `projects`
+          section, so it is per-machine rather than shared with every other
+          client of a Runtime Host — a working directory only exists on one
+          filesystem. */}
       {props.canSetLocalDefault ? (
-        <DefaultWorkingDirectoryRow
-          defaultWorkingDirectory={props.defaultWorkingDirectory}
-          onUpdate={props.onUpdate}
-        />
+        <>
+          <SettingsRow
+            label={copy.defaultWorkingDirectory}
+            description={
+              <>
+                {copy.defaultWorkingDirectoryHelp}
+                <code className="settingsWorkingDirectoryPath">
+                  {props.defaultWorkingDirectory ?? copy.notSet}
+                </code>
+              </>
+            }
+          />
+          <SettingsActions role="group" aria-label={copy.defaultWorkingDirectory}>
+            <Button
+              variant="secondary"
+              size="sm"
+              label={copy.chooseDefaultWorkingDirectory}
+              isDisabled={saving}
+              onClick={() => void persistWorkingDirectory('choose')}
+            />
+            {props.defaultWorkingDirectory ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.clearDefaultWorkingDirectory}
+                isDisabled={saving}
+                onClick={() => void persistWorkingDirectory('clear')}
+              />
+            ) : null}
+          </SettingsActions>
+        </>
       ) : null}
       {props.connectionsAvailable ? (
         <SettingsRow
