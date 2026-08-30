@@ -30,7 +30,7 @@ import {
   type RuntimeHostPeerStatus,
 } from '@maka/runtime-host/operator';
 import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
-import { hasActivePeerMeshMembership } from '@maka/runtime-host/peer-mesh';
+import { hasPeerMeshIdentityObligations } from '@maka/runtime-host/peer-mesh';
 import {
   allocateRuntimeHostPeerPort,
   RuntimeHostServiceManagerError,
@@ -170,14 +170,14 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       );
     }
     if (
-      await hasActivePeerMeshMembership(
+      await hasPeerMeshIdentityObligations(
         join(config.deploymentRoot, 'peer-mesh', current.peerId),
         current.peerId,
       )
     ) {
       throw new RuntimeHostServiceManagerError(
         'invalid_config',
-        'Close or leave every active Peer Mesh before rotating the Direct peer identity',
+        'Close or finish leaving every Peer Mesh before rotating the Direct peer identity',
       );
     }
     previousPeerId = current.peerId;
