@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import type { spawn as SpawnFn } from 'node:child_process';
 // Deep import (pi-tui does not re-export it): the layout frame is what
 // TuiAltScreen's doRender builds every frame, so rendering one here exercises
 // the exact composition path the fullscreen trial uses.
@@ -35,7 +37,9 @@ import {
   MakaTranscriptScrollView,
 } from '../pi-tui-layout.js';
 import {
+  isOpenableExternalUrl,
   isNightlyPackageVersion,
+  openExternalUrl,
   renderUnreadIndicator,
   resolveTuiFullscreen,
   UnreadOutputCounter,
@@ -466,5 +470,79 @@ describe('fullscreen layout frame', () => {
     // …and the catch-up frame clears it.
     assert.doesNotMatch(harness.plainLines().join('\n'), /new lines — End to jump to latest/);
     assert.equal(harness.frameCatchUps, 0);
+  });
+});
+
+describe('external URL opener hardening', () => {
+  interface RecordedSpawn {
+    command: string;
+    args: readonly string[];
+  }
+
+  function recordingSpawn(): { calls: RecordedSpawn[]; spawn: typeof SpawnFn } {
+    const calls: RecordedSpawn[] = [];
+    const spawn = ((command: string, args: readonly string[], _options?: SpawnOptions) => {
+      calls.push({ command, args });
+      return { unref() {} } as unknown as ChildProcess;
+    }) as unknown as typeof SpawnFn;
+    return { calls, spawn };
+  }
+
+  test('opens web and mail targets with the platform opener', () => {
+    assert.equal(isOpenableExternalUrl('https://apache.org'), true);
+    assert.equal(isOpenableExternalUrl('http://localhost:8080/?x=1'), true);
+    assert.equal(isOpenableExternalUrl('mailto:someone@example.com'), true);
+    // `URL` normalizes the scheme to lowercase, so a hostile casing cannot
+    // smuggle a scheme past the allowlist either.
+    assert.equal(isOpenableExternalUrl('HTTPS://APACHE.ORG'), true);
+  });
+
+  test('rejects every non-allowlisted scheme without spawning an opener', () => {
+    const rejected = [
+      'file:///C:/Windows/System32/calc.exe',
+      'javascript:alert(1)',
+      'ftp://example.com/pub',
+      'calc://payload',
+      'ms-msdt:id',
+      '\\\\server\\share\\payload',
+      'not a url',
+      '',
+      'https://example.com trailing text',
+    ];
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      for (const url of rejected) {
+        const { calls, spawn } = recordingSpawn();
+        openExternalUrl(url, platform, spawn);
+        assert.deepEqual(calls, [], `expected no opener for ${JSON.stringify(url)} on ${platform}`);
+      }
+    }
+    assert.equal(isOpenableExternalUrl('file:///etc/passwd'), false);
+  });
+
+  test('never routes a URL through cmd.exe, whatever metacharacters it carries', () => {
+    const hostile = [
+      'https://example.com/?x=1&calc.exe',
+      'https://example.com/?x=1|calc.exe',
+      'https://example.com/?x=%PATH%',
+      'https://example.com/?q="quoted"&x=1',
+    ];
+    for (const url of hostile) {
+      const { calls, spawn } = recordingSpawn();
+      openExternalUrl(url, 'win32', spawn);
+      assert.deepEqual(
+        calls.map((call) => call.command),
+        ['rundll32'],
+        `expected the shell-free rundll32 opener for ${JSON.stringify(url)}`,
+      );
+      assert.deepEqual(calls[0]?.args, ['url.dll,FileProtocolHandler', url]);
+    }
+  });
+
+  test('passes macOS and Linux targets as plain argv elements', () => {
+    const { calls, spawn } = recordingSpawn();
+    openExternalUrl('https://apache.org?x=1&y=2', 'darwin', spawn);
+    openExternalUrl('https://apache.org?x=1&y=2', 'linux', spawn);
+    assert.deepEqual(calls[0], { command: 'open', args: ['https://apache.org?x=1&y=2'] });
+    assert.deepEqual(calls[1], { command: 'xdg-open', args: ['https://apache.org?x=1&y=2'] });
   });
 });

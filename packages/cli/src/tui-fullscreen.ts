@@ -132,25 +132,59 @@ export function renderUnreadIndicator(
 }
 
 /**
- * Opens an OSC 8 hyperlink activated by a primary-button click in the
- * fullscreen viewport. Platform-default opener; failures are swallowed — a
- * dead link must never take the TUI down.
+ * URL schemes a model-authored OSC 8 link may be opened with, mirroring the
+ * desktop's external-link guard (apps/desktop/src/main/external-link-guard.ts):
+ * web and mail only. Assistant Markdown is rendered with the raw href, so
+ * everything else — `file:`, `javascript:`, unknown handlers, UNC paths —
+ * must never reach an OS opener from a click.
  */
-export function openExternalUrl(url: string, platform: NodeJS.Platform = process.platform): void {
+const OPENABLE_URL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+
+export function isOpenableExternalUrl(url: string): boolean {
+  try {
+    return OPENABLE_URL_PROTOCOLS.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Opens an OSC 8 hyperlink activated by a primary-button click in the
+ * fullscreen viewport. Model-authored hrefs are untrusted input, so the
+ * opener is deliberately narrow:
+ *
+ * - Only `http:`, `https:`, and `mailto:` targets are handed off at all.
+ * - Windows never routes the URL through cmd.exe — `spawn`'s argument
+ *   quoting does not escape shell metacharacters (`&` would start a second
+ *   command under `cmd /c start`), so the opener is `rundll32
+ *   url.dll,FileProtocolHandler`, which receives the URL as a single argv
+ *   element and hands it to ShellExecute. The DLL/entrypoint half of the
+ *   command line is a compile-time constant, so a hostile URL cannot
+ *   redirect it.
+ * - macOS/Linux openers take the URL as a plain argv element (no shell).
+ *
+ * Failures are swallowed — a dead link must never take the TUI down.
+ */
+export function openExternalUrl(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  spawnProcess: typeof spawn = spawn,
+): void {
+  if (!isOpenableExternalUrl(url)) return;
   try {
     if (platform === 'darwin') {
-      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+      spawnProcess('open', [url], { detached: true, stdio: 'ignore' }).unref();
       return;
     }
     if (platform === 'win32') {
-      spawn('cmd', ['/c', 'start', '', url], {
+      spawnProcess('rundll32', ['url.dll,FileProtocolHandler', url], {
         detached: true,
         stdio: 'ignore',
-        windowsVerbatimArguments: false,
+        windowsHide: true,
       }).unref();
       return;
     }
-    spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    spawnProcess('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
   } catch {
     // Best-effort only; the terminal may also offer its own link handling.
   }
