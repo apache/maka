@@ -1746,6 +1746,15 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
   // entry covers the field, not its contents. A new key inside a state delta is
   // out of reach of any contract keyed on the action surface.
   stateDelta: { action: { continuationStart: true } },
+  managedMutationTerminal: {
+    action: {
+      protocol: 'managed_mutation_terminal_v1',
+      operationId: 'coverage-operation',
+      dispatchEventId: 'coverage-dispatch',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      terminalKind: 'no_workspace_change',
+    },
+  },
   continuationStart: {
     action: {
       protocol: 'continuation_start_v2',

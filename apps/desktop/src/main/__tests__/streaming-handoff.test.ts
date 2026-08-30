@@ -110,7 +110,7 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.equal((markup.match(/data-virtual-turn-id=/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id=/g) ?? []).length, 1);
     assert.match(markup, /data-transient-message-id="message-pending"/);
     assert.match(markup, />send now</);
   });
@@ -146,7 +146,7 @@ describe('single live-turn handoff', () => {
     assert.doesNotMatch(markup, /maka-chat-message-loading/);
     assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
     assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
-    assert.equal((markup.match(/data-virtual-turn-id="turn-1"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
   it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {

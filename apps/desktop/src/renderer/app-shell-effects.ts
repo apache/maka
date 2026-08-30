@@ -516,6 +516,7 @@ export function useActiveSessionEvents(options: {
 
 export function useShellRunUpdates(options: {
   activeId: string | undefined;
+  hydrate?: boolean;
   setShellRunUpdatesBySession: (updater: (current: ShellRunUpdatesBySession) => ShellRunUpdatesBySession) => void;
 }) {
   const applyUpdates = useEffectEvent(
@@ -544,6 +545,7 @@ export function useShellRunUpdates(options: {
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let retryDelayMs = 250;
     const hydration = new ShellRunHydration();
+    if (options.hydrate === false) hydration.commit(0);
     const unsubscribe = window.maka.shellRuns.subscribeUpdates((update) => {
       if (disposed) return;
       const live = hydration.accept(update);
@@ -554,6 +556,7 @@ export function useShellRunUpdates(options: {
       }
     });
     const hydrate = (epoch: number) => {
+      if (options.hydrate === false) return;
       void window.maka.shellRuns
         .list(sessionId)
         .then((updates) => {
@@ -577,7 +580,7 @@ export function useShellRunUpdates(options: {
         });
     };
     const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
-      if (disposed || event.sessionId !== sessionId) return;
+      if (disposed || options.hydrate === false || event.sessionId !== sessionId) return;
       const epoch = hydration.begin();
       retryDelayMs = 250;
       if (retryTimer !== undefined) {
@@ -586,14 +589,14 @@ export function useShellRunUpdates(options: {
       }
       hydrate(epoch);
     });
-    hydrate(hydration.begin());
+    if (options.hydrate !== false) hydrate(hydration.begin());
     return () => {
       disposed = true;
       if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
       unsubscribe();
       unsubscribeResync();
     };
-  }, [options.activeId]);
+  }, [options.activeId, options.hydrate]);
 }
 
 export function useSessionEventHealthPolling(options: {

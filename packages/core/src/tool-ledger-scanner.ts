@@ -182,6 +182,9 @@ export function validateGenericToolLedgerAppend(
 ): GenericToolLedgerAppendValidation {
   const lane = validateToolLedgerEventLane(event);
   if (!lane.ok) return lane;
+  if (event.actions?.managedMutationTerminal !== undefined) {
+    return { ok: false, code: 'reserved_tool_boundary_fact', eventId: event.id };
+  }
   if (lane.lane === 'reconcile_result' || lane.lane === 'recovery_decision') {
     return { ok: false, code: 'reserved_recovery_fact', eventId: event.id };
   }
@@ -614,14 +617,19 @@ function matchesFunctionCallActions(actions: RuntimeEvent['actions']): boolean {
 
 function matchesFunctionResponseActions(actions: RuntimeEvent['actions']): boolean {
   if (!actions) return true;
-  if (!hasOnlyKeys(actions, ['stateDelta'])) return false;
+  const keys = Object.keys(actions);
+  if (
+    keys.length === 0 ||
+    keys.some((key) => key !== 'stateDelta' && key !== 'managedMutationTerminal')
+  ) {
+    return false;
+  }
   const stateDelta = actions.stateDelta;
-  return (
-    stateDelta !== undefined &&
-    hasOnlyKeys(stateDelta, ['durationMs']) &&
-    typeof stateDelta.durationMs === 'number' &&
-    Number.isFinite(stateDelta.durationMs)
-  );
+  return stateDelta === undefined
+    ? actions.managedMutationTerminal !== undefined
+    : hasOnlyKeys(stateDelta, ['durationMs']) &&
+        typeof stateDelta.durationMs === 'number' &&
+        Number.isFinite(stateDelta.durationMs);
 }
 
 function toolCallIdentity(invocationId: string, toolCallId: string): string {

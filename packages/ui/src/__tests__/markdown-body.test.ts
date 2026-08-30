@@ -59,6 +59,50 @@ it('renders Markdown emphasis and LaTeX without exposing their source delimiters
   assert.doesNotMatch(markup, /\\\\\\\(/);
 });
 
+it('keeps URL, email, and Markdown markers atomic inside math', () => {
+  const markup = renderToStaticMarkup(createElement(LocaleProvider, {
+    locale: 'en',
+    children: createElement(MarkdownBody, {
+      text: [
+        'URL \\( \\texttt{https://example.com} \\)',
+        'Email \\( \\text{person@example.com} \\)',
+        'Markers \\( x \\left[y\\right] * z \\)',
+      ].join('\n\n'),
+      streaming: true,
+      settledText: [
+        'URL \\( \\texttt{https://example.com} \\)',
+        'Email \\( \\text{person@example.com} \\)',
+        'Markers \\( x \\left[y\\right] * z \\)',
+      ].join('\n\n'),
+    }),
+  }));
+
+  assert.equal((markup.match(/class="maka-math maka-math-inline"/g) ?? []).length, 3);
+  assert.equal((markup.match(/class="katex"/g) ?? []).length, 3);
+  assert.doesNotMatch(markup, /<a\b|mailto:/);
+  assert.doesNotMatch(markup, /\\\(|\\\)/);
+});
+
+it('falls back to ordinary Markdown for an empty formula', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'Empty \\( \\) end',
+  }));
+
+  assert.doesNotMatch(markup, /class="maka-math/);
+  assert.doesNotMatch(markup, /\\\(|\\\)/);
+  assert.match(markup, /Empty \( \) end/);
+});
+
+it('keeps literal math transport syntax as prose', () => {
+  const literalToken = '\uE000MAKA_MATH:0:78\uE001';
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: `Literal ${literalToken} end`,
+  }));
+
+  assert.doesNotMatch(markup, /class="maka-math/);
+  assert.match(markup, new RegExp(literalToken));
+});
+
 it('leaves LaTeX delimiters untouched inside inline and fenced code', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
     text: ['Use `\\( x + 1 \\)` literally.', '', '```tex', '\\( y + 2 \\)', '```'].join('\n'),
@@ -67,6 +111,44 @@ it('leaves LaTeX delimiters untouched inside inline and fenced code', () => {
   assert.doesNotMatch(markup, /class="maka-math/);
   assert.match(markup, /\\\( x \+ 1 \\\)/);
   assert.match(markup, /\\\( y \+ 2 \\\)/);
+});
+
+it('does not let an unmatched inline backtick hide later math', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: 'Unmatched ` prose.\n\nMath \\(x + 1\\)',
+  }));
+
+  assert.match(markup, /class="maka-math maka-math-inline"/);
+  assert.match(markup, /class="katex"/);
+});
+
+it('does not let an unmatched math delimiter hide a later formula', () => {
+  for (const text of [
+    'bad \\( then \\[x\\]',
+    'bad $$ then \\(x\\)',
+    'bad \\[ then \\(x\\)',
+  ]) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text }));
+    assert.match(markup, /class="maka-math/);
+    assert.match(markup, /class="katex/);
+  }
+});
+
+it('lets a formula own backticks that occur inside its delimiters', () => {
+  for (const formula of ['\\(x ` y\\)', '\\(x \\text{`foo`}\\)']) {
+    const markup = renderToStaticMarkup(createElement(MarkdownBody, { text: formula }));
+    assert.match(markup, /class="maka-math maka-math-inline"/);
+    assert.match(markup, /class="katex"/);
+  }
+});
+
+it('keeps scanning after a malformed math transport prefix', () => {
+  const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+    text: `bad \uE000MAKA_MATH:bad then \\(x\\)`,
+  }));
+
+  assert.match(markup, /MAKA_MATH:bad/);
+  assert.match(markup, /class="maka-math maka-math-inline"/);
 });
 
 it('renders display math while leaving ordinary currency alone', () => {
@@ -99,21 +181,6 @@ it('does not treat shell variables, currency, or inline code as dollar-delimited
   assert.match(markup, /class="katex"/);
 });
 
-it('keeps raw and malformed internal-token lookalikes literal', () => {
-  for (const token of [
-    '\uE000MAKAMATHIFFFFFFEND\uE001',
-    '\uE000MAKAMATH:0:0:\uE001',
-    '\uE000MAKAMATH:999:not-a-token:\uE001',
-  ]) {
-    const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-      text: `Before ${token} after with \\( x + 1 \\).`,
-    }));
-
-    assert.match(markup, new RegExp(token));
-    assert.equal((markup.match(/class="maka-math maka-math-inline"/g) ?? []).length, 1);
-  }
-});
-
 it('renders multiline display math outside code for both supported delimiters', () => {
   for (const [text, mathNode] of [
     [['Before', '', '$$', 'E = mc^2', '$$', '', 'After'].join('\n'), '<msup>'],
@@ -129,6 +196,26 @@ it('renders multiline display math outside code for both supported delimiters', 
     assert.doesNotMatch(markup, /\\\[/);
     assert.match(markup, new RegExp(mathNode));
     assert.doesNotMatch(markup, /<em[^>]*>1<\/em>/);
+  }
+});
+
+it('keeps display math intact across Markdown-looking block boundaries', () => {
+  const bodies = [
+    ['x + 1', '', 'y + 2'],
+    ['x + 1', '# heading-shaped'],
+    ['x + 1', '- list-shaped'],
+    ['x + 1', '| table | shaped |', '| --- | --- |'],
+  ];
+
+  for (const [open, close] of [['$$', '$$'], ['\\[', '\\]']]) {
+    for (const body of bodies) {
+      const markup = renderToStaticMarkup(createElement(MarkdownBody, {
+        text: ['Before', '', open, ...body, close, '', 'After'].join('\n'),
+      }));
+
+      assert.match(markup, /class="maka-math maka-math-display"/);
+      assert.doesNotMatch(markup, /<h1\b|<ul\b|<table\b/);
+    }
   }
 });
 
@@ -409,15 +496,13 @@ it('shows only the restored prefix on its first streaming render', () => {
   assert.doesNotMatch(markup, /new delta/);
 });
 
-it('uses the same protected math registry for live and settled streaming text', () => {
-  const rawToken = '\uE000MAKAMATH:0:0:\uE001';
+it('renders settled math while keeping the live tail behind the display cursor', () => {
   const markup = renderToStaticMarkup(createElement(MarkdownBody, {
-    text: `Stable ${rawToken} \\( x + 1 \\) with a new delta`,
+    text: 'Stable \\( x + 1 \\) with a new delta',
     streaming: true,
-    settledText: `Stable ${rawToken} \\( x + 1 \\)`,
+    settledText: 'Stable \\( x + 1 \\)',
   }));
 
-  assert.match(markup, new RegExp(rawToken));
   assert.match(markup, /class="maka-math maka-math-inline"/);
   assert.match(markup, /class="katex"/);
   assert.doesNotMatch(markup, /new delta/);

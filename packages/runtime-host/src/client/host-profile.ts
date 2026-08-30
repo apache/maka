@@ -60,7 +60,7 @@ import {
   type RuntimeHostWslProcessFactory,
 } from './wsl-environment.js';
 
-const PROFILE_SCHEMA_VERSION = 2;
+const PROFILE_SCHEMA_VERSION = 3;
 const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
@@ -100,6 +100,14 @@ export interface RemoteRuntimeHostProfile extends RuntimeHostProfileOfKind<'remo
   readonly name: string;
   readonly transport: RuntimeHostRemoteTransport;
   readonly rootId: string;
+  /** Present only when this profile carries a restricted Session Guest credential. */
+  readonly access?: 'session_guest';
+}
+
+export type RuntimeHostProfileAccess = 'owner' | 'session_guest';
+
+export function runtimeHostProfileAccess(profile: RuntimeHostProfile): RuntimeHostProfileAccess {
+  return profile.kind === 'remote' ? (profile.access ?? 'owner') : 'owner';
 }
 
 export type RuntimeHostRemoteTransport =
@@ -168,7 +176,10 @@ export function sameRemoteRuntimeHostProfileTarget(
   left: RemoteRuntimeHostProfile,
   right: RemoteRuntimeHostProfile,
 ): boolean {
-  return profileCredentialBinding(left) === profileCredentialBinding(right);
+  return (
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
+    profileCredentialBinding(left) === profileCredentialBinding(right)
+  );
 }
 
 export interface RuntimeHostProfileCatalog {
@@ -544,7 +555,11 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
     'schemaVersion',
     'profiles',
   ]);
-  if (record.schemaVersion !== 1 && record.schemaVersion !== PROFILE_SCHEMA_VERSION) {
+  if (
+    record.schemaVersion !== 1 &&
+    record.schemaVersion !== 2 &&
+    record.schemaVersion !== PROFILE_SCHEMA_VERSION
+  ) {
     throw new Error('Runtime Host profile document has an unsupported schema');
   }
   if (!Array.isArray(record.profiles) || record.profiles.length > PROFILE_COUNT_MAX) {
@@ -560,6 +575,12 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
     )
   ) {
     throw new Error('Runtime Host profile schema 1 cannot contain activation');
+  }
+  if (
+    record.schemaVersion !== PROFILE_SCHEMA_VERSION &&
+    profiles.some((profile) => profile.kind === 'remote' && profile.access === 'session_guest')
+  ) {
+    throw new Error('Runtime Host profile schema 3 is required for restricted access');
   }
   const ids = new Set<string>();
   for (const profile of profiles) {
@@ -652,7 +673,8 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         throw new Error('A new Runtime Host profile must use a new profile id');
       }
       const targetChanged = previousProfile
-        ? profileTargetBinding(previousProfile) !== profileTargetBinding(profile)
+        ? profileTargetBinding(previousProfile) !== profileTargetBinding(profile) ||
+          runtimeHostProfileAccess(previousProfile) !== runtimeHostProfileAccess(profile)
         : false;
       if (targetChanged) {
         throw new Error('A Runtime Host profile target cannot be changed; create a new profile id');
@@ -753,7 +775,8 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     const profile = decodeRemoteRuntimeHostProfile(value);
     if (
       profile.id !== expectedProfile.id ||
-      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)
+      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile) ||
+      runtimeHostProfileAccess(profile) !== runtimeHostProfileAccess(expectedProfile)
     ) {
       return Promise.reject(new Error('A Runtime Host profile rebind must retain its connection'));
     }
@@ -872,20 +895,25 @@ export function decodeEnvironmentRuntimeHostProfile(value: unknown): Environment
 }
 
 export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
-  const record = requireExactRecord(value, 'Remote Runtime Host profile', [
-    'id',
-    'name',
-    'kind',
-    'transport',
-    'rootId',
-  ]);
+  const candidate = requireRecord(value, 'Remote Runtime Host profile');
+  const record = requireExactRecord(
+    value,
+    'Remote Runtime Host profile',
+    candidate.access === undefined
+      ? ['id', 'name', 'kind', 'transport', 'rootId']
+      : ['id', 'name', 'kind', 'transport', 'rootId', 'access'],
+  );
   if (record.kind !== 'remote') throw new Error('Runtime Host profile kind must be remote');
+  if (record.access !== undefined && record.access !== 'session_guest') {
+    throw new Error('Runtime Host profile access is invalid');
+  }
   return Object.freeze({
     id: requireProfileId(record.id),
     name: requireProfileName(record.name),
     kind: 'remote',
     transport: decodeRuntimeHostRemoteTransport(record.transport),
     rootId: requireHostRootId(record.rootId),
+    ...(record.access === undefined ? {} : { access: record.access }),
   });
 }
 
@@ -1082,6 +1110,7 @@ function sameRemoteRuntimeHostProfile(
   return (
     left.id === right.id &&
     left.name === right.name &&
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
     profileCredentialBinding(left) === profileCredentialBinding(right)
   );
 }
@@ -1093,6 +1122,7 @@ function samePersistedRuntimeHostProfile(
   return (
     left.id === right.id &&
     left.name === right.name &&
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
     profileTargetBinding(left) === profileTargetBinding(right)
   );
 }
@@ -1191,12 +1221,16 @@ async function writeProfileDocument(
   document: RuntimeHostProfileDocument,
 ): Promise<void> {
   const schemaVersion = document.profiles.some(
-    (profile) =>
-      profile.kind === 'environment' ||
-      (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+    (profile) => profile.kind === 'remote' && profile.access === 'session_guest',
   )
     ? PROFILE_SCHEMA_VERSION
-    : 1;
+    : document.profiles.some(
+          (profile) =>
+            profile.kind === 'environment' ||
+            (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+        )
+      ? 2
+      : 1;
   const encoded = `${JSON.stringify({ ...document, schemaVersion }, null, 2)}\n`;
   if (Buffer.byteLength(encoded, 'utf8') > PROFILE_DOCUMENT_MAX_BYTES) {
     throw new Error('Runtime Host profile document exceeds its size limit');

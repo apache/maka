@@ -44,6 +44,11 @@ interface RuntimeHostArtifactsIpcDeps {
   readonly presentationRoot?: string;
 }
 
+type RuntimeHostAttachmentPreviewIpcDeps = Pick<
+  RuntimeHostArtifactsIpcDeps,
+  'ipcMain' | 'client'
+>;
+
 const ATTACHMENT_PREVIEW_LIMIT_EXCEEDED = Symbol("attachment-preview-limit-exceeded");
 
 export function registerRuntimeHostArtifactsIpc(
@@ -92,52 +97,7 @@ export function registerRuntimeHostArtifactsIpc(
       return result;
     },
   );
-  handleReconnectableRead(
-    deps.ipcMain,
-    "attachments:readBytes",
-    async (_event, sessionId: string, artifactId: string) => {
-      const artifact = await deps.client.getArtifact(sessionId, artifactId);
-      if (
-        !artifact ||
-        artifact.status === "deleted"
-      ) {
-        return { ok: false as const, reason: "not_found" };
-      }
-      const preview = resolveArtifactImagePreview(artifact);
-      if (preview.kind === "unsupported") {
-        return {
-          ok: false as const,
-          reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
-        };
-      }
-      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
-      if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
-      const chunks: Buffer[] = [];
-      let received = 0;
-      try {
-        await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
-          received += chunk.byteLength;
-          if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
-            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
-          }
-          chunks.push(Buffer.from(chunk));
-        });
-      } catch (error) {
-        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
-          return { ok: false as const, reason: "too_large" };
-        }
-        throw error;
-      }
-      if (received !== artifact.sizeBytes) {
-        return { ok: false as const, reason: "read_failed" };
-      }
-      return {
-        ok: true as const,
-        base64: Buffer.concat(chunks, received).toString("base64"),
-        mimeType,
-      };
-    },
-  );
+  registerRuntimeHostAttachmentPreviewIpc(deps);
   deps.ipcMain.handle(
     "app:openArtifactPath",
     async (_event, sessionId: string, artifactId: string) => {
@@ -188,6 +148,58 @@ export function registerRuntimeHostArtifactsIpc(
       } catch {
         return { ok: false, reason: "write_failed" };
       }
+    },
+  );
+}
+
+/** Guest-safe projection used by transcript attachment thumbnails. */
+export function registerRuntimeHostAttachmentPreviewIpc(
+  deps: RuntimeHostAttachmentPreviewIpcDeps,
+): void {
+  handleReconnectableRead(
+    deps.ipcMain,
+    "attachments:readBytes",
+    async (_event, sessionId: string, artifactId: string) => {
+      const artifact = await deps.client.getArtifact(sessionId, artifactId);
+      if (
+        !artifact ||
+        artifact.status === "deleted"
+      ) {
+        return { ok: false as const, reason: "not_found" };
+      }
+      const preview = resolveArtifactImagePreview(artifact);
+      if (preview.kind === "unsupported") {
+        return {
+          ok: false as const,
+          reason: preview.reason === "oversize" ? "too_large" : "unsupported_mime",
+        };
+      }
+      const mimeType = normalizeArtifactImagePreviewMime(artifact.mimeType, artifact.name);
+      if (!mimeType) return { ok: false as const, reason: "unsupported_mime" };
+      const chunks: Buffer[] = [];
+      let received = 0;
+      try {
+        await deps.client.streamArtifact(sessionId, artifactId, async (chunk) => {
+          received += chunk.byteLength;
+          if (received > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+            throw ATTACHMENT_PREVIEW_LIMIT_EXCEEDED;
+          }
+          chunks.push(Buffer.from(chunk));
+        });
+      } catch (error) {
+        if (error === ATTACHMENT_PREVIEW_LIMIT_EXCEEDED) {
+          return { ok: false as const, reason: "too_large" };
+        }
+        throw error;
+      }
+      if (received !== artifact.sizeBytes) {
+        return { ok: false as const, reason: "read_failed" };
+      }
+      return {
+        ok: true as const,
+        base64: Buffer.concat(chunks, received).toString("base64"),
+        mimeType,
+      };
     },
   );
 }

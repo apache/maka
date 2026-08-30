@@ -90,9 +90,13 @@ test('credential metadata exposes only usable public access state', async (t) =>
     new Date(Date.now() - 60_000).toISOString(),
   );
   const revoked = credential('revoked', revokedSecret, 'revoked');
+  const guest = {
+    ...credential('guest', 'maka_rh_guest_secret', 'active'),
+    principalKind: 'session_guest' as const,
+  };
   await writeAccessCredentialFile(
     join(owner.controlDirectory, ACCESS_FILE_NAME),
-    createAccessCredentialFile([active, pending, expired, revoked]),
+    createAccessCredentialFile([active, pending, expired, revoked, guest]),
   );
 
   const metadata = await readRuntimeHostAccessCredentialMetadata(root, capability.rootId);

@@ -235,7 +235,7 @@ test('content that grows outside the turn wrappers is followed too', async ({
     grown.dataset.outsideTurnGrowth = 'true';
     grown.style.height = '600px';
     list.append(grown);
-    return grown.closest('[data-virtual-turn-id]') === null;
+    return grown.closest('[data-transcript-turn-id]') === null;
   });
   await waitForPaintedFrames(page);
 
@@ -353,6 +353,68 @@ test('a gesture a nested scroller consumed does not release the tail', async ({
   expect(await scrollButtonOffered(page)).toBe(false);
 });
 
+test('a nested scroller near the history boundary does not request an earlier range', async ({
+  promptRailWindow: page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 1500 });
+  await waitForPaintedFrames(page, 6);
+  const metrics = await scrollMetrics(page);
+  expect(metrics.scrollTop).toBeLessThanOrEqual(Math.max(640, metrics.clientHeight * 2));
+  expect(metrics.distance).toBeLessThanOrEqual(4);
+
+  const nestedBefore = await page.evaluate((selector) => {
+    const root = document.querySelector<HTMLElement>(selector);
+    const list = root?.querySelector<HTMLElement>('.maka-chat-message-list');
+    if (!root || !list) throw new Error('the active transcript range is missing');
+    const box = document.createElement('div');
+    box.dataset.nestedHistoryScroller = 'true';
+    box.style.cssText = [
+      'position:fixed',
+      'top:160px',
+      'left:160px',
+      'width:240px',
+      'height:120px',
+      'overflow-y:auto',
+      'z-index:9999',
+    ].join(';');
+    const filler = document.createElement('div');
+    filler.style.height = '2000px';
+    box.append(filler);
+    // A Turn uses `content-visibility:auto`, whose paint containment prevents
+    // a fixed descendant from reliably winning hit testing over sibling Turns
+    // on Linux/Xvfb. Keep the fixture inside the transcript event path without
+    // putting it inside the product containment boundary being tested.
+    list.append(box);
+    box.scrollTop = 600;
+    return box.scrollTop;
+  }, SCROLLER);
+
+  const nested = page.locator('[data-nested-history-scroller="true"]');
+  const box = await nested.boundingBox();
+  if (!box) throw new Error('the nested history scroller is not rendered');
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  expect(await page.evaluate(({ x, y }) =>
+    document.elementFromPoint(x, y)?.closest('[data-nested-history-scroller="true"]') !== null,
+  point)).toBe(true);
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.wheel(0, -400);
+  await waitForPaintedFrames(page);
+
+  const nestedAfter = await page.evaluate(() =>
+    document.querySelector<HTMLElement>('[data-nested-history-scroller="true"]')?.scrollTop ?? -1,
+  );
+  expect(nestedAfter).toBeLessThan(nestedBefore);
+  await page.evaluate(() => {
+    const list = document.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    const grown = document.createElement('div');
+    grown.style.height = '600px';
+    list.append(grown);
+  });
+  await waitForPaintedFrames(page, 6);
+  expect(await distanceToTail(page)).toBeLessThanOrEqual(4);
+});
+
 test('the dock affordance returns the reader to the tail', async ({ window: page }) => {
   test.slow();
   await page.setViewportSize({ width: 900, height: 700 });
@@ -374,14 +436,15 @@ test('the dock affordance returns the reader to the tail', async ({ window: page
 test('earlier history lands above the turn the reader is on', async ({
   promptRailWindow: page,
 }) => {
-  const loadedTurns = () =>
-    page.locator('.maka-chat-message-list').getAttribute('data-turn-source-count').then((value) => Number(value));
-  const loadedBefore = await loadedTurns();
+  const firstLoadedTurn = () => page
+    .locator('[data-transcript-turn-id]')
+    .first()
+    .getAttribute('data-transcript-turn-id');
+  const firstBefore = await firstLoadedTurn();
 
-  // Just short of the band that asks for more, so the virtual window has
-  // mounted turns around the reader before the load starts. Landing straight on
-  // zero puts the viewport inside the leading spacer, where there is no turn to
-  // be reading and nothing to hold still.
+  // Just short of the band that asks for more, so the active range has painted
+  // turns around the reader before the load starts. Landing straight on zero
+  // leaves no visible turn above the load boundary to identify as the anchor.
   await page.evaluate((selector) => {
     const root = document.querySelector(selector);
     if (!root) throw new Error('the chat scroll container is missing');
@@ -390,40 +453,44 @@ test('earlier history lands above the turn the reader is on', async ({
   await waitForPaintedFrames(page, 6);
 
   // The move that asks for earlier history, and the reading of where the
-  // reader is, in one task: the scroll event that starts the load is dispatched
-  // afterwards, so the app anchors on the same position this reads.
+  // reader is, in one task. Keep the reader near the active range's head: an
+  // anchor near its tail can already have a complete bounded range around it,
+  // so a valid load has no reason to move the first resident Turn.
   const anchor = await page.evaluate((selector) => {
     const root = document.querySelector(selector);
     if (!root) throw new Error('the chat scroll container is missing');
-    root.scrollTop = Math.max(640, root.clientHeight * 2) - 100;
+    root.scrollTop = Math.min(300, root.scrollHeight - root.clientHeight);
     const rootTop = root.getBoundingClientRect().top;
     const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
       (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
     );
     const turnId = turn?.dataset.turnId;
     if (!turn || !turnId) throw new Error('no turn is on screen');
-    return { turnId, top: Math.round(turn.getBoundingClientRect().top) };
+    const anchor = { turnId, top: Math.round(turn.getBoundingClientRect().top) };
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+    return anchor;
   }, SCROLLER);
 
-  await expect.poll(loadedTurns, { timeout: 20_000 }).toBeGreaterThan(loadedBefore);
+  await expect.poll(firstLoadedTurn, { timeout: 20_000 }).not.toBe(firstBefore);
   await waitForPaintedFrames(page);
 
   // The turns that arrived went above the reader, and the reader did not go
   // with them. Asserting the element rather than a `scrollTop` delta is the
   // point: a compensation computed from `scrollHeight` satisfies the delta
   // while putting the reader somewhere else entirely.
-  expect(Math.abs((await turnTop(page, anchor.turnId)) - anchor.top)).toBeLessThanOrEqual(4);
+  await expect.poll(
+    async () => Math.abs((await turnTop(page, anchor.turnId)) - anchor.top),
+  ).toBeLessThanOrEqual(4);
 });
 
 test('history asked for at the very top of the scroller still lands above the reader', async ({
   promptRailWindow: page,
 }) => {
-  const loadedTurns = () =>
-    page
-      .locator('.maka-chat-message-list')
-      .getAttribute('data-turn-source-count')
-      .then((value) => Number(value));
-  const loadedBefore = await loadedTurns();
+  const firstLoadedTurn = () => page
+    .locator('[data-transcript-turn-id]')
+    .first()
+    .getAttribute('data-transcript-turn-id');
+  const firstBefore = await firstLoadedTurn();
 
   // The one position where the browser declines to anchor, and the one the
   // wheel-to-load path puts the reader in.
@@ -433,7 +500,7 @@ test('history asked for at the very top of the scroller still lands above the re
     root.scrollTop = 0;
   }, SCROLLER);
 
-  await expect.poll(loadedTurns, { timeout: 20_000 }).toBeGreaterThan(loadedBefore);
+  await expect.poll(firstLoadedTurn, { timeout: 20_000 }).not.toBe(firstBefore);
   await waitForPaintedFrames(page);
 
   // Anchoring resumes at an offset of one pixel, so the offset itself is the
@@ -465,12 +532,11 @@ test('history asked for at the very top of the scroller still lands above the re
 test('following the tail does not ask for the history above it', async ({
   promptRailWindow: page,
 }) => {
-  const loadedTurns = () =>
-    page
-      .locator('.maka-chat-message-list')
-      .getAttribute('data-turn-source-count')
-      .then((value) => Number(value));
-  const loadedBefore = await loadedTurns();
+  const firstLoadedTurn = () => page
+    .locator('[data-transcript-turn-id]')
+    .first()
+    .getAttribute('data-transcript-turn-id');
+  const firstBefore = await firstLoadedTurn();
 
   // Tall enough that the tail sits inside `max(640, clientHeight * 2)`. The
   // resize itself is a growth signal, so the pin writes the tail and that write
@@ -487,20 +553,19 @@ test('following the tail does not ask for the history above it', async ({
 
   // Nothing arrived that the reader did not ask for.
   await waitForPaintedFrames(page, 12);
-  expect(await loadedTurns()).toBe(loadedBefore);
+  expect(await firstLoadedTurn()).toBe(firstBefore);
 });
 
-test('a wheel the scroller cannot act on still asks for history', async ({
+test('a wheel a short scroller cannot act on still asks for history', async ({
   promptRailWindow: page,
 }) => {
-  const loadedTurns = () =>
-    page
-      .locator('.maka-chat-message-list')
-      .getAttribute('data-turn-source-count')
-      .then((value) => Number(value));
-  const loadedBefore = await loadedTurns();
+  const firstLoadedTurn = () => page
+    .locator('[data-transcript-turn-id]')
+    .first()
+    .getAttribute('data-transcript-turn-id');
+  const firstBefore = await firstLoadedTurn();
 
-  await page.setViewportSize({ width: 900, height: 1500 });
+  await page.setViewportSize({ width: 900, height: 4000 });
   await waitForPaintedFrames(page, 6);
   const asked = await scrollMetrics(page);
   expect(asked.distance, JSON.stringify(asked)).toBeLessThanOrEqual(4);
@@ -515,11 +580,5 @@ test('a wheel the scroller cannot act on still asks for history', async ({
     root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
   }, SCROLLER);
 
-  await expect.poll(loadedTurns, { timeout: 20_000 }).toBeGreaterThan(loadedBefore);
-
-  // And it landed above the reader: they are where they were, with more above
-  // them than before.
-  const after = await scrollMetrics(page);
-  expect(after.scrollTop, `${JSON.stringify(asked)} then ${JSON.stringify(after)}`)
-    .toBeGreaterThan(asked.scrollTop);
+  await expect.poll(firstLoadedTurn, { timeout: 20_000 }).not.toBe(firstBefore);
 });

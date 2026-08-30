@@ -20,177 +20,296 @@
 import katex from 'katex';
 import type { MarkdownInlinePlugin } from '@astryxdesign/core/Markdown';
 
-export interface PreparedMarkdownMath {
+const TOKEN_START = '\uE000MAKA_MATH:';
+const TOKEN_END = '\uE001';
+const TOKEN_PATTERN = /\uE000MAKA_MATH:([012]):([0-9a-f]+)\uE001/g;
+const LITERAL_TOKEN_PATTERN = /^\uE000MAKA_MATH:[012]:[0-9a-f]+\uE001/;
+
+/**
+ * Discardable derived state owned by one MarkdownBody mount. Capacity is two
+ * strings no larger than that component's currently displayed source and its
+ * transport form; a rewrite resets both and unmounting drops the cache.
+ */
+export interface MarkdownMathCache {
+  source: string;
   text: string;
-  settledText?: string;
-  plugin: MarkdownInlinePlugin;
+  safeSourceEnd: number;
+  safeTextEnd: number;
 }
 
-interface MathTokenValue {
-  formula: string;
-  displayMode: boolean;
+export function createMarkdownMathCache(): MarkdownMathCache {
+  return { source: '', text: '', safeSourceEnd: 0, safeTextEnd: 0 };
 }
 
 export function prepareMarkdownMath(
   source: string,
-  settledSource?: string,
-): PreparedMarkdownMath {
-  const registry = createMathTokenRegistry([source, settledSource]);
-  return {
-    text: protectMathOutsideCode(source, registry.register),
-    ...(settledSource === undefined
-      ? {}
-      : { settledText: protectMathOutsideCode(settledSource, registry.register) }),
-    plugin: {
-      pattern: registry.pattern,
-      render: (match, key) => {
-        const value = registry.values.get(match[0]);
-        if (!value) return match[0];
-        const html = katex.renderToString(value.formula, {
-          displayMode: value.displayMode,
-          output: 'htmlAndMathml',
-          strict: 'warn',
-          throwOnError: false,
-          trust: false,
-        });
-        return (
-          <span
-            key={key}
-            className={
-              value.displayMode ? 'maka-math maka-math-display' : 'maka-math maka-math-inline'
-            }
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        );
-      },
-    },
-  };
+  cache: MarkdownMathCache,
+): string {
+  // The caller currently supplies a full string rather than an append token,
+  // so proving that a rewrite did not occur requires this prefix check. It
+  // keeps the JavaScript lexer on the changing tail; it does not make the
+  // full-string identity check itself incremental.
+  const extendsPrevious = source.startsWith(cache.source);
+  const sourceStart = extendsPrevious ? cache.safeSourceEnd : 0;
+  const textStart = extendsPrevious ? cache.safeTextEnd : 0;
+  const protectedTail = protectMarkdownMath(
+    source.slice(sourceStart),
+    sourceStart === 0 || source[sourceStart - 1] === '\n',
+  );
+  const text = `${extendsPrevious ? cache.text.slice(0, textStart) : ''}${protectedTail.text}`;
+
+  cache.source = source;
+  cache.text = text;
+  cache.safeSourceEnd = sourceStart + protectedTail.safeSourceEnd;
+  cache.safeTextEnd = textStart + protectedTail.safeTextEnd;
+  return text;
 }
 
-function createMathTokenRegistry(sources: Array<string | undefined>): {
-  pattern: RegExp;
-  register: (formula: string, displayMode: boolean) => string;
-  values: Map<string, MathTokenValue>;
+export const MARKDOWN_MATH_PLUGINS = [{
+  pattern: TOKEN_PATTERN,
+  render: (match, key) => {
+    const formula = decodeFormula(match[2] ?? '');
+    if (match[1] === '2') return formula;
+    const displayMode = match[1] === '1';
+    const html = katex.renderToString(formula, {
+      displayMode,
+      output: 'htmlAndMathml',
+      strict: 'warn',
+      throwOnError: false,
+      trust: false,
+    });
+    return (
+      <span
+        key={key}
+        className={
+          displayMode ? 'maka-math maka-math-display' : 'maka-math maka-math-inline'
+        }
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  },
+}] satisfies MarkdownInlinePlugin[];
+
+function protectMarkdownMath(source: string, startsAtLineStart = true): {
+  text: string;
+  safeSourceEnd: number;
+  safeTextEnd: number;
 } {
-  let namespaceIndex = 0;
-  let namespace = '';
-  do {
-    namespace = `\uE000MAKAMATH:${namespaceIndex}:`;
-    namespaceIndex += 1;
-  } while (sources.some((source) => source?.includes(namespace)));
-
-  const tokenEnd = ':\uE001';
-  const values = new Map<string, MathTokenValue>();
-  const tokensByValue = new Map<string, string>();
-  let nextTokenId = 0;
-  return {
-    pattern: new RegExp(`${escapeRegExp(namespace)}\\d+${escapeRegExp(tokenEnd)}`, 'g'),
-    register: (formula, displayMode) => {
-      const valueKey = JSON.stringify([displayMode, formula]);
-      const existingToken = tokensByValue.get(valueKey);
-      if (existingToken) return existingToken;
-
-      const token = `${namespace}${nextTokenId}${tokenEnd}`;
-      nextTokenId += 1;
-      values.set(token, { formula, displayMode });
-      tokensByValue.set(valueKey, token);
-      return token;
-    },
-    values,
-  };
-}
-
-function protectMathOutsideCode(
-  source: string,
-  register: (formula: string, displayMode: boolean) => string,
-): string {
-  const lines = source.split('\n');
-  let fence: { character: string; length: number } | undefined;
-  let proseLines: string[] = [];
-  const protectedParts: string[] = [];
-
-  const flushProse = () => {
-    if (proseLines.length === 0) return;
-    protectedParts.push(protectMathInProse(proseLines.join('\n'), register));
-    proseLines = [];
-  };
-
-  for (const line of lines) {
-    const opening = /^( {0,3})(`{3,}|~{3,})/.exec(line);
-    if (opening) {
-      flushProse();
-      const marker = opening[2] ?? '';
-      const character = marker[0] ?? '';
-      if (!fence) {
-        fence = { character, length: marker.length };
-      } else if (character === fence.character && marker.length >= fence.length) {
-        fence = undefined;
-      }
-      protectedParts.push(line);
-    } else if (fence) {
-      protectedParts.push(line);
-    } else {
-      proseLines.push(line);
-    }
-  }
-  flushProse();
-
-  return protectedParts.join('\n');
-}
-
-function protectMathInProse(
-  source: string,
-  register: (formula: string, displayMode: boolean) => string,
-): string {
-  let output = '';
+  let text = '';
   let index = 0;
+  let safeSourceEnd = 0;
+  let safeTextEnd = 0;
+  let atLineStart = startsAtLineStart;
+  let canMarkSafe = true;
+  const markSafe = () => {
+    if (!canMarkSafe) return;
+    safeSourceEnd = index;
+    safeTextEnd = text.length;
+  };
 
   while (index < source.length) {
+    const fence = atLineStart ? readFence(source, index) : undefined;
+    if (fence?.kind === 'pending') {
+      text += source.slice(index);
+      break;
+    }
+    if (fence?.kind === 'match') {
+      text += source.slice(index, fence.end);
+      index = fence.end;
+      atLineStart = source[index - 1] === '\n';
+      if (fence.closed) markSafe();
+      else break;
+      continue;
+    }
+
+    const literalToken = readLiteralToken(source, index);
+    if (literalToken?.kind === 'pending') {
+      text += source.slice(index);
+      break;
+    }
+    if (literalToken?.kind === 'match') {
+      text += transportToken(literalToken.source, '2');
+      index = literalToken.end;
+      atLineStart = false;
+      markSafe();
+      continue;
+    }
+
     if (source[index] === '`') {
-      const run = /^`+/.exec(source.slice(index))?.[0] ?? '`';
-      const close = source.indexOf(run, index + run.length);
-      if (close >= 0) {
-        output += source.slice(index, close + run.length);
-        index = close + run.length;
+      let runEnd = index + 1;
+      while (source[runEnd] === '`') runEnd++;
+      const run = source.slice(index, runEnd);
+      const close = source.indexOf(run, runEnd);
+      if (close < 0) {
+        text += run;
+        index = runEnd;
+        atLineStart = false;
+        canMarkSafe = false;
         continue;
       }
+      const end = close + run.length;
+      text += source.slice(index, end);
+      index = end;
+      atLineStart = source[index - 1] === '\n';
+      markSafe();
+      continue;
     }
 
     const delimited =
       readDelimitedMath(source, index, '\\(', '\\)', false, false)
       ?? readDelimitedMath(source, index, '\\[', '\\]', true, true)
       ?? readDelimitedMath(source, index, '$$', '$$', true, true);
-    if (delimited) {
-      output += register(delimited.formula, delimited.displayMode);
+    if (delimited?.kind === 'pending') {
+      text += source.slice(index, delimited.end);
       index = delimited.end;
+      atLineStart = false;
+      canMarkSafe = false;
+      continue;
+    }
+    if (delimited?.kind === 'match') {
+      text += mathToken(delimited.formula, delimited.displayMode);
+      index = delimited.end;
+      atLineStart = false;
+      markSafe();
       continue;
     }
 
-    output += source[index];
-    index += 1;
+    const character = source[index] ?? '';
+    text += character;
+    index++;
+    atLineStart = character === '\n';
+    if (
+      index < source.length ||
+      (character !== '\\' && character !== '$' && character !== '`')
+    ) {
+      markSafe();
+    }
   }
 
-  return output;
+  return { text, safeSourceEnd, safeTextEnd };
+}
+
+function readFence(
+  source: string,
+  index: number,
+):
+  | { kind: 'match'; end: number; closed: boolean }
+  | { kind: 'pending' }
+  | undefined {
+  const tail = source.slice(index);
+  const opening = /^( {0,3})(`{3,}|~{3,})/.exec(tail);
+  if (!opening) {
+    return /^ {0,3}(?:`{1,2}|~{1,2})?$/.test(tail)
+      ? { kind: 'pending' }
+      : undefined;
+  }
+  const marker = opening[2] ?? '';
+  let lineStart = source.indexOf('\n', index);
+  while (lineStart >= 0) {
+    lineStart++;
+    const candidate = /^( {0,3})(`{3,}|~{3,})/.exec(source.slice(lineStart));
+    const candidateMarker = candidate?.[2] ?? '';
+    if (
+      candidateMarker[0] === marker[0] &&
+      candidateMarker.length >= marker.length
+    ) {
+      const lineEnd = source.indexOf('\n', lineStart);
+      return {
+        kind: 'match',
+        end: lineEnd < 0 ? source.length : lineEnd + 1,
+        closed: true,
+      };
+    }
+    lineStart = source.indexOf('\n', lineStart);
+  }
+  return { kind: 'match', end: source.length, closed: false };
+}
+
+function readLiteralToken(
+  source: string,
+  index: number,
+):
+  | { kind: 'match'; source: string; end: number }
+  | { kind: 'pending' }
+  | undefined {
+  if (source[index] !== TOKEN_START[0]) return undefined;
+  if (!source.startsWith(TOKEN_START, index)) {
+    const tail = source.slice(index);
+    return tail.length < TOKEN_START.length && TOKEN_START.startsWith(tail)
+      ? { kind: 'pending' }
+      : undefined;
+  }
+  const tokenEnd = source.indexOf(TOKEN_END, index + TOKEN_START.length);
+  if (tokenEnd < 0) {
+    const payload = source.slice(index + TOKEN_START.length);
+    return /^(?:[012](?::[0-9a-f]*)?)?$/.test(payload)
+      ? { kind: 'pending' }
+      : undefined;
+  }
+  const candidate = source.slice(index, tokenEnd + TOKEN_END.length);
+  const match = LITERAL_TOKEN_PATTERN.exec(candidate);
+  if (!match) return undefined;
+  const token = match[0];
+  return { kind: 'match', source: token, end: index + token.length };
 }
 
 function readDelimitedMath(
-  line: string,
+  source: string,
   index: number,
   opening: string,
   closing: string,
   displayMode: boolean,
   allowNewlines: boolean,
-): { formula: string; displayMode: boolean; end: number } | undefined {
-  if (!line.startsWith(opening, index)) return undefined;
+):
+  | { kind: 'match'; formula: string; displayMode: boolean; end: number }
+  | { kind: 'pending'; end: number }
+  | undefined {
+  if (!source.startsWith(opening, index)) return undefined;
   const contentStart = index + opening.length;
-  const close = line.indexOf(closing, contentStart);
-  if (close < 0) return undefined;
-  if (!allowNewlines && line.slice(contentStart, close).includes('\n')) return undefined;
-  const formula = line.slice(contentStart, close).trim();
-  if (!formula) return undefined;
-  return { formula, displayMode, end: close + closing.length };
+  const close = source.indexOf(closing, contentStart);
+
+  if (close < 0) {
+    if (!allowNewlines && source.indexOf('\n', contentStart) >= 0) return undefined;
+    if (findPendingFenceBoundary(source, contentStart) >= 0) return undefined;
+    return { kind: 'pending', end: contentStart };
+  }
+  const rawFormula = source.slice(contentStart, close);
+  if (!allowNewlines && rawFormula.includes('\n')) return undefined;
+  if (/(?:^|\n) {0,3}(?:`{3,}|~{3,})/.test(rawFormula)) {
+    return undefined;
+  }
+  const formula = rawFormula.trim();
+  if (formula === '') return undefined;
+  return { kind: 'match', formula, displayMode, end: close + closing.length };
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function findPendingFenceBoundary(source: string, from: number): number {
+  const fenceMatch = /(?:^|\n) {0,3}(?:`{3,}|~{3,})/g;
+  fenceMatch.lastIndex = from;
+  const fence = fenceMatch.exec(source);
+  return fence ? fence.index + (source[fence.index] === '\n' ? 1 : 0) : -1;
+}
+
+function mathToken(formula: string, displayMode: boolean): string {
+  return transportToken(formula, displayMode ? '1' : '0');
+}
+
+function transportToken(value: string, kind: '0' | '1' | '2'): string {
+  return `${TOKEN_START}${kind}:${encodeFormula(value)}${TOKEN_END}`;
+}
+
+function encodeFormula(formula: string): string {
+  let encoded = '';
+  for (const byte of new TextEncoder().encode(formula)) {
+    encoded += byte.toString(16).padStart(2, '0');
+  }
+  return encoded;
+}
+
+function decodeFormula(encoded: string): string {
+  const bytes = new Uint8Array(encoded.length / 2);
+  for (let index = 0; index < bytes.length; index++) {
+    bytes[index] = Number.parseInt(encoded.slice(index * 2, index * 2 + 2), 16);
+  }
+  return new TextDecoder().decode(bytes);
 }

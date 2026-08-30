@@ -31,12 +31,6 @@ export type HostChangeFrame =
   | SessionCatalogChangedFrame
   | ScheduledTaskChangedFrame;
 
-export type HostChangeKind =
-  | 'configuration'
-  | 'project_catalog'
-  | 'session_catalog'
-  | 'scheduled_task';
-
 export interface HostChangeSubscription {
   close(): void;
 }
@@ -44,7 +38,7 @@ export interface HostChangeSubscription {
 export interface HostChangeSubscriptionMask {
   readonly configuration?: boolean;
   readonly projectCatalog?: boolean;
-  readonly sessionCatalog?: boolean;
+  readonly sessionCatalog?: true | { readonly sessionId: string; readonly principalId: string };
   readonly scheduledTask?: boolean;
 }
 
@@ -81,7 +75,7 @@ export class HostChangeFeed {
 
   publishConfiguration(): void {
     this.#configurationRevision += 1;
-    this.#publish('configuration', {
+    this.#publish({
       kind: 'configuration.changed',
       revision: this.#configurationRevision,
     });
@@ -89,23 +83,49 @@ export class HostChangeFeed {
 
   publishProjectCatalog(): void {
     this.#projectCatalogRevision += 1;
-    this.#publish('project_catalog', {
+    this.#publish({
       kind: 'project.catalog.changed',
       revision: this.#projectCatalogRevision,
     });
   }
 
   publishSessionCatalog(sessionId: string): void {
+    this.#publishSessionCatalog(sessionId);
+  }
+
+  /** Publish the final scoped invalidation, then stop that resource-scoped feed. */
+  publishSessionCatalogAndCloseScope(sessionId: string, principalId: string): void {
+    this.#publishSessionCatalog(sessionId, principalId);
+  }
+
+  #publishSessionCatalog(sessionId: string, closeScopeFor?: string): void {
     this.#sessionCatalogRevision += 1;
-    this.#publish('session_catalog', {
+    const frame: SessionCatalogChangedFrame = {
       kind: 'session.catalog.changed',
       revision: this.#sessionCatalogRevision,
       sessionId,
-    });
+    };
+    for (const [connectionId, subscription] of this.#subscriptions) {
+      if (!isSubscribed(subscription.mask, frame)) continue;
+      void subscription.sink.send(frame).catch(() => {
+        if (this.#subscriptions.get(connectionId) === subscription) {
+          this.#subscriptions.delete(connectionId);
+        }
+      });
+      if (
+        closeScopeFor !== undefined &&
+        subscription.mask.sessionCatalog !== true &&
+        subscription.mask.sessionCatalog?.sessionId === sessionId &&
+        subscription.mask.sessionCatalog.principalId === closeScopeFor &&
+        this.#subscriptions.get(connectionId) === subscription
+      ) {
+        this.#subscriptions.delete(connectionId);
+      }
+    }
   }
 
   publishScheduledTask(revision: number, reason: ScheduledTaskChangedReason, taskId: string): void {
-    this.#publish('scheduled_task', {
+    this.#publish({
       kind: 'scheduled-task.changed',
       revision,
       reason,
@@ -113,9 +133,9 @@ export class HostChangeFeed {
     });
   }
 
-  #publish(kind: HostChangeKind, frame: HostChangeFrame): void {
+  #publish(frame: HostChangeFrame): void {
     for (const [connectionId, subscription] of this.#subscriptions) {
-      if (!isSubscribed(subscription.mask, kind)) continue;
+      if (!isSubscribed(subscription.mask, frame)) continue;
       void subscription.sink.send(frame).catch(() => {
         if (this.#subscriptions.get(connectionId) === subscription) {
           this.#subscriptions.delete(connectionId);
@@ -125,15 +145,18 @@ export class HostChangeFeed {
   }
 }
 
-function isSubscribed(mask: HostChangeSubscriptionMask, kind: HostChangeKind): boolean {
-  switch (kind) {
-    case 'configuration':
+function isSubscribed(mask: HostChangeSubscriptionMask, frame: HostChangeFrame): boolean {
+  switch (frame.kind) {
+    case 'configuration.changed':
       return mask.configuration === true;
-    case 'project_catalog':
+    case 'project.catalog.changed':
       return mask.projectCatalog === true;
-    case 'session_catalog':
-      return mask.sessionCatalog === true;
-    case 'scheduled_task':
+    case 'session.catalog.changed':
+      return (
+        mask.sessionCatalog === true ||
+        (mask.sessionCatalog !== undefined && frame.sessionId === mask.sessionCatalog.sessionId)
+      );
+    case 'scheduled-task.changed':
       return mask.scheduledTask === true;
   }
 }

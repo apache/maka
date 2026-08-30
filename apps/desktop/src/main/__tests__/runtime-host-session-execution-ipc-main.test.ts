@@ -38,14 +38,22 @@ import { createAttachmentApprovalRegistry } from "../attachment-approval.js";
 import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   registerRuntimeHostSessionExecutionIpc,
+  registerRuntimeHostSessionObservationIpc,
   type RuntimeHostSessionExecutionIpcDeps,
 } from "../runtime-host-session-execution-ipc-main.js";
+import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 import { RuntimeHostSessionObserver } from "../runtime-host-session-observer.js";
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
 
 test('registers Session observation as one reconnectable operation', () => {
   const ipc = ipcHarness();
-  registerExecutionIpc({ client: executionClient({}) }, ipc);
+  registerRuntimeHostSessionObservationIpc(
+    {
+      observations: new RuntimeHostSessionObservationRegistry(),
+      resolveSideConversation: async () => false,
+    },
+    ipc,
+  );
 
   assert.equal(ipc.reconnectableChannels.has('sessions:observe'), true);
 });
@@ -1681,7 +1689,6 @@ function registerExecutionIpc(
       resizeImage: async (bytes) => bytes,
       beforeStop() {},
       ...deps,
-      observations: deps.observations ?? observer,
       sessionCopyCleanup: deps.sessionCopyCleanup ?? unusedSessionCopyCleanup(),
       onBackgroundError: deps.onBackgroundError ?? (() => undefined),
     },

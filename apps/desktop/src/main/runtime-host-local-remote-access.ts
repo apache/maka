@@ -95,6 +95,15 @@ export interface DesktopRuntimeHostLocalManagementTarget
 
 export interface DesktopLocalRuntimeHostRemoteAccess {
   getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+  createCollaborationConnectionTarget(): Promise<{
+    readonly name: string;
+    readonly transport: {
+      readonly kind: 'libp2p-direct';
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    };
+  }>;
   enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
   disable(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
   uninstall(value: unknown): Promise<{ readonly kind: 'active_tasks' | 'uninstalled' }>;
@@ -489,6 +498,19 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
     });
 
+  const createCollaborationConnectionTarget = () =>
+    serialize(async () => {
+      const managed = requireManaged(
+        await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
+      );
+      const peer = await readPeer(input.operator, managed);
+      if (!peer) throw new Error('Remote access is not enabled on this computer');
+      return {
+        name: hostName(),
+        transport: { kind: 'libp2p-direct' as const, ...peer },
+      };
+    });
+
   const revokeSharedAccess = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
     serialize(async () => {
       const managed = requireManaged(
@@ -653,6 +675,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
 
   return {
     getSnapshot,
+    createCollaborationConnectionTarget,
     enable,
     disable,
     uninstall,

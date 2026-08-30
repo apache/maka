@@ -91,7 +91,7 @@ interface ChatMessageSurfaceProps extends Omit<
   hasOlderHistory: boolean;
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
-  onLoadEarlierHistory: () => Promise<void> | void;
+  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
   onReturnToLatestHistory: () => Promise<void> | void;
 }
 

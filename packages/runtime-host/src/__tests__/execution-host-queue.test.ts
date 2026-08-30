@@ -218,17 +218,18 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     await tui.close();
     await fixture.stopHost(host);
     const chain = await fixture.readAdmissionChain();
+    assert.equal(chain.length, 3);
     assert.deepEqual(
-      chain.map((admission) => admission.turnId),
+      chain.slice(0, 2).map((admission) => admission.turnId),
       [firstTurnId, successor.snapshot.rootTurn.turnId],
     );
+    assert.equal(chain[2]?.previousRootTurnId, successor.snapshot.rootTurn.turnId);
     assert.deepEqual(
-      chain[1]?.sourceMessages.map((source) => source.messageId),
-      [desktopFollowupId, tuiFollowupId],
+      chain.slice(1).map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[desktopFollowupId], [tuiFollowupId]],
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${desktopFollowupContent.text}\n\n${tuiFollowupContent.text}`,
-    });
+    assert.deepEqual(chain[1]?.normalizedInput, desktopFollowupContent);
+    assert.deepEqual(chain[2]?.normalizedInput, tuiFollowupContent);
   });
 });
 

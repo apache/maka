@@ -661,6 +661,15 @@ describe('SQLite SessionStore', () => {
       );
       assert.deepEqual(tail.next, { position: 1, byteOffset: null });
 
+      const decodedTail = await store.readTranscriptRecordsSnapshot(session.id, {
+        direction: 'older',
+        maxStoredBytes: 1,
+        maxMessages: 2,
+      });
+      assert.equal(decodedTail.throughSequence, 3);
+      assert.deepEqual(decodedTail.records, [{ sequence: 3, message: messages[3] }]);
+      assert.equal(decodedTail.nextPosition, 2);
+
       await store.appendMessage(session.id, {
         type: 'user',
         id: 'message-4',

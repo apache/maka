@@ -344,7 +344,7 @@ export const TURN_OPERATION_SPECS = {
   }),
 } as const;
 
-function decodeTurnStartInput(value: unknown): TurnStartInput {
+export function decodeTurnStartInput(value: unknown): TurnStartInput {
   const record = requireShapedRecord(
     value,
     'turn.start input',

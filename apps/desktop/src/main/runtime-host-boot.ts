@@ -254,7 +254,9 @@ if (runtimeHostPeerConfiguration) {
     });
   } catch (error) {
     console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
-    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
+    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment(process.env, {
+      automaticRelayDiscovery: runtimeHostPeerConfiguration.automaticRelayDiscovery,
+    });
   }
 }
 const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
@@ -929,6 +931,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     registerClientIpc: registerHostClientIpc,
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
+    resolveLocalCollaborationConnectionTarget: () =>
+      localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(

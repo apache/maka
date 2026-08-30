@@ -255,6 +255,20 @@ export interface SessionTranscriptStoragePage {
   } | null;
 }
 
+export interface SessionTranscriptRecordScanRequest {
+  readonly direction: 'older' | 'newer';
+  readonly throughSequence?: number | null;
+  readonly position?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionTranscriptRecordScanPage {
+  readonly throughSequence: number | null;
+  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  readonly nextPosition: number | null;
+}
+
 export interface SessionTurnContribution {
   readonly turnId: string;
   readonly firstSequence: number;
@@ -331,6 +345,11 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
+  /** Decode a bounded ledger range for an authority-owned wire projection. */
+  readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage>;
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -889,6 +908,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
   ): Promise<StoredMessage[]> {
     await this.ensureReady();
     return this.metadata.readTranscriptMessages(sessionId, request);
+  }
+
+  async readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptRecords(sessionId, request);
   }
 
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {

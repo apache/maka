@@ -58,7 +58,6 @@ import {
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
-import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -264,7 +263,7 @@ export function ChatView(props: {
   scrollTargetTurn?: { turnId: string; nonce: number };
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  onLoadEarlierHistory?(): Promise<void> | void;
+  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
   returnToLatest?: {
     title: string;
     label: string;
@@ -505,31 +504,14 @@ export function ChatView(props: {
   }
   const scrollRef = chatLayout.scrollContainerRef;
   const scrollAuthority = useTranscriptScrollAuthority();
-  const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  const sessionId = props.activeSession?.id;
-  const {
-    start: mountStart,
-    end: mountEnd,
-    beforeHeight,
-    afterHeight,
-    revealTurn,
-  } = useTurnVirtualizer({
-    sessionId,
-    turnIds: orderedTurnIds,
-    scrollRef,
-    targetTurnId: props.scrollTargetTurn?.turnId,
-    targetKey: props.scrollTargetTurn?.nonce,
-  });
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
-    if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
-    else if (turn.sequence !== undefined) {
+    if (!turnIdsRef.current.has(turn.turnId) && turn.sequence !== undefined) {
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
-  }, [revealTurn]);
-  const mountedTurns = turns.slice(mountStart, mountEnd);
+  }, []);
   const inlineTransientMessages = tailTurnId
     ? transientMessages.filter((message) => {
-        const turn = mountedTurns.find((candidate) => candidate.turnId === tailTurnId);
+        const turn = turns.find((candidate) => candidate.turnId === tailTurnId);
         if (
           turn === undefined
           || turn.user !== undefined
@@ -719,19 +701,12 @@ export function ChatView(props: {
           {showEmptyState ? null : (
             <>
               {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {beforeHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: beforeHeight, flex: '0 0 auto', transition: 'none' }}
-                />
-              )}
-              {mountedTurns.map((turn) => {
+              {turns.map((turn) => {
                 return (
                   <div
                     key={turn.turnId}
-                    className="maka-turn-virtual-item"
-                    data-virtual-turn-id={turn.turnId}
+                    className="maka-transcript-turn"
+                    data-transcript-turn-id={turn.turnId}
                   >
                     {turn.turnId === tailTurnId
                       ? inlineTransientMessages.map((message) => (
@@ -790,13 +765,6 @@ export function ChatView(props: {
                   </div>
                 );
               })}
-              {afterHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
-                />
-              )}
               {transientMessages.filter(
                 (message) => !inlineTransientMessageIds.has(message.id),
               ).map((message) => (

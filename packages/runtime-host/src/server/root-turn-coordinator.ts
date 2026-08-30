@@ -1438,7 +1438,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
                 ? request.content
                 : requireHostedExecutionMessageContent(existing);
           }
-          if (!rootMessageAdmissionMatches(existing, request, content)) {
+          if (
+            !rootMessageAdmissionMatches(
+              existing,
+              request,
+              content,
+              context.turnAdmissionAuthorization,
+            )
+          ) {
             return completedStart(
               operationConflict('Turn identity was already admitted with a different payload'),
             );
@@ -1543,6 +1550,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
+          ...(context.turnAdmissionAuthorization
+            ? { authorization: context.turnAdmissionAuthorization }
+            : {}),
           sourceMessages: [],
           admittedAt: Date.now(),
         });
@@ -1551,7 +1561,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             operationConflict('Turn identity belongs to a different execution kind'),
           );
         }
-        if (!rootMessageAdmissionMatches(admitted.admission, request, canonicalContent.content)) {
+        if (
+          !rootMessageAdmissionMatches(
+            admitted.admission,
+            request,
+            canonicalContent.content,
+            context.turnAdmissionAuthorization,
+          )
+        ) {
           return completedStart(
             operationConflict('Turn identity was already admitted with a different payload'),
           );
@@ -2726,6 +2743,7 @@ function rootMessageAdmissionMatches(
   admission: RootTurnAdmission,
   request: RootMessageStartRequest,
   content: MessageContent,
+  authorization: ConnectionContext['turnAdmissionAuthorization'],
 ): boolean {
   return (
     isDeepStrictEqual(admission.execution, request.execution) &&
@@ -2733,6 +2751,7 @@ function rootMessageAdmissionMatches(
       ? true
       : messageContentsEqual(requireHostedExecutionMessageContent(admission), content)) &&
     isDeepStrictEqual(admission.turnOrchestration, request.turnOrchestration) &&
+    isDeepStrictEqual(admission.authorization, authorization) &&
     admission.sourceMessages.length === 0
   );
 }

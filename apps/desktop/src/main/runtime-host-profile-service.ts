@@ -37,6 +37,7 @@ import {
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
 import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
+import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
@@ -45,6 +46,7 @@ import type {
   DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostConnectionCodeImportResult,
+  DesktopSessionCollaborationImportResult,
 } from "../preload/bridge-contract.js";
 import {
   RuntimeHostPairingFinalizationInterruptedError,
@@ -66,6 +68,7 @@ import {
   type DesktopRuntimeHostManagedServiceBinding,
   type DesktopRuntimeHostManagedServiceStore,
 } from "./runtime-host-managed-services.js";
+import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
 
 const PREFERENCES_SCHEMA_VERSION = 2;
 const PREFERENCES_FILE = "runtime-host-profile-selection.json";
@@ -99,6 +102,10 @@ export interface DesktopRuntimeHostProfileService {
     },
   ): Promise<{ readonly profileId: string }>;
   importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
+  importCollaborationInvitation(
+    code: string,
+    allowInsecure: boolean,
+  ): Promise<DesktopSessionCollaborationImportResult>;
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
@@ -203,9 +210,13 @@ export async function resolveDesktopRuntimeHostStartup(
     };
   }
   const profileIds = new Set(document.profiles.map((profile) => profile.id));
+  const defaultProfile = document.profiles.find(
+    (profile) => profile.id === preferences.defaultProfileId,
+  );
   const defaultProfileId =
     preferences.defaultProfileId === LOCAL_RUNTIME_HOST_PROFILE.id ||
-    profileIds.has(preferences.defaultProfileId)
+    (profileIds.has(preferences.defaultProfileId) &&
+      !(defaultProfile?.kind === 'remote' && defaultProfile.access === 'session_guest'))
       ? preferences.defaultProfileId
       : LOCAL_RUNTIME_HOST_PROFILE.id;
   const enabledRemoteProfileIds = new Set(
@@ -764,6 +775,39 @@ export function createDesktopRuntimeHostProfileService(input: {
         return { kind: 'error', reason: connectionCodeImportFailure(error) };
       }
     },
+    async importCollaborationInvitation(code, allowInsecure) {
+      let bundle;
+      let invitation;
+      try {
+        bundle = decodeDesktopCollaborationInvitation(code);
+        invitation = decodeCollaborationInvitationCode(bundle.invitationCode);
+      } catch {
+        return { kind: 'error', reason: 'invalid_code' };
+      }
+      if (bundle.target.transport.kind === 'plaintext' && !allowInsecure) {
+        return { kind: 'error', reason: 'insecure_confirmation_required' };
+      }
+      try {
+        await addAndEnableVerified({
+          profile: {
+            id: `shared-${randomUUID()}`,
+            name: `${bundle.target.name} · Shared`,
+            kind: 'remote',
+            rootId: invitation.rootId,
+            transport: bundle.target.transport,
+            access: 'session_guest',
+          },
+          credential: invitation.credential,
+        });
+        return { kind: 'connected' };
+      } catch (error) {
+        return {
+          kind: 'error',
+          reason: 'connection_failed',
+          message: asError(error).message,
+        };
+      }
+    },
     rotateManagedCredential(expected, credential) {
       return mutateProfiles(async () => {
         const profileId = expected.profile.id;
@@ -1099,6 +1143,12 @@ export function createDesktopRuntimeHostProfileService(input: {
         ) {
           throw new Error("Enable a Runtime Host before making it the default");
         }
+        if (profileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
+          const target = await catalog.resolve(profileId);
+          if (target.profile.kind === 'remote' && target.profile.access === 'session_guest') {
+            throw new Error('A shared Session connection cannot be the default Runtime Host');
+          }
+        }
         const next = { ...preferences, defaultProfileId: profileId };
         await persist(next);
         input.setDefault(profileId);
@@ -1251,6 +1301,7 @@ export function registerDesktopRuntimeHostProfileIpc(
     "runtime-host-profiles:set-default",
     "runtime-host-profiles:remove",
     "runtime-host-profiles:resolve-pairing-recovery",
+    'session-collaboration:import',
   ] as const;
   ipcMain.handle(channels[0], () => service.getSnapshot());
   ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
@@ -1263,6 +1314,9 @@ export function registerDesktopRuntimeHostProfileIpc(
   ipcMain.handle(channels[4], (_event, profileId: string) => service.setDefault(profileId));
   ipcMain.handle(channels[5], (_event, profileId: string) => service.remove(profileId));
   ipcMain.handle(channels[6], () => service.resolvePairingRecovery());
+  ipcMain.handle(channels[7], (_event, code: string, allowInsecure: boolean) =>
+    service.importCollaborationInvitation(code, allowInsecure),
+  );
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };

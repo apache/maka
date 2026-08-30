@@ -44,7 +44,7 @@ import { expect, test } from './fixtures';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
-} from '../src/renderer/features/session-navigation/model/session-list-layout';
+} from '../src/renderer/features/session-navigation/testing';
 import type { Locator, Page } from '@playwright/test';
 
 async function revealPopulatedSidebar(page: Page): Promise<Locator> {

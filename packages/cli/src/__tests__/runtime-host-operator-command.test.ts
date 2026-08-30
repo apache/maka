@@ -378,6 +378,8 @@ describe('Runtime Host operator commands', () => {
         'access.credential.rotation.prepare',
         'access.credential.rotation.revoke',
         'access.principal.revoke',
+        'collaboration.turn-request.acknowledge',
+        'collaboration.turn-request.create',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',

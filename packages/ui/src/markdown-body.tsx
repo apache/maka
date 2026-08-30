@@ -29,7 +29,7 @@
  * product-specific trust boundaries around that renderer.
  */
 
-import { useContext, type ReactNode } from 'react';
+import { useCallback, useContext, useRef, type ReactNode } from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
@@ -46,7 +46,11 @@ import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { MermaidDiagram } from './mermaid-diagram.js';
-import { prepareMarkdownMath } from './markdown-math.js';
+import {
+  createMarkdownMathCache,
+  MARKDOWN_MATH_PLUGINS,
+  prepareMarkdownMath,
+} from './markdown-math.js';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { useAttachmentImageSource } from './attachment-image.js';
 
@@ -132,9 +136,12 @@ export function MarkdownBody(props: {
   settledText?: string;
   density?: 'default' | 'compact';
 }) {
-  const prepared = prepareMarkdownMath(props.text, props.settledText);
-  const safeText = prepared.text;
-  const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
+  const mathCache = useRef(createMarkdownMathCache());
+  const transformMathSource = useCallback(
+    (source: string) => prepareMarkdownMath(source, mathCache.current),
+    [],
+  );
+  const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
     ? density === 'compact'
@@ -175,9 +182,10 @@ export function MarkdownBody(props: {
         // the one combination neither half of the argument asks for.
         density={density}
         components={components}
-        inlinePlugins={[prepared.plugin]}
+        inlinePlugins={MARKDOWN_MATH_PLUGINS}
         isStreaming={props.streaming}
-        settledText={prepared.settledText}
+        settledText={props.settledText}
+        transformSource={transformMathSource}
       >
         {budgetedText}
       </AstryxMarkdown>

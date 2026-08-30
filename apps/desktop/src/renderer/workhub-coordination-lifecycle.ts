@@ -18,10 +18,11 @@
  */
 
 import type { DesktopRuntimeHostProfileChangedEvent } from '../preload/bridge-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 
 export type WorkHubCoordinationHostChange = Pick<
   DesktopRuntimeHostProfileChangedEvent,
-  'isDefault' | 'readiness' | 'removed'
+  'hostId' | 'isDefault' | 'readiness' | 'removed'
 >;
 
 const UNAVAILABLE_DEFAULT_HOST = 'The default Runtime Host is unavailable';
@@ -40,10 +41,12 @@ export function startWorkHubCoordinationLifecycle(input: {
   let stopped = false;
   let generation = 0;
   let failedGeneration: number | undefined;
+  let resolvedHostId: string | undefined;
 
   const revoke = () => {
     const currentGeneration = ++generation;
     failedGeneration = undefined;
+    resolvedHostId = undefined;
     input.onResolving();
     return currentGeneration;
   };
@@ -57,6 +60,7 @@ export function startWorkHubCoordinationLifecycle(input: {
     void input.resolve()
       .then((sessionId) => {
         if (stopped || currentGeneration !== generation) return;
+        resolvedHostId = parseDesktopSessionKey(sessionId).hostId;
         failedGeneration = undefined;
         input.onResolved(sessionId);
       })
@@ -69,6 +73,14 @@ export function startWorkHubCoordinationLifecycle(input: {
 
   const unsubscribeHosts = input.subscribeHostChanges((event) => {
     if (stopped || !event.isDefault) return;
+    if (
+      resolvedHostId !== undefined &&
+      event.hostId === resolvedHostId &&
+      event.readiness !== 'unavailable' &&
+      !event.removed
+    ) {
+      return;
+    }
     const currentGeneration = revoke();
     if (event.readiness === 'ready') {
       resolveGeneration(currentGeneration);

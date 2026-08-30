@@ -18,7 +18,8 @@
  */
 
 import { PROMPT_RAIL_PROMPT_COUNT } from '../src/main/e2e-fixture/seed-helpers';
-import { expect, test } from './fixtures';
+import { DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS } from '../src/preload/transcript-contract';
+import { ensureSidebarExpanded, expect, test } from './fixtures';
 import type { Page } from '@playwright/test';
 
 const MAX_PROMPT_RAIL_TICKS = 64;
@@ -95,6 +96,20 @@ async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promi
   await waitForPaintedFrames(page);
 }
 
+async function scrollTranscriptAwayFromTail(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) throw new Error('the chat scroll container is missing');
+    const historyLoadBand = Math.max(640, root.clientHeight * 2);
+    root.scrollTop = Math.min(
+      root.scrollHeight - root.clientHeight - 100,
+      historyLoadBand + 200,
+    );
+    root.dispatchEvent(new Event('scroll'));
+  });
+  await waitForPaintedFrames(page);
+}
+
 async function waitForPaintedFrames(page: Page, count = 2): Promise<void> {
   await page.evaluate((frames) => new Promise<void>((resolve) => {
     const tick = (left: number) => {
@@ -114,15 +129,6 @@ function notifyTranscriptScrolled(page: Page): Promise<void> {
     if (!root) throw new Error('the chat scroll container is missing');
     root.dispatchEvent(new Event('scroll'));
   });
-}
-
-async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
-  const transcript = page.locator('.maka-chat-message-list');
-  await scrollTranscriptTo(page, 'top');
-  await transcript.hover();
-  await page.mouse.wheel(0, -100);
-  await expect.poll(async () => Number(await transcript.getAttribute('data-turn-source-count')))
-    .toBeGreaterThan(100);
 }
 
 test('every tick paints a bar with a real box', async ({ promptRailWindow: page }) => {
@@ -247,9 +253,11 @@ test('the first click of a session lands on its prompt and holds', async ({
   // Bounded on both sides: below is the turn never arriving, above is it
   // arriving and then being pulled off the top of the scrollport.
   await expect
-    .poll(async () => (await landing())?.offset, { message: 'the clicked prompt reaches the top' })
-    .toBeGreaterThan(-24);
-  expect((await landing())?.offset).toBeLessThan(24);
+    .poll(async () => {
+      const offset = (await landing())?.offset;
+      return offset === undefined ? Number.POSITIVE_INFINITY : Math.abs(offset);
+    }, { message: 'the clicked prompt reaches the top' })
+    .toBeLessThan(24);
   expect((await landing())?.tickIsCurrent).toBe(true);
 
   // And stays: turns keep resolving their content and remeasuring after the
@@ -262,43 +270,37 @@ test('the first click of a session lands on its prompt and holds', async ({
   expect(settled?.tickIsCurrent).toBe(true);
 });
 
-test('long transcripts keep a bounded mounted turn window', async ({
+test('active transcript Turns keep stable DOM identities while scrolling', async ({
   promptRailWindow: page,
 }) => {
-  const count = async () => page.locator('[data-virtual-turn-id]').count();
-  await page.locator('[data-virtual-turn-id]').first().waitFor();
-  await loadPromptRailBeyondVirtualWindow(page);
-  expect(await page.evaluate(() => {
-    const transcript = document.querySelector<HTMLElement>('.maka-chat-message-list');
-    const rows = transcript?.firstElementChild;
-    const turn = document.querySelector<HTMLElement>('[data-virtual-turn-id]');
-    if (!rows || !turn) throw new Error('the virtual transcript is missing');
-    return {
-      list: Number.parseFloat(getComputedStyle(rows).rowGap),
-      turn: Number.parseFloat(getComputedStyle(turn).rowGap),
-    };
-  })).toEqual({ list: 16, turn: 16 });
-  expect(await count()).toBeGreaterThan(0);
-  expect(await count()).toBeLessThanOrEqual(100);
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
-  await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
-  expect(await count()).toBeGreaterThan(0);
-  expect(await count()).toBeLessThanOrEqual(100);
+  const sourceCount = Number(
+    await page.locator('.maka-chat-message-list').getAttribute('data-turn-source-count'),
+  );
+  expect(sourceCount).toBe(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(await page.locator('[data-turn-id]').count()).toBe(sourceCount);
+  await page.evaluate(() => {
+    for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      turn.dataset.stableMountProbe = turn.dataset.turnId;
+    }
+  });
+
+  await scrollTranscriptTo(page, 'bottom');
+  await scrollTranscriptAwayFromTail(page);
+
+  expect(await page.locator('[data-turn-id]').count()).toBe(sourceCount);
+  expect(await page.locator('[data-turn-id][data-stable-mount-probe]').count()).toBe(sourceCount);
 });
 
-test('evicting a turn-owned sibling interaction hands focus back to the transcript', async ({
+test('scrolling away preserves a turn-owned focus and selection', async ({
   promptRailWindow: page,
 }) => {
-  const scroller = page.locator('[data-chat-scroll-container="true"]');
-  await page.locator('[data-virtual-turn-id]').first().waitFor();
-  await loadPromptRailBeyondVirtualWindow(page);
   await scrollTranscriptTo(page, 'bottom');
-  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
-  const retainedTurnId = await page.evaluate(() => {
-    const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
-    const turn = turns.item(turns.length - 1);
-    if (!turn?.dataset.virtualTurnId) throw new Error('the mounted turn is missing');
+  await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  await page.evaluate(() => {
+    const turn = document.querySelector<HTMLElement>('[data-turn-id="turn-prompt-rail-120"]');
+    if (!turn) throw new Error('the tail Turn is missing');
     const turnOwnedAction = document.createElement('button');
+    turnOwnedAction.dataset.turnOwnedAction = 'true';
     turnOwnedAction.textContent = 'Turn-owned action';
     turn.append(turnOwnedAction);
     turnOwnedAction.focus();
@@ -307,39 +309,75 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
     const selection = document.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    return turn.dataset.virtualTurnId;
   });
+  await scrollTranscriptAwayFromTail(page);
 
-  // The injected control resizes the tail Turn. That can queue a scroll-anchor
-  // restore captured at the bottom. Let that setup-only restore finish before
-  // the one-shot jump so the assertion still catches any later restore that
-  // would pin the viewport back on the retained Turn (#3121).
-  await waitForPaintedFrames(page);
-  await scrollTranscriptTo(page, 'top');
-  await notifyTranscriptScrolled(page);
-  await expect.poll(async () => page.evaluate((turnId) => {
-    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    if (!root) throw new Error('the chat scroll container is missing');
-    const mounted = [...document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')]
-      .map((turn) => turn.dataset.virtualTurnId ?? '');
+  await expect.poll(async () => page.evaluate(() => {
     const active = document.activeElement;
     return {
-      retained: mounted.includes(turnId),
-      scrollTop: Math.round(root.scrollTop),
-      firstMounted: mounted[0] ?? null,
-      lastMounted: mounted.at(-1) ?? null,
-      focusOnTranscript: active instanceof HTMLElement
-        && active.classList.contains('maka-chat-message-list'),
-      selectionCollapsed: document.getSelection()?.isCollapsed ?? true,
+      retained: document.querySelector('[data-turn-id="turn-prompt-rail-120"]') !== null,
+      focusRetained: active instanceof HTMLElement
+        && active.dataset.turnOwnedAction === 'true',
+      selectionRetained: document.getSelection()?.isCollapsed === false,
     };
-  }, retainedTurnId), {
-    message: 'the retained tail turn leaves after one jump to the top',
-  }).toMatchObject({
-    retained: false,
-    scrollTop: 0,
-    focusOnTranscript: true,
-    selectionCollapsed: true,
+  })).toEqual({
+    retained: true,
+    focusRetained: true,
+    selectionRetained: true,
   });
+});
+
+test('offscreen active Turns remain findable and accessible', async ({
+  promptRailWindow: page,
+}) => {
+  const firstTurnId = await page.locator('[data-turn-id]').first().getAttribute('data-turn-id');
+  const turnNumber = Number(firstTurnId?.split('-').at(-1));
+  expect(turnNumber).toBeGreaterThan(0);
+  const needle = `第 ${turnNumber} 个问题`;
+  await scrollTranscriptTo(page, 'bottom');
+
+  const found = await page.evaluate((text) => {
+    document.getSelection()?.removeAllRanges();
+    return (window as Window & { find(text: string): boolean }).find(text);
+  }, needle);
+  expect(found).toBe(true);
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? '')).toContain(needle);
+
+  const cdp = await page.context().newCDPSession(page);
+  const tree = await cdp.send('Accessibility.getFullAXTree');
+  expect(tree.nodes.some((node) => node.name?.value?.includes(needle))).toBe(true);
+});
+
+test('switching sessions reconstructs only the Host active range', async ({
+  promptRailWindow: page,
+}) => {
+  await ensureSidebarExpanded(page);
+  const rows = page.locator('.maka-session-row');
+  const selected = rows.locator('button.astryx-side-nav-item.selected');
+  const originalId = await selected
+    .evaluate((button) => button.closest('.maka-session-row')?.getAttribute('data-session-id'));
+  if (!originalId) throw new Error('the prompt-rail Session is not selected');
+  const otherId = await rows.evaluateAll(
+    (rows, selected) => rows
+      .map((row) => row.getAttribute('data-session-id'))
+      .find((sessionId) => sessionId !== selected) ?? null,
+    originalId,
+  );
+  if (!otherId) throw new Error('the fixture has no second Session');
+  await page.locator(`.maka-session-row[data-session-id=${JSON.stringify(otherId)}] button`)
+    .first()
+    .click();
+  await expect(page.locator(
+    `.maka-session-row[data-session-id=${JSON.stringify(otherId)}] button.selected`,
+  ))
+    .toHaveCount(1);
+
+  await page.locator(`.maka-session-row[data-session-id=${JSON.stringify(originalId)}] button`)
+    .first()
+    .click();
+  await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  expect(await page.locator('[data-turn-id]').count())
+    .toBe(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
 });
 
 test('a tick is what the pointer lands on, not the scrollbar', async ({

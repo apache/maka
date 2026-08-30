@@ -52,12 +52,13 @@
   overflow-anchor: auto;
 }
 
-.maka-turn-virtual-item {
+.maka-transcript-turn {
   display: flex;
   width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
-  contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 280px;
 }
 
 .maka-chat-message-loading {

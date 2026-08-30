@@ -638,10 +638,32 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       const result: ConnectionTestResult = await props.bridge.test(connection.slug);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
-        toast.success(
-          copy.connectionSuccess(connection.name),
-          `${result.modelTested} · ${result.latencyMs} ms`,
-        );
+        // The backend probes the enabled models first, then the provider
+        // fallbacks (opencode-free tries each in turn until one answers). When
+        // the model that actually answered isn't one the user enabled, a plain
+        // "connection succeeded · <model>" reads as if their selection never
+        // took — and hides that their chosen model is currently down. Name both
+        // facts instead.
+        const testedId = result.modelTested;
+        const modelLabel = (id: string): string =>
+          models.find((model) => model.id === id)?.displayName ?? id;
+        // Inline the `testedId !== undefined` check so it narrows `testedId` to
+        // string for `modelLabel(testedId)` below.
+        if (
+          testedId !== undefined &&
+          enabledModelIds.length > 0 &&
+          !enabledModelIds.includes(testedId)
+        ) {
+          toast.warning(
+            copy.connectionFallbackTitle(connection.name),
+            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+          );
+        } else {
+          toast.success(
+            copy.connectionSuccess(connection.name),
+            `${result.modelTested} · ${result.latencyMs} ms`,
+          );
+        }
       } else {
         reportHostError(
           copy.connectionFailed(connection.name),

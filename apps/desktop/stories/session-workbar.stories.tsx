@@ -19,7 +19,7 @@
 
 import type { CSSProperties } from 'react';
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
-import { expect, waitFor } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewSnapshot } from '@maka/core/git-review';
@@ -90,6 +90,13 @@ const LOADED_BROWSER_STATE: BrowserState = {
   secure: true,
   hasPage: true,
 };
+// A pathologically long address + title — the one layout edge a browser value
+// can break, since the address field has to keep the URL legible at the
+// column's 320px floor.
+const LONG_BROWSER_URL =
+  'https://maka.apache.org/docs/getting-started/configuration/advanced/runtime-host/agent-graph/scheduling/readiness-and-activation/edge-cases?highlight=very-long-query-string-that-keeps-going#a-deep-anchor-that-also-runs-long';
+const LONG_BROWSER_TITLE =
+  'Getting started · Configuration · Advanced · Runtime Host · Agent Graph scheduling, readiness, and activation edge cases — Apache Maka documentation';
 const TOOL_PICKER_SOURCE_SESSION: SessionSummary = {
   id: SESSION_ID,
   name: '工作栏组件审查',
@@ -625,6 +632,8 @@ function bridge(options: {
   /** The context snapshot the composition block reads (#2323). */
   context?: ContextDiagnosticsResult;
   browserState?: BrowserState;
+  /** Make `browser.navigate` reject, so a valid address surfaces the navigation-failed toast. */
+  browserNavigateFails?: boolean;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
@@ -701,7 +710,9 @@ function bridge(options: {
     browser: {
       setActiveSession: noop,
       setViewport: noop,
-      navigate: async () => undefined,
+      navigate: async () => {
+        if (options.browserNavigateFails) throw new Error('navigation failed');
+      },
       back: async () => undefined,
       forward: async () => undefined,
       reload: async () => undefined,
@@ -928,6 +939,63 @@ export const BrowserStacked: Story = {
   decorators: [bridge({ browserState: LOADED_BROWSER_STATE })],
   render: () => <Workbar tab="browser" />,
 };
+// Real path: 任务工作栏 → 浏览器 mid-history — the one nav-control combination
+// the other browser stories never show: forward enabled, not just back.
+export const BrowserCanGoForward: Story = {
+  decorators: [bridge({ browserState: { ...LOADED_BROWSER_STATE, canGoForward: true } })],
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(within(canvasElement).getByRole('button', { name: '浏览器前进' })).toBeEnabled(),
+    );
+  },
+};
+
+// Real path: 任务工作栏 → 浏览器 on a page with a very long URL and title, at the
+// column's 320px floor — the address field must keep the URL legible instead of
+// pushing the toolbar controls out.
+export const BrowserLongUrl: Story = {
+  decorators: [
+    bridge({
+      browserState: { ...LOADED_BROWSER_STATE, url: LONG_BROWSER_URL, title: LONG_BROWSER_TITLE },
+    }),
+  ],
+  render: () => <Workbar tab="browser" width={320} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(within(canvasElement).getByRole('textbox', { name: '浏览器地址' })).toHaveValue(
+        LONG_BROWSER_URL,
+      ),
+    );
+  },
+};
+
+// Real path: 任务工作栏 → 浏览器 when the typed address is not an HTTP(S) URL. The
+// embedded browser rejects it before navigating and raises the "无法打开地址"
+// toast — a failure a bare loaded page never shows.
+export const BrowserInvalidAddress: Story = {
+  decorators: [bridge({ browserState: EMPTY_BROWSER_STATE })],
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const address = await within(canvasElement).findByRole('textbox', { name: '浏览器地址' });
+    await userEvent.type(address, 'mailto:team@maka.apache.org{Enter}');
+    await within(document.body).findByText('无法打开地址');
+  },
+};
+
+// Real path: 任务工作栏 → 浏览器 when a valid address fails to load (navigate
+// rejects); the panel raises the "浏览器导航失败" toast.
+export const BrowserNavigationFailed: Story = {
+  decorators: [bridge({ browserState: LOADED_BROWSER_STATE, browserNavigateFails: true })],
+  render: () => <Workbar tab="browser" />,
+  play: async ({ canvasElement }) => {
+    const address = await within(canvasElement).findByRole('textbox', { name: '浏览器地址' });
+    await userEvent.clear(address);
+    await userEvent.type(address, 'https://example.com/status{Enter}');
+    await within(document.body).findByText('浏览器导航失败');
+  },
+};
+
 // Real path: 任务工作栏 → 文件, on a session whose agent wrote artifacts. The
 // count in the tab is the pane's own filtered total, reported upward.
 // The pane's empty state renders the same EmptyState as TraceEmpty below, so it
