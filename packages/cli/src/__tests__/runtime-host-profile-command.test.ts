@@ -237,6 +237,7 @@ function createProfileCatalogCapture(): {
     removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
     rebindIfCurrent: async () => assert.fail('unexpected conditional profile rebind'),
     mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional mutation'),
+    isRemoteProfileIncarnationCurrent: async () => assert.fail('unexpected conditional read'),
   };
   return {
     get document() {

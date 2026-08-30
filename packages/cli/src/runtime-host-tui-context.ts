@@ -169,11 +169,15 @@ export async function createRuntimeHostTuiContext(
         connection,
       });
     } else if (connected.profile.kind === 'remote') {
+      if (!connected.profileIncarnationId) {
+        throw new Error('Remote Runtime Host profile incarnation is unavailable');
+      }
       mcp = createTuiMcpController({
         workspaceRoot: input.rootPath,
         connection: createRemoteTuiMcpPublicationTarget({
           clientDataRoot: input.clientDataRoot,
           profile: connected.profile,
+          profileIncarnationId: connected.profileIncarnationId,
           ownerClientInstanceId: connected.clientInstanceId,
         }),
       });

@@ -127,14 +127,21 @@ test('remote TUI publication keeps its owner association across reconnect and re
     const profile = remoteProfile(host.websocketEndpoints[0]!, capability.rootId);
     const profiles = createClientRuntimeHostProfileCatalog(clientRoot);
     await profiles.create(profile, firstOwner.credential);
+    const resolvedProfile = await profiles.resolve(profile.id);
+    assert.ok(resolvedProfile.profileIncarnationId);
+    const profileTarget = {
+      profile,
+      profileIncarnationId: resolvedProfile.profileIncarnationId,
+    };
     const credentials = createRuntimeHostCapabilityProviderCredentialStore(
       createClientRuntimeHostCredentialStore(clientRoot),
     );
-    await credentials.set(profile, 'terminal-a', firstProvider.credential);
+    await credentials.set(profileTarget, 'terminal-a', firstProvider.credential);
     const publication = createRemoteTuiMcpPublicationTarget(
       {
         clientDataRoot: clientRoot,
         profile,
+        profileIncarnationId: profileTarget.profileIncarnationId,
         ownerClientInstanceId: 'terminal-a',
       },
       {
@@ -183,11 +190,18 @@ test('remote TUI publication keeps its owner association across reconnect and re
 
     const wrongProfile = remoteProfile(host.websocketEndpoints[0]!, 'f'.repeat(64), 'wrong-office');
     await profiles.create(wrongProfile, firstOwner.credential);
-    await credentials.set(wrongProfile, 'terminal-a', firstProvider.credential);
+    const resolvedWrongProfile = await profiles.resolve(wrongProfile.id);
+    assert.ok(resolvedWrongProfile.profileIncarnationId);
+    const wrongProfileTarget = {
+      profile: wrongProfile,
+      profileIncarnationId: resolvedWrongProfile.profileIncarnationId,
+    };
+    await credentials.set(wrongProfileTarget, 'terminal-a', firstProvider.credential);
     const wrongTarget = createRemoteTuiMcpPublicationTarget(
       {
         clientDataRoot: clientRoot,
         profile: wrongProfile,
+        profileIncarnationId: wrongProfileTarget.profileIncarnationId,
         ownerClientInstanceId: 'terminal-a',
       },
       {
@@ -230,7 +244,7 @@ test('remote TUI publication keeps its owner association across reconnect and re
       credentialId: firstProvider.credentialId,
     });
     await waitFor(() => controller?.snapshot().publication === 'credential_rejected');
-    assert.equal(await credentials.get(profile, 'terminal-a'), firstProvider.credential);
+    assert.equal(await credentials.get(profileTarget, 'terminal-a'), firstProvider.credential);
 
     await createClientRuntimeHostProfileCatalog(clientRoot).remove(profile.id);
     await waitFor(() => controller?.snapshot().publication === 'target_mismatch');

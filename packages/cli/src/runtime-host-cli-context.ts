@@ -93,6 +93,7 @@ export interface RuntimeHostCliConnectionContext {
 export interface RuntimeHostCliConnectionContextWithIdentity
   extends RuntimeHostCliConnectionContext {
   readonly clientInstanceId: string;
+  readonly profileIncarnationId?: string;
 }
 
 export interface RuntimeHostCliTarget {
@@ -207,6 +208,9 @@ export async function connectRuntimeHostCli(
       catalog: await deps.readConnectionCatalog(liveConnection),
       profile,
       clientInstanceId,
+      ...(resolvedProfile.profileIncarnationId
+        ? { profileIncarnationId: resolvedProfile.profileIncarnationId }
+        : {}),
       close: async () => {
         try {
           await liveConnection.close();

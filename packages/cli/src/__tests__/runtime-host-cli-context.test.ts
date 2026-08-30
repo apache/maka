@@ -284,6 +284,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
             rootId,
           },
           credential: 'opaque-token',
+          profileIncarnationId: 'incarnation-a',
         }),
         create: async () => {
           throw new Error('unexpected write');
@@ -303,6 +304,9 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
         mutateRemoteProfileIfCurrent: async () => {
           throw new Error('unexpected write');
         },
+        isRemoteProfileIncarnationCurrent: async () => {
+          throw new Error('unexpected read');
+        },
       },
       loadClientInstanceId: async () => '11111111-1111-4111-8111-111111111111',
       readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
@@ -314,6 +318,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
   assert.equal(remoteInput?.credential, 'opaque-token');
   assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
   assert.equal(context.clientInstanceId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(context.profileIncarnationId, 'incarnation-a');
   assert.equal(Object.hasOwn(context.profile, 'credential'), false);
   await context.close();
 });
@@ -553,7 +558,11 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     read: async () => ({ schemaVersion: 3, profiles: [profile] }),
     resolve: async (profileId) => {
       assert.equal(profileId, profile.id);
-      return { profile, credential: 'opaque-token' };
+      return {
+        profile,
+        credential: 'opaque-token',
+        profileIncarnationId: 'incarnation-a',
+      };
     },
     create: async () => assert.fail('unexpected write'),
     save: async () => assert.fail('unexpected write'),
@@ -561,5 +570,6 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     removeIfCurrent: async () => assert.fail('unexpected write'),
     rebindIfCurrent: async () => assert.fail('unexpected write'),
     mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
+    isRemoteProfileIncarnationCurrent: async () => assert.fail('unexpected read'),
   };
 }

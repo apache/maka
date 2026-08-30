@@ -29,7 +29,6 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
   RuntimeHostPermanentReconnectError,
   RuntimeHostProfileConnectionError,
-  sameRemoteRuntimeHostProfileTarget,
   subscribeClientRuntimeHostProfileCatalogChanges,
   RuntimeHostRemoteCompatibilityError,
   runtimeHostProfileTargetFingerprint,
@@ -38,6 +37,7 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostPeerClient,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostRemoteProfileIncarnation,
   type RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
@@ -53,7 +53,10 @@ interface RemoteTuiMcpPublicationDeps {
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
-  readonly profiles: Pick<RuntimeHostProfileCatalog, 'read' | 'mutateRemoteProfileIfCurrent'>;
+  readonly profiles: Pick<
+    RuntimeHostProfileCatalog,
+    'isRemoteProfileIncarnationCurrent' | 'mutateRemoteProfileIfCurrent'
+  >;
   readonly subscribeProfileChanges: (listener: (error?: Error) => void) => () => void;
 }
 
@@ -61,6 +64,7 @@ export function createRemoteTuiMcpPublicationTarget(
   input: {
     readonly clientDataRoot: string;
     readonly profile: RemoteRuntimeHostProfile;
+    readonly profileIncarnationId: string;
     readonly ownerClientInstanceId: string;
   },
   overrides: Partial<RemoteTuiMcpPublicationDeps> = {},
@@ -85,6 +89,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   readonly #input: {
     readonly clientDataRoot: string;
     readonly profile: RemoteRuntimeHostProfile;
+    readonly profileIncarnationId: string;
     readonly ownerClientInstanceId: string;
   };
   readonly #deps: RemoteTuiMcpPublicationDeps;
@@ -111,6 +116,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     input: {
       readonly clientDataRoot: string;
       readonly profile: RemoteRuntimeHostProfile;
+      readonly profileIncarnationId: string;
       readonly ownerClientInstanceId: string;
     },
     deps: RemoteTuiMcpPublicationDeps,
@@ -130,7 +136,10 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
         await this.#retire(profileCurrent === false ? 'target_mismatch' : 'host_unavailable');
         return;
       }
-      const credential = await deps.credentials.get(input.profile, input.ownerClientInstanceId);
+      const credential = await deps.credentials.get(
+        this.#profileTarget(),
+        input.ownerClientInstanceId,
+      );
       if (this.#closed) return;
       if (!credential) {
         this.#setUnavailable('credential_required');
@@ -167,9 +176,13 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
       const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#input.profile,
+        this.#profileTarget(),
         (profile) =>
-          this.#deps.credentials.set(profile, this.#input.ownerClientInstanceId, credential),
+          this.#deps.credentials.set(
+            { profile, profileIncarnationId: this.#input.profileIncarnationId },
+            this.#input.ownerClientInstanceId,
+            credential,
+          ),
       );
       if (!committed) {
         await this.#retire('target_mismatch');
@@ -189,8 +202,12 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
       await this.#disconnect();
       const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
-        this.#input.profile,
-        (profile) => this.#deps.credentials.delete(profile, this.#input.ownerClientInstanceId),
+        this.#profileTarget(),
+        (profile) =>
+          this.#deps.credentials.delete(
+            { profile, profileIncarnationId: this.#input.profileIncarnationId },
+            this.#input.ownerClientInstanceId,
+          ),
       );
       if (!committed) {
         await this.#retire('target_mismatch');
@@ -326,11 +343,14 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   async #profileStillCurrent(): Promise<boolean> {
-    const document = await this.#deps.profiles.read();
-    const current = document.profiles.find((profile) => profile.id === this.#input.profile.id);
-    return (
-      current?.kind === 'remote' && sameRemoteRuntimeHostProfileTarget(current, this.#input.profile)
-    );
+    return this.#deps.profiles.isRemoteProfileIncarnationCurrent(this.#profileTarget());
+  }
+
+  #profileTarget(): RuntimeHostRemoteProfileIncarnation {
+    return {
+      profile: this.#input.profile,
+      profileIncarnationId: this.#input.profileIncarnationId,
+    };
   }
 
   async #retire(reason: TuiMcpPublicationUnavailableReason): Promise<void> {
@@ -392,12 +412,15 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 function providerIdentityPath(input: {
   readonly clientDataRoot: string;
   readonly profile: RemoteRuntimeHostProfile;
+  readonly profileIncarnationId: string;
   readonly ownerClientInstanceId: string;
 }): string {
   const identity = createHash('sha256')
     .update('tui-mcp-capability-provider')
     .update('\0')
     .update(runtimeHostProfileTargetFingerprint(input.profile))
+    .update('\0')
+    .update(input.profileIncarnationId)
     .update('\0')
     .update(input.ownerClientInstanceId)
     .digest('hex')
