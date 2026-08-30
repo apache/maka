@@ -70,7 +70,9 @@ import {
   SessionCatalogProjection,
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES,
   TASK_MUTATION_QUERY_MAX_CORRELATIONS,
+  taskMutationCorrelationsEncodedByteLength,
   WorkspaceTarget,
   type GoalControlAction,
   type GoalProjection,
@@ -1035,8 +1037,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     const unique = uniqueTaskMutationCorrelations(correlations);
     const deadline = Date.now() + TASK_MUTATION_QUERY_DEADLINE_MS;
     const lookups: TaskMutationLookup[] = [];
-    for (let offset = 0; offset < unique.length; offset += TASK_MUTATION_QUERY_MAX_CORRELATIONS) {
-      const batch = unique.slice(offset, offset + TASK_MUTATION_QUERY_MAX_CORRELATIONS);
+    for (const batch of taskMutationCorrelationBatches(unique)) {
       lookups.push(...(await this.#queryTaskMutationBatch(sessionId, batch, deadline)));
     }
     return lookups;
@@ -1760,6 +1761,29 @@ function uniqueTaskMutationCorrelations(
     unique.push(correlation);
   }
   return unique;
+}
+
+function taskMutationCorrelationBatches(
+  correlations: readonly TaskMutationCorrelation[],
+): TaskMutationCorrelation[][] {
+  const batches: TaskMutationCorrelation[][] = [];
+  let batch: TaskMutationCorrelation[] = [];
+  for (const correlation of correlations) {
+    const candidate = [...batch, correlation];
+    if (
+      batch.length > 0 &&
+      (candidate.length > TASK_MUTATION_QUERY_MAX_CORRELATIONS ||
+        taskMutationCorrelationsEncodedByteLength(candidate) >
+          TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES)
+    ) {
+      batches.push(batch);
+      batch = [correlation];
+      continue;
+    }
+    batch = candidate;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
 }
 
 function assertExactTaskMutationLookups(

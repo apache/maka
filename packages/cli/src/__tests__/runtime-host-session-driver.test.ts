@@ -36,6 +36,8 @@ import {
 } from '@maka/runtime-host/client';
 import {
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES,
+  TASK_MUTATION_QUERY_INPUT_MAX_ENCODED_BYTES,
   type GoalProjection,
   type InteractionPendingSnapshot,
   type OperationInput,
@@ -102,6 +104,78 @@ describe('Runtime Host Maka Session driver', () => {
       (requests[3]!.input as { correlations: readonly unknown[] }).correlations.length,
       1,
     );
+  });
+
+  test('batches Task mutation correlations by encoded bytes and keeps continuation inputs bounded', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = Array.from({ length: 128 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      toolCallId: `legacy:nested:${String(index).padStart(3, '0')}${'x'.repeat(2_029)}`,
+    }));
+    let firstBatch = true;
+    connection.taskMutationResponder = (input) => {
+      if (input.kind === 'continue') return mutationPage(input.correlations.slice(1), null);
+      if (firstBatch) {
+        firstBatch = false;
+        return mutationPage(input.correlations.slice(0, 1), 'cursor-1');
+      }
+      return mutationPage(input.correlations, null);
+    };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+
+    const lookups = await driver.queryTaskMutations!('session-1', correlations);
+
+    assert.deepEqual(
+      lookups.map(({ correlation }) => correlation),
+      correlations,
+    );
+    const requests = connection.requests.filter(
+      ({ operation }) => operation === 'task.mutation.query',
+    );
+    assert.ok(requests.length > 2);
+    assert.ok(requests.some(({ input }) => (input as { kind: string }).kind === 'continue'));
+    for (const { input } of requests) {
+      const query = input as OperationInput<'task.mutation.query'>;
+      assert.ok(
+        Buffer.byteLength(JSON.stringify(query.correlations), 'utf8') <=
+          TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES,
+      );
+      assert.ok(
+        Buffer.byteLength(JSON.stringify(query), 'utf8') <=
+          TASK_MUTATION_QUERY_INPUT_MAX_ENCODED_BYTES,
+      );
+    }
+  });
+
+  test('rejects the whole Task mutation query when a later byte batch fails', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = Array.from({ length: 128 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      toolCallId: `legacy:nested:${String(index).padStart(3, '0')}${'x'.repeat(2_029)}`,
+    }));
+    let batches = 0;
+    connection.taskMutationResponder = (input) => {
+      batches += 1;
+      if (batches === 2) throw new Error('later batch unavailable');
+      return mutationPage(input.correlations, null);
+    };
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+
+    await assert.rejects(
+      driver.queryTaskMutations!('session-1', correlations),
+      /later batch unavailable/,
+    );
+    assert.equal(batches, 2);
   });
 
   test('rejects a repeated Task mutation cursor without returning a partial batch', async () => {
@@ -2697,6 +2771,9 @@ class FakeConnection {
   readonly goalQueryResults: Array<GoalProjection | null> = [];
   readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
   readonly taskMutationOutcomes: Array<TaskMutationQueryResult | Error> = [];
+  taskMutationResponder:
+    | ((input: OperationInput<'task.mutation.query'>) => TaskMutationQueryResult)
+    | undefined;
   /**
    * Operations held open by a test. The request is recorded on entry and then
    * waits, so a test can hold one round trip and observe what the driver does
@@ -2806,6 +2883,11 @@ class FakeConnection {
       } as OperationOutput<K>;
     }
     if (operation === 'task.mutation.query') {
+      if (this.taskMutationResponder) {
+        return this.taskMutationResponder(
+          input as OperationInput<'task.mutation.query'>,
+        ) as OperationOutput<K>;
+      }
       const outcome = this.taskMutationOutcomes.shift();
       if (!outcome) throw new Error('Unexpected task.mutation.query request');
       if (outcome instanceof Error) throw outcome;
