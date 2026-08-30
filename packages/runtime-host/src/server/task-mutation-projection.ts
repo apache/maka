@@ -22,6 +22,7 @@ import {
   canTransitionTaskStatus,
   isSafeTaskId,
   isTaskKey,
+  projectTaskLedgerEvents,
   sanitizeTaskLedgerTask,
   type Task,
   type TaskLedgerEvent,
@@ -52,6 +53,8 @@ export function projectTaskMutationLookups(
   rows: readonly SequencedTaskLedgerEvent[],
   correlations: readonly TaskMutationCorrelation[],
 ): readonly TaskMutationLookup[] {
+  const canonicalHistory = projectTaskLedgerEvents(rows.map(({ event }) => event));
+  const historyIsCanonical = canonicalHistory.diagnostics.length === 0;
   const rowsByCorrelation = new Map<string, SequencedTaskLedgerEvent[]>();
   for (const row of rows) {
     const refs = row.event.refs;
@@ -65,6 +68,7 @@ export function projectTaskMutationLookups(
   return correlations.map((correlation) => {
     const matched = rowsByCorrelation.get(correlationKey(correlation));
     if (!matched || matched.length === 0) return { kind: 'not_found', correlation };
+    if (!historyIsCanonical) return { kind: 'incompatible', correlation };
     const presentation = projectPresentation(correlation, matched);
     return presentation
       ? { kind: 'found', correlation, presentation }

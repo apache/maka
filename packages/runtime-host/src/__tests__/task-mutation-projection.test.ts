@@ -51,6 +51,7 @@ describe('Task mutation projection', () => {
   });
 
   test('projects a contiguous create batch and redacts exact mutation detail', () => {
+    const startCorrelation = { turnId: 'turn-start', toolCallId: 'call-start' };
     const blocked = event('event-3', 'task_blocked', updateCorrelation, 'Blocked task', {
       previousStatus: 'in_progress',
       nextStatus: 'blocked',
@@ -60,7 +61,14 @@ describe('Task mutation projection', () => {
       [
         row(0, event('event-1', 'task_created', createCorrelation, 'First')),
         row(1, event('event-2', 'task_created', createCorrelation, 'Second', { taskIndex: 2 })),
-        row(2, blocked),
+        row(
+          2,
+          event('event-start', 'task_started', startCorrelation, 'Blocked task', {
+            previousStatus: 'pending',
+            nextStatus: 'in_progress',
+          }),
+        ),
+        row(3, blocked),
       ],
       [createCorrelation, updateCorrelation],
     );
@@ -136,6 +144,48 @@ describe('Task mutation projection', () => {
         { kind: 'incompatible', correlation: updateCorrelation },
       ]);
     }
+  });
+
+  test('rejects mutations that conflict with the canonical global replay', () => {
+    const firstCreate = { turnId: 'turn-first', toolCallId: 'call-first' };
+    const secondCreate = { turnId: 'turn-second', toolCallId: 'call-second' };
+    const falsePrevious = { turnId: 'turn-false', toolCallId: 'call-false' };
+    const conflictingStatusRows = [
+      row(0, event('event-1', 'task_created', firstCreate, 'Pending task')),
+      row(
+        1,
+        event('event-2', 'task_completed', falsePrevious, 'False previous status', {
+          previousStatus: 'in_progress',
+          nextStatus: 'completed',
+          evidence: 'Done',
+        }),
+      ),
+    ];
+    assert.deepEqual(projectTaskMutationLookups(conflictingStatusRows, [falsePrevious]), [
+      { kind: 'incompatible', correlation: falsePrevious },
+    ]);
+
+    const duplicateGlobalKeyRows = [
+      row(0, event('event-3', 'task_created', firstCreate, 'First')),
+      row(
+        1,
+        event('event-4', 'task_created', secondCreate, 'Second', {
+          taskIndex: 2,
+          taskKey: 'T1',
+        }),
+      ),
+    ];
+    assert.deepEqual(projectTaskMutationLookups(duplicateGlobalKeyRows, [secondCreate]), [
+      { kind: 'incompatible', correlation: secondCreate },
+    ]);
+
+    const unknownUpdate = event('event-5', 'task_started', updateCorrelation, 'Unknown task', {
+      previousStatus: 'pending',
+      nextStatus: 'in_progress',
+    });
+    assert.deepEqual(projectTaskMutationLookups([row(0, unknownUpdate)], [updateCorrelation]), [
+      { kind: 'incompatible', correlation: updateCorrelation },
+    ]);
   });
 });
 
