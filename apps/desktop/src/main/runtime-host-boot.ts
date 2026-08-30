@@ -254,7 +254,9 @@ if (runtimeHostPeerConfiguration) {
     });
   } catch (error) {
     console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
-    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
+    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment(process.env, {
+      automaticRelayDiscovery: runtimeHostPeerConfiguration.automaticRelayDiscovery,
+    });
   }
 }
 const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
@@ -929,6 +931,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     registerClientIpc: registerHostClientIpc,
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
+    resolveLocalCollaborationConnectionTarget: () =>
+      localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(
@@ -1013,6 +1017,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       });
     },
     recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
+    resolveLocalHostReplacement: (registration, signal) =>
+      localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();

@@ -47,7 +47,10 @@ import {
   type RuntimeHostSetupFrame,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
-import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
+import {
+  runtimeHostSetupPackageVersion,
+  type DesktopRuntimeHostSetupPackage,
+} from './runtime-host-setup-package.js';
 
 const SETUP_TIMEOUT_MS = 10 * 60_000;
 const SETUP_FRAME_PENDING_MAX = 20 * 1024;
@@ -179,6 +182,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     input: {
       readonly setupPackage: DesktopRuntimeHostSetupPackage;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
+      readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
       readonly allowInterruptActiveTasks?: boolean;
       readonly signal?: AbortSignal;
     },
@@ -346,11 +350,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     },
     runUpdate(command, onProgress) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
-      const deploymentId = command.target.deploymentId;
-      if (!deploymentId) {
+      if (!command.target.deploymentId) {
         return Promise.reject(new Error('Runtime Host update requires a deployment generation'));
       }
       const setupPackage = resolveLocalSetupPackage(command.setupPackage);
+      const targetVersion = runtimeHostSetupPackageVersion(command.setupPackage);
       return runServiceFrameProcess({
         command: {
           executable: 'npm',
@@ -365,10 +369,12 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             'service',
             'update',
             '--framed',
+            ...(targetVersion ? ['--target', targetVersion] : []),
             '--managed-root-id',
             command.target.rootId,
-            '--operator-deployment-id',
-            deploymentId,
+            ...(command.expectedHost
+              ? ['--expected-host-json', JSON.stringify(command.expectedHost)]
+              : []),
             ...managedTargetArgs(command.target),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ],

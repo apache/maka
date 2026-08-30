@@ -141,6 +141,7 @@ import {
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
+import { SessionTurnAccessRequestCoordinator } from './session-turn-access-request-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
 import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
 import { HostMemoryCoordinator } from './memory-coordinator.js';
@@ -378,6 +379,9 @@ export async function createExecutionRuntimeHostComposition(
       sessionAdmission,
       acquireResidency: () => context.acquireResidency('runtime-resource'),
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
       resolveShell: async () =>
         resolveShellPlan((await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell),
       onProjectionChanged: (update) =>
@@ -490,7 +494,9 @@ export async function createExecutionRuntimeHostComposition(
     const projects = new HostProjectCatalogCoordinator(
       openedProjectCatalog,
       { publish: () => hostChanges.publishProjectCatalog() },
-      { publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId) },
+      {
+        publish: (sessionId: string) => hostChanges.publishSessionCatalog(sessionId),
+      },
       projectMembership,
       context.requestDrain,
       new HostProjectDirectoryAuthority(options.projectDirectoryRoots),
@@ -556,6 +562,7 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       createSessionTranscriptReader({ stores, canonicalPermissionOutcomes }),
       (sessionId) => hostChanges.publishSessionCatalog(sessionId),
+      context.sessionAccessAuthority,
     );
     const continuityCoordinator = continuity;
     unsubscribeTranscriptChanges = stores.sessionStore.subscribeTranscriptChanges((sessionId) =>
@@ -1108,6 +1115,8 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       sessionAdmission,
       stores.sessionStore,
+      Date.now,
+      context.sessionAccessAuthority,
     );
     rootCoordinator = new RootTurnCoordinator(
       manager,
@@ -1171,6 +1180,16 @@ export async function createExecutionRuntimeHostComposition(
       turns: stores.agentRunStore,
       runtime: manager,
     });
+    const turnAccessRequests = context.sessionAccessAuthority
+      ? new SessionTurnAccessRequestCoordinator({
+          authority: context.sessionAccessAuthority,
+          startTurn: interactiveTurns.handlers['turn.start'],
+          hostEpoch: context.hostEpoch,
+          acquireResidency: () => context.acquireResidency('collaboration-turn-request'),
+          requestDrain: context.requestDrain,
+          whenIdle: (sessionId) => coordinator.whenIdle(sessionId),
+        })
+      : undefined;
     const graphExecutions = new HostAgentGraphExecutionCoordinator({
       executions: coordinator,
       runtime: manager,
@@ -1270,6 +1289,9 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       workspaceResolver,
       requestDrain: context.requestDrain,
+      ...(context.sessionAccessAuthority
+        ? { sessionAccessAuthority: context.sessionAccessAuthority }
+        : {}),
     });
     const workHubCoordination = new HostWorkHubCoordinationCoordinator({
       stateRoot: context.owner.capability.canonicalPath,
@@ -1280,6 +1302,9 @@ export async function createExecutionRuntimeHostComposition(
       sessionActions: {
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
+          if (durable) {
+            await messages.consumePendingAdmissions([durable.targetSessionId]);
+          }
           const create =
             !durable && input.create
               ? await sessionCatalog.prepareWorkHubCreate({
@@ -1348,6 +1373,10 @@ export async function createExecutionRuntimeHostComposition(
                   },
                   ...(create ? { create } : {}),
                 });
+                // Keep the durable steering identity and its live queue owner
+                // under one Session admission. A terminal transition must not
+                // observe the committed Message before the queue does.
+                await messages.consumePendingAdmissionsAdmitted(input.targetSessionId, lease);
                 try {
                   await continuityCoordinator.refreshCanonical(
                     WORKHUB_COORDINATION_SESSION_ID,
@@ -1362,12 +1391,6 @@ export async function createExecutionRuntimeHostComposition(
               },
             ));
 
-          // Assignment is already the acknowledged durable outcome. Consume
-          // the exact stored admission after releasing the assignment leases;
-          // failure leaves it pending for the same normal recovery consumer.
-          void messages
-            .consumePendingAdmissions([persisted.targetSessionId])
-            .catch(() => undefined);
           return {
             turnId: persisted.targetTurnId,
             ...(persisted.steered ? { steered: true as const } : {}),
@@ -1677,10 +1700,12 @@ export async function createExecutionRuntimeHostComposition(
             await messages.recoverPendingAfterHostRestart(
               recoverySessions.map((session) => session.id),
             );
+            await turnAccessRequests?.recover();
             rootRecoveryCompleted = true;
           },
         },
         drain: [
+          () => turnAccessRequests?.beginDrain(),
           () => rootCoordinator?.beginDrain(),
           () => workspaceExecution?.beginDrain(),
           () => runtimeResources?.beginDrain(),
@@ -1699,6 +1724,7 @@ export async function createExecutionRuntimeHostComposition(
           () => sessionEffects?.close(),
           () => messages.close(),
           () => interactions.close(),
+          () => turnAccessRequests?.close(),
           () => continuityCoordinator.close(),
         ],
         releaseConnection: [(connectionId) => runtimeResources?.releaseConnection(connectionId)],
@@ -1867,7 +1893,10 @@ function adaptWorkspaceFilesystemWorker(
     async execute(input) {
       // Read-only operations never participate in CAS; the adapter says so
       // explicitly (#3484) instead of relying on an absent optional field.
-      const result = await worker.execute({ ...input, expectedIdentity: 'unchecked' });
+      const result = await worker.execute({
+        ...input,
+        expectedIdentity: 'unchecked',
+      });
       switch (result.kind) {
         case 'read':
         case 'read_image':

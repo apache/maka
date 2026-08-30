@@ -492,12 +492,11 @@ describe('collapsed tool row target', () => {
     const markup = renderToStaticMarkup(createElement(ToolTrow, {
       items: [{
         ...baseItem,
-        toolName: 'ExploreAgent',
-        intent: '只读探索:定位渲染入口',
-        args: { objective: '定位渲染入口' },
+        intent: '检查渲染入口',
+        args: { command: 'rg renderEntry' },
       }],
     }));
-    assert.match(markup, /只读探索/);
+    assert.match(markup, /检查渲染入口/);
   });
 
   it('names a live call from the wire args preview before full args arrive', async () => {

@@ -837,45 +837,6 @@ export type ToolResultContent =
       credentialSource?: string;
     }
   | {
-      kind: 'explore_agent';
-      ok: boolean;
-      partial?: boolean;
-      terminalStatus?: 'completed' | 'completed_empty' | 'failed' | 'canceled' | 'canceled_partial';
-      mode: 'read_only';
-      objective: string;
-      roots: string[];
-      queries: string[];
-      ignoredPaths?: string[];
-      stoppingCondition?: string;
-      limitReasons?: ReadonlyArray<
-        'candidate_budget' | 'file_budget' | 'match_budget' | 'byte_budget'
-      >;
-      filesDiscovered?: number;
-      filesInspected: number;
-      filesSkipped: number;
-      sensitiveFilesSkipped?: number;
-      bytesRead: number;
-      startedAt?: number;
-      completedAt?: number;
-      durationMs?: number;
-      progress: string[];
-      recentEvents?: ReadonlyArray<{ type: string; at: number; message: string }>;
-      evidence?: ReadonlyArray<{
-        type: 'match' | 'candidate';
-        path: string;
-        line?: number;
-        label: string;
-        score?: number;
-      }>;
-      summary?: string;
-      report?: string;
-      candidateFiles: ReadonlyArray<{ path: string; score: number; reasons: string[] }>;
-      matches: ReadonlyArray<{ path: string; line: number; query: string; snippet: string }>;
-      notes: string[];
-      reason?: 'invalid_objective' | 'invalid_root' | 'no_readable_roots' | 'aborted';
-      message?: string;
-    }
-  | {
       kind: 'subagent';
       childSessionId?: string;
       agentId?: string;

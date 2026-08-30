@@ -19,7 +19,7 @@
 
 import { projectDeepResearchEvents, type DeepResearchRun } from '@maka/core/deep-research-run';
 import { projectDeepResearchClientProgress } from '@maka/core/deep-research-client-progress';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { isDeepResearchSession } from '@maka/core/deep-research';
 import { buildDeepResearchTools } from '@maka/runtime/deep-research-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import {

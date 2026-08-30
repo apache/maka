@@ -19,6 +19,7 @@
 
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import type { RootTurnAdmissionAuthorization } from '@maka/storage/execution-stores';
 import {
   HOST_OPERATION_SPECS,
   decodeOperationOutcome,
@@ -33,15 +34,19 @@ import {
 } from '../protocol/index.js';
 import { HOST_BOOTSTRAP_OPERATION_SPECS } from '../protocol/host-status.js';
 import { ACCESS_AUTHORITY_OPERATION_SPECS } from '../protocol/access-authority.js';
+import { SESSION_COLLABORATION_OPERATION_SPECS } from '../protocol/session-collaboration.js';
 import { PEER_MESH_OPERATION_SPECS } from '../protocol/peer-mesh.js';
 import { createPeerMeshOperationHandlers } from './peer-mesh-authority.js';
+import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 
 export interface ConnectionContext {
   hostEpoch: string;
   connectionId: string;
   principal: string;
+  principalKind?: RuntimeHostConnectionAuthority['principalKind'];
   credentialId?: string;
   clientInstanceId?: string;
+  turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;
 }
 
@@ -61,6 +66,7 @@ export type OperationHandlerMap = {
 export type HostCoreOperationKey =
   | keyof typeof HOST_BOOTSTRAP_OPERATION_SPECS
   | keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
+  | keyof typeof SESSION_COLLABORATION_OPERATION_SPECS
   | keyof typeof PEER_MESH_OPERATION_SPECS;
 export type DomainOperationKey = Exclude<OperationKey, HostCoreOperationKey>;
 export type TurnOperationKey = Extract<
@@ -217,7 +223,7 @@ export type WorkHubCoordinationOperationHandlerMap = Pick<
 >;
 export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,
-  keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS
+  keyof typeof ACCESS_AUTHORITY_OPERATION_SPECS | keyof typeof SESSION_COLLABORATION_OPERATION_SPECS
 >;
 export type HostCoreUnavailableOperationHandlerMap = AccessAuthorityOperationHandlerMap &
   Pick<OperationHandlerMap, keyof typeof PEER_MESH_OPERATION_SPECS>;
@@ -254,6 +260,7 @@ export function createUnavailableDomainOperationHandlers(): DomainOperationHandl
     if (
       Object.hasOwn(HOST_BOOTSTRAP_OPERATION_SPECS, operation) ||
       Object.hasOwn(ACCESS_AUTHORITY_OPERATION_SPECS, operation) ||
+      Object.hasOwn(SESSION_COLLABORATION_OPERATION_SPECS, operation) ||
       Object.hasOwn(PEER_MESH_OPERATION_SPECS, operation)
     ) {
       continue;
@@ -331,6 +338,62 @@ export function createUnavailableAccessAuthorityOperationHandlers(): AccessAutho
       error: {
         code: 'operation_unavailable',
         message: 'Runtime Host access credentials are unavailable',
+      },
+    }),
+    'collaboration.invitation.prepare': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.access.query': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.grant.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.principal.revoke': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.create': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.acknowledge': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.query': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
+      },
+    }),
+    'collaboration.turn-request.decide': async () => ({
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'Runtime Host collaboration authority is unavailable',
       },
     }),
   };

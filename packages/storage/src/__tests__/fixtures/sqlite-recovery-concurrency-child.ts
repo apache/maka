@@ -20,6 +20,7 @@
 import { existsSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { type ToolRecoveryFactEnvelope } from '@maka/core/tool-recovery-fact';
 import { type WorkspaceBaselineAuthorityInput } from '@maka/core/workspace-version-authority';
 import { createRuntimeBoundaryCursor, runtimePrefixSegment } from '@maka/core/runtime-boundary';
@@ -67,6 +68,10 @@ try {
       workspaceBaselineInput(mode === 'workspace_baseline_b' ? 'b' : 'a'),
     );
     writeSync(1, `BASELINE ${result.created ? 'created' : 'existing'}\n`);
+  } else if (mode === 'managed_mutation_a' || mode === 'managed_mutation_b') {
+    bindWorkspaceBaselineAuthorityStoreRootInternal(store!, 'a'.repeat(64));
+    await store!.commitToolPrepared(managedMutationPreparedCommit(mode.endsWith('_b') ? 'b' : 'a'));
+    writeSync(1, 'MUTATION reserved\n');
   } else if (mode === 'append_source') {
     await store!.ensureTerminalRuntimeEventDurable('session-1', 'run-1', {
       ...baseEvent('concurrent-source-terminal', 3),
@@ -313,5 +318,73 @@ function workspaceBaselineInput(variant: 'a' | 'b'): WorkspaceBaselineAuthorityI
       changedFileCount: 7,
       deletedFileCount: 0,
     },
+  };
+}
+
+function managedMutationPreparedCommit(variant: 'a' | 'b') {
+  const operationId = `managed-mutation-${variant}`;
+  const toolCallId = `${operationId}-call`;
+  const args = { path: 'notes.txt', content: variant };
+  const canonicalArgsHash = canonicalToolArgsHash('Write', args);
+  return {
+    operationId,
+    journalEventId: `${operationId}_prepared`,
+    runtimeEvent: {
+      id: `${operationId}-call-event`,
+      invocationId: `${operationId}-invocation`,
+      runId: `${operationId}-run`,
+      sessionId: `${operationId}-session`,
+      turnId: `${operationId}-turn`,
+      ts: 1_700_000_000_001,
+      partial: false,
+      role: 'model' as const,
+      author: 'agent' as const,
+      content: { kind: 'function_call' as const, id: toolCallId, name: 'Write', args },
+      refs: { operationId, toolCallId },
+    },
+    dispatchRuntimeEvent: {
+      id: `${operationId}-dispatch-event`,
+      invocationId: `${operationId}-invocation`,
+      runId: `${operationId}-run`,
+      sessionId: `${operationId}-session`,
+      turnId: `${operationId}-turn`,
+      ts: 1_700_000_000_001,
+      partial: false,
+      role: 'system' as const,
+      author: 'system' as const,
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1' as const,
+          operationId,
+          providerToolCallId: toolCallId,
+          toolName: 'Write',
+          canonicalArgsHash,
+          recoveryMode: 'reconcile' as const,
+          managedMutation: {
+            protocol: 'managed_mutation_v2' as const,
+            repositoryId: `repository_${'1'.repeat(32)}`,
+            workspaceId: `workspace_${'2'.repeat(32)}`,
+            workspaceEpochId: `epoch_${'3'.repeat(32)}`,
+            workspaceInstanceId: `instance_${'4'.repeat(32)}`,
+            objectFormat: 'sha1' as const,
+            baseWorkspaceVersionId: `version_${'5'.repeat(32)}`,
+            baseAcceptedEventId: 'workspace-version-event-a',
+            baseHeadRevision: 1,
+            baseCommitOid: '5'.repeat(40),
+            baseTreeOid: '2'.repeat(40),
+            expectedPath: 'notes.txt',
+            pathPolicyVersion: 3 as const,
+            executionProfileDigest:
+              'sha256:ffdfdda9cf38f382e0c4db81dac7319cd33586a6c65051a97a15e6c41b88f825' as const,
+          },
+        },
+      },
+      refs: { operationId, toolCallId },
+    },
+    providerToolCallId: toolCallId,
+    toolName: 'Write',
+    canonicalArgsHash,
+    recoveryMode: 'reconcile' as const,
+    committedAt: 1_700_000_000_001,
   };
 }

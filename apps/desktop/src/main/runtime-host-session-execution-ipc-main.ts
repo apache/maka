@@ -20,11 +20,11 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -145,13 +145,6 @@ async function submitMessageWithReconnect(
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
-  observations: Pick<
-    RuntimeHostSessionObservationRegistry,
-    | 'loadTranscriptAround'
-    | 'loadTranscriptBefore'
-    | 'observe'
-    | 'openTranscript'
-  >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -174,6 +167,58 @@ export interface RuntimeHostSessionExecutionIpcDeps {
     >;
   };
   newId?: () => string;
+}
+
+export interface RuntimeHostSessionObservationIpcDeps {
+  observations: Pick<
+    RuntimeHostSessionObservationRegistry,
+    | 'loadTranscriptAround'
+    | 'loadTranscriptBefore'
+    | 'observe'
+    | 'openTranscript'
+  >;
+  resolveSideConversation(sessionId: string): Promise<boolean>;
+}
+
+/** Register the complete Desktop surface available to an observation-only Session. */
+export function registerRuntimeHostSessionObservationIpc(
+  deps: RuntimeHostSessionObservationIpcDeps,
+  ipcMain: ReconnectableReadIpcMain,
+): void {
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:observe',
+    async (event, sessionId: unknown, observerId: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      await deps.observations.observe(
+        normalizedSessionId,
+        requiredId(observerId, 'Session observer'),
+        event.sender as RuntimeHostSessionObserverTarget,
+        await deps.resolveSideConversation(normalizedSessionId),
+      );
+    },
+  );
+  ipcMain.handle(
+    'sessions:transcript:open',
+    async (event, sessionId: unknown, consumerId: unknown) =>
+      deps.observations.openTranscript(
+        requiredId(sessionId, 'Session'),
+        requiredId(consumerId, 'Transcript consumer'),
+        event.sender as RuntimeHostTranscriptTarget,
+      ),
+  );
+  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptBefore(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAround(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
 }
 
 /**
@@ -220,47 +265,6 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
 
-  handleReconnectableRead(
-    ipcMain,
-    "sessions:observe",
-    async (event, sessionId: unknown, observerId: unknown) => {
-      const normalizedSessionId = requiredId(sessionId, "Session");
-      const normalizedObserverId = requiredId(observerId, "Session observer");
-      const session = await deps.client.getSession(normalizedSessionId);
-      if (!session) {
-        throw new Error(`Runtime Host Session not found: ${normalizedSessionId}`);
-      }
-      await deps.observations.observe(
-        normalizedSessionId,
-        normalizedObserverId,
-        event.sender as RuntimeHostSessionObserverTarget,
-        isSideConversationSession(session.labels),
-      );
-    },
-  );
-  ipcMain.handle(
-    'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown) => {
-      const result = await deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
-      );
-      return result;
-    },
-  );
-  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptBefore(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
-  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptAround(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
   );

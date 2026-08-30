@@ -81,7 +81,11 @@ export function authorizeRuntimeHostOperation(
   authority: RuntimeHostConnectionAuthority,
   frame: RequestFrame,
 ): boolean {
-  if (authority.principalKind !== 'local_owner' && !operationAllowsRemoteOwner(frame.operation)) {
+  if (
+    (authority.principalKind === 'remote_owner' ||
+      authority.principalKind === 'capability_provider') &&
+    !operationAllowsRemoteOwner(frame.operation)
+  ) {
     return false;
   }
   if (authority.operationGrants !== 'all' && !authority.operationGrants.includes(frame.operation)) {

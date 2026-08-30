@@ -23,6 +23,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
+import {
+  INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+  RUNTIME_HOST_COMPATIBILITY_EPOCH,
+  RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+  type HostRegistration,
+} from '@maka/runtime-host/protocol';
 import type { RuntimeHostDesktopManager } from '../runtime-host-desktop-manager.js';
 
 const RECOVERY_DEPLOYMENT_ID = '33333333-3333-4333-8333-333333333333';
@@ -228,6 +234,65 @@ test('keeps the managed service visible when Direct peer support is unavailable'
   assert.equal(snapshot.managedService, true);
 });
 
+test('replaces a conflicting supervised Host through canonical authority without a receipt', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-conflict-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  let updated = false;
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    resolveManagedDeploymentAuthority: async () => ({
+      kind: 'active',
+      lifecycleMode: 'supervised',
+      target: {
+        schemaVersion: 1,
+        serviceId: rootId,
+        rootPath,
+        rootId,
+        operatorPath: join(base, 'operator'),
+        deploymentId: RECOVERY_DEPLOYMENT_ID,
+      },
+    }),
+    operator: {
+      async runUpdate(input: {
+        readonly target: { readonly rootId: string; readonly deploymentId?: string };
+        readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
+        readonly allowInterruptActiveTasks?: boolean;
+      }) {
+        assert.equal(input.target.rootId, rootId);
+        assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
+        assert.deepEqual(input.expectedHost, { hostEpoch: 'older-host', pid: 42 });
+        assert.equal(input.allowInterruptActiveTasks, true);
+        updated = true;
+        return {
+          kind: 'result' as const,
+          action: 'update' as const,
+          update: { kind: 'updated', previousVersion: '0.2.0', targetVersion: '0.2.0' },
+        } as never;
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const replacement = await service.resolveConflictingHostReplacement(
+    hostRegistration({ rootId, lifecycleMode: 'service' }),
+    new AbortController().signal,
+  );
+  assert.ok(replacement);
+  await replacement.replace();
+  assert.equal(updated, true);
+});
+
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-remote-access-ownership-'));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -309,6 +374,7 @@ test('adopts committed managed authority for every pending receipt without repla
       manager: () => assert.fail('pre-start reconciliation must not require the Local manager'),
       resolveManagedDeploymentAuthority: async () => ({
         kind: 'active',
+        lifecycleMode: 'supervised',
         target: {
           schemaVersion: 1,
           serviceId: rootId,
@@ -736,6 +802,27 @@ async function writeManagedLifecycle(
       deploymentId: RECOVERY_DEPLOYMENT_ID,
     })}\n`,
   );
+}
+
+function hostRegistration(
+  overrides: Partial<Pick<HostRegistration, 'rootId' | 'lifecycleMode'>> = {},
+): HostRegistration {
+  return {
+    kind: 'maka-runtime-host',
+    schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
+    rootId: 'a'.repeat(64),
+    hostEpoch: 'older-host',
+    endpoint: '/tmp/runtime-host.sock',
+    protocolMin: 0,
+    protocolMax: 0,
+    compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH - 1,
+    compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+    compositionRevision: 'legacy',
+    state: 'ready',
+    pid: 42,
+    createdAt: '2026-08-29T00:00:00.000Z',
+    ...overrides,
+  };
 }
 
 function sharedCredential(credentialId: string, status: 'active' | 'pending') {

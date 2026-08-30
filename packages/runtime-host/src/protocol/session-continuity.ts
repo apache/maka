@@ -176,8 +176,8 @@ export type SessionToolEvent =
       activityKind?: ToolActivityKind;
       displayName?: string;
       /**
-       * Model/runtime-authored call intent (e.g. ExploreAgent's objective).
-       * Pass-through from the durable event; bounded on the wire.
+       * Model/runtime-authored call intent. Pass-through from the durable
+       * event; bounded on the wire.
        */
       intent?: string;
       /**
@@ -293,7 +293,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
 }
 
 export type SubscriptionFrame =
@@ -492,7 +492,11 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       'sequence',
       'reason',
     ]);
-    if (record.reason !== 'slow_consumer' && record.reason !== 'session_removed') {
+    if (
+      record.reason !== 'slow_consumer' &&
+      record.reason !== 'session_removed' &&
+      record.reason !== 'access_revoked'
+    ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }
     frame = { kind: record.kind, ...envelope, reason: record.reason };

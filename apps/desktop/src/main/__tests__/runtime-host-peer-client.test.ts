@@ -62,6 +62,7 @@ test('development uses the native peer addon only for the peer-enabled launch', 
   }), {
     nativePath,
     keyPath: join(clientDataRoot, 'runtime-host-client.peer.key'),
+    automaticRelayDiscovery: true,
   });
   assert.equal(peerEnvironment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH, nativePath);
 });

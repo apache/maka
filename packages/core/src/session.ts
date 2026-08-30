@@ -50,7 +50,7 @@ import { markPersisted, type PersistedValue } from './persisted-value.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 
-export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './explore-agent.js';
+export { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from './deep-research.js';
 
 /** Runtime execution states. Archive visibility is represented by `isArchived`. */
 export const SESSION_STATUSES = [
@@ -778,6 +778,17 @@ export interface UserMessage extends MessageContent {
 /** Prefer the human-facing view of a user message when one was stored. */
 export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'>): string {
   return message.displayText ?? message.text;
+}
+
+const USER_VISIBLE_SESSION_SYSTEM_NOTES = new Set([
+  'context_compacted',
+  'context_compaction_failed_open',
+  'step_limit',
+]);
+
+/** Closed policy for system notes that are part of the user-visible transcript. */
+export function isUserVisibleSessionSystemNote(kind: string): boolean {
+  return USER_VISIBLE_SESSION_SYSTEM_NOTES.has(kind);
 }
 
 export interface AssistantMessage {

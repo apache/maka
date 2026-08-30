@@ -34,7 +34,7 @@ import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
-import type { SessionStartMode } from './explore-agent.js';
+import type { SessionStartMode } from './deep-research.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
 import type { TurnOrigin } from './turn-origin.js';

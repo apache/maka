@@ -102,10 +102,12 @@ import { markPersisted } from '@maka/core/persisted-value';
 import {
   normalizePendingMessageAdmission,
   normalizeProvenRootMessageHandoff,
+  normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
   type MarkMessagesHandedOffInput,
   type PendingMessageAdmission,
   type ProvenRootMessageHandoff,
+  type ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
 import { normalizeSubmittedTurnIntent } from './submitted-turn-intent.js';
 import {
@@ -135,6 +137,8 @@ import {
   type ExternalSessionImportLookupResult,
   type SessionTranscriptMessageLookupRequest,
   type SessionTranscriptPageRequest,
+  type SessionTranscriptRecordScanPage,
+  type SessionTranscriptRecordScanRequest,
   type SessionTranscriptStoragePage,
   type SessionTurnContribution,
   type SessionTurnContributionPage,
@@ -1901,6 +1905,24 @@ export class SqliteSessionMetadataStore {
       }
       provenRootMessages.set(normalized.messageId, normalized);
     }
+    const provenSteeringMessages = new Map<string, ProvenSteeringMessageHandoff>();
+    for (const proof of input.provenSteeringMessages ?? []) {
+      const normalized = normalizeProvenSteeringMessageHandoff(proof);
+      if (!requestedMessageIds.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Message identity is not present in messageIds',
+        );
+      }
+      if (provenSteeringMessages.has(normalized.messageId)) {
+        throw new SessionMetadataConflictError(
+          'Proven steering Messages contain duplicate identities',
+        );
+      }
+      if (normalized.executionTurnId !== input.turnId) {
+        throw new SessionMetadataConflictError('Proven steering execution Turn conflict');
+      }
+      provenSteeringMessages.set(normalized.messageId, normalized);
+    }
     this.transaction(() => {
       const lastSequenceRow = this.db
         .prepare(
@@ -1927,6 +1949,7 @@ export class SqliteSessionMetadataStore {
       const existingSequences = new Map<string, number>();
       for (const messageId of unique) {
         const fallback = provenRootMessages.get(messageId);
+        const steeringProof = provenSteeringMessages.get(messageId);
         const admissionRow = this.db
           .prepare(
             `
@@ -1941,10 +1964,22 @@ export class SqliteSessionMetadataStore {
         const admission = admissionRow
           ? decodeMessageAdmissionRow(input.sessionId, admissionRow)
           : undefined;
+        const provenCrossTurnSteering =
+          admission !== undefined &&
+          steeringProof !== undefined &&
+          admission.disposition === 'steering' &&
+          admission.turnId === steeringProof.admissionTurnId &&
+          admission.runId === steeringProof.admissionRunId &&
+          admission.admittedAt === steeringProof.admittedAt &&
+          messageContentsEqual(admission.content, steeringProof.content);
+        if (admission !== undefined && steeringProof !== undefined && !provenCrossTurnSteering) {
+          throw new SessionMetadataConflictError('Proven steering admission identity conflict');
+        }
         if (
           admission !== undefined &&
           admission.turnId !== input.turnId &&
-          admission.disposition !== 'followup'
+          admission.disposition !== 'followup' &&
+          !provenCrossTurnSteering
         ) {
           throw new SessionMetadataConflictError('Message admission Turn conflict');
         }
@@ -1996,9 +2031,9 @@ export class SqliteSessionMetadataStore {
             type: 'user',
             id: messageId,
             turnId: input.turnId,
-            ts: source.admittedAt,
+            ts: steeringProof?.eventTs ?? source.admittedAt,
             ...source.content,
-            steeringEventId: messageId,
+            steeringEventId: steeringProof?.eventId ?? messageId,
           });
           const json = JSON.stringify(message);
           (historicalMessageIdSet.has(messageId)
@@ -2013,14 +2048,12 @@ export class SqliteSessionMetadataStore {
           const row = rows[0]!;
           const recordJson = readStoredMessageRecordJson(this.db, input.sessionId, sequence, row);
           const message = decodeStoredMessage(JSON.parse(recordJson) as unknown);
+          const expectedSource = admission ?? fallback ?? steeringProof;
           if (
             message.type !== 'user' ||
             message.id !== messageId ||
-            ((admission !== undefined || fallback !== undefined) &&
-              !messageContentsEqual(
-                normalizeMessageContent(message),
-                (admission ?? fallback)!.content,
-              ))
+            (expectedSource !== undefined &&
+              !messageContentsEqual(normalizeMessageContent(message), expectedSource.content))
           ) {
             throw new SessionMetadataConflictError(
               'Message admission transcript identity conflict',
@@ -2028,6 +2061,14 @@ export class SqliteSessionMetadataStore {
           }
           if (message.turnId !== input.turnId) {
             throw new SessionMetadataConflictError('Message admission transcript Turn conflict');
+          }
+          if (
+            steeringProof !== undefined &&
+            (message.ts !== steeringProof.eventTs ||
+              message.turnId !== steeringProof.executionTurnId ||
+              message.steeringEventId !== steeringProof.eventId)
+          ) {
+            throw new SessionMetadataConflictError('Proven steering transcript identity conflict');
           }
           existingSequences.set(messageId, sequence);
         }
@@ -2537,6 +2578,86 @@ export class SqliteSessionMetadataStore {
         }
       }
       return messages;
+    });
+  }
+
+  async readTranscriptRecords(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertTranscriptRecordScanRequest(request);
+    return this.readTransaction(() => {
+      if (!this.readRecordSync(sessionId)) throw new SessionNotFoundError(sessionId);
+      const highWaterRow = this.db
+        .prepare('SELECT MAX(sequence) AS high_water FROM session_messages WHERE session_id = ?')
+        .get(sessionId) as { high_water?: unknown };
+      const actualHighWater = nullableStoredMessageSequence(highWaterRow.high_water, sessionId);
+      const throughSequence =
+        request.throughSequence === undefined ? actualHighWater : request.throughSequence;
+      if (throughSequence === null) {
+        return { throughSequence: null, records: [], nextPosition: null };
+      }
+      if (actualHighWater === null || throughSequence > actualHighWater) {
+        throw new Error(`Session transcript watermark is ahead of durable storage: ${sessionId}`);
+      }
+      const position = request.position ?? (request.direction === 'older' ? throughSequence : 0);
+      const comparison = request.direction === 'older' ? '<=' : '>=';
+      const order = request.direction === 'older' ? 'DESC' : 'ASC';
+      const rows = this.db
+        .prepare(
+          `
+          SELECT message.sequence,
+            coalesce(payload.record_bytes, length(CAST(message.record_json AS BLOB))) AS stored_bytes
+          FROM session_messages AS message
+          LEFT JOIN session_message_payloads AS payload
+            ON payload.session_id = message.session_id AND payload.sequence = message.sequence
+          WHERE message.session_id = ?
+            AND message.sequence <= ?
+            AND message.sequence ${comparison} ?
+          ORDER BY message.sequence ${order}
+          LIMIT ?
+        `,
+        )
+        .all(sessionId, throughSequence, position, request.maxMessages + 1) as Array<{
+        sequence?: unknown;
+        stored_bytes?: unknown;
+      }>;
+      const selected: number[] = [];
+      let storedBytes = 0;
+      for (const row of rows) {
+        if (selected.length >= request.maxMessages) break;
+        const sequence = requireStoredMessageSequence(row.sequence, sessionId);
+        const bytes = requireTranscriptRecordByteLength(row.stored_bytes, sessionId, sequence);
+        if (selected.length > 0 && storedBytes + bytes > request.maxStoredBytes) break;
+        selected.push(sequence);
+        storedBytes += bytes;
+      }
+      const decoded = new Map<number, StoredMessage>();
+      for (const row of readStoredMessageRows(this.db, sessionId, selected)) {
+        try {
+          decoded.set(row.sequence, decodeStoredMessage(JSON.parse(row.recordJson) as unknown));
+        } catch (error) {
+          throw new StoredSessionMessageIncompatibleError(sessionId, row.sequence, {
+            cause: error,
+          });
+        }
+      }
+      const records = selected.map((sequence) => {
+        const message = decoded.get(sequence);
+        if (!message) throw new StoredSessionMessageIncompatibleError(sessionId, sequence);
+        return { sequence, message };
+      });
+      const last = selected.at(-1);
+      return {
+        throughSequence,
+        records,
+        nextPosition:
+          last !== undefined && rows.length > selected.length
+            ? last + (request.direction === 'older' ? -1 : 1)
+            : null,
+      };
     });
   }
 
@@ -7034,5 +7155,38 @@ function assertTranscriptPageRequest(request: SessionTranscriptPageRequest): voi
     request.maxMessages > 256
   ) {
     throw new Error('Session transcript page message limit must be between 1 and 256');
+  }
+}
+
+function assertTranscriptRecordScanRequest(request: SessionTranscriptRecordScanRequest): void {
+  if (request.direction !== 'older' && request.direction !== 'newer') {
+    throw new Error('Invalid Session transcript record direction');
+  }
+  if (
+    request.throughSequence !== undefined &&
+    request.throughSequence !== null &&
+    (!Number.isSafeInteger(request.throughSequence) || request.throughSequence < 0)
+  ) {
+    throw new Error('Invalid Session transcript watermark');
+  }
+  if (
+    request.position !== undefined &&
+    (!Number.isSafeInteger(request.position) || request.position < 0)
+  ) {
+    throw new Error('Invalid Session transcript position');
+  }
+  if (
+    !Number.isSafeInteger(request.maxStoredBytes) ||
+    request.maxStoredBytes < 1 ||
+    request.maxStoredBytes > 16 * 1024 * 1024
+  ) {
+    throw new Error('Invalid Session transcript record byte limit');
+  }
+  if (
+    !Number.isSafeInteger(request.maxMessages) ||
+    request.maxMessages < 1 ||
+    request.maxMessages > 256
+  ) {
+    throw new Error('Invalid Session transcript record count limit');
   }
 }

@@ -27,7 +27,7 @@ import {
   encodeRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import { REMOTE_OWNER_OPERATION_GRANTS } from '@maka/runtime-host/protocol';
+import { REMOTE_OWNER_OPERATION_GRANTS, type HostRegistration } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
@@ -80,7 +80,11 @@ interface LocalServiceManaged extends LocalServiceTarget {
 }
 
 type LocalManagedDeploymentAuthority =
-  | { readonly kind: 'active'; readonly target: LocalServiceTarget }
+  | {
+      readonly kind: 'active';
+      readonly lifecycleMode: 'on_demand' | 'supervised';
+      readonly target: LocalServiceTarget;
+    }
   | { readonly kind: 'transition' };
 
 export interface DesktopRuntimeHostLocalManagementTarget
@@ -91,6 +95,15 @@ export interface DesktopRuntimeHostLocalManagementTarget
 
 export interface DesktopLocalRuntimeHostRemoteAccess {
   getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
+  createCollaborationConnectionTarget(): Promise<{
+    readonly name: string;
+    readonly transport: {
+      readonly kind: 'libp2p-direct';
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+      readonly coordinationRelays: readonly string[];
+    };
+  }>;
   enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
   disable(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
   uninstall(value: unknown): Promise<{ readonly kind: 'active_tasks' | 'uninstalled' }>;
@@ -100,6 +113,10 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
   changeManaged<T>(
     operation: (target: DesktopRuntimeHostLocalManagementTarget) => Promise<T>,
   ): Promise<T>;
+  resolveConflictingHostReplacement(
+    registration: HostRegistration,
+    signal: AbortSignal,
+  ): Promise<{ replace(): Promise<void> } | undefined>;
   recoverBeforeLocalHostStart(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -172,6 +189,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       if (authority.record.state !== 'active') return { kind: 'transition' };
       return {
         kind: 'active',
+        lifecycleMode: authority.record.lifecycle.mode,
         target: requireServiceTarget(
           {
             schemaVersion: 1,
@@ -480,6 +498,19 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
     });
 
+  const createCollaborationConnectionTarget = () =>
+    serialize(async () => {
+      const managed = requireManaged(
+        await readLifecycle(lifecyclePath, input.rootPath, input.rootId),
+      );
+      const peer = await readPeer(input.operator, managed);
+      if (!peer) throw new Error('Remote access is not enabled on this computer');
+      return {
+        name: hostName(),
+        transport: { kind: 'libp2p-direct' as const, ...peer },
+      };
+    });
+
   const revokeSharedAccess = (): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot> =>
     serialize(async () => {
       const managed = requireManaged(
@@ -644,6 +675,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
 
   return {
     getSnapshot,
+    createCollaborationConnectionTarget,
     enable,
     disable,
     uninstall,
@@ -663,6 +695,58 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         const managed = requireManagementTarget(lifecycle);
         return requireManager(input.manager).runManagedLocalHostChange(() => operation(managed));
       }),
+    resolveConflictingHostReplacement: async (registration, signal) => {
+      signal.throwIfAborted();
+      if (registration.rootId !== input.rootId) {
+        throw conflictReplacementError(registration.pid, 'the workspace identity changed');
+      }
+      if (registration.lifecycleMode === 'ephemeral') return undefined;
+      const authority = await resolveManagedDeploymentAuthority(registration.rootId);
+      if (
+        !authority ||
+        authority.kind !== 'active' ||
+        authority.lifecycleMode !== 'supervised'
+      ) {
+        return undefined;
+      }
+      const target = authority.target;
+      return {
+        replace: () =>
+          serialize(async () => {
+            signal.throwIfAborted();
+            const setupPackage = await input.resolveSetupPackage(signal);
+            const frame = await input.operator.runUpdate(
+              {
+                setupPackage,
+                target,
+                expectedHost: {
+                  hostEpoch: registration.hostEpoch,
+                  pid: registration.pid,
+                },
+                allowInterruptActiveTasks: true,
+                signal,
+              },
+              () => undefined,
+            );
+            if (frame.kind === 'error') {
+              if (frame.error.code === 'target_mismatch') return;
+              throw conflictReplacementError(registration.pid, frame.error.message);
+            }
+            if (frame.kind === 'progress' || frame.action !== 'update') {
+              throw conflictReplacementError(
+                registration.pid,
+                'the managed service returned an unrelated result',
+              );
+            }
+            if (frame.update.kind === 'active_tasks') {
+              throw conflictReplacementError(
+                registration.pid,
+                'the managed service refused to interrupt active work',
+              );
+            }
+          }),
+      };
+    },
     recoverBeforeLocalHostStart: async (signal) => {
       const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
       operationSignal.throwIfAborted();
@@ -733,6 +817,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       await mutation;
     },
   };
+}
+
+function conflictReplacementError(pid: number, reason: string): Error {
+  return new Error(`Maka could not replace Runtime Host process ${pid}: ${reason}`);
 }
 
 function supported(directPeerAvailable: boolean): boolean {

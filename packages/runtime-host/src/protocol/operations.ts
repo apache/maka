@@ -54,6 +54,7 @@ import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
+import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
@@ -166,6 +167,7 @@ export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './scheduled-task.js';
 export * from './session-catalog.js';
+export * from './session-collaboration.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
@@ -181,6 +183,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   PEER_MESH_OPERATION_SPECS,
   HOSTED_EXECUTION_OPERATION_SPECS,
   ACCESS_AUTHORITY_OPERATION_SPECS,
+  SESSION_COLLABORATION_OPERATION_SPECS,
   AGENT_GRAPH_OPERATION_SPECS,
   GOAL_OPERATION_SPECS,
   TURN_OPERATION_SPECS,
@@ -234,6 +237,12 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'client.capability.replace',
   'client.capability.unregister',
   'configuration.credentials.export',
+  'collaboration.access.query',
+  'collaboration.grant.revoke',
+  'collaboration.invitation.prepare',
+  'collaboration.principal.revoke',
+  'collaboration.turn-request.decide',
+  'collaboration.turn-request.query',
   'connection.catalog.create',
   'connection.catalog.query',
   'connection.catalog.remove',
@@ -298,6 +307,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.create',
   'session.execution_boundary.query',
   'session.lifecycle.set',
+  'session.shared.query',
   'session.metadata.update',
   'session.read_marker.set',
   'session.recap.generate',

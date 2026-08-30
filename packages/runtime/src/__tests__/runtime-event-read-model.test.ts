@@ -688,6 +688,59 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(out.diagnostics).toEqual([]);
   });
 
+  test('folds retired ExploreAgent results before model replay', () => {
+    const result = {
+      kind: 'explore_agent',
+      ok: false,
+      terminalStatus: 'failed',
+      mode: 'read_only',
+      objective: 'Trace the session lifecycle.',
+      roots: ['packages/runtime'],
+      queries: ['SessionManager'],
+      filesInspected: 0,
+      filesSkipped: 0,
+      bytesRead: 0,
+      candidateFiles: [],
+      matches: [],
+      notes: [],
+      summary: '未完成：目标无效。',
+      report: '',
+      reason: 'invalid_objective',
+      message: '目标无效。',
+    } as const;
+    const events = [
+      ev({
+        id: 'evt-explore-call',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'explore-1',
+          name: 'ExploreAgent',
+          args: { objective: result.objective },
+        },
+      }),
+      ev({
+        id: 'evt-explore-result',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'explore-1',
+          name: 'ExploreAgent',
+          result: result as never,
+        },
+      }),
+    ];
+
+    const replay = buildRuntimeEventModelReplayPlan(events);
+
+    expect(replay.items.find((item) => item.kind === 'tool_result')).toMatchObject({
+      output: { kind: 'text', text: '未完成：目标无效。' },
+    });
+    expect(replay.diagnostics).toEqual([]);
+  });
+
   test('restores a settled Agent Swarm function response', () => {
     const result = {
       kind: 'agent_swarm' as const,
@@ -1693,6 +1746,15 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
   // entry covers the field, not its contents. A new key inside a state delta is
   // out of reach of any contract keyed on the action surface.
   stateDelta: { action: { continuationStart: true } },
+  managedMutationTerminal: {
+    action: {
+      protocol: 'managed_mutation_terminal_v1',
+      operationId: 'coverage-operation',
+      dispatchEventId: 'coverage-dispatch',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      terminalKind: 'no_workspace_change',
+    },
+  },
   continuationStart: {
     action: {
       protocol: 'continuation_start_v2',

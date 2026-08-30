@@ -183,6 +183,7 @@ test('local update runs the selected package against the exact managed deploymen
         rootId: 'a'.repeat(64),
         deploymentId,
       },
+      expectedHost: { hostEpoch: 'older-host', pid: 42 },
     },
     (phase) => phases.push(phase),
   );
@@ -191,8 +192,9 @@ test('local update runs the selected package against the exact managed deploymen
   assert.deepEqual(args, [
     'exec', '--yes', '--package', 'maka-agent@0.3.0', '--',
     'maka', 'runtime-host', 'service', 'update', '--framed',
+    '--target', '0.3.0',
     '--managed-root-id', 'a'.repeat(64),
-    '--operator-deployment-id', deploymentId,
+    '--expected-host-json', JSON.stringify({ hostEpoch: 'older-host', pid: 42 }),
     '--expected-service-id', 'a'.repeat(64),
     '--expected-root-path', '/tmp/maka/root',
     '--expected-root-id', 'a'.repeat(64),

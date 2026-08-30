@@ -41,6 +41,8 @@ export interface DesktopSessionSummary extends SessionSummary {
   readonly profileId: string;
   readonly profileName: string;
   readonly profileKind: RuntimeHostProfileKind;
+  /** Present only for Session projections granted to a Guest principal. */
+  readonly shared?: true;
 }
 
 export interface DesktopSessionHost extends DesktopHostRef {

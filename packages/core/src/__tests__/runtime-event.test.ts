@@ -19,6 +19,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { expect } from './test-helpers.js';
 import {
   decodeMessageContent,
@@ -31,6 +32,8 @@ import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../in
 import {
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
@@ -496,6 +499,88 @@ describe('RuntimeEvent content variants', () => {
 });
 
 describe('RuntimeEvent actions', () => {
+  test('binds the managed mutation digest to its canonical execution semantics', () => {
+    const canonicalProfile = JSON.stringify({
+      protocol: 'managed_mutation_execution_profile_v1',
+      toolNames: ['Write', 'Edit'],
+      transform: 'pure_frozen_args_only_v1',
+      objectFormat: 'sha1',
+      pathPolicyVersion: 3,
+      resultSnapshot: {
+        maxBytes: 1_048_576,
+        maxDepth: 64,
+        maxNodes: 65_536,
+        maxProperties: 65_536,
+        maxArrayLength: 65_536,
+        format: 'strict_json_v1',
+      },
+      terminalAuthority: 'owner_committed_exact_outcome_v1',
+      genericFallback: 'forbidden',
+    });
+
+    assert.equal(
+      MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+      `sha256:${createHash('sha256').update(canonicalProfile).digest('hex')}`,
+    );
+    assert.equal(JSON.stringify(MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC), canonicalProfile);
+  });
+
+  test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
+    const managedMutation = {
+      protocol: 'managed_mutation_v2',
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      objectFormat: 'sha1',
+      baseWorkspaceVersionId: 'version_55555555555555555555555555555555',
+      baseAcceptedEventId: 'baseline-event-1',
+      baseHeadRevision: 1,
+      baseCommitOid: '1'.repeat(40),
+      baseTreeOid: '2'.repeat(40),
+      expectedPath: 'src/a.ts',
+      pathPolicyVersion: 3,
+      executionProfileDigest: MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+    } as const;
+    const toolDispatch = {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'operation-1',
+      providerToolCallId: 'call-1',
+      toolName: 'Write',
+      canonicalArgsHash: `sha256:${'b'.repeat(64)}`,
+      recoveryMode: 'reconcile',
+      managedMutation,
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ role: 'system', author: 'system', actions: { toolDispatch } }))
+        .actions?.toolDispatch?.managedMutation,
+      managedMutation,
+    );
+    for (const invalid of [
+      { ...managedMutation, expectedPath: 'src/../secrets.txt' },
+      { ...managedMutation, expectedPath: 'NoDe_MoDuLeS/pkg/index.js' },
+      { ...managedMutation, expectedPath: '.GiT/config' },
+      { ...managedMutation, expectedPath: 'x'.repeat(4097) },
+      { ...managedMutation, pathPolicyVersion: 2 },
+      { ...managedMutation, executionProfileDigest: `sha256:${'a'.repeat(64)}` },
+      { ...managedMutation, baseAcceptedEventId: 'event id with spaces' },
+      { ...managedMutation, baseHeadRevision: 0 },
+      { ...managedMutation, baseTreeOid: 'not-an-oid' },
+      { ...managedMutation, extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent(
+          baseEvent({
+            role: 'system',
+            author: 'system',
+            actions: { toolDispatch: { ...toolDispatch, managedMutation: invalid } as never },
+          }),
+        ),
+      );
+    }
+  });
+
   test('permission and user-question interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {

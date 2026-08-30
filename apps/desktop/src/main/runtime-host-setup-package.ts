@@ -41,6 +41,18 @@ function isExactRuntimeHostSetupPackageSpecifier(value: unknown): value is strin
   return typeof value === 'string' && /^maka-agent@[0-9][0-9A-Za-z.+-]*$/u.test(value);
 }
 
+export function runtimeHostSetupPackageVersion(
+  setupPackage:
+    | { readonly kind: 'npm'; readonly specifier: string }
+    | { readonly kind: 'development_archive' },
+): string | undefined {
+  if (setupPackage.kind === 'development_archive') return undefined;
+  if (!isExactRuntimeHostSetupPackageSpecifier(setupPackage.specifier)) {
+    throw new Error('Runtime Host setup package must use an exact Maka version');
+  }
+  return setupPackage.specifier.slice('maka-agent@'.length);
+}
+
 interface DevelopmentArchiveBuild {
   readonly result: Promise<string>;
   close(): Promise<void>;

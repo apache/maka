@@ -27,7 +27,7 @@ import {
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,
-  type AccessCredentialPrincipalKind,
+  type ManagedAccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
 import {
@@ -58,7 +58,7 @@ export class RuntimeHostAccessUnavailableError extends Error {
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
   readonly expectedRootId?: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
@@ -70,7 +70,7 @@ export interface RuntimeHostAccessIssueOptions {
 export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
 
 export interface ResolvedRuntimeHostAccessIssue {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -99,7 +99,7 @@ export interface IssuedRuntimeHostAccessCredential {
   readonly rootId: string;
   readonly credential: string;
   readonly credentialId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;

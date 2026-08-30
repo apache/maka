@@ -57,6 +57,8 @@ import {
 } from './runtime-host-management-dialog.js';
 import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
 import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
+import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
+import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -81,6 +83,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const collaborationCopy = getSessionCollaborationCopy(locale);
   const mountedRef = useMountedRef();
   const toast = useToast();
   const [snapshot, setSnapshot] = useState<
@@ -88,6 +91,7 @@ export function RuntimeHostProfilesSection(props: {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showJoinSharedSession, setShowJoinSharedSession] = useState(false);
   const [managedTarget, setManagedTarget] = useState<RuntimeHostManagementTarget>();
   const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
   const [connectionCodeDialog, setConnectionCodeDialog] = useState<
@@ -360,7 +364,11 @@ export function RuntimeHostProfilesSection(props: {
     ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
     : undefined;
   const profileOptions = (snapshot?.entries ?? [])
-    .filter((entry) => entry.enabled)
+    .filter(
+      (entry) =>
+        entry.enabled &&
+        (entry.profile.kind !== 'remote' || entry.profile.access !== 'session_guest'),
+    )
     .map((entry) => ({
       value: entry.profile.id,
       label: entry.profile.name,
@@ -506,6 +514,11 @@ export function RuntimeHostProfilesSection(props: {
                   onClick: () => setConnectionCodeDialog({ mode: 'import' }),
                 },
                 {
+                  label: collaborationCopy.joinAction,
+                  isDisabled: switching,
+                  onClick: () => setShowJoinSharedSession(true),
+                },
+                {
                   label: showAdd ? copy.cancel : copy.configureManually,
                   isDisabled: switching,
                   onClick: toggleAdd,
@@ -622,7 +635,10 @@ export function RuntimeHostProfilesSection(props: {
             {connectedEntries.map((entry) => {
               const profile = entry.profile;
               if (profile.kind === 'local') return null;
+              const isSharedAccess =
+                profile.kind === 'remote' && profile.access === 'session_guest';
               const managedSshDestination =
+                !isSharedAccess &&
                 profile.kind === 'remote' &&
                 profile.transport.kind === 'ssh' &&
                 entry.managedService
@@ -649,6 +665,9 @@ export function RuntimeHostProfilesSection(props: {
                       ) : null}
                       {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
                         <Badge variant="warning" label={copy.experimentalBadge} />
+                      ) : null}
+                      {isSharedAccess ? (
+                        <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
                       ) : null}
                       {entry.readiness === "unavailable" ? (
                         <Badge variant="neutral" label={copy.unavailable} />
@@ -744,6 +763,15 @@ export function RuntimeHostProfilesSection(props: {
             if (openManagement && localManagementTarget) {
               setManagedTarget(localManagementTarget);
             }
+          }}
+        />
+      ) : null}
+      {showJoinSharedSession ? (
+        <SessionCollaborationDialog
+          mode="join"
+          onClose={() => setShowJoinSharedSession(false)}
+          onImported={() => {
+            void reload();
           }}
         />
       ) : null}

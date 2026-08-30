@@ -32,7 +32,7 @@ import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/sessi
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
-} from '@maka/core/explore-agent';
+} from '@maka/core/deep-research';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
@@ -58,6 +58,7 @@ import {
 } from '@maka/runtime/session-manager';
 import {
   decodeSessionCatalogProjection,
+  decodeSharedSessionCatalogProjection,
   SESSION_CATALOG_LIVE_RUN_STATE_SCHEMA_VERSION,
   SESSION_CATALOG_LABEL_MAX_BYTES,
   SESSION_CATALOG_LABEL_MAX_ITEMS,
@@ -70,6 +71,7 @@ import {
   type SessionCatalogItem,
   type SessionCatalogLiveRunState,
   type SessionCatalogProjection,
+  type SharedSessionCatalogProjection,
   type SessionCatalogQueryInput,
   type SessionCatalogQueryResult,
   type SessionCatalogRevision,
@@ -88,6 +90,7 @@ import {
   projectSessionTurnContributionForWire,
 } from '../protocol/index.js';
 import type { SessionCatalogOperationHandlerMap } from './operation-dispatcher.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import type { SessionContinuityCoordinator } from './session-continuity-coordinator.js';
 import { type HostWorkspaceResolver, WorkspaceResolutionError } from './workspace-resolver.js';
@@ -154,6 +157,10 @@ export interface HostSessionCatalogCoordinatorOptions {
   readonly continuity: SessionContinuity;
   readonly workspaceResolver: HostWorkspaceResolver;
   readonly requestDrain: () => void;
+  readonly sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    'activeSessionGrantForPrincipal'
+  >;
 }
 
 interface ResolvedSessionModel {
@@ -165,6 +172,7 @@ interface ResolvedSessionModel {
 /** Host-owned Session catalog, creation, and configuration authority. */
 export class HostSessionCatalogCoordinator {
   readonly handlers: SessionCatalogOperationHandlerMap = {
+    'session.shared.query': (_input, context) => this.#querySharedSession(context.principal),
     'session.catalog.query': (input) => this.#query(input),
     'session.create': (input) => this.#create(input),
     'session.metadata.update': (input) => this.#updateMetadata(input),
@@ -183,6 +191,9 @@ export class HostSessionCatalogCoordinator {
   readonly #continuity: SessionContinuity;
   readonly #workspaceResolver: HostWorkspaceResolver;
   readonly #requestDrain: () => void;
+  readonly #sessionAccessAuthority:
+    | Pick<RuntimeHostAccessAuthority, 'activeSessionGrantForPrincipal'>
+    | undefined;
 
   constructor(options: HostSessionCatalogCoordinatorOptions) {
     this.#stores = options.stores;
@@ -192,6 +203,7 @@ export class HostSessionCatalogCoordinator {
     this.#continuity = options.continuity;
     this.#workspaceResolver = options.workspaceResolver;
     this.#requestDrain = options.requestDrain;
+    this.#sessionAccessAuthority = options.sessionAccessAuthority;
   }
 
   async resolveExternalSessionImportTarget(): Promise<Omit<CreateSessionInput, 'cwd' | 'name'>> {
@@ -283,6 +295,48 @@ export class HostSessionCatalogCoordinator {
       );
     } catch {
       return queryFailure('persistence_failed', 'Session catalog is unavailable');
+    }
+  }
+
+  async #querySharedSession(
+    principalId: string,
+  ): Promise<OperationOutcome<'session.shared.query'>> {
+    if (!this.#sessionAccessAuthority) {
+      return {
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'Session sharing is unavailable' },
+      };
+    }
+    const grant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+      principalId,
+      'session_observation',
+    );
+    if (!grant) return { ok: true, result: { session: null } };
+    try {
+      const record = await this.#readCatalogRecordIfPresent(grant.sessionId);
+      const currentGrant = this.#sessionAccessAuthority.activeSessionGrantForPrincipal(
+        principalId,
+        'session_observation',
+      );
+      if (currentGrant?.grantId !== grant.grantId) {
+        return { ok: true, result: { session: null } };
+      }
+      return {
+        ok: true,
+        result: {
+          session: record
+            ? projectSharedSessionCatalogRecord(
+                record,
+                projectCatalogLiveRunState(this.#manager.runningTurnIds(record.header.id)),
+              )
+            : null,
+        },
+      };
+    } catch {
+      return {
+        ok: false,
+        error: { code: 'persistence_failed', message: 'Shared Session catalog is unavailable' },
+      };
     }
   }
 
@@ -1105,6 +1159,30 @@ export function projectSessionCatalogRecord(
       reason: 'not_wire_representable',
     };
   }
+}
+
+function projectSharedSessionCatalogRecord(
+  record: SessionCatalogRecord,
+  liveRunState?: SessionCatalogLiveRunState,
+): SharedSessionCatalogProjection {
+  const { header, summary } = record;
+  const shared: SharedSessionCatalogProjection = {
+    kind: 'shared_session',
+    id: header.id,
+    revision: record.revision,
+    createdAt: header.createdAt,
+    activityAt: record.activityAt,
+    name: header.name,
+    ...(summary.lastMessageAt === undefined ? {} : { lastMessageAt: summary.lastMessageAt }),
+    ...(summary.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: summary.lastMessagePreview }),
+    status: header.status,
+    ...(liveRunState === undefined ? {} : { liveRunState }),
+    ...(header.blockedReason === undefined ? {} : { blockedReason: header.blockedReason }),
+    ...(header.statusUpdatedAt === undefined ? {} : { statusUpdatedAt: header.statusUpdatedAt }),
+  };
+  return decodeSharedSessionCatalogProjection(shared);
 }
 
 function projectCatalogLiveRunState(

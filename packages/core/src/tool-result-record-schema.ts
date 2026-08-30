@@ -36,7 +36,6 @@ import {
 } from './record-schema.js';
 
 type Result<K extends ToolResultContent['kind']> = Extract<ToolResultContent, { kind: K }>;
-type ExploreResult = Result<'explore_agent'>;
 type AgentSwarmResult = Result<'agent_swarm'>;
 type RiveResult = Result<'rive_workflow'>;
 
@@ -85,61 +84,6 @@ const WEB_SEARCH_ROW_SHAPE = defineObjectShape<WebSearchRow>()(
 const WEB_SEARCH_ERROR_SHAPE = defineObjectShape<Result<'web_search_error'>>()(
   ['kind', 'ok', 'provider', 'reason', 'message'],
   ['query', 'credentialSource'],
-);
-const EXPLORE_SHAPE = defineObjectShape<ExploreResult>()(
-  [
-    'kind',
-    'ok',
-    'mode',
-    'objective',
-    'roots',
-    'queries',
-    'filesInspected',
-    'filesSkipped',
-    'bytesRead',
-    'progress',
-    'candidateFiles',
-    'matches',
-    'notes',
-  ],
-  [
-    'partial',
-    'terminalStatus',
-    'ignoredPaths',
-    'stoppingCondition',
-    'limitReasons',
-    'filesDiscovered',
-    'sensitiveFilesSkipped',
-    'startedAt',
-    'completedAt',
-    'durationMs',
-    'recentEvents',
-    'evidence',
-    'summary',
-    'report',
-    'reason',
-    'message',
-  ],
-);
-type ExploreRecentEvent = NonNullable<ExploreResult['recentEvents']>[number];
-type ExploreEvidence = NonNullable<ExploreResult['evidence']>[number];
-type ExploreCandidate = ExploreResult['candidateFiles'][number];
-type ExploreMatch = ExploreResult['matches'][number];
-const EXPLORE_RECENT_EVENT_SHAPE = defineObjectShape<ExploreRecentEvent>()(
-  ['type', 'at', 'message'],
-  [],
-);
-const EXPLORE_EVIDENCE_SHAPE = defineObjectShape<ExploreEvidence>()(
-  ['type', 'path', 'label'],
-  ['line', 'score'],
-);
-const EXPLORE_CANDIDATE_SHAPE = defineObjectShape<ExploreCandidate>()(
-  ['path', 'score', 'reasons'],
-  [],
-);
-const EXPLORE_MATCH_SHAPE = defineObjectShape<ExploreMatch>()(
-  ['path', 'line', 'query', 'snippet'],
-  [],
 );
 const SUBAGENT_SHAPE = defineObjectShape<Result<'subagent'>>()(
   ['kind', 'agentName', 'turnId', 'status', 'permissionMode', 'summary', 'artifactIds'],
@@ -223,11 +167,33 @@ export function decodePersistedToolResultContent(
   persisted: PersistedValue<ToolResultContent>,
 ): ToolResultContent {
   const value = persisted as unknown;
+  if (isRecord(value) && value.kind === 'explore_agent') {
+    if (value.mode !== 'read_only' || typeof value.ok !== 'boolean') {
+      throw new Error('Invalid tool result content');
+    }
+    const summary = firstNonEmptyString(
+      typeof value.report === 'string' ? value.report : undefined,
+      typeof value.summary === 'string' ? value.summary : undefined,
+      typeof value.message === 'string' ? value.message : undefined,
+    );
+    return {
+      kind: 'text',
+      text:
+        summary ??
+        (isFiniteNumber(value.filesInspected)
+          ? `Inspected ${value.filesInspected} files`
+          : 'Historical repository scan result'),
+    };
+  }
   if (!isRecord(value) || value.kind !== 'subagent') {
     return decodeCanonicalToolResultContent(value);
   }
   const permissionMode = decodePersistedPermissionMode(value.permissionMode);
   return decodeCanonicalToolResultContent({ ...value, permissionMode });
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  return values.find((value) => value !== undefined && value.trim().length > 0);
 }
 
 function isNonShellToolResultContent(value: unknown): value is ToolResultContent {
@@ -313,8 +279,6 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         typeof value.message === 'string' &&
         isOptionalString(value.credentialSource)
       );
-    case 'explore_agent':
-      return isExploreResult(value);
     case 'subagent':
       return (
         hasValidSubagentResultFields(value) &&
@@ -384,97 +348,6 @@ function isAgentSwarmItem(value: unknown): value is AgentSwarmItem {
     isOptionalFiniteNumber(value.completedAt) &&
     isOptionalFiniteNumber(value.durationMs) &&
     isOptionalString(value.failureClass)
-  );
-}
-
-function isExploreResult(value: Record<string, unknown>): value is ExploreResult {
-  return (
-    hasExactShape(value, EXPLORE_SHAPE) &&
-    typeof value.ok === 'boolean' &&
-    (value.partial === undefined || typeof value.partial === 'boolean') &&
-    (value.terminalStatus === undefined ||
-      ['completed', 'completed_empty', 'failed', 'canceled', 'canceled_partial'].includes(
-        value.terminalStatus as string,
-      )) &&
-    value.mode === 'read_only' &&
-    typeof value.objective === 'string' &&
-    isStringArray(value.roots) &&
-    isStringArray(value.queries) &&
-    (value.ignoredPaths === undefined || isStringArray(value.ignoredPaths)) &&
-    isOptionalString(value.stoppingCondition) &&
-    (value.limitReasons === undefined ||
-      (Array.isArray(value.limitReasons) &&
-        value.limitReasons.every((reason) =>
-          ['candidate_budget', 'file_budget', 'match_budget', 'byte_budget'].includes(reason),
-        ))) &&
-    isOptionalFiniteNumber(value.filesDiscovered) &&
-    isFiniteNumber(value.filesInspected) &&
-    isFiniteNumber(value.filesSkipped) &&
-    isOptionalFiniteNumber(value.sensitiveFilesSkipped) &&
-    isFiniteNumber(value.bytesRead) &&
-    isOptionalFiniteNumber(value.startedAt) &&
-    isOptionalFiniteNumber(value.completedAt) &&
-    isOptionalFiniteNumber(value.durationMs) &&
-    isStringArray(value.progress) &&
-    (value.recentEvents === undefined ||
-      (Array.isArray(value.recentEvents) && value.recentEvents.every(isExploreRecentEvent))) &&
-    (value.evidence === undefined ||
-      (Array.isArray(value.evidence) && value.evidence.every(isExploreEvidence))) &&
-    isOptionalString(value.summary) &&
-    isOptionalString(value.report) &&
-    Array.isArray(value.candidateFiles) &&
-    value.candidateFiles.every(isExploreCandidate) &&
-    Array.isArray(value.matches) &&
-    value.matches.every(isExploreMatch) &&
-    isStringArray(value.notes) &&
-    (value.reason === undefined ||
-      ['invalid_objective', 'invalid_root', 'no_readable_roots', 'aborted'].includes(
-        value.reason as string,
-      )) &&
-    isOptionalString(value.message)
-  );
-}
-
-function isExploreRecentEvent(value: unknown): value is ExploreRecentEvent {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_RECENT_EVENT_SHAPE) &&
-    typeof value.type === 'string' &&
-    isFiniteNumber(value.at) &&
-    typeof value.message === 'string'
-  );
-}
-
-function isExploreEvidence(value: unknown): value is ExploreEvidence {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_EVIDENCE_SHAPE) &&
-    (value.type === 'match' || value.type === 'candidate') &&
-    typeof value.path === 'string' &&
-    isOptionalFiniteNumber(value.line) &&
-    typeof value.label === 'string' &&
-    isOptionalFiniteNumber(value.score)
-  );
-}
-
-function isExploreCandidate(value: unknown): value is ExploreCandidate {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_CANDIDATE_SHAPE) &&
-    typeof value.path === 'string' &&
-    isFiniteNumber(value.score) &&
-    isStringArray(value.reasons)
-  );
-}
-
-function isExploreMatch(value: unknown): value is ExploreMatch {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, EXPLORE_MATCH_SHAPE) &&
-    typeof value.path === 'string' &&
-    isFiniteNumber(value.line) &&
-    typeof value.query === 'string' &&
-    typeof value.snippet === 'string'
   );
 }
 

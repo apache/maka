@@ -43,6 +43,8 @@ apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/plan-mode-panel.tsx
 apps/desktop/src/renderer/reference-shell.css
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
+apps/desktop/src/renderer/session-collaboration-dialog.tsx
+apps/desktop/src/renderer/session-turn-request-composer.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
 apps/desktop/src/renderer/settings/bot-chat-detail.tsx
@@ -214,7 +216,6 @@ packages/ui/src/task-ledger-panel.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx
-packages/ui/src/tool-activity/agent-preview.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx

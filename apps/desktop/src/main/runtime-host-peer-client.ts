@@ -29,13 +29,21 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
   readonly resourcesPath: string;
   readonly clientDataRoot: string;
   readonly environment?: NodeJS.ProcessEnv;
-}): Promise<{ readonly nativePath: string; readonly keyPath: string } | undefined> {
+}): Promise<{
+  readonly nativePath: string;
+  readonly keyPath: string;
+  readonly automaticRelayDiscovery: true;
+} | undefined> {
   const environment = input.environment ?? process.env;
   const explicitNativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH?.trim();
   const explicitKeyPath = environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH?.trim();
   if (explicitNativePath || explicitKeyPath) {
     return explicitNativePath && explicitKeyPath
-      ? { nativePath: explicitNativePath, keyPath: explicitKeyPath }
+      ? {
+          nativePath: explicitNativePath,
+          keyPath: explicitKeyPath,
+          automaticRelayDiscovery: true,
+        }
       : undefined;
   }
   if (!input.isPackaged && !input.enableDevelopmentPeer) return undefined;
@@ -59,5 +67,5 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
   environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH = nativePath;
   const keyPath = join(input.clientDataRoot, 'runtime-host-client.peer.key');
   environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH = keyPath;
-  return { nativePath, keyPath };
+  return { nativePath, keyPath, automaticRelayDiscovery: true };
 }

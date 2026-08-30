@@ -20,7 +20,7 @@
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
-import { isSessionStartMode, type SessionStartMode } from '@maka/core/explore-agent';
+import { isSessionStartMode, type SessionStartMode } from '@maka/core/deep-research';
 import {
   isSessionBlockedReason,
   isSessionToolProfile,
@@ -253,7 +253,28 @@ export interface UnsupportedLegacySessionCatalogRecord {
   readonly reason: 'not_wire_representable';
 }
 
+export interface SharedSessionCatalogProjection {
+  readonly kind: 'shared_session';
+  readonly id: string;
+  readonly revision: number;
+  readonly createdAt: number;
+  readonly activityAt: number;
+  readonly name: string;
+  readonly lastMessageAt?: number;
+  readonly lastMessagePreview?: string;
+  readonly status: SessionStatus;
+  readonly liveRunState?: SessionCatalogLiveRunState;
+  readonly blockedReason?: SessionBlockedReason;
+  readonly statusUpdatedAt?: number;
+}
+
 export type SessionCatalogItem = SessionCatalogProjection | UnsupportedLegacySessionCatalogRecord;
+
+export type SharedSessionCatalogQueryInput = Record<string, never>;
+
+export interface SharedSessionCatalogQueryResult {
+  readonly session: SharedSessionCatalogProjection | null;
+}
 
 export type SessionCatalogQueryResult =
   | {
@@ -281,6 +302,17 @@ export type SessionUpdateResult =
     };
 
 export const SESSION_CATALOG_OPERATION_SPECS = {
+  'session.shared.query': defineOperation<
+    SharedSessionCatalogQueryInput,
+    SharedSessionCatalogQueryResult,
+    (typeof QUERY_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: QUERY_ERRORS,
+    decodeInput: decodeSharedSessionCatalogQueryInput,
+    decodeOutput: decodeSharedSessionCatalogQueryResult,
+  }),
   'session.catalog.query': defineOperation<
     SessionCatalogQueryInput,
     SessionCatalogQueryResult,
@@ -370,6 +402,49 @@ export const SESSION_CATALOG_OPERATION_SPECS = {
     decodeOutput: decodeExecutionBoundarySummary,
   }),
 } as const;
+
+function decodeSharedSessionCatalogQueryInput(value: unknown): SharedSessionCatalogQueryInput {
+  requireExactRecord(value, 'shared Session catalog query input', []);
+  return {};
+}
+
+function decodeSharedSessionCatalogQueryResult(value: unknown): SharedSessionCatalogQueryResult {
+  const record = requireExactRecord(value, 'shared Session catalog query result', ['session']);
+  const session =
+    record.session === null ? null : decodeSharedSessionCatalogProjection(record.session);
+  requireEncodedByteLimit(
+    session,
+    'shared Session catalog result',
+    SESSION_CATALOG_RESULT_MAX_BYTES,
+  );
+  return { session };
+}
+
+export function decodeSharedSessionCatalogProjection(
+  value: unknown,
+): SharedSessionCatalogProjection {
+  const exact = requireShapedRecord(
+    value,
+    'shared Session catalog projection',
+    ['kind', 'id', 'revision', 'createdAt', 'activityAt', 'name', 'status'],
+    ['lastMessageAt', 'lastMessagePreview', 'liveRunState', 'blockedReason', 'statusUpdatedAt'],
+  );
+  if (exact.kind !== 'shared_session') throw invalidProtocolFrame('Invalid shared Session kind');
+  return {
+    kind: 'shared_session',
+    id: requireEntityId(exact.id, 'Session id'),
+    revision: positiveRevision(exact.revision, 'Session revision'),
+    createdAt: timestamp(exact.createdAt, 'Session createdAt'),
+    activityAt: timestamp(exact.activityAt, 'Session activityAt'),
+    name: sessionName(exact.name),
+    ...optionalTimestamp(exact, 'lastMessageAt'),
+    ...optionalText(exact, 'lastMessagePreview', SESSION_CATALOG_PREVIEW_MAX_BYTES),
+    status: decodeSessionStatus(exact.status),
+    ...optionalLiveRunState(exact),
+    ...optionalBlockedReason(exact),
+    ...optionalTimestamp(exact, 'statusUpdatedAt'),
+  };
+}
 
 export function decodeSessionExecutionBoundaryQueryInput(
   value: unknown,
