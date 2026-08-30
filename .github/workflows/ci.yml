@@ -143,7 +143,7 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
 
       # The header audit above remains install-free. The complete source gate
@@ -181,7 +181,9 @@ jobs:
       # directly instead of being hidden behind an earlier compilation failure.
       - name: Astryx surface inventory
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
-        run: npm run astryx:surface-inventory
+        run: |
+          npm run astryx:surface-inventory
+          npm run astryx:surface-inventory:test
 
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
