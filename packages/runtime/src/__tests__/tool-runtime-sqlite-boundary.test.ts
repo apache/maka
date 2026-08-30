@@ -357,7 +357,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         impl: async () => ({ ok: true }),
       };
 
-      await runtime.settleToolCall({
+      const settlement = await runtime.settleToolCall({
         tool: exclusive,
         turnId: 'turn-1',
         stepId: 'step-1',
@@ -438,7 +438,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
 
       const published: SessionEvent[] = [];
 
-      await runtime.settleToolCall({
+      const settlement = await runtime.settleToolCall({
         tool,
         turnId: 'turn-1',
         toolCallId: 'provider-call-1',
@@ -471,6 +471,20 @@ describe('ToolRuntime with real SQLite boundary', () => {
       );
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
 
+      const response = events.find((event) => event.content?.kind === 'function_response');
+      const durableProjection =
+        response?.content?.kind === 'function_response'
+          ? response.content.modelProjection
+          : undefined;
+      assert.deepEqual(durableProjection, {
+        version: 1,
+        kind: 'json',
+        value: { ok: true, text: 'contents' },
+      });
+      assert.deepEqual(settlement.modelOutput, {
+        type: 'json',
+        value: { ok: true, text: 'contents' },
+      });
       const context = invocationContext();
       const memory = createSessionEventMapMemory();
       const durableEvents = published.filter(
@@ -482,10 +496,13 @@ describe('ToolRuntime with real SQLite boundary', () => {
       );
       assert.deepEqual(
         mappedEvents,
-        events.filter(
-          (event) =>
-            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
-        ),
+        events
+          .filter(
+            (event) =>
+              event.content?.kind === 'function_call' ||
+              event.content?.kind === 'function_response',
+          )
+          .map((event) => JSON.parse(JSON.stringify(event))),
       );
 
       assert.equal((await store.readRuntimeEvents('session-1', 'run-1')).length, 3);
@@ -545,10 +562,13 @@ describe('ToolRuntime with real SQLite boundary', () => {
       const events = await store.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
         mappedEvents,
-        events.filter(
-          (event) =>
-            event.content?.kind === 'function_call' || event.content?.kind === 'function_response',
-        ),
+        events
+          .filter(
+            (event) =>
+              event.content?.kind === 'function_call' ||
+              event.content?.kind === 'function_response',
+          )
+          .map((event) => JSON.parse(JSON.stringify(event))),
       );
       assert.equal(events.length, 3);
       assert.equal(events[2]?.content?.kind, 'function_response');

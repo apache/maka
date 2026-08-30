@@ -194,6 +194,8 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
+import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -801,6 +803,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Caller wires this to the session ArtifactStore; runtime never imports storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
+  /** Host-owned persistence for inline image parts before their Tool Result T2 commit. */
+  persistDurableProjectionArtifact?: ToolRuntimeInput['persistDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
    * image parts; false/unknown stay as text refs with a fallback note.
@@ -1323,8 +1327,13 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
+      materializeDurableToolResultProjection: ({ toolCallId, projection }) =>
+        this.materializeDurableToolResultProjection(
+          identity.scope().imageBudget,
+          projection,
+          toolCallId,
+        ),
+      persistDurableProjectionArtifact: input.persistDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
@@ -4411,6 +4420,62 @@ export class AiSdkBackend implements AgentBackend {
         },
       ],
     };
+  }
+
+  private async materializeDurableToolResultProjection(
+    budget: ProviderImageBudget,
+    projection: DurableToolResultProjection,
+    decisionKey: string,
+  ): Promise<ToolResultOutput> {
+    if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
+    const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
+    for (const [index, part] of projection.parts.entries()) {
+      if (part.kind === 'text') {
+        value.push({ type: 'text', text: part.text });
+        continue;
+      }
+      if (this.input.supportsVision !== true) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but the selected model does not support image input.',
+        });
+        continue;
+      }
+      if (!this.input.readAttachmentBytes) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but its stored bytes are unavailable.',
+        });
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(part.ref);
+      } catch {
+        value.push({
+          type: 'text',
+          text: 'Image could not be loaded from artifact storage: read_failed.',
+        });
+        continue;
+      }
+      if (!read.ok) {
+        value.push({
+          type: 'text',
+          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
+        });
+        continue;
+      }
+      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
+        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
+        continue;
+      }
+      value.push({
+        type: 'file',
+        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+        mediaType: part.mediaType,
+      });
+    }
+    return { type: 'content', value };
   }
 
   private async buildCurrentUserContent(

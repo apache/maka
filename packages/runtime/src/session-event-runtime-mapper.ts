@@ -350,6 +350,9 @@ function mapBackendSessionEvent(
           ...(event.providerExecuted && event.providerOutput !== undefined
             ? { providerOutput: structuredClone(event.providerOutput) }
             : {}),
+          ...(event.modelProjection !== undefined
+            ? { modelProjection: event.modelProjection }
+            : {}),
         },
         refs: {
           toolCallId: event.toolUseId,

@@ -6928,6 +6928,7 @@ describe('AiSdkBackend error surfaces', () => {
     await turnScope(backend, 'turn-1').toolRuntime.writeSyntheticToolResult(
       'tool-1',
       'turn-1',
+      'Bash',
       'failed with api_key=sk-live-secret-token-value',
       {
         push: (event) => {

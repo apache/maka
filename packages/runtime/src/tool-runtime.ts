@@ -82,8 +82,20 @@ import { stableHash } from './request-shape.js';
 import { classifyError } from './provider-error-classification.js';
 import type { RunTraceLike } from './run-trace.js';
 import { AwaitRegistry } from './await-registry.js';
-import { jsonValue } from './tool-result-output.js';
 import type { ToolResultOutput } from './model-protocol.js';
+import {
+  durableProjectionToToolResultOutput,
+  durableProjectionHasArtifacts,
+  compatibilityToolResultProjection,
+  encodeDefaultDurableToolResultOutput,
+  encodeDurableToolResultOutput,
+  encodeDurableToolResultOutputWithArtifacts,
+} from './durable-tool-result-projection.js';
+import {
+  DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
+  type DurableProjectionArtifactRef,
+  type DurableToolResultProjection,
+} from '@maka/core/durable-tool-result-projection';
 import {
   buildToolOperationId,
   canonicalToolArgsHash,
@@ -144,6 +156,7 @@ export interface ToolSettlement {
 export interface RawToolSettlement {
   result: unknown;
   providerError?: string;
+  modelProjection: DurableToolResultProjection;
 }
 
 export interface MakaTool<P = any, R = unknown> {
@@ -349,10 +362,16 @@ export interface ToolRuntimeInput {
   runId?: string;
   orchestrationMode?: OrchestrationMode;
   invocationId?: string;
-  materializeDefaultToolResultOutput?: (options: {
+  materializeDurableToolResultProjection?: (options: {
     toolCallId: string;
-    output: unknown;
+    projection: DurableToolResultProjection;
   }) => ToolResultOutput | PromiseLike<ToolResultOutput>;
+  persistDurableProjectionArtifact?: (input: {
+    turnId: string;
+    toolCallId: string;
+    bytes: Uint8Array;
+    mediaType: string;
+  }) => Promise<DurableProjectionArtifactRef>;
   spawnChildSession?: (input: {
     parentRunId: string;
     parentTurnId: string;
@@ -404,6 +423,7 @@ interface RuntimeManagedMutationOperationValue<T> {
     readonly content: ToolResultContent;
     readonly isError: boolean;
     readonly durationMs: number;
+    readonly modelProjection: DurableToolResultProjection;
   };
 }
 
@@ -416,6 +436,7 @@ export interface RuntimeManagedMutationOperationProof {
   readonly content: ToolResultContent;
   readonly isError: boolean;
   readonly durationMs: number;
+  readonly modelProjection: DurableToolResultProjection;
 }
 
 export type RuntimeManagedMutationSettlement =
@@ -446,12 +467,14 @@ interface DurableToolAttempt {
   commitOutcome(
     result: unknown,
     isError: boolean,
+    modelProjection: DurableToolResultProjection,
     durationMs?: number,
   ): Promise<{ id: string; operationId: string; ts: number }>;
   adoptCommittedOutcome(
     event: RuntimeEvent,
     result: ToolResultContent,
     isError: boolean,
+    modelProjection: DurableToolResultProjection,
     durationMs: number,
   ): { id: string; operationId: string; ts: number };
 }
@@ -710,27 +733,14 @@ export class ToolRuntime {
    */
   async settleToolCall(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
     const settlement = await this.settleToolCallRaw(call);
-    const modelOutput = settlement.providerError
-      ? call.tool.providerTool?.kind === 'openai-apply-patch'
-        ? {
-            type: 'json' as const,
-            value: { status: 'failed' as const, output: settlement.providerError },
-          }
-        : { type: 'error-text' as const, value: new Error(settlement.providerError).toString() }
-      : call.tool.toModelOutput
-        ? await call.tool.toModelOutput({
+    const modelOutput =
+      durableProjectionHasArtifacts(settlement.modelProjection) &&
+      this.input.materializeDurableToolResultProjection
+        ? await this.input.materializeDurableToolResultProjection({
             toolCallId: call.toolCallId,
-            input: call.input,
-            output: settlement.result,
+            projection: settlement.modelProjection,
           })
-        : this.input.materializeDefaultToolResultOutput
-          ? await this.input.materializeDefaultToolResultOutput({
-              toolCallId: call.toolCallId,
-              output: settlement.result,
-            })
-          : typeof settlement.result === 'string'
-            ? { type: 'text' as const, value: settlement.result }
-            : { type: 'json' as const, value: jsonValue(settlement.result) };
+        : durableProjectionToToolResultOutput(settlement.modelProjection);
     return { result: settlement.result, modelOutput };
   }
 
@@ -754,6 +764,7 @@ export class ToolRuntime {
   }
 
   private async performToolSettlement(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
+    let modelProjection: DurableToolResultProjection | undefined;
     const result = await this.executeTool(
       call.tool,
       call.turnId,
@@ -769,9 +780,71 @@ export class ToolRuntime {
         ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
       },
       call.stepId,
+      (projection) => {
+        modelProjection = projection;
+      },
     );
     const providerError = providerToolErrorMessage(result);
-    return { result, ...(providerError ? { providerError } : {}) };
+    if (modelProjection === undefined) {
+      const projected = this.projectToolResult(
+        call.tool,
+        call.turnId,
+        call.toolCallId,
+        call.input,
+        result,
+      );
+      modelProjection = isPromiseLike(projected) ? await projected : projected;
+    }
+    return { result, modelProjection, ...(providerError ? { providerError } : {}) };
+  }
+
+  private projectToolResult(
+    tool: MakaTool,
+    turnId: string,
+    toolCallId: string,
+    input: unknown,
+    result: unknown,
+  ): DurableToolResultProjection | PromiseLike<DurableToolResultProjection> {
+    try {
+      const providerError = providerToolErrorMessage(result);
+      if (providerError) {
+        return encodeDurableToolResultOutput(
+          tool.providerTool?.kind === 'openai-apply-patch'
+            ? {
+                type: 'json' as const,
+                value: { status: 'failed' as const, output: providerError },
+              }
+            : { type: 'error-text' as const, value: new Error(providerError).toString() },
+          this.input.sessionId,
+        );
+      }
+      if (!tool.toModelOutput) {
+        return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
+      }
+      const output = tool.toModelOutput({ toolCallId, input, output: result });
+      const encode = (resolved: ToolResultOutput) =>
+        encodeDurableToolResultOutputWithArtifacts(
+          resolved,
+          this.input.sessionId,
+          this.input.persistDurableProjectionArtifact
+            ? ({ bytes, mediaType }) =>
+                this.input.persistDurableProjectionArtifact!({
+                  turnId,
+                  toolCallId,
+                  bytes,
+                  mediaType,
+                })
+            : undefined,
+        );
+      return isPromiseLike(output)
+        ? Promise.resolve(output).then(
+            (resolved) => encode(resolved),
+            () => DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
+          )
+        : encode(output);
+    } catch {
+      return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
+    }
   }
 
   /**
@@ -894,6 +967,7 @@ export class ToolRuntime {
   async writeSyntheticToolResult(
     toolUseId: string,
     turnId: string,
+    toolName: string,
     text: string,
     queue: DurableSessionEventSink,
     sandboxDenial?: SandboxDenialSignal,
@@ -906,7 +980,7 @@ export class ToolRuntime {
       parentOperationId?: string;
     } = {},
     attempt?: DurableToolAttempt,
-  ): Promise<void> {
+  ): Promise<DurableToolResultProjection> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
@@ -924,7 +998,18 @@ export class ToolRuntime {
     // guards, where no attempt exists and no identity is owed.
     const durableAttempt =
       attempt ?? this.durableToolAttempts.get(durableAttemptKey(turnId, toolUseId));
-    const durableOutcome = await durableAttempt?.commitOutcome(content, true);
+    const modelProjection =
+      compatibilityToolResultProjection(
+        {
+          kind: 'function_response',
+          id: toolUseId,
+          name: toolName,
+          result: content,
+          isError: true,
+        },
+        this.input.sessionId,
+      ) ?? DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
+    const durableOutcome = await durableAttempt?.commitOutcome(content, true, modelProjection);
     const msg: ToolResultMessage = {
       type: 'tool_result',
       id: this.input.newId(),
@@ -945,8 +1030,10 @@ export class ToolRuntime {
       ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
       isError: true,
       content,
+      modelProjection,
       ...activityIdentity,
     } satisfies ToolResultEvent);
+    return modelProjection;
   }
 
   private async executeTool(
@@ -964,6 +1051,7 @@ export class ToolRuntime {
       maxResultBytes?: number;
     },
     stepId?: string,
+    captureProjection?: (projection: DurableToolResultProjection) => void,
   ): Promise<unknown> {
     const rawExecutionArgs = snapshotToolArgs(args);
     const sandboxBoundaryDecisionGeneration = this.sandboxBoundaryDecisionGeneration;
@@ -1139,6 +1227,7 @@ export class ToolRuntime {
       await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
+        tool.name,
         text,
         queue,
         undefined,
@@ -1549,10 +1638,13 @@ export class ToolRuntime {
           const content = immutableSnapshot
             ? Object.freeze(coerceResultContent(result))
             : coerceResultContent(result);
+          const projected = this.projectToolResult(tool, turnId, toolUseId, executionArgs, result);
+          const modelProjection = isPromiseLike(projected) ? await projected : projected;
           const outcome = {
             content,
             isError: deriveToolResultStatus(content, result) !== 'success',
             durationMs: this.input.now() - startedAt,
+            modelProjection,
           };
           const value = {
             result,
@@ -1593,6 +1685,7 @@ export class ToolRuntime {
                   content: value.outcome.content,
                   isError: value.outcome.isError,
                   durationMs: value.outcome.durationMs,
+                  modelProjection: value.outcome.modelProjection,
                 };
               } finally {
                 if (operationLifecycle.state === 'running') {
@@ -1664,7 +1757,8 @@ export class ToolRuntime {
         }
         const { result, outcome } = settledExecution.value;
         output.flush();
-        const { content, durationMs } = outcome;
+        const { content, durationMs, modelProjection } = outcome;
+        captureProjection?.(modelProjection);
         // Keep the full provider-facing terminal classification. `isError` is
         // sufficient for the durable response envelope, but it intentionally
         // collapses `aborted` into an error bit and therefore cannot drive live
@@ -1681,12 +1775,14 @@ export class ToolRuntime {
             settledExecution.durableOutcome,
             content,
             outcome.isError,
+            modelProjection,
             durationMs,
           );
         } else {
           durableOutcome = await durableAttempt?.commitOutcome(
             content,
             outcome.isError,
+            modelProjection,
             durationMs,
           );
         }
@@ -1732,6 +1828,7 @@ export class ToolRuntime {
           ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
           isError: toolResultStatus !== 'success',
           content,
+          modelProjection,
           durationMs,
           ...activityIdentity,
         } satisfies ToolResultEvent);
@@ -1846,9 +1943,20 @@ export class ToolRuntime {
           );
         }
         const durationMs = Math.max(0, this.input.now() - startedAt);
+        const terminalResult = this.errorReturn(terminalFailure.message);
+        const projected = this.projectToolResult(
+          tool,
+          turnId,
+          toolUseId,
+          executionArgs,
+          terminalResult,
+        );
+        const modelProjection = isPromiseLike(projected) ? await projected : projected;
+        captureProjection?.(modelProjection);
         const durableOutcome = await durableAttempt?.commitOutcome(
           terminalFailure.content,
           true,
+          modelProjection,
           durationMs,
         );
         const resultMsg: ToolResultMessage = {
@@ -1872,6 +1980,7 @@ export class ToolRuntime {
           ...(durableOutcome ? { operationId: durableOutcome.operationId } : {}),
           isError: true,
           content: terminalFailure.content,
+          modelProjection,
           durationMs,
           ...activityIdentity,
         } satisfies ToolResultEvent);
@@ -1902,7 +2011,7 @@ export class ToolRuntime {
           errorClass,
           ...(sandboxError ? { sandbox: sandboxError } : {}),
         });
-        return this.errorReturn(terminalFailure.message);
+        return terminalResult;
       }
       const msg =
         err instanceof ToolResultLimitError
@@ -1912,9 +2021,10 @@ export class ToolRuntime {
             : uncertainOutcome
               ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
               : formatSyntheticToolErrorText(err);
-      await this.writeSyntheticToolResult(
+      const modelProjection = await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
+        tool.name,
         msg,
         queue,
         sandboxDenialSignalFromError(err),
@@ -1923,6 +2033,7 @@ export class ToolRuntime {
         activityIdentity,
         durableAttempt,
       );
+      captureProjection?.(modelProjection);
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
         turnId,
@@ -2049,6 +2160,7 @@ export class ToolRuntime {
       actions: {
         toolDispatch: {
           protocol: TOOL_BOUNDARY_PROTOCOL_V1,
+          resultProjectionVersion: 1,
           operationId,
           providerToolCallId: input.startEvent.toolUseId,
           toolName: input.tool.name,
@@ -2109,6 +2221,7 @@ export class ToolRuntime {
     const buildResponseEvent = (
       result: unknown,
       isError: boolean,
+      modelProjection: DurableToolResultProjection,
       durationMs: number | undefined,
       ts: number,
     ): RuntimeEvent => ({
@@ -2129,6 +2242,7 @@ export class ToolRuntime {
         name: input.tool.name,
         result,
         ...(isError ? { isError: true } : {}),
+        modelProjection,
       },
       refs: {
         operationId,
@@ -2146,9 +2260,15 @@ export class ToolRuntime {
     return {
       operationId,
       responseEventId: `${operationId}_response`,
-      commitOutcome: async (result, isError, durationMs) => {
+      commitOutcome: async (result, isError, modelProjection, durationMs) => {
         if (committedOutcome) return committedOutcome;
-        const responseEvent = buildResponseEvent(result, isError, durationMs, this.input.now());
+        const responseEvent = buildResponseEvent(
+          result,
+          isError,
+          modelProjection,
+          durationMs,
+          this.input.now(),
+        );
         try {
           await sink.commitToolOutcome({
             operationId,
@@ -2169,9 +2289,9 @@ export class ToolRuntime {
         );
         return committedOutcome;
       },
-      adoptCommittedOutcome: (event, result, isError, durationMs) => {
+      adoptCommittedOutcome: (event, result, isError, modelProjection, durationMs) => {
         if (committedOutcome) return committedOutcome;
-        const expected = buildResponseEvent(result, isError, durationMs, event.ts);
+        const expected = buildResponseEvent(result, isError, modelProjection, durationMs, event.ts);
         if (!Number.isFinite(event.ts) || !isDeepStrictEqual(event, expected)) {
           throw new RuntimeCommitBoundaryError(
             'T2',
@@ -3249,6 +3369,7 @@ function normalizeManagedMutationSettlement(
   const expectedError = kind === 'operation_failed_no_effect_committed';
   if (
     response?.kind !== 'function_response' ||
+    response.modelProjection === undefined ||
     (expectedError ? response.isError !== true : response.isError === true)
   ) {
     throw new Error('Managed no-effect settlement has the wrong durable outcome state');
@@ -3257,6 +3378,7 @@ function normalizeManagedMutationSettlement(
   const outcome = Object.freeze({
     content,
     isError: expectedError,
+    modelProjection: response.modelProjection,
     durationMs:
       typeof durableOutcome.actions?.stateDelta?.durationMs === 'number'
         ? durableOutcome.actions.stateDelta.durationMs
@@ -3707,6 +3829,15 @@ function providerToolErrorMessage(output: unknown): string | undefined {
     return record.text;
   }
   return record.error;
+}
+
+function isPromiseLike<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'then' in value &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
 }
 
 function summarizeArgs(toolName: string, args: unknown): string {

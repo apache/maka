@@ -343,12 +343,26 @@ describe('ToolRuntime settlement', () => {
     assert.deepEqual(settlement.modelOutput, { type: 'json', value: result });
   });
 
-  it('uses the runtime model-output materializer for default tool results', async () => {
-    const result = { kind: 'image', ref: 'artifact-1' };
+  it('materializes a durable artifact projection for the current continuation', async () => {
+    const result = {
+      kind: 'image',
+      mimeType: 'image/png',
+      ref: { kind: 'session_context' as const, sessionId: 'session-1', refId: 'artifact-1' },
+    };
     const runtime = makeRuntime({
-      materializeDefaultToolResultOutput: async ({ toolCallId, output }) => {
+      materializeDurableToolResultProjection: async ({ toolCallId, projection }) => {
         assert.equal(toolCallId, 'call-1');
-        assert.equal(output, result);
+        assert.deepEqual(projection, {
+          version: 1,
+          kind: 'content',
+          parts: [
+            {
+              kind: 'artifact',
+              mediaType: 'image/png',
+              ref: result.ref,
+            },
+          ],
+        });
         return { type: 'text', value: 'materialized image' };
       },
     });
@@ -529,7 +543,10 @@ function makeRuntime(
   overrides: Partial<
     Pick<
       ToolRuntimeInput,
-      'materializeDefaultToolResultOutput' | 'readExecutionBoundary' | 'spawnChildSession' | 'runId'
+      | 'materializeDurableToolResultProjection'
+      | 'readExecutionBoundary'
+      | 'spawnChildSession'
+      | 'runId'
     >
   > = {},
 ): ToolRuntime {

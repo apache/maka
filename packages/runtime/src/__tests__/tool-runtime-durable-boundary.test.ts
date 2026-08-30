@@ -24,6 +24,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
   RuntimeCommitSink,
   ToolOutcomeCommit,
@@ -194,12 +195,140 @@ describe('ToolRuntime durable boundary', () => {
       prepared[0]?.dispatchRuntimeEvent.actions?.toolDispatch?.protocol,
       't1_after_preflight_v1',
     );
+    assert.equal(
+      prepared[0]?.dispatchRuntimeEvent.actions?.toolDispatch?.resultProjectionVersion,
+      1,
+    );
     assert.equal(prepared[0]?.dispatchRuntimeEvent.content, undefined);
     assert.equal(outcomes[0]?.runtimeEvent.content?.kind, 'function_response');
     assert.equal(prepared[0]?.operationId, outcomes[0]?.operationId);
     assert.equal(prepared[0]?.runtimeEvent.refs?.operationId, prepared[0]?.operationId);
     assert.equal(prepared[0]?.dispatchRuntimeEvent.refs?.operationId, prepared[0]?.operationId);
     assert.equal(outcomes[0]?.runtimeEvent.refs?.operationId, prepared[0]?.operationId);
+  });
+
+  it('commits the completed outcome with its model projection in T2', async () => {
+    const order: string[] = [];
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        order.push('t2');
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const projectedTool = tool(() => ({ private: 'raw execution fact' }));
+    projectedTool.toModelOutput = () => {
+      order.push('project');
+      return { type: 'text', value: 'bounded model fact' };
+    };
+
+    await harness.execute(projectedTool);
+
+    assert.deepEqual(order, ['project', 't2']);
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.deepEqual(
+      response?.kind === 'function_response' ? response.modelProjection : undefined,
+      {
+        version: 1,
+        kind: 'text',
+        text: 'bounded model fact',
+      },
+    );
+  });
+
+  it('commits one deterministic projection fallback without repeating a completed tool', async () => {
+    let implementationCalls = 0;
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const unprojectableTool = tool(() => {
+      implementationCalls += 1;
+      return { private: 'completed execution fact' };
+    });
+    unprojectableTool.toModelOutput = () => {
+      throw new Error('projection implementation failed');
+    };
+
+    assert.deepEqual(await harness.execute(unprojectableTool), {
+      private: 'completed execution fact',
+    });
+
+    assert.equal(implementationCalls, 1);
+    assert.equal(outcomes.length, 1);
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.deepEqual(
+      response?.kind === 'function_response' ? response.modelProjection : undefined,
+      {
+        version: 1,
+        kind: 'failure',
+        reason: 'projection_failed',
+        message: 'The tool completed, but its model-visible result could not be projected safely.',
+      },
+    );
+  });
+
+  it('persists inline image output as a Session artifact before committing T2', async () => {
+    const order: string[] = [];
+    const outcomes: ToolOutcomeCommit[] = [];
+    const artifactRef = {
+      kind: 'session_file' as const,
+      sessionId: 'session-1',
+      relativePath: 'artifact-1',
+    };
+    const harness = makeHarness(
+      {
+        commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+        commitToolOutcome: async (input) => {
+          outcomes.push(input);
+          order.push('t2');
+          return { created: true, runtimeEventSeq: 2 };
+        },
+      },
+      undefined,
+      'run-1',
+      {
+        persistDurableProjectionArtifact: async (input) => {
+          order.push('artifact');
+          assert.equal(input.turnId, 'turn-1');
+          assert.equal(input.toolCallId, 'provider-call-1');
+          assert.equal(input.mediaType, 'image/png');
+          assert.deepEqual([...input.bytes], [137, 80, 78, 71]);
+          return artifactRef;
+        },
+      },
+    );
+    const imageTool = tool(() => ({ private: 'raw execution fact' }));
+    imageTool.toModelOutput = () => ({
+      type: 'content',
+      value: [
+        {
+          type: 'file',
+          data: { type: 'data', data: Buffer.from([137, 80, 78, 71]).toString('base64') },
+          mediaType: 'image/png',
+        },
+      ],
+    });
+
+    await harness.execute(imageTool);
+
+    assert.deepEqual(order, ['artifact', 't2']);
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.deepEqual(
+      response?.kind === 'function_response' ? response.modelProjection : undefined,
+      {
+        version: 1,
+        kind: 'content',
+        parts: [{ kind: 'artifact', mediaType: 'image/png', ref: artifactRef }],
+      },
+    );
+    assert.doesNotMatch(JSON.stringify(response), /iVBORw/);
   });
 
   it('adopts an owner-committed managed successor without invoking generic T2', async () => {
@@ -1627,6 +1756,9 @@ function managedOutcomeEvent(
   isError: boolean,
   options: {
     durationMs?: number;
+    modelProjection?: NonNullable<
+      Extract<RuntimeEvent['content'], { kind: 'function_response' }>['modelProjection']
+    >;
     origin?: 'provider' | 'code_mode';
     modelVisibility?: 'visible' | 'hidden';
     toolCallId?: string;
@@ -1653,6 +1785,7 @@ function managedOutcomeEvent(
       name: 'Write',
       result,
       ...(isError ? { isError: true } : {}),
+      modelProjection: options.modelProjection ?? managedModelProjection(result),
     },
     refs: {
       operationId,
@@ -1662,6 +1795,26 @@ function managedOutcomeEvent(
     },
     actions: { stateDelta: { durationMs: options.durationMs ?? 0 } },
   };
+}
+
+function managedModelProjection(
+  result: unknown,
+): NonNullable<Extract<RuntimeEvent['content'], { kind: 'function_response' }>['modelProjection']> {
+  const raw =
+    result &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    (result as { kind?: unknown }).kind === 'json'
+      ? (result as { value: unknown }).value
+      : result;
+  const providerError =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as { error?: unknown }).error
+      : undefined;
+  if (typeof providerError === 'string') {
+    return { version: 1, kind: 'text', text: `Error: ${providerError}`, isError: true };
+  }
+  return { version: 1, kind: 'json', value: raw as never };
 }
 
 function managedMutationDispatch() {
