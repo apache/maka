@@ -90,7 +90,17 @@ export function createRuntimeHostBotSessionAdapter(
         ) {
           throw error;
         }
-        const reconciled = await deps.client.getSession(sessionId);
+        // The create may have committed while its response was lost. A null
+        // read means it did not (nothing to clean up); a failed read means
+        // the committed row is indistinguishable from absent, so mirror the
+        // pin path and abandon the id before rethrowing the create error.
+        let reconciled: SessionCatalogProjection | null;
+        try {
+          reconciled = await deps.client.getSession(sessionId);
+        } catch {
+          await abandonUnusableBotSession(deps.client, sessionId);
+          throw error;
+        }
         if (!reconciled) throw error;
         session = reconciled;
       }

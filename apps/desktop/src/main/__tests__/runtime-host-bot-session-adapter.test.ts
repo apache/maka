@@ -270,6 +270,144 @@ test('archives the orphaned Session when an uncertain explore pin cannot be veri
   assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
 });
 
+test('pins explore on a create-unknown Session that reconciles to the Host default', async () => {
+  const lifecycle: unknown[] = [];
+  const updates: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async () => {
+        throw new RuntimeHostOperationError(
+          'session.create',
+          'commit_outcome_unknown',
+          'response lost',
+        );
+      },
+      // The create committed with the Host default permission mode.
+      getSession: async (sessionId) => session(sessionId, { permissionMode: 'ask' }),
+      updateSessionConfiguration: async (sessionId, patch) => {
+        updates.push({ sessionId, patch });
+        return session(sessionId, { permissionMode: 'explore' });
+      },
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+    newId: () => 'stable-session-id',
+  });
+
+  assert.equal(
+    await adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    'stable-session-id',
+  );
+  assert.deepEqual(updates, [
+    { sessionId: 'stable-session-id', patch: { permissionMode: 'explore' } },
+  ]);
+  assert.deepEqual(lifecycle, []);
+});
+
+test('abandons the uncertain id when the create reconcile read itself fails', async () => {
+  const lifecycle: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async () => {
+        throw new RuntimeHostOperationError(
+          'session.create',
+          'commit_outcome_unknown',
+          'response lost',
+        );
+      },
+      // A failed catalog read leaves a committed row indistinguishable from
+      // an absent one.
+      getSession: async () => {
+        throw new RuntimeHostOperationError(
+          'session.catalog.query',
+          'persistence_failed',
+          'catalog read failed',
+        );
+      },
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+    newId: () => 'stable-session-id',
+  });
+
+  await assert.rejects(
+    adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    (error: unknown) =>
+      error instanceof RuntimeHostOperationError &&
+      error.code === 'commit_outcome_unknown',
+  );
+  assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
+});
+
+test('abandons the Session when the pin reconcile read fails', async () => {
+  const lifecycle: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async (input) => session(input.sessionId, { permissionMode: 'ask' }),
+      updateSessionConfiguration: async () => {
+        throw new RuntimeHostOperationError(
+          'session.configuration.update',
+          'commit_outcome_unknown',
+          'response lost',
+        );
+      },
+      getSession: async () => {
+        throw new RuntimeHostOperationError(
+          'session.catalog.query',
+          'persistence_failed',
+          'catalog read failed',
+        );
+      },
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+    newId: () => 'stable-session-id',
+  });
+
+  await assert.rejects(
+    adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    RuntimeHostOperationError,
+  );
+  assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
+});
+
+test('abandons the Session when the Host commits the pin without explore', async () => {
+  const lifecycle: unknown[] = [];
+  const adapter = createRuntimeHostBotSessionAdapter({
+    client: botClient({
+      createSession: async (input) => session(input.sessionId, { permissionMode: 'ask' }),
+      // The Host accepts the write but keeps the Session in ask mode.
+      updateSessionConfiguration: async (sessionId) =>
+        session(sessionId, { permissionMode: 'ask' }),
+      setSessionLifecycle: async (sessionId, state) => {
+        lifecycle.push([sessionId, state]);
+        return session(sessionId);
+      },
+    }),
+    resolveCreateTarget: hostPathCreateTarget,
+    emitSessionsChanged() {},
+    newId: () => 'stable-session-id',
+  });
+
+  await assert.rejects(
+    adapter.createSession({ name: 'Bot conversation', labels: ['bot'] }),
+    /could not enter explore mode/,
+  );
+  assert.deepEqual(lifecycle, [['stable-session-id', 'archived']]);
+});
+
 test('subscribes before Turn start and settles a fast Host reply without losing text', async () => {
   const events = new AsyncFrameQueue();
   const changes: unknown[] = [];
