@@ -72,6 +72,11 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 export interface OAuthLoginService {
   bridge: OAuthLoginFlowBridge;
   display: { name: string; shortName: string };
+  // Codex's device-authorization page requires the user to type the code the
+  // flow surfaces as `stateHint` — the verification URL does not embed it, so
+  // the notice must show it or the login cannot be completed. xAI's page
+  // needs no manual code, mirroring the catalog panel's `!isXai` guard.
+  showsDeviceCode: boolean;
 }
 
 export function oauthLoginServiceFor(
@@ -83,11 +88,13 @@ export function oauthLoginServiceFor(
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
+        showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        showsDeviceCode: false,
       };
     default:
       return null;
