@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import {
   scheduledTaskPresetSessionLabel,
   type ScheduledTask,
@@ -104,6 +105,21 @@ test('projects the Daily Review preset from ordinary Session and usage services'
         hosts.push(`sessions:${host.hostId}`);
         return sessions;
       },
+      listArtifacts: async (sessionId) => {
+        hosts.push(`artifacts:${sessionId}`);
+        return [{
+          id: 'report-artifact',
+          sessionId,
+          turnId: 'report-turn',
+          createdAt: Date.now(),
+          name: 'daily-review.md',
+          kind: 'file',
+          sizeBytes: 100,
+          mimeType: 'text/markdown',
+          source: 'tool_result',
+          status: 'live',
+        } satisfies ArtifactDescriptor];
+      },
       readUsage: async (_range, host) => {
         hosts.push(`usage:${host.hostId}`);
         return { totalRequests: 7, totalTokens: 1_234, totalCostUsd: 0.25 };
@@ -121,7 +137,7 @@ test('projects the Daily Review preset from ordinary Session and usage services'
   await act(async () => root.render(createElement(Probe)));
   assert.equal(controller?.task, task);
   const view = await controller!.bridge.load(1);
-  assert.deepEqual(hosts, ['sessions:host-a', 'usage:host-a']);
+  assert.deepEqual(hosts, ['sessions:host-a', 'usage:host-a', 'artifacts:report']);
   assert.deepEqual(view.totals, {
     sessionCount: 2,
     totalRequests: 7,
@@ -156,6 +172,7 @@ test('invalidates the projection for ordinary Session and Runtime Host changes',
     dailyReview: {
       supported: true,
       listSessions: async () => [],
+      listArtifacts: async () => [],
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: (handler) => {
         sessionChanged = handler;
@@ -213,6 +230,7 @@ test('rejects a projection if the default Runtime Host changes mid-read', async 
     dailyReview: {
       supported: true,
       listSessions: async () => pendingSessions.promise,
+      listArtifacts: async () => [],
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: () => () => undefined,
     },

@@ -18,7 +18,10 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import type { ScheduledTask } from '@maka/core/scheduled-task';
+import {
+  scheduledTaskPresetSessionLabel,
+  type ScheduledTask,
+} from '@maka/core/scheduled-task';
 import {
   dailyReviewRangeBounds,
   projectDailyReviewView,
@@ -68,11 +71,22 @@ export function useDailyReviewController(input: {
       const result = await runOnDefaultRuntimeHost(
         input.services.runtimeHosts,
         async (host) => {
-          const [sessions, usage] = await Promise.all([
-            input.services.dailyReview.listSessions(host),
+          const sessions = await input.services.dailyReview.listSessions(host);
+          const presetLabel = scheduledTaskPresetSessionLabel('daily-review');
+          const reportSessions = sessions.filter(
+            (session) =>
+              session.labels.includes('migrated:daily-review') ||
+              session.labels.includes(presetLabel),
+          );
+          const [usage, reportArtifacts] = await Promise.all([
             input.services.dailyReview.readUsage(bounds, host),
+            Promise.all(
+              reportSessions.map((session) =>
+                input.services.dailyReview.listArtifacts(session.id),
+              ),
+            ).then((groups) => groups.flat()),
           ]);
-          return { sessions, usage };
+          return { sessions, usage, reportArtifacts };
         },
       );
       if (!(await isDefaultRuntimeHostCurrent(input.services.runtimeHosts, result.host))) {
@@ -80,6 +94,7 @@ export function useDailyReviewController(input: {
       }
       return projectDailyReviewView({
         sessions: result.value.sessions,
+        reportArtifacts: result.value.reportArtifacts,
         usage: result.value.usage,
         ...bounds,
       });

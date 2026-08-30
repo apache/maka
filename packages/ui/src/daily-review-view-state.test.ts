@@ -22,6 +22,7 @@ import test from 'node:test';
 import {
   scheduledTaskPresetSessionLabel,
 } from '@maka/core/scheduled-task';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import type { SessionSummary } from '@maka/core/session';
 import {
   dailyReviewManualIntent,
@@ -42,6 +43,21 @@ function session(input: Partial<SessionSummary> & Pick<SessionSummary, 'id' | 'n
     model: 'fixture-model',
     permissionMode: 'ask',
     ...input,
+  };
+}
+
+function reportArtifact(sessionId: string, createdAt: number): ArtifactDescriptor {
+  return {
+    id: `report-${sessionId}`,
+    sessionId,
+    turnId: `turn-${sessionId}`,
+    createdAt,
+    name: 'daily-review.md',
+    kind: 'file',
+    sizeBytes: 100,
+    mimeType: 'text/markdown',
+    source: 'tool_result',
+    status: 'live',
   };
 }
 
@@ -95,6 +111,13 @@ test('projects stable preset and migrated completed Sessions as Daily Review his
 
   const view = projectDailyReviewView({
     sessions,
+    reportArtifacts: [
+      reportArtifact('scheduled-report', 9_100),
+      reportArtifact('migrated-report', 8_100),
+      reportArtifact('older-migrated-report', 1_100),
+      reportArtifact('running-scheduled-report', 9_600),
+      reportArtifact('failed-scheduled-report', 9_500),
+    ],
     from: 5_000,
     to: 10_000,
     usage: {
@@ -120,20 +143,20 @@ test('projects stable preset and migrated completed Sessions as Daily Review his
     {
       sessionId: 'scheduled-report',
       title: 'Daily Review · August 29',
-      generatedAt: 9_000,
+      generatedAt: 9_100,
       preview: 'Completed work and follow-ups.',
       migrated: false,
     },
     {
       sessionId: 'migrated-report',
       title: 'Daily Review · 2026-08-28 · 1d',
-      generatedAt: 8_000,
+      generatedAt: 8_100,
       migrated: true,
     },
     {
       sessionId: 'older-migrated-report',
       title: 'Daily Review · 2026-07-01 · 1d',
-      generatedAt: 1_000,
+      generatedAt: 1_100,
       migrated: true,
     },
   ]);

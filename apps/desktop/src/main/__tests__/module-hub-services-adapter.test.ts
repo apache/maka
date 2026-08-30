@@ -84,9 +84,10 @@ describe('createDesktopModuleHubServices', () => {
     const ranges: unknown[] = [];
     const usageHosts: unknown[] = [];
     let sessionChanged: (() => void) | undefined;
+    let artifactChanged: (() => void) | undefined;
     let notifications = 0;
     const bridge = {
-      contract: { version: 1 },
+      contract: { version: 2 },
       runtimeHostProfiles: {
         getDefaultHost: async () => host,
         subscribeChanges: () => () => undefined,
@@ -96,6 +97,13 @@ describe('createDesktopModuleHubServices', () => {
         catalog: methodRecorder([], 'skills.catalog'),
       }),
       scheduledTasks: methodRecorder([], 'scheduledTasks'),
+      artifacts: {
+        list: async () => [],
+        subscribeChanges(handler: () => void) {
+          artifactChanged = handler;
+          return () => undefined;
+        },
+      },
       sessions: {
         listWithCoverage: async () => ({
           sessions,
@@ -125,6 +133,7 @@ describe('createDesktopModuleHubServices', () => {
 
     assert.equal(services.dailyReview.supported, true);
     assert.deepEqual(await services.dailyReview.listSessions(host), [sessions[1]]);
+    assert.deepEqual(await services.dailyReview.listArtifacts('local-session-revision'), []);
     assert.deepEqual(await services.dailyReview.readUsage(range, host), {
       totalRequests: 5,
       totalTokens: 500,
@@ -132,16 +141,17 @@ describe('createDesktopModuleHubServices', () => {
     });
     services.dailyReview.subscribeChanges(() => { notifications += 1; });
     sessionChanged?.();
+    artifactChanged?.();
 
     assert.deepEqual(ranges, [range]);
     assert.deepEqual(usageHosts, [host]);
-    assert.equal(notifications, 1);
+    assert.equal(notifications, 2);
   });
 
   it('rejects Daily Review when the target Host catalog is incomplete', async () => {
     const host = { profileId: 'remote-a', hostId: 'host-a' };
     const bridge = {
-      contract: { version: 1 },
+      contract: { version: 2 },
       runtimeHostProfiles: {
         getDefaultHost: async () => host,
         subscribeChanges: () => () => undefined,
@@ -170,6 +180,7 @@ describe('createDesktopModuleHubServices', () => {
 
   it('gates Daily Review when the renderer is paired with an older preload', async () => {
     const bridge = {
+      contract: { version: 1 },
       runtimeHostProfiles: {
         getDefaultHost: async () => ({ profileId: 'local', hostId: 'local' }),
         subscribeChanges: () => () => undefined,

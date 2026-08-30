@@ -132,7 +132,8 @@ export function DailyReviewPanel(props: {
     ? rangeDateFormatter.format(displayedBounds.from)
     : `${rangeDateFormatter.format(displayedBounds.from)} – ${rangeDateFormatter.format(displayedBounds.to - 1)}`;
 
-  const primaryAction = props.task ? (
+  const primaryAction = props.task &&
+    (props.task.status === 'active' || props.task.status === 'paused') ? (
     <UiButton
       variant="primary"
       label={runPending ? copy.page.running : copy.page.runNow}
@@ -140,7 +141,7 @@ export function DailyReviewPanel(props: {
       isLoading={runPending}
       onClick={() => void runNow()}
     />
-  ) : props.canSetUp && props.onSetUp ? (
+  ) : !props.task && props.canSetUp && props.onSetUp ? (
     <UiButton variant="primary" label={copy.page.setup} onClick={props.onSetUp} />
   ) : undefined;
 
@@ -217,7 +218,7 @@ export function DailyReviewPanel(props: {
               <div className="maka-daily-review-schedule">
                 <div className="maka-daily-review-schedule-summary">
                   <Text type="supporting" color="secondary">
-                    {props.task.status === 'active' ? copy.schedule.active : copy.schedule.paused}
+                    {copy.schedule[props.task.status]}
                   </Text>
                   <span className="maka-daily-review-separator" aria-hidden="true">·</span>
                   <Text type="supporting" color="secondary">

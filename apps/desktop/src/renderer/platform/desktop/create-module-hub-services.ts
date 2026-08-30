@@ -27,7 +27,7 @@ type DesktopModuleHubSettingsBridge = Partial<
 
 export type DesktopModuleHubBridge = Pick<
   MakaBridge,
-  'runtimeHostProfiles' | 'scheduledTasks' | 'sessions' | 'skills'
+  'artifacts' | 'runtimeHostProfiles' | 'scheduledTasks' | 'sessions' | 'skills'
 > & {
   /** Optional at runtime while a loaded renderer still has an older preload. */
   readonly contract?: MakaBridge['contract'];
@@ -46,7 +46,7 @@ export function createDesktopModuleHubServices(
   const clientSettingsSupported =
     typeof getClientSettings === 'function' &&
     typeof updateClientSettings === 'function';
-  const dailyReviewSupported = bridge.contract?.version === 1;
+  const dailyReviewSupported = bridge.contract?.version === 2;
 
   return {
     runtimeHosts: {
@@ -112,6 +112,7 @@ export function createDesktopModuleHubServices(
           catalog.sessions.filter((session) => session.runtimeHostId === host.hostId),
         );
       },
+      listArtifacts: (sessionId) => bridge.artifacts.list(sessionId),
       async readUsage(range, host) {
         if (!dailyReviewSupported) {
           throw new Error('Daily Review requires a newer Desktop bridge');
@@ -124,7 +125,14 @@ export function createDesktopModuleHubServices(
           totalCostUsd: stats.summary.totalCostUsd,
         };
       },
-      subscribeChanges: (handler) => bridge.sessions.subscribeChanges(() => handler()),
+      subscribeChanges(handler) {
+        const unsubscribeSessions = bridge.sessions.subscribeChanges(() => handler());
+        const unsubscribeArtifacts = bridge.artifacts.subscribeChanges(() => handler());
+        return () => {
+          unsubscribeSessions();
+          unsubscribeArtifacts();
+        };
+      },
     },
     clientSettings: {
       supported: clientSettingsSupported,

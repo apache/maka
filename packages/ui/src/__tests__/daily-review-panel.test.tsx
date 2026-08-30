@@ -22,6 +22,7 @@ import { afterEach, test } from 'node:test';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { DailyReviewPanel } from '../daily-review-panel.js';
 import { LocaleProvider } from '../locale-context.js';
 import type { DailyReviewViewState } from '../daily-review-view-state.js';
@@ -68,7 +69,10 @@ const EMPTY_VIEW: DailyReviewViewState = {
   hasMigratedReports: false,
 };
 
-async function renderDailyReview(view: DailyReviewViewState): Promise<Document> {
+async function renderDailyReview(
+  view: DailyReviewViewState,
+  task?: ScheduledTask,
+): Promise<Document> {
   const { document, window } = parseHTML('<div id="root"></div>');
   window.getComputedStyle = () => computedStyle();
   Object.assign(globalThis, {
@@ -93,7 +97,9 @@ async function renderDailyReview(view: DailyReviewViewState): Promise<Document> 
             load: async () => view,
           }}
           canSetUp
+          task={task}
           onSetUp={() => undefined}
+          onManageSchedule={() => undefined}
         />
       </LocaleProvider>,
     );
@@ -102,6 +108,33 @@ async function renderDailyReview(view: DailyReviewViewState): Promise<Document> 
   });
   return document;
 }
+
+test('a completed Daily Review task shows its terminal state without Run Now', async () => {
+  const now = Date.now();
+  const document = await renderDailyReview(EMPTY_VIEW, {
+    id: 'completed-review',
+    presetId: 'daily-review',
+    title: 'Daily Review',
+    intent: { kind: 'text', body: 'Review my work.' },
+    schedule: { kind: 'once', runAt: now - 1_000 },
+    effect: { kind: 'notify', channel: 'local' },
+    status: 'completed',
+    nextFireAt: null,
+    lastFireAt: now - 1_000,
+    fireCount: 1,
+    maxFires: 1,
+    expiresAt: null,
+    createdBy: { kind: 'user' },
+    createdAt: now - 2_000,
+    updatedAt: now,
+    runs: [],
+    lastError: null,
+  });
+  const text = document.documentElement.textContent ?? '';
+  assert.match(text, /每日回顾已完成/u);
+  assert.doesNotMatch(text, /立即生成回顾/u);
+  assert.match(text, /管理日程/u);
+});
 
 test('an empty Daily Review keeps one date-scoped content section', async () => {
   const document = await renderDailyReview(EMPTY_VIEW);

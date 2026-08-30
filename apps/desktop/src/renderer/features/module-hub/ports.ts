@@ -22,6 +22,7 @@ import type {
   ScheduledTask,
   UpdateScheduledTaskInput,
 } from '@maka/core/scheduled-task';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import type { SessionSummary } from '@maka/core/session';
 import type { DailyReviewUsageSummary } from '@maka/ui';
 import type {
@@ -211,6 +212,7 @@ export interface ModuleHubClientSettingsService {
 export interface ModuleHubDailyReviewService {
   readonly supported: boolean;
   listSessions(host: ModuleHubRuntimeHostRef): Promise<SessionSummary[]>;
+  listArtifacts(sessionId: string): Promise<ArtifactDescriptor[]>;
   readUsage(
     range: { readonly from: number; readonly to: number },
     host: ModuleHubRuntimeHostRef,

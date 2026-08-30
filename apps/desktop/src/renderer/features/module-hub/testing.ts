@@ -162,6 +162,7 @@ export function createFakeModuleHubServices(
     dailyReview: {
       supported: true,
       listSessions: async () => [],
+      listArtifacts: async () => [],
       readUsage: async () => ({ totalRequests: 0, totalTokens: 0, totalCostUsd: 0 }),
       subscribeChanges: noopSubscription,
     },

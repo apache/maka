@@ -48,6 +48,8 @@ export interface DailyReviewCopy {
   schedule: {
     active: string;
     paused: string;
+    completed: string;
+    expired: string;
   };
   history: {
     title: string;
@@ -70,7 +72,7 @@ const COPY = {
     },
     range: { label: '活动范围', options: [[1, '今日'], [7, '最近 7 天'], [30, '最近 30 天']], earlier: '查看更早一天', later: '查看更晚一天', current: '回到当前范围' },
     overview: { tasks: '任务', modelCalls: '模型调用', tokens: 'Token', cost: '费用' },
-    schedule: { active: '每日回顾已启用', paused: '每日回顾已暂停' },
+    schedule: { active: '每日回顾已启用', paused: '每日回顾已暂停', completed: '每日回顾已完成', expired: '每日回顾已过期' },
     history: { title: '回顾报告', count: (count) => `${count} 份`, open: '打开报告任务', migrated: '已迁移', migrationNote: '旧报告已迁移为普通任务和 Artifact' },
     activity: { title: '任务活动', count: (count) => `${count} 个任务`, emptyTitle: '这个范围内还没有任务' },
   },
@@ -80,7 +82,7 @@ const COPY = {
     },
     range: { label: 'Activity range', options: [[1, 'Today'], [7, 'Last 7 days'], [30, 'Last 30 days']], earlier: 'View one day earlier', later: 'View one day later', current: 'Return to the current range' },
     overview: { tasks: 'Tasks', modelCalls: 'Model calls', tokens: 'Tokens', cost: 'Cost' },
-    schedule: { active: 'Daily Review is active', paused: 'Daily Review is paused' },
+    schedule: { active: 'Daily Review is active', paused: 'Daily Review is paused', completed: 'Daily Review is completed', expired: 'Daily Review is expired' },
     history: { title: 'Review reports', count: (count) => `${count} ${count === 1 ? 'report' : 'reports'}`, open: 'Open report task', migrated: 'Migrated', migrationNote: 'Earlier reports are ordinary tasks and artifacts now' },
     activity: { title: 'Task activity', count: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`, emptyTitle: 'No tasks in this range yet' },
   },

@@ -20,6 +20,7 @@
 import {
   scheduledTaskPresetSessionLabel,
 } from '@maka/core/scheduled-task';
+import type { ArtifactDescriptor } from '@maka/core/artifacts';
 import type { SessionStatus, SessionSummary } from '@maka/core/session';
 
 export type DailyReviewRange = 1 | 7 | 30;
@@ -86,6 +87,7 @@ export function dailyReviewManualIntent(
 
 export function projectDailyReviewView(input: {
   readonly sessions: readonly SessionSummary[];
+  readonly reportArtifacts: readonly ArtifactDescriptor[];
   readonly from: number;
   readonly to: number;
   readonly usage: DailyReviewUsageSummary;
@@ -104,18 +106,32 @@ export function projectDailyReviewView(input: {
     }))
     .sort((left, right) => right.activityAt - left.activityAt);
   const presetLabel = scheduledTaskPresetSessionLabel('daily-review');
+  const latestReportArtifact = new Map<string, ArtifactDescriptor>();
+  for (const artifact of input.reportArtifacts) {
+    if (
+      artifact.status !== 'live' ||
+      (artifact.mimeType !== 'text/markdown' && !artifact.name.toLowerCase().endsWith('.md'))
+    ) {
+      continue;
+    }
+    const current = latestReportArtifact.get(artifact.sessionId);
+    if (!current || artifact.createdAt > current.createdAt) {
+      latestReportArtifact.set(artifact.sessionId, artifact);
+    }
+  }
   const reports = input.sessions
     .filter(
       (session) =>
         session.lastMessageAt !== undefined &&
         session.status === 'active' &&
+        latestReportArtifact.has(session.id) &&
         (session.labels.includes('migrated:daily-review') ||
           session.labels.includes(presetLabel)),
     )
     .map((session): DailyReviewReportSummary => ({
       sessionId: session.id,
       title: session.name,
-      generatedAt: session.lastMessageAt!,
+      generatedAt: latestReportArtifact.get(session.id)!.createdAt,
       ...(session.lastMessagePreview ? { preview: session.lastMessagePreview } : {}),
       migrated: session.labels.includes('migrated:daily-review'),
     }))
