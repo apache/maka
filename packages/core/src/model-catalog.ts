@@ -264,10 +264,21 @@ export function buildConnectionModelCatalogEntries(
   const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)].filter(
     (id) => !broken.has(id),
   );
+  // A quarantined id persisted as this connection's `defaultModel` must not
+  // re-enter the catalog either. `models` and `enabledModelIds` are filtered
+  // below, but a broken default reaches `makeMissingDefaultEntry` unfiltered and
+  // would be re-added as a selectable `provider_default` row — picker-visible
+  // and default-capable while `authorizeConnectionModel` vetoes the same id. A
+  // reachable persisted state: the id was picker-visible before the quarantine.
+  // Dropping it leaves the connection with no valid default (readiness reports
+  // `missing_model`), which is what a model that can no longer send warrants.
+  const defaultModel = broken.has((connection.defaultModel ?? '').trim())
+    ? undefined
+    : connection.defaultModel;
   return buildModelCatalogEntries({
     providerType: connection.providerType,
     connectionSlug: connection.slug,
-    defaultModel: connection.defaultModel,
+    defaultModel,
     models: connection.models?.filter(({ id }) => !broken.has(id)),
     modelSource: connection.modelSource,
     modelsFetchedAt: connection.modelsFetchedAt,

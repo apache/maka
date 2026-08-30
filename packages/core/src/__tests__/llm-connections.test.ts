@@ -301,3 +301,30 @@ test('a quarantined model id is vetoed even when enabled and present in the inve
     id: 'nemotron-3-ultra-free',
   });
 });
+
+test('a quarantined stored default is dropped from the picker, not re-added as a missing-default row', () => {
+  // The retired `x-preview-f-free` was picker-visible before the quarantine, so
+  // an upgrade connection can carry it as `defaultModel` and enabled. `models`
+  // and `enabledModelIds` are filtered against `brokenModelIds`, but the raw
+  // `defaultModel` used to pass through unfiltered and `makeMissingDefaultEntry`
+  // re-added it as a selectable `provider_default` row — visible and pickable
+  // while `authorizeConnectionModel` vetoed the same id. The picker and the send
+  // authority must agree: neither offers it, and the live model still renders.
+  const connection = {
+    connectionId: 'connection-opencode-free',
+    slug: 'opencode-free',
+    name: 'OpenCode Free',
+    providerType: 'opencode-free' as ProviderType,
+    enabled: true,
+    defaultModel: 'x-preview-f-free',
+    enabledModelIds: ['x-preview-f-free', 'nemotron-3-ultra-free'],
+    models: [{ id: 'x-preview-f-free' }, { id: 'nemotron-3-ultra-free' }],
+    modelSource: 'fetched' as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const models = buildChatModelChoices([connection]).map(({ model }) => model);
+  assert.ok(!models.includes('x-preview-f-free'), 'quarantined default must not be offered');
+  assert.ok(models.includes('nemotron-3-ultra-free'), 'live enabled model still renders');
+  assert.equal(authorizeConnectionModel(connection, 'x-preview-f-free'), undefined);
+});
