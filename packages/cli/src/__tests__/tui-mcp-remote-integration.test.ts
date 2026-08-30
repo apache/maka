@@ -18,7 +18,8 @@
  */
 
 import assert from 'node:assert/strict';
-import { createServer } from 'node:net';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,8 +29,10 @@ import {
   connectRemoteRuntimeHost,
   connectRuntimeHost,
   consumeAccessCredentialDelivery,
+  createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   type RemoteRuntimeHostProfile,
-  type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import {
@@ -37,8 +40,10 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 import { startExecutionRuntimeHostService } from '@maka/runtime-host/server';
+import { mcpProxyToolName } from '@maka/runtime/mcp-tools';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
+import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createRemoteTuiMcpPublicationTarget } from '../tui-mcp-remote-publication.js';
 import { createTuiMcpController, type TuiMcpController } from '../tui-mcp-control.js';
 
@@ -55,6 +60,8 @@ test('remote TUI publication keeps its owner association across reconnect and re
   const clientRoot = join(base, 'client');
   const eventLog = join(base, 'stdio-events.jsonl');
   const port = await reservePort();
+  const model = await startModelProvider();
+  await seedModelConnection(hostRoot, model.baseUrl);
   let host = await startHost(hostRoot, port);
   let local: RuntimeHostConnection | undefined;
   let terminal: RuntimeHostConnection | undefined;
@@ -117,8 +124,13 @@ test('remote TUI publication keeps its owner association across reconnect and re
       env: { MAKA_MCP_STDIO_EVENT_LOG: eventLog },
       protocol: 'legacy',
     });
-    const credentials = credentialStore(firstProvider.credential);
     const profile = remoteProfile(host.websocketEndpoints[0]!, capability.rootId);
+    const profiles = createClientRuntimeHostProfileCatalog(clientRoot);
+    await profiles.create(profile, firstOwner.credential);
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createClientRuntimeHostCredentialStore(clientRoot),
+    );
+    await credentials.set(profile, 'terminal-a', firstProvider.credential);
     const publication = createRemoteTuiMcpPublicationTarget(
       {
         clientDataRoot: clientRoot,
@@ -134,10 +146,48 @@ test('remote TUI publication keeps its owner association across reconnect and re
     await waitFor(() => controller?.snapshot().publication === 'published');
     assert.equal(host.connectionCount, 5);
 
+    const sessionId = 'remote-tui-mcp-session';
+    const turnId = 'remote-tui-mcp-turn';
+    await terminal.request('session.create', {
+      sessionId,
+      workspace: { kind: 'host_path', path: hostRoot },
+      modelTarget: { kind: 'default' },
+      permissionMode: 'bypass',
+    });
+    const started = await terminal.request('turn.start', {
+      sessionId,
+      turnId,
+      content: { text: 'Call the fixture MCP echo tool.' },
+    });
+    assert.equal(started.kind, 'started');
+    let completedTurn: Awaited<ReturnType<RuntimeHostConnection['request']>> | undefined;
+    await waitFor(async () => {
+      const turn = await terminal?.request('turn.query', { sessionId, turnId });
+      if (
+        turn?.status !== 'completed' &&
+        turn?.status !== 'failed' &&
+        turn?.status !== 'cancelled'
+      ) {
+        return false;
+      }
+      completedTurn = turn;
+      return true;
+    });
+    assert.equal(
+      completedTurn?.status,
+      'completed',
+      JSON.stringify({ completedTurn, modelRequests: model.requestSummary() }),
+    );
+    assert.equal(model.fixtureCalls(), 1);
+    assert.equal(model.observedToolResult(), 'remote-session-sentinel');
+
+    const wrongProfile = remoteProfile(host.websocketEndpoints[0]!, 'f'.repeat(64), 'wrong-office');
+    await profiles.create(wrongProfile, firstOwner.credential);
+    await credentials.set(wrongProfile, 'terminal-a', firstProvider.credential);
     const wrongTarget = createRemoteTuiMcpPublicationTarget(
       {
         clientDataRoot: clientRoot,
-        profile: remoteProfile(host.websocketEndpoints[0]!, 'f'.repeat(64)),
+        profile: wrongProfile,
         ownerClientInstanceId: 'terminal-a',
       },
       {
@@ -180,7 +230,10 @@ test('remote TUI publication keeps its owner association across reconnect and re
       credentialId: firstProvider.credentialId,
     });
     await waitFor(() => controller?.snapshot().publication === 'credential_rejected');
-    assert.equal(credentials.current(), firstProvider.credential);
+    assert.equal(await credentials.get(profile, 'terminal-a'), firstProvider.credential);
+
+    await createClientRuntimeHostProfileCatalog(clientRoot).remove(profile.id);
+    await waitFor(() => controller?.snapshot().publication === 'target_mismatch');
 
     await controller.close();
     controller = undefined;
@@ -197,6 +250,7 @@ test('remote TUI publication keeps its owner association across reconnect and re
     await terminal?.close().catch(() => undefined);
     await local?.close().catch(() => undefined);
     await host.close().catch(() => undefined);
+    await model.close().catch(() => undefined);
     await rm(base, { recursive: true, force: true });
   }
 });
@@ -214,13 +268,23 @@ async function provisionOwner(
   url: string,
   rootId: string,
   clientInstanceId: string,
-): Promise<{ readonly credentialId: string; readonly connection: RuntimeHostConnection }> {
+): Promise<{
+  readonly credentialId: string;
+  readonly credential: string;
+  readonly connection: RuntimeHostConnection;
+}> {
   const candidate = await local.request('access.credential.prepare', {
     principalKind: 'remote_owner',
     principalId: clientInstanceId,
-    operationGrants: ['access.credential.finalize', 'session.catalog.query'],
+    operationGrants: [
+      'access.credential.finalize',
+      'session.catalog.query',
+      'session.create',
+      'turn.start',
+      'turn.query',
+    ],
     canPublishClientCapabilities: false,
-    canUseHostPaths: false,
+    canUseHostPaths: true,
     bindClientInstance: true,
   });
   const credential = await consumeAccessCredentialDelivery(
@@ -235,6 +299,7 @@ async function provisionOwner(
   await pairing.close();
   return {
     credentialId: candidate.credentialId,
+    credential,
     connection: await connectRemote(url, rootId, credential, clientInstanceId),
   };
 }
@@ -295,29 +360,13 @@ async function connectRemote(
   return result.connection;
 }
 
-function remoteProfile(url: string, rootId: string): RemoteRuntimeHostProfile {
+function remoteProfile(url: string, rootId: string, id = 'office'): RemoteRuntimeHostProfile {
   return {
-    id: 'office',
+    id,
     name: 'Office',
     kind: 'remote',
     transport: { kind: 'plaintext', url, acknowledgement: 'plaintext-bearer-v1' },
     rootId,
-  };
-}
-
-function credentialStore(initial: string): RuntimeHostCapabilityProviderCredentialStore & {
-  current(): string | null;
-} {
-  let credential: string | null = initial;
-  return {
-    get: async () => credential,
-    set: async (_profile, _ownerClientInstanceId, next) => {
-      credential = next;
-    },
-    delete: async () => {
-      credential = null;
-    },
-    current: () => credential,
   };
 }
 
@@ -356,8 +405,251 @@ async function fixtureEvents(path: string): Promise<Array<{ readonly event: stri
   }
 }
 
+async function seedModelConnection(rootPath: string, baseUrl: string): Promise<void> {
+  const capability = await resolveStorageRoot({ path: rootPath, kind: 'interactive' });
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire model fixture root');
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'remote-mcp-fixture-model',
+        name: 'Remote MCP fixture model',
+        providerType: 'moonshot',
+        baseUrl,
+        enabled: true,
+        enabledModelIds: ['hosted-real-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') throw new Error('Model fixture connection did not commit');
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) throw new Error('Model fixture connection was not persisted');
+    assert.equal(
+      (
+        await policy.credentialVault.set({
+          locator: {
+            scope: 'connection',
+            connectionId: connection.connectionId,
+            kind: 'api_key',
+          },
+          expected: null,
+          secret: 'fixture-model-key',
+        })
+      ).kind,
+      'committed',
+    );
+    const prepared = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(prepared.kind, 'ready');
+    if (prepared.kind !== 'ready') throw new Error('Model fixture discovery was not ready');
+    const discovered = await policy.operations.completeModelFetch(prepared.ticket, {
+      models: [
+        {
+          id: 'hosted-real-model',
+          capabilities: { chat: true, functionCalling: true },
+          contextWindow: 8_192,
+          maxOutputTokens: 128,
+        },
+      ],
+      source: 'fetched',
+      fetchedAt: Date.now(),
+    });
+    assert.equal(discovered.kind, 'committed');
+    if (discovered.kind !== 'committed') throw new Error('Model fixture discovery did not commit');
+    assert.equal(
+      (
+        await policy.connectionCatalog.setDefaultTarget({
+          expectedCatalogRevision: discovered.snapshot.revision,
+          target: {
+            connectionId: connection.connectionId,
+            modelId: 'hosted-real-model',
+          },
+        })
+      ).kind,
+      'committed',
+    );
+  } finally {
+    await owner.close();
+  }
+}
+
+async function startModelProvider(): Promise<{
+  readonly baseUrl: string;
+  fixtureCalls(): number;
+  observedToolResult(): string | undefined;
+  requestSummary(): readonly unknown[];
+  close(): Promise<void>;
+}> {
+  const proxyToolName = mcpProxyToolName('fixture', 'echo');
+  let streamRequests = 0;
+  let fixtureCalls = 0;
+  let observedToolResult: string | undefined;
+  const requestSummary: unknown[] = [];
+  const server = createServer((request, response) => {
+    void readRequestBody(request)
+      .then((body) => {
+        const input = JSON.parse(body) as Record<string, unknown>;
+        requestSummary.push({ stream: input.stream, tools: modelToolNames(input) });
+        if (input.stream !== true) {
+          respondModelSummary(response);
+          return;
+        }
+        streamRequests += 1;
+        if (streamRequests === 1) {
+          assert.ok(modelToolNames(input).includes('tool_search'));
+          respondModelToolCall(response, streamRequests, 'tool_search', {
+            query: proxyToolName,
+          });
+          return;
+        }
+        if (streamRequests === 2) {
+          assert.ok(modelToolNames(input).includes(proxyToolName));
+          fixtureCalls += 1;
+          respondModelToolCall(response, streamRequests, proxyToolName, {
+            value: 'remote-session-sentinel',
+          });
+          return;
+        }
+        const serialized = JSON.stringify(input);
+        if (serialized.includes('remote-session-sentinel')) {
+          observedToolResult = 'remote-session-sentinel';
+        }
+        respondModelText(response, 'Remote MCP fixture completed.');
+      })
+      .catch((error) => response.destroy(error as Error));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    fixtureCalls: () => fixtureCalls,
+    observedToolResult: () => observedToolResult,
+    requestSummary: () => requestSummary,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  };
+}
+
+function modelToolNames(body: Record<string, unknown>): string[] {
+  return (Array.isArray(body.tools) ? body.tools : []).flatMap((tool) => {
+    if (!tool || typeof tool !== 'object') return [];
+    const fn = (tool as { function?: unknown }).function;
+    if (!fn || typeof fn !== 'object') return [];
+    const name = (fn as { name?: unknown }).name;
+    return typeof name === 'string' ? [name] : [];
+  });
+}
+
+function respondModelToolCall(
+  response: ServerResponse,
+  step: number,
+  toolName: string,
+  args: Record<string, unknown>,
+): void {
+  respondModelEvents(response, [
+    {
+      id: `chatcmpl-remote-mcp-${step}`,
+      object: 'chat.completion.chunk',
+      created: step,
+      model: 'hosted-real-model',
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: `remote-mcp-tool-call-${step}`,
+                type: 'function',
+                function: { name: toolName, arguments: JSON.stringify(args) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      id: `chatcmpl-remote-mcp-${step}`,
+      object: 'chat.completion.chunk',
+      created: step,
+      model: 'hosted-real-model',
+      choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    },
+  ]);
+}
+
+function respondModelText(response: ServerResponse, text: string): void {
+  respondModelEvents(response, [
+    {
+      id: 'chatcmpl-remote-mcp-complete',
+      object: 'chat.completion.chunk',
+      created: 3,
+      model: 'hosted-real-model',
+      choices: [{ index: 0, delta: { role: 'assistant', content: text }, finish_reason: null }],
+    },
+    {
+      id: 'chatcmpl-remote-mcp-complete',
+      object: 'chat.completion.chunk',
+      created: 3,
+      model: 'hosted-real-model',
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+    },
+  ]);
+}
+
+function respondModelEvents(response: ServerResponse, events: readonly unknown[]): void {
+  response.writeHead(200, { 'content-type': 'text/event-stream' });
+  for (const event of events) response.write(`data: ${JSON.stringify(event)}\n\n`);
+  response.end('data: [DONE]\n\n');
+}
+
+function respondModelSummary(response: ServerResponse): void {
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(
+    JSON.stringify({
+      id: 'chatcmpl-remote-mcp-summary',
+      object: 'chat.completion',
+      created: 1,
+      model: 'hosted-real-model',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: 'Remote MCP Session' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+    }),
+  );
+}
+
+function readRequestBody(request: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => {
+      body += chunk;
+    });
+    request.on('end', () => resolve(body));
+    request.on('error', reject);
+  });
+}
+
 async function reservePort(): Promise<number> {
-  const server = createServer();
+  const server = createNetServer();
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
