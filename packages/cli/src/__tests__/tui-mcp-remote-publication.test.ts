@@ -38,6 +38,16 @@ const PROFILE: RemoteRuntimeHostProfile = {
   rootId: 'a'.repeat(64),
 };
 
+const DIRECT_PROFILE: RemoteRuntimeHostProfile = {
+  ...PROFILE,
+  transport: {
+    kind: 'libp2p-direct',
+    peerId: 'peer-a',
+    routeHints: ['/ip4/127.0.0.1/tcp/4001'],
+    coordinationRelays: [],
+  },
+};
+
 test('remote TUI publication activates, rotates, and removes one profile-bound credential', async () => {
   const credentials = credentialHarness();
   const connected: Array<{ credential?: string; clientInstanceId: string }> = [];
@@ -190,25 +200,109 @@ test('remote TUI publication retires when another process removes its profile', 
   });
 });
 
+test('remote TUI publication revalidates an invalidation received during a profile read', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const connection = connectionHarness('connection-1');
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => connection.connection,
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'provider companion to connect');
+
+  const heldRead = profiles.holdNextRead();
+  profiles.invalidate();
+  await heldRead.started;
+  profiles.remove();
+  heldRead.release();
+
+  await waitFor(() => {
+    const current = latest();
+    return current.kind === 'unavailable' && current.reason === 'target_mismatch';
+  }, 'later profile invalidation to retire provider companion');
+  assert.equal(connection.closes, 1);
+  await target.closePublication?.();
+});
+
+test('remote TUI publication close waits for concurrent profile retirement cleanup', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness(DIRECT_PROFILE);
+  const connectionCloseStarted = deferred();
+  const allowConnectionClose = deferred();
+  const peerCloseStarted = deferred();
+  const allowPeerClose = deferred();
+  let peerCloses = 0;
+  const connection = connectionHarness('connection-1', async () => {
+    connectionCloseStarted.resolve();
+    await allowConnectionClose.promise;
+  });
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: DIRECT_PROFILE,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => connection.connection,
+      createPeerClient: () =>
+        ({
+          close: async () => {
+            peerCloses += 1;
+            peerCloseStarted.resolve();
+            await allowPeerClose.promise;
+          },
+        }) as RuntimeHostPeerClient,
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'provider companion to connect');
+
+  profiles.remove();
+  await connectionCloseStarted.promise;
+  let closeSettled = false;
+  const close = target.closePublication?.().then(() => {
+    closeSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false);
+
+  allowConnectionClose.resolve();
+  await peerCloseStarted.promise;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false);
+
+  allowPeerClose.resolve();
+  await close;
+  assert.equal(closeSettled, true);
+  assert.equal(connection.closes, 1);
+  assert.equal(peerCloses, 1);
+});
+
 test('remote TUI publication closes its direct peer after a permanent reconnect failure', async () => {
   const credentials = credentialHarness('provider-secret');
-  const profile: RemoteRuntimeHostProfile = {
-    ...PROFILE,
-    transport: {
-      kind: 'libp2p-direct',
-      peerId: 'peer-a',
-      routeHints: ['/ip4/127.0.0.1/tcp/4001'],
-      coordinationRelays: [],
-    },
-  };
-  const profiles = profileHarness(profile);
+  const profiles = profileHarness(DIRECT_PROFILE);
   const initial = connectionHarness('connection-1');
   let peerCloses = 0;
   let fatal: ((error: Error) => void) | undefined;
   const target = createRemoteTuiMcpPublicationTarget(
     {
       clientDataRoot: '/client-data',
-      profile,
+      profile: DIRECT_PROFILE,
       ownerClientInstanceId: 'terminal-client',
     },
     {
@@ -273,8 +367,26 @@ function profileDeps(profile: RemoteRuntimeHostProfile = PROFILE) {
 function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
   let profiles: RemoteRuntimeHostProfile[] = [initial];
   const listeners = new Set<(error?: Error) => void>();
+  let heldRead:
+    | {
+        readonly started: ReturnType<typeof deferred>;
+        readonly release: ReturnType<typeof deferred>;
+      }
+    | undefined;
   const catalog: Pick<RuntimeHostProfileCatalog, 'read'> = {
-    read: async () => ({ schemaVersion: 3 as const, profiles }),
+    read: async () => {
+      const snapshot = profiles;
+      const held = heldRead;
+      heldRead = undefined;
+      if (held) {
+        held.started.resolve();
+        await held.release.promise;
+      }
+      return { schemaVersion: 3 as const, profiles: snapshot };
+    },
+  };
+  const invalidate = () => {
+    for (const listener of listeners) listener();
   };
   return {
     catalog,
@@ -282,9 +394,16 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    invalidate,
     remove: () => {
       profiles = [];
-      for (const listener of listeners) listener();
+      invalidate();
+    },
+    holdNextRead: () => {
+      const started = deferred();
+      const release = deferred();
+      heldRead = { started, release };
+      return { started: started.promise, release: release.resolve };
     },
   };
 }
@@ -295,7 +414,10 @@ interface ConnectionHarness {
   closes: number;
 }
 
-function connectionHarness(connectionId: string): ConnectionHarness {
+function connectionHarness(
+  connectionId: string,
+  beforeClose: () => Promise<void> = async () => undefined,
+): ConnectionHarness {
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => {
     resolveClosed = resolve;
@@ -324,10 +446,19 @@ function connectionHarness(connectionId: string): ConnectionHarness {
     subscribeScheduledTaskChanges: () => () => undefined,
     close: async () => {
       harness.closes += 1;
+      await beforeClose();
       resolveClosed();
     },
   } as unknown as RuntimeHostConnection;
   return harness;
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function reconnectingConnection(connection: RuntimeHostConnection) {

@@ -104,6 +104,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   #closeTask: Promise<void> | undefined;
   #disposeProfileChanges: (() => void) | undefined;
   #profileValidationQueued = false;
+  #profileInvalidationGeneration = 0;
   #profileValidationError: Error | undefined;
 
   constructor(
@@ -187,8 +188,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 
   closePublication(): Promise<void> {
     this.#cancelConnect();
-    this.#closeTask ??= this.#close();
-    return this.#closeTask;
+    return this.#beginClose({ waitForOperations: true });
   }
 
   #serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -278,31 +278,32 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     if (!this.#closed) this.#setUnavailable('host_unavailable');
   }
 
-  async #close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#disposeProfileChanges?.();
-    this.#disposeProfileChanges = undefined;
-    await this.#operation.catch(() => undefined);
-    await this.#disconnect();
-    this.#listeners.clear();
-  }
-
   #scheduleProfileValidation(error?: Error): void {
     if (this.#closed) return;
+    this.#profileInvalidationGeneration += 1;
     this.#profileValidationError ??= error;
     if (this.#profileValidationQueued) return;
     this.#profileValidationQueued = true;
     void this.#serialize(async () => {
-      const profileCurrent = await this.#profileStillCurrent().catch(() => undefined);
-      const validationError = this.#profileValidationError;
-      this.#profileValidationError = undefined;
-      this.#profileValidationQueued = false;
-      if (this.#closed) return;
-      if (validationError || profileCurrent !== true) {
-        await this.#retire(
-          validationError || profileCurrent === undefined ? 'host_unavailable' : 'target_mismatch',
-        );
+      try {
+        while (!this.#closed) {
+          const generation = this.#profileInvalidationGeneration;
+          const profileCurrent = await this.#profileStillCurrent().catch(() => undefined);
+          const validationError = this.#profileValidationError;
+          this.#profileValidationError = undefined;
+          if (this.#closed) return;
+          if (validationError || profileCurrent !== true) {
+            await this.#retire(
+              validationError || profileCurrent === undefined
+                ? 'host_unavailable'
+                : 'target_mismatch',
+            );
+            return;
+          }
+          if (generation === this.#profileInvalidationGeneration) return;
+        }
+      } finally {
+        this.#profileValidationQueued = false;
       }
     });
   }
@@ -316,13 +317,26 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   async #retire(reason: TuiMcpPublicationUnavailableReason): Promise<void> {
-    if (this.#closed) return;
+    await this.#beginClose({ reason, waitForOperations: false });
+  }
+
+  #beginClose(input: {
+    readonly reason?: TuiMcpPublicationUnavailableReason;
+    readonly waitForOperations: boolean;
+  }): Promise<void> {
+    if (this.#closeTask) return this.#closeTask;
     this.#closed = true;
     this.#disposeProfileChanges?.();
     this.#disposeProfileChanges = undefined;
-    this.#setUnavailable(reason);
-    await this.#disconnect();
-    this.#listeners.clear();
+    if (input.reason) this.#setUnavailable(input.reason);
+    const operations = input.waitForOperations
+      ? this.#operation.catch(() => undefined)
+      : Promise.resolve();
+    this.#closeTask = operations.then(async () => {
+      await this.#disconnect();
+      this.#listeners.clear();
+    });
+    return this.#closeTask;
   }
 
   #requireConnection(): RuntimeHostReconnectingConnection {
