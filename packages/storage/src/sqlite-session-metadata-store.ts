@@ -2031,9 +2031,9 @@ export class SqliteSessionMetadataStore {
             type: 'user',
             id: messageId,
             turnId: input.turnId,
-            ts: source.admittedAt,
+            ts: steeringProof?.eventTs ?? source.admittedAt,
             ...source.content,
-            steeringEventId: messageId,
+            steeringEventId: steeringProof?.eventId ?? messageId,
           });
           const json = JSON.stringify(message);
           (historicalMessageIdSet.has(messageId)
@@ -2064,8 +2064,9 @@ export class SqliteSessionMetadataStore {
           }
           if (
             steeringProof !== undefined &&
-            (message.ts !== steeringProof.admittedAt ||
-              message.turnId !== steeringProof.executionTurnId)
+            (message.ts !== steeringProof.eventTs ||
+              message.turnId !== steeringProof.executionTurnId ||
+              message.steeringEventId !== steeringProof.eventId)
           ) {
             throw new SessionMetadataConflictError('Proven steering transcript identity conflict');
           }

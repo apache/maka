@@ -145,33 +145,94 @@ test('consumes an active-target admission before the terminal transition can mak
   assert.equal(fixture.drainRequests(), 0);
 });
 
-test('idle recovery resolves differently preassigned Messages to their shared successor Turn', async () => {
-  const fixture = createFixture();
+test('idle recovery starts one real preassigned WorkHub root and restores the remainder', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-idle-recovery-'));
+  const store = createSessionStore(root);
+  t.after(async () => {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  });
+  await store.createStableSession({
+    sessionId: WORKHUB_COORDINATION_SESSION_ID,
+    requestFingerprint: `sha256:${'a'.repeat(64)}`,
+    input: {
+      cwd: root,
+      name: 'WorkHub',
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'explore',
+      toolProfile: 'workhub-coordination-v1',
+    },
+  });
+  await store.createStableSession({
+    sessionId: ROOT.sessionId,
+    requestFingerprint: `sha256:${'b'.repeat(64)}`,
+    input: {
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    },
+  });
+  const fixture = createFixture(undefined, () => true, store);
   fixture.setRootState({ kind: 'idle' });
-  for (const [messageId, turnId, runId] of [
-    ['workhub-message-a', 'preassigned-turn-a', 'preassigned-run-a'],
-    ['workhub-message-b', 'preassigned-turn-b', 'preassigned-run-b'],
-  ] as const) {
+  const messageIds: string[] = [];
+  for (const actionId of ['preassigned-action-a', 'preassigned-action-b']) {
+    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
+    const messageId = `whm_${suffix}`;
+    const turnId = `wht_${suffix}`;
+    const runId = `whr_${suffix}`;
+    messageIds.push(messageId);
     const content = { text: `recover ${messageId}` };
-    await fixture.admissions.commitMessageAdmission({
-      sessionId: ROOT.sessionId,
-      turnId,
-      runId,
-      messageId,
-      content,
-      submittedContentDigest: messageContentDigest(content),
-      submittedPlacement: 'current_turn',
-      placement: 'current_turn',
-      disposition: 'followup',
-      admittedAt: 10,
+    await store.assignWorkHubMessage({
+      assignment: {
+        type: 'workhub_coordination',
+        id: `wha_${suffix}`,
+        turnId: actionId,
+        ts: 10,
+        schemaVersion: 1,
+        kind: 'delegation_assigned',
+        actionId,
+        actionFingerprint: `sha256:${suffix.padEnd(64, '0')}`,
+        coordinationTurnId: actionId,
+        targetSessionId: ROOT.sessionId,
+        targetSessionName: 'Payments',
+        targetTurnId: turnId,
+        targetMessageId: messageId,
+        delegationId: `whd_${suffix}`,
+        disposition: 'delegate_existing',
+        userText: content.text,
+      },
+      admission: {
+        sessionId: ROOT.sessionId,
+        turnId,
+        runId,
+        messageId,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        admittedAt: 10,
+      },
     });
   }
 
   await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((s) => s.messageId)),
+    [[messageIds[0]]],
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
+    [messageIds[1]],
+  );
   const resolved = await fixture.coordinator.handlers['turn.message.execution.query'](
     {
       sessionId: ROOT.sessionId,
-      messageIds: ['workhub-message-a', 'workhub-message-b'],
+      messageIds,
     },
     operationContext(),
   );
@@ -181,20 +242,116 @@ test('idle recovery resolves differently preassigned Messages to their shared su
     result: {
       resolutions: [
         {
-          messageId: 'workhub-message-a',
+          messageId: messageIds[0],
           state: 'owned',
           turnId: 'recovered-turn',
           runId: 'durable-run',
         },
         {
-          messageId: 'workhub-message-b',
-          state: 'owned',
-          turnId: 'recovered-turn',
-          runId: 'durable-run',
+          messageId: messageIds[1],
+          state: 'pending',
         },
       ],
     },
   });
+});
+
+test('idle recovery keeps promoted steering ahead of distinct real WorkHub roots', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-promoted-recovery-'));
+  const store = createSessionStore(root);
+  t.after(async () => {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  });
+  await store.createStableSession({
+    sessionId: WORKHUB_COORDINATION_SESSION_ID,
+    requestFingerprint: `sha256:${'a'.repeat(64)}`,
+    input: {
+      cwd: root,
+      name: 'WorkHub',
+      role: WORKHUB_COORDINATION_SESSION_ROLE,
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'explore',
+      toolProfile: 'workhub-coordination-v1',
+    },
+  });
+  await store.createStableSession({
+    sessionId: ROOT.sessionId,
+    requestFingerprint: `sha256:${'b'.repeat(64)}`,
+    input: {
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    },
+  });
+  const fixture = createFixture(undefined, () => true, store);
+  fixture.setRootState({ kind: 'idle' });
+  const promotedContent = { text: 'promoted correction' };
+  await fixture.admissions.commitMessageAdmission({
+    sessionId: ROOT.sessionId,
+    turnId: 'earlier-turn',
+    runId: 'earlier-run',
+    messageId: 'promoted-message',
+    content: promotedContent,
+    submittedContentDigest: messageContentDigest(promotedContent),
+    submittedPlacement: 'next_turn',
+    placement: 'current_turn',
+    disposition: 'steering',
+    admittedAt: 9,
+  });
+  const workHubMessageIds: string[] = [];
+  for (const actionId of ['later-action-a', 'later-action-b']) {
+    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
+    const messageId = `whm_${suffix}`;
+    const content = { text: `recover ${messageId}` };
+    workHubMessageIds.push(messageId);
+    await store.assignWorkHubMessage({
+      assignment: {
+        type: 'workhub_coordination',
+        id: `wha_${suffix}`,
+        turnId: actionId,
+        ts: 10,
+        schemaVersion: 1,
+        kind: 'delegation_assigned',
+        actionId,
+        actionFingerprint: `sha256:${suffix.padEnd(64, '0')}`,
+        coordinationTurnId: actionId,
+        targetSessionId: ROOT.sessionId,
+        targetSessionName: 'Payments',
+        targetTurnId: `wht_${suffix}`,
+        targetMessageId: messageId,
+        delegationId: `whd_${suffix}`,
+        disposition: 'delegate_existing',
+        userText: content.text,
+      },
+      admission: {
+        sessionId: ROOT.sessionId,
+        turnId: `wht_${suffix}`,
+        runId: `whr_${suffix}`,
+        messageId,
+        content,
+        submittedContentDigest: messageContentDigest(content),
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        admittedAt: 10,
+      },
+    });
+  }
+
+  await fixture.coordinator.consumePendingAdmissions([ROOT.sessionId]);
+
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((s) => s.messageId)),
+    [['promoted-message']],
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).steering.map((entry) => entry.messageId),
+    workHubMessageIds,
+  );
 });
 
 test('idle recovery preserves the exact root identity of durable steering', async () => {
@@ -2193,6 +2350,8 @@ test('run settlement hands off only steering admissions with immutable proof', a
           admissionTurnId: ROOT.turnId,
           admissionRunId: ROOT.runId,
           executionTurnId: ROOT.turnId,
+          eventId: 'event-steer-proved',
+          eventTs: 1,
           content: { text: 'provider must see this' },
           admittedAt,
         },

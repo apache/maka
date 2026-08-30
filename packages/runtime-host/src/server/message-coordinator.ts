@@ -692,6 +692,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           admissionTurnId: admission.turnId,
           admissionRunId: admission.runId,
           executionTurnId: proof.event.turnId,
+          eventId: proof.event.id,
+          eventTs: proof.event.ts,
           content: admission.content,
           admittedAt: admission.admittedAt,
         });
@@ -2565,8 +2567,24 @@ function nextRecoveredSuccessorItems(
   const steeringIntent = pending.filter(
     (entry) => entry.disposition === 'steering' || entry.submittedPlacement === 'current_turn',
   );
-  if (steeringIntent.length > 0) return steeringIntent;
+  const first = steeringIntent[0];
+  if (first) {
+    const firstHasRootIdentity = hasNativeSteeringRootIdentity(first);
+    const compatible: PendingMessageAdmission[] = [];
+    for (const entry of steeringIntent) {
+      if (hasNativeSteeringRootIdentity(entry) !== firstHasRootIdentity) break;
+      if (firstHasRootIdentity && (entry.turnId !== first.turnId || entry.runId !== first.runId)) {
+        break;
+      }
+      compatible.push(entry);
+    }
+    return compatible;
+  }
   return pending.length > 0 ? [pending[0]!] : [];
+}
+
+function hasNativeSteeringRootIdentity(admission: PendingMessageAdmission): boolean {
+  return admission.disposition === 'steering' && admission.submittedPlacement === 'current_turn';
 }
 
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {

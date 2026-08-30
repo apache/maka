@@ -65,6 +65,8 @@ export interface ProvenSteeringMessageHandoff {
   readonly admissionTurnId: string;
   readonly admissionRunId: string;
   readonly executionTurnId: string;
+  readonly eventId: string;
+  readonly eventTs: number;
   readonly content: MessageContent;
   readonly admittedAt: number;
 }
@@ -152,6 +154,10 @@ export function normalizeProvenSteeringMessageHandoff(
   assertSafeId(handoff.admissionTurnId, 'Invalid proven steering admission Turn');
   assertSafeId(handoff.admissionRunId, 'Invalid proven steering admission Run');
   assertSafeId(handoff.executionTurnId, 'Invalid proven steering execution Turn');
+  assertSafeId(handoff.eventId, 'Invalid proven steering RuntimeEvent identity');
+  if (!Number.isSafeInteger(handoff.eventTs) || handoff.eventTs < 0) {
+    throw new Error('Invalid proven steering RuntimeEvent timestamp');
+  }
   if (!Number.isSafeInteger(handoff.admittedAt) || handoff.admittedAt < 0) {
     throw new Error('Invalid proven steering Message timestamp');
   }
