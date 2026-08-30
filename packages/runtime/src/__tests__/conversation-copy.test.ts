@@ -303,10 +303,23 @@ test('collectConversationCopySessionFileRefs gathers source-Session refs across 
     sourceSessionId: 'session-source',
     messages,
     runtimeEvents,
-    archivedResults: [],
+    archivedResults: [
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived'),
+      }),
+      // A child-Session archived image must be ignored.
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived-child', 'child-session'),
+      }),
+    ],
   });
 
   assert.deepEqual([...refs].sort(), [
+    'attachment-archived',
     'attachment-event',
     'attachment-fn',
     'attachment-tool-result',
