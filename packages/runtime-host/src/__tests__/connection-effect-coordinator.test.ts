@@ -152,6 +152,45 @@ test('creates multiple accounts with Host-owned identities without changing the 
   });
 });
 
+test('a second Bedrock enrollment re-authorizes the canonical connection and remains readable', async () => {
+  await withFixture(async ({ stores }) => {
+    const enroll = async (secret: string, modelId: string) => {
+      const begun = await stores.operations.beginConnectionOnboarding({
+        target: { kind: 'create', providerType: 'amazon-bedrock' },
+        baseUrl: null,
+      });
+      assert.equal(begun.kind, 'ready');
+      if (begun.kind !== 'ready') throw new Error('Bedrock onboarding was not prepared');
+      const completed = await stores.operations.completeConnectionOnboarding(begun.ticket, {
+        suppliedSecret: secret,
+        enabledModelIds: [modelId],
+        discovery: { models: [{ id: modelId }], source: 'fetched', fetchedAt: 1 },
+        bedrock: {
+          ssoStartUrl: 'https://example.awsapps.com/start',
+          ssoRegion: 'us-east-1',
+          region: 'us-west-2',
+          accountId: '123456789012',
+          roleName: 'Developer',
+        },
+      });
+      assert.equal(completed.kind, 'committed');
+      if (completed.kind !== 'committed') throw new Error('Bedrock onboarding did not commit');
+      return { begun, completed };
+    };
+
+    const first = await enroll('first-session', 'amazon.nova-lite-v1:0');
+    const second = await enroll('second-session', 'amazon.nova-pro-v1:0');
+
+    assert.equal(second.begun.candidate.connectionId, first.begun.candidate.connectionId);
+    assert.equal(second.begun.candidate.slug, 'amazon-bedrock');
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections.length, 1);
+    assert.equal(catalog.connections[0]?.connectionId, first.begun.candidate.connectionId);
+    assert.equal(catalog.connections[0]?.slug, 'amazon-bedrock');
+    assert.ok(catalog.connections[0]?.enabledModelIds.includes('amazon.nova-pro-v1:0'));
+  });
+});
+
 test('two create tickets cannot commit the same planned slug', async () => {
   await withFixture(async ({ stores }) => {
     const input = {

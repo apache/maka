@@ -41,8 +41,9 @@ import {
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
+import { BedrockSsoSetup } from './bedrock-sso-setup';
 
-export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
+export type OAuthCardId = 'bedrock' | 'codex' | 'github-copilot' | 'xai';
 
 export interface OAuthCard {
   id: OAuthCardId;
@@ -57,6 +58,7 @@ export interface OAuthCard {
 
 function emptyOAuthCardStates(): Record<OAuthCardId, SubscriptionSnapshot | null> {
   return {
+    bedrock: null,
     codex: null,
     'github-copilot': null,
     xai: null,
@@ -191,6 +193,9 @@ function OAuthLoginPanelForCurrentGeneration(props: {
   cardId: OAuthCardId;
   onLoginSuccess(): void | Promise<void>;
 }) {
+  if (props.cardId === 'bedrock') {
+    return <BedrockSsoSetup onCancel={() => undefined} onCreated={props.onLoginSuccess} />;
+  }
   if (props.cardId === 'github-copilot') {
     return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
   }
@@ -199,6 +204,7 @@ function OAuthLoginPanelForCurrentGeneration(props: {
 
 /** The subtitle the setup level's header shows above each login panel. */
 export function oauthPanelSubtitle(cardId: OAuthCardId, copy: ProviderSettingsCopy['oauthSection']): string {
+  if (cardId === 'bedrock') return 'AWS IAM Identity Center · Bedrock Converse';
   if (cardId === 'github-copilot') return copy.copilotSubtitle;
   if (cardId === 'xai') return copy.xaiDetail;
   return copy.codexDetail;
@@ -211,6 +217,7 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
   description: string;
 }> {
   return [
+    { id: 'bedrock', providerType: 'amazon-bedrock', name: 'Amazon Bedrock', description: 'AWS IAM Identity Center · Converse' },
     { id: 'codex', providerType: 'openai-codex', name: 'OpenAI Codex', description: copy.codexDescription },
     { id: 'github-copilot', providerType: 'github-copilot', name: 'GitHub Copilot', description: copy.copilotDescription },
     { id: 'xai', providerType: 'xai-oauth', name: 'xAI Grok', description: copy.xaiDescription },
@@ -322,6 +329,15 @@ async function getSubscriptionSnapshot(
   serviceId: OAuthCardId,
   host: DesktopRuntimeHostRef,
 ): Promise<SubscriptionSnapshot> {
+  if (serviceId === 'bedrock') {
+    const state = await window.maka.amazonBedrockSso.getState(host);
+    return {
+      runtimeState: state.runtimeState,
+      email: state.accountId
+        ? `••••${state.accountId.slice(-4)} · ${state.roleName ?? ''} · ${state.region ?? ''}`
+        : undefined,
+    };
+  }
   if (serviceId === 'github-copilot') {
     return window.maka.githubCopilotSubscription.getAccountState(host);
   }

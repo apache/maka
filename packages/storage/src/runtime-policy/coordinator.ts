@@ -99,6 +99,7 @@ import {
   type BeginConnectionTestResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
+  type CompareAndSetAwsSsoCredentialInput,
   type CompareAndSetOAuthCredentialInput,
   type ConnectionEffectChangedDomain,
   type ConnectionEffectCompletionResult,
@@ -464,6 +465,39 @@ export class RuntimePolicyCoordinator {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
+        );
+      }
+      const prepared = this.vault.prepareSet(await this.vault.read(root), input);
+      if (prepared.kind !== 'ready') return deepFreeze({ kind: 'superseded' as const });
+      await this.vault.commitSet(root, prepared);
+      return deepFreeze({
+        kind: 'committed' as const,
+        credentialId: prepared.entry.credentialId,
+        revision: prepared.entry.revision,
+      });
+    });
+  }
+
+  compareAndSetAwsSsoCredential(rawInput: CompareAndSetAwsSsoCredentialInput) {
+    return this.inLane(async (root) => {
+      const input = decodeCredentialInput(() => normalizeSetCredentialInput(rawInput));
+      if (
+        input.locator.scope !== 'connection' ||
+        input.locator.kind !== 'aws_sso' ||
+        input.expected === null
+      ) {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO refresh requires an existing connection credential generation',
+        );
+      }
+      const catalog = await this.catalog.read(root);
+      const connection = findConnection(catalog, input.locator);
+      if (!connection) return deepFreeze({ kind: 'superseded' as const });
+      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'aws_sso') {
+        throw codecError(
+          'invalid_credential_input',
+          'AWS SSO credential does not match the provider auth contract',
         );
       }
       const prepared = this.vault.prepareSet(await this.vault.read(root), input);
@@ -1008,17 +1042,34 @@ export class RuntimePolicyCoordinator {
         const providerType = decodeConnectionInput(() =>
           decodeProviderType(requestedTarget.providerType),
         );
-        target = {
-          kind: 'create',
-          candidate: {
-            connectionId: randomUUID(),
-            slug: deriveConnectionSlug(
-              providerType,
-              catalog.connections.map((connection) => connection.slug),
-            ),
-            providerType,
-          },
-        };
+        // Bedrock has one canonical catalog identity. Treat another enrollment as
+        // re-authorization of that identity rather than deriving an unreadable
+        // `amazon-bedrock-2` slug and orphaning its credential.
+        existing =
+          providerType === 'amazon-bedrock'
+            ? catalog.connections.find((connection) => connection.providerType === providerType)
+            : undefined;
+        target = existing
+          ? {
+              kind: 'existing',
+              candidate: {
+                connectionId: existing.connectionId,
+                slug: existing.slug,
+                providerType: existing.providerType,
+              },
+              revision: existing.revision,
+            }
+          : {
+              kind: 'create',
+              candidate: {
+                connectionId: randomUUID(),
+                slug: deriveConnectionSlug(
+                  providerType,
+                  catalog.connections.map((connection) => connection.slug),
+                ),
+                providerType,
+              },
+            };
       } else if (requestedTarget.kind === 'existing') {
         const connectionId = decodeConnectionInput(() =>
           decodeRuntimePolicyEntityId(requestedTarget.connectionId),
@@ -1041,7 +1092,7 @@ export class RuntimePolicyCoordinator {
       // Onboarding guards the api_key credential slot; a provider whose auth
       // never uses one has no business here (the Host gates on the same
       // predicate, this keeps the storage API honest on its own).
-      if (!providerAuthSupportsApiKey(providerType)) {
+      if (!providerAuthSupportsApiKey(providerType) && providerType !== 'amazon-bedrock') {
         return deepFreeze({ kind: 'provider_unsupported' as const });
       }
       if (
@@ -1249,7 +1300,7 @@ export class RuntimePolicyCoordinator {
       const locator = {
         scope: 'connection',
         connectionId,
-        kind: 'api_key',
+        kind: candidate.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
       } as const;
       const vault = await this.vault.read(root);
       const credential = findCredential(vault, locator);
@@ -1287,6 +1338,7 @@ export class RuntimePolicyCoordinator {
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
+      intent.bedrock,
     );
     if (catalogPreflight.kind === 'slug_conflict') {
       return deepFreeze({ kind: 'superseded' as const, changed: ['connection'] as const });
@@ -1678,6 +1730,7 @@ export class RuntimePolicyCoordinator {
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
+      intent.bedrock,
     );
     if (prepared.kind === 'slug_conflict') {
       throw codecError(
@@ -1694,7 +1747,7 @@ export class RuntimePolicyCoordinator {
       const locator = {
         scope: 'connection',
         connectionId: intent.connectionId,
-        kind: 'api_key',
+        kind: intent.providerType === 'amazon-bedrock' ? 'aws_sso' : 'api_key',
       } as const;
       const vault = await this.vault.read(root);
       const existing = findCredential(vault, locator);

@@ -189,6 +189,7 @@ import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js
 import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
+import { registerRuntimeHostBedrockSsoIpc } from "./runtime-host-bedrock-sso-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
 import { registerRuntimeHostPermissionsIpc } from "./runtime-host-permissions-ipc-main.js";
 import { registerRuntimeHostRendererIpc } from "./runtime-host-renderer-ipc-main.js";
@@ -1248,6 +1249,12 @@ function registerHostClientIpc(
     presentation: oauthPresentation,
     emitConnectionListChanged: emitTargetConnectionListChanged,
   });
+  registerRuntimeHostBedrockSsoIpc({
+    ipcMain: scopedIpc,
+    client,
+    presentation: oauthPresentation,
+    emitConnectionListChanged: emitTargetConnectionListChanged,
+  });
   registerRuntimeHostGitHubCopilotIpc({
     ipcMain: scopedIpc,
     client,
@@ -1401,7 +1408,12 @@ function registerHostClientIpc(
         const status = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
-          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+          kind:
+            authKind === "oauth_token"
+              ? "oauth_token"
+              : authKind === "aws_sso"
+                ? "aws_sso"
+                : "api_key",
         });
         return status?.configured === true;
       }, false),
@@ -1433,7 +1445,12 @@ function registerHostClientIpc(
         const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
-          kind: authKind === "oauth_token" ? "oauth_token" : "api_key",
+          kind:
+            authKind === "oauth_token"
+              ? "oauth_token"
+              : authKind === "aws_sso"
+                ? "aws_sso"
+                : "api_key",
         }).then((status) => status?.configured === true);
         return { kind: "resolved", connection, hasSecret } as const;
       }, { kind: "unknown" }),

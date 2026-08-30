@@ -20,6 +20,7 @@
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  decodeBedrockConfig,
   decodeProviderType,
   decodeConnectionSlug,
   decodeRuntimePolicyEntityId,
@@ -59,6 +60,7 @@ export interface ConnectionOnboardingTransactionInput {
   readonly enabledModelIds: unknown;
   readonly discovery: unknown;
   readonly invalidateLastTest: unknown;
+  readonly bedrock?: unknown;
 }
 
 export interface ConnectionOnboardingIntent {
@@ -72,6 +74,7 @@ export interface ConnectionOnboardingIntent {
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
   readonly invalidateLastTest: boolean;
+  readonly bedrock?: ReturnType<typeof decodeBedrockConfig>;
 }
 
 export type CurrentConnectionOnboardingIntent = ConnectionOnboardingIntent & {
@@ -85,7 +88,7 @@ export function prepareConnectionOnboardingIntent(
 ): CurrentConnectionOnboardingIntent {
   const decode = source === 'persisted' ? decodePersistedDomain : decodeConnectionInput;
   const providerType = decode(() => decodeProviderType(input.providerType));
-  if (!providerAuthSupportsApiKey(providerType)) {
+  if (!providerAuthSupportsApiKey(providerType) && providerType !== 'amazon-bedrock') {
     throw codecError(
       source === 'persisted' ? 'invalid_document' : 'invalid_connection_input',
       'Onboarding requires an API-key provider',
@@ -116,6 +119,7 @@ export function prepareConnectionOnboardingIntent(
         ...((baseUrl ?? definition.baseUrl) ? { baseUrl: baseUrl ?? definition.baseUrl } : {}),
         enabled: true,
         enabledModelIds: input.enabledModelIds,
+        ...(input.bedrock === undefined ? {} : { bedrock: input.bedrock }),
       },
       providerType,
     ),
@@ -152,6 +156,7 @@ export function prepareConnectionOnboardingIntent(
     enabledModelIds: normalized.enabledModelIds,
     discovery,
     invalidateLastTest: input.invalidateLastTest,
+    ...(normalized.bedrock === undefined ? {} : { bedrock: normalized.bedrock }),
   };
 }
 
@@ -175,6 +180,7 @@ export async function readConnectionOnboardingIntent(
       'enabledModelIds',
       'discovery',
       'invalidateLastTest',
+      'bedrock',
     ],
     [
       'schemaVersion',
@@ -200,6 +206,7 @@ export async function readConnectionOnboardingIntent(
       enabledModelIds: raw.enabledModelIds,
       discovery: raw.discovery,
       invalidateLastTest: raw.invalidateLastTest,
+      bedrock: raw.bedrock,
     },
     'persisted',
   );

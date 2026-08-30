@@ -161,6 +161,7 @@ import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/cor
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
   AuthorizationUrlPayload,
+  SubscriptionAccountState,
   SubscriptionActionResult,
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
@@ -2759,6 +2760,83 @@ const makaBridge = {
   // kenji `1da909d5`/`45b31e16` hardening: `openAuthUrl` takes ONLY an
   // `authRequestId`; the URL is held by main from the earlier `getAuthUrl`
   // call. Renderer can never hand `shell.openExternal` an arbitrary URL.
+  // Whole feature is gated behind `MAKA_CLAUDE_SUBSCRIPTION_EXPERIMENTAL=1`
+  // until product/legal sign-off. `isExperimentalEnabled()` lets the
+  // Settings UI hide the card; even without that hide, all auth-flow
+  // handlers re-check the flag main-side (fail-closed via the
+  // `experimental_disabled` reason).
+  claudeSubscription: {
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:is-experimental-enabled');
+    },
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:get-auth-url');
+    },
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string, pasted: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:complete-authorization', authRequestId, pasted);
+    },
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:cancel-authorization', authRequestId);
+    },
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<SubscriptionAccountState> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:get-account-state');
+    },
+    refreshQuota(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:refresh-quota');
+    },
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:refresh-tokens');
+    },
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'claude-subscription:logout');
+    },
+  },
+  amazonBedrockSso: {
+    getState(host?: DesktopRuntimeHostRef): Promise<{
+      runtimeState: 'not_logged_in' | 'authenticated';
+      accountId?: string;
+      roleName?: string;
+      region?: string;
+    }> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:get-state');
+    },
+    start(
+      configuration: { ssoStartUrl: string; ssoRegion: string; region: string },
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.login.start'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:start', configuration);
+    },
+    query(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.query'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:query', attemptId);
+    },
+    cancel(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.cancel'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:cancel', attemptId);
+    },
+    listAccounts(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.accounts.list'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:list-accounts', attemptId);
+    },
+    listRoles(attemptId: string, accountId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.roles.list'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:list-roles', attemptId, accountId);
+    },
+    fetchModels(
+      attemptId: string,
+      accountId: string,
+      roleName: string,
+      manualModelIds: string[],
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.models.fetch'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:fetch-models', attemptId, accountId, roleName, manualModelIds);
+    },
+    commit(attemptId: string, enabledModelIds: string[], host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.onboarding.commit'>> {
+      return invokeSelectedRuntimeHost(host, 'amazon-bedrock-sso:commit', attemptId, enabledModelIds);
+    },
+  },
+  // Browser-assisted Codex account bridge. Same shape as
+  // `claudeSubscription`: no token-shaped fields cross preload, the
+  // authorization attempt stays opaque, and actions return envelopes.
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');

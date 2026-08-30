@@ -29,6 +29,43 @@
  * action results and authorization payloads only.
  */
 
+export type OAuthSubscriptionProvider = 'claude-subscription';
+
+export type OAuthSubscriptionRuntimeState =
+  | 'not_logged_in'
+  | 'authorizing'
+  | 'authenticated'
+  | 'refreshing'
+  | 'refresh_failed'
+  | 'storage_failed'
+  | 'quota_unavailable'
+  | 'provider_rejected';
+
+export interface SubscriptionAccountProfile {
+  email?: string;
+  displayName?: string;
+  accountUuid: string;
+}
+
+export interface QuotaWindow {
+  utilization: number;
+  resetsAt: string;
+}
+
+export interface QuotaSnapshot {
+  fiveHour?: QuotaWindow;
+  sevenDay?: QuotaWindow;
+  fetchedAt: number;
+}
+
+export interface SubscriptionAccountState {
+  provider: OAuthSubscriptionProvider;
+  runtimeState: OAuthSubscriptionRuntimeState;
+  profile?: SubscriptionAccountProfile;
+  quota?: QuotaSnapshot;
+  errorMessage?: string;
+}
+
 /**
  * Action result envelope returned from mutating IPC handlers
  * (start authorization, complete authorization, refresh, logout).

@@ -211,6 +211,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // A model that already carries a declaration always keeps its row, or a
   // stale declaration would be uneditable and unclearable.
   const isRelay = isRelayProviderType(connection.providerType);
+  const supportsRequestCustomization = connection.providerType !== 'amazon-bedrock';
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
@@ -349,6 +350,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // narrower authority: built-in and derived endpoints are visible but fixed,
   // while custom relays and local runtimes keep their existing editor.
   const endpoint = providerEndpointPresentation(connection);
+  const showsEndpoint = endpoint.value !== null && endpoint.value !== undefined;
   const endpointValue = endpoint.value
     ? <code className="settingsReadOnlyValue providerEndpointValue" data-mono="true">{endpoint.value}</code>
     : endpoint.emptyState === 'managed'
@@ -566,7 +568,11 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           offer work that either fails or — worse, before the vault refused it —
           saves something that can never reach a request. What remains is the
           retirement notice above and the deletion below. */}
-      {!retired && (
+      {/* The rows draw the closing rule themselves; without them the section
+          still needs one. Two rules with a gap between them read as an empty
+          row, so only ever one. */}
+      {!supportsApiKey && !showsEndpoint && <Divider />}
+      {!retired && supportsRequestCustomization && (
       <DetailSection title={copy.advancedRequest} description={copy.advancedRequestHelp}>
         <VStack gap={0}>
               <SettingsExpandableRow

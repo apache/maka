@@ -34,7 +34,11 @@ import {
   buildOpenAiCodexHistoryCompactor,
   withOpenAiCodexHistoryCompactionFallback,
 } from '@maka/runtime/openai-codex-history-compactor';
-import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
+import {
+  buildPricingLookup,
+  recordToolInvocation,
+  withBedrockSourcePricing,
+} from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
@@ -59,6 +63,7 @@ import {
   createHostOAuthModelFetch,
   type HostOAuthExecutionAuthority,
 } from './oauth-execution-authority.js';
+import type { BedrockSsoExecutionAuthority } from './bedrock-sso-execution-authority.js';
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
@@ -70,6 +75,8 @@ export interface HostAiSdkBackendInput {
   readonly context: BackendFactoryContext;
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
+  readonly bedrockCredentials?: BedrockSsoExecutionAuthority;
+  readonly claudeDeviceId: string;
   readonly createRunComposer: HostRunComposerFactory;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
@@ -112,6 +119,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         input.runtimePolicy,
         input.oauthCredentials,
         createFetchTransport,
+        input.bedrockCredentials,
       ),
     input.context.abortSignal,
   );
@@ -119,7 +127,11 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
   );
-  const pricing = buildPricingLookup(pricingSnapshot.overrides);
+  const pricing = withBedrockSourcePricing(
+    buildPricingLookup(pricingSnapshot.overrides),
+    target.connection,
+    target.model,
+  );
   const runtimePolicySnapshot = await readDuringBackendCreation(
     () => input.runtimePolicy.runtimePolicy.getSnapshot(),
     input.context.abortSignal,
@@ -150,6 +162,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       throw error;
     }
   }
+  const awsCredentialProvider = target.bedrockBinding
+    ? () => target.bedrockBinding!.credentials()
+    : undefined;
   const providerOptions = buildProviderOptions(
     target.connection,
     target.model,
@@ -180,6 +195,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ...modelInput,
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
+      awsCredentialProvider,
     });
   const resolveHistoryCompactModel = () =>
     getAIModel({
@@ -188,6 +204,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       modelId: target.model,
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
+      awsCredentialProvider,
     });
   const textHistorySummarizer = buildLlmHistorySummarizer({
     resolveModel: resolveHistoryCompactModel,

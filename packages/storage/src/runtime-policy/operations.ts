@@ -116,6 +116,17 @@ export interface CompareAndSetOAuthCredentialInput {
   readonly secret: string;
 }
 
+export type AwsSsoCredentialLocator = Omit<
+  Extract<CredentialLocator, { scope: 'connection' }>,
+  'kind'
+> & { readonly kind: 'aws_sso' };
+
+export interface CompareAndSetAwsSsoCredentialInput {
+  readonly locator: AwsSsoCredentialLocator;
+  readonly expected: Pick<CredentialVersionBasis, 'credentialId' | 'revision'>;
+  readonly secret: string;
+}
+
 export type CompareAndSetOAuthCredentialResult =
   | {
       readonly kind: 'committed';
@@ -266,6 +277,7 @@ export interface CommitConnectionOnboardingInput {
   readonly suppliedSecret: string | null;
   readonly enabledModelIds: readonly string[];
   readonly discovery: ConnectionModelDiscoveryResult;
+  readonly bedrock?: NonNullable<ConnectionCatalogEntry['bedrock']>;
 }
 
 export type CommitConnectionOnboardingResult =
@@ -345,6 +357,9 @@ export interface RuntimePolicyOperationCoordinator {
   compareAndSetOAuthCredential(
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
+  compareAndSetAwsSsoCredential(
+    input: CompareAndSetAwsSsoCredentialInput,
+  ): Promise<CompareAndSetOAuthCredentialResult>;
   importConnectionCredential(input: SetCredentialInput): Promise<CredentialMutationResult>;
   beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
@@ -383,6 +398,8 @@ export function connectionCredentialLocator(
       return { scope: 'connection', connectionId, kind: 'api_key' };
     case 'oauth_token':
       return { scope: 'connection', connectionId, kind: 'oauth_token' };
+    case 'aws_sso':
+      return { scope: 'connection', connectionId, kind: 'aws_sso' };
     case 'none':
       return null;
   }

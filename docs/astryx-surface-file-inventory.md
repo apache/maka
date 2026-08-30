@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.0` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 229 files — blocker 0, reimplementation 0, polish 1, aligned 228.
+**Totals:** 230 files — blocker 0, reimplementation 0, polish 1, aligned 229.
 
 ## Exclusions (explicit)
 
@@ -81,6 +81,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/session-turn-request-composer.tsx` | shell-chrome-or-panel | Button, Text, TextArea | aligned — uses Astryx (Button, Text, TextArea) | aligned |
 | `apps/desktop/src/renderer/settings/about-settings-page.tsx` | settings-page | Badge, Banner, Button, Kbd, Link, List, ListItem | aligned — uses Astryx (Badge, Banner, Button, Kbd, Link, List, ListItem) | aligned |
 | `apps/desktop/src/renderer/settings/appearance-settings-page.tsx` | settings-page | Button, Grid, HStack, NumberInput, SelectableCard, Switch, Text, VStack | aligned — uses Astryx (Button, Grid, HStack, NumberInput, SelectableCard, Switch, Text, VStack) | aligned |
+| `apps/desktop/src/renderer/settings/bedrock-sso-setup.tsx` | settings-module | Banner, Button, HStack, MultiSelector, Selector, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, HStack, MultiSelector, Selector, Text, TextInput, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-detail.tsx` | settings-module | Banner, Button, Card, FormLayout, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, Selector, StatusDot, Switch, Text, TextArea, TextInput, VStack | aligned — uses Astryx (Banner, Button, Card, FormLayout, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-overview.tsx` | settings-module | Banner, Button, EmptyState, Item, StatusDot | aligned — uses Astryx (Banner, Button, EmptyState, Item, StatusDot) | aligned |
 | `apps/desktop/src/renderer/settings/bot-chat-settings-page.tsx` | settings-page | none | aligned — no raw controls; no Astryx JSX usage | aligned |

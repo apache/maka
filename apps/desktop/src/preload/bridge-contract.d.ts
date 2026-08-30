@@ -82,6 +82,7 @@ import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/cor
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type {
   AuthorizationUrlPayload,
+  SubscriptionAccountState,
   SubscriptionActionResult,
 } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
@@ -1435,6 +1436,45 @@ export interface MakaBridge {
       | SearchResult[]
       | { ok: false; reason: SearchErrorReason; message: string }
     >;
+  };
+  claudeSubscription: {
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
+    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(
+      authRequestId: string,
+      pasted: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<SubscriptionActionResult>;
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
+    getAccountState(host?: DesktopRuntimeHostRef): Promise<SubscriptionAccountState>;
+    refreshQuota(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+  };
+  amazonBedrockSso: {
+    getState(host?: DesktopRuntimeHostRef): Promise<{
+      runtimeState: 'not_logged_in' | 'authenticated';
+      accountId?: string;
+      roleName?: string;
+      region?: string;
+    }>;
+    start(
+      configuration: { ssoStartUrl: string; ssoRegion: string; region: string },
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.login.start'>>;
+    query(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.query'>>;
+    cancel(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.login.cancel'>>;
+    listAccounts(attemptId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.accounts.list'>>;
+    listRoles(attemptId: string, accountId: string, host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.roles.list'>>;
+    fetchModels(
+      attemptId: string,
+      accountId: string,
+      roleName: string,
+      manualModelIds: string[],
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'bedrock.sso.models.fetch'>>;
+    commit(attemptId: string, enabledModelIds: string[], host?: DesktopRuntimeHostRef): Promise<OperationOutput<'bedrock.sso.onboarding.commit'>>;
   };
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;

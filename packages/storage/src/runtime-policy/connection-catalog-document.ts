@@ -518,6 +518,7 @@ export class ConnectionCatalogDocumentOwner {
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
     invalidateLastTest: boolean,
+    rawBedrock?: unknown,
   ):
     | PreparedOnboardingResult
     | { readonly kind: 'slug_conflict' }
@@ -567,6 +568,7 @@ export class ConnectionCatalogDocumentOwner {
           ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
           enabled: true,
           enabledModelIds: rawEnabledModelIds,
+          ...(rawBedrock === undefined ? {} : { bedrock: rawBedrock }),
         },
         providerType,
       ),
@@ -612,6 +614,7 @@ export class ConnectionCatalogDocumentOwner {
       revision: previous ? nextRevision(previous.revision) : 1,
       enabled: true,
       enabledModelIds,
+      ...(changes.bedrock === undefined ? {} : { bedrock: changes.bedrock }),
       models: result.models,
       modelSource: result.source,
       modelsFetchedAt: result.fetchedAt,
@@ -628,6 +631,7 @@ export class ConnectionCatalogDocumentOwner {
       isDeepStrictEqual(previous.models, result.models) &&
       previous.modelSource === result.source &&
       previous.modelsFetchedAt === result.fetchedAt &&
+      isDeepStrictEqual(previous.bedrock, changes.bedrock) &&
       isDeepStrictEqual(current.defaultTarget, defaultTarget) &&
       (!invalidateLastTest || previous.lastTest === undefined)
     ) {

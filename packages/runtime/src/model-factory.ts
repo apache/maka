@@ -21,6 +21,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 // Load-bearing until the public Anthropic API exposes model thinking mode:
 // replace this capability lookup when upgrading if the exported internal path disappears.
 import { getModelCapabilities as getAnthropicModelCapabilities } from '@ai-sdk/anthropic/internal';
+import { createAmazonBedrock } from '@ai-sdk/amazon-bedrock';
 import { createCohere } from '@ai-sdk/cohere';
 import { createGoogle } from '@ai-sdk/google';
 import { createOpenResponses } from '@ai-sdk/open-responses';
@@ -59,8 +60,15 @@ import {
 import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
-import { openAiCodexHeaders } from './subscription-auth.js';
+import { claudeSubscriptionHeaders, openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
+
+export interface AwsCredentialIdentity {
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly sessionToken?: string;
+  readonly expiration?: Date;
+}
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
@@ -71,6 +79,7 @@ export interface ModelFactoryInput {
   resolvedRuntime?: ResolvedModelRuntime;
   openAiChatReasoningTransportState?: OpenAiChatReasoningTransportState;
   openAiResponsesTransportState?: OpenAiResponsesTransportState;
+  awsCredentialProvider?: () => PromiseLike<AwsCredentialIdentity>;
 }
 
 const ANTHROPIC_BETA = 'interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14';
@@ -84,6 +93,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     resolvedRuntime,
     openAiChatReasoningTransportState,
     openAiResponsesTransportState,
+    awsCredentialProvider,
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
@@ -102,6 +112,26 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   }
 
   switch (adapter.kind) {
+    case 'amazon-bedrock': {
+      const config = connection.bedrock;
+      if (!config || !awsCredentialProvider) {
+        throw new Error(
+          'Amazon Bedrock requires IAM Identity Center configuration and credentials',
+        );
+      }
+      if (hasRequestCustomization) {
+        throw new Error('Amazon Bedrock does not support custom request headers or body overlays');
+      }
+      return createAmazonBedrock({
+        // Explicitly suppress the SDK's AWS_BEARER_TOKEN_BEDROCK fallback: this
+        // connection is identity-bound to the Host-owned SSO credential provider.
+        apiKey: '',
+        region: config.region,
+        credentialProvider: awsCredentialProvider,
+        fetch: requestFetch,
+      })(modelId);
+    }
+
     case 'anthropic':
       return createAnthropic({
         ...(adapter.auth === 'bearer' ? { authToken: apiKey } : { apiKey }),
@@ -115,6 +145,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
       // filter it out and `resolveModelRuntime` refuses earlier; this is the
       // backstop that keeps a stored connection from silently sending.
       throw new Error('This provider is retired and can no longer be used to send.');
+
+    case 'claude-subscription':
+      return createAnthropic({
+        authToken: apiKey,
+        baseURL: anthropicV1BaseUrl(baseURL),
+        fetch: requestFetch,
+        headers: claudeSubscriptionHeaders(),
+      }).chat(modelId);
 
     case 'openai-codex':
       return createOpenAI({
