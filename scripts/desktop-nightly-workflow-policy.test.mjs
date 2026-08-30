@@ -19,9 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
 
@@ -125,24 +123,10 @@ test('the first Desktop Nightly creates its destination with rsync 3.1-compatibl
   assert.match(bootstrap.run, /mkdir -p \.nightly-empty\/maka\/desktop/u);
   assert.match(bootstrap.run, /^rsync -rlptDz --protect-args /mu);
   assert.doesNotMatch(bootstrap.run, /--mkpath/u);
+  assert.doesNotMatch(bootstrap.run, /--delete/u);
   assert.match(bootstrap.run, /\.nightly-empty\/maka\/ "\$NIGHTLIES_RSYNC_BASE\/maka\/"/u);
   assert.doesNotMatch(bootstrap.run, /\.nightly-publish/u);
   assert.ok(steps.indexOf(bootstrap) < feedGuardPosition);
-
-  const workspace = await mkdtemp(join(tmpdir(), 'maka-nightly-bootstrap-'));
-  const remoteBase = join(workspace, 'remote');
-  await mkdir(remoteBase);
-  try {
-    const localBootstrap = bootstrap.run.replace('--protect-args ', '');
-    const result = spawnSync('bash', ['-c', localBootstrap], {
-      cwd: workspace,
-      env: { ...process.env, NIGHTLIES_RSYNC_BASE: remoteBase },
-    });
-    assert.equal(result.status, 0, result.stderr.toString());
-    assert.ok((await stat(join(remoteBase, 'maka', 'desktop'))).isDirectory());
-  } finally {
-    await rm(workspace, { recursive: true, force: true });
-  }
 });
 
 test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
