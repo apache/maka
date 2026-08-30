@@ -1857,8 +1857,21 @@ export class SqliteSessionMetadataStore {
       if (target.header.status === 'waiting_for_user') {
         throw new SessionMetadataConflictError('WorkHub target Session is waiting for user input');
       }
+      let committedAssignment = assignment;
+      let committedAssignmentJson = assignmentJson;
       if (target.header.name !== assignment.targetSessionName) {
-        throw new SessionMetadataConflictError('WorkHub target display identity changed');
+        if (
+          assignment.disposition !== 'delegate_existing' ||
+          assignment.replacesDelegationId === undefined
+        ) {
+          throw new SessionMetadataConflictError('WorkHub target display identity changed');
+        }
+        // A durable replacement owns the target Session id before retiring the
+        // source. Canonicalize its display-only name at the same transaction
+        // boundary that validates the target so a concurrent rename cannot
+        // strand the already-retired delegation.
+        committedAssignment = { ...assignment, targetSessionName: target.header.name };
+        committedAssignmentJson = JSON.stringify(committedAssignment);
       }
       if (this.readMessageAdmissionSync(admission.sessionId, admission.messageId)) {
         throw new SessionMetadataConflictError(
@@ -1883,14 +1896,14 @@ export class SqliteSessionMetadataStore {
         WORKHUB_COORDINATION_SESSION_ID,
         sequenceRow.last_sequence + 1,
         [
-          { message: assignment, json: assignmentJson },
+          { message: committedAssignment, json: committedAssignmentJson },
           ...(supersession && supersessionJson
             ? [{ message: supersession, json: supersessionJson }]
             : []),
         ],
       );
       this.updateCatalogProjectionSync(WORKHUB_COORDINATION_SESSION_ID, request.projection, false);
-      return { kind: 'assigned' as const, targetCreated, assignment };
+      return { kind: 'assigned' as const, targetCreated, assignment: committedAssignment };
     });
   }
 

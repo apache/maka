@@ -136,6 +136,32 @@ test('rolls create_new Session back when assignment validation fails', async () 
   }
 });
 
+test('rejects a stale display identity for a new delegation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stale-assignment-'));
+  const store = createSessionStore(root);
+  try {
+    await createCoordinationSession(store, root);
+    const target = await store.create({
+      cwd: root,
+      name: 'Payments',
+      llmConnectionSlug: 'test',
+      model: 'test',
+      permissionMode: 'ask',
+    });
+    const request = assignmentRequest('stale-action', target.id, 'Old name', 'target-turn');
+
+    await assert.rejects(store.assignWorkHubMessage(request), /display identity changed/u);
+    assert.equal(await store.readWorkHubAssignment(request.assignment.actionId), undefined);
+    assert.equal(
+      await store.readMessageAdmission(target.id, request.assignment.targetMessageId),
+      undefined,
+    );
+  } finally {
+    await store.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('atomically commits a replacement assignment with the old-link supersession', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-workhub-replacement-'));
   const store = createSessionStore(root);
@@ -150,7 +176,7 @@ test('atomically commits a replacement assignment with the old-link supersession
     });
     const destination = await store.create({
       cwd: root,
-      name: 'Login',
+      name: 'Login before rename',
       llmConnectionSlug: 'test',
       model: 'test',
       permissionMode: 'ask',
@@ -161,7 +187,7 @@ test('atomically commits a replacement assignment with the old-link supersession
     const base = assignmentRequest(
       'replacement-action',
       destination.id,
-      'Login',
+      'Login before rename',
       'destination-turn',
     );
     const assignment: WorkHubDelegationAssignedMessage = {
@@ -187,19 +213,22 @@ test('atomically commits a replacement assignment with the old-link supersession
       supersededDelegationId: original.assignment.delegationId,
       replacementDelegationId: assignment.delegationId,
     };
+    await store.rename(destination.id, 'Login');
 
     const committed = await store.assignWorkHubMessage({
       ...base,
       assignment,
       supersession,
     });
+    const committedAssignment = { ...assignment, targetSessionName: 'Login' };
 
     assert.equal(committed.kind, 'assigned');
+    assert.deepEqual(committed.assignment, committedAssignment);
     assert.deepEqual(
       await store.readWorkHubSupersession(original.assignment.delegationId),
       supersession,
     );
-    assert.deepEqual(await store.readWorkHubAssignment(assignment.actionId), assignment);
+    assert.deepEqual(await store.readWorkHubAssignment(assignment.actionId), committedAssignment);
     assert.deepEqual(
       await store.readMessageAdmission(destination.id, assignment.targetMessageId),
       base.admission,

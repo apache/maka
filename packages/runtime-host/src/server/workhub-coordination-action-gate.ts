@@ -413,32 +413,40 @@ export class WorkHubCoordinationActionGate {
     }
     let assignment = assignmentInputFromReplacement(replacement);
     if (replacement.disposition === 'delegate_existing') {
-      const target = (await this.#effects.listSessions()).find(
-        (session) => session.id === replacement.targetSessionId,
-      );
-      if (!target || !isCandidateSession(target)) {
-        throw new WorkHubActionGateFailure(
-          'candidate_unavailable',
-          'WorkHub replacement target is unavailable',
-        );
-      }
-      this.#assertTarget({
-        candidateRef: 'prepared',
-        sessionId: target.id,
-        sessionName: target.name,
-        workspace: workspaceProjection(target),
-        state: candidateState(target.status),
-        updatedAt: updatedAt(target),
-      });
-      // A replacement intent owns the stable target Session id. Its display
-      // name can legitimately change after that intent is prepared, so carry
-      // the freshly validated name into the post-retirement assignment. This
-      // keeps SQLite's display-identity guard from turning a recoverable rename
-      // into a permanently unassignable replacement.
-      assignment = { ...assignment, targetSessionName: target.name };
+      await this.#replacementTarget(replacement);
     }
     await this.#effects.retireDelegation(source);
+    if (replacement.disposition === 'delegate_existing') {
+      // Retirement can await cancellation or Stop long enough for display
+      // metadata to change. Re-read after that destructive boundary and carry
+      // the current name into SQLite's display-identity guard.
+      const target = await this.#replacementTarget(replacement);
+      assignment = { ...assignment, targetSessionName: target.name };
+    }
     return this.#assign(assignment, context);
+  }
+
+  async #replacementTarget(
+    replacement: WorkHubDelegationReplacementRequestedMessage,
+  ): Promise<WorkHubActionGateSession> {
+    const target = (await this.#effects.listSessions()).find(
+      (session) => session.id === replacement.targetSessionId,
+    );
+    if (!target || !isCandidateSession(target)) {
+      throw new WorkHubActionGateFailure(
+        'candidate_unavailable',
+        'WorkHub replacement target is unavailable',
+      );
+    }
+    this.#assertTarget({
+      candidateRef: 'prepared',
+      sessionId: target.id,
+      sessionName: target.name,
+      workspace: workspaceProjection(target),
+      state: candidateState(target.status),
+      updatedAt: updatedAt(target),
+    });
+    return target;
   }
 
   async #assign(

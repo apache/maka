@@ -476,7 +476,7 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.supersessions.has('delegation-source-action'), true);
   });
 
-  test('refreshes replacement target display identity before retiring the source', async () => {
+  test('refreshes replacement target display identity after retiring the source', async () => {
     const effects = fakeEffects([
       session('source'),
       session('destination', { name: 'Destination' }),
@@ -500,13 +500,12 @@ describe('WorkHub Coordination Action Gate', () => {
     const destination = snapshot.candidates.find(
       (candidate) => candidate.sessionId === 'destination',
     )!;
-    const prepareReplacement = effects.prepareReplacement;
-    effects.prepareReplacement = async (input) => {
-      const prepared = await prepareReplacement.call(effects, input);
+    const retireDelegation = effects.retireDelegation;
+    effects.retireDelegation = async (assignment) => {
+      await retireDelegation.call(effects, assignment);
       effects.sessions = effects.sessions.map((candidate) =>
         candidate.id === 'destination' ? { ...candidate, name: 'Renamed destination' } : candidate,
       );
-      return prepared;
     };
     const assign = effects.assign;
     effects.assign = async (input) => {
