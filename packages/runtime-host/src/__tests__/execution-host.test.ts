@@ -35,13 +35,17 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
+import { createExternalExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { MessageContent } from '@maka/core/events';
+import type { MessageContent, SessionEvent } from '@maka/core/events';
+import type { LlmConnection } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
   decodeStoredMessage as decodePersistedStoredMessage,
+  type SessionHeader,
   type StoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
@@ -49,6 +53,7 @@ import type { Task } from '@maka/core/task-ledger';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
@@ -61,6 +66,7 @@ import {
   FAKE_WAIT_FOR_STEERING_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
 import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
@@ -124,6 +130,11 @@ import {
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
   decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+
+const ZERO_MODEL_USAGE = {
+  inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 0, text: 0, reasoning: 0 },
+};
 
 test('production Host resumes a Session through the ScheduledTask authority', {
   timeout: 30_000,
@@ -424,17 +435,135 @@ test('dual UDS Clients query persisted Task Ledger tool-port mutations across Ho
   });
 });
 
+test('Host queries the exact nested Task identities produced by Code Mode', async () => {
+  await withExecutionRoot(async (fixture) => {
+    const runId = randomUUID();
+    const turnId = randomUUID();
+    const parentToolCallId = `provider-${'x'.repeat(120)}`;
+    const events: SessionEvent[] = [];
+
+    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
+      let step = 0;
+      let nextId = 0;
+      const model = new MockLanguageModelV4({
+        doStream: async () => {
+          step += 1;
+          return {
+            stream: convertArrayToReadableStream<LanguageModelV4StreamPart>(
+              step === 1
+                ? [
+                    { type: 'stream-start' as const, warnings: [] },
+                    {
+                      type: 'tool-call' as const,
+                      toolCallId: parentToolCallId,
+                      toolName: 'exec',
+                      input: JSON.stringify({
+                        code: [
+                          "await tools.task_create({ tasks: [{ subject: 'Code Mode task' }] });",
+                          "return await tools.task_update({ id: 'T1', status: 'in_progress' });",
+                        ].join('\n'),
+                      }),
+                    },
+                    {
+                      type: 'finish' as const,
+                      finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' },
+                      usage: ZERO_MODEL_USAGE,
+                    },
+                  ]
+                : [
+                    { type: 'stream-start' as const, warnings: [] },
+                    {
+                      type: 'finish' as const,
+                      finishReason: { unified: 'stop' as const, raw: 'stop' },
+                      usage: ZERO_MODEL_USAGE,
+                    },
+                  ],
+            ),
+          };
+        },
+      });
+      const backend = new AiSdkBackend({
+        sessionId: fixture.sessionId,
+        header: taskMutationSessionHeader(fixture),
+        appendMessage: async () => undefined,
+        readExecutionBoundary: async () => createExternalExecutionBoundary(),
+        connection: taskMutationConnection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model',
+        modelFactory: () => model,
+        tools,
+        maxSteps: 1,
+        newId: () => `runtime-id-${++nextId}`,
+        now: () => 1,
+      });
+      for await (const event of backend.send({
+        invocationId: randomUUID(),
+        runId,
+        turnId,
+        text: 'Create and update a task',
+        context: [],
+        toolMode: 'code_mode',
+      })) {
+        events.push(event);
+      }
+    });
+
+    const correlations = events
+      .filter(
+        (event): event is Extract<SessionEvent, { type: 'tool_start' }> =>
+          event.type === 'tool_start' &&
+          (event.toolName === 'task_create' || event.toolName === 'task_update'),
+      )
+      .map((event) => ({ turnId, toolCallId: event.toolUseId }));
+    assert.equal(correlations.length, 2);
+    assert.ok(
+      correlations.every(({ toolCallId }) => /^code_nested_v1_[a-f0-9]{64}$/.test(toolCallId)),
+    );
+
+    const host = await fixture.startHost();
+    const client = await connectClient(fixture.root);
+    try {
+      const projection = await collectTaskMutationProjection(
+        client,
+        fixture.sessionId,
+        correlations,
+      );
+      assert.deepEqual(
+        projection.lookups.map((lookup) =>
+          lookup.kind === 'found'
+            ? {
+                correlation: lookup.correlation,
+                operation: lookup.presentation.operation,
+              }
+            : { correlation: lookup.correlation, kind: lookup.kind },
+        ),
+        [
+          { correlation: correlations[0], operation: 'create' },
+          { correlation: correlations[1], operation: 'update' },
+        ],
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('Task mutation cursor freezes appends and detects purged history incarnation', async () => {
   await withExecutionRoot(async (fixture) => {
     const runId = randomUUID();
     const turnId = randomUUID();
-    const createCorrelation = { turnId, toolCallId: `create:nested:${randomUUID()}` };
+    const createCorrelation = {
+      turnId,
+      toolCallId: `legacy:nested:${'x'.repeat(2_032)}`,
+    };
+    assert.equal(Buffer.byteLength(JSON.stringify(createCorrelation.toolCallId), 'utf8'), 2_048);
     const updateCorrelations: TaskMutationCorrelation[] = [];
     await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
       const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
       await create.impl(
         create.parameters.parse({
-          tasks: Array.from({ length: 128 }, () => ({ subject: '界'.repeat(200) })),
+          tasks: Array.from({ length: 200 }, () => ({ subject: '\0'.repeat(200) })),
         }),
         taskLedgerToolContext(fixture, { runId, ...createCorrelation }),
       );
@@ -474,6 +603,12 @@ test('Task mutation cursor freezes appends and detects purged history incarnatio
       });
       assert.equal(result.kind, 'page');
       if (result.kind !== 'page') throw new Error('Expected initial Task mutation page');
+      assert.equal(result.lookups[0]?.kind, 'found');
+      assert.equal(
+        result.lookups[0]?.kind === 'found' ? result.lookups[0].presentation.changes.length : 0,
+        200,
+      );
+      assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 320 * 1024);
       assert.ok(result.nextCursor);
       firstPage = result;
       const tamperedCursor = JSON.parse(
@@ -1474,6 +1609,40 @@ function taskLedgerToolContext(
     ...identity,
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
+  };
+}
+
+function taskMutationSessionHeader(fixture: ExecutionFixture): SessionHeader {
+  return {
+    id: fixture.sessionId,
+    workspaceRoot: fixture.root,
+    cwd: fixture.root,
+    createdAt: 1,
+    name: 'Task mutation Code Mode integration',
+    titleIsManual: false,
+    isFlagged: false,
+    labels: [],
+    isArchived: false,
+    status: 'active',
+    hasUnread: false,
+    backend: 'ai-sdk',
+    llmConnectionSlug: 'openai',
+    connectionLocked: true,
+    model: 'mock-model',
+    permissionMode: 'bypass',
+    schemaVersion: 1,
+  };
+}
+
+function taskMutationConnection(): LlmConnection {
+  return {
+    slug: 'openai',
+    providerType: 'openai',
+    defaultModel: 'mock-model',
+    name: 'OpenAI',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
   };
 }
 

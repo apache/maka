@@ -24,7 +24,10 @@ import {
   decodeTaskMutationQueryInput,
   decodeTaskMutationQueryResult,
   encodeTaskMutationQueryResult,
+  TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES,
   TASK_MUTATION_PAGE_MAX_BYTES,
+  TASK_MUTATION_TOOL_CALL_ID_MAX_ENCODED_BYTES,
+  taskMutationCorrelationsEncodedByteLength,
   type TaskMutationChange,
   type TaskMutationCorrelation,
   type TaskMutationQueryResult,
@@ -112,7 +115,15 @@ describe('Task mutation protocol', () => {
     });
     assert.deepEqual(decodeTaskMutationQueryResult(result), result);
 
-    for (const toolCallId of ['', 'x'.repeat(129)]) {
+    assert.equal(
+      decodeTaskMutationQueryInput({
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations: [{ turnId: 'turn-1', toolCallId: 'x'.repeat(129) }],
+      }).correlations[0]?.toolCallId,
+      'x'.repeat(129),
+    );
+    for (const toolCallId of ['', '\0'.repeat(342)]) {
       assertInvalid(() =>
         decodeTaskMutationQueryInput({
           kind: 'start',
@@ -126,6 +137,36 @@ describe('Task mutation protocol', () => {
         kind: 'start',
         sessionId: 'session-1',
         correlations: [{ turnId: 'turn:still-strict', toolCallId: nestedCreate.toolCallId }],
+      }),
+    );
+  });
+
+  test('bounds legacy opaque ids and aggregate correlations by encoded bytes', () => {
+    const escapedBoundary = '\0'.repeat(341);
+    assert.equal(Buffer.byteLength(JSON.stringify(escapedBoundary), 'utf8'), 2048);
+    assert.equal(TASK_MUTATION_TOOL_CALL_ID_MAX_ENCODED_BYTES, 2048);
+    assert.equal(
+      decodeTaskMutationQueryInput({
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations: [{ turnId: 'turn-1', toolCallId: escapedBoundary }],
+      }).correlations[0]?.toolCallId,
+      escapedBoundary,
+    );
+
+    const correlations = Array.from({ length: 128 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      toolCallId: `${index}-${'x'.repeat(1_800)}`,
+    }));
+    assert.ok(
+      taskMutationCorrelationsEncodedByteLength(correlations) >
+        TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES,
+    );
+    assertInvalid(() =>
+      decodeTaskMutationQueryInput({
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations,
       }),
     );
   });

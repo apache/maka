@@ -366,6 +366,54 @@ test('links nested activity to the durable outer exec operation', async () => {
   assert.equal(nestedDurable?.modelVisibility, 'hidden');
 });
 
+test('bounds long-parent nested Task identities while preserving the durable parent ref', async () => {
+  const parentToolCallId = `provider-${'x'.repeat(120)}`;
+  const prepared: ToolPreparedCommit[] = [];
+  let seq = 0;
+  const sink: RuntimeCommitSink = {
+    commitToolPrepared: async (input) => {
+      prepared.push(input);
+      return { created: true, runtimeEventSeq: ++seq };
+    },
+    commitToolOutcome: async () => ({ created: true, runtimeEventSeq: ++seq }),
+  };
+  const taskTools: MakaTool[] = ['task_create', 'task_update'].map((name) => ({
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: () => ({ ok: true }),
+  }));
+  await collect(
+    backend(
+      execThenStopModel(
+        'return await Promise.all([tools.task_create({}), tools.task_update({})])',
+        parentToolCallId,
+      ),
+      [],
+      sink,
+      { tools: taskTools },
+    ).send({
+      invocationId: 'inv-long-parent',
+      runId: 'run-long-parent',
+      turnId: 'turn-long-parent',
+      text: 'mutate tasks',
+      context: [],
+      toolMode: 'code_mode',
+    }),
+  );
+
+  const nested = prepared.filter(
+    (commit) => commit.toolName === 'task_create' || commit.toolName === 'task_update',
+  );
+  assert.deepEqual(nested.map(({ toolName }) => toolName).sort(), ['task_create', 'task_update']);
+  assert.equal(new Set(nested.map(({ providerToolCallId }) => providerToolCallId)).size, 2);
+  for (const commit of nested) {
+    assert.match(commit.providerToolCallId, /^code_nested_v1_[a-f0-9]{64}$/);
+    assert.ok(commit.providerToolCallId.length <= 128);
+    assert.equal(commit.runtimeEvent.refs?.parentToolCallId, parentToolCallId);
+  }
+});
+
 test('propagates nested durable commit failures out of the outer exec', async () => {
   const outcomes: number[] = [];
   const sink: RuntimeCommitSink = {
@@ -990,6 +1038,7 @@ function backend(
 
 function execThenStopModel(
   code = 'return await tools.lookup({ id: "nested" })',
+  toolCallId = 'exec-1',
 ): MockLanguageModelV4 {
   let step = 0;
   return new MockLanguageModelV4({
@@ -1001,7 +1050,7 @@ function execThenStopModel(
               { type: 'stream-start', warnings: [] },
               {
                 type: 'tool-call',
-                toolCallId: 'exec-1',
+                toolCallId,
                 toolName: 'exec',
                 input: JSON.stringify({ code }),
               },

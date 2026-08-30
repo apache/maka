@@ -134,6 +134,7 @@ import {
   DEFAULT_CODE_MODE_EXECUTION_POLICY,
   executeCodeCell,
 } from './code-mode.js';
+import { codeModeNestedToolCallId } from './code-mode-nested-tool-call-id.js';
 import {
   StreamWatchdog,
   formatStreamWatchdogError,
@@ -3195,10 +3196,11 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
+          const childToolCallId = this.newId();
           const settlement = await scope.toolRuntime.settleToolCallRaw({
             tool,
             turnId: context.turnId,
-            toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
+            toolCallId: codeModeNestedToolCallId(context.toolCallId, childToolCallId),
             input: parsedInput,
             abortSignal: signal,
             eventSink: nestedEventSink,

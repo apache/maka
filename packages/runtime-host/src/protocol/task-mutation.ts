@@ -30,14 +30,17 @@ import {
   type Task,
   type TaskStatus,
 } from '@maka/core/task-ledger';
-import { requireEntityId, requireExactRecord, requireId, requireRecord } from './codec.js';
+import { requireEntityId, requireExactRecord, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
 export const TASK_MUTATION_QUERY_MAX_CORRELATIONS = 128;
 export const TASK_MUTATION_PAGE_MAX_ITEMS = 128;
-export const TASK_MUTATION_PAGE_MAX_BYTES = 256 * 1024;
+export const TASK_MUTATION_PAGE_MAX_BYTES = 320 * 1024;
 export const TASK_MUTATION_CURSOR_MAX_BYTES = 1024;
+export const TASK_MUTATION_TOOL_CALL_ID_MAX_ENCODED_BYTES = 2 * 1024;
+export const TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES = 192 * 1024;
+export const TASK_MUTATION_QUERY_INPUT_MAX_ENCODED_BYTES = 224 * 1024;
 
 const QUERY_ERRORS = [
   'host_not_ready',
@@ -132,11 +135,11 @@ export function decodeTaskMutationQueryInput(value: unknown): TaskMutationQueryI
       'sessionId',
       'correlations',
     ]);
-    return {
+    return boundedTaskMutationQueryInput({
       kind: 'start',
       sessionId: requireEntityId(input.sessionId, 'sessionId'),
       correlations: taskMutationCorrelations(input.correlations),
-    };
+    });
   }
   if (record.kind === 'continue') {
     const input = requireExactRecord(record, 'task mutation query continuation input', [
@@ -146,13 +149,13 @@ export function decodeTaskMutationQueryInput(value: unknown): TaskMutationQueryI
       'revision',
       'cursor',
     ]);
-    return {
+    return boundedTaskMutationQueryInput({
       kind: 'continue',
       sessionId: requireEntityId(input.sessionId, 'sessionId'),
       correlations: taskMutationCorrelations(input.correlations),
       revision: taskMutationRevision(input.revision, 'task mutation revision'),
       cursor: taskMutationCursor(input.cursor),
-    };
+    });
   }
   throw invalidProtocolFrame('Invalid task mutation query kind');
 }
@@ -215,6 +218,12 @@ function taskMutationCorrelations(value: unknown): readonly TaskMutationCorrelat
     throw invalidProtocolFrame('Invalid task mutation correlations');
   }
   const correlations = value.map(taskMutationCorrelation);
+  if (
+    taskMutationCorrelationsEncodedByteLength(correlations) >
+    TASK_MUTATION_CORRELATIONS_MAX_ENCODED_BYTES
+  ) {
+    throw invalidProtocolFrame('Task mutation correlations exceed byte limit');
+  }
   const unique = new Set(correlations.map(correlationKey));
   if (unique.size !== correlations.length) {
     throw invalidProtocolFrame('Duplicate task mutation correlation');
@@ -227,10 +236,30 @@ function taskMutationCorrelation(value: unknown): TaskMutationCorrelation {
     'turnId',
     'toolCallId',
   ]);
+  if (
+    typeof correlation.toolCallId !== 'string' ||
+    correlation.toolCallId.length === 0 ||
+    jsonByteLength(correlation.toolCallId) > TASK_MUTATION_TOOL_CALL_ID_MAX_ENCODED_BYTES
+  ) {
+    throw invalidProtocolFrame('Invalid toolCallId');
+  }
   return {
     turnId: requireEntityId(correlation.turnId, 'turnId'),
-    toolCallId: requireId(correlation.toolCallId, 'toolCallId'),
+    toolCallId: correlation.toolCallId,
   };
+}
+
+export function taskMutationCorrelationsEncodedByteLength(
+  correlations: readonly TaskMutationCorrelation[],
+): number {
+  return jsonByteLength(correlations);
+}
+
+function boundedTaskMutationQueryInput(input: TaskMutationQueryInput): TaskMutationQueryInput {
+  if (jsonByteLength(input) > TASK_MUTATION_QUERY_INPUT_MAX_ENCODED_BYTES) {
+    throw invalidProtocolFrame('Task mutation query input exceeds byte limit');
+  }
+  return input;
 }
 
 function taskMutationLookup(value: unknown, direction: 'encode' | 'decode'): TaskMutationLookup {
