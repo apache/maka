@@ -19,8 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { McpToolBinding } from '@maka/core/mcp';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
+import { buildMcpTools, type McpToolProvider } from '@maka/runtime/mcp-tools';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
@@ -167,6 +169,90 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       offers: provider.offers(),
     }),
   );
+});
+
+test('publishes and invokes MCP JSON Schema tools through Desktop native capabilities', async () => {
+  let receivedArguments: Record<string, unknown> | undefined;
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'fixture',
+            name: 'echo',
+            description: 'Echo one value',
+            inputSchema: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+              required: ['value'],
+              additionalProperties: false,
+            },
+          },
+          binding: 'fixture-echo' as McpToolBinding,
+        },
+      ],
+    }),
+    async callTool(_binding, args) {
+      receivedArguments = args;
+      return { content: [{ type: 'text', text: `echo:${String(args.value)}` }] };
+    },
+  };
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp',
+        label: 'MCP',
+        description: 'MCP tools',
+        tools: buildMcpTools(mcpProvider),
+      },
+    ],
+  });
+
+  const offer = provider.offers()[0];
+  assert.equal(offer?.offerId, 'desktop_mcp');
+  assert.deepEqual(offer?.tools[0]?.inputSchema, {
+    type: 'object',
+    properties: { value: { type: 'string' } },
+    required: ['value'],
+    additionalProperties: false,
+  });
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp',
+        serverId: 'desktop_mcp',
+        toolName: 'mcp__fixture__echo',
+        arguments: { value: 'ok' },
+      }),
+    ),
+    { content: [{ type: 'text', text: 'echo:ok' }] },
+  );
+  assert.deepEqual(receivedArguments, { value: 'ok' });
+
+  let admitted = false;
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: 'mcp__fixture__echo',
+          arguments: { value: 1 },
+        }),
+        () => {
+          admitted = true;
+        },
+      ),
+    (error: unknown) => error instanceof z.ZodError,
+  );
+  assert.equal(admitted, false);
 });
 
 test('publishes and admits additional Desktop native-effect services', async () => {
