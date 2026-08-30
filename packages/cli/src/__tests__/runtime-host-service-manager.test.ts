@@ -3056,7 +3056,10 @@ describe('managed Runtime Host service', () => {
 
     await provider.supervisor.retire();
 
-    assert.equal(systemd.calls.some(([command]) => command === 'stop'), false);
+    assert.equal(
+      systemd.calls.some(([command]) => command === 'stop'),
+      false,
+    );
   });
 
   it('serializes status behind an in-flight deployment', async (t) => {

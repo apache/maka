@@ -411,11 +411,7 @@ async function runRuntimeHostSupervisedSetupLocked(
   const legacyToMigrate = current ? null : legacyConfig;
   if (current && legacyConfig) await assertLegacyArtifactsAbsent(legacyBackend);
   if (legacyToMigrate) await assertCompatibleExistingVersion(legacyStatus, options.version);
-  if (
-    current &&
-    current.launch.package.version !== options.version &&
-    !options.updateExisting
-  ) {
+  if (current && current.launch.package.version !== options.version && !options.updateExisting) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${current.launch.package.version} is already installed; changing to ${options.version} requires the update workflow`,
@@ -485,8 +481,8 @@ async function runRuntimeHostSupervisedSetupLocked(
             ? packageChanged
               ? 'update'
               : isDeepStrictEqual(current.lifecycle, desired.lifecycle)
-              ? 'configure'
-              : 'lifecycle_change'
+                ? 'configure'
+                : 'lifecycle_change'
             : 'install',
         ...(current ? { current } : {}),
         desired,
