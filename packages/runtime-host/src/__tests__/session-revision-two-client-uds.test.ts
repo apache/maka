@@ -870,7 +870,10 @@ async function seedSource(
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
-      turnId: 'turn-1',
+      // A user upload carries the uploadId sentinel as its turnId, not a
+      // conversation turn — so it is not selected by the turn-scoped artifact
+      // copy and must be carried by the referenced-attachment include path.
+      turnId: 'upload-source-artifact',
       name: 'source.txt',
       kind: 'file',
       content: 'retained bytes',
@@ -905,7 +908,7 @@ async function seedSource(
             ref: {
               kind: 'session_file',
               sessionId: source.id,
-              relativePath: artifact.relativePath,
+              relativePath: artifact.id,
             },
           },
         ],
@@ -965,7 +968,7 @@ async function seedSource(
               ref: {
                 kind: 'session_file',
                 sessionId: source.id,
-                relativePath: artifact.relativePath,
+                relativePath: artifact.id,
               },
             },
           ],
@@ -1537,7 +1540,9 @@ async function verifyDurableBranch(
     assert.equal(ref?.kind, 'session_file');
     if (ref?.kind !== 'session_file') assert.fail('Copied attachment must remain session-backed');
     assert.equal(ref.sessionId, branchSessionId);
-    assert.notEqual(ref.relativePath, `${sourceSessionId}/source-artifact-source.txt`);
+    // The user-upload attachment ref carries the source artifact id; the copy
+    // must rewrite it to a fresh target artifact id, never leave the source id.
+    assert.notEqual(ref.relativePath, 'source-artifact');
     assert.equal((await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 })).total, 2);
     assert.deepEqual((await tasks.list(branchSessionId)).map((task) => task.subject).sort(), [
       'Legacy child task',
