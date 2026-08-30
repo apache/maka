@@ -66,6 +66,7 @@ export {
   type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
+  type RuntimeHostRemoteProfileIncarnation,
   type RuntimeHostCapabilityProviderCredentialStore,
   RuntimeHostProfileConnectionError,
   type RuntimeHostProfileConnectionFailureReason,

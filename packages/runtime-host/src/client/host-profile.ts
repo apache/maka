@@ -71,6 +71,8 @@ const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PEER_ID_MAX_BYTES = 160;
 const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 const PEER_ROUTE_MAX = 16;
+const PROFILE_CREDENTIAL_RECORD_PREFIX = 'maka-runtime-host-profile-credential-v1:';
+const PROFILE_INCARNATION_ID_MAX_BYTES = 128;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
 export const RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT = 'plaintext-bearer-v1' as const;
 
@@ -157,6 +159,12 @@ export interface RuntimeHostProfileDocument {
 export interface ResolvedRuntimeHostProfile {
   readonly profile: RuntimeHostProfile;
   readonly credential?: string;
+  readonly profileIncarnationId?: string;
+}
+
+export interface RuntimeHostRemoteProfileIncarnation {
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly profileIncarnationId: string;
 }
 
 export type RuntimeHostConnectionPhase =
@@ -215,27 +223,37 @@ export interface RuntimeHostProfileCatalog {
     readonly rebound: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
-  /** Serialize one sidecar mutation with catalog updates while this exact target remains current. */
+  /** Serialize one sidecar mutation with catalog updates while this profile lifetime remains current. */
   mutateRemoteProfileIfCurrent(
-    target: RemoteRuntimeHostProfile,
+    target: RuntimeHostRemoteProfileIncarnation,
     mutation: (profile: RemoteRuntimeHostProfile) => Promise<void>,
   ): Promise<boolean>;
+  isRemoteProfileIncarnationCurrent(target: RuntimeHostRemoteProfileIncarnation): Promise<boolean>;
+}
+
+export interface RuntimeHostProfileCredential {
+  readonly credential: string;
+  /** Stable for updates, replaced when removal and recreation start a new profile lifetime. */
+  readonly profileIncarnationId: string;
 }
 
 export interface RuntimeHostProfileCredentialStore {
-  get(profile: RemoteRuntimeHostProfile): Promise<string | null>;
-  set(profile: RemoteRuntimeHostProfile, credential: string): Promise<void>;
+  get(profile: RemoteRuntimeHostProfile): Promise<RuntimeHostProfileCredential | null>;
+  set(profile: RemoteRuntimeHostProfile, credential: RuntimeHostProfileCredential): Promise<void>;
   delete(profile: RemoteRuntimeHostProfile): Promise<void>;
 }
 
 export interface RuntimeHostCapabilityProviderCredentialStore {
-  get(profile: RemoteRuntimeHostProfile, ownerClientInstanceId: string): Promise<string | null>;
+  get(
+    target: RuntimeHostRemoteProfileIncarnation,
+    ownerClientInstanceId: string,
+  ): Promise<string | null>;
   set(
-    profile: RemoteRuntimeHostProfile,
+    target: RuntimeHostRemoteProfileIncarnation,
     ownerClientInstanceId: string,
     credential: string,
   ): Promise<void>;
-  delete(profile: RemoteRuntimeHostProfile, ownerClientInstanceId: string): Promise<void>;
+  delete(target: RuntimeHostRemoteProfileIncarnation, ownerClientInstanceId: string): Promise<void>;
 }
 
 export type RuntimeHostProfileConnectionFailureReason =
@@ -290,19 +308,23 @@ export function createRuntimeHostProfileCredentialStore(
 ): RuntimeHostProfileCredentialStore {
   return {
     get: async (profile) => {
-      return credentials.getSecret(profileCredentialSlot(profile), 'runtime_host_access');
+      const stored = await credentials.getSecret(
+        profileCredentialSlot(profile),
+        'runtime_host_access',
+      );
+      return stored === null ? null : decodeProfileCredential(profile, stored);
     },
     set: (profile, credential) => {
       try {
-        requireRuntimeHostAccessCredential(credential);
+        const encoded = encodeProfileCredential(credential);
+        return credentials.setSecret(
+          profileCredentialSlot(profile),
+          'runtime_host_access',
+          encoded,
+        );
       } catch (error) {
         return Promise.reject(error);
       }
-      return credentials.setSecret(
-        profileCredentialSlot(profile),
-        'runtime_host_access',
-        credential,
-      );
     },
     delete: (profile) => credentials.deleteSecret(profileCredentialSlot(profile)),
   };
@@ -312,30 +334,32 @@ export function createRuntimeHostCapabilityProviderCredentialStore(
   credentials: Pick<CredentialStore, 'getSecret' | 'setSecret' | 'deleteSecret'>,
 ): RuntimeHostCapabilityProviderCredentialStore {
   return {
-    get: async (profile, ownerClientInstanceId) => {
+    get: async (target, ownerClientInstanceId) => {
       const stored = await credentials.getSecret(
-        profileCredentialSlot(profile),
+        profileCredentialSlot(target.profile),
         'runtime_host_capability_provider',
       );
       if (stored === null) return null;
       const decoded = decodeCapabilityProviderCredential(stored);
-      return decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId)
+      return decoded.ownerClientInstanceId === requireClientInstanceId(ownerClientInstanceId) &&
+        decoded.profileIncarnationId === requireProfileIncarnationId(target.profileIncarnationId)
         ? decoded.credential
         : null;
     },
-    set: async (profile, ownerClientInstanceId, credential) => {
+    set: async (target, ownerClientInstanceId, credential) => {
       await credentials.setSecret(
-        profileCredentialSlot(profile),
+        profileCredentialSlot(target.profile),
         'runtime_host_capability_provider',
         JSON.stringify({
           schemaVersion: 1,
+          profileIncarnationId: requireProfileIncarnationId(target.profileIncarnationId),
           ownerClientInstanceId: requireClientInstanceId(ownerClientInstanceId),
           credential: requireRuntimeHostAccessCredential(credential),
         }),
       );
     },
-    delete: (profile, ownerClientInstanceId) =>
-      deleteCapabilityProviderCredential(credentials, profile, ownerClientInstanceId),
+    delete: (target, ownerClientInstanceId) =>
+      deleteCapabilityProviderCredential(credentials, target, ownerClientInstanceId),
   };
 }
 
@@ -770,13 +794,17 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
       );
     }
     if (profile.kind === 'environment') return { profile };
-    const credential = await this.credentials.get(profile);
-    if (!credential) {
+    const storedCredential = await this.credentials.get(profile);
+    if (!storedCredential) {
       throw new RuntimeHostPermanentReconnectError(
         `Runtime Host profile ${profile.id} has no access credential`,
       );
     }
-    return { profile, credential };
+    return {
+      profile,
+      credential: storedCredential.credential,
+      profileIncarnationId: storedCredential.profileIncarnationId,
+    };
   }
 
   save(
@@ -832,7 +860,10 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           : [...current.profiles, profile],
       });
       if (profile.kind === 'remote' && suppliedCredential !== undefined) {
-        await this.credentials.set(profile, suppliedCredential);
+        await this.credentials.set(profile, {
+          credential: suppliedCredential,
+          profileIncarnationId: previousCredential?.profileIncarnationId ?? randomUUID(),
+        });
       }
       try {
         await writeProfileDocument(this.path, next);
@@ -886,7 +917,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         !samePersistedRuntimeHostProfile(profile, expectedProfile) ||
         (profile.kind === 'remote' &&
           (target.credential === undefined ||
-            (await this.credentials.get(profile)) !== target.credential))
+            !sameProfileCredential(await this.credentials.get(profile), target)))
       ) {
         return { removed: false, document: current };
       }
@@ -919,11 +950,14 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     return this.#exclusive(async () => {
       const current = await this.#readSnapshot();
       const stored = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
+      const storedCredential =
+        stored?.kind === 'remote' ? await this.credentials.get(stored) : null;
       if (
         !stored ||
         stored.kind !== 'remote' ||
         !sameRemoteRuntimeHostProfile(stored, expectedProfile) ||
-        (await this.credentials.get(stored)) !== target.credential
+        !storedCredential ||
+        !sameProfileCredential(storedCredential, target)
       ) {
         return { rebound: false, document: current };
       }
@@ -933,11 +967,14 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           candidate.id === profile.id ? profile : candidate,
         ),
       });
-      await this.credentials.set(profile, credential);
+      await this.credentials.set(profile, {
+        credential,
+        profileIncarnationId: storedCredential.profileIncarnationId,
+      });
       try {
         await writeProfileDocument(this.path, next);
       } catch (error) {
-        await restoreCredential(this.credentials, profile, target.credential).catch(
+        await restoreCredential(this.credentials, profile, storedCredential).catch(
           (rollbackError) => {
             throw new AggregateError(
               [error, rollbackError],
@@ -952,10 +989,11 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   }
 
   mutateRemoteProfileIfCurrent(
-    target: RemoteRuntimeHostProfile,
+    target: RuntimeHostRemoteProfileIncarnation,
     mutation: (profile: RemoteRuntimeHostProfile) => Promise<void>,
   ): Promise<boolean> {
-    const expectedProfile = decodeRemoteRuntimeHostProfile(target);
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
     return this.#exclusive(async () => {
       const current = await this.#readSnapshot();
       const profile = current.profiles.find(
@@ -963,9 +1001,25 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           candidate.id === expectedProfile.id && candidate.kind === 'remote',
       );
       if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+      const credential = await this.credentials.get(profile);
+      if (credential?.profileIncarnationId !== expectedIncarnationId) return false;
       await mutation(profile);
       return true;
     });
+  }
+
+  async isRemoteProfileIncarnationCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+  ): Promise<boolean> {
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
+    const current = await this.#readSnapshot();
+    const profile = current.profiles.find(
+      (candidate): candidate is RemoteRuntimeHostProfile =>
+        candidate.id === expectedProfile.id && candidate.kind === 'remote',
+    );
+    if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+    return (await this.credentials.get(profile))?.profileIncarnationId === expectedIncarnationId;
   }
 
   async #removeProfile(
@@ -1193,47 +1247,106 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
 
 async function deleteCapabilityProviderCredential(
   credentials: Pick<CredentialStore, 'getSecret' | 'deleteSecret'>,
-  profile: RemoteRuntimeHostProfile,
+  target: RuntimeHostRemoteProfileIncarnation,
   ownerClientInstanceId: string,
 ): Promise<void> {
-  const slot = profileCredentialSlot(profile);
+  const slot = profileCredentialSlot(target.profile);
   const stored = await credentials.getSecret(slot, 'runtime_host_capability_provider');
   if (stored === null) return;
   const decoded = decodeCapabilityProviderCredential(stored);
-  if (decoded.ownerClientInstanceId !== requireClientInstanceId(ownerClientInstanceId)) return;
+  if (
+    decoded.ownerClientInstanceId !== requireClientInstanceId(ownerClientInstanceId) ||
+    decoded.profileIncarnationId !== requireProfileIncarnationId(target.profileIncarnationId)
+  ) {
+    return;
+  }
   await credentials.deleteSecret(slot, 'runtime_host_capability_provider');
 }
 
 function decodeCapabilityProviderCredential(value: string): {
   readonly ownerClientInstanceId: string;
   readonly credential: string;
+  readonly profileIncarnationId: string;
 } {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(value);
-  } catch (error) {
-    throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Runtime Host capability-provider credential is invalid');
-  }
-  const record = parsed as Record<string, unknown>;
-  if (
-    record.schemaVersion !== 1 ||
-    Object.keys(record).some(
-      (key) => !['schemaVersion', 'ownerClientInstanceId', 'credential'].includes(key),
-    )
-  ) {
-    throw new Error('Runtime Host capability-provider credential is invalid');
-  }
-  try {
+    const parsed: unknown = JSON.parse(value);
+    const record = requireExactRecord(parsed, 'Runtime Host capability-provider credential', [
+      'schemaVersion',
+      'profileIncarnationId',
+      'ownerClientInstanceId',
+      'credential',
+    ]);
+    if (record.schemaVersion !== 1) {
+      throw new Error('Runtime Host capability-provider credential schema is unsupported');
+    }
     return {
       ownerClientInstanceId: requireClientInstanceId(record.ownerClientInstanceId),
       credential: requireRuntimeHostAccessCredential(record.credential as string),
+      profileIncarnationId: requireProfileIncarnationId(record.profileIncarnationId),
     };
   } catch (error) {
     throw new Error('Runtime Host capability-provider credential is invalid', { cause: error });
   }
+}
+
+function encodeProfileCredential(credential: RuntimeHostProfileCredential): string {
+  return `${PROFILE_CREDENTIAL_RECORD_PREFIX}${JSON.stringify({
+    schemaVersion: 1,
+    profileIncarnationId: requireProfileIncarnationId(credential.profileIncarnationId),
+    credential: requireRuntimeHostAccessCredential(credential.credential),
+  })}`;
+}
+
+function decodeProfileCredential(
+  profile: RemoteRuntimeHostProfile,
+  value: string,
+): RuntimeHostProfileCredential {
+  if (!value.startsWith(PROFILE_CREDENTIAL_RECORD_PREFIX)) {
+    const credential = requireRuntimeHostAccessCredential(value);
+    return {
+      credential,
+      profileIncarnationId: legacyProfileIncarnationId(profile),
+    };
+  }
+  try {
+    const parsed: unknown = JSON.parse(value.slice(PROFILE_CREDENTIAL_RECORD_PREFIX.length));
+    const record = requireExactRecord(parsed, 'Runtime Host profile credential', [
+      'schemaVersion',
+      'profileIncarnationId',
+      'credential',
+    ]);
+    if (record.schemaVersion !== 1) {
+      throw new Error('Runtime Host profile credential schema is unsupported');
+    }
+    return {
+      credential: requireRuntimeHostAccessCredential(record.credential as string),
+      profileIncarnationId: requireProfileIncarnationId(record.profileIncarnationId),
+    };
+  } catch (error) {
+    throw new Error('Runtime Host profile credential is invalid', { cause: error });
+  }
+}
+
+function legacyProfileIncarnationId(profile: RemoteRuntimeHostProfile): string {
+  // Existing plaintext records predate incarnations. Their target-bound value
+  // remains stable until the next catalog write migrates the credential record.
+  return createHash('sha256')
+    .update('legacy-runtime-host-profile-incarnation')
+    .update('\0')
+    .update(profileCredentialSlot(profile))
+    .digest('hex');
+}
+
+function requireProfileIncarnationId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    Buffer.byteLength(value, 'utf8') > PROFILE_INCARNATION_ID_MAX_BYTES ||
+    !/^[A-Za-z0-9._-]+$/u.test(value)
+  ) {
+    throw new Error('Runtime Host profile incarnation is invalid');
+  }
+  return value;
 }
 
 function requireRuntimeHostAccessCredential(credential: string): string {
@@ -1345,11 +1458,23 @@ function samePersistedRuntimeHostProfile(
 function restoreCredential(
   credentials: RuntimeHostProfileCredentialStore,
   profile: RemoteRuntimeHostProfile,
-  previousCredential: string | null,
+  previousCredential: RuntimeHostProfileCredential | null,
 ): Promise<void> {
   return previousCredential === null
     ? credentials.delete(profile)
     : credentials.set(profile, previousCredential);
+}
+
+function sameProfileCredential(
+  stored: RuntimeHostProfileCredential | null,
+  expected: ResolvedRuntimeHostProfile,
+): boolean {
+  return (
+    stored !== null &&
+    stored.credential === expected.credential &&
+    (expected.profileIncarnationId === undefined ||
+      stored.profileIncarnationId === expected.profileIncarnationId)
+  );
 }
 
 function requireProfileName(value: unknown): string {
