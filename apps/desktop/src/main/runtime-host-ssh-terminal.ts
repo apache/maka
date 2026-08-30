@@ -1180,6 +1180,10 @@ function runtimeHostSetupRemoteCommand(
     'desktop-client',
     '--lifecycle',
     input.lifecycle === 'on_demand' ? 'on-demand' : 'supervised',
+    // Development archives identify every source revision as a distinct exact
+    // package. Re-running Add computer is the explicit replacement gesture in
+    // that environment; released packages keep using the normal update UI.
+    ...(setupPackage.kind === 'development_archive' ? ['--update-existing'] : []),
     '--defer-pairing-commit',
     ...(input.projectDirectoryRoots === undefined
       ? []

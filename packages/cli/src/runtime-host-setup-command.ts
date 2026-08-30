@@ -409,7 +409,11 @@ async function runRuntimeHostSupervisedSetupLocked(
   const legacyToMigrate = current ? null : legacyConfig;
   if (current && legacyConfig) await assertLegacyArtifactsAbsent(legacyBackend);
   if (legacyToMigrate) await assertCompatibleExistingVersion(legacyStatus, options.version);
-  if (current && current.launch.package.version !== options.version) {
+  if (
+    current &&
+    current.launch.package.version !== options.version &&
+    !options.updateExisting
+  ) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${current.launch.package.version} is already installed; changing to ${options.version} requires the update workflow`,
@@ -418,7 +422,8 @@ async function runRuntimeHostSupervisedSetupLocked(
 
   const resolvedPackage = await resolveRuntimeHostSetupPackage(options, deps);
   const { candidate } = resolvedPackage;
-  if (current && !sameExactPackage(current, candidate)) {
+  const packageChanged = current !== undefined && !sameExactPackage(current, candidate);
+  if (current && packageChanged && !options.updateExisting) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
       `Runtime Host ${current.launch.package.version} is already installed; changing its exact package requires the update workflow`,
@@ -439,6 +444,7 @@ async function runRuntimeHostSupervisedSetupLocked(
       sourcePackageRoot: packageRoot,
       version: candidate.version,
       packageIntegrity: candidate.integrity,
+      ...(current ? { deploymentRoot: current.deploymentRoot } : {}),
     });
     let committed = false;
     try {
@@ -453,13 +459,16 @@ async function runRuntimeHostSupervisedSetupLocked(
         legacyToMigrate,
         lifecycleOffer,
       );
-      if (current && !sameDesiredManagedDeployment(current, desired)) {
-        if (current.lifecycle.mode === 'supervised') {
-          throw new RuntimeHostSetupError(
-            'configuration_changed',
-            'Change an existing supervised Runtime Host through its explicit configure or update workflow',
-          );
-        }
+      if (
+        current &&
+        !sameDesiredManagedDeployment(current, desired) &&
+        !options.updateExisting &&
+        current.lifecycle.mode === 'supervised'
+      ) {
+        throw new RuntimeHostSetupError(
+          'configuration_changed',
+          'Change an existing supervised Runtime Host through its explicit configure or update workflow',
+        );
       }
       emit({ kind: 'progress', phase: 'installing_service' });
       if (legacyToMigrate) {
@@ -471,7 +480,9 @@ async function runRuntimeHostSupervisedSetupLocked(
         operation: legacyToMigrate
           ? 'legacy_migration'
           : current
-            ? isDeepStrictEqual(current.lifecycle, desired.lifecycle)
+            ? packageChanged
+              ? 'update'
+              : isDeepStrictEqual(current.lifecycle, desired.lifecycle)
               ? 'configure'
               : 'lifecycle_change'
             : 'install',
@@ -538,10 +549,14 @@ async function runRuntimeHostSupervisedSetupLocked(
           : {}),
       };
     } catch (error) {
-      if (!current && !committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
-        await removeRuntimeHostManagedDeployment(deployment.root, capability.rootId).catch(
-          () => undefined,
-        );
+      if (!committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
+        if (current && packageChanged) {
+          await deployment.rollback().catch(() => undefined);
+        } else if (!current) {
+          await removeRuntimeHostManagedDeployment(deployment.root, capability.rootId).catch(
+            () => undefined,
+          );
+        }
       }
       throw error;
     }

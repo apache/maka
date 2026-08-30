@@ -18,7 +18,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -1056,6 +1056,52 @@ test("reactivates the previous credential after a pre-rebind rotation crash", as
   );
 });
 
+test('recovers a new profile after a crash before its enable preference is written', async () => {
+  const root = await clientRoot();
+  const credentialStore = createClientRuntimeHostCredentialStore(root);
+  const catalog = createClientRuntimeHostProfileCatalog(root, credentialStore);
+  await catalog.create(MANAGED_PROFILE, 'new-token');
+  await writeDesktopRuntimeHostPairingIntents(credentialStore, [
+    createDesktopRuntimeHostPairingIntent({
+      target: { profile: MANAGED_PROFILE, credential: 'new-token' },
+      wasEnabled: false,
+    }),
+  ]);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore });
+  assert.deepEqual(startup.preferences.enabledRemoteProfileIds, []);
+  const enabled: ResolvedRuntimeHostProfile[] = [];
+  const finalized: string[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      enabled.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async (profileId) => {
+      finalized.push(profileId);
+    },
+  });
+
+  await service.startEnabledProfiles();
+
+  assert.deepEqual(enabled.map((target) => target.credential), ['new-token']);
+  assert.deepEqual(finalized, [MANAGED_PROFILE.id]);
+  assert.equal(
+    (await service.getSnapshot()).entries.find(({ profile }) => profile.id === MANAGED_PROFILE.id)
+      ?.enabled,
+    true,
+  );
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore })).pairingIntents,
+    [],
+  );
+});
+
 test("does not let journal cleanup failure lock a completed pairing", async () => {
   const root = await clientRoot();
   const credentials = createClientRuntimeHostCredentialStore(root);
@@ -1106,7 +1152,7 @@ test("does not let journal cleanup failure lock a completed pairing", async () =
   );
 
   const restarted = await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore });
-  assert.equal(restarted.pairingIntents.length, 1);
+  assert.equal(restarted.pairingIntents.length, 0);
   const reenabled: ResolvedRuntimeHostProfile[] = [];
   const restartedService = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -1173,6 +1219,8 @@ test('discarding a committed rotation unlocks the restored local profile', async
   );
 
   restoringOldCredential = true;
+  const abandonedLock = join(root, 'runtime-host-profiles.json.lock');
+  await mkdir(abandonedLock);
   const discarded = await service.discardPairing(MANAGED_PROFILE.id);
   assert.equal(discarded.pairingRecoveryPending, undefined);
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, 'old-token');

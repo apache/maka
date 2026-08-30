@@ -18,7 +18,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   createClientRuntimeHostCredentialStore,
@@ -316,6 +316,7 @@ export function createDesktopRuntimeHostProfileService(input: {
 
   const mutateProfiles = <T>(operation: () => Promise<T>): Promise<T> =>
     mutate(async () => {
+      await recoverAbandonedProfileLock(profilePath);
       assertPreferencesWritable();
       if (pairingReadFailure) {
         throw new Error(
@@ -391,17 +392,16 @@ export function createDesktopRuntimeHostProfileService(input: {
     preferences = next;
   };
 
-  const clearPairingIntentBestEffort = async (profileId: string): Promise<void> => {
+  const clearPairingIntent = async (profileId: string): Promise<void> => {
     const next = new Map(pairingIntents);
     next.delete(profileId);
     try {
       await persistPairingIntents(next);
     } catch (error) {
-      // The pairing has already reached a terminal outcome. A leftover durable
-      // journal entry is restart recovery garbage, not authority to lock the
-      // live profile. A later startup can idempotently clear it again.
-      pairingIntents = next;
-      console.error("[runtime-host] completed pairing recovery could not be cleared:", error);
+      // Keep the in-memory recovery lock when neither deletion nor an empty
+      // journal can be persisted. Retrying is safe and prevents a stale intent
+      // from becoming ambiguous after restart.
+      throw new RuntimeHostPairingFinalizationInterruptedError({ cause: error });
     }
   };
 
@@ -507,7 +507,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     await ensureEnabled(target);
     await activateTarget(target, "terminal");
     await input.finalizePairing(target.profile.id);
-    await clearPairingIntentBestEffort(target.profile.id);
+    await clearPairingIntent(target.profile.id);
   };
 
   const rollbackPairingIntent = async (
@@ -527,7 +527,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
-      await clearPairingIntentBestEffort(intent.target.profile.id);
+      await clearPairingIntent(intent.target.profile.id);
       return;
     }
     const rollbackFailures: unknown[] = [];
@@ -604,7 +604,7 @@ export function createDesktopRuntimeHostProfileService(input: {
     }
     if (reactivationFailure) unavailable.set(current.profile.id, reactivationFailure);
     else unavailable.delete(current.profile.id);
-    await clearPairingIntentBestEffort(intent.target.profile.id);
+    await clearPairingIntent(intent.target.profile.id);
   };
 
   const recoverPairingIntent = async (
@@ -622,7 +622,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       if (!intent.previous) {
         await managedServices.removeForProfileIfCurrent(intent.target.profile);
       }
-      await clearPairingIntentBestEffort(intent.target.profile.id);
+      await clearPairingIntent(intent.target.profile.id);
       if (
         current &&
         (preferences.defaultProfileId === current.profile.id ||
@@ -634,15 +634,6 @@ export function createDesktopRuntimeHostProfileService(input: {
           return asError(error);
         }
       }
-      return undefined;
-    }
-    const pairingStillEnabled =
-      preferences.defaultProfileId === current.profile.id ||
-      preferences.enabledRemoteProfileIds.includes(current.profile.id);
-    if (!pairingStillEnabled) {
-      // A durable disable supersedes stale recovery garbage left behind by a
-      // journal-GC failure. Never resurrect a Host the user turned off.
-      await clearPairingIntentBestEffort(current.profile.id);
       return undefined;
     }
     try {
@@ -1340,6 +1331,27 @@ function assertRootIsNotEnabled(
       `Runtime Host profile "${duplicate.name}" is already connected to this computer; disable it before adding another connection`,
     );
   }
+}
+
+async function recoverAbandonedProfileLock(profilePath: string): Promise<void> {
+  const lockPath = `${profilePath}.lock`;
+  const lock = await lstat(lockPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (
+    !lock ||
+    !lock.isDirectory() ||
+    lock.isSymbolicLink()
+  ) {
+    return;
+  }
+  // Electron's single-instance authority excludes another Desktop writer for
+  // this client data root. Legacy directory locks contain no owner identity,
+  // so only reclaim an old, empty marker; unexpected contents still fail loud.
+  await rmdir(lockPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  });
 }
 
 function isSessionGuestProfile(
