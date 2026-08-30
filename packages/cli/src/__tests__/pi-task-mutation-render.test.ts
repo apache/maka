@@ -115,6 +115,66 @@ test('renders update transitions and only settled unresolved history', () => {
   assert.match(plain(renderMakaPiTranscript(state, metadata(), 100)), /Task details unavailable/);
 });
 
+test('neutralizes Task text controls on live and transcript document surfaces', () => {
+  const cases = [
+    {
+      subject: '\x1b[31mVisible subject\x1b[0m',
+      nextStatus: 'pending' as const,
+    },
+    {
+      subject: '\x1b\x07',
+      previousStatus: 'pending' as const,
+      nextStatus: 'blocked' as const,
+      reason: '\x1b]52;c;Y2xpcGJvYXJk\x07\x1b]8;;https://example.invalid\x1b\\Visible reason',
+    },
+    {
+      subject: 'Completed task',
+      previousStatus: 'in_progress' as const,
+      nextStatus: 'completed' as const,
+      evidence: '\x1b\x9b',
+    },
+  ];
+  for (const [index, change] of cases.entries()) {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(
+      state,
+      taskMessages(index === 0 ? 'task_create' : 'task_update'),
+    );
+    const documentRenderer = new MakaTranscriptComponent(state, metadata).createDocumentRenderer();
+    documentRenderer(100);
+    const tool = onlyTool(state);
+    tool.taskMutation = {
+      kind: 'found',
+      fingerprint: `unsafe-${index}`,
+      presentation: {
+        operation: index === 0 ? 'create' : 'update',
+        correlation: { turnId: 'turn-1', toolCallId: 'call-1' },
+        changes: [{ taskId: 'task-1', key: 'T1', ...change }],
+      },
+    };
+    tool.taskMutationVersion = 1;
+    for (const rendered of [
+      renderMakaPiTranscript(state, metadata(), 100),
+      documentRenderer(100),
+    ]) {
+      const raw = rendered.join('\n');
+      assert.equal(raw.includes('\x1b]52;'), false);
+      assert.equal(raw.includes('\x1b]8;'), false);
+      assert.equal(raw.includes('\x1b\\'), false);
+      assert.equal(raw.includes('\x07'), false);
+      assert.equal(raw.includes('\x9b'), false);
+      if (index === 0) assert.match(plain(rendered), /\[31mVisible subject \[0m/);
+      if (index === 1) {
+        assert.match(
+          plain(rendered),
+          /\[unsafe text removed\][\s\S]*\]52;c;Y2xpcGJvYXJk \]8;;https:\/\/example.invalid[\s\S]*\\Visible reason/,
+        );
+      }
+      if (index === 2) assert.match(plain(rendered), /Completed task — \[unsafe text removed\]/);
+    }
+  }
+});
+
 function taskMessages(
   toolName: 'task_create' | 'task_update' | 'task_list' | 'task_get',
 ): StoredMessage[] {

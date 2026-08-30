@@ -181,6 +181,77 @@ test('does not announce hydration while the rendered tool still crosses the view
   controller.dispose();
 });
 
+test('does not re-query found immutable mutations when later entries settle', async () => {
+  const state = createMakaPiTranscriptState();
+  replaceTranscriptWithStoredMessages(state, taskMessagesFor('turn-a', 'call-a'));
+  const secondState = createMakaPiTranscriptState();
+  replaceTranscriptWithStoredMessages(secondState, taskMessagesFor('turn-b', 'call-b'));
+  state.entries.push(...secondState.entries);
+  const queries: string[][] = [];
+  const controller = createTaskMutationHydrationController({
+    state,
+    driver: {
+      queryTaskMutations: async (_sessionId, correlations) => {
+        queries.push(correlations.map(({ toolCallId }) => toolCallId));
+        return correlations.map((correlation) =>
+          correlation.toolCallId === 'call-a'
+            ? found(correlation.turnId, correlation.toolCallId)
+            : { kind: 'not_found' as const, correlation },
+        );
+      },
+    },
+    onChanged: () => undefined,
+  });
+  controller.replace('session-1');
+  controller.schedule('session-1');
+  await flush();
+
+  const thirdState = createMakaPiTranscriptState();
+  replaceTranscriptWithStoredMessages(thirdState, taskMessagesFor('turn-c', 'call-c'));
+  state.entries.push(...thirdState.entries);
+  controller.schedule('session-1');
+  await flush();
+
+  assert.deepEqual(queries, [
+    ['call-a', 'call-b'],
+    ['call-b', 'call-c'],
+  ]);
+  controller.dispose();
+});
+
+test('never announces unavailable frozen Task details as ready', async () => {
+  for (const reason of ['not_found', 'incompatible'] as const) {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, taskMessages());
+    const tool = taskTool(state);
+    state.renderGeometry.entryFirstLine = new Map([[tool, 0]]);
+    state.renderGeometry.entryLineCount = new Map([[tool, 2]]);
+    state.renderGeometry.viewportTop = 5;
+    let changed = 0;
+    const controller = createTaskMutationHydrationController({
+      state,
+      driver: {
+        queryTaskMutations: async (_sessionId, correlations) =>
+          correlations.map((correlation) => ({ kind: reason, correlation })),
+      },
+      onChanged: () => {
+        changed += 1;
+      },
+    });
+    controller.replace('session-1');
+    controller.schedule('session-1');
+    await flush();
+
+    assert.equal(tool.taskMutation?.kind, 'unresolved');
+    assert.equal(
+      state.entries.some((entry) => entry.kind === 'notice'),
+      false,
+    );
+    assert.equal(changed, 1);
+    controller.dispose();
+  }
+});
+
 test('keeps running unresolved history hidden until a settled projection is queried', async () => {
   const state = createMakaPiTranscriptState();
   replaceTranscriptWithStoredMessages(state, taskMessages());
@@ -216,11 +287,19 @@ test('keeps running unresolved history hidden until a settled projection is quer
 });
 
 function taskMessages(toolName: 'task_create' | 'task_update' = 'task_create'): StoredMessage[] {
+  return taskMessagesFor('turn-1', 'call-1', toolName);
+}
+
+function taskMessagesFor(
+  turnId: string,
+  toolCallId: string,
+  toolName: 'task_create' | 'task_update' = 'task_create',
+): StoredMessage[] {
   return [
     {
       type: 'tool_call',
-      id: 'call-1',
-      turnId: 'turn-1',
+      id: toolCallId,
+      turnId,
       ts: 1,
       toolName,
       args: { tasks: [{ subject: 'First task' }] },
@@ -228,9 +307,9 @@ function taskMessages(toolName: 'task_create' | 'task_update' = 'task_create'): 
     {
       type: 'tool_result',
       id: 'result-1',
-      turnId: 'turn-1',
+      turnId,
       ts: 2,
-      toolUseId: 'call-1',
+      toolUseId: toolCallId,
       isError: false,
       content: { kind: 'text', text: 'Created' },
     },

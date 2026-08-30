@@ -20,6 +20,8 @@
 import type { ToolOutputStream, ToolResultContent } from '@maka/core/events';
 import { formatQuietJsonValue, formatToolInvocationLine } from '@maka/core/tool-quiet-preview';
 import { redactSecrets } from '@maka/core/display-redaction';
+import { TASK_EVIDENCE_MAX_CHARS, TASK_SUBJECT_MAX_CHARS } from '@maka/core/task-ledger';
+import { sanitizeUnicodeText } from '@maka/core/text-sanitize';
 import {
   isActiveShellRunStatus,
   type PtyShellOutput,
@@ -57,6 +59,7 @@ export function renderToolBlock(
 }
 
 const TASK_MUTATION_LIVE_INLINE_MAX_CHANGES = 20;
+const UNSAFE_TASK_TEXT_REMOVED = '[unsafe text removed]';
 
 function renderTaskMutationBlock(
   entry: MakaPiToolEntry,
@@ -97,16 +100,25 @@ function renderTaskMutationBlock(
       change.previousStatus === undefined
         ? change.nextStatus
         : `${change.previousStatus} → ${change.nextStatus}`;
-    const detail = change.reason ?? change.evidence;
+    const subject = safeTaskMutationText(change.subject, TASK_SUBJECT_MAX_CHARS);
+    const rawDetail = change.reason ?? change.evidence;
+    const detail =
+      rawDetail === undefined
+        ? undefined
+        : safeTaskMutationText(rawDetail, TASK_EVIDENCE_MAX_CHARS);
     lines.push(
       ...renderIndented(
-        `${change.key}  ${transition}  ${change.subject}${detail ? ` — ${detail}` : ''}`,
+        `${change.key}  ${transition}  ${subject}${detail ? ` — ${detail}` : ''}`,
         width,
         2,
       ),
     );
   }
   return lines;
+}
+
+function safeTaskMutationText(value: string, maxCodePoints: number): string {
+  return sanitizeUnicodeText(value, { maxCodePoints }) || UNSAFE_TASK_TEXT_REMOVED;
 }
 
 /** Status disc for a tool row: green = done, accent = running, danger = error/aborted/failed, muted = detached/unavailable. */

@@ -95,29 +95,36 @@ export function createTaskMutationHydrationController(input: {
         }
 
         let changed = false;
-        let frozenChanged = false;
+        let frozenFoundChanged = false;
         for (let index = 0; index < targets.length; index += 1) {
           const target = targets[index]!;
           const lookup = lookups[index]!;
           const next = mutationState(lookup, target.observedSettled);
-          if (target.entry.taskMutation?.fingerprint === next.fingerprint) continue;
+          const previous = target.entry.taskMutation;
+          if (previous?.fingerprint === next.fingerprint) continue;
           target.entry.taskMutation = next;
           target.entry.taskMutationVersion = (target.entry.taskMutationVersion ?? 0) + 1;
           changed = true;
-          if (!isFrozenRenderedEntry(input.state, target.entry)) continue;
+          if (
+            next.kind !== 'found' ||
+            previous?.kind === 'found' ||
+            !isFrozenRenderedEntry(input.state, target.entry)
+          ) {
+            continue;
+          }
           const noticeKey = `${requestedSessionId}\0${correlationKey(target.correlation)}\0${next.fingerprint}`;
           if (announced.has(noticeKey)) continue;
           announced.add(noticeKey);
-          frozenChanged = true;
+          frozenFoundChanged = true;
         }
-        if (frozenChanged) {
+        if (frozenFoundChanged) {
           input.state.entries.push({
             kind: 'notice',
             level: 'info',
             text: 'Task details are ready · /transcript to view the full history.',
           });
         }
-        if (changed || frozenChanged) input.onChanged();
+        if (changed || frozenFoundChanged) input.onChanged();
       })
       .catch(() => undefined);
   };
@@ -144,7 +151,8 @@ function taskMutationTargets(state: MakaPiTranscriptState): TaskMutationTarget[]
       !entry.turnId ||
       (entry.toolName !== 'task_create' && entry.toolName !== 'task_update') ||
       entry.userOwned === true ||
-      entry.suppressed === true
+      entry.suppressed === true ||
+      entry.taskMutation?.kind === 'found'
     ) {
       continue;
     }

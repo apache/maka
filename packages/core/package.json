@@ -68,6 +68,7 @@
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./task-ledger": "./dist/task-ledger.js",
+    "./text-sanitize": "./dist/text-sanitize.js",
     "./foreign-session": "./dist/foreign-session.js",
     "./external-session": "./dist/external-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
