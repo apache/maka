@@ -365,6 +365,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
       readWorkHubReplacement: (delegationId) =>
         run(() => sessionStore.readWorkHubReplacement(delegationId)),
+      readWorkHubReplacementAbort: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>

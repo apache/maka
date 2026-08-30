@@ -84,6 +84,7 @@ import {
   type TurnStateMessage,
   type UserMessage,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationReplacementAbortedMessage,
   type WorkHubDelegationReplacementRequestedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
@@ -423,6 +424,9 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
   readWorkHubSupersession(
     delegationId: string,
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
@@ -686,6 +690,18 @@ class SqliteSessionStore implements SessionAuthorityStore {
     );
     return message?.type === 'workhub_coordination' &&
       message.kind === 'delegation_replacement_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whb_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_aborted'
       ? message
       : undefined;
   }

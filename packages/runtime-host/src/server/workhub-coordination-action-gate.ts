@@ -24,6 +24,7 @@ import type {
   WorkHubDelegationAssignedMessage,
   WorkHubDelegationCreateSpec,
   WorkHubDelegationDisposition,
+  WorkHubDelegationReplacementAbortedMessage,
   WorkHubDelegationReplacementRequestedMessage,
   WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
@@ -67,6 +68,9 @@ export interface WorkHubActionGateEffects {
   readReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
   readSupersession(delegationId: string): Promise<WorkHubDelegationSupersededMessage | undefined>;
   answer(
     input: { readonly turnId: string; readonly text: string },
@@ -84,6 +88,12 @@ export interface WorkHubActionGateEffects {
   prepareReplacement(
     input: WorkHubDelegationReplacementInput,
   ): Promise<WorkHubDelegationReplacementRequestedMessage>;
+  abortReplacement(
+    input: WorkHubDelegationReplacementAbortInput,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage>;
+  readDelegationRetirement(
+    assignment: WorkHubDelegationAssignedMessage,
+  ): Promise<'not_retired' | 'retired' | 'recovering'>;
   retireDelegation(assignment: WorkHubDelegationAssignedMessage): Promise<void>;
 }
 
@@ -104,6 +114,11 @@ export interface WorkHubDelegationReplacementInput extends WorkHubDelegationAssi
   readonly replacesDelegationId: string;
   readonly replacedTargetSessionId: string;
   readonly replacedTargetMessageId: string;
+}
+
+export interface WorkHubDelegationReplacementAbortInput {
+  readonly replacement: WorkHubDelegationReplacementRequestedMessage;
+  readonly reason: WorkHubDelegationReplacementAbortedMessage['reason'];
 }
 
 export type WorkHubActionEffectFailureCode =
@@ -222,11 +237,17 @@ export class WorkHubCoordinationActionGate {
     const proposal = input.proposal;
     const durable = await this.#effects.readAssignment(input.actionId);
     if (durable) {
-      if (durable.actionFingerprint !== fingerprint) {
+      const replayFingerprint = durable.replacesActionId
+        ? replacementActionFingerprint(input, durable.targetSessionId)
+        : fingerprint;
+      if (durable.actionFingerprint !== replayFingerprint) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub action identity belongs to a different proposal',
         );
+      }
+      if (durable.replacesActionId) {
+        await this.#assertReplacementReplayTarget(input, durable.targetSessionId);
       }
       return this.#assign(assignmentInputFromRecord(durable), context);
     }
@@ -283,15 +304,20 @@ export class WorkHubCoordinationActionGate {
       }
       const prepared = await this.#effects.readReplacement(replaced.delegationId);
       if (prepared) {
-        if (prepared.actionId !== input.actionId || prepared.actionFingerprint !== fingerprint) {
+        if (
+          prepared.actionId !== input.actionId ||
+          prepared.actionFingerprint !==
+            replacementActionFingerprint(input, prepared.targetSessionId)
+        ) {
           throw new WorkHubActionGateFailure(
             'action_conflict',
             'WorkHub delegation already has a different replacement intent',
           );
         }
+        await this.#assertReplacementReplayTarget(input, prepared.targetSessionId);
         return this.#replace(prepared, context);
       }
-      const replacement = await this.#replacementAssignment(input, fingerprint, replaced);
+      const replacement = await this.#replacementAssignment(input, replaced);
       const intent = await this.#effects.prepareReplacement(replacement);
       return this.#replace(intent, context);
     }
@@ -322,7 +348,6 @@ export class WorkHubCoordinationActionGate {
 
   async #replacementAssignment(
     input: WorkHubCoordinationActInput,
-    fingerprint: `sha256:${string}`,
     replaced: WorkHubDelegationAssignedMessage,
   ): Promise<WorkHubDelegationReplacementInput> {
     if (input.proposal.disposition !== 'replace') {
@@ -330,6 +355,12 @@ export class WorkHubCoordinationActionGate {
     }
     const target = input.proposal.target;
     if (target.disposition === 'create_new') {
+      if (!isExplicitWorkHubCorrectionCreation(input.userText)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub replacement creation requires explicit non-negated user intent',
+        );
+      }
       if (!input.create) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -339,7 +370,7 @@ export class WorkHubCoordinationActionGate {
       const targetSessionId = workHubCreatedSessionId(input.actionId);
       return {
         actionId: input.actionId,
-        actionFingerprint: fingerprint,
+        actionFingerprint: replacementActionFingerprint(input, targetSessionId),
         targetSessionId,
         targetSessionName: target.title,
         disposition: 'create_new',
@@ -376,7 +407,7 @@ export class WorkHubCoordinationActionGate {
     }
     return {
       actionId: input.actionId,
-      actionFingerprint: fingerprint,
+      actionFingerprint: replacementActionFingerprint(input, destination.sessionId),
       targetSessionId: destination.sessionId,
       targetSessionName: destination.sessionName,
       disposition: 'delegate_existing',
@@ -392,6 +423,22 @@ export class WorkHubCoordinationActionGate {
     replacement: WorkHubDelegationReplacementRequestedMessage,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
+    const aborted = await this.#effects.readReplacementAbort(replacement.replacesDelegationId);
+    if (aborted) {
+      if (
+        aborted.actionId !== replacement.actionId ||
+        aborted.actionFingerprint !== replacement.actionFingerprint
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub delegation replacement has a different terminal outcome',
+        );
+      }
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub replacement was aborted after its source delegation retired',
+      );
+    }
     const superseded = await this.#effects.readSupersession(replacement.replacesDelegationId);
     if (superseded) {
       throw new WorkHubActionGateFailure(
@@ -412,18 +459,68 @@ export class WorkHubCoordinationActionGate {
       );
     }
     let assignment = assignmentInputFromReplacement(replacement);
-    if (replacement.disposition === 'delegate_existing') {
+    const retirement = await this.#effects.readDelegationRetirement(source);
+    if (retirement === 'recovering') {
+      throw new WorkHubActionEffectFailure(
+        'operation_unavailable',
+        'WorkHub is still resolving the delegated Message owner',
+      );
+    }
+    if (retirement === 'not_retired' && replacement.disposition === 'delegate_existing') {
       await this.#replacementTarget(replacement);
     }
-    await this.#effects.retireDelegation(source);
-    if (replacement.disposition === 'delegate_existing') {
-      // Retirement can await cancellation or Stop long enough for display
-      // metadata to change. Re-read after that destructive boundary and carry
-      // the current name into SQLite's display-identity guard.
-      const target = await this.#replacementTarget(replacement);
-      assignment = { ...assignment, targetSessionName: target.name };
+    if (retirement === 'not_retired') await this.#effects.retireDelegation(source);
+    try {
+      if (replacement.disposition === 'delegate_existing') {
+        // Retirement can await cancellation or Stop long enough for display
+        // metadata or lifecycle state to change. Re-read after that destructive
+        // boundary and carry the current name into SQLite's identity guard.
+        const target = await this.#replacementTarget(replacement);
+        assignment = { ...assignment, targetSessionName: target.name };
+      }
+      return await this.#assign(assignment, context);
+    } catch (error) {
+      // An assignment may have committed before its caller observed a transport
+      // or projection failure. Never append an abort beside a real supersession.
+      const [durable, supersession] = await Promise.all([
+        this.#effects.readAssignment(replacement.actionId),
+        this.#effects.readSupersession(replacement.replacesDelegationId),
+      ]);
+      if (durable && supersession?.replacementDelegationId === durable.delegationId) {
+        return this.#assign(assignmentInputFromRecord(durable), context);
+      }
+      const reason =
+        replacement.disposition === 'delegate_existing'
+          ? await this.#replacementAbortReason(replacement)
+          : undefined;
+      if (reason) await this.#effects.abortReplacement({ replacement, reason });
+      throw error;
     }
-    return this.#assign(assignment, context);
+  }
+
+  async #assertReplacementReplayTarget(
+    input: WorkHubCoordinationActInput,
+    targetSessionId: string,
+  ): Promise<void> {
+    if (
+      input.proposal.disposition !== 'replace' ||
+      input.proposal.target.disposition !== 'delegate_existing' ||
+      input.candidateSetId === undefined
+    ) {
+      return;
+    }
+    const candidateRef = input.proposal.target.candidateRef;
+    const candidates = await this.candidates();
+    if (candidates.candidateSetId !== input.candidateSetId) return;
+    const proposed = candidates.candidates.find(
+      (candidate) => candidate.candidateRef === candidateRef,
+    );
+    if (proposed && proposed.sessionId !== targetSessionId) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub replacement replay cannot change its durable target Session',
+      );
+    }
   }
 
   async #replacementTarget(
@@ -447,6 +544,20 @@ export class WorkHubCoordinationActionGate {
       updatedAt: updatedAt(target),
     });
     return target;
+  }
+
+  async #replacementAbortReason(
+    replacement: WorkHubDelegationReplacementRequestedMessage,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage['reason'] | undefined> {
+    try {
+      await this.#replacementTarget(replacement);
+      return undefined;
+    } catch (error) {
+      if (!(error instanceof WorkHubActionGateFailure)) return undefined;
+      if (error.code === 'candidate_unavailable') return 'target_unavailable';
+      if (error.code === 'target_waiting_for_user') return 'target_waiting_for_user';
+      return undefined;
+    }
   }
 
   async #assign(
@@ -631,6 +742,41 @@ function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string
         }
       : {}),
   });
+}
+
+function replacementActionFingerprint(
+  input: WorkHubCoordinationActInput,
+  targetSessionId: string,
+): `sha256:${string}` {
+  if (input.proposal.disposition !== 'replace') {
+    throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub replacement replay');
+  }
+  return digest({
+    userText: input.userText,
+    disposition: input.proposal.disposition,
+    replacesActionId: input.proposal.replacesActionId,
+    target: {
+      disposition: input.proposal.target.disposition,
+      targetSessionId,
+      ...(input.proposal.target.disposition === 'create_new'
+        ? { title: input.proposal.target.title, workspace: input.create?.workspace }
+        : {}),
+    },
+  });
+}
+
+function isExplicitWorkHubCorrectionCreation(value: string): boolean {
+  const negated =
+    /(?:不要|别|无需|不用|不需要|先不|暂不|禁止)(?:[\p{Script=Han}\w-]{0,8}\s*)?(?:创建|新建|新开|开一个)/iu.test(
+      value,
+    ) ||
+    /\b(?:do\s+not|don't|never|without)(?:\s+[\w-]+){0,4}\s+(?:creat(?:e|ing)|start(?:ing)?|open(?:ing)?)\b/iu.test(
+      value,
+    );
+  if (negated) return false;
+  return /(?:创建|新建|新开|开一个)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|\b(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)\b/iu.test(
+    value,
+  );
 }
 
 function assignmentInputFromRecord(

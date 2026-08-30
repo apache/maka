@@ -28,6 +28,7 @@ import {
   type WorkHubSessionPort,
   type WorkHubCoordinationTurn,
 } from '../../renderer/workhub-controller.js';
+import { createWorkHubRoutePolicy } from '../../renderer/workhub-route-policy.js';
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -1945,6 +1946,30 @@ test('negated and deliberative creation language never creates a Session', async
   assert.equal(negated.kind, 'discussion');
   assert.equal(deliberative.kind, 'discussion');
   assert.deepEqual(created, []);
+});
+
+test('a correction with a negated creation tail never proposes a new Session', () => {
+  const login = session('login', { sessionName: 'Login 登录稳定性', updatedAt: 20 });
+  const payment = session('payment', { sessionName: 'Payment 支付稳定性', updatedAt: 30 });
+  const cases = [
+    '不是这个，换成登录稳定性，不要创建新会话',
+    'Wrong session; switch to Login; do not create a new session',
+    'Wrong session; switch to Login without creating a new session',
+    '不是这个，而是不要真的创建一个新的 Session',
+    'Wrong session; do not actually create a new Session',
+  ];
+
+  for (const text of cases) {
+    const policy = createWorkHubRoutePolicy();
+    policy.rememberTarget(payment.target);
+    const decision = policy.resolve({
+      text,
+      sessions: [login, payment],
+      originPromptBySessionId: new Map(),
+    });
+
+    assert.notEqual(decision.kind, 'new_session', text);
+  }
 });
 
 test('subscribe exposes Session invalidations without inventing WorkHub state', () => {

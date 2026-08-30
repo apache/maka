@@ -80,6 +80,9 @@ export function createDesktopWorkHubCoordinationPort(deps: {
       let disposed = false;
       let ready = false;
       let historyReady = false;
+      let historyGeneration = 0;
+      let handle: Awaited<ReturnType<typeof deps.transcripts.open>> | undefined;
+      let historyLane = Promise.resolve();
       const coordinationMessagesBySequence = new Map<number, StoredMessage>();
       const emit = () => {
         const messages = store.snapshot().messages;
@@ -92,12 +95,25 @@ export function createDesktopWorkHubCoordinationPort(deps: {
           ),
         );
       };
-      const handle = await deps.transcripts.open(
+      const opened = await deps.transcripts.open(
         deps.sessionId,
         (batch) => {
           if (disposed) return;
           try {
-            if (batch.reset) coordinationMessagesBySequence.clear();
+            if (batch.reset) {
+              coordinationMessagesBySequence.clear();
+              ready = false;
+              historyReady = false;
+              const generation = ++historyGeneration;
+              if (handle) {
+                historyLane = historyLane.then(async () => {
+                  if (disposed || generation !== historyGeneration) return;
+                  await rebuildCompleteHistory(generation);
+                }).catch((error) => {
+                  onError(error);
+                });
+              }
+            }
             const changed = store.accept(batch);
             for (const { sequence, message } of store.durableEntries()) {
               if (message.type === 'workhub_coordination') {
@@ -117,8 +133,11 @@ export function createDesktopWorkHubCoordinationPort(deps: {
         onError(error);
         throw error;
       });
-      try {
-        while (!disposed && store.range().hasOlder) {
+      handle = opened;
+
+      async function rebuildCompleteHistory(generation: number): Promise<void> {
+        if (!handle) return;
+        while (!disposed && generation === historyGeneration && store.range().hasOlder) {
           const before = store.range().oldestSequence;
           await handle.loadBefore(before);
           const after = store.range();
@@ -126,21 +145,27 @@ export function createDesktopWorkHubCoordinationPort(deps: {
             throw new Error('WorkHub Coordination transcript history did not advance');
           }
         }
+        if (disposed || generation !== historyGeneration) return;
         const range = store.range();
-        if (!disposed && range.hasNewer && range.durableThrough !== null) {
+        if (range.hasNewer && range.durableThrough !== null) {
           await handle.loadAround(range.durableThrough);
         }
+        if (disposed || generation !== historyGeneration) return;
+        historyReady = true;
+        if (ready) emit();
+      }
+
+      try {
+        await rebuildCompleteHistory(historyGeneration);
       } catch (error) {
         disposed = true;
         await handle.close().catch(() => undefined);
         throw error;
       }
-      historyReady = true;
-      if (ready && !disposed) emit();
       return {
         async close() {
           disposed = true;
-          await handle.close();
+          await handle?.close();
         },
       };
     },
@@ -150,16 +175,16 @@ export function createDesktopWorkHubCoordinationPort(deps: {
 export function projectWorkHubActiveDelegations(
   entries: ReadonlyArray<{ readonly sequence: number; readonly message: StoredMessage }>,
 ): WorkHubActiveDelegation[] {
-  const supersededDelegationIds = new Set(
-    entries.flatMap(({ message }) =>
-      message.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
-        ? [message.supersededDelegationId]
-        : []),
+  const terminalDelegationIds = new Set(
+    entries.flatMap(({ message }) => {
+      const terminal = terminalDelegationLink(message);
+      return terminal ? [terminal.delegationId] : [];
+    }),
   );
   return entries.flatMap(({ message, sequence }) =>
     message.type === 'workhub_coordination' &&
       message.kind === 'delegation_assigned' &&
-      !supersededDelegationIds.has(message.delegationId)
+      !terminalDelegationIds.has(message.delegationId)
       ? [{
           actionId: message.actionId,
           targetSessionId: message.targetSessionId,
@@ -176,12 +201,11 @@ export function projectWorkHubCoordinationTurns(
   );
   const turns: WorkHubCoordinationTurn[] = [];
   const latestUserIndexByTurnId = new Map<string, number>();
-  const supersededDelegationIds = new Set(
-    messages.flatMap((message) =>
-      message.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
-        ? [message.supersededDelegationId]
-        : []),
-  );
+  const terminalLinkState = new Map<string, 'superseded' | 'aborted'>();
+  for (const message of messages) {
+    const terminal = terminalDelegationLink(message);
+    if (terminal) terminalLinkState.set(terminal.delegationId, terminal.state);
+  }
 
   for (const message of messages) {
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
@@ -198,9 +222,7 @@ export function projectWorkHubCoordinationTurns(
           targetMessageId: message.targetMessageId,
           targetTurnId: message.targetTurnId,
           feedbackState: 'accepted',
-          linkState: supersededDelegationIds.has(message.delegationId)
-            ? 'superseded'
-            : 'active',
+          linkState: terminalLinkState.get(message.delegationId) ?? 'active',
         },
         updatedAt: message.ts,
       });
@@ -235,6 +257,19 @@ export function projectWorkHubCoordinationTurns(
       left.updatedAt - right.updatedAt || left.messageId.localeCompare(right.messageId),
     )
     .slice(-WORKHUB_COORDINATION_TURN_LIMIT);
+}
+
+function terminalDelegationLink(
+  message: StoredMessage,
+): { readonly delegationId: string; readonly state: 'superseded' | 'aborted' } | undefined {
+  if (message.type !== 'workhub_coordination') return undefined;
+  if (message.kind === 'delegation_superseded') {
+    return { delegationId: message.supersededDelegationId, state: 'superseded' };
+  }
+  if (message.kind === 'delegation_replacement_aborted') {
+    return { delegationId: message.abortedDelegationId, state: 'aborted' };
+  }
+  return undefined;
 }
 
 function projectState(status: TurnStatus): WorkHubProjectedTurnState {

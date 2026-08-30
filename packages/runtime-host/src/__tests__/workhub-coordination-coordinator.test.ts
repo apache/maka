@@ -714,7 +714,9 @@ function coordinator(
     hasRootTurnAdmission: async () => false,
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
-  sessionActions: Partial<Pick<WorkHubActionGateEffects, 'assign' | 'retireDelegation'>> = {},
+  sessionActions: Partial<
+    Pick<WorkHubActionGateEffects, 'assign' | 'readDelegationRetirement' | 'retireDelegation'>
+  > = {},
 ) {
   return new HostWorkHubCoordinationCoordinator({
     stateRoot: root,
@@ -724,6 +726,7 @@ function coordinator(
     executions,
     sessionActions: {
       assign: async ({ targetSessionId }) => ({ turnId: `turn-${targetSessionId}` }),
+      readDelegationRetirement: async () => 'not_retired',
       retireDelegation: async () => undefined,
       ...sessionActions,
     },

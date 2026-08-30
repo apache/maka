@@ -113,11 +113,13 @@ The initial assignment link does not mirror the target Turn's execution lifecycl
 Target acceptance, running, waiting, completion, failure, abort, and recovery state
 remain ordinary Session facts. WorkHub derives those states as read-only
 projections and does not persist them as independent Coordination Session truth.
-Linked correction records coordination-owned `active` / `superseded` linkage
-without turning target execution status into WorkHub-owned state. The renderer
-rebuilds active linkage from the complete Coordination transcript separately from
-its bounded visible timeline, preserving durable transcript sequence rather than
-wall-clock order.
+Linked correction records coordination-owned `active` / `superseded` / `aborted`
+linkage without turning target execution status into WorkHub-owned state. Here,
+`aborted` means the source link was retired but replacement admission could not
+complete because the selected target became archived, disappeared, or began
+waiting for user input. The renderer rebuilds active linkage from the complete
+Coordination transcript separately from its bounded visible timeline, preserving
+durable transcript sequence rather than wall-clock order.
 
 The ordinary Session records the delegated request, tools, side effects, and
 authoritative result. WorkHub may display a bounded projection or record a
@@ -166,10 +168,19 @@ been committed.
 Before any destructive retirement, replacement persists a
 `delegation_replacement_requested` record whose identity is unique to the source
 delegation. The target Session's ordinary Message authority then either cancels
-the exact still-pending delegated Message or resolves its exact owning Turn; only
-that owning Turn may be stopped. Replacement assignment and the old link's
-`delegation_superseded` proof commit atomically. Retrying the same action recovers
-the crash seam after retirement/Stop and before replacement assignment.
+the exact still-pending delegated Message or resolves how the Message entered an
+execution Turn. A root Turn created by that Message may be stopped; a pre-existing
+user Turn that merely consumed it as steering is shared authority and must remain
+running. Replacement assignment and the old link's `delegation_superseded` proof
+commit atomically. Retrying the same action recovers the crash seam after
+retirement/Stop and before replacement assignment. The replacement fingerprint
+binds the resolved stable target Session id rather than its transient candidate
+reference, so metadata refreshes do not change action identity and a retry cannot
+select a different Session. If the target becomes archived, unavailable, or
+waiting after the destructive retirement boundary, Coordination appends a
+`delegation_replacement_aborted` terminal fact. That auditable fact removes the
+retired source from active linkage and makes later retries return the same terminal
+outcome instead of displaying a stopped, unsuperseded link.
 
 ## Consequences, costs, and reevaluation
 

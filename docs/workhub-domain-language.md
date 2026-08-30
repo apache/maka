@@ -69,11 +69,13 @@ creating.
 
 **delegation**: A bounded reference from a Coordination Turn to one target ordinary
 Session and Turn, including only its identity, disposition, and coordination-owned
-link status (`active` or `superseded`). Delegation links the separately authoritative
-transcripts; it does not copy the target's complete execution transcript into
-WorkHub. Target acceptance, running, waiting, completion, failure, abort, and
-recovery state remain ordinary Session facts and appear in WorkHub only as read-only
-projections.
+link status (`active`, `superseded`, or `aborted`). A link is `aborted` only when a
+correction retired its source but the replacement target became unavailable or
+started waiting before admission; it is not the target Turn's execution status.
+Delegation links the separately authoritative transcripts; it does not copy the
+target's complete execution transcript into WorkHub. Target acceptance, running,
+waiting, completion, failure, abort, and recovery state remain ordinary Session
+facts and appear in WorkHub only as read-only projections.
 
 **Action Gate**: The deterministic Runtime boundary that validates a proposed
 disposition and operation before any write, including target/Host validity,
@@ -88,6 +90,12 @@ the trusted user text and cannot come from routing output alone. The Coordinatio
 Session durably claims one replacement intent per source delegation in transcript
 order. It delegates exact pending-Message cancellation or owning-Turn Stop to the
 target Session, then atomically records the replacement link and supersession.
+Only a root Turn created by the delegated Message may be stopped; consuming the
+Message as steering does not give WorkHub ownership of the surrounding user Turn.
+Replacement replay is bound to the resolved stable target Session identity. If
+that target becomes unavailable or waits for user input after source retirement,
+the Coordination transcript records an auditable replacement-aborted terminal
+fact and removes the retired source from active linkage.
 Correction never replaces either Session's transcript authority.
 
 **R2.4**: The deterministic context-continuity routing baseline. It remains useful

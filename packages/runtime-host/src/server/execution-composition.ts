@@ -1282,6 +1282,23 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       executions: coordinator,
       sessionActions: {
+        readDelegationRetirement: async (assignment) => {
+          const disposition = await messages.readMessageExecutionDisposition(
+            assignment.targetSessionId,
+            assignment.targetMessageId,
+          );
+          if (disposition.kind === 'recovering') return 'recovering';
+          if (disposition.kind === 'pending') return 'not_retired';
+          if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
+            return 'retired';
+          }
+          const rootState = coordinator.readRootState(assignment.targetSessionId);
+          return rootState.kind === 'active' &&
+            rootState.turnId === disposition.turnId &&
+            rootState.runId === disposition.runId
+            ? 'not_retired'
+            : 'retired';
+        },
         retireDelegation: async (assignment) => {
           const disposition = await messages.cancelMessageIfPending(
             assignment.targetSessionId,
@@ -1293,7 +1310,16 @@ export async function createExecutionRuntimeHostComposition(
               'WorkHub is still resolving the delegated Message owner',
             );
           }
-          if (disposition.kind === 'owned') {
+          if (disposition.kind === 'shared_turn') return;
+          if (disposition.kind === 'owned_root') {
+            const rootState = coordinator.readRootState(assignment.targetSessionId);
+            if (
+              rootState.kind !== 'active' ||
+              rootState.turnId !== disposition.turnId ||
+              rootState.runId !== disposition.runId
+            ) {
+              return;
+            }
             await coordinator.stopRoot({
               sessionId: assignment.targetSessionId,
               turnId: disposition.turnId,

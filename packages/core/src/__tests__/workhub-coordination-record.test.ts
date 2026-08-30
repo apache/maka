@@ -170,12 +170,32 @@ describe('WorkHub Coordination stored records', () => {
       supersededDelegationId: 'original-delegation',
       replacementDelegationId: 'replacement-delegation',
     } as const;
+    const aborted = {
+      type: 'workhub_coordination',
+      id: 'replacement-aborted-id',
+      turnId: 'replacement-action',
+      ts: 3,
+      schemaVersion: 2,
+      kind: 'delegation_replacement_aborted',
+      actionId: 'replacement-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'replacement-action',
+      abortedActionId: 'original-action',
+      abortedDelegationId: 'original-delegation',
+      targetSessionId: 'login',
+      reason: 'target_unavailable',
+    } as const;
 
     assert.deepEqual(decodeCanonicalMessage(replacement), replacement);
     assert.deepEqual(decodeCanonicalMessage(assigned), assigned);
     assert.deepEqual(decodeCanonicalMessage(superseded), superseded);
+    assert.deepEqual(decodeCanonicalMessage(aborted), aborted);
     assert.throws(
       () => decodeCanonicalMessage({ ...superseded, replacementDelegationId: '' }),
+      /Invalid stored message schema/u,
+    );
+    assert.throws(
+      () => decodeCanonicalMessage({ ...aborted, reason: 'retry_later' }),
       /Invalid stored message schema/u,
     );
   });

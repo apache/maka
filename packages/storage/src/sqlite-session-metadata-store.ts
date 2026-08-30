@@ -1815,6 +1815,17 @@ export class SqliteSessionMetadataStore {
         ) {
           throw new SessionMetadataConflictError('WorkHub supersession source is unavailable');
         }
+        const abortSuffix = createHash('sha256')
+          .update(assignment.replacesDelegationId)
+          .digest('hex')
+          .slice(0, 48);
+        const existingAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${abortSuffix}`,
+        );
+        if (existingAbort) {
+          throw new SessionMetadataConflictError('WorkHub delegation replacement is aborted');
+        }
         const existingSupersession = this.readMessageByIdSync(
           WORKHUB_COORDINATION_SESSION_ID,
           supersession.id,

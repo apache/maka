@@ -108,7 +108,7 @@ export interface WorkHubCoordinationTurn {
     readonly targetMessageId: string;
     readonly targetTurnId: string;
     readonly feedbackState: WorkHubDelegationExecutionState;
-    readonly linkState: 'active' | 'superseded';
+    readonly linkState: 'active' | 'superseded' | 'aborted';
   };
   updatedAt: number;
 }

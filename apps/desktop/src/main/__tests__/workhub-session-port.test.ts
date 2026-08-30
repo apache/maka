@@ -220,6 +220,51 @@ test('rebuilds active linkage outside the bounded visible timeline in transcript
   }]);
 });
 
+test('a durable replacement abort terminalizes the retired source linkage', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const aborted: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'replacement-aborted',
+    turnId: 'replacement-action',
+    ts: 2,
+    schemaVersion: 2,
+    kind: 'delegation_replacement_aborted',
+    actionId: 'replacement-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'replacement-action',
+    abortedActionId: 'action-old',
+    abortedDelegationId: 'payments-delegation',
+    targetSessionId: 'login',
+    reason: 'target_unavailable',
+  };
+
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: aborted },
+  ]), []);
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment, aborted])[0]?.assignment?.linkState,
+    'aborted',
+  );
+});
+
 test('Coordination transcript adapter emits an initial empty ready snapshot and closes cleanly', async () => {
   const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
   const snapshots: unknown[] = [];
@@ -275,6 +320,160 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
   assert.deepEqual(snapshots, [[[], []]]);
   await handle.close();
   assert.equal(closes, 1);
+});
+
+test('Coordination transcript reset rebuilds active linkage outside the resident window', async () => {
+  const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const recent: StoredMessage = {
+    type: 'user',
+    id: 'recent-user',
+    turnId: 'recent-turn',
+    ts: 2,
+    text: 'Recent coordination',
+  };
+  const fragment = (message: StoredMessage, sequence: number) => {
+    const data = new TextEncoder().encode(JSON.stringify(message));
+    return {
+      source: 'durable' as const,
+      identity: sequence,
+      order: null,
+      byteOffset: 0,
+      totalBytes: data.byteLength,
+      data,
+    };
+  };
+  let deliver: ((batch: DesktopTranscriptBatch) => void) | undefined;
+  let generation = 'generation-1';
+  let historyLoads = 0;
+  let historyBatchReady = true;
+  const snapshots: unknown[] = [];
+  const adapter = createDesktopWorkHubCoordinationPort({
+    sessionId,
+    transcripts: {
+      open: async (_requestedSessionId, handler) => {
+        deliver = handler;
+        handler({
+          sessionId: 'coordination',
+          deliverySequence: 1,
+          generation,
+          hostEpoch: 'epoch-1',
+          durableThrough: 1,
+          fragments: [fragment(recent, 1)],
+          evictedDurableSequences: [],
+          completedOverlayMessageIds: [],
+          hasOlder: true,
+          hasNewer: false,
+          reset: true,
+          ready: true,
+        });
+        return {
+          sessionId,
+          generation,
+          hostEpoch: 'epoch-1',
+          readThroughMessageId: null,
+          loadBefore: async () => {
+            historyLoads += 1;
+            handler({
+              sessionId: 'coordination',
+              deliverySequence: historyLoads + 1,
+              generation,
+              hostEpoch: 'epoch-1',
+              durableThrough: 1,
+              fragments: [fragment(assignment, 0)],
+              evictedDurableSequences: [],
+              completedOverlayMessageIds: [],
+              hasOlder: false,
+              hasNewer: false,
+              reset: false,
+              ready: historyBatchReady,
+            });
+          },
+          loadAround: async () => {},
+          close: async () => {},
+        };
+      },
+    },
+    record: async (input) => ({ turnId: input.turnId }),
+    candidates: async () => ({
+      candidateSetId: `sha256:${'b'.repeat(64)}`,
+      candidates: [],
+    }),
+    act: async () => ({
+      ok: true,
+      result: { disposition: 'answer_here', coordinationTurnId: 'coordination-turn' },
+    }),
+  });
+
+  const handle = await adapter.open(
+    (_turns, activeDelegations) => snapshots.push(activeDelegations),
+    (error) => assert.fail(String(error)),
+  );
+  assert.deepEqual(snapshots.at(-1), [{
+    actionId: 'action-old',
+    targetSessionId: desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' }),
+    sequence: 0,
+  }]);
+
+  generation = 'generation-2';
+  historyBatchReady = false;
+  const snapshotsBeforeReset = snapshots.length;
+  deliver?.({
+    sessionId: 'coordination',
+    deliverySequence: 3,
+    generation,
+    hostEpoch: 'epoch-1',
+    durableThrough: 1,
+    fragments: [fragment(recent, 1)],
+    evictedDurableSequences: [],
+    completedOverlayMessageIds: [],
+    hasOlder: true,
+    hasNewer: false,
+    reset: true,
+    ready: false,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(historyLoads, 2);
+  assert.equal(snapshots.length, snapshotsBeforeReset);
+  deliver?.({
+    sessionId: 'coordination',
+    deliverySequence: 5,
+    generation,
+    hostEpoch: 'epoch-1',
+    durableThrough: 1,
+    fragments: [fragment(recent, 1)],
+    evictedDurableSequences: [],
+    completedOverlayMessageIds: [],
+    hasOlder: false,
+    hasNewer: false,
+    reset: false,
+    ready: true,
+  });
+  assert.deepEqual(snapshots.at(-1), [{
+    actionId: 'action-old',
+    targetSessionId: desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' }),
+    sequence: 0,
+  }]);
+  await handle.close();
 });
 
 test('projects durable Session messages into an ordered WorkHub conversation', () => {

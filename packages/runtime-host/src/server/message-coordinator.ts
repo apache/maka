@@ -180,8 +180,13 @@ export interface HostMessageStopFence {
 
 export type HostMessageCancellationDisposition =
   | { readonly kind: 'cancelled' }
-  | { readonly kind: 'owned'; readonly turnId: string; readonly runId: string }
+  | { readonly kind: 'owned_root'; readonly turnId: string; readonly runId: string }
+  | { readonly kind: 'shared_turn'; readonly turnId: string; readonly runId: string }
   | { readonly kind: 'recovering' };
+
+export type HostMessageExecutionDisposition =
+  | HostMessageCancellationDisposition
+  | { readonly kind: 'pending' };
 
 /** Root execution operations that must share the message coordinator's Session gate. */
 export interface HostMessageRootPort {
@@ -459,47 +464,21 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       | { messageId: string; state: 'owned'; turnId: string; runId: string }
     > = [];
     for (const messageId of input.messageIds) {
-      const receipt = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        input.sessionId,
-        messageId,
-      );
-      if (
-        receipt?.admission.sessionId === input.sessionId &&
-        receipt.sourceMessage.messageId === messageId
-      ) {
-        // A root source receipt is the latest durable ownership proof and
-        // therefore outranks the steering location from which a Message may
-        // have been folded into this successor.
+      const disposition = await this.#resolveMessageExecution(input.sessionId, messageId);
+      if (disposition.kind === 'owned_root' || disposition.kind === 'shared_turn') {
         resolutions.push({
           messageId,
           state: 'owned',
-          turnId: receipt.admission.turnId,
-          runId: receipt.admission.runId,
+          turnId: disposition.turnId,
+          runId: disposition.runId,
         });
         continue;
       }
-      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
-        input.sessionId,
-        messageId,
-      );
-      if (
-        steering?.event.sessionId === input.sessionId &&
-        steering.event.refs?.providerEventId === messageId
-      ) {
-        resolutions.push({
-          messageId,
-          state: 'owned',
-          turnId: steering.event.turnId,
-          runId: steering.event.runId,
-        });
-        continue;
-      }
-      if (await this.#admissions.hasCancelledMessageAdmission(input.sessionId, messageId)) {
+      if (disposition.kind === 'cancelled') {
         resolutions.push({ messageId, state: 'cancelled' });
         continue;
       }
-      const pending = await this.#admissions.readMessageAdmission(input.sessionId, messageId);
-      if (pending?.sessionId === input.sessionId && pending.messageId === messageId) {
+      if (disposition.kind === 'pending') {
         resolutions.push({ messageId, state: 'pending' });
       }
     }
@@ -516,39 +495,8 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
     messageId: string,
   ): Promise<HostMessageCancellationDisposition> {
     return this.#sessionAdmission.run(sessionId, async () => {
-      const receipt = await this.#durableProof.readRootTurnSourceMessageReceipt(
-        sessionId,
-        messageId,
-      );
-      if (
-        receipt?.admission.sessionId === sessionId &&
-        receipt.sourceMessage.messageId === messageId
-      ) {
-        return {
-          kind: 'owned',
-          turnId: receipt.admission.turnId,
-          runId: receipt.admission.runId,
-        };
-      }
-      const steering = await this.#durableProof.readImmutableSteeringMessageProof(
-        sessionId,
-        messageId,
-      );
-      if (
-        steering?.event.sessionId === sessionId &&
-        steering.event.refs?.providerEventId === messageId
-      ) {
-        return {
-          kind: 'owned',
-          turnId: steering.event.turnId,
-          runId: steering.event.runId,
-        };
-      }
-      if (await this.#admissions.hasCancelledMessageAdmission(sessionId, messageId)) {
-        return { kind: 'cancelled' };
-      }
-      const pending = await this.#admissions.readMessageAdmission(sessionId, messageId);
-      if (!pending || pending.sessionId !== sessionId) return { kind: 'recovering' };
+      const disposition = await this.#resolveMessageExecution(sessionId, messageId);
+      if (disposition.kind !== 'pending') return disposition;
 
       const state = this.#sessions.get(sessionId);
       const inFlight =
@@ -581,6 +529,56 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       }
       return { kind: 'cancelled' };
     });
+  }
+
+  readMessageExecutionDisposition(
+    sessionId: string,
+    messageId: string,
+  ): Promise<HostMessageExecutionDisposition> {
+    return this.#sessionAdmission.run(sessionId, () =>
+      this.#resolveMessageExecution(sessionId, messageId),
+    );
+  }
+
+  async #resolveMessageExecution(
+    sessionId: string,
+    messageId: string,
+  ): Promise<HostMessageExecutionDisposition> {
+    const receipt = await this.#durableProof.readRootTurnSourceMessageReceipt(sessionId, messageId);
+    if (
+      receipt?.admission.sessionId === sessionId &&
+      receipt.sourceMessage.messageId === messageId
+    ) {
+      // A root source receipt is the latest durable ownership proof and
+      // therefore outranks the steering location from which a Message may
+      // have been folded into this successor.
+      return {
+        kind: 'owned_root',
+        turnId: receipt.admission.turnId,
+        runId: receipt.admission.runId,
+      };
+    }
+    const steering = await this.#durableProof.readImmutableSteeringMessageProof(
+      sessionId,
+      messageId,
+    );
+    if (
+      steering?.event.sessionId === sessionId &&
+      steering.event.refs?.providerEventId === messageId
+    ) {
+      return {
+        kind: 'shared_turn',
+        turnId: steering.event.turnId,
+        runId: steering.event.runId,
+      };
+    }
+    if (await this.#admissions.hasCancelledMessageAdmission(sessionId, messageId)) {
+      return { kind: 'cancelled' };
+    }
+    const pending = await this.#admissions.readMessageAdmission(sessionId, messageId);
+    return pending?.sessionId === sessionId && pending.messageId === messageId
+      ? { kind: 'pending' }
+      : { kind: 'recovering' };
   }
 
   retireSessions(sessionIds: readonly string[]): void {

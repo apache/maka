@@ -373,6 +373,16 @@ function naturalCorrectionTargetText(value: string): string | undefined {
 }
 
 function looksLikeCorrectionCreation(value: string): boolean {
+  if (
+    /(?:不要|别|无需|不用|不需要|先不|暂不|禁止)(?:[\p{Script=Han}\w-]{0,8}\s*)?(?:创建|新建|新开|开一个)/iu.test(
+      value,
+    ) ||
+    /\b(?:do\s+not|don't|never|without)(?:\s+[\w-]+){0,4}\s+(?:creat(?:e|ing)|start(?:ing)?|open(?:ing)?)\b/iu.test(
+      value,
+    )
+  ) {
+    return false;
+  }
   return /(?:创建|新建|新开|开一个)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|\b(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)\b/iu.test(
     value,
   );

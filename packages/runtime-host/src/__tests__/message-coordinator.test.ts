@@ -502,6 +502,37 @@ test('exact pending cancellation removes only the linked Message', async () => {
   );
 });
 
+test('a consumed steering Message cannot claim ownership of its pre-existing root Turn', async () => {
+  const fixture = createFixture();
+  fixture.events.push(steeringEvent('linked-message', 'wrong delegation'));
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    {
+      kind: 'shared_turn',
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+    },
+  );
+});
+
+test('a root source Message owns only the root Turn it created', async () => {
+  const fixture = createFixture();
+  fixture.receipts.set(
+    'linked-message',
+    sourceReceipt('linked-message', 'wrong delegation', 'current_turn', 'turn_started'),
+  );
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    {
+      kind: 'owned_root',
+      turnId: 'durable-turn',
+      runId: 'durable-run',
+    },
+  );
+});
+
 test('message execution query reports the Turn that durably owns each Message', async () => {
   const fixture = createFixture();
   const pendingContent = { text: 'not handed off yet' };
