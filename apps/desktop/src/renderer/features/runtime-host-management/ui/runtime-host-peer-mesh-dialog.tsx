@@ -68,7 +68,7 @@ type PeerMeshDialogView =
     };
 
 type PeerMeshWorkingAction =
-  | 'sync'
+  | 'refresh'
   | 'create'
   | 'join'
   | 'invite'
@@ -270,15 +270,17 @@ export function RuntimeHostPeerMeshDialog(props: {
     return completed && !cancelled && !closed.current;
   }
 
-  async function reconcile(): Promise<void> {
-    const completed = await runOperation('sync', async (operationId) => {
-      const result = await services.execute(activeTarget, 'reconcile', {
-        operationId,
-      });
-      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
-      setSnapshot(result);
-    });
-    if (completed) await refresh().catch(() => undefined);
+  async function refreshNow(): Promise<void> {
+    if (working || closed.current) return;
+    setWorkingAction('refresh');
+    setError(undefined);
+    try {
+      await refresh();
+    } catch (failure) {
+      if (!closed.current) setError(peerMeshErrorMessage(failure, copy.unknownError));
+    } finally {
+      if (!closed.current) setWorkingAction(undefined);
+    }
   }
 
   function cancelOperation(): void {
@@ -537,14 +539,16 @@ export function RuntimeHostPeerMeshDialog(props: {
                 <Banner
                   status="info"
                   title={copy.working[workingAction]}
-                  endContent={workingAction === 'enable-peer' ? undefined : (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      label={copy.cancel}
-                      onClick={cancelOperation}
-                    />
-                  )}
+                  endContent={
+                    workingAction === 'enable-peer' || workingAction === 'refresh' ? undefined : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        label={copy.cancel}
+                        onClick={cancelOperation}
+                      />
+                    )
+                  }
                 />
               ) : null}
               {error ? <Banner status="error" title={copy.failed} description={error} /> : null}
@@ -566,7 +570,7 @@ export function RuntimeHostPeerMeshDialog(props: {
                   onClose={(meshId) => void mutate('close', meshId)}
                   onJoin={() => setView({ kind: 'join' })}
                   onCreate={() => void createMesh()}
-                  onRefresh={() => void reconcile()}
+                  onRefresh={() => void refreshNow()}
                   onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
                   onRename={rename}
                   onRenameMesh={renameMesh}
@@ -1374,11 +1378,11 @@ function peerMeshCopy(locale: string) {
           '此 Host 的 Direct peer 连接正在使用中，请先在 Host 列表中将它停用。',
         enablePeerConnection: '开启 Peer 连接',
         peerConnectionStarting: 'Peer 连接已开启，Mesh endpoint 正在就绪',
-        peerConnectionStartingHint: '通常只需几秒；也可以立即重新同步。',
+        peerConnectionStartingHint: '通常只需几秒；也可以立即重新检查。',
         peerConnectionUpgradeRequired: '此 Runtime Host 版本尚不支持 Peer Mesh 管理',
         peerConnectionUpgradeRequiredHint: '请先更新此 Host，再回来开启 Peer 连接。',
         working: {
-          sync: '正在恢复并验证 Mesh 路径…',
+          refresh: '正在刷新 Peer Mesh…',
           create: '正在创建 Mesh…',
           join: '正在加入 Mesh…',
           invite: '正在准备邀请…',
@@ -1459,7 +1463,7 @@ function peerMeshCopy(locale: string) {
         invitationCopied: '邀请码已复制',
         copyInvitation: '复制邀请码',
         create: '创建 Mesh',
-        refresh: '同步',
+        refresh: '刷新',
         back: '返回',
         leave: '退出 Mesh',
         closeMesh: '关闭 Mesh',
@@ -1491,11 +1495,11 @@ function peerMeshCopy(locale: string) {
           "This Host's Direct peer connection is in use. Disable it in the Host list before changing the listener.",
         enablePeerConnection: 'Enable peer connectivity',
         peerConnectionStarting: 'Peer connectivity is enabled; the Mesh endpoint is starting',
-        peerConnectionStartingHint: 'This normally takes a few seconds. You can also sync now.',
+        peerConnectionStartingHint: 'This normally takes a few seconds. You can also check again.',
         peerConnectionUpgradeRequired: 'This Runtime Host version cannot manage Peer Mesh',
         peerConnectionUpgradeRequiredHint: 'Update this Host before enabling peer connectivity.',
         working: {
-          sync: 'Recovering and verifying Mesh routes…',
+          refresh: 'Refreshing Peer Mesh…',
           create: 'Creating Mesh…',
           join: 'Joining Mesh…',
           invite: 'Preparing invitation…',
@@ -1577,7 +1581,7 @@ function peerMeshCopy(locale: string) {
         invitationCopied: 'Invitation copied',
         copyInvitation: 'Copy invitation',
         create: 'Create Mesh',
-        refresh: 'Sync',
+        refresh: 'Refresh',
         back: 'Back',
         leave: 'Leave Mesh',
         closeMesh: 'Close Mesh',
