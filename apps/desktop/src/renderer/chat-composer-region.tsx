@@ -22,10 +22,6 @@ import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } f
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
-  useComposerDirectories,
-  type ComposerDirectoriesController,
-} from './use-composer-directories.js';
-import {
   readNewTaskReloadDraft,
   readNewTaskReloadIntent,
   UNRESOLVED_NEW_TASK_DRAFT_KEY,
@@ -103,14 +99,11 @@ interface ChatComposerRegionProps
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
-  directoryController: ComposerDirectoriesController;
-  directoryDraftKey: string;
-  directoryHostId?: string;
+  directoryComposerProps: Pick<
+    ComponentProps<typeof Composer>,
+    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
+  >;
   directoryPickerEnabled: boolean;
-  pickDirectory(): ReturnType<typeof window.maka.attachments.pickDirectory>;
-  directoryToastApi: {
-    error(title: string, description?: string): void;
-  };
 }
 
 export function ChatComposerRegion({
@@ -128,22 +121,11 @@ export function ChatComposerRegion({
   respondToUserQuestion,
   stop,
   boundaryUnreadableNotice,
-  directoryController,
-  directoryDraftKey,
-  directoryHostId,
+  directoryComposerProps,
   directoryPickerEnabled,
-  pickDirectory,
-  directoryToastApi,
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
-  const directories = useComposerDirectories({
-    controller: directoryController,
-    draftKey: directoryDraftKey,
-    hostId: directoryHostId,
-    pick: pickDirectory,
-    toastApi: directoryToastApi,
-  });
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -249,9 +231,10 @@ export function ChatComposerRegion({
         mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
         mentionSkillsLoading={mentions?.mentionSkillsLoading}
         onSearchMentionFiles={mentions?.searchMentionFiles}
-        pendingDirectories={directories.pendingDirectories}
-        onRemoveDirectory={directories.removeDirectory}
-        onPickDirectory={directoryPickerEnabled ? directories.pickDirectory : undefined}
+        {...directoryComposerProps}
+        onPickDirectory={
+          directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+        }
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
         draftKey={activeId ?? newTaskDraftKey}
         draftPersistence={newTaskDraftPersistence}

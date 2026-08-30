@@ -23,31 +23,39 @@ import { act, createElement } from 'react';
 import { LocaleProvider } from '@maka/ui';
 import { normalizeSessionSendCommand } from '../permission-response-guard.js';
 import {
-  createComposerDirectoriesController,
-  useComposerDirectories,
-} from '../../renderer/use-composer-directories.js';
+  useComposerAttachments,
+  type ComposerAttachmentService,
+} from '../../renderer/use-composer-attachments.js';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 
 afterEach(cleanupFakeDom);
 
-type Options = Parameters<typeof useComposerDirectories>[0];
-type State = ReturnType<typeof useComposerDirectories>;
+type Picker = NonNullable<ComposerAttachmentService['pickDirectory']>;
+type Options = { draftKey: string; hostId?: string; pick: Picker };
+type State = ReturnType<typeof useComposerAttachments>;
 const reference = { hostId: 'host-a', path: '/workspace/source' };
 
 async function mount(initial: Partial<Options> = {}) {
   const { root } = installReactRenderer();
   let state!: State;
   const errors: string[] = [];
-  const controller = createComposerDirectoriesController();
   let options: Options = {
-    controller,
-    draftKey: 'draft-a', hostId: 'host-a',
+    draftKey: 'draft-a',
+    hostId: 'host-a',
     pick: async () => ({ ok: true, reference }),
-    toastApi: { error: (title, description) => errors.push(description ?? title) },
     ...initial,
   };
   function Probe() {
-    state = useComposerDirectories(options);
+    state = useComposerAttachments({
+      draftKey: options.draftKey,
+      directoryHostId: options.hostId,
+      service: {
+        pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
+        previewApproval: async () => ({ ok: false, reason: 'not used' }),
+        pickDirectory: options.pick,
+      },
+      toastApi: { error: (title, description) => errors.push(description ?? title) },
+    });
     return null;
   }
   const render = async (patch: Partial<Options> = {}) => {
@@ -60,11 +68,11 @@ async function mount(initial: Partial<Options> = {}) {
 
 test('directory picker cancellation, duplicates and removal leave the draft consistent', async () => {
   const probe = await mount({ pick: async () => ({ ok: false, reason: 'cancelled' }) });
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   assert.deepEqual(probe.state().pendingDirectories, []);
   await probe.render({ pick: async () => ({ ok: true, reference }) });
-  await act(() => probe.state().pickDirectory!());
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   assert.deepEqual(probe.state().pendingDirectories, [reference]);
   await act(() => probe.state().removeDirectory(0));
   assert.deepEqual(probe.state().pendingDirectories, []);
@@ -73,11 +81,11 @@ test('directory picker cancellation, duplicates and removal leave the draft cons
 
 test('discards a picker reply after its draft or Host changes', async () => {
   for (const patch of [{ draftKey: 'draft-b' }, { hostId: 'host-b' }]) {
-    let resolve!: (result: Awaited<ReturnType<Options['pick']>>) => void;
-    const pending = new Promise<Awaited<ReturnType<Options['pick']>>>((settle) => { resolve = settle; });
+    let resolve!: (result: Awaited<ReturnType<Picker>>) => void;
+    const pending = new Promise<Awaited<ReturnType<Picker>>>((settle) => { resolve = settle; });
     const probe = await mount({ pick: () => pending });
     let picked!: Promise<void>;
-    await act(() => { picked = probe.state().pickDirectory!(); });
+    await act(() => { picked = probe.state().directoryComposerProps.onPickDirectory!(); });
     await probe.render(patch);
     await act(async () => { resolve({ ok: true, reference }); await picked; });
     assert.deepEqual(probe.state().pendingDirectories, []);
@@ -90,10 +98,10 @@ test('rejects a foreign Host picker result and does not pick without a local Hos
     picks += 1;
     return { ok: true, reference: { ...reference, hostId: 'host-b' } };
   } });
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   assert.equal(picks, 0);
   await probe.render({ hostId: 'host-a' });
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   assert.equal(probe.errors.length, 1);
   assert.deepEqual(probe.state().pendingDirectories, []);
 });
@@ -103,16 +111,16 @@ test('caps concurrent picker results and clearing a submitted draft keeps newer 
   const probe = await mount({ pick: async () => ({
     ok: true, reference: { ...reference, path: '/workspace/' + ++sequence },
   }) });
-  const pick = probe.state().pickDirectory!;
+  const pick = probe.state().directoryComposerProps.onPickDirectory!;
   await act(() => Promise.all(Array.from({ length: 6 }, pick)).then(() => undefined));
   assert.equal(probe.state().pendingDirectories.length, 4);
-  assert.equal(probe.state().pickDirectory, undefined);
+  assert.equal(probe.state().directoryComposerProps.onPickDirectory, undefined);
   const submitted = probe.state().pendingDirectories;
   const clearSubmitted = probe.state().clearSubmittedDirectories;
   await act(() => probe.state().removeDirectory(0));
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   await probe.render({ draftKey: 'draft-b' });
-  await act(() => probe.state().pickDirectory!());
+  await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   await act(() => clearSubmitted(submitted));
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a different draft');
   await probe.render({ draftKey: 'draft-a' });

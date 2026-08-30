@@ -215,10 +215,6 @@ import {
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
-import {
-  ComposerDirectoriesProvider,
-  type ComposerDirectoriesController,
-} from './use-composer-directories';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
 import { ComposerMentionsProvider, type ComposerMentionsSurface } from './composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
@@ -313,18 +309,13 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
       <AstryxLocaleProvider>
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
-            <ComposerDirectoriesProvider>
-              {(composerDirectories) => (
-                <AppShellContent
-                  initialOnboardingSnapshot={initialOnboardingSnapshot}
-                  uiLocale={uiLocale}
-                  uiLocaleOverride={uiLocaleOverride}
-                  setUiLocaleOverride={setUiLocaleOverride}
-                  setUiLocalePreference={setUiLocalePreference}
-                  composerDirectories={composerDirectories}
-                />
-              )}
-            </ComposerDirectoriesProvider>
+            <AppShellContent
+              initialOnboardingSnapshot={initialOnboardingSnapshot}
+              uiLocale={uiLocale}
+              uiLocaleOverride={uiLocaleOverride}
+              setUiLocaleOverride={setUiLocaleOverride}
+              setUiLocalePreference={setUiLocalePreference}
+            />
           </ErrorBoundary>
         </ToastProvider>
       </AstryxLocaleProvider>
@@ -349,14 +340,12 @@ function AppShellContent({
   uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
-  composerDirectories,
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
-  composerDirectories: ComposerDirectoriesController;
 }) {
   const toastApi = useToast();
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
@@ -419,15 +408,27 @@ function AppShellContent({
   // the composer the user is looking at, and an in-flight send needs an owner
   // that cannot move under it. See NEW_TASK_PENDING_KEY.
   const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
+  const directoryHostId = activeId
+    ? (activeCatalogSession?.profileKind === 'local'
+        ? activeCatalogSession.runtimeHostId
+        : undefined)
+    : (taskEntry.selectors.selectedHost?.kind === 'local'
+        ? taskEntry.selectors.target?.hostId
+        : undefined);
   const {
     pendingAttachments,
+    submittableAttachments,
+    hasPendingContext,
+    directoryOptions,
+    directoryComposerProps,
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
     removeAttachment,
-    clearSubmittedAttachments,
+    clearSubmittedContext,
   } = useComposerAttachments({
     draftKey: attachmentDraftKey,
+    directoryHostId,
     toastApi,
     service: window.maka.attachments,
   });
@@ -847,12 +848,6 @@ function AppShellContent({
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
-  const directoryHostId = activeId
-    ? (activeDesktopSession?.profileKind === 'local' ? activeDesktopSession.runtimeHostId : undefined)
-    : (taskEntry.selectors.selectedHost?.kind === 'local'
-        ? taskEntry.selectors.target?.hostId
-        : undefined);
-  const directoryDraftKey = activeId ?? `new-task-directories:${directoryHostId ?? 'unresolved'}`;
   function openSessionSharing(session: DesktopSessionSummary): void {
     sharedSessionDialog.open({
       sessionId: session.id,
@@ -1910,8 +1905,7 @@ function AppShellContent({
     activeIdRef,
     composerRef,
     messages,
-    hasPendingAttachments: () =>
-      pendingAttachments.length > 0 || composerDirectories.get(directoryDraftKey).length > 0,
+    hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
     refreshMessages,
     refreshSessions,
@@ -1954,9 +1948,8 @@ function AppShellContent({
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean> {
-    const pendingDirectories = composerDirectories.get(directoryDraftKey);
-    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const pending = submittableAttachments;
+    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     try {
       const sent = await enqueueMessage(
         sessionId,
@@ -1964,7 +1957,7 @@ function AppShellContent({
         mode === 'steer' ? 'current_turn' : 'next_turn',
         pending,
         {
-          ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
+          ...directoryOptions,
           ...(quotes ? { quotes: [...quotes] } : {}),
           ...(metadata?.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
@@ -1974,9 +1967,8 @@ function AppShellContent({
       // Refused: the composer keeps the draft, the attachments and the quotes,
       // because the user has to change something and send it again.
       if (!sent) return false;
-      if (pending) clearSubmittedAttachments(pending);
+      clearSubmittedContext(pending);
       if (quotes) clearQuotes();
-      composerDirectories.clearSubmitted(directoryDraftKey, pendingDirectories);
       return true;
     } catch (error) {
       if (activeIdRef.current === sessionId) {
@@ -1995,7 +1987,6 @@ function AppShellContent({
     text: string,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean | void> {
-    const pendingDirectories = composerDirectories.get(directoryDraftKey);
     const revision = revisionDraftRef.current;
     const revisionSend = Boolean(
       revision && activeIdRef.current === revision.draftSessionId,
@@ -2033,8 +2024,7 @@ function AppShellContent({
       revisionSend &&
       revision &&
       text.trim() === revision.originalText.trim() &&
-      pendingAttachments.length === 0 &&
-      pendingDirectories.length === 0
+      !hasPendingContext
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
@@ -2042,7 +2032,7 @@ function AppShellContent({
     }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (pendingAttachments.length > 0 || pendingDirectories.length > 0) {
+      if (hasPendingContext) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
@@ -2086,10 +2076,9 @@ function AppShellContent({
         return false;
       }
       if (
-        pendingAttachments.length > 0 ||
-        pendingDirectories.length > 0 ||
-        pendingQuotes.length > 0 ||
-        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+        hasPendingContext ||
+        pendingQuotes.length ||
+        metadata?.workspaceFileReferences?.length
       ) {
         toastApi.info(
           shellCopy.sideChatContextPendingTitle,
@@ -2126,11 +2115,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2142,9 +2131,10 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
-      if (ok !== false) composerDirectories.clearSubmitted(directoryDraftKey, pendingDirectories);
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+      }
       return ok;
     }
     if (slashCommand?.kind === 'graph') {
@@ -2173,11 +2163,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
-        ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2189,28 +2179,28 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
-      if (ok !== false) composerDirectories.clearSubmitted(directoryDraftKey, pendingDirectories);
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+      }
       return ok;
     }
-    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
+    const pending = submittableAttachments;
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
-      ...(pendingDirectories.length ? { directoryReferences: [...pendingDirectories] } : {}),
+      ...directoryOptions,
       ...(quotes ? { quotes } : {}),
-      ...(workspaceFileReferences.length > 0
+      ...(workspaceFileReferences.length
         ? { workspaceFileReferences }
         : {}),
     });
-    if (ok !== false && pending) clearSubmittedAttachments(pending);
-    if (ok !== false && quotes) clearQuotes();
-    if (ok !== false) composerDirectories.clearSubmitted(directoryDraftKey, pendingDirectories);
-    if (ok !== false && sessionId) {
-      delete retractedWorkspaceReferencesRef.current[sessionId];
+    if (ok !== false) {
+      clearSubmittedContext(pending);
+      if (quotes) clearQuotes();
+      if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
     }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
@@ -2981,14 +2971,10 @@ function AppShellContent({
                   activeQuestion={activeQuestion}
                   respondToUserQuestion={respondToUserQuestion}
                   stop={stop}
-                  directoryController={composerDirectories}
-                  directoryDraftKey={directoryDraftKey}
-                  directoryHostId={directoryHostId}
-                  directoryPickerEnabled={Boolean(
+                  directoryComposerProps={directoryComposerProps}
+                  directoryPickerEnabled={!!(
                     canStageComposerContext && directoryHostId && !revisionDraft
                   )}
-                  pickDirectory={window.maka.attachments.pickDirectory}
-                  directoryToastApi={toastApi}
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
