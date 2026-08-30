@@ -28,6 +28,7 @@ import {
 import {
   connectExistingRuntimeHost,
   prepareConnectedRuntimeHostRetirement,
+  waitForRuntimeHostReady,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import {
@@ -52,6 +53,9 @@ import type {
   RuntimeHostLifecycleProvider,
   RuntimeHostProviderDefinition,
 } from './runtime-host-lifecycle-provider.js';
+
+/** The budget a managed Runtime Host has to become reachable after its lifecycle is activated. */
+export const RUNTIME_HOST_READY_TIMEOUT_MS = 45_000;
 
 export interface RuntimeHostLifecycleTransactionDeps {
   readonly resolveProvider: (
@@ -720,7 +724,7 @@ export async function activateRuntimeHostLifecycle(
 export async function verifyRuntimeHostLifecycleReady(
   config: RuntimeHostManagedDeploymentConfig,
   deps: RuntimeHostLifecycleTransactionDeps,
-  timeoutMs = 45_000,
+  timeoutMs = RUNTIME_HOST_READY_TIMEOUT_MS,
 ): Promise<void> {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await verifyRuntimeHostLifecycleProjection(canonical, deps);
@@ -745,9 +749,12 @@ export async function verifyRuntimeHostLifecycleReady(
         try {
           const diagnostics = await connected.connection.request('host.diagnostics.query', {});
           if (diagnostics.pid === status.pid && connected.connection.rootId === canonical.root.id) {
+            await waitForRuntimeHostReady(connected.connection, Math.max(1, deadline - Date.now()));
             return;
           }
           lastFailure = new Error('Runtime Host process or Root identity did not match');
+        } catch (error) {
+          lastFailure = error;
         } finally {
           await connected.connection.close().catch(() => undefined);
         }

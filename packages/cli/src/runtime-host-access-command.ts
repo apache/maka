@@ -366,7 +366,9 @@ async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
     },
   );
   if (result.kind !== 'connected') {
-    throw new RuntimeHostAccessUnavailableError(result.kind);
+    throw new RuntimeHostAccessUnavailableError(
+      result.kind === 'unavailable' ? result.reason : result.kind,
+    );
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

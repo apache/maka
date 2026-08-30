@@ -107,6 +107,7 @@ import {
   canDiscardRuntimeHostLifecycleDesiredArtifacts,
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
+  RUNTIME_HOST_READY_TIMEOUT_MS,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
 import type {
@@ -120,7 +121,6 @@ import {
 import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
 const SETUP_LOCK_TIMEOUT_MS = 5 * 60_000;
-const PAIRING_AVAILABILITY_TIMEOUT_MS = 10_000;
 const PAIRING_AVAILABILITY_POLL_MS = 100;
 
 export interface RuntimeHostSetupCliOptions {
@@ -1089,7 +1089,7 @@ async function pairAndVerifyRuntimeHostSetup(
       preset: options.preset,
       ...(options.bindPairingToClient ? { bindClientInstance: true } : {}),
     };
-    const deadline = Date.now() + PAIRING_AVAILABILITY_TIMEOUT_MS;
+    const deadline = Date.now() + RUNTIME_HOST_READY_TIMEOUT_MS;
     while (true) {
       try {
         paired = await pairCredential(credentialInput);
@@ -1104,7 +1104,10 @@ async function pairAndVerifyRuntimeHostSetup(
       }
     }
   } catch (error) {
-    const reason = generalizedErrorMessage(error, 'Runtime Host access service is unavailable');
+    const reason =
+      error instanceof RuntimeHostAccessUnavailableError
+        ? error.message
+        : generalizedErrorMessage(error, 'Runtime Host access service is unavailable');
     throw new RuntimeHostSetupError(
       'pairing_failed',
       `Runtime Host could not pair the requested Client identity: ${reason}`,
