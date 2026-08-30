@@ -17,85 +17,38 @@
  * under the License.
  */
 
-import type { ScheduledTask } from '@maka/core/scheduled-task';
-import type { SessionSummary } from '@maka/core/session';
 import {
   SegmentedControl,
   SegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
-import { SideNav, type SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
-import type { NavModuleMemory, NavSelection } from './nav-selection.js';
+import { SideNav } from '@astryxdesign/core/SideNav';
+import { SessionHistoryList } from './session-history-list.js';
 import {
-  SessionHistoryList,
-  type ProjectRowActions,
-  type SessionHistoryGroup,
-  type SessionRowActions,
-} from './session-history-list.js';
+  useSessionRailChrome,
+  type SessionViewMode,
+} from './session-rail-context.js';
 import {
   SessionSidebarFooter,
   SessionSidebarNav,
-  type SidebarBuildStamp,
-  type SidebarUpdateReminder,
 } from './session-sidebar-nav.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import type { Ref } from 'react';
 
-export type SessionViewMode = 'conversation' | 'project';
+/**
+ * One element, created once, for the ~1,000 fibers below it.
+ *
+ * The list takes no props — it reads `SessionRailData` — so this element never
+ * needs rebuilding, and React skips the whole subtree whenever the panel around
+ * it re-renders for chrome that changed. That is the boundary; there is no
+ * `memo` comparator, because there is nothing to compare (#4109).
+ */
+const SESSION_HISTORY_LIST = <SessionHistoryList />;
 
-export function SessionListPanel(props: {
-  collapsed?: boolean;
-  onCollapsedChange?(collapsed: boolean): void;
-  /* The rail's collapse is two pieces of state, not one: the boolean this shell
-     owns, and the width Astryx's `useResizable` keeps behind `resizable`.
-     Dragging the handle past Astryx's threshold zeroes that width and reports
-     the collapse outward, so a toggle that only flips the boolean back leaves
-     the rail expanded over a stored width of 0 — the next drag starts from
-     zero. `toggle()` is the one call that moves both. */
-  collapseHandleRef?: Ref<SideNavImperativeCollapseHandle>;
-  width?: number;
-  onWidthChange?(width: number): void;
-  minWidth?: number;
-  maxWidth?: number;
-  selection: NavSelection;
-  sessions: SessionSummary[];
-  activeId?: string;
-  scheduledTasks?: readonly ScheduledTask[];
-  streamingSessionIds?: Set<string>;
-  staleSessionIds?: Set<string>;
-  groups?: ReadonlyArray<SessionHistoryGroup>;
-  worktreeSessionIds?: ReadonlySet<string>;
-  sessionMeta?(session: SessionSummary): string | undefined;
-  projectActions?: ProjectRowActions;
-  viewMode?: SessionViewMode;
-  onViewModeChange?: (mode: SessionViewMode) => void;
-  onSelectSession(sessionId: string): void;
-  moduleMemory?: NavModuleMemory;
-  onSelect(selection: NavSelection): void;
-  onOpenSettings(): void;
-  buildStamp?: SidebarBuildStamp;
-  updateReminder?: SidebarUpdateReminder;
-  onOpenUpdate?(): void;
-  onNew(): void;
-  workHubEntry?: {
-    active: boolean;
-    label: string;
-    onSelect(): void;
-  };
-  rowActions?: SessionRowActions;
-}) {
+/** The Session rail: permanent chrome around the history list. */
+export function SessionListPanel() {
   const copy = getConversationCopy(useUiLocale()).sessions;
-  const {
-    collapsed = false,
-    onCollapsedChange = () => {},
-    width = 260,
-    onWidthChange = () => {},
-    minWidth = 180,
-    maxWidth = 480,
-    viewMode = 'conversation',
-    onViewModeChange,
-    groups,
-  } = props;
+  const chrome = useSessionRailChrome();
+  const { collapsed, viewMode, onViewModeChange } = chrome;
 
   // A view switch, not a command: two exclusive ways to read the same list.
   // Astryx spends a SegmentedControl on exactly this — see its own file-explorer
@@ -149,19 +102,19 @@ export function SessionListPanel(props: {
     // plate instead of straddling the seam between the two.
     <div className="maka-sidenav-motion">
       <SideNav
-        handleRef={props.collapseHandleRef}
+        handleRef={chrome.collapseHandleRef}
         className="maka-session-panel agents-sidebar"
         aria-label={copy.listAriaLabel}
         collapsible={{
           isCollapsed: collapsed,
-          onCollapsedChange,
+          onCollapsedChange: chrome.onCollapsedChange,
           hasButton: false,
         }}
         resizable={{
-          defaultWidth: width,
-          minWidth,
-          maxWidth,
-          onWidthChange,
+          defaultWidth: chrome.width,
+          minWidth: chrome.minWidth,
+          maxWidth: chrome.maxWidth,
+          onWidthChange: chrome.onWidthChange,
         }}
         // Permanent chrome stays sticky via SideNav topContent; only history
         // scrolls in children (Astryx five-zone model). The section inside owns
@@ -169,41 +122,13 @@ export function SessionListPanel(props: {
         // already names the panel on screen, and stays for assistive tech.
         topContent={
           <>
-            <SessionSidebarNav
-              selection={props.selection}
-              scheduledTasks={props.scheduledTasks}
-              moduleMemory={props.moduleMemory}
-              onSelect={props.onSelect}
-              onNew={props.onNew}
-              workHubEntry={props.workHubEntry}
-            />
+            <SessionSidebarNav />
             {groupingSwitch}
           </>
         }
-        footer={
-          <SessionSidebarFooter
-            buildStamp={props.buildStamp}
-            updateReminder={props.updateReminder}
-            onOpenSettings={props.onOpenSettings}
-            onOpenUpdate={props.onOpenUpdate}
-          />
-        }
+        footer={<SessionSidebarFooter />}
       >
-        {!collapsed ? (
-          <SessionHistoryList
-            sessions={props.sessions}
-            activeId={props.activeId}
-            streamingSessionIds={props.streamingSessionIds}
-            staleSessionIds={props.staleSessionIds}
-            groupVariant={viewMode}
-            groups={groups}
-            worktreeSessionIds={props.worktreeSessionIds}
-            sessionMeta={props.sessionMeta}
-            projectActions={props.projectActions}
-            onSelectSession={props.onSelectSession}
-            rowActions={props.rowActions}
-          />
-        ) : null}
+        {!collapsed ? SESSION_HISTORY_LIST : null}
       </SideNav>
     </div>
   );

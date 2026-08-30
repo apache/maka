@@ -161,6 +161,56 @@ test('production Host resumes a Session through the ScheduledTask authority', {
   });
 });
 
+test('production Host fails slug-only ScheduledTask Agent runs before binding execution identity', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const host = await fixture.startHost();
+    const desktop = await connectClient(fixture.root);
+    try {
+      const created = await desktop.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'legacy agent-run identity proof',
+          intentBody: 'Do not execute with a replacement account.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionSlug: 'fake',
+              model: 'fake-model',
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      const fired = await desktop.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(
+        fired.task.lastError,
+        'ScheduledTask Agent runs require an immutable model connection identity',
+      );
+      assert.equal(fired.task.runs.length, 1);
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.runs[0]?.sessionId, undefined);
+      assert.equal(fired.task.runs[0]?.runId, undefined);
+    } finally {
+      await desktop.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
 test('production Host settles dispatched Client Capabilities before publishing Ready', async () => {
   await withExecutionRoot(async (fixture) => {
     const prepared = await seedDispatchedClientCapability(fixture);
@@ -440,6 +490,82 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
       await fixture.stopHost(host);
     }
   });
+});
+
+test('two UDS Clients serialize same-provider account creation through one Host lane', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 50 });
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
+      const secrets = ['desktop-account-secret', 'tui-account-secret'] as const;
+      let identities: Array<{ connectionId: string; slug: string }> = [];
+      try {
+        const results = await Promise.all(
+          [desktop, tui].map((client, index) =>
+            client.request('connection.onboarding.save', {
+              target: { kind: 'create', providerType: 'openai-compatible' },
+              apiKey: secrets[index]!,
+              baseUrl: provider.baseUrl,
+              enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+            }),
+          ),
+        );
+        assert.ok(results.every((result) => result.kind === 'saved'));
+        identities = results.map((result) => {
+          if (result.kind !== 'saved') throw new Error('Onboarding did not save');
+          return {
+            connectionId: result.connection.connectionId,
+            slug: result.connection.slug,
+          };
+        });
+        assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
+          'openai-compatible',
+          'openai-compatible-2',
+        ]);
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+
+      const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections
+            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .map(({ connectionId, slug }) => ({ connectionId, slug }))
+            .sort((left, right) => left.slug.localeCompare(right.slug)),
+          [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),
+        );
+        for (const [index, identity] of identities.entries()) {
+          assert.equal(
+            (
+              await stores.operations.exportCredentialMaterial({
+                scope: 'connection',
+                connectionId: identity.connectionId,
+                kind: 'api_key',
+              })
+            )?.secret,
+            secrets[index],
+          );
+        }
+      } finally {
+        await owner.close();
+      }
+      assert.deepEqual(
+        provider.requests.map(({ authorization }) => authorization).sort(),
+        secrets.map((secret) => `Bearer ${secret}`).sort(),
+      );
+    });
+  } finally {
+    await provider.close();
+  }
 });
 
 test('two UDS Clients await slow connection effects against one canonical catalog', async () => {

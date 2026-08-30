@@ -394,7 +394,11 @@ test('owned hosted execution closes its fresh Host after configuration fails', a
       executionId: '00000000-0000-4000-8000-000000000002',
       session: {
         workspace: { kind: 'host_path', path: rootPath },
-        modelTarget: { kind: 'explicit', connectionSlug: 'missing', model: 'missing' },
+        modelTarget: {
+          kind: 'explicit',
+          connectionSlug: 'missing',
+          model: 'missing',
+        },
       },
       content: { text: 'This request must not reach a provider.' },
     },

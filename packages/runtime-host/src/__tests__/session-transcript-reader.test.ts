@@ -44,6 +44,7 @@ test('keeps durable history separate from the canonical active overlay', async (
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -329,6 +330,7 @@ function runHeader(sessionId: string): AgentRunHeader {
     turnId: 'turn-1',
     status: 'running',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/tmp',

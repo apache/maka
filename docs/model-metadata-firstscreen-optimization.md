@@ -26,7 +26,7 @@
 
 Most users configure only a few providers, but Maka currently loads metadata for every provider and hundreds of models on startup. This data should remain behind the main-process authority boundary, with the renderer receiving only the lightweight projection needed for the current UI.
 
-The Desktop AppShell startup path statically loads `packages/core/src/model-metadata.generated.ts`. This models.dev snapshot is currently about 520 KB / 13,988 lines and contains full metadata for roughly 44 providers and hundreds of models.
+The Desktop AppShell startup path statically loads `packages/core/src/model-metadata.generated.ts`. The file is generated during installation or build from the committed models.dev snapshot; the 2026-08-04 measurement below was about 520 KB / 13,988 lines and contained full metadata for roughly 44 providers and hundreds of models.
 
 Measured from the 2026-08-04 renderer build:
 
@@ -70,7 +70,7 @@ Remove the remaining provider-registry dependencies from the startup path:
 - `providerDisplay` uses the existing exhaustive `PROVIDER_DISPLAY_COPY`; an unknown cross-version type falls back to the type string and generic local description instead of `PROVIDER_DEFAULTS`.
 - OnboardingHero gets its four first-run provider types from a small metadata-free product constant or equivalent lightweight projection instead of importing `RECOMMENDED_PROVIDER_TYPES` at runtime.
 
-Full metadata remains available to the main process and lazy-loaded SettingsModal. The metadata code-generation flow remains unchanged.
+Full metadata remains available to the main process and lazy-loaded SettingsModal. This renderer optimization does not otherwise change the metadata generation flow.
 
 Acceptance criteria:
 
@@ -99,7 +99,7 @@ Acceptance criteria:
 
 大多数用户只配置少数几个 provider，但 Maka 当前会在启动时加载全部 provider 和数百个模型的元数据。完整目录应留在 main process 的权威边界内，renderer 只接收当前界面所需的轻量投影。
 
-桌面端 AppShell 的首屏静态依赖会加载 `packages/core/src/model-metadata.generated.ts`。该文件由 `scripts/sync-model-metadata.mjs` 从 models.dev 生成，当前约 520 KB、13,988 行，包含约 44 个 provider 和数百个模型的完整元数据。
+桌面端 AppShell 的首屏静态依赖会加载 `packages/core/src/model-metadata.generated.ts`。该文件在安装或构建时由 committed models.dev snapshot 生成；下面记录的 2026-08-04 实测约为 520 KB、13,988 行，包含约 44 个 provider 和数百个模型的完整元数据。
 
 2026-08-04 的 renderer 构建实测：
 
@@ -143,7 +143,7 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 - `providerDisplay` 使用已有且类型完整的 `PROVIDER_DISPLAY_COPY`；遇到跨版本未知 type 时直接显示 type 和通用本地描述，不再 fallback 到 `PROVIDER_DEFAULTS`。
 - OnboardingHero 的 4 个首次引导 provider 使用不依赖 provider registry 的小型产品常量或等价轻量投影，不再运行时引用 `RECOMMENDED_PROVIDER_TYPES`。
 
-完整元数据继续保留在 main process 和懒加载的 SettingsModal 中，codegen 流程保持不变。
+完整元数据继续保留在 main process 和懒加载的 SettingsModal 中；这项 renderer 优化本身不再改变元数据生成流程。
 
 验收标准：
 

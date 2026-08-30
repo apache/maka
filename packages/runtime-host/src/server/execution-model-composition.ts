@@ -30,7 +30,10 @@ import {
   resolveSelectedModelContextWindow,
 } from '@maka/runtime/context-budget-policy';
 import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summarizer';
-import { buildOpenAiCodexHistoryCompactor } from '@maka/runtime/openai-codex-history-compactor';
+import {
+  buildOpenAiCodexHistoryCompactor,
+  withOpenAiCodexHistoryCompactionFallback,
+} from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
@@ -49,6 +52,8 @@ import {
   persistProviderRequestCaptureArtifact,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
+import type { InteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
+import { createReadImageSnapshotReader } from '@maka/storage/read-image-snapshot-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {
@@ -70,6 +75,8 @@ export interface HostAiSdkBackendInput {
   readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
+  readonly contextOffload?: InteractiveContextOffloadReader;
+  readonly contextOffloadUnavailable?: boolean;
   readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
@@ -184,18 +191,22 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
     });
+  const textHistorySummarizer = buildLlmHistorySummarizer({
+    resolveModel: resolveHistoryCompactModel,
+    providerOptions,
+  });
   const summarizeHistoryCompact =
     target.connection.providerType === 'openai-codex'
-      ? buildOpenAiCodexHistoryCompactor({
-          resolveModel: resolveHistoryCompactModel,
-          connectionSlug: target.connection.slug,
-          modelId: target.model,
-          providerOptions,
-        })
-      : buildLlmHistorySummarizer({
-          resolveModel: resolveHistoryCompactModel,
-          providerOptions,
-        });
+      ? withOpenAiCodexHistoryCompactionFallback(
+          buildOpenAiCodexHistoryCompactor({
+            resolveModel: resolveHistoryCompactModel,
+            connectionSlug: target.connection.slug,
+            modelId: target.model,
+            providerOptions,
+          }),
+          textHistorySummarizer,
+        )
+      : textHistorySummarizer;
   const historyCompactRoute =
     target.connection.providerType === 'openai-codex' ? 'provider_native' : 'text_summary';
   let telemetryDrainRequested = false;
@@ -381,6 +392,17 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
+          ...(input.contextOffload
+            ? {
+                readImageSnapshots: createReadImageSnapshotReader(
+                  input.contextOffload,
+                  input.context.sessionId,
+                ),
+              }
+            : {}),
+          ...(!input.contextOffload && input.contextOffloadUnavailable
+            ? { readImageSnapshotsUnavailable: true }
+            : {}),
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
         toolResultArchive: input.executionArtifacts.toolResultArchive,

@@ -125,7 +125,7 @@ export type PreparedRequestSegmentRef = Pick<PreparedRequestSegment, 'kind' | 'i
  * ungrouped + loaded groups). A tool absent from it is withheld from
  * `activeTools` but stays in `providerTools` so it remains dispatchable once
  * its group loads. Omitting `activeNames` advertises every visible tool — the
- * full-surface case (no searchable groups).
+ * full-surface case (search availability omitted).
  */
 export function canonicalizeToolSet(
   tools: readonly MakaTool[],

@@ -57,7 +57,12 @@ const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]/g;
 //   U+200F  RLM (right-to-left mark)
 //   U+202A  LRE, U+202B RLE, U+202C PDF, U+202D LRO, U+202E RLO
 //   U+2066  LRI, U+2067 RLI, U+2068 FSI, U+2069 PDI
-const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+//   U+206A  INHIBIT SYMMETRIC SWAPPING, U+206B ACTIVATE SYMMETRIC SWAPPING,
+//   U+206C  INHIBIT ARABIC FORM SHAPING, U+206D ACTIVATE ARABIC FORM SHAPING,
+//   U+206E  NATIONAL DIGIT SHAPES, U+206F NOMINAL DIGIT SHAPES
+//     (deprecated Cf bidi-adjacent controls; invisible and not whitespace, so
+//      the `\s+` collapse never removed them — #3823)
+const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u206F]/g;
 
 // Zero-width / invisible format characters. Removed entirely (no replacement)
 // because they're meant to be invisible and replacing with space would inject

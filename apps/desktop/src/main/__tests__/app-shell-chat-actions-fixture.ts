@@ -92,30 +92,30 @@ export function createTransientState() {
 }
 
 export function createActionsDeps() {
+  const activeIdRef = { current: undefined as string | undefined };
   return {
     uiLocale: 'en' as const,
-    activeIdRef: { current: undefined as string | undefined },
-    addPendingSessionAction: () => true,
+    activeIdRef,
     captureComposerImportOwner: () => ({
       sessionId: undefined,
       navSection: 'sessions' as const,
     }),
     checkTaskSubmissionReadiness: async () => true,
-    clearPendingSessionAction: () => undefined,
     isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
     markSessionReadLocally: () => undefined,
-    messageRetryPendingRef: { current: new Set<string>() },
+    messageRetryPending: { claim: () => true, release: () => undefined },
     refreshSessions: async () => [],
+    activateSessionForFirstSend: async (sessionId: string) => {
+      activeIdRef.current = sessionId;
+    },
     setActiveId: () => undefined,
     setMessageLoadErrorBySession: () => undefined,
-    setMessageRetryPendingBySession: () => undefined,
     setMessages: () => undefined,
     addTransientMessage: () => undefined,
     updateTransientMessage: () => undefined,
     removeTransientMessage: () => undefined,
     transcriptRangeRef: { current: undefined },
-    setNavSelection: () => undefined,
     setLiveTurnBySession: () => undefined,
     setInteractionBySession: () => undefined,
     showModelSetupToast: () => undefined,

@@ -31,7 +31,7 @@
 > 打开的 object format 稳定 fail closed，且不得调用或回退到系统 Git。
 
 它不证明 source import、clone、fetch、worktree、candidate、projection、ref CAS、Write/Edit 或
-resume。现有 dormant `GitWorkspaceService` 也没有切换到该 helper。
+resume。已删除的 Git executable-backed workspace service 也不由该 helper 复活。
 
 ## 2. 为什么是 helper，不是常驻 broker
 

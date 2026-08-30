@@ -29,7 +29,6 @@ import { redactSecrets } from '../redact.js';
 import { useClipboardCopyFeedback } from '../clipboard-feedback.js';
 import { useUiLocale } from '../locale-context.js';
 import { cn } from '../ui.js';
-import { ExploreAgentPreview } from './agent-preview.js';
 import { formatQuietJsonValue } from './builtin-preview.js';
 import { ToolCodeBlock } from './tool-code-block.js';
 import { DiffCodePreview } from './diff-code-preview.js';
@@ -210,10 +209,6 @@ export function ToolResultPreview(props: {
         actionIdentity={props.actionIdentity}
       />
     );
-  }
-
-  if (content.kind === 'explore_agent') {
-    return <ExploreAgentPreview result={content} />;
   }
 
   if (content.kind === 'rive_workflow') {

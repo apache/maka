@@ -169,6 +169,8 @@ Use the system UI stack with explicit platform CJK fallbacks; Geist Variable is 
 
 **The Four-Pixel Line Rule.** Text line boxes land on the 4px grid. Mono is technical, never decorative.
 
+**The One Measure Rule.** Line length is a typographic decision, so the app has one reading column and one token for it: `--maka-reading-measure`. The container holds it — a turn, the composer, a report — and no component carries a measure of its own, because a measure inside a component is one its container cannot override. Two measures on one column is what the reader sees as two right edges.
+
 ## 8. Color Specification
 
 The palette is cool-neutral and quiet; color is generated to spec, not picked by eye.
@@ -253,5 +255,5 @@ Three mutually exclusive forms, chosen by structural predictability — never by
 - **Don't** use generic AI gradients, glowing borders, sparkle, decorative "thinking," or default glassmorphism.
 - **Don't** personify the agent through mascots, fake emotion, excessive avatars, or chat ornament; the optional user-supplied pet is the only exception.
 - **Don't** turn every region into a card or every status into a colored pill.
-- **Don't** introduce another accent, spacing ruler, radius tier, icon system, text axis, or parallel component path.
+- **Don't** introduce another accent, spacing ruler, radius tier, icon system, text axis, reading measure, or parallel component path (§7).
 - **Don't** copy primitive internals, progress, versions, palette inventories, or surface inventories into this document.

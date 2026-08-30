@@ -123,6 +123,21 @@ describe('importGitHubCopilotLocalCredential', () => {
     assert.equal(imported.result.ok, false);
     assert.equal(imported.secret, undefined);
   });
+
+  test('distinguishes a transient entitlement failure from account ineligibility', async () => {
+    const imported = await importGitHubCopilotLocalCredential({
+      resolveGitHubToken: async () => 'gho_temporarily_unavailable',
+      fetchFn: async () => new Response(null, { status: 429 }),
+    });
+
+    assert.equal(imported.result.ok, false);
+    if (!imported.result.ok) {
+      assert.equal(imported.result.reason, 'token_exchange_failed');
+      assert.match(imported.result.message, /暂时无法验证/);
+      assert.doesNotMatch(imported.result.message, /没有可用/);
+    }
+    assert.equal(imported.secret, undefined);
+  });
 });
 
 function copilotModelsResponse(): Response {

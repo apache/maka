@@ -17,21 +17,33 @@
  * under the License.
  */
 
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import {
+  MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { TelemetryIndexWriter } from '@maka/storage/usage-stores';
 import { header } from './seed-helpers.js';
 
-// Settings → 使用统计 fixture. `usageStats` aggregates `token_usage` + tool
-// messages across ALL sessions in the workspace, so the settings-usage capture
-// only shows real tables if the seed contains enough varied traffic. These
-// sessions are gated to the `settings-usage` scenario so no other capture is
-// disturbed; every value is a literal keyed off the fixed `now`, so the tables
-// render deterministically.
+type PersistedToolInvocationRecord = Parameters<
+  TelemetryIndexWriter['recordToolInvocation']
+>[0];
+
+// Settings → 使用统计 fixture. Session messages keep the task links realistic,
+// while `usageStatsRecords` seeds the two Host-owned surfaces the page reads:
+// model calls go through the CANONICAL model-call ledger (AgentRun
+// `model_call_attempt_recorded` events, projected by
+// `catchUpModelCallProjection`), and tool invocations stay on the legacy
+// telemetry table (tools have no canonical ledger). These records are gated to
+// `settings-usage` so no other capture is disturbed; every value is derived
+// from the fixed fixture clock for deterministic tables.
 //
 // The shape below intentionally spreads across:
-//   - 3 providers (zai-live / relay-fallback / needs-reauth) → 供应商统计
+//   - 3 connections (zai-live / relay-fallback / needs-reauth) → 供应商统计
 //   - 5 models (glm / claude / gpt families) → 模型统计
 //   - 6 tools with 2 failures → 工具统计 (exercises the error column)
-//   - a dozen request-log rows mixing model + tool + success/error → 请求日志
+//   - a dozen activity rows mixing model + tool + success/error → 活动记录
 
 interface UsageTurnSpec {
   turnId: string;
@@ -214,4 +226,102 @@ export function usageStatsSessions(
       ],
     },
   ];
+}
+
+export function usageStatsRecords(now: number): {
+  modelCalls: Array<{ header: AgentRunHeader; attempt: ModelCallAttempt }>;
+  tools: PersistedToolInvocationRecord[];
+} {
+  const sessions = usageStatsSessions(now);
+  const modelCalls: Array<{ header: AgentRunHeader; attempt: ModelCallAttempt }> = [];
+  const tools: PersistedToolInvocationRecord[] = [];
+  for (const { header: session, messages } of sessions) {
+    const modelByTurn = new Map(
+      messages
+        .filter((message) => message.type === 'assistant')
+        .map((message) => [message.turnId, message.modelId]),
+    );
+    const toolResults = new Map(
+      messages
+        .filter((message) => message.type === 'tool_result')
+        .map((message) => [message.toolUseId, message]),
+    );
+    for (const message of messages) {
+      if (message.type === 'token_usage') {
+        const inputTokens = message.input;
+        const outputTokens = message.output;
+        const cacheRead = message.cacheRead ?? 0;
+        const cacheMiss = message.cacheMissInput ?? Math.max(0, inputTokens - cacheRead);
+        const cacheWrite = message.cacheCreation ?? 0;
+        const modelId = modelByTurn.get(message.turnId) ?? session.model;
+        // Run/attempt ids must match SAFE_ID_PATTERN ([A-Za-z0-9_-]); no colons.
+        const runId = `run-${message.id}`;
+        modelCalls.push({
+          header: {
+            runId,
+            sessionId: session.id,
+            turnId: message.turnId,
+            status: 'created',
+            backendKind: 'fake',
+            llmConnectionSlug: session.llmConnectionSlug,
+            modelId,
+            cwd: '/tmp/e2e-usage',
+            permissionMode: 'ask',
+            createdAt: message.ts - 2_000,
+            updatedAt: message.ts,
+          },
+          attempt: {
+            schemaVersion: MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+            logicalCallId: message.id,
+            attemptId: message.id,
+            traceId: message.turnId,
+            sessionId: session.id,
+            runId,
+            turnId: message.turnId,
+            step: 0,
+            attempt: 0,
+            callKind: 'main',
+            connectionSlug: session.llmConnectionSlug,
+            providerId: session.llmConnectionSlug,
+            modelId,
+            startedAt: message.ts - 2_000,
+            completedAt: message.ts,
+            latencyMs: 2_000,
+            status: 'completed',
+            usageBasis: 'reported',
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens: cacheRead,
+            cacheMissInputTokens: cacheMiss,
+            cacheWriteInputTokens: cacheWrite,
+            reasoningTokens: message.reasoning ?? 0,
+            costBasis: 'priced',
+            costUsd: message.costUsd ?? 0,
+          },
+        });
+      }
+      if (message.type === 'tool_call') {
+        const result = toolResults.get(message.id);
+        const durationMs = result?.durationMs ?? 0;
+        const ts = result?.ts ?? message.ts;
+        tools.push({
+          id: `tool:${message.id}`,
+          sessionId: session.id,
+          turnId: message.turnId,
+          toolCallId: message.id,
+          toolName: message.displayName ?? message.toolName,
+          providerId: session.llmConnectionSlug,
+          modelId: modelByTurn.get(message.turnId) ?? session.model,
+          durationMs,
+          status: result?.isError ? 'error' : 'success',
+          bytesIn: 0,
+          bytesOut: 0,
+          startedAt: message.ts,
+          date: new Date(ts).toISOString().slice(0, 10),
+          ts,
+        });
+      }
+    }
+  }
+  return { modelCalls, tools };
 }

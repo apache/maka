@@ -28,6 +28,11 @@ import {
   serializeOAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
 import { fetchGitHubCopilotModels } from '@maka/runtime/model-fetcher';
+import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
+  verifyGitHubCopilotModelEntitlement,
+} from '@maka/runtime/github-copilot-oauth-enrollment';
 
 const execFileAsync = promisify(execFile);
 
@@ -81,12 +86,37 @@ export async function importGitHubCopilotLocalCredential(
       };
     }
     const tokens = createGitHubCopilotAccountTokens(githubToken);
-    const models = await fetchGitHubCopilotModels(
-      tokens.base_url!,
-      tokens.access_token,
-      deps.fetchFn,
-    );
-    if (models.length === 0) throw new Error('GitHub Copilot account returned no usable models.');
+    let models: ModelInfo[];
+    try {
+      await verifyGitHubCopilotModelEntitlement({
+        tokens,
+        fetchFn: deps.fetchFn ?? fetch,
+      });
+      // The verifier owns classification; this second read only obtains the
+      // model IDs needed by the Host connection catalog.
+      models = await fetchGitHubCopilotModels(tokens.base_url!, tokens.access_token, deps.fetchFn);
+    } catch (error) {
+      if (error instanceof GitHubCopilotEntitlementError) {
+        return {
+          result: {
+            ok: false,
+            reason: 'token_exchange_failed',
+            message:
+              '当前 GitHub 账号没有可用的 Copilot 订阅权限；请确认账号具有 Copilot Requests 权限。',
+          },
+        };
+      }
+      if (error instanceof GitHubCopilotEntitlementUnavailableError) {
+        return {
+          result: {
+            ok: false,
+            reason: 'token_exchange_failed',
+            message: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
+          },
+        };
+      }
+      throw error;
+    }
     return { result: { ok: true, models }, secret: serializeOAuthSubscriptionTokens(tokens) };
   } catch {
     return {

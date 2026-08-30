@@ -228,6 +228,7 @@ describe('Host Session retirement coordinator', () => {
         'parent retirement cleanup did not converge',
       );
       assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.checkedContext), new Set(harness.familyIds));
     });
   });
 
@@ -1008,6 +1009,7 @@ interface RetirementActions {
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
   readonly purgedArtifacts: string[];
+  readonly checkedContext: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
   readonly purgedAgentGraphs: string[];
@@ -1046,6 +1048,7 @@ async function withHarness(
       retiredCapabilities: [],
       retiredMessages: [],
       purgedArtifacts: [],
+      checkedContext: [],
       purgedTasks: [],
       purgedOperationalState: [],
       purgedAgentGraphs: [],
@@ -1211,6 +1214,9 @@ async function withHarness(
           actions.purgedTasks.push(sessionId);
         },
       },
+      assertNoContextOffloadReferences: async (sessionIds) => {
+        actions.checkedContext.push(...sessionIds);
+      },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
       },
@@ -1319,6 +1325,7 @@ function sessionInput(
 ): CreateSessionInput {
   return {
     cwd: '/workspace',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',

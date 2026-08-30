@@ -33,29 +33,47 @@ import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
+  OperationOutcome,
+  OperationError,
 } from '@maka/runtime-host/protocol';
 import { boundedWorkHubTimelineText } from './workhub-controller.js';
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
 
+export class WorkHubCoordinationFailure extends Error {
+  constructor(
+    readonly code: OperationError<'workhub.coordination.act'>['code'],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'WorkHubCoordinationFailure';
+  }
+}
+
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
   transcripts: WorkHubDesktopTranscriptBridge;
-  answer(input: { turnId: string; text: string }): Promise<{ turnId: string }>;
   record(input: {
     turnId: string;
     userText: string;
     assistantText: string;
   }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
-  act(input: Omit<WorkHubCoordinationActInput, 'create'>): Promise<WorkHubCoordinationActResult>;
+  act(
+    input: Omit<WorkHubCoordinationActInput, 'create'>,
+  ): Promise<OperationOutcome<'workhub.coordination.act'>>;
 }): WorkHubCoordinationPort {
   return {
-    answer: deps.answer,
     record: deps.record,
     candidates: deps.candidates,
-    act: deps.act,
+    async act(input) {
+      const outcome = await deps.act(input);
+      if (!outcome.ok) {
+        throw new WorkHubCoordinationFailure(outcome.error.code, outcome.error.message);
+      }
+      return outcome.result;
+    },
     async open(handler, onError) {
       const store = new DesktopTranscriptRangeStore(deps.sessionId);
       let disposed = false;
@@ -101,6 +119,24 @@ export function projectWorkHubCoordinationTurns(
   const latestUserIndexByTurnId = new Map<string, number>();
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: 'completed',
+        assignment: {
+          delegationId: message.delegationId,
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+          targetMessageId: message.targetMessageId,
+          targetTurnId: message.targetTurnId,
+          feedbackState: 'accepted',
+        },
+        updatedAt: message.ts,
+      });
+      continue;
+    }
     if (message.type === 'user') {
       const text = boundedWorkHubTimelineText(userFacingText(message));
       if (!text) continue;

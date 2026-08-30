@@ -17,10 +17,11 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { isSha512PackageIntegrity } from '@maka/runtime-host/operator';
+import { randomUUID } from 'node:crypto';
+import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import { resolveRuntimeHostNpmDeploymentLayout } from '@maka/runtime-host/operator';
+import { syncDirectory, syncDirectoryChain, syncFile } from '@maka/storage/stable-storage';
 
 const PACKAGE_NAME = 'maka-agent';
 
@@ -50,8 +51,9 @@ export function resolveRuntimeHostPackageCliPath(
   packageIntegrity?: string,
 ): string {
   assertVersion(version);
-  const packageDirectory = packageIntegrity ? registryPackageDirectory(packageIntegrity) : version;
-  return join(resolve(deploymentRoot), 'versions', packageDirectory, 'dist', 'cli.js');
+  return packageIntegrity
+    ? registryPackageLayout(deploymentRoot, packageIntegrity).cliPath
+    : join(resolve(deploymentRoot), 'versions', version, 'dist', 'cli.js');
 }
 
 export async function prepareRuntimeHostPackageDeployment(input: {
@@ -62,20 +64,28 @@ export async function prepareRuntimeHostPackageDeployment(input: {
 }): Promise<RuntimeHostPackageDeployment> {
   assertVersion(input.version);
   const sourcePackageRoot = await validatePackage(input.sourcePackageRoot, input.version);
+  // The filesystem root is the one deterministic ancestor this workflow can
+  // never have created in an interrupted earlier attempt. Visible intermediate
+  // directories are not evidence that their directory entries are durable.
+  const durabilityBoundary = await realpath(parse(resolve(input.deploymentRoot)).root);
   await mkdir(join(input.deploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
   const deploymentRoot = await realpath(resolve(input.deploymentRoot));
-  const versionsRoot = join(deploymentRoot, 'versions');
-  const packageDirectory = input.packageIntegrity
-    ? registryPackageDirectory(input.packageIntegrity)
-    : input.version;
-  const packageRoot = join(versionsRoot, packageDirectory);
-  const cliPath = resolveRuntimeHostPackageCliPath(
+  const versionsRoot = await validateOwnedPackageDirectory(
+    join(deploymentRoot, 'versions'),
     deploymentRoot,
-    input.version,
-    input.packageIntegrity,
+    'package store',
   );
+  const layout = input.packageIntegrity
+    ? registryPackageLayout(deploymentRoot, input.packageIntegrity)
+    : {
+        packageRoot: join(versionsRoot, input.version),
+        cliPath: join(versionsRoot, input.version, 'dist', 'cli.js'),
+      };
+  const { packageRoot, cliPath } = layout;
+  const packageDirectory = basename(packageRoot);
   if (await pathExists(packageRoot)) {
-    await validatePackage(packageRoot, input.version);
+    await validateOwnedPackageDirectory(packageRoot, versionsRoot, 'published package');
+    await stabilizePublishedPackage(packageRoot, input.version, versionsRoot, durabilityBoundary);
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
   }
 
@@ -89,12 +99,16 @@ export async function prepareRuntimeHostPackageDeployment(input: {
       preserveTimestamps: true,
     });
     await validatePackage(stagingRoot, input.version);
+    await syncPackageTree(stagingRoot);
     try {
       await rename(stagingRoot, packageRoot);
+      await validateOwnedPackageDirectory(packageRoot, versionsRoot, 'published package');
+      await syncDirectoryChain(versionsRoot, durabilityBoundary);
     } catch (error) {
       if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
-      await validatePackage(packageRoot, input.version);
       await rm(stagingRoot, { recursive: true, force: true });
+      await validateOwnedPackageDirectory(packageRoot, versionsRoot, 'published package');
+      await stabilizePublishedPackage(packageRoot, input.version, versionsRoot, durabilityBoundary);
       return deployment(input.version, deploymentRoot, packageRoot, cliPath, false);
     }
     return deployment(input.version, deploymentRoot, packageRoot, cliPath, true);
@@ -107,6 +121,28 @@ export async function prepareRuntimeHostPackageDeployment(input: {
       { cause: error },
     );
   }
+}
+
+async function syncPackageTree(path: string): Promise<void> {
+  const target = await lstat(path);
+  if (target.isFile()) {
+    await syncFile(path);
+    return;
+  }
+  if (!target.isDirectory()) return;
+  for (const entry of await readdir(path)) await syncPackageTree(join(path, entry));
+  await syncDirectory(path);
+}
+
+async function stabilizePublishedPackage(
+  packageRoot: string,
+  version: string,
+  versionsRoot: string,
+  durabilityBoundary: string,
+): Promise<void> {
+  await validatePackage(packageRoot, version);
+  await syncPackageTree(packageRoot);
+  await syncDirectoryChain(versionsRoot, durabilityBoundary);
 }
 
 export async function openRuntimeHostPackageDeployment(input: {
@@ -151,6 +187,27 @@ export function isRuntimeHostPackageDeploymentCli(root: string, cliPath: string)
     !pathFromVersions.startsWith(`..${sep}`) &&
     !isAbsolute(pathFromVersions)
   );
+}
+
+export async function pruneRuntimeHostPackageDeployments(
+  deploymentRoot: string,
+  retainedCliPath: string,
+): Promise<void> {
+  if (!isRuntimeHostPackageDeploymentCli(deploymentRoot, retainedCliPath)) {
+    throw new RuntimeHostPackageDeploymentError(
+      'invalid_package',
+      'The retained Runtime Host package does not belong to its package store',
+    );
+  }
+  const root = resolve(deploymentRoot);
+  const versionsRoot = await validateOwnedPackageDirectory(
+    join(root, 'versions'),
+    root,
+    'package store',
+  );
+  const retainedPackageRoot = dirname(dirname(resolve(retainedCliPath)));
+  await validateOwnedPackageDirectory(retainedPackageRoot, versionsRoot, 'retained package');
+  await pruneInactivePackages(versionsRoot, basename(retainedPackageRoot));
 }
 
 async function removeAbandonedPackageWorkspaces(
@@ -198,12 +255,45 @@ async function validatePackage(path: string, version: string): Promise<string> {
 
 async function pathExists(path: string): Promise<boolean> {
   try {
-    await stat(path);
+    await lstat(path);
     return true;
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return false;
     throw error;
   }
+}
+
+async function validateOwnedPackageDirectory(
+  path: string,
+  expectedParent: string,
+  label: string,
+): Promise<string> {
+  const requested = resolve(path);
+  const parent = resolve(expectedParent);
+  if (dirname(requested) !== parent) {
+    throw new RuntimeHostPackageDeploymentError(
+      'invalid_package',
+      `The Runtime Host ${label} escapes its expected store`,
+    );
+  }
+  let canonical: string;
+  let target: Awaited<ReturnType<typeof lstat>>;
+  try {
+    [canonical, target] = await Promise.all([realpath(requested), lstat(requested)]);
+  } catch (error) {
+    throw new RuntimeHostPackageDeploymentError(
+      'invalid_package',
+      `The Runtime Host ${label} is unavailable`,
+      { cause: error },
+    );
+  }
+  if (canonical !== requested || !target.isDirectory() || target.isSymbolicLink()) {
+    throw new RuntimeHostPackageDeploymentError(
+      'invalid_package',
+      `The Runtime Host ${label} is redirected`,
+    );
+  }
+  return canonical;
 }
 
 function deployment(
@@ -218,7 +308,7 @@ function deployment(
     root,
     packageRoot,
     cliPath,
-    cleanup: () => pruneInactivePackages(dirname(packageRoot), basename(packageRoot)),
+    cleanup: () => pruneRuntimeHostPackageDeployments(root, cliPath),
     rollback: () =>
       created
         ? removePackageAtomically(dirname(packageRoot), basename(packageRoot))
@@ -254,14 +344,16 @@ async function removePackageAtomically(versionsRoot: string, packageName: string
   }
 }
 
-function registryPackageDirectory(integrity: string): string {
-  if (!isSha512PackageIntegrity(integrity)) {
+function registryPackageLayout(deploymentRoot: string, integrity: string) {
+  try {
+    return resolveRuntimeHostNpmDeploymentLayout(deploymentRoot, integrity);
+  } catch (error) {
     throw new RuntimeHostPackageDeploymentError(
       'invalid_package',
       'The Runtime Host package integrity is invalid',
+      { cause: error },
     );
   }
-  return `registry-${createHash('sha256').update(integrity).digest('hex')}`;
 }
 
 function assertVersion(version: string): void {

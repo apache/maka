@@ -29,6 +29,24 @@ import {
   type ProjectRowActions,
   type SessionRowActions,
 } from '../session-history-list.js';
+import { SessionRailProvider, type SessionRailData } from '../session-rail-context.js';
+
+/**
+ * The list reads its rows from `SessionRailData`, so a case states the reading
+ * it is about and nothing else.
+ */
+function Rail(props: Partial<SessionRailData> & { sessions: readonly SessionSummary[] }) {
+  const data: SessionRailData = {
+    groupVariant: 'conversation',
+    onSelectSession: () => undefined,
+    ...props,
+  };
+  return (
+    <SessionRailProvider data={data}>
+      <SessionHistoryList />
+    </SessionRailProvider>
+  );
+}
 
 const session: SessionSummary = {
   id: 'session-1',
@@ -93,7 +111,7 @@ function assertNoNestedButtons(markup: string): void {
 test('renders session navigation and row actions as sibling controls', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[session]}
         onSelectSession={() => undefined}
         rowActions={rowActions}
@@ -113,7 +131,7 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   try {
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <SessionHistoryList
+        <Rail
           sessions={[{ ...session, lastMessageAt: now - 46 * 60_000 }]}
           onSelectSession={() => undefined}
         />
@@ -131,7 +149,7 @@ test('renders Runtime Host live runs without requiring renderer-local streaming'
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[hostRunning]}
         onSelectSession={() => undefined}
         rowActions={rowActions}
@@ -150,7 +168,7 @@ for (const [status, attentionLabel] of [
     const awaitingUser = { ...session, status, runningTurnIds: ['turn-live'] };
     const markup = renderToStaticMarkup(
       <LocaleProvider locale="en">
-        <SessionHistoryList
+        <Rail
           sessions={[awaitingUser]}
           streamingSessionIds={new Set([awaitingUser.id])}
           onSelectSession={() => undefined}
@@ -168,7 +186,7 @@ test('keeps known-empty idle unless renderer-local streaming is newer', () => {
   const knownEmpty = { ...session, status: 'running' as const, runningTurnIds: [] as string[] };
   const idleMarkup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[knownEmpty]}
         onSelectSession={() => undefined}
         rowActions={rowActions}
@@ -177,7 +195,7 @@ test('keeps known-empty idle unless renderer-local streaming is newer', () => {
   );
   const locallyStreamingMarkup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[knownEmpty]}
         streamingSessionIds={new Set([knownEmpty.id])}
         onSelectSession={() => undefined}
@@ -194,7 +212,7 @@ test('keeps known-empty idle unless renderer-local streaming is newer', () => {
 test('renders collapsible project navigation and row actions as sibling controls', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[session]}
         groups={[{ id: project.id, label: project.name, project, sessions: [session] }]}
         groupVariant="project"

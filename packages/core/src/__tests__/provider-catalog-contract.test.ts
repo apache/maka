@@ -78,6 +78,19 @@ describe('provider catalog contract — structural invariants over CATALOG_PROVI
       );
     }
   });
+
+  it('delegates Alibaba Token Plan execution through one explicit Runtime profile', () => {
+    const delegated = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
+      const adapter = definition.runtimeAdapter;
+      return adapter.kind === 'openai-compatible' && adapter.runtimeProfile
+        ? [{ providerType, runtimeProfile: adapter.runtimeProfile }]
+        : [];
+    });
+    assert.deepEqual(delegated, [
+      { providerType: 'alibaba-token-plan-cn', runtimeProfile: 'alibaba-token-plan' },
+      { providerType: 'alibaba-token-plan', runtimeProfile: 'alibaba-token-plan' },
+    ]);
+  });
 });
 
 describe('retired provider contract', () => {
@@ -198,5 +211,34 @@ describe('provider catalog contract — fallback lifecycle', () => {
       }
     }
     assert.deepEqual(regressed, []);
+  });
+});
+
+describe('opencode-free retired-model quarantine', () => {
+  const opencodeFree = PROVIDER_REGISTRY['opencode-free'];
+
+  // Ox Alpha Free (x-preview-f-free) was retired upstream on OpenCode Zen while
+  // models.dev still snapshots it free+active, so the derivation would keep
+  // offering it as a default-enabled, picker-visible row. Remove this assertion
+  // together with the OPENCODE_FREE_BROKEN_MODEL_IDS entry once the snapshot
+  // marks it deprecated (or upstream serves it again).
+  it('quarantines x-preview-f-free out of the offered free models', () => {
+    assert.ok(opencodeFree.brokenModelIds?.includes('x-preview-f-free'));
+    assert.ok(!(opencodeFree.fallbackModels ?? []).includes('x-preview-f-free'));
+    assert.ok(!(opencodeFree.defaultEnabledModelIds ?? []).includes('x-preview-f-free'));
+  });
+
+  // Mechanism guard, independent of which ids the deny-list holds: a quarantined
+  // id must never leak back into the offered candidates through either path.
+  it('never offers a quarantined broken id as a free candidate', () => {
+    const broken = new Set(opencodeFree.brokenModelIds ?? []);
+    const offered = [
+      ...(opencodeFree.fallbackModels ?? []),
+      ...(opencodeFree.defaultEnabledModelIds ?? []),
+    ];
+    assert.deepEqual(
+      offered.filter((id) => broken.has(id)),
+      [],
+    );
   });
 });

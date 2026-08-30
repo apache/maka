@@ -28,6 +28,16 @@
 - Added `/transcript` to browse long TUI sessions without depending on terminal
   scrollback, with line, page, and first/last navigation.
 
+### Fixed
+
+- Fixed a renderer crash dialog reporting React error #185 ("Maximum update depth
+  exceeded") coming from the composer's prompt-history inline completion (#4117): the
+  offer engine the 0.1.11 composer fed could flip-flop its announcement state on
+  real-layout measurements until React hit its nested-update limit, which surfaced as
+  the crash dialog. The unstable completion wiring was removed from the composer
+  (#3292), Astryx 0.5.0 no longer ships the engine (#3755), and regression tests now
+  keep that seam closed.
+
 ### Changed
 
 - Made typed `request()` the sole direct Runtime Host operation API; removed the 17 forwarding

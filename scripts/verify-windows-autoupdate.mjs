@@ -20,10 +20,14 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  feedServed,
+  startDesktopUpdateFeed,
+  verifyDesktopUpdateArtifacts,
+} from './desktop-update-contract.mjs';
 import {
   evaluateInRenderer,
   findRendererTarget,
@@ -46,6 +50,7 @@ import {
   powerShellLiteral,
   verifyPackagedWindowsApp,
 } from './verify-windows-x64.mjs';
+import { compareProductReleaseVersions } from './release-version.mjs';
 
 const uninstallExecutableName = 'Uninstall Maka.exe';
 const executableName = 'Maka.exe';
@@ -56,113 +61,6 @@ function delay(milliseconds) {
 
 function step(label) {
   console.log(`[verify-windows-autoupdate] ${label}`);
-}
-
-function compareStableVersions(left, right) {
-  const parse = (value) => value.split('.').map(Number);
-  const [lMaj, lMin, lPat] = parse(left);
-  const [rMaj, rMin, rPat] = parse(right);
-  if (lMaj !== rMaj) return lMaj - rMaj;
-  if (lMin !== rMin) return lMin - rMin;
-  return lPat - rPat;
-}
-
-/**
- * Loopback static file server for the update feed. Serves exactly the mapped
- * root-level paths (`/latest.yml`, `/<installer>`, …) — the *full* request
- * path is matched, so a nested `/x/latest.yml` counts as unexpected; a wrong
- * updater request shape must surface, not be absorbed. A mapped path whose
- * file is absent 404s without counting: the updater legitimately probes the
- * *previous* version's blockmap for a differential download and falls back to
- * the full installer when the feed does not have it. Bodies are read once at
- * startup — electron-updater issues many ranged requests against the
- * multi-hundred-megabyte installer, and re-reading it per request could push
- * the download stage past its deadline. Supports single-range GETs because
- * differential downloads use ranged requests.
- */
-async function startFeedServer(files) {
-  const requests = [];
-  let unexpectedRequests = 0;
-  const bodies = new Map();
-  for (const [name, filePath] of files) {
-    try {
-      bodies.set(`/${name}`, await readFile(filePath));
-    } catch {
-      // Mapped but absent (the previous blockmap): served as an expected 404.
-    }
-  }
-  const server = createServer((request, response) => {
-    const method = request.method ?? 'GET';
-    // The raw path segment is matched without decoding, so `/%6catest.yml`
-    // cannot alias `/latest.yml`. The query is allowed and recorded, not
-    // matched: electron-updater cache-busts its channel request with
-    // `?noCache=<id>`, so rejecting queries rejects the updater's own
-    // documented request shape (the first live run proved exactly that).
-    const target = request.url ?? '/';
-    const queryIndex = target.indexOf('?');
-    const pathName = queryIndex === -1 ? target : target.slice(0, queryIndex);
-    const record = { method, path: pathName, target, status: 0 };
-    requests.push(record);
-    const known = [...files.keys()].some((name) => `/${name}` === pathName);
-    if ((method !== 'GET' && method !== 'HEAD') || !known) {
-      unexpectedRequests += 1;
-      record.status = 404;
-      response.writeHead(404).end();
-      return;
-    }
-    const body = bodies.get(pathName);
-    if (body === undefined) {
-      // Known path, absent file: the expected 404 shape (previous blockmap).
-      record.status = 404;
-      response.writeHead(404).end();
-      return;
-    }
-    const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? '');
-    if (range) {
-      const start = Number(range[1]);
-      const end = range[2] === '' ? body.length - 1 : Math.min(Number(range[2]), body.length - 1);
-      if (start > end || start >= body.length) {
-        record.status = 416;
-        response.writeHead(416, { 'Content-Range': `bytes */${body.length}` }).end();
-        return;
-      }
-      record.status = 206;
-      response.writeHead(206, {
-        'Content-Type': 'application/octet-stream',
-        'Content-Range': `bytes ${start}-${end}/${body.length}`,
-        'Content-Length': end - start + 1,
-        'Accept-Ranges': 'bytes',
-      });
-      response.end(method === 'HEAD' ? undefined : body.subarray(start, end + 1));
-      return;
-    }
-    record.status = 200;
-    response.writeHead(200, {
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': body.length,
-      'Accept-Ranges': 'bytes',
-    });
-    response.end(method === 'HEAD' ? undefined : body);
-  });
-  await new Promise((resolvePromise, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolvePromise);
-  });
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    server.close();
-    throw new Error('Could not start the loopback update feed.');
-  }
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    requests,
-    unexpectedCount: () => unexpectedRequests,
-    close: () =>
-      new Promise((resolvePromise) => {
-        server.close(() => resolvePromise());
-        server.closeAllConnections?.();
-      }),
-  };
 }
 
 export async function waitForInstalledProductVersion(
@@ -237,15 +135,19 @@ export async function verifyWindowsAutoupdate(
   if (!nextVersion) {
     throw new Error(`latest.yml in ${nextDirectory} does not advertise a version.`);
   }
-  if (compareStableVersions(nextVersion, candidateVersion) <= 0) {
+  if (compareProductReleaseVersions(nextVersion, candidateVersion) <= 0) {
     throw new Error(
       `The served version ${nextVersion} must be newer than the candidate ${candidateVersion}.`,
     );
   }
   const nextInstallerName = `Maka-${nextVersion}-win-x64.exe`;
   installerVersion(join(nextDirectory, nextInstallerName));
-  await access(join(nextDirectory, nextInstallerName));
-  await access(join(nextDirectory, `${nextInstallerName}.blockmap`));
+  await verifyDesktopUpdateArtifacts({
+    directory: nextDirectory,
+    metadataName: 'latest.yml',
+    version: nextVersion,
+    artifactName: nextInstallerName,
+  });
 
   const temporaryDirectory = await makeTemporaryDirectory();
   const installDirectory = join(temporaryDirectory, 'installed');
@@ -264,7 +166,7 @@ export async function verifyWindowsAutoupdate(
     // a differential download. If the file is missing next to the candidate
     // installer, the mapped-but-absent 404 makes the updater fall back to the
     // full download — both are valid production shapes.
-    feed = await startFeedServer(
+    feed = await startDesktopUpdateFeed(
       new Map([
         ['latest.yml', join(nextDirectory, 'latest.yml')],
         [nextInstallerName, join(nextDirectory, nextInstallerName)],
@@ -366,19 +268,12 @@ export async function verifyWindowsAutoupdate(
 
     step('asserting the download really came from the loopback feed');
     // Exact root-level paths, matching the server's own allowlist shape.
-    const served = (name) =>
-      feed.requests.some(
-        (request) =>
-          request.method === 'GET' &&
-          request.path === `/${name}` &&
-          (request.status === 200 || request.status === 206),
-      );
-    if (!served('latest.yml')) {
+    if (!feedServed(feed, 'latest.yml')) {
       throw new Error(
         `The app never fetched latest.yml from the loopback feed: ${JSON.stringify(feed.requests)}`,
       );
     }
-    if (!served(nextInstallerName)) {
+    if (!feedServed(feed, nextInstallerName)) {
       throw new Error(
         `The app never downloaded the installer from the loopback feed: ${JSON.stringify(feed.requests)}`,
       );

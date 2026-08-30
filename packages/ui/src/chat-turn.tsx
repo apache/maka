@@ -17,18 +17,14 @@
  * under the License.
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, AlertOctagon, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
-import {
-  formatAbsoluteTimestamp,
-  formatTurnDuration,
-  turnAbortMarkerLabel,
-} from './chat-display-helpers.js';
-import { redactSecrets } from './redact.js';
-import { isProgressiveStreamingEnabled, isTimeDrivenMotionEnabled } from './streaming-presentation.js';
+import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
+import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
+import { isTimeDrivenMotionEnabled } from './streaming-presentation.js';
 import { computerRunningLabel } from './tool-activity/computer-action-label.js';
 import {
   Badge,
@@ -47,18 +43,18 @@ import {
   Token,
   useLightbox,
 } from '@astryxdesign/core';
-import { useStreamingText } from '@astryxdesign/core/hooks';
 import { ChatReasoning } from './astryx-chat-reasoning.js';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { SKILL_INVOCATION_TOKEN_SOURCE } from '@maka/core/skill-invocation-token';
 import {
   type AttachmentRef,
   type InlineReference,
-  type ProviderRetryEvent,
   type QuoteRef,
 } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import type { TransientUserMessageProjection } from './chat-view.js';
+import { type LiveProviderRetry } from './live-turn-projection.js';
+import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
   finalAssistantReplyText,
   type TurnTimelineItem,
@@ -74,6 +70,9 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { redactSecrets } from './redact.js';
+import { useAttachmentImageSource } from './attachment-image.js';
+import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({
   accessibleLabel,
@@ -92,19 +91,6 @@ export function LocalizedChatMessage({
   );
 }
 
-/**
- * Injected host capability that reads a session attachment's bytes. @maka/ui is
- * host-agnostic: it never reaches into the desktop preload or any other host
- * global. The desktop renderer threads its attachment reader through this prop;
- * non-desktop hosts (Storybook, tests, a future web shell) can omit it or supply
- * their own reader,
- * in which case an image attachment stays in its pending skeleton.
- */
-export type ReadAttachmentBytes = (
-  sessionId: string,
-  relativePath: string,
-) => Promise<{ ok: true; base64: string; mimeType: string } | { ok: false }>;
-
 function legacySentSkillTokens(text: string) {
   const values = new Set(
     [...text.matchAll(new RegExp(SKILL_INVOCATION_TOKEN_SOURCE, 'g'))].map((match) => match[0]),
@@ -112,32 +98,27 @@ function legacySentSkillTokens(text: string) {
   return [...values].map((value) => ({ value, label: value, variant: 'neutral' as const }));
 }
 
-function AttachmentImage(props: { attachment: AttachmentRef; onReadAttachmentBytes?: ReadAttachmentBytes }) {
-  const [src, setSrc] = useState<string | undefined>(undefined);
-  const { onReadAttachmentBytes } = props;
-  useEffect(() => {
-    if (props.attachment.ref.kind !== 'session_file') return;
-    // No host reader (non-desktop host, or the capability wasn't wired): leave the
-    // thumbnail in its pending skeleton rather than reaching into a host global.
-    if (!onReadAttachmentBytes) return;
-    let cancelled = false;
-    onReadAttachmentBytes(props.attachment.ref.sessionId, props.attachment.ref.relativePath)
-      .then((result) => {
-        if (cancelled || !result.ok) return;
-        setSrc(`data:${result.mimeType};base64,${result.base64}`);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [props.attachment, onReadAttachmentBytes]);
+function AttachmentImage(props: { attachment: AttachmentRef }) {
+  const preview = resolvePreviewKind({
+    name: props.attachment.name,
+    kind: 'image',
+    mimeType: props.attachment.mimeType,
+    sizeBytes: props.attachment.bytes,
+  });
+  const ref = preview.kind === 'image' && props.attachment.ref.kind === 'session_file'
+    ? {
+        sessionId: props.attachment.ref.sessionId,
+        artifactId: props.attachment.ref.relativePath,
+      }
+    : undefined;
+  const src = useAttachmentImageSource(ref);
   if (!src) {
     return (
       <Thumbnail
         className="maka-user-attachment-thumbnail"
         alt={props.attachment.name}
         label={props.attachment.name}
-        isLoading
+        isLoading={preview.kind === 'image'}
       />
     );
   }
@@ -174,7 +155,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
-  onReadAttachmentBytes?: ReadAttachmentBytes;
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
   editDisabled?: boolean;
@@ -195,7 +175,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           /* `value` takes ms directly: Timestamp's own parseValue reads
              anything past 1e12 as milliseconds (2001-09-09 onward), and a
              chat message never predates that. */
-          (<Timestamp className="maka-message-time-inline" value={props.ts} format="time" />)
+          (<Timestamp className="maka-message-time-inline" value={props.ts} format="auto" isLive />)
         ) : undefined
       }
       footer={
@@ -257,7 +237,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
             <AttachmentImage
               key={`${attachment.name}-${index}`}
               attachment={attachment}
-              onReadAttachmentBytes={props.onReadAttachmentBytes}
             />
           ))}
         </HStack>
@@ -280,7 +259,6 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
 export function TransientUserMessage(props: {
   message: TransientUserMessageProjection;
-  onReadAttachmentBytes?: ReadAttachmentBytes;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const message = props.message;
@@ -298,7 +276,6 @@ export function TransientUserMessage(props: {
           attachments={message.attachments}
           quotes={message.quotes}
           inlineReferences={message.inlineReferences}
-          onReadAttachmentBytes={props.onReadAttachmentBytes}
         />
       </LocalizedChatMessage>
     </div>
@@ -397,12 +374,18 @@ export const TurnView = memo(function TurnView(props: {
    */
   failedReasonLabel?: string;
   /**
-   * PR-PawWork-run-incident-lite: pre-derived recovery guidance for a failed
-   * turn. Caller computes this from error class, retained partial output, and
-   * tool activity so the banner can distinguish "retry" from "inspect tool
-   * output first".
+   * How loud the failed-turn banner should be. Caller computes it from the
+   * error class; `warning` marks the outcomes the session can simply continue
+   * past. Defaults to `error` when a caller doesn't derive it.
    */
-  failedRecoveryLabel?: string;
+  failedSeverity?: 'error' | 'warning';
+  /**
+   * What the turn already did before it failed, when that changes the cost of
+   * sending the next message (a tool that ran may have had side effects). This
+   * accompanies `failedReasonLabel` rather than competing with it: the reason
+   * is the outcome, this is the execution state, and both can be true.
+   */
+  failedExecutionStateLabel?: string;
   safeResumeAction?: {
     pending: boolean;
     detail?: string;
@@ -449,16 +432,9 @@ export const TurnView = memo(function TurnView(props: {
      * looks abandoned and the user most needs to see it is still working.
      */
     runningStatus?: boolean;
-    providerRetry?: ProviderRetryEvent;
+    providerRetry?: LiveProviderRetry;
     initialLiveContent?: ReadonlyMap<string, string>;
   };
-  /**
-   * Injected host reader for image attachment bytes. Threaded down to the user
-   * message's `AttachmentImage` thumbnails; absent on non-desktop hosts, where
-   * image thumbnails stay in their pending skeleton. Keeps @maka/ui from
-   * reaching into the desktop preload directly.
-   */
-  onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
    * Open a linked subagent child session in the main chat column. Threaded into
    * linked subagent tool rows; omitted when the host has no navigation.
@@ -577,7 +553,6 @@ export const TurnView = memo(function TurnView(props: {
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
             inlineReferences={turn.user.inlineReferences}
-            onReadAttachmentBytes={props.onReadAttachmentBytes}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
@@ -633,58 +608,26 @@ export const TurnView = memo(function TurnView(props: {
                 attachments={message.attachments}
                 quotes={message.quotes}
                 inlineReferences={message.inlineReferences}
-                onReadAttachmentBytes={props.onReadAttachmentBytes}
               />
             </LocalizedChatMessage>
           );
         }
         const ownsTurnChrome = segmentIndex === conversationSegments.length - 1;
+        // Disjoint namespaces: a steering id is any string, so a bare
+        // sentinel could collide with a real one.
+        const assistantKey =
+          segment.repliesTo === undefined
+            ? 'assistant-opening'
+            : `assistant-after-${segment.repliesTo}`;
         return (
-          <LocalizedChatMessage
-            // Disjoint namespaces: a steering id is any string, so a bare
-            // sentinel could collide with a real one.
-            key={
-              segment.repliesTo === undefined
-                ? 'assistant-opening'
-                : `assistant-after-${segment.repliesTo}`
-            }
-            accessibleLabel={copy.assistantAriaLabel}
-            sender="assistant"
-            data-turn-status={turn.status}
-            className="maka-chat-message maka-assistant-answer"
-          >
+          <Fragment key={assistantKey}>
+            <LocalizedChatMessage
+              accessibleLabel={copy.assistantAriaLabel}
+              sender="assistant"
+              data-turn-status={turn.status}
+              className="maka-chat-message maka-assistant-answer"
+            >
             <div className="maka-assistant-answer-content">
-              {ownsTurnChrome && turn.status === 'aborted' && (
-                <Marker variant="aborted" role="status">
-                  <Ban size={ICON_SIZE.meta} aria-hidden="true" />
-                  <em>{turnAbortMarkerLabel(turn.abortSource, locale)}</em>
-                </Marker>
-              )}
-              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
-                <Marker variant="failed-banner" role="alert">
-                  <Marker as="span" variant="failed-icon" aria-hidden="true">
-                    <AlertOctagon size={ICON_SIZE.control} />
-                  </Marker>
-                  <span>{props.failedReasonLabel}</span>
-                  {(props.safeResumeAction?.detail ?? props.failedRecoveryLabel) && (
-                    <Marker as="span" variant="failed-recovery">
-                      {props.safeResumeAction?.detail ?? props.failedRecoveryLabel}
-                    </Marker>
-                  )}
-                  {props.safeResumeAction && (
-                    <UiButton
-                      variant="ghost"
-                      size="sm"
-                      className="maka-turn-failed-resume"
-                      isDisabled={props.safeResumeAction.pending}
-                      onClick={props.safeResumeAction.onResume}
-                      label={
-                        props.safeResumeAction.pending ? copy.safeResumePending : copy.safeResume
-                      }
-                    />
-                  )}
-                </Marker>
-              )}
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts): each step's 深度思考 disclosure, answer bubble,
                 and Astryx tool group in the order the model produced them.
@@ -717,6 +660,42 @@ export const TurnView = memo(function TurnView(props: {
                     initialLiveContent={props.liveStreaming?.initialLiveContent}
                   />
                 ),
+              )}
+              {/* A failed turn's banner states the OUTCOME of the turn, so it
+                  belongs after the work it is the outcome of. `description`
+                  carries the parked-resume diagnostic when there
+                  is one — it explains why the button did nothing, which
+                  outranks execution state on the one turn that can have both. */}
+              {ownsTurnChrome && turn.status === 'failed' && props.failedReasonLabel && (
+                <Banner
+                  status={props.failedSeverity ?? 'error'}
+                  container="section"
+                  className="maka-turn-failed-banner"
+                  title={props.failedReasonLabel}
+                  {...(props.safeResumeAction?.detail ?? props.failedExecutionStateLabel
+                    ? {
+                        description:
+                          props.safeResumeAction?.detail ?? props.failedExecutionStateLabel,
+                      }
+                    : {})}
+                  {...(props.safeResumeAction
+                    ? {
+                        endContent: (
+                          <UiButton
+                            variant="ghost"
+                            size="sm"
+                            isDisabled={props.safeResumeAction.pending}
+                            onClick={props.safeResumeAction.onResume}
+                            label={
+                              props.safeResumeAction.pending
+                                ? copy.safeResumePending
+                                : copy.safeResume
+                            }
+                          />
+                        ),
+                      }
+                    : {})}
+                />
               )}
               {ownsTurnChrome && props.liveStreaming && (
                 <>
@@ -779,7 +758,16 @@ export const TurnView = memo(function TurnView(props: {
                   />
                 )
               ))}
-          </LocalizedChatMessage>
+            </LocalizedChatMessage>
+            {/* An abort is a short, settled status change rather than sender
+                content or a recovery error. Keep Astryx's system notice as a
+                sibling of the assistant message, after the work it closes. */}
+            {ownsTurnChrome && turn.status === 'aborted' && (
+              <ChatSystemMessage icon={<Ban size={ICON_SIZE.meta} aria-hidden="true" />}>
+                {turnAbortStatusLabel(turn.abortSource, locale)}
+              </ChatSystemMessage>
+            )}
+          </Fragment>
         );
       })}
     </section>
@@ -868,7 +856,8 @@ export interface TurnLineageBadge {
 export interface TurnPresentation {
   footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>>;
   failedReasonLabels: Record<string, string>;
-  failedRecoveryLabels: Record<string, string>;
+  failedSeverities: Record<string, 'error' | 'warning'>;
+  failedExecutionStateLabels: Record<string, string>;
   lineageBadgesByTurn: Record<string, TurnLineageBadge[]>;
   /** The turn a safe resume would restart, when the shell offers one. */
   resumeCandidateTurnId?: string;
@@ -1091,24 +1080,67 @@ export function TurnRunningStatus(props: {
   );
 }
 
-export function ModelProviderRetryIndicator(props: { retry: ProviderRetryEvent }) {
+export function ModelProviderRetryIndicator(props: { retry: LiveProviderRetry }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const title =
-    props.retry.phase === 'scheduled'
+  const { event: retry, receivedAtMs } = props.retry;
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Undefined until an effect measures it, so SSR and first paint render the
+  // granted delay untouched; the effect then counts down against the
+  // CLIENT-local receipt time (a single clock domain — the event's `ts`
+  // belongs to the possibly remote Runtime Host clock), taking its length
+  // from the skew-free `remainingMs` duration when the emitter provided one.
+  const [nowMs, setNowMs] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    if (retry.phase !== 'scheduled') return;
+    // The initial measurement sits OUTSIDE the motion gate on purpose: under
+    // a genuine reduced-motion preference the banner must still show the
+    // correct remaining wait at mount — gating it would pin the full delay
+    // for the whole wait, the exact #3393 symptom. Only the per-second tick
+    // respects the preference (and the frozen-fixture contract).
+    setNowMs(Date.now());
+    if (!isTimeDrivenMotionEnabled(rootRef.current)) return;
+    const tick = window.setInterval(() => setNowMs(Date.now()), ELAPSED_TICK_MS);
+    return () => window.clearInterval(tick);
+  }, [retry.phase, retry.id, receivedAtMs]);
+  const displaySeconds =
+    retry.phase !== 'scheduled'
+      ? 0
+      : // nowMs undefined (SSR / first paint) reads as zero elapsed.
+        providerRetryDisplaySeconds(retry, (nowMs ?? receivedAtMs) - receivedAtMs);
+  const titleText =
+    retry.phase === 'scheduled'
       ? copy.providerRetryScheduled(
-          Math.max(1, Math.ceil(props.retry.delayMs / 1_000)),
-          props.retry.attempt,
-          props.retry.maxAttempts,
+          displaySeconds,
+          retry.attempt,
+          retry.maxAttempts,
         )
-      : copy.providerRetryStarted(props.retry.attempt, props.retry.maxAttempts);
+      : copy.providerRetryStarted(retry.attempt, retry.maxAttempts);
+  // The banner is a role="status" live region: a title that changes every
+  // second would be announced every second — for hours during a quota wait.
+  // The ticking text is aria-hidden; the region exposes a stable label that
+  // follows the running-turn indicator's pattern (the row's accessible name
+  // is the whole status, the moving text is decoration).
+  const scheduledA11y = retry.phase === 'scheduled';
   return (
     <Banner
+      ref={rootRef}
       status="warning"
       container="section"
       role="status"
       className="maka-turn-provider-retry"
-      title={title}
-      description={copy.providerRetryReason[props.retry.reason]}
+      {...(scheduledA11y
+        ? {
+            'aria-label': `${copy.providerRetryReason[retry.reason]} · ${copy.providerRetryWaiting(retry.attempt, retry.maxAttempts)}`,
+          }
+        : {})}
+      title={scheduledA11y ? <span aria-hidden="true">{titleText}</span> : titleText}
+      description={
+        scheduledA11y ? (
+          <span aria-hidden="true">{copy.providerRetryReason[retry.reason]}</span>
+        ) : (
+          copy.providerRetryReason[retry.reason]
+        )
+      }
     />
   );
 }
@@ -1165,6 +1197,9 @@ const AssistantAnswerBubble = memo(function AssistantAnswerBubble(props: Assista
   return (
     <ChatMessageBubble
       variant="ghost"
+      // Astryx's own seam for a bubble that spans the message column: it sets
+      // the width and drops the default max(80%, 280px) cap in one prop.
+      width="100%"
       className={
         props.phase === 'historical'
           ? 'maka-chat-message-bubble maka-chat-message-bubble-assistant'
@@ -1282,22 +1317,33 @@ function ProcessingBlock(props: {
 
 function DeepThinking(props: { text: string; live: boolean; settledText?: string; truncated?: boolean }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const safeText = redactSecrets(props.text);
-  const displayed = useStreamingText(safeText, isProgressiveStreamingEnabled(props.live), {
-    settledText: props.settledText === undefined
-      ? undefined
-      : redactSecrets(props.settledText),
-  });
   const label = props.truncated ? `${copy.thinking} · ${copy.truncated}` : copy.thinking;
   return (
     <ChatReasoning
       className="maka-deep-thinking"
       label={label}
+      previewText={reasoningPreviewText(props.text)}
       isStreaming={props.live}
       title={props.truncated ? copy.thinkingTruncatedTitle : undefined}
       data-deep-thinking={props.live ? 'live' : undefined}
     >
-      {displayed}
+      <Markdown
+        text={props.text}
+        streaming={props.live}
+        settledText={props.settledText}
+        density="compact"
+      />
     </ChatReasoning>
   );
+}
+
+function reasoningPreviewText(text: string): string {
+  const safeText = redactSecrets(text);
+  const firstLine = safeText.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  return firstLine
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\\([()[\]])/g, '')
+    .replace(/\$\$/g, '')
+    .replace(/[*_~`]+/g, '')
+    .trim();
 }

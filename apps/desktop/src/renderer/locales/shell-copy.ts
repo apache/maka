@@ -337,6 +337,7 @@ type ShellCopy = {
     modelSwitchedDescription(from: string, to: string): string;
     modelFailedTitle: string;
     modelFallback: string;
+    modelRecoveryHint: string;
     thinkingUpdatedTitle: string;
     thinkingDefault: string;
     thinkingLabels: Record<ThinkingLevel, string>;
@@ -1001,6 +1002,7 @@ const SHELL_COPY_BY_LOCALE = {
       modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
+      modelRecoveryHint: '如果所选连接需要登录或 API Key，请到 设置 · 模型 补齐后重试。',
       thinkingUpdatedTitle: '已更新思考级别',
       thinkingDefault: '默认',
       thinkingLabels: {
@@ -1200,10 +1202,10 @@ const SHELL_COPY_BY_LOCALE = {
       sideChatContextPendingTitle: '先处理待发送的上下文',
       sideChatContextPendingDescription:
         '当前 Composer 还有附件、引用或文件 mention。请先发送或移除它们，再使用 /side。',
-      resumeStartedTitle: '已开始安全恢复',
+      resumeStartedTitle: '已开始继续这一轮',
       resumeStartedDescription: '正在从最后一个完整执行边界继续',
-      resumeFailedTitle: '恢复失败',
-      resumeFailedFallback: '无法启动安全恢复，请检查任务状态后重试。',
+      resumeFailedTitle: '继续失败',
+      resumeFailedFallback: '无法继续这一轮，请检查任务状态后重试。',
       goalClearFailedTitle: '停止目标失败',
       goalClearFailedFallback: '目标仍可能继续运行，请立即重试。',
       goalPauseFailedTitle: '暂停目标失败',
@@ -1527,6 +1529,7 @@ const SHELL_COPY_BY_LOCALE = {
       modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
+      modelRecoveryHint: 'If the selected connection needs sign-in or an API key, complete it in Settings · Models and try again.',
       thinkingUpdatedTitle: 'Thinking level updated',
       thinkingDefault: 'Default',
       thinkingLabels: {
@@ -1766,10 +1769,10 @@ const SHELL_COPY_BY_LOCALE = {
       sideChatContextPendingTitle: 'Resolve pending context first',
       sideChatContextPendingDescription:
         'The Composer still has attachments, quotes, or file mentions. Send or remove them before using /side.',
-      resumeStartedTitle: 'Safe recovery started',
+      resumeStartedTitle: 'Continuing this turn',
       resumeStartedDescription: 'Continuing from the last complete execution boundary',
-      resumeFailedTitle: 'Recovery failed',
-      resumeFailedFallback: 'Safe recovery could not start. Check the task state and try again.',
+      resumeFailedTitle: 'Could not continue',
+      resumeFailedFallback: 'This turn could not be continued. Check the task state and try again.',
       goalClearFailedTitle: 'Could not stop the goal',
       goalClearFailedFallback: 'The goal may still be running. Try again now.',
       goalPauseFailedTitle: 'Could not pause the goal',

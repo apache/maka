@@ -1460,12 +1460,16 @@ describe('builtin Bash streaming output', () => {
         basename(executableDirectory) === 'bin'
           ? dirname(executableDirectory)
           : executableDirectory;
-      assert.ok(argv.includes(`-DEXECUTABLE_ROOT_0=${executableRoot}`));
+      const hasExecutableRoot = (root: string) =>
+        argv.some(
+          (argument) => /^-DEXECUTABLE_ROOT_\d+=/u.test(argument) && argument.endsWith(`=${root}`),
+        );
+      assert.ok(hasExecutableRoot(executableRoot));
       if (process.execPath.startsWith('/opt/homebrew/')) {
-        assert.ok(argv.includes('-DEXECUTABLE_ROOT_1=/opt/homebrew'));
+        assert.ok(hasExecutableRoot('/opt/homebrew'));
       }
       if (process.execPath.startsWith('/usr/local/')) {
-        assert.ok(argv.includes('-DEXECUTABLE_ROOT_1=/usr/local'));
+        assert.ok(hasExecutableRoot('/usr/local'));
       }
     } finally {
       await rm(root, { recursive: true, force: true });

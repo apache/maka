@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
+import type {
+  HistoryCompactSummarizer,
+  HistoryCompactSummaryInput,
+} from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import {
   historyCompactCheckpointToModelMessage,
@@ -33,6 +36,7 @@ import {
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
 import { toolResultOutput } from './tool-result-output.js';
+import { providerFailureDiagnostic } from './provider-error-classification.js';
 
 export { fitHistoryCompactMessages as fitOpenAiCodexCompactionMessages } from './history-compact-input-fit.js';
 
@@ -84,6 +88,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
             model: options.resolveModel(),
             wrapLanguageModel: ai.wrapLanguageModel,
             tracker: providerRequestTracker,
+            historyCompactRoute: 'provider_native',
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
         : options.resolveModel();
@@ -116,6 +121,52 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };
+}
+
+/**
+ * Prefer the Codex-native checkpoint, but retain a portable liveness path when
+ * the native protocol is unavailable for this request. The fallback is narrow:
+ * provider capacity/auth/transient failures keep their original outcome rather
+ * than doubling traffic through the same unhealthy connection.
+ */
+export function withOpenAiCodexHistoryCompactionFallback(
+  preferred: HistoryCompactSummarizer,
+  fallback: HistoryCompactSummarizer,
+): HistoryCompactSummarizer {
+  return async (input) => {
+    try {
+      return await preferred(input);
+    } catch (error) {
+      if (!shouldFallbackFromOpenAiCodexHistoryCompaction(error, input.abortSignal)) throw error;
+      return await fallback(input);
+    }
+  };
+}
+
+export function shouldFallbackFromOpenAiCodexHistoryCompaction(
+  error: unknown,
+  abortSignal?: AbortSignal,
+): boolean {
+  if (abortSignal?.aborted || hasAbortCause(error)) return false;
+  if (!(error instanceof HistoryCompactSummarizerError)) return false;
+  if (error.reason === 'input_too_large' || error.reason === 'invalid_provider_state') return true;
+  if (error.reason !== 'provider_error') return false;
+  const diagnostic = providerFailureDiagnostic(error);
+  return diagnostic.errorClass === 'RequestRejected' && !diagnostic.retryable;
+}
+
+function hasAbortCause(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 6 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (current instanceof Error && current.name === 'AbortError') return true;
+    current =
+      typeof current === 'object' && current !== null && 'cause' in current
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
 }
 
 /**

@@ -1032,7 +1032,8 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
+  const providerCopy = getProviderSettingsCopy(useUiLocale());
+  const copy = providerCopy.detail;
   const flow = useOAuthLoginFlow({
     bridge: props.service.bridge,
     display: props.service.display,
@@ -1056,21 +1057,16 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
-  // The device page will not accept anything until the user types this code, so
-  // the surface that opened the browser is the one that has to show it. Without
-  // it the button opens a page the user cannot get past.
+  // Device pages without the code in their URL require the surface to show it.
   const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner
       status="info"
       title={title}
       description={deviceCode ? (
-        <VStack gap={0.5}>
-          <Text type="supporting">{detail}</Text>
-          <Text type="supporting" data-testid="oauth-relogin-device-code">
-            {copy.deviceCode} {deviceCode}
-          </Text>
-        </VStack>
+        <>
+          {detail} {providerCopy.oauthSection.deviceCode} <code>{deviceCode}</code>
+        </>
       ) : detail}
       endContent={!loading ? (
           <Button

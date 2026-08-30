@@ -18,6 +18,13 @@
  */
 
 export {
+  RuntimeHostManagedActivationError,
+  activateRuntimeHostManagedDeployment,
+  type ActivateRuntimeHostManagedDeploymentInput,
+  type RuntimeHostManagedActivationErrorCode,
+} from './managed-activation.js';
+export { openRuntimeHostManagedStdioBridge } from './managed-stdio-bridge.js';
+export {
   connectRuntimeHost,
   connectExistingRuntimeHost,
   connectRemoteRuntimeHost,
@@ -38,15 +45,22 @@ export {
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostProfileCredentialStore,
+  connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
+  decodeEnvironmentRuntimeHostProfile,
+  decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
+  runtimeHostProfileAccess,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  type EnvironmentRuntimeHostProfile,
+  type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfile,
+  type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
@@ -56,6 +70,11 @@ export {
   type RuntimeHostConnectionAvailability,
   type RuntimeHostReconnectingConnection,
 } from './reconnecting-connection.js';
+export {
+  RuntimeHostSshOperatorActivationError,
+  activateRuntimeHostSshOperator,
+  type RuntimeHostSshOperatorActivationInput,
+} from './ssh-operator-activation.js';
 export {
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
@@ -86,6 +105,15 @@ export {
   runtimeHostStartupError,
 } from './startup-error.js';
 export {
+  connectRuntimeHostWslEnvironment,
+  listRuntimeHostWslDistributions,
+  normalizeRuntimeHostWslDistribution,
+  normalizeRuntimeHostWslOperatorPath,
+  resolveSystemRuntimeHostWslExecutable,
+  type RuntimeHostWslEnvironmentInput,
+  type RuntimeHostWslProcessFactory,
+} from './wsl-environment.js';
+export {
   RuntimeHostCatalogReadError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
@@ -103,11 +131,12 @@ export {
   type RuntimeHostElectionDiagnostic,
   type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
+export { waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
 } from './candidate-launch-barrier.js';
-export { runHostedExecution } from './hosted-execution.js';
+export { runHostedExecution, type RunHostedExecutionInput } from './hosted-execution.js';
 export { type ClientCapabilityProvider } from './client-capability.js';
 export {
   readRuntimeHostAgentGraphEpochs,
@@ -120,7 +149,18 @@ export {
 export { loadOrCreateRuntimeHostClientInstanceId } from './client-instance-identity.js';
 export { projectSessionCatalogSummary } from './session-catalog-summary.js';
 export { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
+export {
+  decodeRuntimeHostOwnerConnectionCode,
+  encodeRuntimeHostOwnerConnectionCode,
+  type RuntimeHostOwnerConnectionCode,
+} from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
+export {
+  createRuntimeHostPeerClient,
+  createRuntimeHostPeerClientFromEnvironment,
+  type RuntimeHostPeerClient,
+  type RuntimeHostPeerConnectInput,
+} from './peer-client.js';
 export {
   createOAuthPresentationClientProvider,
   type OAuthPresentationBackend,

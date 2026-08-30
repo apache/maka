@@ -60,6 +60,7 @@ import {
   type RequestFrame,
   type ResponseFrame,
 } from './operations.js';
+import { isCanonicalRuntimeHostWebSocketPath } from './websocket-path.js';
 
 export * from './access-authority.js';
 export * from './agent-graph.js';
@@ -70,6 +71,7 @@ export * from './configuration-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './plan.js';
+export * from './peer-mesh.js';
 export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
@@ -79,6 +81,7 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './session-collaboration.js';
 export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
@@ -92,11 +95,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 54 as const;
-// 54: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`. An older Host rejects a
-// login start for it, so the pair must be refused rather than fail mid-flow.
-// Re-derived on each rebase: 49 through 53 were claimed on `main` while this
-// branch was open, so the number is read from `main` rather than reserved.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 77 as const;
+// 77: GitHub Copilot enrollment adds a provider and Host enrollment query to
+// the closed OAuth protocol vocabulary. Older peers reject these values, so
+// this incompatible change needs a handshake boundary above current main.
 // 53: Message admission answers `turn.message.submit` with an explicit
 // disposition, and queued Messages can be proven cancelled. Older peers read the
 // answer as a bare acknowledgement and cannot reconcile their own projection.
@@ -236,6 +238,7 @@ export interface HostRegistration {
   rootId: string;
   hostEpoch: string;
   endpoint: string;
+  websocketEndpoints?: readonly string[];
   protocolMin: number;
   protocolMax: number;
   compatibilityEpoch: number;
@@ -371,6 +374,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
   const protocolMax = requireProtocolVersion(registration.protocolMax, 'protocolMax');
   validateProtocolRange({ min: protocolMin, max: protocolMax });
   const rootId = requireHostRootId(registration.rootId);
+  const websocketEndpoints = decodeRegistrationWebSocketEndpoints(registration.websocketEndpoints);
   const pid = requireCount(registration.pid, 'pid');
   if (pid === 0) throw invalidProtocolFrame('Invalid pid');
   return {
@@ -379,6 +383,7 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     rootId,
     hostEpoch: requireId(registration.hostEpoch, 'hostEpoch'),
     endpoint: requireString(registration.endpoint, 'endpoint', 512),
+    ...(websocketEndpoints === undefined ? {} : { websocketEndpoints }),
     protocolMin,
     protocolMax,
     compatibilityEpoch:
@@ -389,7 +394,9 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     compositionRevision: decodeCompositionRevision(registration.compositionRevision),
     ...(registration.lifecycleMode === undefined
       ? {}
-      : { lifecycleMode: requireHostLifecycleMode(registration.lifecycleMode) }),
+      : {
+          lifecycleMode: requireHostLifecycleMode(registration.lifecycleMode),
+        }),
     ...(registration.generation === undefined
       ? {}
       : { generation: requireHostGeneration(registration.generation) }),
@@ -397,6 +404,39 @@ export function decodeHostRegistration(value: unknown): HostRegistration {
     pid,
     createdAt: requireString(registration.createdAt, 'createdAt', 64),
   };
+}
+
+function decodeRegistrationWebSocketEndpoints(value: unknown): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 4) {
+    throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoints');
+  }
+  const endpoints = value.map((entry) => {
+    const endpoint = requireString(entry, 'Runtime Host WebSocket endpoint', 2_048);
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    if (
+      url.protocol !== 'ws:' ||
+      url.hostname !== '127.0.0.1' ||
+      url.username ||
+      url.password ||
+      url.port === '' ||
+      url.search ||
+      url.hash ||
+      !isCanonicalRuntimeHostWebSocketPath(url.pathname)
+    ) {
+      throw invalidProtocolFrame('Invalid Runtime Host registration WebSocket endpoint');
+    }
+    return url.toString();
+  });
+  if (new Set(endpoints).size !== endpoints.length) {
+    throw invalidProtocolFrame('Duplicate Runtime Host registration WebSocket endpoint');
+  }
+  return Object.freeze(endpoints);
 }
 
 function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {
@@ -407,7 +447,9 @@ function requireHostLifecycleMode(value: unknown): 'ephemeral' | 'service' {
 function decodeTakeover(value: unknown): ClientHello['takeover'] {
   if (value === undefined) return undefined;
   const takeover = requireRecord(value, 'Runtime Host takeover');
-  return { expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch') };
+  return {
+    expectedHostEpoch: requireId(takeover.expectedHostEpoch, 'expectedHostEpoch'),
+  };
 }
 
 export function encodeProtocolMessage(value: ClientFrame | HostFrame): EncodedProtocolMessage {

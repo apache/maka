@@ -42,8 +42,8 @@
 .workhub-header,
 .workhub-empty,
 .workhub-turns {
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
+  width: min(var(--maka-reading-measure), 100%);
+  max-width: var(--maka-reading-measure);
   margin-inline: auto;
 }
 
@@ -123,12 +123,6 @@
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.workhub-assistant-bubble.maka-chat-message-bubble-assistant {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: none;
 }
 
 .workhub-assistant-bubble > small,
@@ -229,7 +223,7 @@
 
 .workhub-return {
   display: block;
-  width: min(680px, calc(100% - 48px));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   margin: 0 auto 8px;
   padding: 7px 12px;
   border: 1px solid var(--color-border-subtle, var(--border));

@@ -57,8 +57,9 @@ export async function readRuntimeHostAccessCredentialMetadata(
   return {
     credentials: file.credentials.flatMap((credential) => {
       if (
-        credential.status !== 'active' &&
-        !(credential.status === 'pending' && Date.parse(credential.expiresAt!) > now)
+        credential.principalKind === 'session_guest' ||
+        (credential.status !== 'active' &&
+          !(credential.status === 'pending' && Date.parse(credential.expiresAt!) > now))
       ) {
         return [];
       }

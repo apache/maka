@@ -20,4 +20,4 @@
 
 import { runExecutionCandidateEntry } from './candidate-entry.js';
 
-await runExecutionCandidateEntry(process.argv.slice(2));
+await runExecutionCandidateEntry(process.argv.slice(2), import.meta.url);

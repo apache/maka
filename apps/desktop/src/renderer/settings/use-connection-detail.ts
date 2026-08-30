@@ -72,12 +72,8 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 export interface OAuthLoginService {
   bridge: OAuthLoginFlowBridge;
   display: { name: string; shortName: string };
-  /**
-   * The provider's device page asks the user to type a one-time code, so the
-   * surface driving this login has to show it. xAI's verification URL carries
-   * the code itself, which is why it is the one flow that does not.
-   */
-  showsDeviceCode?: boolean;
+  // OAuth device pages that require manual code entry expose it as stateHint.
+  showsDeviceCode: boolean;
 }
 
 export function oauthLoginServiceFor(
@@ -95,6 +91,7 @@ export function oauthLoginServiceFor(
       return {
         bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        showsDeviceCode: false,
       };
     // Copilot re-login is the same Host-owned device grant the catalog drives;
     // importing a local `gh` credential stays a catalog action, so an expired
@@ -653,10 +650,32 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       const result: ConnectionTestResult = await props.bridge.test(connection.slug);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
-        toast.success(
-          copy.connectionSuccess(connection.name),
-          `${result.modelTested} · ${result.latencyMs} ms`,
-        );
+        // The backend probes the enabled models first, then the provider
+        // fallbacks (opencode-free tries each in turn until one answers). When
+        // the model that actually answered isn't one the user enabled, a plain
+        // "connection succeeded · <model>" reads as if their selection never
+        // took — and hides that their chosen model is currently down. Name both
+        // facts instead.
+        const testedId = result.modelTested;
+        const modelLabel = (id: string): string =>
+          models.find((model) => model.id === id)?.displayName ?? id;
+        // Inline the `testedId !== undefined` check so it narrows `testedId` to
+        // string for `modelLabel(testedId)` below.
+        if (
+          testedId !== undefined &&
+          enabledModelIds.length > 0 &&
+          !enabledModelIds.includes(testedId)
+        ) {
+          toast.warning(
+            copy.connectionFallbackTitle(connection.name),
+            copy.connectionFallbackDetail(enabledModelIds.map(modelLabel), modelLabel(testedId)),
+          );
+        } else {
+          toast.success(
+            copy.connectionSuccess(connection.name),
+            `${result.modelTested} · ${result.latencyMs} ms`,
+          );
+        }
       } else {
         reportHostError(
           copy.connectionFailed(connection.name),

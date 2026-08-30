@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, describe, it } from 'node:test';
-import { bumpedAutoupdateVersion } from './package-windows-autoupdate-next.mjs';
+import { bumpedAutoupdateVersion } from './desktop-update-contract.mjs';
 import { validateWindowsUpgradeBaseline } from './prepare-windows-upgrade-baseline.mjs';
 import {
   diffTreeManifests,

@@ -22,7 +22,7 @@ import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
 import type { StoredMessage } from '@maka/core/session';
-import { sanitizeForeignTitle } from '@maka/core/foreign-session';
+import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
 import { externalSessionMatchesQuery } from '@maka/core/external-session';
 import type {
   ExternalMakaSession,
@@ -38,7 +38,6 @@ const CODEX_ROLLOUT_HEAD_BYTES = 512 * 1024;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
-const CODEX_ROOT_SOURCE_TOKENS = new Set(['cli', 'exec', 'vscode']);
 
 export interface CodexSessionAdapterOptions {
   /** Codex's state root. Defaults to `$CODEX_HOME`, then `~/.codex`. */
@@ -156,7 +155,7 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
   private async entryFromRow(row: CodexThreadRow): Promise<CodexCatalogEntry | undefined> {
     if (!isSafeCodexSessionId(row.id)) return undefined;
     if (typeof row.rollout_path !== 'string' || row.rollout_path.length === 0) return undefined;
-    if (!isRootCodexSource(row.source)) return undefined;
+    if (!isSupportedCodexThreadSource(row.source)) return undefined;
 
     const rolloutPath = await this.resolveRolloutPath(row.rollout_path, row.id);
     if (!rolloutPath) return undefined;
@@ -575,7 +574,7 @@ function catalogEntryFromRolloutHead(
     const payload = asRecord(record.payload);
     if (!payload) continue;
     if (record.type === 'session_meta') {
-      if (!isRootCodexSource(payload.source)) return undefined;
+      if (!isSupportedCodexThreadSource(payload.source)) return undefined;
       id = stringField(payload, 'session_id') ?? stringField(payload, 'id') ?? id;
       cwd = safeCodexCwd(payload.cwd) || cwd;
       createdAt =
@@ -792,21 +791,6 @@ function firstNonEmptyTitle(...values: unknown[]): string | undefined {
     if (title.length > 0) return title;
   }
   return undefined;
-}
-
-function isRootCodexSource(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
-  if (typeof value === 'string') {
-    if (CODEX_ROOT_SOURCE_TOKENS.has(value)) return true;
-    if (!value.startsWith('{')) return false;
-    try {
-      return isRootCodexSource(JSON.parse(value) as unknown);
-    } catch {
-      return false;
-    }
-  }
-  if (!isRecord(value)) return false;
-  return value.custom === 'atlas' || value.custom === 'chatgpt';
 }
 
 function codexErrorAffectsTurnStatus(payload: JsonRecord): boolean {

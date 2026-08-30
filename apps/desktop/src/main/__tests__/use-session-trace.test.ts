@@ -458,6 +458,45 @@ describe('useSessionTrace', () => {
     );
   });
 
+  it('collapses all loaded earlier pages after reaching the oldest page', async () => {
+    const { root } = installReactRenderer();
+    const harness = createTraceHarness({
+      tracePages: [
+        tracePage('session-1', 'run-3', 'cursor-3'),
+        tracePage('session-1', 'run-2', null),
+      ],
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          services: harness.services,
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+
+    assert.equal(snapshot?.canHideEarlier, false);
+    await act(async () => snapshot?.loadEarlier());
+    assert.equal(snapshot?.canHideEarlier, true);
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-2', 'run-3'],
+    );
+
+    await act(async () => snapshot?.hideEarlier());
+    assert.equal(snapshot?.canHideEarlier, false);
+    assert.equal(snapshot?.nextCursor, 'cursor-3');
+    assert.deepEqual(
+      snapshot?.trace?.turns.map((turn) => turn.runId),
+      ['run-3'],
+    );
+  });
+
   it('rebuilds the loaded window when a run is inserted behind an unchanged head cursor', async () => {
     const { root } = installReactRenderer();
     const harness = createTraceHarness({

@@ -21,6 +21,7 @@ import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   decodeProviderType,
+  decodeConnectionSlug,
   decodeRuntimePolicyEntityId,
   normalizeCatalogConnectionBaseUrl,
   normalizeConnectionCatalogEntryUpdateForProvider,
@@ -29,6 +30,7 @@ import {
   type ConnectionModelDiscoveryResult,
 } from '@maka/core/runtime-policy';
 import {
+  deriveConnectionSlug,
   PROVIDER_DEFAULTS,
   providerAuthSupportsApiKey,
   type ProviderType,
@@ -45,11 +47,12 @@ import {
 } from './errors.js';
 import { readBoundedJsonDocument, writeJsonDocument } from './document-io.js';
 const FILE = 'runtime-policy-onboarding.json';
-const SCHEMA_VERSION = 1 as const;
+const SCHEMA_VERSION = 2 as const;
 const MAX_BYTES = 5 * 1024 * 1024;
 
 export interface ConnectionOnboardingTransactionInput {
   readonly connectionId: unknown;
+  readonly slug: unknown;
   readonly providerType: unknown;
   readonly suppliedSecret: unknown;
   readonly baseUrl: unknown;
@@ -59,8 +62,10 @@ export interface ConnectionOnboardingTransactionInput {
 }
 
 export interface ConnectionOnboardingIntent {
-  readonly schemaVersion: typeof SCHEMA_VERSION;
+  readonly schemaVersion: 1 | typeof SCHEMA_VERSION;
   readonly connectionId: string;
+  /** Absent only while replaying a schema-v1 identity-first intent. */
+  readonly slug: string | null;
   readonly providerType: ProviderType;
   readonly suppliedSecret: string | null;
   readonly baseUrl: string | null;
@@ -69,10 +74,15 @@ export interface ConnectionOnboardingIntent {
   readonly invalidateLastTest: boolean;
 }
 
+export type CurrentConnectionOnboardingIntent = ConnectionOnboardingIntent & {
+  readonly schemaVersion: 2;
+  readonly slug: string;
+};
+
 export function prepareConnectionOnboardingIntent(
   input: ConnectionOnboardingTransactionInput,
   source: 'input' | 'persisted' = 'input',
-): ConnectionOnboardingIntent {
+): CurrentConnectionOnboardingIntent {
   const decode = source === 'persisted' ? decodePersistedDomain : decodeConnectionInput;
   const providerType = decode(() => decodeProviderType(input.providerType));
   if (!providerAuthSupportsApiKey(providerType)) {
@@ -135,6 +145,7 @@ export function prepareConnectionOnboardingIntent(
   return {
     schemaVersion: SCHEMA_VERSION,
     connectionId: decode(() => decodeRuntimePolicyEntityId(input.connectionId)),
+    slug: decode(() => decodeConnectionSlug(input.slug)),
     providerType,
     suppliedSecret,
     baseUrl,
@@ -149,8 +160,7 @@ export async function readConnectionOnboardingIntent(
 ): Promise<ConnectionOnboardingIntent | undefined> {
   const value = await readBoundedJsonDocument(root, FILE, MAX_BYTES);
   if (value === undefined) return undefined;
-  // `baseUrl` is allowed but not required: an intent journaled by a build
-  // that predates the field must still replay.
+  // `baseUrl` is allowed but not required for the oldest v1 journal shape.
   const raw = record(
     value,
     FILE,
@@ -158,6 +168,7 @@ export async function readConnectionOnboardingIntent(
     [
       'schemaVersion',
       'connectionId',
+      'slug',
       'providerType',
       'suppliedSecret',
       'baseUrl',
@@ -175,13 +186,15 @@ export async function readConnectionOnboardingIntent(
       'invalidateLastTest',
     ],
   );
-  if (raw.schemaVersion !== SCHEMA_VERSION) {
+  if (raw.schemaVersion !== 1 && raw.schemaVersion !== SCHEMA_VERSION) {
     throw codecError('invalid_document', `${FILE} has an unsupported schema version`);
   }
-  return prepareConnectionOnboardingIntent(
+  const prepared = prepareConnectionOnboardingIntent(
     {
       providerType: raw.providerType,
       connectionId: raw.connectionId,
+      slug:
+        raw.schemaVersion === 1 ? deriveLegacyIntentPlaceholderSlug(raw.providerType) : raw.slug,
       suppliedSecret: raw.suppliedSecret,
       baseUrl: raw.baseUrl,
       enabledModelIds: raw.enabledModelIds,
@@ -190,13 +203,19 @@ export async function readConnectionOnboardingIntent(
     },
     'persisted',
   );
+  return raw.schemaVersion === 1 ? { ...prepared, schemaVersion: 1, slug: null } : prepared;
 }
 
 export function writeConnectionOnboardingIntent(
   root: string,
-  intent: ConnectionOnboardingIntent,
+  intent: CurrentConnectionOnboardingIntent,
 ): Promise<void> {
   return writeJsonDocument(root, FILE, intent, MAX_BYTES);
+}
+
+function deriveLegacyIntentPlaceholderSlug(rawProviderType: unknown): string {
+  const providerType = decodePersistedDomain(() => decodeProviderType(rawProviderType));
+  return deriveConnectionSlug(providerType);
 }
 
 export async function clearConnectionOnboardingIntent(root: string): Promise<void> {

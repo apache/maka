@@ -38,10 +38,6 @@ export interface BuildPriorRuntimeContextInput {
   sessionId: string;
   currentRunId: string;
   currentTurnId: string;
-  parentRunId?: string;
-  resumedFromRunId?: string;
-  agentId?: string;
-  linkedChildSession: boolean;
   runStore?: AgentRunStore;
   runtimeEventStore?: RuntimeEventStore;
   runStoreAvailable: boolean;
@@ -58,9 +54,6 @@ interface PriorRunTerminalFactContext {
 export async function buildPriorRuntimeContext(
   input: BuildPriorRuntimeContextInput,
 ): Promise<PriorRuntimeContext | undefined> {
-  if (input.resumedFromRunId)
-    return await buildResumedChildRuntimeContext(input, input.resumedFromRunId);
-  if (input.parentRunId) return undefined;
   if (
     !input.runStore ||
     !input.runtimeEventStore ||
@@ -130,89 +123,6 @@ export async function buildPriorRuntimeContext(
   if (events.length === 0 || buildRuntimeEventModelReplayPlan(events).items.length === 0)
     return undefined;
   return { events, runs: priorRuns };
-}
-
-async function buildResumedChildRuntimeContext(
-  input: BuildPriorRuntimeContextInput,
-  sourceRunId: string,
-): Promise<PriorRuntimeContext> {
-  if (
-    !input.runStore ||
-    !input.runtimeEventStore ||
-    !input.runStoreAvailable ||
-    !input.runtimeEventStoreAvailable
-  ) {
-    throw new Error('Child AgentRun resume requires durable run and RuntimeEvent stores');
-  }
-  const sessionRuns = await input.runStore.listSessionRuns(input.sessionId);
-  const runsById = new Map(sessionRuns.map((run) => [run.runId, run]));
-  const reverseChain: AgentRunHeader[] = [];
-  const visited = new Set<string>();
-  let cursor: string | undefined = sourceRunId;
-  while (cursor) {
-    if (visited.has(cursor))
-      throw new Error(`Child AgentRun resume lineage contains a cycle at ${cursor}`);
-    visited.add(cursor);
-    const run = runsById.get(cursor);
-    if (!run) throw new Error(`Child AgentRun resume source ${cursor} was not found`);
-    if (
-      input.linkedChildSession
-        ? !isSessionInlineRun(run)
-        : !run.parentRunId || isSessionInlineRun(run)
-    ) {
-      throw new Error(`AgentRun ${cursor} is not a resumable child run`);
-    }
-    if (!run.agentId || run.agentId !== input.agentId) {
-      throw new Error(`Child AgentRun resume profile changed at ${cursor}`);
-    }
-    reverseChain.push(run);
-    cursor = run.resumedFromRunId ?? (input.linkedChildSession ? run.retriedFromRunId : undefined);
-  }
-  const effectiveRuns: AgentRunHeader[] = [];
-  const events: RuntimeEvent[] = [];
-  for (const run of reverseChain.reverse()) {
-    const loaded = await loadRequiredChildResumeContext(input, run);
-    effectiveRuns.push(loaded.run);
-    events.push(...loaded.events);
-  }
-  const replay = buildRuntimeEventModelReplayPlan(events);
-  const unsafe = replay.diagnostics.find((diagnostic) =>
-    [
-      'unmatched_tool_call',
-      'unmatched_tool_result',
-      'tool_id_mismatch',
-      'unsupported_role',
-      'unsupported_content',
-    ].includes(diagnostic.code),
-  );
-  if (unsafe) throw new Error(`Child AgentRun resume history is unsafe: ${unsafe.code}`);
-  const first = replay.items[0];
-  if (!first || first.kind !== 'text' || first.role !== 'user') {
-    throw new Error('Child AgentRun resume history has no user-anchored replay boundary');
-  }
-  return { events, runs: effectiveRuns };
-}
-
-async function loadRequiredChildResumeContext(
-  input: BuildPriorRuntimeContextInput,
-  run: AgentRunHeader,
-): Promise<PriorRunTerminalFactContext> {
-  let events = await input.runtimeEventStore!.readRuntimeEvents(input.sessionId, run.runId);
-  if (
-    (events.length === 0 || !events.some(isTerminalRuntimeEvent)) &&
-    (await input.repairRunRuntimeLedger?.(input.sessionId, run.runId))
-  ) {
-    events = await input.runtimeEventStore!.readRuntimeEvents(input.sessionId, run.runId);
-  }
-  if (events.length === 0 || !events.some(isTerminalRuntimeEvent)) {
-    throw new Error(`Child AgentRun resume source ${run.runId} has no terminal RuntimeEvent fact`);
-  }
-  const terminalFact = classifyRuntimeEventTerminalFact(run, events).fact;
-  if (!terminalFact)
-    throw new Error(
-      `Child AgentRun resume source ${run.runId} has an invalid terminal RuntimeEvent fact`,
-    );
-  return { events, run: effectiveRunHeaderFromTerminalFact(run, terminalFact) };
 }
 
 /**

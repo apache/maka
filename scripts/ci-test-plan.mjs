@@ -35,6 +35,7 @@ const FULL_SUITE_FILES = new Set([
 ]);
 
 const RELEASE_CONTRACT_FILES = new Set([
+  'apps/desktop/src/main/app-update-test-context.ts',
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
   'apps/desktop/bundled-tools.json',
@@ -42,11 +43,14 @@ const RELEASE_CONTRACT_FILES = new Set([
   'apps/desktop/electron-builder.config.mjs',
   'apps/desktop/package.json',
   '.github/workflows/cli-package-validation.yml',
+  '.github/workflows/desktop-nightly.yml',
+  '.github/workflows/npm-publication.yml',
   '.github/workflows/release-cli-finalize.yml',
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
   '.github/workflows/release-windows-check.yml',
   'scripts/package-macos-arm64.mjs',
+  'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
@@ -58,6 +62,10 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/release-version.mjs',
   'scripts/verify-macos-arm64-cli.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-macos-autoupdate.mjs',
+  'scripts/desktop-update-contract.mjs',
+  'scripts/product-nightly.mjs',
+  'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
@@ -95,10 +103,9 @@ const ASF_SOURCE_FILES = new Set([
   'NOTICE',
   'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
   'biome.jsonc',
+  'docs/code-origin-audit.md',
   'package.json',
-  'packages/core/src/model-metadata.generated.ts',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
-  'packages/runtime/src/telemetry/model-pricing.generated.ts',
   'scripts/asf-license-headers.mjs',
   'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
@@ -141,6 +148,7 @@ function isCliPackagePath(path) {
 function isReleaseContractPath(path) {
   return (
     RELEASE_CONTRACT_FILES.has(path) ||
+    path.startsWith('scripts/desktop-nightly') ||
     path.startsWith('scripts/product-release-') ||
     path.startsWith('scripts/release-cli-')
   );
@@ -241,7 +249,6 @@ function isE2eProductPath(path) {
 
 const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/agent-run-store.ts',
-  'packages/storage/src/git-workspace-service.ts',
   'packages/storage/src/runtime-event-invariants.ts',
   'packages/storage/src/root-authority.ts',
   'packages/storage/src/operational-state-store.ts',
@@ -252,10 +259,8 @@ const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/sqlite-usage-schema.ts',
   'packages/storage/src/sqlite-workflow-schema.ts',
   'packages/storage/src/__tests__/agent-run-store.test.ts',
-  'packages/storage/src/__tests__/git-workspace-service.test.ts',
   'packages/storage/src/__tests__/root-authority.test.ts',
   'packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts',
-  'packages/storage/src/__tests__/fixtures/git-workspace-service-crash-child.ts',
   'packages/storage/src/__tests__/fixtures/sqlite-recovery-concurrency-child.ts',
   'packages/storage/src/__tests__/fixtures/root-lock-holder.ts',
   'packages/storage/src/__tests__/fixtures/root-resolver.ts',

@@ -103,7 +103,7 @@ function faultingOpen(
     let closeFailed = false;
     const wrapped: MarkerFileHandle = {
       stat: (options) => handle.stat(options),
-      readFile: (encoding) => handle.readFile(encoding),
+      read: (buffer, offset, length, position) => handle.read(buffer, offset, length, position),
       writeFile: async (data, encoding) => {
         if (failurePhase === 'write') {
           await handle.writeFile(data.slice(0, 1), encoding);

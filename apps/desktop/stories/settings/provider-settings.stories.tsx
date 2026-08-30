@@ -24,6 +24,7 @@ import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
   ConnectionTestResult,
+  IdentifiedLlmConnection,
   LlmConnection,
   ModelDiscoveryResult,
   ProviderType,
@@ -69,8 +70,9 @@ function makeConnection(input: {
   lastTestMessage?: string;
   models?: LlmConnection['models'];
   modelSource?: LlmConnection['modelSource'];
-}): LlmConnection {
+}): IdentifiedLlmConnection {
   return {
+    connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
     providerType: input.providerType,
@@ -213,7 +215,7 @@ const problemConnections = [
 ];
 
 function createBridge(input: {
-  connections?: LlmConnection[];
+  connections?: IdentifiedLlmConnection[];
   defaultSlug?: string | null;
   failLoad?: boolean;
   loading?: boolean;
@@ -250,7 +252,7 @@ function createBridge(input: {
     async update(slug, patch) {
       const current = connections.find((connection) => connection.slug === slug);
       if (!current) throw new Error('连接不存在');
-      const updated: LlmConnection = {
+      const updated: IdentifiedLlmConnection = {
         ...current,
         ...patch,
         // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);

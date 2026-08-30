@@ -10,3 +10,8 @@
 /.claude export-ignore
 /.maka-shots export-ignore
 /maka-proposal-zh-review.txt export-ignore
+
+# DeepSeek Harness remains available to repository development and benchmarks,
+# but its external runtime dependency closure is not an ASF source-release input.
+/packages/eval/harbor/deepseek-harness-toolchain/package.json export-ignore
+/packages/eval/harbor/deepseek-harness-toolchain/package-lock.json export-ignore

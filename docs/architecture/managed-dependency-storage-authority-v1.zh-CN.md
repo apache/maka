@@ -38,7 +38,7 @@ base: upstream/main@08bcf324b
 
 - bundled npm 的实现与网络策略；
 - `node_modules/.bin` symlink 的 producer 配额扫描；
-- ManagedWorkspaceOwner/worker logical binding；
+- workspace execution owner/worker logical binding；
 - Desktop/CLI/Runtime Host 接线；
 - release packaging、audit 或 SBOM。
 

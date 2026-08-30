@@ -801,6 +801,22 @@ function toModelInfo(model: RawProviderModel): ModelInfo | null {
   if (model.tags?.includes('vision')) capabilities.vision = true;
   if (model.tags?.includes('reasoning')) capabilities.reasoning = true;
   if (model.tags?.includes('tool-use')) capabilities.functionCalling = true;
+  // `output_modalities` was validated above and then dropped, so a relay that
+  // advertised an image-only model handed back a row indistinguishable from a
+  // chat model's. Declared output that names modalities but not text is the
+  // provider stating the model cannot answer in text; record it the way the
+  // rest of this function records modality facts, as a capability.
+  //
+  // Read through `knownOutputModalities` rather than the raw array. Every
+  // other modality read here ADDS a capability, so a value this code fails to
+  // recognize costs a fact; this one REMOVES chat, where the same miss would
+  // silently disable a working model. `assertOptionalArray` checks the
+  // container and not its items, so `['Text']` or `[null]` reach here intact.
+  const declaredOutput = knownOutputModalities(model.output_modalities);
+  if (declaredOutput.length > 0 && !declaredOutput.includes('text')) {
+    capabilities.chat = false;
+    if (declaredOutput.includes('image')) capabilities.imageGeneration = true;
+  }
   if (model.providers) {
     capabilities.functionCalling = providers.some(
       (provider) => provider.status === 'live' && provider.supports_tools === true,
@@ -851,6 +867,20 @@ function providerObjectArray<T extends object>(
     throw new ConnectionEffectInvalidResponseError(`Invalid ${label} response`);
   }
   return value as T[];
+}
+
+/**
+ * The declared output modalities this build understands, in the provider's
+ * order. Anything else — a value from a newer spec, a capitalized spelling, a
+ * non-string — is dropped rather than guessed at, so an unrecognized list
+ * reads as "said nothing" instead of "said not text".
+ */
+function knownOutputModalities(declared: readonly unknown[] | undefined): string[] {
+  if (declared === undefined) return [];
+  return declared.filter(
+    (value): value is 'text' | 'image' | 'audio' =>
+      value === 'text' || value === 'image' || value === 'audio',
+  );
 }
 
 function assertOptionalArray(

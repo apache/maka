@@ -40,22 +40,14 @@
  * sites.
  */
 
-import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { getConversationCopy } from './conversation-copy.js';
 
-function createAbsoluteTimeFormat(locale: UiLocale): Intl.DateTimeFormat {
-  if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') {
-    return { format: (d: Date) => d.toISOString() } as unknown as Intl.DateTimeFormat;
-  }
-  return new Intl.DateTimeFormat(
-    uiLocaleToIntlLocale(locale),
-    { dateStyle: 'medium', timeStyle: 'short' },
-  );
-}
-
-export function formatAbsoluteTimestamp(ts: number, locale: UiLocale): string {
-  return createAbsoluteTimeFormat(locale).format(new Date(ts));
-}
+/* `formatAbsoluteTimestamp` used to live here as a second copy of the same
+   `Intl` options `@maka/core/relative-time` already owned, and it built a
+   formatter per call — the sidebar renders one per row for the row tooltip and
+   one for the row's accessible name. Its callers now read the core module
+   directly, so there is no second reading of a timestamp to keep in step. */
 
 /* `formatClockTime` (a 24-hour `HH:mm` for the user-message time) lived here
    until the meta row moved to Astryx's `Timestamp`. Locking the hour cycle was
@@ -84,7 +76,7 @@ export function formatTurnDuration(ms: number): string {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-export function turnAbortMarkerLabel(abortSource: string | undefined, locale: UiLocale): string {
+export function turnAbortStatusLabel(abortSource: string | undefined, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages;
   switch (abortSource) {
     case 'renderer.stop_button': return copy.abortedByStop;

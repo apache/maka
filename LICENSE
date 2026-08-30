@@ -450,14 +450,18 @@ License: MIT
 
 packages/core/src/model-metadata.generated.ts and
 packages/runtime/src/telemetry/model-pricing.generated.ts are generated from the
-models.dev catalog by scripts/sync-model-metadata.mjs and are redistributed with
-Maka. The exact selected input projection is stored at
+models.dev catalog by scripts/sync-model-metadata.mjs during installation or
+build and are redistributed with compiled Maka packages, but are not tracked as
+source. The exact selected input projection is stored at
 scripts/model-metadata/models-dev-api.snapshot.json. Its origin record either
 binds a refresh to the downloaded response digest or identifies the exact Maka
 commit whose generated outputs seeded the migration snapshot. The snapshot
-also carries a digest of its normalized projection; the generated-file headers
-bind each output to that digest. They copy and transform selected model and
-provider metadata from that catalog, including upstream display names and
+is the sole build input for a particular repository revision and release;
+models.dev remains the upstream source used by an explicit refresh. Normal
+installation and build paths do not fetch the latest catalog implicitly. The
+snapshot also carries a digest of its normalized projection; the generated-file
+headers bind each output to that digest. They copy and transform selected model
+and provider metadata from that catalog, including upstream display names and
 descriptive text, lifecycle status values, reasoning effort options, context
 and output limits, modalities, and prices. Which providers are kept, which
 fields are kept, and the order they appear in are decided by the generator. The

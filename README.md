@@ -30,6 +30,7 @@
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
   <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux not yet supported" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-9BB8F0?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
 </p>
 
 <p align="center">
@@ -123,6 +124,15 @@ npm run dev
 npm run dev:full
 ```
 
+Direct Peer and Peer Mesh development additionally requires Rust stable 1.98 or newer and the
+platform linker (Xcode Command Line Tools on macOS, MSVC Build Tools on Windows). Use the
+peer-enabled entry point so the native addon is built before Desktop starts:
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # full build
+```
+
 If dependencies were installed with `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, install the Electron platform binary before starting:
 
 ```sh
@@ -190,17 +200,20 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 ## Repository layout
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   SQLite operational state, configuration, and payload stores
-packages/runtime/   AgentRun, model adapters, tools, context, and recovery
-packages/eval/      Experiment cells, attempts, results, and executor/subject adapters
-packages/cli/       TUI and non-interactive CLI
-packages/ui/        Shared conversation, Markdown, Artifact, and UI primitives
+packages/core/         Pure contracts for Sessions, Events, Permissions, and Connections
+packages/storage/      SQLite operational state, configuration, and payload stores
+packages/mcp/          Provider-neutral Model Context Protocol client integration
+packages/runtime/      AgentRun, model adapters, tools, context, and recovery
+packages/runtime-host/ Single-owner Runtime Host lifecycle, protocol, and client bootstrap
+packages/eval/         Experiment cells, attempts, results, and executor/subject adapters
+packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
+packages/cli/          TUI and non-interactive CLI
+packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
 
-docs/               Architecture, product, security, privacy, and test contracts
-scripts/            Build hygiene, visual checks, smoke tests, and release helpers
+docs/                  Architecture, product, security, privacy, and test contracts
+scripts/               Build hygiene, visual checks, smoke tests, and release helpers
 ```
 
 ## Local data and recovery

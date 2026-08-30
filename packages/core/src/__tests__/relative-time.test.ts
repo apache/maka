@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  formatAbsoluteTimestamp,
   formatCompactTimestamp,
   formatRelativeTimestamp,
   formatSidebarTimestamp,
@@ -112,6 +113,44 @@ describe('relative timestamp labels', () => {
     ]) {
       const delay = nextRelativeRefreshDelay(ts, NOW);
       assert.ok(delay === null || (Number.isFinite(delay) && delay > 0 && delay <= 10 * 60_000));
+    }
+  });
+
+  it('reuses both formatters when relative and absolute readings alternate', () => {
+    resetRelativeTimeFormatters();
+    const OriginalDateTimeFormat = Intl.DateTimeFormat;
+    const OriginalRelativeTimeFormat = Intl.RelativeTimeFormat;
+    let constructions = 0;
+    function countConstructions(name: 'DateTimeFormat' | 'RelativeTimeFormat'): void {
+      const Original = Intl[name] as unknown as new (...args: unknown[]) => unknown;
+      function Counting(...args: unknown[]): unknown {
+        constructions += 1;
+        return new Original(...args);
+      }
+      Object.defineProperty(Intl, name, { value: Counting, configurable: true, writable: true });
+    }
+    countConstructions('DateTimeFormat');
+    countConstructions('RelativeTimeFormat');
+    try {
+      for (let round = 0; round < 5; round += 1) {
+        // The sidebar reads both per row: the relative label and, for the
+        // accessible name and the tooltip, the absolute one.
+        formatRelativeTimestamp(NOW - 60_000, NOW, 'en');
+        formatAbsoluteTimestamp(NOW - 60_000, 'en');
+      }
+      assert.equal(constructions, 2, 'one formatter of each kind for one locale');
+    } finally {
+      Object.defineProperty(Intl, 'DateTimeFormat', {
+        value: OriginalDateTimeFormat,
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(Intl, 'RelativeTimeFormat', {
+        value: OriginalRelativeTimeFormat,
+        configurable: true,
+        writable: true,
+      });
+      resetRelativeTimeFormatters();
     }
   });
 });

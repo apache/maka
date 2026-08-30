@@ -1022,6 +1022,9 @@ export async function assertPackagedResources(
     // artifacts that were correct when they shipped. The canonical icon itself
     // is `requireCanonicalIcon` above, not this.
     requireAppIconCatalog = true,
+    // Current Desktop builds ship the direct-peer Client addon beside its Rust
+    // notices. Upgrade baselines may predate both resources.
+    requireDirectPeerArtifact = true,
   } = {},
 ) {
   if (bundledGitContract !== 'forbidden' && bundledGitContract !== 'legacy-required') {
@@ -1042,6 +1045,12 @@ export async function assertPackagedResources(
       : []),
     ...(requireCanonicalIcon ? [join('assets', 'icon.png')] : []),
     join('workers', 'filesystem-worker.js'),
+    ...(requireDirectPeerArtifact
+      ? [
+          join('runtime-host-peer', 'maka_runtime_host_peer.node'),
+          join('licenses', 'runtime-host-peer', 'THIRD_PARTY_NOTICES.txt'),
+        ]
+      : []),
     // The picker's catalog is read at runtime, and Electron reports a missing
     // file as an empty image rather than an error — a packaging change that
     // dropped one would ship a blank tile silently.

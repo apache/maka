@@ -30,6 +30,7 @@
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
   <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux 尚未支持" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
 </p>
 
 <p align="center">
@@ -121,6 +122,15 @@ npm run dev
 npm run dev:full
 ```
 
+开发 Direct Peer 和 Peer Mesh 还需要 Rust stable 1.98 或更高版本及平台 linker
+（macOS 使用 Xcode Command Line Tools，Windows 使用 MSVC Build Tools）。使用 Peer 开发入口，
+Desktop 会在启动前构建原生 addon：
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # 完整构建
+```
+
 如果安装时设置过 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，启动前需要补装 Electron 平台二进制：
 
 ```sh
@@ -187,17 +197,20 @@ Experiment → Cells → Attempts → Results
 ## 仓库结构
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Session、Event、Permission、Connection 等纯 contracts
-packages/storage/   SQLite 运行状态、配置与 payload stores
-packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
-packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
-packages/cli/       TUI 和非交互 CLI
-packages/ui/        共享对话、Markdown、Artifact 与 UI primitives
+packages/core/         Session、Event、Permission、Connection 等纯 contracts
+packages/storage/      SQLite 运行状态、配置与 payload stores
+packages/mcp/          与提供商无关的 Model Context Protocol 客户端集成
+packages/runtime/      AgentRun、模型适配、工具、上下文和恢复
+packages/runtime-host/ 单一所有者的 Runtime Host 生命周期、协议和客户端启动
+packages/eval/         Experiment cell、attempt、result 与 executor/subject adapter
+packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
+packages/cli/          TUI 和非交互 CLI
+packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
 
-docs/               架构、产品、安全、隐私和测试契约
-scripts/            Build hygiene、视觉检查、smoke 和 release helpers
+docs/                  架构、产品、安全、隐私和测试契约
+scripts/               Build hygiene、视觉检查、smoke 和 release helpers
 ```
 
 ## 本地数据与恢复

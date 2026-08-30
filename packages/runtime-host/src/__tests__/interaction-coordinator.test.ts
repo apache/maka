@@ -124,6 +124,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -255,6 +256,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -326,6 +328,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -501,6 +504,7 @@ describe('HostInteractionCoordinator', () => {
       await mkdir(workspace);
       const session = await stores.sessionStore.create({
         cwd: workspace,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',

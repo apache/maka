@@ -20,7 +20,7 @@
 import type { IpcMain } from 'electron';
 import {
   MCP_CONFIG_VERSION,
-  isMcpStdioConfig,
+  mcpConfigChangeRetiresCredentials,
   type McpConfigAddResult,
   type McpConfigFile,
   type McpConfigImportResult,
@@ -29,6 +29,7 @@ import {
 } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import {
+  assertMcpEndpointPolicyOnChanges,
   McpServerExistsError,
   McpConfigSourceError,
   normalizeMcpConfig,
@@ -93,53 +94,45 @@ export function registerMcpIpcMain(deps: McpIpcMainDeps): void {
       );
     }
   };
-  // Every config mutation is one transaction on one lane:
+  // Every config mutation is one transaction on one lane and one shared file
+  // lock:
   //   read the authoritative snapshot → restore sentinels and apply the
   //   active-login gate against it → erase the credentials this commit
   //   orphans (removed servers, repointed endpoints) → persist.
-  // The credential erasure is asynchronous, so it cannot live inside the
-  // store's synchronous transform; the lane serializes the whole sequence
-  // instead, and the final transform still fails closed if the snapshot
-  // drifted under an out-of-band writer. Credentials go first so a failed
-  // erase aborts the commit while everything is still configured and
-  // retryable — never a persisted removal whose token a same-id re-add
-  // could inherit after a restart.
+  // The lane also excludes Desktop OAuth claims; the store transaction makes
+  // the same sequence linearizable against TUI and other process writers.
+  // Credentials go first so a failed erase aborts the commit while everything
+  // is still configured and retryable — never a persisted removal whose token
+  // a same-id re-add could inherit after a restart.
   const inMutationLane = deps.exclusiveLane ?? createMcpExclusiveLane();
   const commitConfig = async (
     mutate: (current: McpConfigFile) => McpConfigFile,
-  ): Promise<McpConfigFile> => {
-    const current = await deps.store.get();
-    const next = mutate(current);
-    // The authoritative gate: every server this commit semantically touches
-    // is re-checked INSIDE the lane. The handler-entry checks are advisory
-    // fast-fails; this one cannot race a login claim, because claims travel
-    // the same lane.
-    for (const serverId of new Set([
-      ...Object.keys(current.mcpServers),
-      ...Object.keys(next.mcpServers),
-    ])) {
-      const before = current.mcpServers[serverId];
-      const after = next.mcpServers[serverId];
-      if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
-    }
-    // Erases are per-server and not transactional as a set: if one fails
-    // partway, the commit aborts with the EARLIER servers already logged
-    // out. That partial effect is deliberately in the fail-closed direction
-    // — a re-login is recoverable, a credential outliving its removed or
-    // repointed config is not.
-    for (const serverId of credentialRetirements(current, next)) {
-      await deps.manager.forgetServerCredentials(serverId);
-    }
-    const snapshot = JSON.stringify(current);
-    return deps.store.transform((actual) => {
-      if (JSON.stringify(actual) !== snapshot) {
-        throw new Error(
-          'MCP configuration changed while this update was being prepared — retry the operation',
-        );
+  ): Promise<McpConfigFile> =>
+    deps.store.transform(async (current) => {
+      const next = mutate(current);
+      assertMcpEndpointPolicyOnChanges(current, next);
+      // The authoritative gate: every server this commit semantically touches
+      // is re-checked INSIDE the lane. The handler-entry checks are advisory
+      // fast-fails; this one cannot race a login claim, because claims travel
+      // the same lane.
+      for (const serverId of new Set([
+        ...Object.keys(current.mcpServers),
+        ...Object.keys(next.mcpServers),
+      ])) {
+        const before = current.mcpServers[serverId];
+        const after = next.mcpServers[serverId];
+        if (JSON.stringify(before) !== JSON.stringify(after)) assertNoActiveLogin(serverId);
+      }
+      // Erases are per-server and not transactional as a set: if one fails
+      // partway, the commit aborts with the EARLIER servers already logged
+      // out. That partial effect is deliberately in the fail-closed direction
+      // — a re-login is recoverable, a credential outliving its removed or
+      // repointed config is not.
+      for (const serverId of credentialRetirements(current, next)) {
+        await deps.manager.forgetServerCredentials(serverId);
       }
       return next;
     });
-  };
   // The renderer is semi-trusted (SECURITY.md §3): every config that crosses
   // toward it leaves with clientSecret replaced by the sentinel, and every
   // config it sends back has sentinels restored from disk before the store
@@ -369,12 +362,7 @@ function credentialRetirements(current: McpConfigFile, next: McpConfigFile): str
     const incoming = Object.hasOwn(next.mcpServers, serverId)
       ? next.mcpServers[serverId]
       : undefined;
-    if (!incoming) {
-      retired.push(serverId);
-      continue;
-    }
-    if (isMcpStdioConfig(server)) continue;
-    if (isMcpStdioConfig(incoming) || incoming.url !== server.url) retired.push(serverId);
+    if (mcpConfigChangeRetiresCredentials(server, incoming)) retired.push(serverId);
   }
   return retired;
 }

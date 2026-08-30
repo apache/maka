@@ -78,6 +78,17 @@
   min-width: 0;
 }
 
+/* The report is a reading column on an uncapped module page, so it is the
+   container that has to stop it — same rule as a transcript turn, and on the
+   same box. The cap belongs here and not on the prose inside: a section is a
+   heading, a divider and its prose, and capping only the last of the three
+   left the first two running to the window edge. Without any cap the prose ran
+   the window width and the code blocks inside it ran wider still, since they
+   come from `components.code` and so bypass Astryx's own. */
+.maka-daily-review-report {
+  max-width: var(--maka-reading-measure);
+}
+
 .maka-daily-review-report-prose {
   color: var(--foreground-secondary);
   overflow-wrap: anywhere;

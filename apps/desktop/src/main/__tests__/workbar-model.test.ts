@@ -166,7 +166,7 @@ describe('Workbar topology', () => {
     );
   });
 
-  it('hydrates v2 right-panel storage without changing its migration', () => {
+  it('ignores workbar storage from versions outside the support window', () => {
     cleanups.push(
       installMemoryLocalStorage({
         'maka-session-workbar-tabs-v2': JSON.stringify({
@@ -177,27 +177,10 @@ describe('Workbar topology', () => {
           ],
           activeTabId: 'workbar:review',
         }),
-      }),
-    );
-    const state = readSessionWorkbarPanels();
-    assert.deepEqual(state.right.tabs, [
-      { id: 'workbar:review', kind: 'review' },
-    ]);
-    assert.equal(state.right.activeTabId, 'workbar:review');
-    assert.deepEqual(state.bottom.tabs, []);
-  });
-
-  it('hydrates the v1 active-tab storage without changing its migration', () => {
-    cleanups.push(
-      installMemoryLocalStorage({
         'maka-session-workbar-tab-v1': 'browser',
       }),
     );
-    const state = loadWorkbarLayout();
-    assert.deepEqual(state.panels.right.tabs, [
-      { id: 'workbar:browser', kind: 'browser' },
-    ]);
-    assert.equal(state.panels.right.activeTabId, 'workbar:browser');
+    assert.deepEqual(readSessionWorkbarPanels(), createSessionWorkbarPanelsState());
   });
 
   it('round-trips v3 layout while filtering transient tab data', () => {

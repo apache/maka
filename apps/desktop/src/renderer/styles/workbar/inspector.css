@@ -424,32 +424,6 @@
   box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border-strong);
 }
 
-/* The three headline figures, across the column rather than down it.
-   A 480px panel of label-then-value rows leaves its whole right half empty and
-   still reads as cramped, because every row is the same weight; giving the
-   three figures a reader actually came for their own band fills the width with
-   the thing that deserves it and lets everything below stay quiet. */
-.maka-inspector-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
-  gap: var(--space-3);
-  margin: 0;
-}
-
-.maka-inspector-stat dt {
-  font: var(--maka-text-body);
-  color: var(--muted-foreground);
-  margin-bottom: 2px;
-}
-
-.maka-inspector-stat dd {
-  margin: 0;
-  font: var(--maka-text-heading-1);
-  color: var(--foreground);
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
 /* The overview's data grid, on the IDE template's `metadataCompact` rhythm
    (row space-1, column space-3) at body type: these facts are the content of
    the panel, not its chrome. Only a qualifier steps down to supporting. */

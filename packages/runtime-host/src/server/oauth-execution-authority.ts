@@ -96,6 +96,7 @@ export class HostOAuthExecutionAuthority {
 
   bind(input: {
     providerType: RuntimeExecutionConnection['providerType'];
+    connectionId: string;
     connectionSlug: string;
     material: RuntimePolicyCredentialMaterial;
     createRefreshTransport: () => ProxiedFetchTransport;
@@ -107,6 +108,12 @@ export class HostOAuthExecutionAuthority {
       );
     }
     const locator = requireOAuthLocator(input.material.locator);
+    if (locator.connectionId !== input.connectionId) {
+      throw new OAuthExecutionCredentialError(
+        'persistence_failed',
+        'Canonical OAuth credential does not belong to the bound connection',
+      );
+    }
     let state = this.#states.get(locator.connectionId);
     if (state) {
       if (
@@ -248,7 +255,11 @@ export class HostOAuthExecutionAuthority {
 
     let resolved;
     try {
-      resolved = await this.#stores.operations.resolveExecutionConnection(state.connectionSlug);
+      resolved = await this.#stores.operations.resolveExecutionConnection({
+        kind: 'bound',
+        connectionId: state.locator.connectionId,
+        connectionSlug: state.connectionSlug,
+      });
     } catch (error) {
       throw new OAuthExecutionCredentialError(
         'persistence_failed',

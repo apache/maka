@@ -159,10 +159,7 @@ export function useAppShellBootstrapSubscriptions(options: {
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
   openSettings: () => void;
-  pendingPermissionModeChangesRef: RefBox<Set<string>>;
-  pendingSessionModelChangesRef: RefBox<Set<string>>;
-  pendingTurnActionTimersRef: RefBox<Map<string, ReturnType<typeof setTimeout>>>;
-  pendingTurnActionsRef: RefBox<Set<string>>;
+  clearPendingTurnActions: () => void;
   projectPickerPendingRef: RefBox<boolean>;
   projectPickerRequestRef: RefBox<number>;
   refreshConnections: () => Promise<void>;
@@ -288,13 +285,7 @@ export function useAppShellBootstrapSubscriptions(options: {
     options.rendererMountedRef.current = false;
     options.projectPickerRequestRef.current += 1;
     options.projectPickerPendingRef.current = false;
-    for (const timeoutHandle of options.pendingTurnActionTimersRef.current.values()) {
-      clearTimeout(timeoutHandle);
-    }
-    options.pendingTurnActionTimersRef.current.clear();
-    options.pendingTurnActionsRef.current.clear();
-    options.pendingPermissionModeChangesRef.current.clear();
-    options.pendingSessionModelChangesRef.current.clear();
+    options.clearPendingTurnActions();
   });
 
   useEffect(() => {
@@ -425,8 +416,11 @@ export function useActiveSessionEvents(options: {
 
   useLayoutEffect(() => {
     if (!activeId) return;
-    const observationGeneration = beginObservationSeed(activeId);
     let disposed = false;
+    let observationAttempt = 0;
+    let observationFailures = 0;
+    let observationRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let unsubscribeSessionEvents = () => {};
     const transcript = new DesktopTranscriptRangeStore(activeId);
     const subscribedAt = Date.now();
     options.setMessageLoadErrorBySession((current) => {
@@ -465,24 +459,56 @@ export function useActiveSessionEvents(options: {
       applyReadError(activeId, error, () => disposed);
     });
     options.transcriptRangeRef.current = controller;
-    const unsubscribe = window.maka.sessions.subscribeEvents(
-      activeId,
-      (event) => {
-        handleSessionEvent(activeId, event);
-      },
-      () => completeObservationSeed(activeId, observationGeneration),
-      (phase) => {
-        if (phase === 'pending') beginObservationSeed(activeId);
-        else completeObservationSeed(activeId);
-      },
-    );
+    const subscribeSessionEvents = () => {
+      const attempt = ++observationAttempt;
+      const observationGeneration = beginObservationSeed(activeId);
+      let unsubscribeRequested = false;
+      let unsubscribeCurrent = () => {
+        unsubscribeRequested = true;
+      };
+      const unsubscribe = window.maka.sessions.subscribeEvents(
+        activeId,
+        (event) => {
+          if (attempt !== observationAttempt) return;
+          handleSessionEvent(activeId, event);
+        },
+        () => {
+          if (attempt !== observationAttempt) return;
+          observationFailures = 0;
+          completeObservationSeed(activeId, observationGeneration);
+        },
+        (phase) => {
+          if (attempt !== observationAttempt) return;
+          if (phase === 'pending') beginObservationSeed(activeId);
+          else completeObservationSeed(activeId);
+        },
+        () => {
+          if (disposed || attempt !== observationAttempt) return;
+          unsubscribeCurrent();
+          observationFailures += 1;
+          const retryDelayMs = Math.min(100 * (2 ** (observationFailures - 1)), 2_000);
+          observationRetryTimer = globalThis.setTimeout(() => {
+            observationRetryTimer = undefined;
+            if (!disposed && attempt === observationAttempt) subscribeSessionEvents();
+          }, retryDelayMs);
+        },
+      );
+      unsubscribeCurrent = unsubscribe;
+      unsubscribeSessionEvents = unsubscribe;
+      if (unsubscribeRequested) unsubscribe();
+    };
+    subscribeSessionEvents();
     return () => {
       disposed = true;
+      observationAttempt += 1;
+      if (observationRetryTimer !== undefined) {
+        globalThis.clearTimeout(observationRetryTimer);
+      }
       if (options.transcriptRangeRef.current?.store === transcript) {
         options.transcriptRangeRef.current = undefined;
       }
       void controller.close();
-      unsubscribe();
+      unsubscribeSessionEvents();
       markSessionEventStreamClosed(activeId);
     };
   }, [activeId]);
@@ -490,6 +516,7 @@ export function useActiveSessionEvents(options: {
 
 export function useShellRunUpdates(options: {
   activeId: string | undefined;
+  hydrate?: boolean;
   setShellRunUpdatesBySession: (updater: (current: ShellRunUpdatesBySession) => ShellRunUpdatesBySession) => void;
 }) {
   const applyUpdates = useEffectEvent(
@@ -518,6 +545,7 @@ export function useShellRunUpdates(options: {
     let retryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
     let retryDelayMs = 250;
     const hydration = new ShellRunHydration();
+    if (options.hydrate === false) hydration.commit(0);
     const unsubscribe = window.maka.shellRuns.subscribeUpdates((update) => {
       if (disposed) return;
       const live = hydration.accept(update);
@@ -528,6 +556,7 @@ export function useShellRunUpdates(options: {
       }
     });
     const hydrate = (epoch: number) => {
+      if (options.hydrate === false) return;
       void window.maka.shellRuns
         .list(sessionId)
         .then((updates) => {
@@ -551,7 +580,7 @@ export function useShellRunUpdates(options: {
         });
     };
     const unsubscribeResync = window.maka.shellRuns.subscribeResync((event) => {
-      if (disposed || event.sessionId !== sessionId) return;
+      if (disposed || options.hydrate === false || event.sessionId !== sessionId) return;
       const epoch = hydration.begin();
       retryDelayMs = 250;
       if (retryTimer !== undefined) {
@@ -560,14 +589,14 @@ export function useShellRunUpdates(options: {
       }
       hydrate(epoch);
     });
-    hydrate(hydration.begin());
+    if (options.hydrate !== false) hydrate(hydration.begin());
     return () => {
       disposed = true;
       if (retryTimer !== undefined) globalThis.clearTimeout(retryTimer);
       unsubscribe();
       unsubscribeResync();
     };
-  }, [options.activeId]);
+  }, [options.activeId, options.hydrate]);
 }
 
 export function useSessionEventHealthPolling(options: {

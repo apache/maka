@@ -440,6 +440,37 @@ test('reconnect lifecycle quiescence waits through a connection gap before freez
   await lifecycle.close();
 });
 
+test('reconnect lifecycle suspension admits recovery while no connection exists', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const reconnectStarted = deferred();
+  let connectCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async (signal) => {
+      connectCalls += 1;
+      if (connectCalls === 1) {
+        reconnectStarted.resolve();
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return replacement.connection;
+    },
+  });
+
+  first.disconnect();
+  await reconnectStarted.promise;
+  const suspension = await lifecycle.suspend();
+  assert.equal(suspension.current, undefined);
+  assert.equal(connectCalls, 1);
+
+  suspension.resume();
+  assert.equal(await lifecycle.waitForCurrent(), replacement.connection);
+  assert.equal(connectCalls, 2);
+  await lifecycle.close();
+});
+
 test('reconnect delay escalates past maxMs while the Host never stabilizes', async () => {
   const first = connectionHarness('first', () => undefined);
   const delays: number[] = [];

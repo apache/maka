@@ -185,9 +185,8 @@ parent-directory update through volatile device caches.
 
 | Surface | Current Windows guarantee | Boundary |
 |---|---|---|
-| SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, memory, and managed-workspace facts survive owner death while incomplete transactions do not become authoritative. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
+| SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, and memory facts survive owner death while incomplete transactions do not become authoritative. Workspace RuntimeEvents and projections retain their schema 9 reader/rebuild contract. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
 | Artifact payload publication | Payload bytes are written to a same-directory staging file and the file is synchronized before publication. Recovery reconciles staged payloads, metadata, deletes, and owner death without accepting uncommitted residue. | Windows evidence covers forced process termination and restart. It does not establish a separately forced parent-directory entry after sudden system power loss. |
-| Marker and managed-workspace control files | Writers synchronize temporary file contents before same-directory `link` or `rename` publication. Readers validate file and root identity and fail closed on unsupported replacement. | Node can synchronize the file on Windows, but the repository's directory synchronization barrier is intentionally unavailable on Windows. |
 | Root and open-database replacement | Live owners retain exclusive authority and cleanup closes stores and leases before deleting their roots. | Windows does not permit the POSIX test technique of renaming or unlinking an open SQLite database or replacing a directory that contains open files. Those tests remain classified as platform contracts rather than portable recovery gates. |
 
 On POSIX, stable-storage paths synchronize changed parent directories after publishing or removing a
@@ -206,7 +205,6 @@ Environment: Windows 11 x64, Node.js 22.23.1, npm 11, Git for Windows.
 |---|---:|---|
 | Workspace build | PASS | All root `build:test` workspace builds completed. |
 | Repository script tests | 110 pass, 0 fail, 1 skip | The skip is a real macOS `pgrep` probe. |
-| Managed workspace baseline tests | 17 pass, 0 fail, 5 skip | Passed after enabling Git for Windows long paths. |
 | Storage suite | 514 pass, 100 fail, 40 skip | Failures are dominated by `EBUSY` cleanup while SQLite files remain open. |
 | Complete repository test plan | TIMEOUT | `npm test` did not exit within 10 minutes and left the workspace test runner alive. |
 

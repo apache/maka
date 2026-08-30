@@ -24,11 +24,89 @@
 // is `auto`, the helper subscribes to the system `prefers-color-scheme` media
 // query so the app follows OS-level Light/Dark switches in real time.
 //
-import type { ThemePalette, ThemePreference } from '@maka/core/settings';
-import { safeLocalStorageSet } from './browser-storage';
+import {
+  DEFAULT_TERMINAL_FONT_SIZE,
+  DEFAULT_UI_FONT_SIZE,
+  normalizeTerminalFontSize,
+  normalizeUiFontSize,
+  type ThemePalette,
+  type ThemePreference,
+} from '@maka/core/settings';
+import { TYPE_SCALE_BASE_PX } from './astryx-theme/type-scale.js';
+import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 import { compositeScrimOverBackground, parseCssRgbColor } from './titlebar-dim-color.js';
 
 const DARK_CLASS = 'dark';
+
+// Persisted alongside the theme/palette caches so the pre-React paint
+// (cached-theme-bootstrap.ts) can restore a non-default size before the first
+// frame, same rationale as `maka-theme-v1`.
+const UI_FONT_SIZE_STORAGE_KEY = 'maka-ui-font-size-v1';
+const TERMINAL_FONT_SIZE_STORAGE_KEY = 'maka-terminal-font-size-v1';
+// The renderer type scale is generated from TYPE_SCALE_BASE_PX (the same
+// constant makaTheme.ts feeds into expandTypeScale) and every --font-size-*
+// token is rem, so the root font-size that reproduces a chosen base px is
+// `16 * px / base`. At the base that is the 16px browser default (no change);
+// other values scale what is rem-derived — text and Astryx's rem icon atoms —
+// while px-literal spacing and widths stay fixed.
+const BROWSER_ROOT_FONT_SIZE_PX = 16;
+
+let currentUiFontSize: number = DEFAULT_UI_FONT_SIZE;
+let currentTerminalFontSize: number = DEFAULT_TERMINAL_FONT_SIZE;
+const terminalFontSizeListeners = new Set<(size: number) => void>();
+
+export function getUiFontSize(): number {
+  return currentUiFontSize;
+}
+
+/**
+ * Apply the UI base font size by writing the proportional document-root
+ * font-size, then persist so the pre-React paint can restore it next launch.
+ * Clamps out-of-range / wrong-typed input to a sane value.
+ */
+export function applyUiFontSize(size: number): void {
+  const next = normalizeUiFontSize(size);
+  currentUiFontSize = next;
+  document.documentElement.style.fontSize = `${(BROWSER_ROOT_FONT_SIZE_PX * next) / TYPE_SCALE_BASE_PX}px`;
+  safeLocalStorageSet(UI_FONT_SIZE_STORAGE_KEY, String(next));
+}
+
+export function getTerminalFontSize(): number {
+  return currentTerminalFontSize;
+}
+
+/**
+ * Set the xterm font size. There is no DOM to touch here — live terminals
+ * subscribe via `subscribeTerminalFontSize` and re-fit themselves; a terminal
+ * opened later reads `getTerminalFontSize()` at creation.
+ */
+export function applyTerminalFontSize(size: number): void {
+  const next = normalizeTerminalFontSize(size);
+  currentTerminalFontSize = next;
+  safeLocalStorageSet(TERMINAL_FONT_SIZE_STORAGE_KEY, String(next));
+  for (const listener of terminalFontSizeListeners) listener(next);
+}
+
+/** Subscribe to live terminal font-size changes. Returns an unsubscribe fn. */
+export function subscribeTerminalFontSize(listener: (size: number) => void): () => void {
+  terminalFontSizeListeners.add(listener);
+  return () => {
+    terminalFontSizeListeners.delete(listener);
+  };
+}
+
+/**
+ * Restore the cached UI font size before React mounts, so a non-default size
+ * does not paint at the default and snap once settings.json loads. Mirrors the
+ * cached theme/palette restore in cached-theme-bootstrap.ts. Also seeds the
+ * terminal size cache so an early terminal open uses the right size.
+ */
+export function applyCachedFontAppearanceBeforeMount(): void {
+  const cachedUi = Number.parseInt(safeLocalStorageGet(UI_FONT_SIZE_STORAGE_KEY) ?? '', 10);
+  if (Number.isFinite(cachedUi)) applyUiFontSize(cachedUi);
+  const cachedTerminal = Number.parseInt(safeLocalStorageGet(TERMINAL_FONT_SIZE_STORAGE_KEY) ?? '', 10);
+  if (Number.isFinite(cachedTerminal)) currentTerminalFontSize = normalizeTerminalFontSize(cachedTerminal);
+}
 
 let unsubscribeMediaQuery: (() => void) | null = null;
 

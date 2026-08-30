@@ -192,15 +192,6 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                 </p>
               )}
 
-              {snapshot.nextCursor && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  label={snapshot.loadingEarlier ? copy.loadingEarlier : copy.loadEarlier}
-                  isDisabled={snapshot.loading || snapshot.loadingEarlier}
-                  onClick={snapshot.loadEarlier}
-                />
-              )}
               <ol className="maka-inspector-turns">
                 {model.turns.map((turn) => (
                   <TurnRow
@@ -212,6 +203,21 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
                   />
                 ))}
               </ol>
+              {(snapshot.nextCursor || snapshot.canHideEarlier) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={
+                    snapshot.canHideEarlier
+                      ? copy.hideEarlier
+                      : snapshot.loadingEarlier
+                        ? copy.loadingEarlier
+                        : copy.loadEarlier
+                  }
+                  isDisabled={snapshot.loading || snapshot.loadingEarlier}
+                  onClick={snapshot.canHideEarlier ? snapshot.hideEarlier : snapshot.loadEarlier}
+                />
+              )}
             </VStack>
           </div>
         )}
@@ -261,33 +267,36 @@ function InspectorOverview(props: {
 }) {
   const { copy, overview } = props;
   const formatNumber = numberFormatter(props.locale);
+  const formatCompactNumber = compactNumberFormatter(props.locale);
   const context = overview.context;
 
   return (
     <VStack gap={6} data-maka-contract="session-inspector-overview">
-      {/* The figures open the panel with nothing above them. Every heading
-          tried here ranked below the numbers it introduced, because a label
-          over a 20px figure is exactly what a StatCell already is — the three
-          cells label themselves. */}
       {props.showTotals && (
-        <>
-          <dl className="maka-inspector-stats" data-maka-contract="session-inspector-stats">
-            <StatCell
-              label={copy.totals.cost}
-              value={formatCost(estimatedSessionCost(props.summary), copy.costUnavailable)}
+        <VStack gap={2} data-maka-contract="session-inspector-stats">
+          <InspectorOverviewStat
+            label={copy.totals.cost}
+            value={formatCost(estimatedSessionCost(props.summary), copy.costUnavailable)}
+          />
+          {overview.cacheHitRate !== undefined && (
+            <InspectorOverviewStat
+              label={copy.overview.cacheHit}
+              value={formatPercent(overview.cacheHitRate)}
             />
-            {overview.cacheHitRate !== undefined && (
-              <StatCell label={copy.overview.cacheHit} value={formatPercent(overview.cacheHitRate)} />
-            )}
-          </dl>
+          )}
           <Text type="supporting" color="secondary">
             {copy.costEstimateHelp}
           </Text>
-        </>
+        </VStack>
       )}
 
       {context && (
-        <InspectorContextSection copy={copy} context={context} formatNumber={formatNumber} />
+        <InspectorContextSection
+          copy={copy}
+          context={context}
+          formatCompactNumber={formatCompactNumber}
+          formatNumber={formatNumber}
+        />
       )}
 
       {overview.composition && (
@@ -302,15 +311,17 @@ function InspectorOverview(props: {
 }
 
 /**
- * One headline figure. A label small enough to stay out of the way over a
- * number big enough to be the thing the eye lands on — the inverse of a table
- * row, and the reason these three do not need a section heading to rank them.
+ * One overview total on the same title/readout rhythm as the sections below.
+ * These figures answer parallel questions, so changing typography between the
+ * first and second block would imply a hierarchy the data does not have.
  */
-function StatCell(props: { label: string; value: ReactNode }) {
+function InspectorOverviewStat(props: { label: string; value: ReactNode }) {
   return (
-    <div className="maka-inspector-stat">
-      <dt>{props.label}</dt>
-      <dd>{props.value}</dd>
+    <div className="maka-inspector-section-head">
+      <Heading level={3} className="maka-inspector-section-title">
+        {props.label}
+      </Heading>
+      <span className="maka-inspector-section-readout">{props.value}</span>
     </div>
   );
 }
@@ -351,9 +362,10 @@ function FactRow(props: { label: ReactNode; value: ReactNode; swatch?: ReactNode
 function InspectorContextSection(props: {
   copy: InspectorCopy;
   context: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['context']>;
+  formatCompactNumber: (value: number) => string;
   formatNumber: (value: number) => string;
 }) {
-  const { context, copy, formatNumber } = props;
+  const { context, copy, formatCompactNumber, formatNumber } = props;
   const level = context.ratio >= 0.9 ? 'error' : context.ratio >= 0.7 ? 'warning' : undefined;
 
   return (
@@ -363,7 +375,7 @@ function InspectorContextSection(props: {
           {copy.overview.context}
         </Heading>
         <span className="maka-inspector-section-readout">
-          {formatNumber(context.usedTokens)} / {formatNumber(context.windowTokens)} ·{' '}
+          {formatCompactNumber(context.usedTokens)} / {formatCompactNumber(context.windowTokens)} ·{' '}
           {formatPercent(context.ratio)}
         </span>
       </div>
@@ -509,6 +521,19 @@ export function InspectorCompositionSection(props: {
 function numberFormatter(locale: UiLocale): (value: number) => string {
   const formatter = new Intl.NumberFormat(uiLocaleToIntlLocale(locale));
   return (value) => formatter.format(value);
+}
+
+export function compactNumberFormatter(_locale: UiLocale): (value: number) => string {
+  return (value) => {
+    if (value < 1_000) return String(value);
+
+    if (value < 1_000_000) {
+      const thousands = Math.round(value / 100) / 10;
+      return thousands >= 1_000 ? '1M' : `${thousands}K`;
+    }
+
+    return `${Math.round(value / 100_000) / 10}M`;
+  };
 }
 
 function formatPercent(ratio: number): string {

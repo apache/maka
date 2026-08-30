@@ -18,13 +18,14 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 
 export type SessionNavigationRemoveDisposition = 'removed' | 'restored';
 
 export interface SessionNavigationSession extends SessionSummary {
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
 }
 
 /** The minimum catalog mutation capability needed by Session Navigation. */
