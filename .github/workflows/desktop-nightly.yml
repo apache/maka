@@ -312,6 +312,11 @@ jobs:
             echo "RSYNC_RSH=ssh -i $ssh_directory/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $NIGHTLIES_RSYNC_PORT"
           } >> "$GITHUB_ENV"
 
+      - name: Ensure the Nightly destination exists
+        run: |
+          mkdir -p .nightly-empty
+          rsync -rlptDz --mkpath --protect-args .nightly-empty/ "$NIGHTLIES_RSYNC_TARGET/"
+
       - name: Require the Desktop Nightly feed to advance
         env:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}

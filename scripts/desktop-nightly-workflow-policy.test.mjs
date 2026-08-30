@@ -107,6 +107,22 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
+test('the first Desktop Nightly creates its empty destination before reading the feed', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = workflow.jobs.publish.steps;
+  const bootstrap = steps.find((step) => step.name === 'Ensure the Nightly destination exists');
+  const feedGuardPosition = steps.findIndex(
+    (step) => step.name === 'Require the Desktop Nightly feed to advance',
+  );
+
+  assert.ok(bootstrap);
+  assert.match(bootstrap.run, /mkdir -p \.nightly-empty/u);
+  assert.match(bootstrap.run, /rsync -rlptDz --mkpath --protect-args/u);
+  assert.match(bootstrap.run, /\.nightly-empty\/ "\$NIGHTLIES_RSYNC_TARGET\/"/u);
+  assert.doesNotMatch(bootstrap.run, /\.nightly-publish/u);
+  assert.ok(steps.indexOf(bootstrap) < feedGuardPosition);
+});
+
 test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   const publish = workflow.jobs.publish;
