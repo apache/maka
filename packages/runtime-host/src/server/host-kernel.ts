@@ -480,6 +480,16 @@ export class RuntimeHostKernel {
     if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
       throw new Error('Runtime Host access credential belongs to another Client');
     }
+    if (
+      authority.principalKind === 'remote_owner' &&
+      authority.clientInstanceId === undefined &&
+      this.#options.accessAuthority?.hasActiveBoundClientIdentity(
+        authority.principalId,
+        hello.clientInstanceId,
+      )
+    ) {
+      throw new Error('Runtime Host Client identity is bound to another access credential');
+    }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
       HOST_PROTOCOL,

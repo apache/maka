@@ -25,11 +25,13 @@ export function clientCapabilityConnectionIdentity(
   principalId = 'test-principal',
   principalKind: ClientCapabilityConnectionIdentity['principalKind'] = 'local_owner',
   capabilityOwner?: ClientCapabilityConnectionIdentity['capabilityOwner'],
+  credentialBound = principalKind === 'remote_owner',
 ): ClientCapabilityConnectionIdentity {
   return {
     connectionId,
     principalId,
     clientInstanceId,
+    ...(credentialBound ? { credentialBoundClientInstanceId: clientInstanceId } : {}),
     principalKind,
     ...(capabilityOwner ? { capabilityOwner } : {}),
   };

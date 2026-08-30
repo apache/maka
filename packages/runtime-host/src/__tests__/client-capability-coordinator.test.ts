@@ -414,6 +414,45 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('does not match a companion from a hello-only Client identity', async () => {
+    const coordinator = createCoordinator();
+    const provider = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'associated-provider',
+        'provider-client',
+        'provider-principal',
+        'capability_provider',
+        { principalId: 'owner-principal', clientInstanceId: 'owner-client' },
+      ),
+      { send: async () => {} },
+    );
+    await replaceTrustedProvider(
+      coordinator,
+      'associated-provider',
+      'associated-registration',
+      'inspect',
+    );
+    const unboundOwner = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'unbound-owner',
+        'owner-client',
+        'owner-principal',
+        'remote_owner',
+        undefined,
+        false,
+      ),
+      { send: async () => {} },
+    );
+
+    assert.deepEqual(await coordinator.bindSession('unbound-owner', 'unbound-owner'), {
+      ok: true,
+    });
+    assert.equal(coordinator.snapshotForSession('unbound-owner'), undefined);
+
+    await Promise.all([provider.close(), unboundOwner.close()]);
+    await coordinator.close();
+  });
+
   test('previews the initiating provider without persisting a Session binding', async () => {
     const coordinator = createCoordinator();
     const connection = coordinator.attachConnection(

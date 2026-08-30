@@ -32,6 +32,8 @@ export interface ClientCapabilityConnectionIdentity {
   readonly connectionId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  /** Present only when the access credential, rather than hello, authenticated this Client ID. */
+  readonly credentialBoundClientInstanceId?: string;
   readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
   readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
 }

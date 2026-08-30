@@ -31,9 +31,11 @@ import {
   type OperationKey,
 } from '../protocol/index.js';
 
-// Schema 4 makes provider ownership downgrade-safe: a pre-association Host
-// rejects the file instead of silently treating a bound provider as global.
+// Schema 4 makes provider ownership downgrade-safe once an association exists.
+// Ordinary access files remain schema 3 so this feature does not fence a
+// downgrade before there is an owner association to preserve.
 const ACCESS_FILE_SCHEMA_VERSION = 4;
+const PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION = 3;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
 const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
 const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
@@ -92,7 +94,9 @@ export interface StoredAccessCredential {
 }
 
 export interface AccessCredentialFile {
-  readonly schemaVersion: typeof ACCESS_FILE_SCHEMA_VERSION;
+  readonly schemaVersion:
+    | typeof PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION
+    | typeof ACCESS_FILE_SCHEMA_VERSION;
   readonly credentials: readonly StoredAccessCredential[];
   readonly sessionGrants: readonly SessionCollaborationGrant[];
   readonly turnAccessRequests: readonly SessionTurnAccessRequest[];
@@ -125,7 +129,9 @@ export function createAccessCredentialFile(
   turnAccessRequests: readonly SessionTurnAccessRequest[] = [],
 ): AccessCredentialFile {
   return {
-    schemaVersion: ACCESS_FILE_SCHEMA_VERSION,
+    schemaVersion: credentials.some((credential) => credential.capabilityOwner !== undefined)
+      ? ACCESS_FILE_SCHEMA_VERSION
+      : PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION,
     credentials,
     sessionGrants,
     turnAccessRequests,
@@ -239,10 +245,10 @@ function decodeAccessFile(value: unknown): AccessCredentialFile {
   if (!Array.isArray(value.credentials)) throw new Error('Invalid Runtime Host access file');
   const credentials = value.credentials.map(decodeStoredCredential);
   if (
-    value.schemaVersion === LEGACY_ACCESS_FILE_SCHEMA_VERSION &&
+    value.schemaVersion < ACCESS_FILE_SCHEMA_VERSION &&
     credentials.some((credential) => credential.capabilityOwner !== undefined)
   ) {
-    throw new Error('Legacy Runtime Host access files cannot declare Client Capability owners');
+    throw new Error('Pre-association Runtime Host access files cannot declare capability owners');
   }
   if (
     new Set(credentials.map((credential) => credential.credentialId)).size !== credentials.length

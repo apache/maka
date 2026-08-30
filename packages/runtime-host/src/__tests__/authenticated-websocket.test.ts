@@ -713,7 +713,7 @@ test('capability-provider credentials retain a Host-verified Client owner identi
     assert.deepEqual(provider.capabilityOwner, expectedOwner);
     assert.equal(
       JSON.parse(await readFile(join(directory, 'runtime-host-access.json'), 'utf8')).schemaVersion,
-      2,
+      4,
     );
     const { consumeAccessCredentialDeliveryFromControlDirectory } = await import(
       '../control/access-credential-delivery.js'
@@ -753,14 +753,190 @@ test('capability-provider credentials retain a Host-verified Client owner identi
     ) as Record<string, unknown>;
     await writeFile(
       join(directory, 'runtime-host-access.json'),
-      `${JSON.stringify({ ...downgraded, schemaVersion: 1 })}\n`,
+      `${JSON.stringify({ ...downgraded, schemaVersion: 3 })}\n`,
       { mode: 0o600 },
     );
     await assert.rejects(
       openRuntimeHostAccessAuthority(directory),
-      /Legacy Runtime Host access files cannot declare Client Capability owners/u,
+      /Pre-association Runtime Host access files cannot declare capability owners/u,
     );
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('an unbound WebSocket credential cannot claim an existing bound Client identity', {
+  timeout: 120_000,
+}, async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-bound-client-websocket-'));
+  const root = join(base, 'root');
+  const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
+  const host = await startExecutionRuntimeHostService({
+    rootPath: root,
+    websocket: { host: '127.0.0.1', port: 0 },
+  });
+  let local: RuntimeHostConnection | undefined;
+  let owner: RuntimeHostConnection | undefined;
+  let provider: RuntimeHostConnection | undefined;
+  try {
+    local = requireConnection(await connectRuntimeHost({ rootPath: root, protocol: PROTOCOL }));
+    const ownerCandidate = await local.request('access.credential.prepare', {
+      principalKind: 'remote_owner',
+      principalId: 'shared-owner',
+      operationGrants: ['access.credential.finalize', 'session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      bindClientInstance: true,
+    });
+    const ownerCredential = await consumeAccessCredentialDelivery(
+      root,
+      ownerCandidate.deliveryId,
+      ownerCandidate.credentialId,
+    );
+    const url = host.websocketEndpoints[0]!;
+    const pairing = requireRemoteConnection(
+      await connectRemoteRuntimeHost({
+        url,
+        credential: ownerCredential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        clientInstanceId: 'client-a',
+        protocol: PROTOCOL,
+      }),
+    );
+    assert.deepEqual(await pairing.request('access.credential.finalize', {}), {
+      reconnectRequired: true,
+    });
+    await pairing.close();
+    owner = requireRemoteConnection(
+      await connectRemoteRuntimeHost({
+        url,
+        credential: ownerCredential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        clientInstanceId: 'client-a',
+        protocol: PROTOCOL,
+      }),
+    );
+    const unbound = await local.request('access.credential.issue', {
+      principalKind: 'remote_owner',
+      principalId: 'shared-owner',
+      operationGrants: ['session.catalog.query'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    const unboundCredential = await consumeAccessCredentialDelivery(
+      root,
+      unbound.deliveryId,
+      unbound.credentialId,
+    );
+    const providerIssue = await local.request('access.credential.issue', {
+      principalKind: 'capability_provider',
+      principalId: 'shared-owner-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+      capabilityOwnerCredentialId: ownerCandidate.credentialId,
+    });
+    const providerCredential = await consumeAccessCredentialDelivery(
+      root,
+      providerIssue.deliveryId,
+      providerIssue.credentialId,
+    );
+    provider = requireRemoteConnection(
+      await connectRemoteRuntimeHost({
+        url,
+        credential: providerCredential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        clientInstanceId: 'provider-a',
+        protocol: PROTOCOL,
+      }),
+    );
+    await provider.replaceClientCapabilities({
+      offers: () => [
+        {
+          offerId: 'bound-provider',
+          version: '1',
+          affinity: 'session',
+          hostPathAccess: 'none',
+          label: 'Bound provider',
+          tools: [
+            {
+              serverId: 'bound-provider',
+              name: 'echo',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
+      call: async () => ({ content: [{ type: 'text', text: 'bound' }] }),
+    });
+
+    assert.deepEqual(
+      await connectRemoteRuntimeHost({
+        url,
+        credential: unboundCredential,
+        expectedRootId: capability.rootId,
+        compositionId: INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
+        clientInstanceId: 'client-a',
+        protocol: PROTOCOL,
+      }),
+      { kind: 'unavailable', reason: 'handshake_failed' },
+    );
+  } finally {
+    await Promise.allSettled([provider?.close(), owner?.close(), local?.close()]);
+    await host.close().catch(() => undefined);
+    await rm(join(resolveRootControlNamespace(), capability.rootId), {
+      recursive: true,
+      force: true,
+    });
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('writes the capability-owner schema only after the association commits', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-owner-schema-'));
+  let rejectAssociation = false;
+  let authority: Awaited<ReturnType<typeof openRuntimeHostAccessAuthority>> | undefined;
+  try {
+    authority = await openRuntimeHostAccessAuthority(directory, {
+      writeFile: async (path, file) => {
+        if (rejectAssociation && file.schemaVersion === 4) {
+          throw new Error('association write rejected');
+        }
+        await writeAccessCredentialFile(path, file);
+      },
+    });
+    const owner = await authority.prepare({
+      principalKind: 'remote_owner',
+      principalId: 'schema-owner',
+      operationGrants: ['access.credential.finalize'],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      bindClientInstance: true,
+    });
+    await authority.finalize(owner.credentialId, 'schema-client');
+    const path = join(directory, 'runtime-host-access.json');
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3);
+
+    const providerInput = {
+      principalKind: 'capability_provider' as const,
+      principalId: 'schema-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'] as const,
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+      capabilityOwnerCredentialId: owner.credentialId,
+    };
+    rejectAssociation = true;
+    await assert.rejects(authority.issue(providerInput), /association write rejected/u);
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3);
+
+    rejectAssociation = false;
+    await authority.issue(providerInput);
+    assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 4);
+  } finally {
+    await authority?.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -1319,6 +1495,13 @@ function requireConnection(
   result: Awaited<ReturnType<typeof connectRuntimeHost>>,
 ): RuntimeHostConnection {
   if (result.kind !== 'connected') throw new Error(`Local Client did not connect: ${result.kind}`);
+  return result.connection;
+}
+
+function requireRemoteConnection(
+  result: Awaited<ReturnType<typeof connectRemoteRuntimeHost>>,
+): RuntimeHostConnection {
+  if (result.kind !== 'connected') throw new Error(`Remote Client did not connect: ${result.kind}`);
   return result.connection;
 }
 

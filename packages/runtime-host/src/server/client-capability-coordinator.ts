@@ -66,6 +66,7 @@ interface ClientProviderState {
   readonly providerId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  readonly credentialBoundClientInstanceId?: string;
   readonly principalKind: ClientCapabilityConnectionIdentity['principalKind'];
   readonly trustedProvider: boolean;
   readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
@@ -341,16 +342,18 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       initiatingProvider?.current && this.#activeConnection(initiatingProvider)
         ? initiatingProvider
         : undefined;
-    const associatedProviders = initiatingProvider
-      ? [...this.#providers.values()].filter(
-          (provider) =>
-            provider.trustedProvider &&
-            provider.current !== undefined &&
-            this.#activeConnection(provider) !== undefined &&
-            provider.capabilityOwner?.principalId === initiatingProvider.principalId &&
-            provider.capabilityOwner.clientInstanceId === initiatingProvider.clientInstanceId,
-        )
-      : [];
+    const associatedProviders =
+      initiatingProvider &&
+      initiatingProvider.credentialBoundClientInstanceId === initiatingProvider.clientInstanceId
+        ? [...this.#providers.values()].filter(
+            (provider) =>
+              provider.trustedProvider &&
+              provider.current !== undefined &&
+              this.#activeConnection(provider) !== undefined &&
+              provider.capabilityOwner?.principalId === initiatingProvider.principalId &&
+              provider.capabilityOwner.clientInstanceId === initiatingProvider.clientInstanceId,
+          )
+        : [];
     if (!directProvider && associatedProviders.length > 1) {
       return {
         ok: false,
@@ -1028,6 +1031,9 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
         providerId,
         principalId: identity.principalId,
         clientInstanceId: identity.clientInstanceId,
+        ...(identity.credentialBoundClientInstanceId
+          ? { credentialBoundClientInstanceId: identity.credentialBoundClientInstanceId }
+          : {}),
         principalKind: identity.principalKind,
         trustedProvider,
         ...(identity.capabilityOwner
@@ -1038,7 +1044,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.#providers.set(providerId, provider);
     } else if (
       provider.principalKind !== identity.principalKind ||
-      provider.trustedProvider !== trustedProvider
+      provider.trustedProvider !== trustedProvider ||
+      provider.credentialBoundClientInstanceId !== identity.credentialBoundClientInstanceId
     ) {
       throw new Error('Client Capability provider authority changed across connections');
     } else if (

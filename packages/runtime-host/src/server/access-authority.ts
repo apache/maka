@@ -151,6 +151,7 @@ export interface RuntimeHostAccessAuthority {
     principalId: string,
     kind: SessionCollaborationGrantKind,
   ): SessionCollaborationGrant | undefined;
+  hasActiveBoundClientIdentity(principalId: string, clientInstanceId: string): boolean;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void;
   subscribeApprovedTurnAccessRequests(
@@ -578,6 +579,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   ): SessionCollaborationGrant | undefined {
     return this.#file.sessionGrants.find(
       (grant) => grant.principalId === principalId && grant.kind === kind,
+    );
+  }
+
+  hasActiveBoundClientIdentity(principalId: string, clientInstanceId: string): boolean {
+    return this.#file.credentials.some(
+      (credential) =>
+        credential.status === 'active' &&
+        credential.principalKind === 'remote_owner' &&
+        credential.principalId === principalId &&
+        credential.clientInstanceId === clientInstanceId,
     );
   }
 
