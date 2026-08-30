@@ -985,14 +985,19 @@ export const TasksDeepNesting: Story = {
   decorators: [bridge({ tasks: deepTaskChain })],
   render: () => <Workbar tab="tasks" />,
   play: async ({ canvasElement }) => {
-    // The eight-level chain renders down to its deepest row (reachability). The
-    // exact indent clamp (`--task-depth`) is a computed-style contract left to
-    // focused tests, not asserted here (review feedback).
-    await waitFor(() =>
-      expect(
-        canvasElement.querySelector('.maka-task-ledger-row[aria-level="8"]'),
-      ).not.toBeNull(),
-    );
+    await waitFor(() => {
+      const panel = canvasElement.querySelector<HTMLElement>('.maka-task-ledger-panel');
+      const deepestRowContent = canvasElement.querySelector<HTMLElement>(
+        '.maka-task-ledger-row[aria-level="8"] > .maka-task-ledger-row-content',
+      );
+      if (!panel || !deepestRowContent) throw new Error('deep task row not rendered yet');
+
+      const panelRect = panel.getBoundingClientRect();
+      const rowRect = deepestRowContent.getBoundingClientRect();
+      expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
+      expect(rowRect.left).toBeGreaterThanOrEqual(panelRect.left);
+      expect(rowRect.right).toBeLessThanOrEqual(panelRect.right);
+    });
   },
 };
 

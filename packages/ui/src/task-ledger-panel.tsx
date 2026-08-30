@@ -188,14 +188,16 @@ function TaskLedgerRow({ task, copy, level, position, setSize, children }: {
       data-status={task.status}
       style={{ '--task-depth': Math.min(depth, 6) } as CSSProperties}
     >
-      <StatusIcon size={ICON_SIZE.control} aria-hidden="true" />
-      <code className="maka-task-ledger-key">{task.key}</code>
-      <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
-      <span className="maka-task-ledger-meta">
-        <span>{copy.status[task.status]}</span>
-        {owner && <span title={owner}>{owner}</span>}
-      </span>
-      {detail && <span className="maka-task-ledger-detail" title={detail}>{detail}</span>}
+      <div className="maka-task-ledger-row-content">
+        <StatusIcon size={ICON_SIZE.control} aria-hidden="true" />
+        <code className="maka-task-ledger-key">{task.key}</code>
+        <span className="maka-task-ledger-subject" title={task.subject}>{task.subject}</span>
+        <span className="maka-task-ledger-meta">
+          <span>{copy.status[task.status]}</span>
+          {owner && <span title={owner}>{owner}</span>}
+        </span>
+        {detail && <span className="maka-task-ledger-detail" title={detail}>{detail}</span>}
+      </div>
       {children}
     </div>
   );

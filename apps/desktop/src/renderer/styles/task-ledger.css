@@ -27,9 +27,15 @@
 .maka-task-ledger-tree {
   display: grid;
   gap: var(--border-width-hairline);
+  min-width: 0;
 }
 
 .maka-task-ledger-row {
+  display: grid;
+  min-width: 0;
+}
+
+.maka-task-ledger-row-content {
   font: var(--maka-text-supporting);
   display: grid;
   grid-template-columns: 14px minmax(34px, auto) minmax(100px, 1fr) auto;
@@ -45,18 +51,19 @@
   display: grid;
   grid-column: 1 / -1;
   gap: var(--border-width-hairline);
+  min-width: 0;
 }
 
-.maka-task-ledger-row:hover { background: var(--state-hover-bg); }
+.maka-task-ledger-row:hover > .maka-task-ledger-row-content { background: var(--state-hover-bg); }
 
-.maka-task-ledger-row:focus-visible {
+.maka-task-ledger-row:focus-visible > .maka-task-ledger-row-content {
   outline: none;
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
 }
-.maka-task-ledger-row[data-status="in_progress"] > svg { color: var(--status-running); }
-.maka-task-ledger-row[data-status="blocked"] > svg { color: var(--warning); }
-.maka-task-ledger-row[data-status="completed"] > svg { color: var(--success); }
-.maka-task-ledger-row[data-status="failed"] > svg { color: var(--destructive); }
+.maka-task-ledger-row[data-status="in_progress"] > .maka-task-ledger-row-content > svg { color: var(--status-running); }
+.maka-task-ledger-row[data-status="blocked"] > .maka-task-ledger-row-content > svg { color: var(--warning); }
+.maka-task-ledger-row[data-status="completed"] > .maka-task-ledger-row-content > svg { color: var(--success); }
+.maka-task-ledger-row[data-status="failed"] > .maka-task-ledger-row-content > svg { color: var(--destructive); }
 
 .maka-task-ledger-key {
   font: var(--maka-text-supporting);
@@ -129,7 +136,7 @@
 }
 
 @media (max-width: 620px) {
-  .maka-task-ledger-row { grid-template-columns: 14px minmax(32px, auto) minmax(0, 1fr); }
+  .maka-task-ledger-row-content { grid-template-columns: 14px minmax(32px, auto) minmax(0, 1fr); }
   .maka-task-ledger-meta { grid-column: 3; justify-content: flex-start; }
   .maka-task-ledger-detail { grid-column: 3; white-space: normal; overflow-wrap: anywhere; }
 }
