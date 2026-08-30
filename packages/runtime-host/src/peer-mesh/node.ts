@@ -48,6 +48,7 @@ import {
   type SignedPeerMeshRosterV1,
   type SignedPeerMeshRouteRecordV1,
 } from './model.js';
+import { canonicalPeerMeshDisplayName } from './display-name.js';
 import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 import {
   authorityKeys,
@@ -127,6 +128,9 @@ type PeerMeshControlRequest = RedeemInvitationRequest | SyncPeerMeshRequest | Le
 
 export interface PeerMeshNode {
   localPeerId(): string;
+  displayName(): string | undefined;
+  setDisplayName(displayName: string | null): Promise<void>;
+  setMeshDisplayName(meshId: string, displayName: string | null): Promise<PeerMeshStatus>;
   status(): readonly PeerMeshStatus[];
   create(): Promise<PeerMeshStatus>;
   invite(meshId: string, input?: { readonly ttlMs?: number }): Promise<PeerMeshInvitationV1>;
@@ -159,6 +163,8 @@ export interface PeerMeshStatus {
 
 export interface PeerMeshMemberRouteStatus {
   readonly peerId: string;
+  readonly endpointKind?: 'client' | 'host';
+  readonly displayName?: string;
   readonly state: 'local' | 'route_available' | 'coordination_only' | 'stale' | 'unknown';
   readonly expiresAt?: number;
 }
@@ -194,6 +200,7 @@ export interface PeerMeshTransport {
 export async function openPeerMeshNode(input: {
   readonly dataRoot: string;
   readonly peer: PeerMeshTransport;
+  readonly endpointKind?: 'client' | 'host';
   readonly now?: () => number;
 }): Promise<PeerMeshNode> {
   const store = await openPeerMeshStateStore(input.dataRoot, input.peer.identity().peerId);
@@ -210,6 +217,7 @@ export async function openPeerMeshNode(input: {
 class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #store: PeerMeshStateStore;
   readonly #peer: PeerMeshTransport;
+  readonly #endpointKind: 'client' | 'host' | undefined;
   readonly #now: () => number;
   readonly #activeControlStreams = new Set<RuntimeHostPeerNativeStream>();
   readonly #lifetime = new AbortController();
@@ -224,10 +232,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   constructor(input: {
     readonly store: PeerMeshStateStore;
     readonly peer: PeerMeshTransport;
+    readonly endpointKind?: 'client' | 'host';
     readonly now?: () => number;
   }) {
     this.#store = input.store;
     this.#peer = input.peer;
+    this.#endpointKind = input.endpointKind;
     this.#now = input.now ?? Date.now;
   }
 
@@ -241,6 +251,57 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return this.#peer.identity().peerId;
   }
 
+  displayName(): string | undefined {
+    this.#assertOpen();
+    return this.#store.read().displayName ?? undefined;
+  }
+
+  async setDisplayName(displayName: string | null): Promise<void> {
+    this.#assertOpen();
+    const canonical = displayName === null ? null : canonicalPeerMeshDisplayName(displayName);
+    if (this.#store.read().displayName === canonical) return;
+    await this.#store.mutate((state) => ({
+      state: { ...state, displayName: canonical },
+      result: undefined,
+    }));
+    await this.#refreshLocalRoute();
+    void this.reconcile().catch(() => undefined);
+  }
+
+  setMeshDisplayName(meshId: string, displayName: string | null): Promise<PeerMeshStatus> {
+    return this.#admitMesh(async () => {
+      const canonical =
+        displayName === null ? undefined : canonicalPeerMeshDisplayName(displayName);
+      await this.#store.mutate((current) => {
+        const state = requireAuthority(current.meshes, meshId);
+        if (state.roster.roster.closed) throw new Error('Peer Mesh is closed');
+        if (state.roster.roster.displayName === canonical)
+          return { state: current, result: undefined };
+        const { displayName: _currentDisplayName, ...currentRoster } = state.roster.roster;
+        const roster = signPeerMeshRoster(
+          canonicalPeerMeshRoster({
+            ...currentRoster,
+            revision: state.roster.roster.revision + 1,
+            ...(canonical ? { displayName: canonical } : {}),
+          }),
+          authorityKeys(state),
+        );
+        return {
+          state: { ...current, meshes: replaceMesh(current.meshes, { ...state, roster }) },
+          result: undefined,
+        };
+      });
+      const stored = this.#store.read();
+      return peerMeshStatus(
+        requireAuthority(stored.meshes, meshId),
+        this.#peer.identity(),
+        this.#endpointKind,
+        stored.routes,
+        this.#now(),
+      );
+    });
+  }
+
   status(): readonly PeerMeshStatus[] {
     this.#assertOpen();
     const identity = this.#peer.identity();
@@ -248,7 +309,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return Object.freeze(
       stored.meshes
         .filter((state) => isActiveMembership(state, identity.peerId))
-        .map((state) => peerMeshStatus(state, identity, stored.routes, this.#now())),
+        .map((state) =>
+          peerMeshStatus(state, identity, this.#endpointKind, stored.routes, this.#now()),
+        ),
     );
   }
 
@@ -296,6 +359,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       return peerMeshStatus(
         findMesh(stored.meshes, state.roster.roster.meshId)!,
         identity,
+        this.#endpointKind,
         stored.routes,
         now,
       );
@@ -442,7 +506,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         await this.#refreshLocalRoute();
         await this.#reconcileTransit();
         const stored = this.#store.read();
-        return peerMeshStatus(findMesh(stored.meshes, invitation.meshId)!, identity, stored.routes);
+        return peerMeshStatus(
+          findMesh(stored.meshes, invitation.meshId)!,
+          identity,
+          this.#endpointKind,
+          stored.routes,
+        );
       } finally {
         await stream.close().catch(() => undefined);
       }
@@ -689,14 +758,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         if (offset >= pending.length) return;
         const { meshId, targets } = pending[(start + offset) % pending.length]!;
         try {
-          const outcomes = await Promise.allSettled(
-            targets.map((target) => this.#syncPeer(meshId, target, operationSignal)),
-          );
-          if (!outcomes.some(({ status }) => status === 'fulfilled')) {
-            const failure = outcomes.find(
-              (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+          try {
+            await this.#syncPeer(meshId, targets[0]!, operationSignal);
+          } catch (authorityFailure) {
+            const fallbackTargets = targets.slice(1);
+            if (fallbackTargets.length === 0) throw authorityFailure;
+            await Promise.any(
+              fallbackTargets.map((target) => this.#syncPeer(meshId, target, operationSignal)),
             );
-            throw failure?.reason ?? new Error('Peer Mesh synchronization failed');
           }
         } catch {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
@@ -780,6 +849,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
       sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
       sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays) &&
+      existing.route.endpointKind === this.#endpointKind &&
+      existing.route.displayName === (current.displayName ?? undefined) &&
       existing.route.transitMeshId === current.transitMeshId
     ) {
       return existing;
@@ -805,6 +876,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       expiresAt: this.#now() + ROUTE_TTL_MS,
       routeHints: identity.listenAddresses,
       coordinationRelays: identity.coordinationRelays,
+      ...(this.#endpointKind ? { endpointKind: this.#endpointKind } : {}),
+      ...(stored.displayName ? { displayName: stored.displayName } : {}),
       ...(stored.transitMeshId ? { transitMeshId: stored.transitMeshId } : {}),
     });
     const proof = await this.#peer.signIdentity(peerMeshRouteRecordSigningBytes(route));
@@ -932,6 +1005,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           revision: state.roster.roster.revision + 1,
           members: next.members,
           closed: next.closed,
+          ...(state.roster.roster.displayName
+            ? { displayName: state.roster.roster.displayName }
+            : {}),
         },
         authorityKeys(state),
       );
@@ -953,7 +1029,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     await this.#refreshLocalRoute();
     await this.#reconcileTransit();
     const stored = this.#store.read();
-    return peerMeshStatus(findMesh(stored.meshes, meshId)!, this.#peer.identity(), stored.routes);
+    return peerMeshStatus(
+      findMesh(stored.meshes, meshId)!,
+      this.#peer.identity(),
+      this.#endpointKind,
+      stored.routes,
+    );
   }
 
   #acceptIncoming(stream: RuntimeHostPeerNativeStream): void {
@@ -1327,9 +1408,12 @@ function isActiveMeshMember(
 function peerMeshStatus(
   state: PeerMeshStateV1,
   identity: ReturnType<PeerMeshTransport['identity']>,
+  endpointKind: 'client' | 'host' | undefined,
   routes: readonly SignedPeerMeshRouteRecordV1[] = [],
   now = Date.now(),
 ): PeerMeshStatus {
+  const localDisplayName = routes.find(({ route }) => route.peerId === identity.peerId)?.route
+    .displayName;
   return Object.freeze({
     role: state.role === 'authority' ? 'authority' : 'member',
     authority: state.role === 'authority' ? authorityTarget(identity) : state.authority,
@@ -1342,18 +1426,29 @@ function peerMeshStatus(
         : 0,
     memberRoutes: Object.freeze(
       state.roster.roster.members.map((peerId) => {
-        if (peerId === identity.peerId) return Object.freeze({ peerId, state: 'local' as const });
+        if (peerId === identity.peerId) {
+          return Object.freeze({
+            peerId,
+            ...(endpointKind ? { endpointKind } : {}),
+            ...(localDisplayName ? { displayName: localDisplayName } : {}),
+            state: 'local' as const,
+          });
+        }
         const route = routes.find((candidate) => candidate.route.peerId === peerId)?.route;
         if (!route) return Object.freeze({ peerId, state: 'unknown' as const });
         if (route.expiresAt <= now) {
           return Object.freeze({
             peerId,
+            ...(route.endpointKind ? { endpointKind: route.endpointKind } : {}),
+            ...(route.displayName ? { displayName: route.displayName } : {}),
             state: 'stale' as const,
             expiresAt: route.expiresAt,
           });
         }
         return Object.freeze({
           peerId,
+          ...(route.endpointKind ? { endpointKind: route.endpointKind } : {}),
+          ...(route.displayName ? { displayName: route.displayName } : {}),
           state:
             route.routeHints.length > 0
               ? ('route_available' as const)

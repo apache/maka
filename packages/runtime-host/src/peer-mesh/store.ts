@@ -37,6 +37,7 @@ import {
   type SignedPeerMeshRouteRecordV1,
   validatePeerMeshAuthorityKeyPair,
 } from './model.js';
+import { canonicalPeerMeshDisplayName } from './display-name.js';
 
 const STATE_FILE = 'peer-mesh.json';
 const LOCK_FILE = 'peer-mesh.owner';
@@ -74,6 +75,7 @@ export interface PeerMeshReplicaStateV1 extends PeerMeshStateBase {
 export type PeerMeshStateV1 = PeerMeshAuthorityStateV1 | PeerMeshReplicaStateV1;
 
 export interface PeerMeshStoredStateV1 {
+  readonly displayName: string | null;
   readonly meshes: readonly PeerMeshStateV1[];
   readonly routes: readonly SignedPeerMeshRouteRecordV1[];
   readonly transitMeshId: string | null;
@@ -363,7 +365,15 @@ async function readState(
       Object.hasOwn(record, 'meshes') &&
       Object.hasOwn(record, 'routes') &&
       Object.hasOwn(record, 'transitMeshId');
-    if (!versionOne && !versionTwo && !versionThree) {
+    const versionFour =
+      record.version === 4 &&
+      Object.keys(record).length === 6 &&
+      Object.hasOwn(record, 'localPeerId') &&
+      Object.hasOwn(record, 'displayName') &&
+      Object.hasOwn(record, 'meshes') &&
+      Object.hasOwn(record, 'routes') &&
+      Object.hasOwn(record, 'transitMeshId');
+    if (!versionOne && !versionTwo && !versionThree && !versionFour) {
       throw new Error('Unsupported Peer Mesh state document');
     }
     if (boundedString(record.localPeerId, 'localPeerId', 256) !== expectedLocalPeerId) {
@@ -371,15 +381,17 @@ async function readState(
     }
     return decodePeerMeshStoredState(
       {
+        displayName: versionFour ? record.displayName : null,
         meshes: record.meshes,
         routes: versionOne ? [] : record.routes,
-        transitMeshId: versionThree ? record.transitMeshId : null,
+        transitMeshId: versionThree || versionFour ? record.transitMeshId : null,
       },
       expectedLocalPeerId,
     );
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) {
       return Object.freeze({
+        displayName: null,
         meshes: Object.freeze([]),
         routes: Object.freeze([]),
         transitMeshId: null,
@@ -404,7 +416,7 @@ async function writeState(
   localPeerId: string,
   state: PeerMeshStoredStateV1,
 ): Promise<void> {
-  const document = `${JSON.stringify({ version: 3, localPeerId, ...state }, null, 2)}\n`;
+  const document = `${JSON.stringify({ version: 4, localPeerId, ...state }, null, 2)}\n`;
   if (Buffer.byteLength(document) > MAX_STATE_BYTES)
     throw new Error('Peer Mesh state is too large');
   const temporary = `${path}.tmp`;
@@ -526,7 +538,8 @@ function decodePeerMeshStoredState(value: unknown, localPeerId: string): PeerMes
   }
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 3 ||
+    Object.keys(record).length !== 4 ||
+    !Object.hasOwn(record, 'displayName') ||
     !Object.hasOwn(record, 'meshes') ||
     !Object.hasOwn(record, 'routes') ||
     !Object.hasOwn(record, 'transitMeshId')
@@ -534,6 +547,8 @@ function decodePeerMeshStoredState(value: unknown, localPeerId: string): PeerMes
     throw new Error('Invalid Peer Mesh state document');
   }
   const meshes = decodePeerMeshStates(record.meshes, localPeerId);
+  const displayName =
+    record.displayName === null ? null : canonicalPeerMeshDisplayName(record.displayName);
   const transitMeshId =
     record.transitMeshId === null
       ? null
@@ -548,6 +563,7 @@ function decodePeerMeshStoredState(value: unknown, localPeerId: string): PeerMes
     throw new Error('Peer Mesh transit selection is not an active membership');
   }
   return Object.freeze({
+    displayName,
     meshes,
     routes: decodeRoutes(record.routes, meshes),
     transitMeshId,

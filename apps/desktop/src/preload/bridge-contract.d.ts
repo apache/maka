@@ -556,6 +556,7 @@ export interface DesktopRuntimeHostDirectPeerSnapshot {
 
 export type DesktopRuntimeHostPeerMeshTarget =
   | { readonly kind: 'desktop' }
+  | { readonly kind: 'local_host' }
   | { readonly kind: 'managed_host'; readonly profileId: string };
 
 export type DesktopRuntimeHostPeerMeshAction =
@@ -816,6 +817,7 @@ export interface MakaBridge {
         readonly meshId?: string | null;
         readonly peerId?: string;
         readonly invitation?: string;
+        readonly displayName?: string | null;
       },
     ): Promise<DesktopRuntimeHostPeerMeshResult>;
   };

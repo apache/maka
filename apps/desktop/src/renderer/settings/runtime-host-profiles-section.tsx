@@ -106,6 +106,18 @@ export function RuntimeHostProfilesSection(props: {
     readonly target: DesktopRuntimeHostPeerMeshTarget;
     readonly name: string;
   }>();
+
+  async function copyPeerId(peerId: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(peerId);
+      toast.success(locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied');
+    } catch (error) {
+      toast.error(
+        locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID',
+        settingsActionErrorMessage(error, locale),
+      );
+    }
+  }
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -654,7 +666,31 @@ export function RuntimeHostProfilesSection(props: {
                       : profile.transport.kind === "ssh"
                         ? profile.transport.destination
                         : profile.transport.kind === "libp2p-direct"
-                          ? abbreviatePeerId(profile.transport.peerId)
+                          ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                label={
+                                  locale.startsWith('zh')
+                                    ? `复制完整 Peer ID：${profile.transport.peerId}`
+                                    : `Copy full Peer ID: ${profile.transport.peerId}`
+                                }
+                                className="settingsRuntimeHostPeerId"
+                                tooltip={
+                                  locale.startsWith('zh')
+                                    ? `复制完整 Peer ID：${profile.transport.peerId}`
+                                    : `Copy full Peer ID: ${profile.transport.peerId}`
+                                }
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (profile.transport.kind === 'libp2p-direct') {
+                                    void copyPeerId(profile.transport.peerId);
+                                  }
+                                }}
+                              >
+                                {abbreviatePeerId(profile.transport.peerId)}
+                              </Button>
+                            )
                           : profile.transport.url
                   }
                   startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
@@ -736,11 +772,21 @@ export function RuntimeHostProfilesSection(props: {
           setManagedTarget(undefined);
           void reload();
         }}
+        onManagePeerMesh={(target) => {
+          setManagedTarget(undefined);
+          setPeerMeshTarget({
+            target: { kind: 'managed_host', profileId: target.id },
+            name: target.name,
+          });
+        }}
       />
       {peerMeshTarget ? (
         <RuntimeHostPeerMeshDialog
           target={peerMeshTarget.target}
           targetName={peerMeshTarget.name}
+          offerLocalHost={
+            peerMeshTarget.target.kind === 'desktop' && localAccess?.state === 'on'
+          }
           onClose={() => setPeerMeshTarget(undefined)}
         />
       ) : null}

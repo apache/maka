@@ -24,6 +24,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
+  encodeRuntimeHostPeerMeshManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
   RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
@@ -205,4 +206,55 @@ test('local update runs the selected package against the exact managed deploymen
     '1',
   );
   assert.deepEqual(phases, ['staging']);
+});
+
+test('local Peer Mesh join sends the invitation to the managed operator over stdin', async (t) => {
+  let args: readonly string[] | undefined;
+  let input = '';
+  const spawnProcess = ((_command, commandArgs) => {
+    args = Array.isArray(commandArgs) ? commandArgs : undefined;
+    const child = new EventEmitter() as ReturnType<typeof spawn>;
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    stdin.on('data', (chunk: Buffer) => { input += chunk.toString('utf8'); });
+    Object.assign(child, { pid: 1234, stdin, stdout, stderr, kill: () => true });
+    process.nextTick(() => {
+      stdout.end(
+        encodeRuntimeHostPeerMeshManagementFrame({ kind: 'input', action: 'join' }) +
+        encodeRuntimeHostPeerMeshManagementFrame({
+          kind: 'result',
+          action: 'join',
+          result: { available: false, meshes: [] },
+        }),
+      );
+      stderr.end();
+      child.emit('close', 0, null);
+    });
+    return child;
+  }) as typeof spawn;
+  const operator = createDesktopRuntimeHostLocalOperator({ spawnProcess });
+  t.after(() => operator.close());
+  const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
+
+  await operator.runPeerMesh({
+    operatorPath: '/tmp/maka/operator',
+    action: 'join',
+    target: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/tmp/maka/root',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+    invitation,
+  });
+
+  assert.deepEqual(args, [
+    'mesh', 'join', '--framed',
+    '--expected-service-id', 'b'.repeat(64),
+    '--expected-root-path', '/tmp/maka/root',
+    '--expected-root-id', 'a'.repeat(64),
+    '--expected-deployment-id', '00000000-0000-4000-8000-000000000001',
+  ]);
+  assert.equal(input, `${invitation}\n`);
 });

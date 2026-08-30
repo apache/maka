@@ -23,6 +23,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
   Button,
+  Banner,
   FormLayout,
   Text,
   TextArea,
@@ -389,9 +390,11 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
   const toast = useToast();
   const [code, setCode] = useState('');
   const [working, setWorking] = useState(false);
+  const [failure, setFailure] = useState<string>();
 
   async function join(allowInsecure = false): Promise<void> {
     setWorking(true);
+    setFailure(undefined);
     try {
       const result = await window.maka.sessionCollaboration.importInvitation({
         code: code.trim(),
@@ -409,13 +412,17 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         return;
       }
       if (result.kind === 'error') {
-        toast.error(copy.joinTitle, importError(copy, result.reason, result.message));
+        const message = importError(copy, result.reason, result.message);
+        setFailure(message);
+        toast.error(copy.joinTitle, message);
         return;
       }
       props.onImported();
       props.onClose();
     } catch (error) {
-      toast.error(copy.joinTitle, errorMessage(error));
+      const message = errorMessage(error);
+      setFailure(message);
+      toast.error(copy.joinTitle, message);
     } finally {
       setWorking(false);
     }
@@ -428,6 +435,8 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         content={(
           <LayoutContent padding={4}>
             <FormLayout>
+              {working ? <Banner status="info" title={copy.joining} /> : null}
+              {failure ? <Banner status="error" title={copy.connectionFailed} description={failure} /> : null}
               <TextArea
                 label={copy.code}
                 value={code}
@@ -442,7 +451,13 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         footer={(
           <LayoutFooter>
             <Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} />
-            <Button variant="primary" label={copy.join} isDisabled={working || !code.trim()} onClick={() => void join()} />
+            <Button
+              variant="primary"
+              label={copy.join}
+              isDisabled={working || !code.trim()}
+              isLoading={working}
+              onClick={() => void join()}
+            />
           </LayoutFooter>
         )}
       />
@@ -464,5 +479,6 @@ function importError(
 ): string {
   if (reason === 'invalid_code') return copy.invalidCode;
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
+  if (message?.startsWith('direct_path_unavailable:')) return copy.directPathUnavailable;
   return message ?? copy.connectionFailed;
 }

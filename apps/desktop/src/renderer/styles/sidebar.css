@@ -284,6 +284,18 @@
   flex-shrink: 0;
 }
 
+.maka-session-row-host-badge {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 88px;
+}
+
+.maka-session-row-host-badge > span {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
 /* Fixed trailing column so StatusDot ↔ MoreMenu swaps do not reflow the label
  * (hover used to steal ~28px and shove the title left). Project rows only; task
  * rows use .maka-session-row-time below. */

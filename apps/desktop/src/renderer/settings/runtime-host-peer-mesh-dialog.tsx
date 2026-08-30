@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Banner } from '@astryxdesign/core';
+import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
 import {
   Badge,
@@ -31,16 +33,19 @@ import {
   Switch,
   Text,
   TextArea,
+  TextInput,
   useToast,
   useUiLocale,
 } from '@maka/ui';
 import {
   ArrowLeft,
+  ChevronDown,
   Copy,
   HelpCircle,
   ICON_SIZE,
   KeyRound,
   Network,
+  Pencil,
   Plus,
   RefreshCcw,
   Workflow,
@@ -58,25 +63,47 @@ type PeerMeshDialogView =
       readonly hasCoordinationRelay: boolean;
     };
 
+const LOCAL_HOST_TARGET = { kind: 'local_host' } as const;
+
 export function RuntimeHostPeerMeshDialog(props: {
   readonly target: DesktopRuntimeHostPeerMeshTarget;
   readonly targetName: string;
+  readonly offerLocalHost?: boolean;
   readonly onClose: () => void;
 }) {
   const locale = useUiLocale();
   const copy = peerMeshCopy(locale);
   const toast = useToast();
   const [snapshot, setSnapshot] = useState<PeerMeshQueryResult>();
+  const [localHostPeerId, setLocalHostPeerId] = useState<string>();
   const [joinDraft, setJoinDraft] = useState('');
   const [view, setView] = useState<PeerMeshDialogView>({ kind: 'overview' });
   const [error, setError] = useState<string>();
   const [working, setWorking] = useState(false);
+  const refreshSequence = useRef(0);
+  const [selectedEndpoint, setSelectedEndpoint] = useState<'desktop' | 'local_host'>(
+    props.target.kind === 'desktop' ? 'desktop' : 'local_host',
+  );
+  const canSelectLocalHost = props.target.kind === 'desktop' && props.offerLocalHost === true;
+  const activeTarget =
+    canSelectLocalHost && selectedEndpoint === 'local_host' ? LOCAL_HOST_TARGET : props.target;
+  const offerLocalHost = canSelectLocalHost && selectedEndpoint === 'desktop';
 
   const refresh = useCallback(async () => {
-    const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'status');
+    const sequence = ++refreshSequence.current;
+    const [result, localHost] = await Promise.all([
+      window.maka.runtimeHostPeerMesh.execute(activeTarget, 'status'),
+      offerLocalHost
+        ? window.maka.runtimeHostPeerMesh
+            .execute(LOCAL_HOST_TARGET, 'status')
+            .catch(() => undefined)
+        : undefined,
+    ]);
     if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+    if (sequence !== refreshSequence.current) return;
     setSnapshot(result);
-  }, [copy.invalidResult, props.target]);
+    setLocalHostPeerId(isSnapshot(localHost) ? localHost.localPeerId : undefined);
+  }, [activeTarget, copy.invalidResult, offerLocalHost]);
 
   useEffect(() => {
     void refresh().catch((failure) => setError(peerMeshErrorMessage(failure, copy.unknownError)));
@@ -86,9 +113,29 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, action);
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, action);
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
       setSnapshot(result);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function createMesh(): Promise<void> {
+    setWorking(true);
+    setError(undefined);
+    try {
+      const previousMeshIds = new Set(snapshot?.meshes.map(({ meshId }) => meshId));
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'create');
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      setSnapshot(result);
+      const created = result.meshes.find(({ meshId }) => !previousMeshIds.has(meshId));
+      if (created && offerLocalHost) {
+        await joinLocalHost(created.meshId);
+        await refresh();
+      }
     } catch (failure) {
       setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
@@ -100,7 +147,7 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'join', {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'join', {
         invitation: joinDraft.trim(),
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
@@ -118,7 +165,7 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'invite', {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'invite', {
         meshId,
       });
       if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
@@ -135,6 +182,32 @@ export function RuntimeHostPeerMeshDialog(props: {
     } finally {
       setWorking(false);
     }
+  }
+
+  async function addLocalHost(meshId: string): Promise<void> {
+    setWorking(true);
+    setError(undefined);
+    try {
+      await joinLocalHost(meshId);
+      await refresh();
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function joinLocalHost(meshId: string): Promise<void> {
+    const prepared = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'invite', {
+      meshId,
+    });
+    if (!isInvitationResult(prepared)) throw new Error(copy.invalidResult);
+    const joined = await window.maka.runtimeHostPeerMesh.execute(
+      LOCAL_HOST_TARGET,
+      'join',
+      { invitation: JSON.stringify(prepared.invitation) },
+    );
+    if (!isSnapshot(joined)) throw new Error(copy.invalidResult);
   }
 
   async function mutate(
@@ -158,7 +231,7 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, action, {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, action, {
         meshId,
         peerId,
       });
@@ -175,7 +248,7 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorking(true);
     setError(undefined);
     try {
-      const result = await window.maka.runtimeHostPeerMesh.execute(props.target, 'transit', {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'transit', {
         meshId: enabled ? meshId : null,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
@@ -192,6 +265,59 @@ export function RuntimeHostPeerMeshDialog(props: {
     try {
       await navigator.clipboard.writeText(view.code);
       toast.success(copy.invitationCopied);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+    }
+  }
+
+  async function rename(displayName: string | null): Promise<void> {
+    setWorking(true);
+    setError(undefined);
+    try {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'rename', {
+        displayName,
+      });
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      setSnapshot(result);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+      throw failure;
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function renameMesh(meshId: string, displayName: string | null): Promise<void> {
+    setWorking(true);
+    setError(undefined);
+    try {
+      const result = await window.maka.runtimeHostPeerMesh.execute(activeTarget, 'rename-mesh', {
+        meshId,
+        displayName,
+      });
+      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      setSnapshot(result);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+      throw failure;
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function copyPeerId(peerId: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(peerId);
+      toast.success(copy.peerIdCopied);
+    } catch (failure) {
+      setError(peerMeshErrorMessage(failure, copy.unknownError));
+    }
+  }
+
+  async function copyMeshId(meshId: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(meshId);
+      toast.success(copy.meshIdCopied);
     } catch (failure) {
       setError(peerMeshErrorMessage(failure, copy.unknownError));
     }
@@ -221,6 +347,34 @@ export function RuntimeHostPeerMeshDialog(props: {
         content={
           <LayoutContent padding={4}>
             <div className="settingsPeerMesh">
+              {canSelectLocalHost ? (
+                <div className="settingsPeerMeshEndpoint">
+                  <SegmentedControl
+                    label={copy.endpoint}
+                    value={selectedEndpoint}
+                    layout="fill"
+                    size="sm"
+                    isDisabled={working}
+                    onChange={(value) => {
+                      refreshSequence.current += 1;
+                      setSelectedEndpoint(value as 'desktop' | 'local_host');
+                      setSnapshot(undefined);
+                      setLocalHostPeerId(undefined);
+                      setJoinDraft('');
+                      setView({ kind: 'overview' });
+                      setError(undefined);
+                    }}
+                  >
+                    <SegmentedControlItem value="desktop" label={copy.desktopEndpoint} />
+                    <SegmentedControlItem value="local_host" label={copy.hostEndpoint} />
+                  </SegmentedControl>
+                  <Text type="supporting" color="secondary">
+                    {selectedEndpoint === 'local_host'
+                      ? copy.hostEndpointHelp
+                      : copy.desktopEndpointHelp}
+                  </Text>
+                </div>
+              ) : null}
               {error ? <Banner status="error" title={copy.failed} description={error} /> : null}
               {view.kind === 'invitation' ? (
                 <InvitationView invitation={view} copy={copy} />
@@ -231,14 +385,23 @@ export function RuntimeHostPeerMeshDialog(props: {
                   snapshot={snapshot}
                   copy={copy}
                   working={working}
+                  localPeerLabel={
+                    selectedEndpoint === 'local_host' ? copy.thisRuntimeHost : copy.thisDesktop
+                  }
                   onInvite={(meshId) => void createInvitation(meshId)}
                   onRemove={(meshId, peerId) => void mutate('remove', meshId, peerId)}
                   onLeave={(meshId) => void mutate('leave', meshId)}
                   onClose={(meshId) => void mutate('close', meshId)}
                   onJoin={() => setView({ kind: 'join' })}
-                  onCreate={() => void run('create')}
+                  onCreate={() => void createMesh()}
                   onRefresh={() => void run('reconcile')}
                   onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
+                  onRename={rename}
+                  onRenameMesh={renameMesh}
+                  onCopyPeerId={(peerId) => void copyPeerId(peerId)}
+                  onCopyMeshId={(meshId) => void copyMeshId(meshId)}
+                  localHostPeerId={localHostPeerId}
+                  onAddLocalHost={offerLocalHost ? (meshId) => void addLocalHost(meshId) : undefined}
                 />
               )}
             </div>
@@ -283,6 +446,7 @@ function Overview(props: {
   readonly snapshot: PeerMeshQueryResult | undefined;
   readonly copy: ReturnType<typeof peerMeshCopy>;
   readonly working: boolean;
+  readonly localPeerLabel: string;
   readonly onInvite: (meshId: string) => void;
   readonly onRemove: (meshId: string, peerId: string) => void;
   readonly onLeave: (meshId: string) => void;
@@ -291,8 +455,16 @@ function Overview(props: {
   readonly onCreate: () => void;
   readonly onRefresh: () => void;
   readonly onSetTransit: (meshId: string, enabled: boolean) => void;
+  readonly onRename: (displayName: string | null) => Promise<void>;
+  readonly onRenameMesh: (meshId: string, displayName: string | null) => Promise<void>;
+  readonly onCopyPeerId: (peerId: string) => void;
+  readonly onCopyMeshId: (meshId: string) => void;
+  readonly localHostPeerId?: string;
+  readonly onAddLocalHost?: (meshId: string) => void;
 }) {
   const { snapshot, copy } = props;
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
   if (!snapshot) {
     return (
       <Text type="supporting" color="secondary">
@@ -311,12 +483,31 @@ function Overview(props: {
         </span>
         <div>
           <Text type="supporting" color="secondary">
-            {copy.thisPeer}
+            {props.localPeerLabel}
           </Text>
-          <code title={snapshot.localPeerId}>
-            {snapshot.localPeerId ? abbreviate(snapshot.localPeerId) : '—'}
-          </code>
+          {snapshot.localDisplayName ? (
+            <Text type="body" weight="semibold">
+              {snapshot.localDisplayName}
+            </Text>
+          ) : null}
+          {snapshot.localPeerId ? (
+            <PeerIdText peerId={snapshot.localPeerId} copy={copy} onCopy={props.onCopyPeerId} />
+          ) : (
+            <code>—</code>
+          )}
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          label={copy.rename}
+          icon={<Pencil size={ICON_SIZE.chrome} aria-hidden="true" />}
+          isDisabled={props.working}
+          onClick={() => {
+            setNameDraft(snapshot.localDisplayName ?? '');
+            setEditingName(true);
+          }}
+        />
         <Button
           variant="ghost"
           size="sm"
@@ -327,6 +518,38 @@ function Overview(props: {
           onClick={props.onRefresh}
         />
       </div>
+      {editingName ? (
+        <div className="settingsPeerMeshRename">
+          <TextInput
+            label={copy.displayName}
+            value={nameDraft}
+            placeholder={props.localPeerLabel}
+            isDisabled={props.working}
+            onChange={setNameDraft}
+          />
+          <HStack gap={2} hAlign="end">
+            <Button
+              variant="ghost"
+              size="sm"
+              label={copy.cancel}
+              isDisabled={props.working}
+              onClick={() => setEditingName(false)}
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              label={copy.save}
+              isDisabled={props.working || nameDraft.trim().length > 80}
+              onClick={() => {
+                void props
+                  .onRename(nameDraft.trim() || null)
+                  .then(() => setEditingName(false))
+                  .catch(() => undefined);
+              }}
+            />
+          </HStack>
+        </div>
+      ) : null}
       {snapshot.meshes.length === 0 ? (
         <div className="settingsPeerMeshEmpty">
           <span className="settingsPeerMeshEmptyIcon" aria-hidden="true">
@@ -396,6 +619,16 @@ function Overview(props: {
                 onLeave={() => props.onLeave(mesh.meshId)}
                 onClose={() => props.onClose(mesh.meshId)}
                 onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
+                onRename={(displayName) => props.onRenameMesh(mesh.meshId, displayName)}
+                onCopyPeerId={props.onCopyPeerId}
+                onCopyMeshId={props.onCopyMeshId}
+                localPeerLabel={props.localPeerLabel}
+                localHostPeerId={props.localHostPeerId}
+                onAddLocalHost={
+                  props.onAddLocalHost
+                    ? () => props.onAddLocalHost?.(mesh.meshId)
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -498,25 +731,43 @@ function MeshCard(props: {
   readonly onLeave: () => void;
   readonly onClose: () => void;
   readonly onSetTransit: (enabled: boolean) => void;
+  readonly onRename: (displayName: string | null) => Promise<void>;
+  readonly onCopyPeerId: (peerId: string) => void;
+  readonly onCopyMeshId: (meshId: string) => void;
+  readonly localPeerLabel: string;
+  readonly localHostPeerId?: string;
+  readonly onAddLocalHost?: () => void;
 }) {
   const { mesh, copy } = props;
+  const [expanded, setExpanded] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
   const transitEnabled = props.transit?.meshId === mesh.meshId;
+  const localHostIsMember =
+    props.localHostPeerId !== undefined &&
+    mesh.members.some(({ peerId }) => peerId === props.localHostPeerId);
   return (
     <section className="settingsPeerMeshCard">
       <div className="settingsPeerMeshCardHeading">
-        <div className="settingsPeerMeshCardIdentity">
-          <span className="settingsPeerMeshCardIcon" aria-hidden="true">
-            <Network size={ICON_SIZE.chrome} />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="settingsPeerMeshCardDisclosure"
+          label={mesh.displayName ?? copy.unnamedMesh}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          endContent={(
+            <ChevronDown
+              className={expanded ? 'settingsPeerMeshChevron isExpanded' : 'settingsPeerMeshChevron'}
+              size={ICON_SIZE.chrome}
+              aria-hidden="true"
+            />
+          )}
+        >
+          <span className="settingsPeerMeshCardTitle">
+            {mesh.displayName ?? copy.unnamedMesh}
           </span>
-          <div>
-            <Text type="supporting" color="secondary">
-              {copy.mesh}
-            </Text>
-            <code className="settingsPeerMeshName" title={mesh.meshId}>
-              {fingerprint(mesh.meshId)}
-            </code>
-          </div>
-        </div>
+        </Button>
         <div className="settingsPeerMeshCardControls">
           <Badge
             variant="neutral"
@@ -524,6 +775,21 @@ function MeshCard(props: {
               mesh.closed ? copy.closed : mesh.role === 'authority' ? copy.authority : copy.member
             }
           />
+          {mesh.role === 'authority' && !mesh.closed ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              label={copy.renameMesh}
+              icon={<Pencil size={ICON_SIZE.chrome} aria-hidden="true" />}
+              isDisabled={props.working}
+              onClick={() => {
+                setNameDraft(mesh.displayName ?? '');
+                setEditingName(true);
+                setExpanded(true);
+              }}
+            />
+          ) : null}
           {!mesh.closed ? (
             <MoreMenu
               label={copy.meshActions}
@@ -549,108 +815,184 @@ function MeshCard(props: {
           ) : null}
         </div>
       </div>
-      <Text type="supporting" color="secondary">
-        {copy.revision(mesh.revision)} · {copy.memberCount(mesh.members.length)}
-        {mesh.pendingInvitationCount > 0 ? ` · ${copy.pending(mesh.pendingInvitationCount)}` : ''}
-      </Text>
-      {!mesh.closed ? (
-        <div className="settingsPeerMeshTransit">
-          <div className="settingsPeerMeshTransitIdentity">
-            <span className="settingsPeerMeshTransitIcon" aria-hidden="true">
-              <Workflow size={ICON_SIZE.chrome} />
-            </span>
-            <div>
-              <div className="settingsPeerMeshTransitTitle">
-                <Text type="supporting" weight="semibold">
-                  {copy.transit}
-                </Text>
-                <span
-                  className="settingsPeerMeshTransitHelp"
-                  role="img"
-                  aria-label={copy.transitLimitsLabel}
-                  title={copy.transitLimits(props.transit)}
-                >
-                  <HelpCircle size={ICON_SIZE.meta} aria-hidden="true" />
-                </span>
-              </div>
-              <Text type="supporting" color="secondary">
-                {copy.transitHelp}
-              </Text>
-            </div>
-          </div>
-          <Switch
-            label={copy.transitToggle}
-            isLabelHidden
-            value={transitEnabled}
-            isDisabled={props.working}
-            onChange={props.onSetTransit}
-          />
-        </div>
-      ) : null}
-      {transitEnabled && props.transit ? (
-        <div className="settingsPeerMeshTransitMetrics" aria-label={copy.transitStatus}>
-          <TransitMetric
-            label={copy.allowedMembers}
-            value={String(props.transit.allowedMemberCount)}
-          />
-          <TransitMetric
-            label={copy.reservations}
-            value={`${props.transit.activeReservationCount}/${props.transit.maxReservationCount}`}
-          />
-          <TransitMetric
-            label={copy.circuits}
-            value={`${props.transit.activeCircuitCount}/${props.transit.maxCircuitCount}`}
-          />
-        </div>
-      ) : null}
-      <div className="settingsPeerMeshMembersHeading">
+      <div className="settingsPeerMeshCardMeta">
+        <MeshIdText meshId={mesh.meshId} copy={copy} onCopy={props.onCopyMeshId} />
         <Text type="supporting" color="secondary">
-          {copy.members}
+          {copy.memberCount(mesh.members.length)}
+          {mesh.pendingInvitationCount > 0 ? ` · ${copy.pending(mesh.pendingInvitationCount)}` : ''}
         </Text>
-        {mesh.role === 'authority' && !mesh.closed ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            label={copy.invite}
-            isDisabled={props.working}
-            onClick={props.onInvite}
-          />
-        ) : null}
       </div>
-      <div className="settingsPeerMeshMembers">
-        {mesh.members.map((member) => (
-          <div className="settingsPeerMeshMember" key={member.peerId}>
-            <div className="settingsPeerMeshMemberIdentity">
-              <span
-                className={`settingsPeerMeshMemberState settingsPeerMeshMemberState-${member.state}`}
-                aria-hidden="true"
+      {expanded ? (
+        <div className="settingsPeerMeshCardDetails">
+          {editingName ? (
+            <div className="settingsPeerMeshRename">
+              <TextInput
+                label={copy.meshDisplayName}
+                value={nameDraft}
+                placeholder={copy.mesh}
+                isDisabled={props.working}
+                onChange={setNameDraft}
               />
-              <div>
-                <code title={member.peerId}>{abbreviate(member.peerId)}</code>
-                <Text type="supporting" color="secondary">
-                  {member.state === 'local' ? copy.thisDevice : copy.routeState[member.state]}
-                  {member.peerId === mesh.authorityPeerId ? ` · ${copy.authority}` : ''}
-                </Text>
-              </div>
-            </div>
-            <div className="settingsPeerMeshMemberActions">
-              {mesh.role === 'authority' && member.state !== 'local' && !mesh.closed ? (
-                <MoreMenu
-                  label={copy.memberActions(member.peerId)}
+              <HStack gap={2} hAlign="end">
+                <Button
+                  variant="ghost"
                   size="sm"
-                  items={[
-                    {
-                      label: copy.remove,
-                      isDisabled: props.working,
-                      onClick: () => props.onRemove(member.peerId),
-                    },
-                  ]}
+                  label={copy.cancel}
+                  isDisabled={props.working}
+                  onClick={() => setEditingName(false)}
                 />
-              ) : null}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  label={copy.save}
+                  isDisabled={props.working || nameDraft.trim().length > 80}
+                  onClick={() => {
+                    void props
+                      .onRename(nameDraft.trim() || null)
+                      .then(() => setEditingName(false))
+                      .catch(() => undefined);
+                  }}
+                />
+              </HStack>
             </div>
+          ) : null}
+          {!mesh.closed ? (
+            <div className="settingsPeerMeshTransit">
+              <div className="settingsPeerMeshTransitIdentity">
+                <span className="settingsPeerMeshTransitIcon" aria-hidden="true">
+                  <Workflow size={ICON_SIZE.chrome} />
+                </span>
+                <div>
+                  <div className="settingsPeerMeshTransitTitle">
+                    <Text type="supporting" weight="semibold">
+                      {copy.transit}
+                    </Text>
+                    <span
+                      className="settingsPeerMeshTransitHelp"
+                      role="img"
+                      aria-label={copy.transitLimitsLabel}
+                      title={copy.transitLimits(props.transit)}
+                    >
+                      <HelpCircle size={ICON_SIZE.meta} aria-hidden="true" />
+                    </span>
+                  </div>
+                  <Text type="supporting" color="secondary">
+                    {copy.transitHelp}
+                  </Text>
+                </div>
+              </div>
+              <Switch
+                label={copy.transitToggle}
+                isLabelHidden
+                value={transitEnabled}
+                isDisabled={props.working}
+                onChange={props.onSetTransit}
+              />
+            </div>
+          ) : null}
+          {props.onAddLocalHost && !localHostIsMember && !mesh.closed ? (
+            <Banner
+              status="info"
+              title={copy.localHostMissing}
+              description={copy.localHostMissingHint}
+              endContent={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  label={copy.addLocalHost}
+                  isDisabled={props.working}
+                  onClick={props.onAddLocalHost}
+                />
+              }
+            />
+          ) : null}
+          {transitEnabled && props.transit ? (
+            <div className="settingsPeerMeshTransitMetrics" aria-label={copy.transitStatus}>
+              <TransitMetric
+                label={copy.allowedMembers}
+                value={String(props.transit.allowedMemberCount)}
+              />
+              <TransitMetric
+                label={copy.reservations}
+                value={`${props.transit.activeReservationCount}/${props.transit.maxReservationCount}`}
+              />
+              <TransitMetric
+                label={copy.circuits}
+                value={`${props.transit.activeCircuitCount}/${props.transit.maxCircuitCount}`}
+              />
+            </div>
+          ) : null}
+          <div className="settingsPeerMeshMembersHeading">
+            <Text type="supporting" color="secondary">
+              {copy.members}
+            </Text>
+            {mesh.role === 'authority' && !mesh.closed ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.invite}
+                isDisabled={props.working}
+                onClick={props.onInvite}
+              />
+            ) : null}
           </div>
-        ))}
-      </div>
+          <div className="settingsPeerMeshMembers">
+            {mesh.members.map((member) => (
+              <div className="settingsPeerMeshMember" key={member.peerId}>
+                <div className="settingsPeerMeshMemberIdentity">
+                  <span
+                    className={`settingsPeerMeshMemberState settingsPeerMeshMemberState-${member.state}`}
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <div className="settingsPeerMeshMemberHeading">
+                      <div className="settingsPeerMeshMemberName">
+                        {member.displayName ? (
+                          <Text type="body" weight="semibold">
+                            {member.displayName}
+                          </Text>
+                        ) : null}
+                        <PeerIdText
+                          peerId={member.peerId}
+                          copy={copy}
+                          onCopy={props.onCopyPeerId}
+                        />
+                      </div>
+                      <Tooltip content={copy.endpointKindHelp[member.endpointKind ?? 'unknown']}>
+                        <Badge
+                          variant={member.endpointKind === 'host' ? 'blue' : 'neutral'}
+                          label={copy.endpointKind[member.endpointKind ?? 'unknown']}
+                        />
+                      </Tooltip>
+                    </div>
+                    <Text type="supporting" color="secondary">
+                      {member.state === 'local'
+                        ? props.localPeerLabel
+                        : copy.routeState[member.state]}
+                      {member.peerId === mesh.authorityPeerId ? ` · ${copy.authority}` : ''}
+                    </Text>
+                  </div>
+                </div>
+                <div className="settingsPeerMeshMemberActions">
+                  {mesh.role === 'authority' && member.state !== 'local' && !mesh.closed ? (
+                    <MoreMenu
+                      label={copy.memberActions(member.peerId)}
+                      size="sm"
+                      items={[
+                        {
+                          label: copy.remove,
+                          isDisabled: props.working,
+                          onClick: () => props.onRemove(member.peerId),
+                        },
+                      ]}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -665,6 +1007,44 @@ function TransitMetric(props: { readonly label: string; readonly value: string }
         {props.value}
       </Text>
     </div>
+  );
+}
+
+function PeerIdText(props: {
+  readonly peerId: string;
+  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly onCopy: (peerId: string) => void;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="settingsPeerMeshPeerId"
+      label={props.copy.copyPeerId(props.peerId)}
+      tooltip={props.copy.copyPeerId(props.peerId)}
+      onClick={() => props.onCopy(props.peerId)}
+    >
+      <code>{abbreviate(props.peerId)}</code>
+    </Button>
+  );
+}
+
+function MeshIdText(props: {
+  readonly meshId: string;
+  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly onCopy: (meshId: string) => void;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="settingsPeerMeshPeerId"
+      label={props.copy.copyMeshId(props.meshId)}
+      tooltip={props.copy.copyMeshId(props.meshId)}
+      onClick={() => props.onCopy(props.meshId)}
+    >
+      <code>{fingerprint(props.meshId)}</code>
+    </Button>
   );
 }
 
@@ -708,8 +1088,23 @@ function peerMeshCopy(locale: string) {
         unknownError: 'Peer Mesh 操作失败',
         unavailable: '当前 endpoint 不支持 Peer Mesh',
         loading: '正在读取 Mesh 状态…',
-        thisPeer: '当前设备',
-        thisDevice: '此设备',
+        endpoint: '管理对象',
+        desktopEndpoint: 'Desktop Client',
+        hostEndpoint: '本机 Runtime Host',
+        desktopEndpointHelp: '此 Client 用于连接 Mesh 中的 Runtime Host。',
+        hostEndpointHelp: '此 Host 加入后，其他成员才能连接本机分享的任务。',
+        thisRuntimeHost: '本机 Runtime Host',
+        thisDesktop: '本机 Desktop',
+        displayName: '在 Mesh 中显示的名称',
+        meshDisplayName: 'Mesh 名称',
+        unnamedMesh: '未命名 Mesh',
+        rename: '修改名称',
+        renameMesh: '修改 Mesh 名称',
+        save: '保存',
+        peerIdCopied: 'Peer ID 已复制',
+        meshIdCopied: 'Mesh ID 已复制',
+        copyPeerId: (value: string) => `复制完整 Peer ID：${value}`,
+        copyMeshId: (value: string) => `复制完整 Mesh ID：${value}`,
         empty: '建立你的第一个 Mesh',
         emptyHint: '创建新 Mesh，或通过一次性邀请码加入。',
         meshes: 'Mesh',
@@ -719,7 +1114,6 @@ function peerMeshCopy(locale: string) {
         authority: '管理者',
         member: '成员',
         closed: '已关闭',
-        revision: (value: number) => `版本 ${value}`,
         memberCount: (value: number) => `${value} 个成员`,
         pending: (value: number) => `${value} 个待使用邀请`,
         transit: '成员转发',
@@ -740,6 +1134,16 @@ function peerMeshCopy(locale: string) {
           coordination_only: '仅协调路径',
           stale: '路径已过期',
           unknown: '路径未知',
+        },
+        endpointKind: {
+          client: 'Client',
+          host: 'Runtime Host',
+          unknown: '未标识 Peer',
+        },
+        endpointKindHelp: {
+          client: 'Client 是操作界面：它连接 Host、浏览任务并发起操作，本身不持有任务。',
+          host: 'Runtime Host 持有任务和运行状态，并执行经过授权的工作。',
+          unknown: '此 Peer 尚未报告它是 Client 还是 Runtime Host，通常来自旧版本。',
         },
         joinTitle: '加入 Mesh',
         joinHint: '粘贴另一个 Peer 生成的一次性邀请码。',
@@ -767,6 +1171,10 @@ function peerMeshCopy(locale: string) {
         removeConfirm: '移除这个成员？',
         meshActions: 'Mesh 操作',
         memberActions: (peerId: string) => `${peerId} 的操作`,
+        addLocalHost: '添加本机 Runtime Host',
+        localRuntimeHost: 'Runtime Host',
+        localHostMissing: '本机 Runtime Host 尚未加入',
+        localHostMissingHint: '加入后，其他成员才能通过此 Mesh 连接本机分享的任务。',
       }
     : {
         title: 'Peer Mesh',
@@ -776,8 +1184,23 @@ function peerMeshCopy(locale: string) {
         unknownError: 'Peer Mesh operation failed',
         unavailable: 'Peer Mesh is unavailable for this endpoint',
         loading: 'Loading Mesh status…',
-        thisPeer: 'This device',
-        thisDevice: 'This device',
+        endpoint: 'Manage endpoint',
+        desktopEndpoint: 'Desktop Client',
+        hostEndpoint: 'Local Runtime Host',
+        desktopEndpointHelp: 'This Client connects to Runtime Hosts in the Mesh.',
+        hostEndpointHelp: 'Add this Host so other members can reach tasks shared from this device.',
+        thisRuntimeHost: 'This Runtime Host',
+        thisDesktop: 'This Desktop',
+        displayName: 'Name shown in the Mesh',
+        meshDisplayName: 'Mesh name',
+        unnamedMesh: 'Unnamed Mesh',
+        rename: 'Rename',
+        renameMesh: 'Rename Mesh',
+        save: 'Save',
+        peerIdCopied: 'Peer ID copied',
+        meshIdCopied: 'Mesh ID copied',
+        copyPeerId: (value: string) => `Copy full Peer ID: ${value}`,
+        copyMeshId: (value: string) => `Copy full Mesh ID: ${value}`,
         empty: 'Build your first Mesh',
         emptyHint: 'Create a new Mesh or join one with a one-time invitation.',
         meshes: 'Meshes',
@@ -787,7 +1210,6 @@ function peerMeshCopy(locale: string) {
         authority: 'Authority',
         member: 'Member',
         closed: 'Closed',
-        revision: (value: number) => `Revision ${value}`,
         memberCount: (value: number) => `${value} members`,
         pending: (value: number) => `${value} pending invites`,
         transit: 'Member transit',
@@ -808,6 +1230,16 @@ function peerMeshCopy(locale: string) {
           coordination_only: 'Coordination only',
           stale: 'Stale route',
           unknown: 'Route unknown',
+        },
+        endpointKind: {
+          client: 'Client',
+          host: 'Runtime Host',
+          unknown: 'Unidentified peer',
+        },
+        endpointKindHelp: {
+          client: 'A Client is the interface that connects to Hosts, browses tasks, and starts actions. It does not own tasks.',
+          host: 'A Runtime Host owns tasks and runtime state, and executes authorized work.',
+          unknown: 'This peer has not reported whether it is a Client or Runtime Host, usually because it uses an older build.',
         },
         joinTitle: 'Join a Mesh',
         joinHint: 'Paste a one-time invitation created by another peer.',
@@ -836,6 +1268,11 @@ function peerMeshCopy(locale: string) {
         removeConfirm: 'Remove this member?',
         meshActions: 'Mesh actions',
         memberActions: (peerId: string) => `Actions for ${peerId}`,
+        addLocalHost: 'Add local Runtime Host',
+        localRuntimeHost: 'Runtime Host',
+        localHostMissing: 'Local Runtime Host has not joined',
+        localHostMissingHint:
+          'Add it so other members can reach tasks shared from this device through the Mesh.',
       };
 }
 

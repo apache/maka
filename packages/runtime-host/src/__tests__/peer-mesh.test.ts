@@ -78,9 +78,16 @@ test('authenticates three peers, consumes invitations once, and keeps authority 
   const nodes: PeerMeshNode[] = [];
   try {
     for (const [index, peer] of peers.entries()) {
-      nodes.push(await openPeerMeshNode({ dataRoot: join(root, String(index)), peer }));
+      nodes.push(
+        await openPeerMeshNode({
+          dataRoot: join(root, String(index)),
+          peer,
+          endpointKind: index === 0 ? 'client' : 'host',
+        }),
+      );
     }
     const [authority, memberB, memberC] = nodes as [PeerMeshNode, PeerMeshNode, PeerMeshNode];
+    await authority.setDisplayName('Alice Desktop');
     const mesh = await authority.create();
     assert.deepEqual(mesh.authority.coordinationRelays, ['/memory/relay/peer-a']);
     const serving = authority.serve();
@@ -93,8 +100,30 @@ test('authenticates three peers, consumes invitations once, and keeps authority 
 
     const loser = attempts[0]?.status === 'rejected' ? memberB : memberC;
     await loser.join(await authority.invite(mesh.roster.roster.meshId));
+    await memberB.setDisplayName('Build Host');
+    await memberB.reconcile();
+    await authority.setMeshDisplayName(mesh.roster.roster.meshId, 'Release Team');
+    await memberB.reconcile();
+    await authority.setMeshDisplayName(mesh.roster.roster.meshId, null);
+    await memberB.reconcile();
+    assert.equal(memberB.status()[0]?.roster.roster.displayName, undefined);
+    await authority.setMeshDisplayName(mesh.roster.roster.meshId, 'Release Team');
+    await memberB.reconcile();
     const current = authority.status()[0];
+    assert.equal(memberB.status()[0]?.roster.roster.displayName, 'Release Team');
     assert.deepEqual(current?.roster.roster.members, ['peer-a', 'peer-b', 'peer-c']);
+    assert.deepEqual(
+      current?.memberRoutes.map(({ peerId, endpointKind, displayName }) => ({
+        peerId,
+        endpointKind,
+        displayName,
+      })),
+      [
+        { peerId: 'peer-a', endpointKind: 'client', displayName: 'Alice Desktop' },
+        { peerId: 'peer-b', endpointKind: 'host', displayName: 'Build Host' },
+        { peerId: 'peer-c', endpointKind: 'host', displayName: undefined },
+      ],
+    );
     assert.equal('authorityPrivateKey' in (current ?? {}), false);
 
     await authority.remove(mesh.roster.roster.meshId, 'peer-b');
@@ -320,6 +349,26 @@ test('closed Mesh records do not permanently consume membership capacity', async
     }
     assert.equal((await node.create()).roster.roster.closed, false);
     assert.equal(node.status().length, 1);
+  } finally {
+    await node.close();
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('persists the endpoint name and selected transit Mesh together', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-presentation-'));
+  const peer = new MemoryPeerNetwork().create('peer-a');
+  let node = await openPeerMeshNode({ dataRoot: root, peer });
+  try {
+    const meshId = (await node.create()).roster.roster.meshId;
+    await node.setDisplayName('Alice Host');
+    await node.setTransitMesh(meshId);
+    await node.close();
+
+    node = await openPeerMeshNode({ dataRoot: root, peer });
+    assert.equal(node.displayName(), 'Alice Host');
+    assert.equal(node.transitMeshId(), meshId);
   } finally {
     await node.close();
     await peer.close();

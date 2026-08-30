@@ -506,6 +506,7 @@ export async function runMakaCli(
         expectedTarget: command.expectedTarget,
         ...(command.meshId !== undefined ? { meshId: command.meshId } : {}),
         ...(command.peerId ? { peerId: command.peerId } : {}),
+        ...(command.displayName !== undefined ? { displayName: command.displayName } : {}),
       });
     }
     case 'runtime-host-service-update': {

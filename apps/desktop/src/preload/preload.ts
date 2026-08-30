@@ -1469,6 +1469,7 @@ const makaBridge = {
         readonly meshId?: string | null;
         readonly peerId?: string;
         readonly invitation?: string;
+        readonly displayName?: string | null;
       } = {},
     ) {
       return ipcRenderer.invoke(
@@ -1478,6 +1479,7 @@ const makaBridge = {
         input.meshId,
         input.peerId,
         input.invitation,
+        input.displayName,
       );
     },
   },

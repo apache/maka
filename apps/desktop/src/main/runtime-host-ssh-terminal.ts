@@ -191,6 +191,7 @@ export interface DesktopRuntimeHostSshPeerMeshManagementInput {
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly meshId?: string | null;
   readonly peerId?: string;
+  readonly displayName?: string | null;
   readonly invitation?: string;
   readonly signal?: AbortSignal;
 }
@@ -1371,6 +1372,11 @@ function runtimeHostPeerMeshManagementRemoteCommand(
         ? ['--off']
         : []),
     ...(input.peerId ? ['--peer', input.peerId] : []),
+    ...(input.displayName === null
+      ? ['--clear-name']
+      : input.displayName
+        ? ['--name', input.displayName]
+        : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
