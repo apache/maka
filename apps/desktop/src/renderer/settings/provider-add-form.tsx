@@ -43,6 +43,7 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
+  connectionEndpointRejectionMessage,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
 } from './provider-panel-shared';
@@ -125,7 +126,11 @@ export function AddProviderForm(props: {
     }
     if (issue.field === 'apiKey') return copy.keyRequired(display.name);
     if (issue.field === 'accountId') return copy.cloudflareAccount;
-    if (issue.field === 'baseUrl') return copy.endpointRequired;
+    if (issue.field === 'baseUrl') {
+      return issue.reason === 'required'
+        ? copy.endpointRequired
+        : connectionEndpointRejectionMessage(issue.rejection, locale);
+    }
     return copy.accountLogin;
   }
 

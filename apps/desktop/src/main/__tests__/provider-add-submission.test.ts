@@ -214,6 +214,66 @@ test('the field gate still reports the rules that survived', () => {
   });
 });
 
+test('the field gate refuses endpoints the Runtime Host would refuse', () => {
+  // Before #3672 each of these passed the form and failed the write, and the
+  // failure read "the model connection service is temporarily unavailable" —
+  // wrong about the cause and wrong about retrying being worth anything.
+  assert.deepEqual(
+    validateAddProviderDraft(draft({ baseUrl: 'https://user:pw@relay.example.com/v1' })),
+    { field: 'baseUrl', reason: 'invalid', rejection: 'credentials' },
+  );
+  assert.deepEqual(
+    validateAddProviderDraft(draft({ baseUrl: 'https://relay.example.com/v1?api-version=2024-06' })),
+    { field: 'baseUrl', reason: 'invalid', rejection: 'query_or_fragment' },
+  );
+  assert.deepEqual(validateAddProviderDraft(draft({ baseUrl: 'https://relay.example.com/v1#x' })), {
+    field: 'baseUrl',
+    reason: 'invalid',
+    rejection: 'query_or_fragment',
+  });
+  assert.deepEqual(validateAddProviderDraft(draft({ baseUrl: 'not-a-url' })), {
+    field: 'baseUrl',
+    reason: 'invalid',
+    rejection: 'malformed',
+  });
+  assert.deepEqual(validateAddProviderDraft(draft({ baseUrl: 'javascript:alert(1)' })), {
+    field: 'baseUrl',
+    reason: 'invalid',
+    rejection: 'scheme',
+  });
+
+  // A provider that ships its own endpoint still exposes the field for local
+  // runtimes, so the rule is not relay-only.
+  assert.deepEqual(
+    validateAddProviderDraft(
+      draft({ providerType: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1?x=1' }),
+    ),
+    { field: 'baseUrl', reason: 'invalid', rejection: 'query_or_fragment' },
+  );
+
+  // Cloudflare's field carries an account id, not a URL — there is nothing to
+  // parse until the template is interpolated after submission.
+  assert.equal(
+    validateAddProviderDraft(
+      draft({
+        providerType: 'cloudflare-workers-ai',
+        cloudflareAccountId: 'abc123',
+        baseUrl: '',
+      }),
+    ),
+    null,
+  );
+
+  // Still accepted: a bare host, a local port, and a percent-encoded `?`.
+  for (const baseUrl of [
+    'https://relay.example.com',
+    'http://127.0.0.1:8080/v1',
+    'https://relay.example.com/a%3Fb',
+  ]) {
+    assert.equal(validateAddProviderDraft(draft({ baseUrl })), null, baseUrl);
+  }
+});
+
 test('a duplicate slug outranks a missing key, so one fix is asked for at a time', () => {
   assert.deepEqual(
     validateAddProviderDraft(

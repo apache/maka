@@ -18,11 +18,13 @@
  */
 
 import {
+  canonicalizeConnectionBaseUrl,
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
   validateSlug,
+  type ConnectionBaseUrlRejection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type { CreateConnectionInput, LlmConnection } from '@maka/core/llm-connections';
@@ -47,6 +49,11 @@ export type AddProviderIssue =
   | { readonly field: 'apiKey'; readonly reason: 'required' }
   | { readonly field: 'accountId'; readonly reason: 'required' }
   | { readonly field: 'baseUrl'; readonly reason: 'required' }
+  | {
+      readonly field: 'baseUrl';
+      readonly reason: 'invalid';
+      readonly rejection: ConnectionBaseUrlRejection;
+    }
   | { readonly field: 'form'; readonly reason: 'experimental' };
 
 export interface AddProviderDraft {
@@ -88,6 +95,16 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
   // missing one — it just has not composed it yet.
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   if (requiresBaseUrl && !draft.baseUrl.trim()) return { field: 'baseUrl', reason: 'required' };
+  // Not gated on `requiresBaseUrl`: a provider that ships a default endpoint
+  // still lets a local runtime's port be edited, and a typo there fails the
+  // same write. Cloudflare is the one exception — its field holds an account
+  // id that gets interpolated into a template, so there is no URL to check yet.
+  if (!isCloudflareWorkersAi && draft.baseUrl.trim()) {
+    const endpoint = canonicalizeConnectionBaseUrl(draft.baseUrl);
+    if (!endpoint.ok) {
+      return { field: 'baseUrl', reason: 'invalid', rejection: endpoint.reason };
+    }
+  }
   if (defaults.status === 'phase3-experimental') return { field: 'form', reason: 'experimental' };
   return null;
 }

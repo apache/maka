@@ -38,6 +38,7 @@ import {
   validateConnectionBaseUrl,
   type ProviderType,
 } from '../llm-connections.js';
+import { normalizeCatalogConnectionBaseUrl } from '../runtime-policy/connection-catalog-codec.js';
 import { isRealConnection } from '../connection-readiness.js';
 import { buildChatModelChoices } from '../chat-model-choice.js';
 
@@ -52,6 +53,75 @@ test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs',
   const exactLimit = `https://example.com/${'a'.repeat(2048 - 'https://example.com/'.length)}`;
   assert.equal(exactLimit.length, 2048);
   assert.equal(validateConnectionBaseUrl(exactLimit), null);
+
+  // The rules the Host had and the client did not, until #3672. A user typing
+  // one of these got a save that failed with "the model connection service is
+  // temporarily unavailable" — a diagnosis that named neither the field nor
+  // the rule, and asked for a retry that could never succeed.
+  assert.match(
+    String(validateConnectionBaseUrl('https://user:pw@gw.example.com/v1')),
+    /must not contain credentials/,
+  );
+  assert.match(
+    String(validateConnectionBaseUrl('https://gw.example.com/v1?api-version=2024-06')),
+    /must not contain a query or fragment/,
+  );
+  assert.match(
+    String(validateConnectionBaseUrl('https://gw.example.com/v1#section')),
+    /must not contain a query or fragment/,
+  );
+  assert.match(
+    String(validateConnectionBaseUrl(`https://example.test/${'界'.repeat(2_000)}`)),
+    /must not exceed 2048 bytes/,
+  );
+  // A percent-encoded `?` is a path segment, not a query. Reading the typed
+  // text rather than the parsed URL is what keeps this accepted, and the Host
+  // reads it the same way.
+  assert.equal(validateConnectionBaseUrl('https://gw.example.com/a%3Fb'), null);
+});
+
+test('the client base URL gate accepts exactly what the Runtime Host codec accepts', () => {
+  // The defect in #3672 was drift between these two, not either one's rules.
+  // Any endpoint the form lets through must survive the write, and any it
+  // refuses must be one the Host would have refused too.
+  const candidates = [
+    'https://gw.example.com',
+    'https://gw.example.com/v1',
+    'https://Gateway.Example.COM:443/V1',
+    'http://127.0.0.1:8080/v1',
+    'http://localhost:11434',
+    'https://gw.example.com/a%3Fb',
+    'https://user:pw@gw.example.com/v1',
+    'https://user@gw.example.com/v1',
+    'https://gw.example.com/v1?api-version=2024-06',
+    'https://gw.example.com/v1#section',
+    'javascript:alert(1)',
+    'file:///etc/passwd',
+    'not-a-url',
+    `https://example.test/${'界'.repeat(2_000)}`,
+    `https://example.com/${'a'.repeat(2_050)}`,
+  ];
+  for (const candidate of candidates) {
+    const client = normalizeConnectionBaseUrl(candidate);
+    let host: { ok: true; value: string | undefined } | { ok: false };
+    try {
+      host = { ok: true, value: normalizeCatalogConnectionBaseUrl(candidate, 'openai-compatible') };
+    } catch {
+      host = { ok: false };
+    }
+    assert.equal(
+      client.ok,
+      host.ok,
+      `client and Host disagree on whether ${candidate} is a usable endpoint`,
+    );
+    if (client.ok && host.ok) {
+      assert.equal(
+        client.value,
+        host.value,
+        `client and Host canonicalize ${candidate} differently`,
+      );
+    }
+  }
 });
 
 test('persisted base URLs retain only meaningful overrides', () => {
@@ -70,9 +140,14 @@ test('persisted base URLs retain only meaningful overrides', () => {
 
 test('base URL normalization preserves clear intent and rejects untrusted runtime types', () => {
   assert.deepEqual(normalizeConnectionBaseUrl('  '), { ok: true, value: '' });
+  // Canonical, not as-typed. This used to assert `https://Example.com:443/V1`
+  // came back untouched, on the reasoning that rewriting it would surprise
+  // whoever typed it that way. The Host canonicalizes on write regardless, so
+  // that form was never what got stored — the client was preserving a value
+  // the system discarded one hop later (#3672).
   assert.deepEqual(normalizeConnectionBaseUrl('  https://Example.com:443/V1  '), {
     ok: true,
-    value: 'https://Example.com:443/V1',
+    value: 'https://example.com/V1',
   });
 
   assert.equal(normalizeConnectionBaseUrl('javascript:alert(1)').ok, false);

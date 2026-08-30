@@ -18,10 +18,14 @@
  */
 
 import {
+  canonicalizeConnectionBaseUrl,
+  CONNECTION_BASE_URL_MAX_BYTES,
+  CONNECTION_BASE_URL_MAX_LENGTH,
   isRelayProviderType,
   PROVIDER_DEFAULTS,
   providerDefaultsOf,
   validateSlug,
+  type ConnectionBaseUrlRejection,
   type ProviderType,
 } from '../llm-connections.js';
 import {
@@ -635,28 +639,15 @@ export function normalizeCatalogConnectionBaseUrl(
   providerType?: ProviderType,
 ): string | undefined {
   if (value === undefined) return undefined;
-  const raw = stringValue(value, 'connection base URL', 2_048);
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw domainError('connection base URL must be a valid URL');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw domainError('connection base URL must use http or https');
-  }
-  if (parsed.username || parsed.password) {
-    throw domainError('connection base URL must not contain credentials');
-  }
-  if (trimmed.includes('?') || trimmed.includes('#')) {
-    throw domainError('connection base URL must not contain a query or fragment');
-  }
-  const canonical = parsed.toString();
-  if (new TextEncoder().encode(canonical).byteLength > 2_048) {
-    throw domainError('connection base URL must not exceed 2048 bytes');
-  }
+  // One rule, three vocabularies: the shape check, the scheme allowlist, the
+  // credential and query/fragment bans, and the canonical form all live in
+  // `canonicalizeConnectionBaseUrl` so the Desktop form and the IPC gate
+  // cannot accept an endpoint this codec would refuse (#3672). Only the
+  // wording is ours — these sentences are wire-facing and pinned by tests.
+  const result = canonicalizeConnectionBaseUrl(value);
+  if (!result.ok) throw domainError(catalogBaseUrlRejectionMessage(result.reason));
+  const canonical = result.value;
+  if (!canonical) return undefined;
   const providerDefault =
     providerType === undefined ? undefined : canonicalProviderBaseUrl(providerType);
   const override = canonical === providerDefault ? undefined : canonical;
@@ -668,6 +659,24 @@ export function normalizeCatalogConnectionBaseUrl(
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
   return override;
+}
+
+function catalogBaseUrlRejectionMessage(reason: ConnectionBaseUrlRejection): string {
+  switch (reason) {
+    case 'not_a_string':
+    case 'too_long':
+      return `connection base URL must be a string no longer than ${CONNECTION_BASE_URL_MAX_LENGTH} characters`;
+    case 'too_many_bytes':
+      return `connection base URL must not exceed ${CONNECTION_BASE_URL_MAX_BYTES} bytes`;
+    case 'malformed':
+      return 'connection base URL must be a valid URL';
+    case 'scheme':
+      return 'connection base URL must use http or https';
+    case 'credentials':
+      return 'connection base URL must not contain credentials';
+    case 'query_or_fragment':
+      return 'connection base URL must not contain a query or fragment';
+  }
 }
 
 export function decodeCanonicalConnectionBaseUrl(

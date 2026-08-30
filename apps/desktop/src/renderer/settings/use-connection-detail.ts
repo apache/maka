@@ -30,7 +30,11 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import {
+  PROVIDER_DEFAULTS,
+  canonicalizeConnectionBaseUrl,
+  connectionEnabledModelIds,
+} from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
@@ -52,6 +56,7 @@ import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-
 import { useKeyedActionGuard } from './use-action-guard';
 import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
 import {
+  connectionEndpointRejectionMessage,
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,
@@ -306,6 +311,21 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
    * the draft intact instead of collapsing as if it had succeeded.
    */
   async function save(field: 'key' | 'endpoint' | 'name'): Promise<boolean> {
+    // Check the endpoint before the write, not after it fails. The Runtime
+    // Host refuses credentials, a query, a fragment, or an oversize URL, and
+    // its English domain error reaches this page unclassified — so the user
+    // used to be told the service was unavailable and to retry, when the
+    // address they had just typed could never be accepted (#3672).
+    if (field === 'endpoint') {
+      const endpoint = canonicalizeConnectionBaseUrl(baseUrl);
+      if (!endpoint.ok) {
+        reportHostError(
+          copy.saveFailed,
+          connectionEndpointRejectionMessage(endpoint.reason, locale),
+        );
+        return false;
+      }
+    }
     const releaseSave = connectionDetailActionGuard.beginExclusive('save');
     if (!releaseSave) return false;
     const lifecycle = connectionDetailLifecycleRef.current;
