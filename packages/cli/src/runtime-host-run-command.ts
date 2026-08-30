@@ -259,6 +259,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
   readonly #maxSteps: number | undefined;
   readonly #unsubscribeTranscriptReplacements: () => void;
+  readonly #unsubscribeSessionFailures: () => void;
+  readonly #unsubscribeStartedTurns: () => void;
   #sessionId: string | undefined;
   #activeTurn: ActiveRuntimeHostTurn | undefined;
   #stopRequested = false;
@@ -278,6 +280,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     reject(error: Error): void;
     unsubscribe(): void;
   }>();
+  #sessionFailure: Error | undefined;
+  readonly #hostStartedTurnDrains = new Set<Promise<void>>();
 
   constructor(
     connection: RuntimeHostConnection,
@@ -302,6 +306,17 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
         this.#acceptGraphTranscript(messages);
       },
     );
+    this.#unsubscribeSessionFailures = driver.subscribeSessionFailures((error) => {
+      this.#sessionFailure = error;
+      this.#cancelGraphTerminalWaiters(error);
+      this.#cancelGoalWaiters(error);
+    });
+    this.#unsubscribeStartedTurns = driver.subscribeStartedTurns((turn) => {
+      const drain = collectEvents(turn.events)
+        .catch(() => undefined)
+        .finally(() => this.#hostStartedTurnDrains.delete(drain));
+      this.#hostStartedTurnDrains.add(drain);
+    });
   }
 
   async createSession(input: CreateSessionRequest): Promise<SessionSummary> {
@@ -369,6 +384,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (this.#graphEnabled) {
       stops.push(this.#stopGraph(sessionId));
     }
+    stops.push(this.#pauseGoal(sessionId));
     const settled = await Promise.allSettled(stops);
     const failure = settled.find(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -426,10 +442,14 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   async waitForGoalCompletion(sessionId: string): Promise<void> {
     await this.#attach(sessionId);
-    const current = (await this.#connection.request('goal.query', { sessionId })).goal;
-    if (!current || TERMINAL_GOAL_STATUSES.has(current.status)) return;
-
-    await this.#waitForGoalTerminal(sessionId, current.goalId);
+    let current = (await this.#connection.request('goal.query', { sessionId })).goal;
+    if (!current) return;
+    if (current.status === 'paused') throw new Error('Goal paused before completion');
+    if (!TERMINAL_GOAL_STATUSES.has(current.status)) {
+      current = await this.#waitForGoalTerminal(sessionId, current.goalId);
+      if (!current) return;
+      if (current.status === 'paused') throw new Error('Goal paused before completion');
+    }
     const messages = await this.#driver.readMessages();
     const turnId = lastGoalTurnId(messages, current.goalId);
     if (!turnId) return;
@@ -444,6 +464,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     this.#closed = true;
     this.#interactions.close();
     this.#unsubscribeTranscriptReplacements();
+    this.#unsubscribeSessionFailures();
+    this.#unsubscribeStartedTurns();
     this.#cancelGraphTerminalWaiters(new Error('Runtime Host run context closed'));
     this.#cancelGoalWaiters(new Error('Runtime Host run context closed'));
     return Promise.resolve();
@@ -501,6 +523,30 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
+  async #pauseGoal(sessionId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const goal = (await this.#connection.request('goal.query', { sessionId })).goal;
+      if (!goal || (goal.status !== 'active' && goal.status !== 'waiting')) return;
+      try {
+        await this.#connection.request('goal.control', {
+          sessionId,
+          goalId: goal.goalId,
+          expectedRevision: goal.revision,
+          action: 'pause',
+        });
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== 'operation_conflict' ||
+          attempt === 2
+        ) {
+          throw error;
+        }
+      }
+    }
+  }
+
   #acceptGraphTranscript(messages: readonly StoredMessage[]): void {
     this.#latestTranscriptReplacement = messages;
     for (const [turnId, waiters] of this.#graphTerminalWaiters) {
@@ -549,6 +595,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
 
   #waitForGoalTerminal(sessionId: string, goalId: string): Promise<GoalProjection | null> {
     if (this.#closed) return Promise.reject(new Error('Runtime Host run context closed'));
+    if (this.#sessionFailure) return Promise.reject(this.#sessionFailure);
     const subscribe = this.#driver.subscribeGoalChanges;
     if (!subscribe) return Promise.reject(new Error('Runtime Host Goal updates are unavailable'));
 
@@ -568,7 +615,13 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
         else resolve(goal ?? null);
       };
       const accept = (goal: GoalProjection | null) => {
-        if (goal?.goalId === goalId && !TERMINAL_GOAL_STATUSES.has(goal.status)) return;
+        if (
+          goal?.goalId === goalId &&
+          goal.status !== 'paused' &&
+          !TERMINAL_GOAL_STATUSES.has(goal.status)
+        ) {
+          return;
+        }
         finish(goal);
       };
 
@@ -615,6 +668,13 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   #cancelGoalWaiters(error: Error): void {
     for (const waiter of [...this.#goalWaiters]) waiter.reject(error);
     this.#goalWaiters.clear();
+  }
+}
+
+async function collectEvents(events: AsyncIterable<SessionEvent>): Promise<void> {
+  for await (const _event of events) {
+    // Host-started Goal/Graph Turns are projected from durable state. Drain
+    // their live queue so a long autonomous run cannot force channel recovery.
   }
 }
 

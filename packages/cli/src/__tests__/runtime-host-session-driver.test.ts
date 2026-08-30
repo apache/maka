@@ -2143,6 +2143,40 @@ describe('Runtime Host Maka Session driver', () => {
     assert.equal(statuses.at(-1), undefined);
   });
 
+  test('publishes active Session failure when bounded recovery is exhausted', async () => {
+    const snapshot = continuitySnapshot({ rootTurn: null });
+    const initial = new FakeSubscription(snapshot, Promise.resolve([]));
+    const ended = Array.from({ length: 8 }, (_, index) => {
+      const subscription = new FakeSubscription(
+        { ...snapshot, projectionRevision: index + 2 },
+        Promise.resolve([]),
+        `subscription-${index + 2}`,
+      );
+      void subscription.close();
+      return subscription;
+    });
+    const connection = new FakeConnection([initial, ...ended], true);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+    const failed = deferred<Error>();
+    driver.subscribeSessionFailures((error) => failed.resolve(error));
+
+    await initial.close();
+    const error = await Promise.race([
+      failed.promise,
+      delay(3_000).then(() => assert.fail('Timed out waiting for Session recovery exhaustion')),
+    ]);
+
+    assert.match(error.message, /recovery/i);
+    assert.equal(connection.openedSubscriptions, 9);
+  });
+
   test('reopens a failed Session channel before starting the next turn', async () => {
     const first = new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve([]));
     const second = new FakeSubscription(
