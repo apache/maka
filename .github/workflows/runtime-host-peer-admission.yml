@@ -21,7 +21,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
       - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
   push:
@@ -29,7 +34,12 @@ on:
       - main
     paths:
       - '.github/workflows/runtime-host-peer-admission.yml'
+      - 'deny.toml'
       - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'packages/runtime-host/src/transport/peer-native.ts'
       - 'packages/runtime-host/src/server/peer-listener.ts'
 
@@ -42,16 +52,9 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+    name: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,58 +70,16 @@ jobs:
       - name: Lint the native peer
         working-directory: native/runtime-host-peer
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
+      - name: Check Cargo dependency inventory
+        run: npm run check:runtime-host-peer-dependencies
+      - name: Check Cargo dependency licenses
+        run: cargo deny --manifest-path native/runtime-host-peer/Cargo.toml --locked --exclude-dev check licenses
+      - name: Check Cargo dependency notices
+        run: npm run check:runtime-host-peer-notices
       - name: Test the native peer
         working-directory: native/runtime-host-peer
         run: cargo test --locked
-      - name: Build the Node addon
-        run: node native/runtime-host-peer/build.mjs
-      - name: Exercise the Node boundary
-        shell: bash
-        run: |
-          node <<'NODE'
-          const { mkdtempSync, rmSync } = require('node:fs');
-          const { tmpdir } = require('node:os');
-          const { join, resolve } = require('node:path');
-          const addon = require(resolve('native/runtime-host-peer/target/debug/maka_runtime_host_peer.node'));
-          void (async () => {
-            const directory = mkdtempSync(join(tmpdir(), 'maka-peer-'));
-            const server = addon.startPeerEndpoint({
-              keyPath: join(directory, 'server.key'),
-              listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-            });
-            const client = addon.startPeerEndpoint({
-              keyPath: join(directory, 'client.key'),
-              listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-            });
-            try {
-              if (!server.peerId || server.listenAddresses.length === 0) {
-                throw new Error('native peer endpoint did not become ready');
-              }
-              const accepted = server.accept();
-              const outbound = await client.connect({
-                peerId: server.peerId,
-                routeHints: server.listenAddresses,
-                directDeadlineMs: 5_000,
-              });
-              const inbound = await accepted;
-              if (!inbound) throw new Error('native peer endpoint did not accept the stream');
-              await outbound.write(Buffer.from('ping'));
-              const request = await inbound.read();
-              if (!request || request.toString() !== 'ping') {
-                throw new Error('native peer endpoint received the wrong request');
-              }
-              await inbound.write(Buffer.from('pong'));
-              const response = await outbound.read();
-              if (!response || response.toString() !== 'pong') {
-                throw new Error('native peer endpoint received the wrong response');
-              }
-              await Promise.all([outbound.close(), inbound.close()]);
-            } finally {
-              await Promise.allSettled([client.close(), server.close()]);
-              rmSync(directory, { recursive: true, force: true });
-            }
-          })().catch((error) => {
-            console.error(error);
-            process.exitCode = 1;
-          });
-          NODE

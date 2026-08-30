@@ -18,7 +18,7 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { QueueEnqueueOutcome, SessionEvent } from '@maka/core/events';
+import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -28,7 +28,12 @@ import type { CreateSessionInput, TurnOrchestration } from '@maka/core/runtime-i
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
-import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
+import type {
+  GoalControlAction,
+  GoalProjection,
+  TurnMessageQueryResult,
+  TurnMessageSubmitResult,
+} from '@maka/runtime-host/protocol';
 
 export interface MakaSessionMoveResult {
   previousCwd: string;
@@ -69,6 +74,14 @@ export interface MakaSideConversationCloseResult extends MakaSessionSwitchResult
   cleanup: 'removed' | 'pending';
 }
 
+export type MakaSideConversationParentStatus =
+  | 'needs_input'
+  | 'needs_approval'
+  | 'failed'
+  | 'interrupted'
+  | 'closed'
+  | 'finished';
+
 export interface MakaPreparedSessionTurn {
   sessionId: string;
   turnId: string;
@@ -90,11 +103,41 @@ export interface MakaPreparePromptOptions {
   maxSteps?: number;
 }
 
-export class SkillInvocationBlockedError extends Error {
-  constructor(readonly skillInvocation: SkillInvocationResult) {
-    super('Explicit Skill invocation could not be resolved');
-    this.name = 'SkillInvocationBlockedError';
-  }
+export interface MakaSubmitMessageOptions {
+  messageId: string;
+  placement: 'current_turn' | 'next_turn';
+  modelText?: string;
+  /** Exact-Turn intent carried to Runtime Host, which decides how to admit it. */
+  turnOrchestration?: TurnOrchestration;
+}
+
+export interface MakaRetractedMessages {
+  text: string;
+  messageIds: readonly string[];
+}
+
+/**
+ * Why Runtime Host refused to open a Turn for an explicit Skill invocation.
+ * `turn.start`'s only remaining caller is headless `maka run`, which reports
+ * this as an ordinary failure, so the reasons belong in the message rather
+ * than in a payload nothing reads.
+ */
+export function skillInvocationBlockedMessage(skillInvocation: SkillInvocationResult): string {
+  const reasons = skillInvocation.failed.map((failure) =>
+    failure.reason === 'too_many_requests'
+      ? `more than ${failure.requestLimit} Skill requests`
+      : `/skill:${failure.request} (${failure.reason.replaceAll('_', ' ')})`,
+  );
+  return reasons.length > 0
+    ? `Could not resolve the Skill this Turn asked for: ${reasons.join(', ')}`
+    : 'Explicit Skill invocation could not be resolved';
+}
+
+export interface MakaUserCommand {
+  readonly commandId: string;
+  readonly result: ShellRunSnapshotResult;
+  /** Returns the newest update that raced the initial card into the transcript. */
+  takeRacedUpdate(): ShellRunUpdate['result'] | undefined;
 }
 
 export interface MakaSessionDriver {
@@ -104,15 +147,25 @@ export interface MakaSessionDriver {
     prompt: string,
     options?: MakaPreparePromptOptions,
   ): Promise<MakaPreparedSessionTurn>;
+  /**
+   * Submits one Message and reports how Runtime Host admitted it. `undefined`
+   * means the outcome could not be proven, so the caller keeps its row.
+   */
+  submitMessage(
+    text: string,
+    options: MakaSubmitMessageOptions,
+  ): Promise<TurnMessageSubmitResult | undefined>;
+  queryCancelledMessages(messageIds: readonly string[]): Promise<TurnMessageQueryResult>;
+  /** Runs one user-owned command. Its input/output never becomes model prompt history. */
+  runUserCommand?(command: string): Promise<MakaUserCommand>;
+  /** Stops every live user-owned command started by this driver. */
+  stopUserCommands?(): Promise<void>;
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
-  steer?(text: string): Promise<QueueEnqueueOutcome>;
-  queueMessage?(text: string): Promise<QueueEnqueueOutcome>;
-  takePendingFollowup?(): Promise<string | null>;
-  retractQueued?(): Promise<string>;
+  retractQueued?(): Promise<MakaRetractedMessages>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
-  setModel(model: string, connectionSlug?: string): Promise<void>;
+  setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setOrchestrationMode?(mode: OrchestrationMode): Promise<void>;
@@ -129,6 +182,11 @@ export interface MakaSessionDriver {
     sideSessionId: string,
     parentSessionId: string,
   ): Promise<MakaSideConversationCloseResult>;
+  observeSideConversationParent?(
+    parentSessionId: string,
+    listener: (status: MakaSideConversationParentStatus | undefined) => void,
+  ): Promise<() => Promise<void>>;
+  discardSideConversation?(sideSessionId: string): Promise<'removed' | 'pending'>;
   subscribeStartedTurns?(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
   subscribeResolvedInteractions?(
     listener: (sessionId: string, requestId: string) => void,
@@ -141,7 +199,12 @@ export interface MakaSessionDriver {
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
-  startNewSession(): void;
+  /**
+   * Prepares a fresh Session: stops every live user-owned command first so
+   * their cards and Ctrl+C affordance never outlive the identity swap.
+   * Rejects without changing Session identity when a stop fails (#3210).
+   */
+  startNewSession(): Promise<void>;
   stop(): Promise<void>;
   getSessionId(): string | null;
   /**

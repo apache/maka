@@ -104,7 +104,18 @@ import {
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
-  type SessionConfiguration,
+  type SharedSessionCatalogProjection,
+  type CollaborationAccessQueryResult,
+  type CollaborationGrantRevokeResult,
+  type CollaborationInvitationPrepareResult,
+  type CollaborationPrincipalRevokeResult,
+  type CollaborationTurnRequestAcknowledgeResult,
+  type CollaborationTurnRequestDecideResult,
+  type CollaborationTurnRequestQueryResult,
+  type SessionCollaborationGrantKind,
+  type SessionTurnAccessRequest,
+  type SessionTurnRequestIntent,
+  type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionTranscriptBootstrap,
@@ -143,7 +154,7 @@ const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
-export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
+export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
@@ -269,6 +280,56 @@ export class DesktopRuntimeHostClient {
     timeoutMs?: number,
   ): Promise<OperationOutput<'access.credential.finalize'>> {
     return this.request('access.credential.finalize', {}, timeoutMs);
+  }
+
+  prepareCollaborationInvitation(
+    sessionId: string,
+    grantKinds: readonly SessionCollaborationGrantKind[],
+  ): Promise<CollaborationInvitationPrepareResult> {
+    return this.request('collaboration.invitation.prepare', { sessionId, grantKinds });
+  }
+
+  queryCollaborationAccess(sessionId?: string): Promise<CollaborationAccessQueryResult> {
+    return this.request(
+      'collaboration.access.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  revokeCollaborationGrant(grantId: string): Promise<CollaborationGrantRevokeResult> {
+    return this.request('collaboration.grant.revoke', { grantId });
+  }
+
+  revokeCollaborationPrincipal(
+    principalId: string,
+  ): Promise<CollaborationPrincipalRevokeResult> {
+    return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  createCollaborationTurnRequest(
+    intent: SessionTurnRequestIntent,
+  ): Promise<SessionTurnAccessRequest> {
+    return this.request('collaboration.turn-request.create', { intent });
+  }
+
+  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request('collaboration.turn-request.query', { sessionId });
+  }
+
+  acknowledgeCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult> {
+    return this.request('collaboration.turn-request.acknowledge', { requestId });
+  }
+
+  decideCollaborationTurnRequest(
+    requestId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<CollaborationTurnRequestDecideResult> {
+    return this.request('collaboration.turn-request.decide', {
+      requestId,
+      decision,
+    });
   }
 
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
@@ -572,6 +633,11 @@ export class DesktopRuntimeHostClient {
     }
   }
 
+  async getSharedSession(): Promise<SharedSessionCatalogProjection | null> {
+    this.#assertOpen();
+    return (await this.request('session.shared.query', {})).session;
+  }
+
   async listProjects(
     includeLocations = true,
   ): Promise<(ProjectCatalogProject | ProjectCatalogProjectDetails)[]> {
@@ -834,6 +900,16 @@ export class DesktopRuntimeHostClient {
     return this.request("workhub.coordination.resolve", {});
   }
 
+  listWorkHubCoordinationCandidates() {
+    return this.request("workhub.coordination.candidates", {});
+  }
+
+  actWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.act">,
+  ): Promise<OperationOutput<"workhub.coordination.act">> {
+    return this.request("workhub.coordination.act", input);
+  }
+
   answerWorkHubCoordination(
     input: OperationInput<"workhub.coordination.answer">,
   ): Promise<OperationOutput<"workhub.coordination.answer">> {
@@ -890,23 +966,7 @@ export class DesktopRuntimeHostClient {
       this.request("session.configuration.update", {
         sessionId,
         expectedRevision: current.revision,
-        configuration: {
-          // An unlocked Session still follows the Host-owned default route.
-          // Once execution or an explicit model change locks it, the resolved
-          // catalog route is the explicit target that must survive this patch.
-          modelTarget: current.connectionLocked
-            ? {
-                kind: "explicit",
-                connectionSlug: current.llmConnectionSlug,
-                model: current.model,
-              }
-            : { kind: "default" },
-          thinkingLevel: current.thinkingLevel ?? null,
-          permissionMode: current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: current.orchestrationMode,
-          ...definedPatch,
-        },
+        patch: definedPatch,
       }),
     );
   }
@@ -1082,6 +1142,18 @@ export class DesktopRuntimeHostClient {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });
+  }
+
+  queryMessages(
+    input: OperationInput<'turn.message.query'>,
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    return this.request('turn.message.query', input);
+  }
+
+  queryMessageExecutions(
+    input: OperationInput<'turn.message.execution.query'>,
+  ): Promise<OperationOutput<'turn.message.execution.query'>> {
+    return this.request('turn.message.execution.query', input);
   }
 
   retractQueueEntry(

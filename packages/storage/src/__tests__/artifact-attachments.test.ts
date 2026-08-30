@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES } from '@maka/core/attachments';
+import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
@@ -121,6 +122,59 @@ describe('artifact attachment authority', () => {
         ok: false,
         reason: 'too_large',
       });
+      const unavailableReader = createAttachmentByteReader({
+        artifactStore: store,
+        sessionId: 'session-1',
+        readImageSnapshotsUnavailable: true,
+      });
+      assert.deepEqual(await unavailableReader(sessionContextRef('ref-1')), {
+        ok: false,
+        reason: 'unavailable',
+      });
+    });
+  });
+
+  test('routes durable context refs through the Session-bound snapshot reader', async () => {
+    await withStore(async (store) => {
+      const reads: string[] = [];
+      const readImageSnapshots: ReadImageSnapshotReader = {
+        async read(ref) {
+          reads.push(ref.refId);
+          if (ref.refId === 'missing') return { ok: false, reason: 'not_found' };
+          return {
+            ok: true,
+            record: {
+              refId: ref.refId,
+              sessionId: ref.sessionId,
+              owner: { kind: 'read_image_snapshot', ownerId: 'owner-1' },
+              blobId: 'a'.repeat(64),
+              sizeBytes: png.byteLength,
+              mediaType: 'image/png',
+              createdAt: 1,
+            },
+            bytes: png,
+          };
+        },
+      };
+      const reader = createAttachmentByteReader({
+        artifactStore: store,
+        sessionId: 'session-1',
+        readImageSnapshots,
+      });
+
+      assert.deepEqual(await reader(sessionContextRef('ref-1')), {
+        ok: true,
+        bytes: png,
+      });
+      assert.deepEqual(await reader(sessionContextRef('missing')), {
+        ok: false,
+        reason: 'not_found',
+      });
+      assert.deepEqual(await reader(sessionContextRef('ref-2', 'other-session')), {
+        ok: false,
+        reason: 'session_mismatch',
+      });
+      assert.deepEqual(reads, ['ref-1', 'missing']);
     });
   });
 
@@ -170,6 +224,10 @@ describe('artifact attachment authority', () => {
 
 function sessionFileRef(relativePath: string, sessionId = 'session-1'): StorageRef {
   return { kind: 'session_file', sessionId, relativePath };
+}
+
+function sessionContextRef(refId: string, sessionId = 'session-1'): StorageRef {
+  return { kind: 'session_context', sessionId, refId };
 }
 
 async function withStore(

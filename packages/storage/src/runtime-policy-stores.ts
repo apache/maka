@@ -238,8 +238,7 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.getConnectionRequestHeaders(connectionId),
       replaceConnectionRequestHeaders: (connectionId, updates) =>
         coordinator.replaceConnectionRequestHeaders(connectionId, updates),
-      resolveExecutionConnection: (connectionSlug) =>
-        coordinator.resolveExecutionConnection(connectionSlug),
+      resolveExecutionConnection: (ref) => coordinator.resolveExecutionConnection(ref),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),
       resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),

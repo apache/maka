@@ -17,20 +17,38 @@
  * under the License.
  */
 
+import type {
+  OperationError,
+  OperationOutcome,
+  WorkHubCoordinationActInput,
+  WorkHubCoordinationActResult,
+  WorkspaceTarget,
+} from '@maka/runtime-host/protocol';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type { ReconnectableReadIpcMain } from './ipc-reconnect-policy.js';
 
 type RuntimeHostWorkHubClient = Pick<
   DesktopRuntimeHostClient,
+  | 'actWorkHubCoordination'
   | 'answerWorkHubCoordination'
+  | 'listWorkHubCoordinationCandidates'
   | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
 >;
+
+type RendererWorkHubActionInput = Omit<WorkHubCoordinationActInput, 'create'>;
+
+export interface RuntimeHostWorkHubIpcOptions {
+  resolveCreateProject(): Promise<WorkspaceTarget>;
+  emitSessionsChanged(reason: 'created' | 'status-change', sessionId: string): void;
+}
 
 /** Projects the Runtime Host WorkHub domain onto renderer IPC. */
 export function registerRuntimeHostWorkHubIpc(
   client: RuntimeHostWorkHubClient,
   ipcMain: Pick<ReconnectableReadIpcMain, 'handle'>,
+  options: RuntimeHostWorkHubIpcOptions,
 ): void {
   ipcMain.handle('workhub:resolveCoordinationSession', () =>
     client.resolveWorkHubCoordinationSession(),
@@ -41,4 +59,64 @@ export function registerRuntimeHostWorkHubIpc(
   ipcMain.handle('workhub:record', (_event, input) =>
     client.recordWorkHubCoordination(input),
   );
+  ipcMain.handle('workhub:candidates', () => client.listWorkHubCoordinationCandidates());
+  ipcMain.handle('workhub:act', async (_event, rawInput: RendererWorkHubActionInput) => {
+    try {
+      const proposal = rawInput?.proposal;
+      const base = {
+        actionId: rawInput?.actionId,
+        userText: rawInput?.userText,
+        proposal,
+      } as Pick<WorkHubCoordinationActInput, 'actionId' | 'userText' | 'proposal'>;
+      let result: WorkHubCoordinationActResult;
+      if (proposal?.disposition === 'create_new') {
+        result = await client.actWorkHubCoordination({
+          ...base,
+          create: {
+            workspace: await options.resolveCreateProject(),
+          },
+        });
+      } else {
+        result = await client.actWorkHubCoordination({
+          ...base,
+          ...(rawInput?.candidateSetId === undefined
+            ? {}
+            : { candidateSetId: rawInput.candidateSetId }),
+        });
+      }
+      if (result.disposition === 'create_new') {
+        options.emitSessionsChanged('created', result.targetSessionId);
+      } else if (result.disposition === 'delegate_existing') {
+        options.emitSessionsChanged('status-change', result.targetSessionId);
+      }
+      return { ok: true, result } satisfies OperationOutcome<'workhub.coordination.act'>;
+    } catch (error) {
+      if (!(error instanceof RuntimeHostOperationError)) throw error;
+      return {
+        ok: false,
+        error: workHubActError(error),
+      } satisfies OperationOutcome<'workhub.coordination.act'>;
+    }
+  });
+}
+
+function workHubActError(
+  error: RuntimeHostOperationError,
+): OperationError<'workhub.coordination.act'> {
+  switch (error.code) {
+    case 'host_not_ready':
+    case 'host_draining':
+    case 'unauthorized':
+    case 'operation_unavailable':
+    case 'not_found':
+    case 'session_archived':
+    case 'session_busy':
+    case 'operation_conflict':
+    case 'persistence_failed':
+    case 'commit_outcome_unknown':
+    case 'internal_failure':
+      return { code: error.code, message: error.message };
+    default:
+      return { code: 'internal_failure', message: 'WorkHub action failed' };
+  }
 }

@@ -31,6 +31,7 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';
 
 export interface DesktopSessionSummary extends SessionSummary {
@@ -39,13 +40,15 @@ export interface DesktopSessionSummary extends SessionSummary {
   readonly runtimeHostId: string;
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
+  /** Present only for Session projections granted to a Guest principal. */
+  readonly shared?: true;
 }
 
 export interface DesktopSessionHost extends DesktopHostRef {
   readonly profileId: string;
   readonly profileName: string;
-  readonly profileKind: 'local' | 'remote';
+  readonly profileKind: RuntimeHostProfileKind;
 }
 
 function projectSessionId(host: DesktopHostRef, sessionId: string): string {
@@ -124,6 +127,11 @@ export function projectDesktopStoredMessage(
       return message.parentSessionId
         ? { ...message, parentSessionId: projectSessionId(host, message.parentSessionId) }
         : message;
+    case 'workhub_coordination':
+      return {
+        ...message,
+        targetSessionId: projectSessionId(host, message.targetSessionId),
+      };
     default:
       return message;
   }
@@ -240,7 +248,9 @@ export function projectDesktopUsageStats(
     ...stats,
     logs: stats.logs.map((log) => ({
       ...log,
-      sessionId: projectSessionId(host, log.sessionId),
+      ...(log.sessionId === undefined
+        ? {}
+        : { sessionId: projectSessionId(host, log.sessionId) }),
     })),
   };
 }

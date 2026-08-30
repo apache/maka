@@ -84,7 +84,12 @@ export function useSessionTrace(
   // whose comment once outran its code — is renderable in a test without the
   // UI package behind it.
   copy: { loadFailed: string; locale: UiLocale },
-): SessionTraceSnapshot & { retry: () => void; loadEarlier: () => void } {
+): SessionTraceSnapshot & {
+  canHideEarlier: boolean;
+  retry: () => void;
+  loadEarlier: () => void;
+  hideEarlier: () => void;
+} {
   const { inspector } = useWorkbarServices();
   const traceRevisionRef = useRef(0);
   const summaryRevisionRef = useRef(0);
@@ -337,6 +342,7 @@ export function useSessionTrace(
     [state.tracePages],
   );
   const nextCursor = state.tracePages?.at(-1)?.nextCursor;
+  const canHideEarlier = Boolean(state.tracePages && state.tracePages.length > 1 && !nextCursor);
 
   const loadEarlier = useCallback(() => {
     if (!sessionId || !nextCursor || state.loading || state.loadingEarlier) return;
@@ -348,11 +354,30 @@ export function useSessionTrace(
     readEarlierPage(sessionId, nextCursor);
   }, [nextCursor, readEarlierPage, sessionId, state.loading, state.loadingEarlier]);
 
+  const hideEarlier = useCallback(() => {
+    if (!sessionId || !canHideEarlier) return;
+    const loaded = traceWindowRef.current;
+    if (loaded?.sessionId !== sessionId || loaded.pages.length < 2) return;
+    const pages = loaded.pages.slice(0, 1);
+    traceWindowRef.current = { sessionId, pages };
+    desiredPageCountRef.current = { sessionId, count: 1 };
+    setState((current) =>
+      current.sessionId === sessionId ? { ...current, tracePages: pages } : current,
+    );
+  }, [canHideEarlier, sessionId]);
+
   if (state.sessionId !== sessionId) {
-    return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId) && active, retry, loadEarlier };
+    return {
+      ...EMPTY_SNAPSHOT,
+      loading: Boolean(sessionId) && active,
+      canHideEarlier: false,
+      retry,
+      loadEarlier,
+      hideEarlier,
+    };
   }
   const { tracePages: _tracePages, ...snapshot } = state;
-  return { ...snapshot, trace, nextCursor, retry, loadEarlier };
+  return { ...snapshot, trace, nextCursor, canHideEarlier, retry, loadEarlier, hideEarlier };
 }
 
 async function readTracePageWindow(

@@ -66,7 +66,15 @@ const MANAGED_DEPENDENCY_PRODUCER_POLICY_V1 = Object.freeze({
   lifecycleScripts: 'disabled' as const,
 });
 const activeAuthorityOwners = new Map<string, object>();
-const WINDOWS_STREAM_QUERY_TIMEOUT_MS = 30_000;
+// Each query spawns a fresh powershell.exe that JIT-compiles the C# helper
+// below via `Add-Type`. On a cold GitHub-hosted Windows runner that first
+// compile (cold csc.exe launch + .NET Framework warmup) has been observed at
+// ~31s, tripping a 30s budget while the following warm queries finish in 2-4s.
+// The bounded, non-recursive walk cannot hang, so the timeout only exists to
+// bound a wedged interpreter; give the cold compile generous headroom rather
+// than misreport it as a wedge. The 45-minute job budget still bounds a true
+// hang.
+const WINDOWS_STREAM_QUERY_TIMEOUT_MS = 120_000;
 const WINDOWS_STREAM_QUERY_MAX_OUTPUT_BYTES = 1024 * 1024;
 const WINDOWS_STREAM_QUERY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'

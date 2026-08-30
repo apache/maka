@@ -23,9 +23,9 @@ export interface ResumeParkToastCopy {
 }
 
 const RESUME_PARK_REASON_COPY: Readonly<Record<string, string>> = {
-  dangling_tool_state: '上次工具执行中断，已安全保留记录，暂不能自动恢复。',
+  dangling_tool_state: '上次工具执行中断，记录已保留，暂时不能自动继续。',
   pending_permission: '上次执行仍在等待权限确认。',
-  background_operation_pending: '仍有后台操作未结束，暂不能安全恢复。',
+  background_operation_pending: '仍有后台操作没有结束，暂时不能继续。',
   workspace_identity_mismatch: '当前工作区与中断时不一致。',
   workspace_identity_missing: '无法确认中断时的工作区。',
   workspace_cwd_mismatch: '当前工作目录与中断时不一致。',
@@ -51,7 +51,7 @@ const RESUME_PARK_REASON_COPY: Readonly<Record<string, string>> = {
   continuation_claim_repair_required: '恢复所有权已保留，但续跑记录需要先修复。',
   continuation_started_indeterminate: '续跑已经开始，但尚未形成可证明的终态。',
   continuation_authority_unavailable: '当前存储不支持安全的续跑所有权。',
-  resume_feature_disabled: '安全恢复功能尚未启用。',
+  resume_feature_disabled: '继续中断任务的功能尚未启用。',
 };
 
 export function resumeParkToastCopy(reasons: readonly string[]): ResumeParkToastCopy {
@@ -69,9 +69,9 @@ export function resumeParkToastCopy(reasons: readonly string[]): ResumeParkToast
   )];
 
   return {
-    title: '暂时无法安全恢复',
+    title: '暂时无法继续这一轮',
     description: descriptions.length > 0
       ? descriptions.join(' ')
-      : '当前任务不满足安全恢复条件。',
+      : '当前任务不满足继续的条件。',
   };
 }

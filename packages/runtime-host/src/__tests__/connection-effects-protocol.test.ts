@@ -30,14 +30,15 @@ const EXPECTED = {
 describe('Runtime Host connection effects protocol', () => {
   test('bounds transient onboarding secrets, models, and save selections', () => {
     const verify = request('connection.onboarding.verify', {
-      providerType: 'openrouter',
-      connectionId: null,
+      target: { kind: 'create', providerType: 'openrouter' },
       apiKey: 'transient-secret',
       baseUrl: null,
     });
     const save = request('connection.onboarding.save', {
-      providerType: 'openai-compatible',
-      connectionId: '00000000-0000-4000-8000-000000000002',
+      target: {
+        kind: 'existing',
+        connectionId: '00000000-0000-4000-8000-000000000002',
+      },
       apiKey: 'transient-secret',
       baseUrl: 'https://relay.example.test/v1',
       enabledModelIds: ['relay/model'],
@@ -57,8 +58,26 @@ describe('Runtime Host connection effects protocol', () => {
       }),
     );
     assert.deepEqual(
-      decodeHostFrame(response('connection.onboarding.save', { kind: 'saved' })),
-      response('connection.onboarding.save', { kind: 'saved' }),
+      decodeHostFrame(
+        response('connection.onboarding.save', {
+          kind: 'saved',
+          connection: {
+            connectionId: '00000000-0000-4000-8000-000000000002',
+            revision: 2,
+            slug: 'relay-2',
+            providerType: 'openai-compatible',
+          },
+        }),
+      ),
+      response('connection.onboarding.save', {
+        kind: 'saved',
+        connection: {
+          connectionId: '00000000-0000-4000-8000-000000000002',
+          revision: 2,
+          slug: 'relay-2',
+          providerType: 'openai-compatible',
+        },
+      }),
     );
     // A save whose discovery basis was concurrently changed is superseded.
     assert.deepEqual(
@@ -68,29 +87,34 @@ describe('Runtime Host connection effects protocol', () => {
       response('connection.onboarding.save', { kind: 'rejected', reason: 'superseded' }),
     );
     assertInvalidRequest('connection.onboarding.save', {
-      providerType: 'openrouter',
-      connectionId: null,
+      target: { kind: 'create', providerType: 'openrouter' },
       apiKey: null,
       baseUrl: null,
       enabledModelIds: [],
     });
-    // The endpoint override goes through the shared catalog normalizer, so a
-    // non-http(s) or credentialed URL never reaches discovery.
+    // Provider-specific URL semantics are resolved after an existing target's
+    // canonical provider is loaded; the wire still bounds the raw value.
     assertInvalidRequest('connection.onboarding.verify', {
-      providerType: 'openai-compatible',
-      connectionId: null,
+      target: { kind: 'create', providerType: 'openai-compatible' },
       apiKey: 'transient-secret',
-      baseUrl: 'ftp://relay.example.test/v1',
+      baseUrl: 'x'.repeat(2_049),
     });
     assertInvalidRequest('connection.onboarding.verify', {
       providerType: 'openai-compatible',
       connectionId: null,
       apiKey: 'transient-secret',
-      baseUrl: 'https://user:pass@relay.example.test/v1',
+      baseUrl: null,
     });
     assertInvalidRequest('connection.onboarding.verify', {
-      providerType: 'openai-compatible',
-      connectionId: 42,
+      target: {
+        kind: 'existing',
+        connectionId: 42,
+      },
+      apiKey: 'transient-secret',
+      baseUrl: null,
+    });
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'openai-compatible', slug: 'surface-owned' },
       apiKey: 'transient-secret',
       baseUrl: null,
     });
@@ -102,6 +126,15 @@ describe('Runtime Host connection effects protocol', () => {
       kind: 'failed',
       errorClass: 'auth',
       secret: 'forbidden',
+    });
+    assertInvalidResponse('connection.onboarding.save', {
+      kind: 'saved',
+      connection: {
+        connectionId: '00000000-0000-4000-8000-000000000002',
+        revision: 0,
+        slug: 'relay-2',
+        providerType: 'openai-compatible',
+      },
     });
   });
 

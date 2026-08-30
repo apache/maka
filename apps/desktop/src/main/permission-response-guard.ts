@@ -52,6 +52,7 @@ export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId:
 
 interface NormalizedSendSessionCommand {
   type: 'send';
+  messageId?: string;
   turnId?: string;
   text: string;
   displayText?: string;
@@ -178,6 +179,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   }
   return {
     type: 'send',
+    ...normalizeOptionalSendMessageId(value.messageId),
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
     ...(displayText !== undefined ? { displayText } : {}),
@@ -192,6 +194,13 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
       value.workspaceFileReferences,
       displayText ?? text,
     ),
+  };
+}
+
+function normalizeOptionalSendMessageId(input: unknown): { messageId?: string } {
+  if (input === undefined) return {};
+  return {
+    messageId: normalizeRequiredString(input, 'Invalid send messageId', MAX_TURN_ID_LENGTH),
   };
 }
 

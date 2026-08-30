@@ -29,6 +29,10 @@ import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/co
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
+  acquireProcessLifetimeOwner,
+  type ProcessLifetimeOwner,
+} from '@maka/storage/process-lifetime-owner';
+import {
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
@@ -37,6 +41,7 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostProfile,
 } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { AgentGraphClientSnapshot, WorkspaceTarget } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
@@ -59,7 +64,7 @@ import {
 import {
   createTuiMcpController,
   type TuiMcpController,
-  type TuiMcpSurface,
+  type TuiMcpManagement,
 } from './tui-mcp-control.js';
 
 export interface RuntimeHostTuiContext {
@@ -67,8 +72,14 @@ export interface RuntimeHostTuiContext {
   readonly driver: ReturnType<typeof createRuntimeHostMakaSessionDriver>;
   readonly cwd: string;
   readonly connectionSlug: string;
+  readonly connectionId?: string;
+  readonly connectionIdentities: readonly {
+    readonly connectionId: string;
+    readonly connectionSlug: string;
+    readonly enabled: boolean;
+  }[];
   readonly connectionName: string;
-  readonly providerType: ConnectionCatalogEntry['providerType'];
+  readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
@@ -87,7 +98,7 @@ export interface RuntimeHostTuiContext {
   };
   readonly recap: SessionRecapGenerator;
   readonly onboarding: ReturnType<typeof createRuntimeHostOnboardingSurface>;
-  readonly mcp?: TuiMcpSurface;
+  readonly mcp?: TuiMcpManagement;
   readonly profile: RuntimeHostProfile;
   close(): Promise<void>;
 }
@@ -112,12 +123,13 @@ export async function createRuntimeHostTuiContext(
   });
   const connection = connected.connection;
   let mcp: TuiMcpController | undefined;
+  let sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined;
   try {
     const catalog = connected.catalog;
     const workspace = await resolveRuntimeHostTuiWorkspace(connection, connected.profile, input);
-    const target = input.resumeSessionId
+    const selectedTarget = input.resumeSessionId
       ? await resolveResumeTarget(connection, catalog, input.resumeSessionId)
-      : resolveTarget(catalog);
+      : exactTuiTarget(resolveTarget(catalog));
     const modelChoices = projectRuntimeHostModelChoices(catalog);
     // Display state, never a create input. Deriving it through the same
     // boundary mapping every other surface uses keeps a prospective Session and
@@ -126,20 +138,30 @@ export async function createRuntimeHostTuiContext(
       executionBoundaryDisplayMode(
         createGenesisExecutionBoundary(await readHostChatDefaultPermissionMode(connection)),
       ) ?? 'ask';
+    const sessionCopyCleanupRoot = join(input.clientDataRoot, 'tui-session-copies');
+    const owner = await acquireProcessLifetimeOwner(
+      join(sessionCopyCleanupRoot, connection.rootId),
+    );
+    sessionCopyCleanupOwner = owner;
     const driverInput: RuntimeHostMakaSessionDriverInput = {
       connection,
       cwd: input.cwd,
-      llmConnectionSlug: target.connection.slug,
-      model: target.model,
+      ...(selectedTarget.connectionId === undefined
+        ? {}
+        : { llmConnectionId: selectedTarget.connectionId }),
+      llmConnectionSlug: selectedTarget.connectionSlug,
+      model: selectedTarget.model,
       prospectivePermissionMode,
-      sessionCopyCleanupRoot: join(input.clientDataRoot, 'tui-session-copies'),
-      executionLocation:
-        connected.profile.kind === 'local' ? { kind: 'client_path' } : { kind: 'host' },
+      sessionCopyCleanupRoot,
+      sessionCopyCleanupOwner: owner,
+      executionLocation: runtimeHostProfileUsesHostWorkspace(connected.profile.kind)
+        ? { kind: 'host' }
+        : { kind: 'client_path' },
       ...(workspace ? { workspace } : {}),
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (connected.profile.kind === 'local') {
+    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
@@ -148,16 +170,28 @@ export async function createRuntimeHostTuiContext(
         connection,
       });
     }
+    const modelContextWindow = selectedTarget.connection?.models.find(
+      (model) => model.id === selectedTarget.model,
+    )?.contextWindow;
     return {
       connection,
       driver,
       cwd: input.cwd,
-      connectionSlug: target.connection.slug,
-      connectionName: target.connection.name,
-      providerType: target.connection.providerType,
-      model: target.model,
-      modelContextWindow: target.connection.models.find((model) => model.id === target.model)
-        ?.contextWindow,
+      connectionSlug: selectedTarget.connectionSlug,
+      ...(selectedTarget.connectionId === undefined
+        ? {}
+        : { connectionId: selectedTarget.connectionId }),
+      connectionIdentities: catalog.connections.map((entry) => ({
+        connectionId: entry.connectionId,
+        connectionSlug: entry.slug,
+        enabled: entry.enabled,
+      })),
+      connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
+      ...(selectedTarget.connection
+        ? { providerType: selectedTarget.connection.providerType }
+        : {}),
+      model: selectedTarget.model,
+      ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,
       prospectivePermissionMode,
       turnActivity: createHostOwnedTurnActivity(),
@@ -166,7 +200,9 @@ export async function createRuntimeHostTuiContext(
           connection,
           driver.getSessionId(),
           workspace ??
-            (connected.profile.kind === 'local' ? { kind: 'host_path', path: cwd } : undefined),
+            (runtimeHostProfileUsesHostWorkspace(connected.profile.kind)
+              ? undefined
+              : { kind: 'host_path', path: cwd }),
           driver.getPermissionMode?.() ?? prospectivePermissionMode,
         ),
       agentGraphHistory: createRuntimeHostAgentGraphHistory(connection),
@@ -174,17 +210,19 @@ export async function createRuntimeHostTuiContext(
       onboarding: createRuntimeHostOnboardingSurface(connection),
       ...(mcp ? { mcp } : {}),
       profile: connected.profile,
-      close: () => closeRuntimeHostTuiContext(mcp, connected.close),
+      close: () => closeRuntimeHostTuiContext(mcp, owner, connected.close),
     };
   } catch (error) {
-    await mcp?.close().catch(() => undefined);
-    await connected.close().catch(() => undefined);
+    await closeRuntimeHostTuiContext(mcp, sessionCopyCleanupOwner, connected.close).catch(
+      () => undefined,
+    );
     throw error;
   }
 }
 
 async function closeRuntimeHostTuiContext(
   mcp: TuiMcpController | undefined,
+  sessionCopyCleanupOwner: ProcessLifetimeOwner | undefined,
   closeConnection: () => Promise<void>,
 ): Promise<void> {
   const errors: unknown[] = [];
@@ -195,6 +233,11 @@ async function closeRuntimeHostTuiContext(
   }
   try {
     await closeConnection();
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await sessionCopyCleanupOwner?.close();
   } catch (error) {
     errors.push(error);
   }
@@ -258,7 +301,7 @@ export async function resolveRuntimeHostTuiWorkspace(
   input: Pick<CreateRuntimeHostTuiContextInput, 'resumeSessionId' | 'projectId'>,
 ): Promise<WorkspaceTarget | undefined> {
   if (input.resumeSessionId) return undefined;
-  if (profile.kind === 'local') {
+  if (!runtimeHostProfileUsesHostWorkspace(profile.kind)) {
     return input.projectId ? { kind: 'project', projectId: input.projectId } : undefined;
   }
   if (!input.projectId) {
@@ -295,16 +338,43 @@ async function resolveResumeTarget(
   connection: RuntimeHostConnection,
   catalog: ConnectionCatalogSnapshot,
   sessionId: string,
-): Promise<{ connection: ConnectionCatalogEntry; model: string }> {
+): Promise<ResolvedTuiTarget> {
   const result = await connection.request('session.catalog.query', { kind: 'get', sessionId });
   const session = result.kind === 'session' ? result.session : null;
   if (session && !('kind' in session)) {
     const sessionConnection = catalog.connections.find(
-      (candidate) => candidate.slug === session.llmConnectionSlug && candidate.enabled,
+      (candidate) =>
+        session.llmConnectionId !== null &&
+        candidate.connectionId === session.llmConnectionId &&
+        candidate.slug === session.llmConnectionSlug,
     );
-    if (sessionConnection) return { connection: sessionConnection, model: session.model };
+    return {
+      ...(session.llmConnectionId === null ? {} : { connectionId: session.llmConnectionId }),
+      connectionSlug: session.llmConnectionSlug,
+      model: session.model,
+      ...(sessionConnection ? { connection: sessionConnection } : {}),
+    };
   }
-  return resolveTarget(catalog);
+  return exactTuiTarget(resolveTarget(catalog));
+}
+
+interface ResolvedTuiTarget {
+  readonly connectionId?: string;
+  readonly connectionSlug: string;
+  readonly model: string;
+  readonly connection?: ConnectionCatalogEntry;
+}
+
+function exactTuiTarget(target: {
+  readonly connection: ConnectionCatalogEntry;
+  readonly model: string;
+}): ResolvedTuiTarget {
+  return {
+    connectionId: target.connection.connectionId,
+    connectionSlug: target.connection.slug,
+    model: target.model,
+    connection: target.connection,
+  };
 }
 
 function createHostOwnedTurnActivity(): MakaPiTuiTurnActivitySurface {

@@ -18,7 +18,7 @@
  */
 
 .plan-mode-panel {
-  width: min(var(--maka-chat-measure), calc(100% - var(--space-8)));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   margin: var(--space-3) auto var(--space-2);
   color: var(--foreground);
 }
@@ -181,7 +181,7 @@
 }
 
 .plan-execution-panel {
-  width: min(var(--maka-chat-measure), calc(100% - var(--space-8)));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   display: grid;
   gap: var(--space-2);
   margin: 0 auto var(--space-2);

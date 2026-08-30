@@ -1182,7 +1182,11 @@ describe('non-serving Runtime Host kernel', () => {
 
   test('does not take over a generation-mismatched Host before it is ready', async () => {
     await withHostPaths(async (paths) => {
+      let markRecoveryEntered!: () => void;
       let releaseRecovery!: () => void;
+      const recoveryEntered = new Promise<void>((resolve) => {
+        markRecoveryEntered = resolve;
+      });
       const recovery = new Promise<void>((resolve) => {
         releaseRecovery = resolve;
       });
@@ -1197,33 +1201,30 @@ describe('non-serving Runtime Host kernel', () => {
         composition: defineInteractiveRuntimeHostComposition(async () => ({
           ...testComposition(),
           async recover() {
+            markRecoveryEntered();
             await recovery;
           },
         })),
       });
 
-      let takeover = await connectRuntimeHost({
-        rootPath: paths.root,
-        protocol: CURRENT_PROTOCOL,
-        generation: 'desktop-new',
-      });
-      while (takeover.kind === 'unavailable' && takeover.reason === 'not_registered') {
-        await sleep(10);
-        takeover = await connectRuntimeHost({
+      try {
+        await withTimeout(recoveryEntered, 5_000, 'Runtime Host did not enter recovery');
+        const takeover = await connectRuntimeHost({
           rootPath: paths.root,
           protocol: CURRENT_PROTOCOL,
           generation: 'desktop-new',
         });
+        assert.equal(takeover.kind, 'upgrade_required');
+        if (takeover.kind === 'upgrade_required') {
+          assert.equal(takeover.restartable, false);
+          assert.equal(takeover.handshake?.state, 'recovering');
+        }
+      } finally {
+        releaseRecovery();
+        const host = await hostPromise;
+        await host.close();
+        await sleep(100);
       }
-      assert.equal(takeover.kind, 'upgrade_required');
-      if (takeover.kind === 'upgrade_required') {
-        assert.equal(takeover.restartable, false);
-        assert.equal(takeover.handshake?.state, 'recovering');
-      }
-      releaseRecovery();
-      const host = await hostPromise;
-      await host.close();
-      await sleep(100);
     });
   });
 
@@ -1420,7 +1421,9 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('startup failure preserves its cause when shutdown reaches the active deadline', async () => {
+  test('startup failure preserves its cause when shutdown reaches the active deadline', {
+    timeout: 10_000,
+  }, async (t) => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
       const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1434,6 +1437,19 @@ describe('non-serving Runtime Host kernel', () => {
         releaseClose = resolve;
       });
       const lifecycle: string[] = [];
+
+      // Fake timers isolate the shutdownGraceMs deadline from real I/O jitter
+      // (registration writes, listener admission, storage-root binding) that
+      // #closeResources() performs before it ever calls composition.close().
+      // On a loaded runner that real work alone can exceed a real 100ms
+      // deadline, aborting shutdown via #assertShutdownCanContinue() before
+      // close() is entered at all — closeEntered then never resolves, and the
+      // test fails with "composition close did not begin" despite the kernel
+      // behaving correctly. Enabling mock timers only after `owner` is already
+      // acquired keeps the earlier real lock-acquisition path (which does poll
+      // via a real setTimeout in @maka/storage's file-update-lock) unaffected.
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+
       const hostTask = RuntimeHostKernel.start({
         owner,
         idleGraceMs: 10_000,
@@ -1460,10 +1476,25 @@ describe('non-serving Runtime Host kernel', () => {
       );
 
       try {
-        await withTimeout(closeEntered, 1_000, 'composition close did not begin');
+        // #3844 widened these budgets to tolerate real wall-clock jitter on a
+        // loaded runner (see #3840). Fake timers remove that jitter, so these
+        // withTimeout wrappers no longer tolerate anything real - they are
+        // deliberate redundancy, kept only so a genuine regression (close()
+        // never entered, or startupFailure never settling after the tick)
+        // fails fast with a named error instead of the generic message from
+        // the outer 10_000ms test timeout.
+        await withTimeout(closeEntered, 5_000, 'composition close did not begin');
+        // Deliberately fire the shutdown deadline now that close() is
+        // confirmed to be genuinely stuck on closeReleased - the exact
+        // scenario this test exists to exercise, reproduced deterministically
+        // instead of raced against wall-clock jitter.
+        t.mock.timers.tick(100);
+        // Let the promise chain settle after the synchronous timer callback
+        // (same pattern as gitoxide-helper-invocation-internal.test.ts).
+        await new Promise<void>((resolve) => setImmediate(resolve));
         const error = await withTimeout(
           startupFailure,
-          1_000,
+          5_000,
           'Runtime Host startup ignored its shutdown deadline',
         );
         assert.ok(error instanceof AggregateError);
@@ -1780,6 +1811,65 @@ describe('non-serving Runtime Host kernel', () => {
       } finally {
         await rm(callerCwd, { recursive: true, force: true });
       }
+    });
+  });
+
+  test('a launcher-owned detached Host exits when its launcher is killed', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/detached-launcher.js', import.meta.url),
+          [paths.root, capability.rootId, 'close-on-launcher-exit'],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      const connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+      assert.equal(connected.registration.pid, launchedPid);
+
+      launcher.kill('SIGKILL');
+      await waitForExit(launcher);
+      await withTimeout(
+        connected.connection.closed,
+        5_000,
+        'launcher-owned detached Host survived its launcher',
+      );
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
+    });
+  });
+
+  test('an authority-supervised Candidate exits if its launch owner is killed', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/owned-authority-launcher.js', import.meta.url),
+          [paths.root, capability.rootId, join(paths.base, 'authority-lease-probe')],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      let connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      if (connected.kind !== 'connected') {
+        connected = await retryConnect(paths, CURRENT_PROTOCOL);
+      }
+      assert.equal(connected.kind, 'connected');
+      if (connected.kind !== 'connected') return;
+      assert.equal(connected.registration.pid, launchedPid);
+
+      launcher.kill('SIGKILL');
+      await waitForExit(launcher);
+      await withTimeout(
+        connected.connection.closed,
+        5_000,
+        'authority-supervised Candidate survived its launch owner',
+      );
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
     });
   });
 
@@ -3235,7 +3325,7 @@ async function startTestRuntimeHostCandidate(
     (await resolveStorageRoot({ path: options.rootPath, kind: 'interactive' })).rootId;
   const result = await startInteractiveRuntimeHostCandidate(
     { ...options, expectedRootId },
-    KERNEL_COMPOSITION,
+    () => KERNEL_COMPOSITION,
   );
   if (result.kind === 'winner') paths.resources.trackCloseable(result.host);
   return result;

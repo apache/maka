@@ -64,10 +64,30 @@ real-machine qualification runner was removed. The five-round process-restart
 runner remains as a non-qualifying soak after its qualification checks moved
 into the canonical Runtime-backed harness.
 
-The canonical operator commands are:
+### Lab fixture setup
 
-```text
+The `real-ax` and `restart-soak` commands require a local checkout of the
+[Codex Computer Use Lab](https://github.com/hqhq1025/codex-computer-use-lab).
+Clone it outside this repository and export its absolute repository root:
+
+```bash
+git clone https://github.com/hqhq1025/codex-computer-use-lab.git ../codex-computer-use-lab
+export MAKA_CU_AX_MODEL_LAB_ROOT="$(cd ../codex-computer-use-lab && pwd)"
+```
+
+The path must contain `test-app/launch.sh`. The launchers invoke that script,
+which builds the fixture when its application bundle is absent.
+
+With the variable exported, run the canonical operator commands:
+
+```bash
 npm run computer-use -- real-ax
 npm run computer-use -- real-ax --scenario restart-recovery
 npm run computer-use -- real-model
+```
+
+The non-qualifying five-round restart soak uses the same fixture checkout:
+
+```bash
+npm run computer-use -- restart-soak
 ```

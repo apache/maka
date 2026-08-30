@@ -34,11 +34,13 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import {
+  aggregateMessageContents,
   messageContentDigest,
   normalizeMessageContent,
   type MessageContent,
@@ -65,6 +67,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -82,6 +85,8 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '../../client/index.js';
+
+const FAKE_CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
@@ -148,6 +153,7 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const session = await stores.sessionStore.create({
         cwd: this.root,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -183,6 +189,7 @@ export class ExecutionFixture {
         turnId: sourceTurnId,
         status: 'created',
         backendKind: 'fake',
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         modelId: 'fake-model',
         cwd: this.root,
@@ -495,6 +502,7 @@ export class ExecutionFixture {
       const child = await stores.sessionStore.createSubagent({
         cwd: this.root,
         name: `${agentName} ${kind}`,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'explore',
@@ -550,6 +558,7 @@ export class ExecutionFixture {
           turnId: `source-turn-${kind}`,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -650,6 +659,7 @@ export class ExecutionFixture {
           turnId: graph.turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -726,6 +736,127 @@ export class ExecutionFixture {
     } finally {
       await stores?.sessionStore.close?.();
       await owner.close();
+    }
+  }
+
+  async seedLegacyRootWithoutSourceTranscripts(
+    runState: 'missing' | 'created' | 'terminal' = 'terminal',
+  ): Promise<{
+    turnId: string;
+    runId: string;
+    sources: readonly [
+      { messageId: string; content: MessageContent; admittedAt: number },
+      { messageId: string; content: MessageContent; admittedAt: number },
+    ];
+  }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for legacy Root setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const turnId = randomUUID();
+      const runId = randomUUID();
+      const admittedAt = Date.now();
+      const followup = {
+        messageId: randomUUID(),
+        content: { text: 'legacy follow-up source' },
+        admittedAt,
+      };
+      const steering = {
+        messageId: randomUUID(),
+        content: { text: 'legacy steering source' },
+        admittedAt,
+      };
+      const normalizedInput = aggregateMessageContents([followup.content, steering.content]);
+      const admission = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'external_message',
+          inputDigest: messageContentDigest(normalizedInput),
+        },
+        previousRootTurnId: null,
+        normalizedInput,
+        sourceMessages: [
+          {
+            messageId: followup.messageId,
+            content: followup.content,
+            submittedContentDigest: messageContentDigest(followup.content),
+            placement: 'next_turn',
+            disposition: 'followup',
+          },
+          {
+            messageId: steering.messageId,
+            content: steering.content,
+            submittedContentDigest: messageContentDigest(steering.content),
+            placement: 'current_turn',
+            disposition: 'steering',
+          },
+        ],
+        admittedAt,
+      });
+      assert.equal(admission.kind, 'admitted');
+      const run: AgentRunHeader = {
+        runId,
+        invocationId: runId,
+        sessionId: this.sessionId,
+        turnId,
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+        cwd: this.root,
+        permissionMode: 'ask',
+        createdAt: admittedAt,
+        updatedAt: admittedAt,
+      };
+      if (runState !== 'missing') {
+        await stores.agentRunStore.createRun(run, { durable: true });
+      }
+      if (runState === 'terminal') {
+        const terminalAt = admittedAt + 1;
+        const terminal = buildRecoveredTerminalRuntimeEvent({
+          id: randomUUID(),
+          run,
+          status: 'failed',
+          ts: terminalAt,
+          failureClass: 'legacy_terminal',
+          recoveryReason: 'test_legacy_terminal_root',
+        });
+        await commitTerminalRunWithRuntimeFact({
+          runStore: stores.agentRunStore,
+          runtimeEventStore: stores.runtimeEventStore,
+          newId: randomUUID,
+          sessionId: this.sessionId,
+          runId,
+          turnId,
+          status: 'failed',
+          ts: terminalAt,
+          terminalEvent: terminal,
+          failureClass: 'legacy_terminal',
+        });
+      }
+      return { turnId, runId, sources: [followup, steering] };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+  }
+
+  deleteRootSourceProof(messageId: string): void {
+    const database = new DatabaseSync(join(this.root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const result = database
+        .prepare(
+          'DELETE FROM core_root_source_message_proofs WHERE session_id = ? AND message_id = ?',
+        )
+        .run(this.sessionId, messageId);
+      assert.equal(result.changes, 1);
+    } finally {
+      database.close();
     }
   }
 
@@ -879,6 +1010,7 @@ export class ExecutionFixture {
           turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -934,9 +1066,10 @@ export class ExecutionFixture {
 
   async stopHost(
     host: ExecutionHostHandle,
+    shutdownMessage: { type: 'shutdown' | 'shutdown_question_admission' } = { type: 'shutdown' },
   ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     if (host.child.exitCode === null && host.child.signalCode === null) {
-      host.child.send({ type: 'shutdown' });
+      host.child.send(shutdownMessage);
     }
     const exit = await withTimeout(
       waitForExitResult(host.child),
@@ -994,6 +1127,32 @@ export class ExecutionFixture {
         terminalEvents: runtimeEvents.filter(isTerminalRuntimeEvent),
         classification: classifyTerminalRuntimeLedger(run, runtimeEvents),
       };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readPendingInteractionCount(): Promise<number> {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.interactionStore.listSessionPending(this.sessionId)).length;
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readTurnRuns(turnId: string) {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.agentRunStore.listSessionRuns(this.sessionId)).filter(
+        (candidate) => candidate.turnId === turnId,
+      );
     } finally {
       await stores?.sessionStore.close?.();
       await reader.close();
@@ -1110,6 +1269,7 @@ export async function withExecutionRoot(
     stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

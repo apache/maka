@@ -26,6 +26,7 @@ export interface ChatReasoningProps extends HTMLAttributes<HTMLDivElement> {
   children: ReactNode;
   label?: string;
   duration?: string;
+  previewText?: string;
   isStreaming?: boolean;
   isExpanded?: boolean;
   defaultIsExpanded?: boolean;
@@ -47,6 +48,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
     children,
     label = 'Thinking',
     duration,
+    previewText: explicitPreviewText,
     isStreaming = false,
     isExpanded: controlledExpanded,
     defaultIsExpanded = false,
@@ -63,7 +65,7 @@ export function ChatReasoning(props: ChatReasoningProps) {
     if (!isControlled) setInternalExpanded(next);
     onExpandedChange?.(next);
   }, [isExpanded, isControlled, onExpandedChange]);
-  const previewText = typeof children === 'string' ? children : null;
+  const previewText = explicitPreviewText ?? (typeof children === 'string' ? children : null);
 
   return (
     <div

@@ -20,8 +20,7 @@
 import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import type { AppSettings } from '@maka/core/settings';
+import { appIconForTheme, type AppSettings } from '@maka/core/settings';
 import { readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
@@ -29,8 +28,9 @@ import { BrowserViewController } from './browser/controller.js';
 import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
+import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
-import { isThemePreference, toNativeThemeSource } from './theme-source.js';
+import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
 import {
@@ -256,9 +256,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // renderer to resources that teardown has already started closing.
     if (signal.aborted) return;
     const themePref = e2eFixture?.theme ?? persistedTheme;
-    const isDark =
-      themePref === 'dark' ||
-      (themePref === 'auto' && nativeTheme.shouldUseDarkColors);
+    const isDark = isDarkAppearance(themePref, nativeTheme.shouldUseDarkColors);
     const initialBg = isDark ? '#1c1d21' : '#ffffff';
     // Astro-Han review (#493): sync nativeTheme here too, not only via the
     // renderer's later setThemeSource() IPC call -- otherwise the vibrancy
@@ -267,15 +265,10 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // disagrees with the persisted in-app preference.
     nativeTheme.themeSource = toNativeThemeSource(themePref);
 
-    const rendererEntryPath = join(
+    const rendererEntry = resolveMainRendererEntry(
       import.meta.dirname,
-      '..',
-      '..',
-      'dist-renderer',
-      'index.html',
+      process.env.VITE_DEV_SERVER_URL,
     );
-    const rendererEntryUrl = process.env.VITE_DEV_SERVER_URL
-      ?? pathToFileURL(rendererEntryPath).href;
 
     // Re-arm the reveal gate for this window's lifecycle (macOS keeps the app
     // alive after close-all; the next createWindow starts hidden again and a
@@ -296,7 +289,13 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       // Windows and Linux draw this icon per window, so a window opened after
       // the user switched icons must be born with the chosen one — waiting for
       // the client-settings effect to catch up would show the default first.
-      icon: readableAppIconPath(persistedAppearance?.appIcon),
+      // Resolved for this window's appearance, not just the stored choice:
+      // Windows and Linux draw the icon per window, so a window opened while
+      // dark is in effect must be born with the dark tile — otherwise it keeps
+      // the light one until something else triggers a re-apply.
+      icon: readableAppIconPath(
+        appIconForTheme(persistedAppearance ?? {}, isDark),
+      ),
       // PR-WINDOW-TITLEBAR-0: hide the native title bar so the renderer
       // chrome can extend to the top edge on every platform. macOS keeps
       // `hiddenInset` + traffic-light buttons (top-left); Windows uses
@@ -390,7 +389,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
           });
       },
     });
-    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntryUrl);
+    installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
     // links to docs / GitHub / provider sign-up pages. Without these guards
@@ -492,11 +491,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       void writeSavedBounds(workspaceRoot, final);
     });
 
-    if (process.env.VITE_DEV_SERVER_URL) {
-      await mainWindow.loadURL(rendererEntryUrl);
-    } else {
-      await mainWindow.loadFile(rendererEntryPath);
-    }
+    await loadMainRenderer(mainWindow, rendererEntry);
 
     // PR-SHOW-AFTER-FIRST-COMMIT: reveal fallback. Start this budget only once
     // the renderer document has loaded. Starting it before loadURL/loadFile

@@ -24,7 +24,7 @@ import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  connectRemoteRuntimeHostProfile,
+  connectRuntimeHostProfile,
   createClientRuntimeHostProfileCatalog,
   RuntimeHostRemoteCompatibilityError,
   RuntimeHostStartupError,
@@ -38,9 +38,11 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
   type HostIncompatible,
+  type HostRegistration,
 } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
 } from '../runtime-host-cli-context.js';
@@ -93,6 +95,31 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
   assert.ok(clientInstanceId);
   await context.close();
+  assert.equal(closes, 1);
+});
+
+test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
+  let closes = 0;
+  await assert.rejects(
+    connectRuntimeHostCli(
+      { rootPath: '/runtime-host-root' },
+      {
+        connectOrSpawn: async () => ({
+          kind: 'connected',
+          registration: hostRegistration({
+            generation: `npm-global-handoff:${'a'.repeat(64)}`,
+          }),
+          connection: {
+            close: async () => {
+              closes += 1;
+            },
+          } as RuntimeHostConnection,
+        }),
+        readDeploymentRecord: async () => undefined,
+      },
+    ),
+    /RUNTIME_HOST_RECOVERY_REQUIRED/u,
+  );
   assert.equal(closes, 1);
 });
 
@@ -181,6 +208,11 @@ test('Runtime Host conflict waits only after an explicit wait answer', () => {
   assert.equal(shouldRetryRuntimeHostConflict('c'), false);
   assert.equal(shouldRetryRuntimeHostConflict('cancel'), false);
   assert.equal(shouldRetryRuntimeHostConflict('unexpected'), false);
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision(' restart ', true), 'restart');
+  assert.equal(resolveRuntimeHostCliConflictDecision('r', false), 'cancel');
+  assert.equal(resolveRuntimeHostCliConflictDecision('w', true), 'wait');
+  assert.equal(resolveRuntimeHostCliConflictDecision('', true), 'cancel');
 });
 
 test('CLI reports an actionable stored-data startup failure', async () => {
@@ -205,7 +237,7 @@ test('CLI reports an actionable stored-data startup failure', async () => {
 
 test('remote CLI profiles pin root identity and resolve credential outside the profile', async () => {
   const rootId = 'a'.repeat(64);
-  let remoteInput: Parameters<typeof connectRemoteRuntimeHostProfile>[0] | undefined;
+  let remoteInput: Parameters<typeof connectRuntimeHostProfile>[0] | undefined;
   const connection = {
     rootId,
     hostEpoch: 'host-remote',
@@ -225,13 +257,13 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
       },
-      connectRemoteProfile: async (input) => {
+      connectProfile: async (input) => {
         remoteInput = input;
         return connection;
       },
       profileCatalog: {
         read: async () => ({
-          schemaVersion: 1,
+          schemaVersion: 3,
           profiles: [
             {
               id: 'office',
@@ -321,7 +353,7 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
       connectOrSpawn: async () => {
         throw new Error('remote profile must not use local discovery');
       },
-      connectRemoteProfile: async (input) => {
+      connectProfile: async (input) => {
         credential = input.credential;
         return connection;
       },
@@ -372,7 +404,7 @@ test('remote CLI enables SSH prompts only for an explicitly interactive TTY', as
         ...(interactiveSsh === undefined ? {} : { interactiveSsh }),
       },
       {
-        connectRemoteProfile: async (input) => {
+        connectProfile: async (input) => {
           assert.ok(input.sshInteraction);
           sshInteractions.push(input.sshInteraction);
           return {
@@ -439,8 +471,8 @@ test('remote profiles preserve shared compatibility errors', async () => {
         connectRuntimeHostCli(
           { rootPath: '/unused-local-root', profileId: profile.id },
           {
-            connectRemoteProfile: (input) =>
-              connectRemoteRuntimeHostProfile(input, {
+            connectProfile: (input) =>
+              connectRuntimeHostProfile(input, {
                 connect: async () => ({ kind: 'incompatible', handshake }),
               }),
             profileCatalog: singleRemoteProfileCatalog(profile),
@@ -476,12 +508,7 @@ test('remote profiles preserve shared compatibility errors', async () => {
   }
 });
 
-function hostRegistration(
-  overrides: Partial<{
-    compatibilityEpoch: number;
-    lifecycleMode: 'ephemeral' | 'service';
-  }> = {},
-) {
+function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegistration {
   return {
     kind: 'maka-runtime-host' as const,
     schemaVersion: RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION,
@@ -518,7 +545,7 @@ function incompatibleRemoteHandshake(overrides: Partial<HostIncompatible> = {}):
 
 function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeHostProfileCatalog {
   return {
-    read: async () => ({ schemaVersion: 1, profiles: [profile] }),
+    read: async () => ({ schemaVersion: 3, profiles: [profile] }),
     resolve: async (profileId) => {
       assert.equal(profileId, profile.id);
       return { profile, credential: 'opaque-token' };

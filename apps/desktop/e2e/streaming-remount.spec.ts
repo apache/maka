@@ -23,7 +23,14 @@ import {
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import type { Locator } from '@playwright/test';
-import { expect, COMPOSER_INPUT, test } from './fixtures';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
+
+interface SessionObservationLatchWindow extends Window {
+  /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
+  makaE2eLatch?: {
+    rejectNextSessionObservation(message: string): void;
+  };
+}
 
 function sessionRow(sidebar: Locator, sessionId: string): Locator {
   return sidebar.locator(`[data-session-id=${JSON.stringify(sessionId)}]`);
@@ -35,6 +42,28 @@ async function steerActiveTurn(composer: Locator, text: string): Promise<void> {
   await composer.fill(text);
   await composer.press('Shift+Enter');
 }
+
+test('a failed first observation seed reconnects to the live Turn', async ({ window: page }) => {
+  const latchInstalled = await page.evaluate(() => {
+    const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
+    if (!latch) return false;
+    latch.rejectNextSessionObservation('forced first observation failure');
+    return true;
+  });
+  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await composer.press('Enter');
+
+  await expect(page.locator('.maka-bubble-streaming')).toContainText(
+    'Fake backend waiting',
+  );
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+});
 
 test('remounting a live surface leaves accumulated output settled', async ({
   window: page,
@@ -51,14 +80,13 @@ test('remounting a live surface leaves accumulated output settled', async ({
   await expect(liveBubble).toContainText(accumulatedOutput);
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await ensureSidebarExpanded(page);
   await sidebar.getByRole('button', { name: '扩展' }).click();
   await expect(page.locator('[data-module="skills"]')).toBeVisible();
   await expect(liveBubble).toHaveCount(0);
-  // Back the way the product actually offers: the rail is collapsed here, so
-  // the task rows are not rendered and there is no 任务 row to press (#2984).
-  // Widening it is the titlebar's job, and the task left behind is still
-  // `activeId`, so it comes back marked and one click away.
-  await page.getByRole('button', { name: '展开侧边栏' }).click();
+  // Return through the task row the product exposes. Module navigation can
+  // preserve either sidebar state, so restore it only when it is collapsed.
+  await ensureSidebarExpanded(page);
   const currentTaskRow = sidebar.locator(
     '[data-maka-contract="session-row"] [aria-current="page"]',
   );
@@ -131,7 +159,7 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
   await composer.press('Enter');
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
-    'Fake backend waiting for the test to stop the Turn.',
+    'Fake backend waiting',
   );
   const originalSessionId = await sidebar
     .locator('[data-session-id]:has([aria-current="page"])')
@@ -231,11 +259,25 @@ test('returning to a live conversation settles output accumulated while away', a
         unsubscribe();
         resolve();
       });
-      void window.maka.sessions.steer(sessionId, steering).catch((error) => {
-        window.clearTimeout(timeout);
-        unsubscribe();
-        reject(error);
-      });
+      // Runtime Host decides what this Message becomes; the test only needs it
+      // to reach the running Turn, so anything short of an accepted admission
+      // fails closed rather than waiting out the timeout.
+      void window.maka.sessions
+        .submitMessage(sessionId, 'current_turn', {
+          messageId: crypto.randomUUID(),
+          text: steering,
+        })
+        .then((result) => {
+          if (result.ok) return;
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(new Error(`Runtime Host refused the steering Message: ${result.reason}`));
+        })
+        .catch((error) => {
+          window.clearTimeout(timeout);
+          unsubscribe();
+          reject(error);
+        });
     }),
     { sessionId: originalSessionId!, steering: backgroundSteering },
   );

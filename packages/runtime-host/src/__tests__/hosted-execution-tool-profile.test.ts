@@ -32,7 +32,12 @@ test('hosted execution tool profiles are durable Session creation inputs', () =>
     executionId: '00000000-0000-4000-8000-000000000001',
     session: {
       workspace: { kind: 'host_path', path: '/workspace' },
-      modelTarget: { kind: 'explicit', connectionSlug: 'provider', model: 'model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'provider',
+        model: 'model',
+      },
       toolProfile: 'headless-coding-v1',
     },
     content: { text: 'solve' },

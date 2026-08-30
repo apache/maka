@@ -28,9 +28,9 @@ import {
   showSessionWorkspaceUnavailableToast,
 } from './session-workspace-errors.js';
 import { acquireSessionCopyAttempt } from './session-copy-attempt.js';
+import type { MessageListUpdater } from './session-workspace-actions.js';
 
 type RefBox<T> = { current: T };
-type MessageListUpdater = (next: StoredMessage[] | ((current: StoredMessage[]) => StoredMessage[])) => void;
 
 type ToastApi = {
   info(title: string, description?: string): void;

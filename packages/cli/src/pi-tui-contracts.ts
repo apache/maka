@@ -20,9 +20,17 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
+import type {
+  ConnectionEffectFailureClass,
+  ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
+  ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+} from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
+  /** Immutable account identity; required for a cross-connection selection. */
+  connectionId?: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;
@@ -50,37 +58,55 @@ export interface OnboardableProvider {
   fallbackModels: readonly string[];
 }
 
-export interface OnboardingProviderEntry extends OnboardableProvider {
-  hasConnection: boolean;
-  /** The existing connection's identity, so saving edits it in place. */
-  connectionId?: string;
-  enabledModelIds: readonly string[];
-}
+export type OnboardingProviderEntry = OnboardableProvider &
+  (
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'create' }>;
+        enabledModelIds: readonly string[];
+      }
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'existing' }>;
+        connectionSlug: string;
+        enabledModelIds: readonly string[];
+      }
+  );
 
 export interface OnboardingVerifyInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
 }
 
+export type OnboardingVerifyRejectionReason = Extract<
+  RuntimeHostOnboardingVerifyResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingSaveRejectionReason = Extract<
+  RuntimeHostOnboardingSaveResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingRejectionReason =
+  | OnboardingVerifyRejectionReason
+  | OnboardingSaveRejectionReason;
+
+export type OnboardingFailureClass = ConnectionEffectFailureClass;
+
+export type OnboardingFailure =
+  | { kind: 'rejected'; reason: OnboardingRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
+
 export type OnboardingVerifyResult =
   | { kind: 'ok'; models: ModelInfo[] }
-  | {
-      kind: 'error';
-      text: string;
-      /** The wizard's provider snapshot is outdated (e.g. the targeted
-       *  connection is gone) — retyping the key cannot fix this, so the
-       *  runner shows the text without its retype-the-key framing. */
-      stale?: boolean;
-    };
+  | { kind: 'rejected'; reason: OnboardingVerifyRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
 
 export interface OnboardingSaveInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
@@ -88,9 +114,22 @@ export interface OnboardingSaveInput {
   models: readonly ModelInfo[];
 }
 
+export interface OnboardingSavedConnection {
+  connectionId: string;
+  revision: number;
+  slug: string;
+  providerType: ProviderType;
+}
+
 export type OnboardingSaveResult =
-  | { kind: 'ok'; modelChoices: ModelChoice[] }
-  | { kind: 'error'; text: string };
+  | {
+      kind: 'ok';
+      connection: OnboardingSavedConnection;
+      refresh:
+        | { kind: 'ok'; modelChoices: ModelChoice[] }
+        | { kind: 'failed'; reason: 'catalog_unavailable' };
+    }
+  | OnboardingFailure;
 
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;

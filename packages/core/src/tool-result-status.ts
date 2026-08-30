@@ -73,8 +73,8 @@ export function isCancelledToolResultContent(content: ToolResultContent | undefi
  *
  * `isError` is the call-level contract: a successful observation of a
  * cancelled background task (`StopBackgroundTask` → shell_run cancelled,
- * isError:false) is `completed`, not interrupted. Only failed cancels and
- * aborted explore agents map to `interrupted`.
+ * isError:false) is `completed`, not interrupted. Failed cancels map to
+ * `interrupted`.
  */
 export function toolResultActivityStatus(
   isError: boolean,
@@ -83,8 +83,5 @@ export function toolResultActivityStatus(
   if (!isError) return 'completed';
   // Failed cancel (user stop / kill) — not a tool failure banner.
   if (isCancelledToolResultContent(content)) return 'interrupted';
-  if (content?.kind === 'explore_agent' && content.reason === 'aborted') {
-    return 'interrupted';
-  }
   return 'errored';
 }

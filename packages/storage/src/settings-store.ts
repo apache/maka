@@ -19,27 +19,33 @@
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type {
-  AppSettings,
-  SettingsTestResult,
-  UpdateAppSettingsInput,
-  UsageRange,
-  UsageStats,
-} from '@maka/core/settings';
+import type { AppSettings, SettingsTestResult, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
-import { readUsageStats } from './usage-stats-store.js';
+
+/**
+ * A conditional write's patch, either fixed or derived from the state the
+ * predicate just accepted.
+ *
+ * The function form exists so a caller that has to touch several fields, but
+ * only the ones that actually matched, can still do it in ONE queued write.
+ * Splitting that into two conditional updates makes a failure of the second
+ * leave the first committed — a partial write that the caller then reports as
+ * an error, with the persisted state and the live state disagreeing.
+ */
+export type ConditionalSettingsPatch =
+  | UpdateAppSettingsInput
+  | ((current: AppSettings) => UpdateAppSettingsInput);
 
 export interface SettingsStore {
   get(): Promise<AppSettings>;
   update(patch: UpdateAppSettingsInput): Promise<AppSettings>;
   updateIf(
     predicate: (current: AppSettings) => boolean,
-    patch: UpdateAppSettingsInput,
+    patch: ConditionalSettingsPatch,
   ): Promise<{ applied: boolean; settings: AppSettings }>;
   testNetworkProxy(): Promise<SettingsTestResult>;
-  usageStats(range?: UsageRange): Promise<UsageStats>;
   /**
    * PR110b: upsert a single onboarding milestone. Caller passes the
    * desired terminal status; the store stamps `Date.now()` so the
@@ -108,7 +114,7 @@ class FileSettingsStore implements SettingsStore {
 
   async updateIf(
     predicate: (current: AppSettings) => boolean,
-    patch: UpdateAppSettingsInput,
+    patch: ConditionalSettingsPatch,
   ): Promise<{ applied: boolean; settings: AppSettings }> {
     let result: { applied: boolean; settings: AppSettings } | undefined;
     await this.withQueue(async () => {
@@ -117,7 +123,7 @@ class FileSettingsStore implements SettingsStore {
         result = { applied: false, settings: current };
         return;
       }
-      const next = mergeSettings(current, patch);
+      const next = mergeSettings(current, typeof patch === 'function' ? patch(current) : patch);
       await this.write(next);
       result = { applied: true, settings: next };
     });
@@ -198,10 +204,6 @@ class FileSettingsStore implements SettingsStore {
       latencyMs: Date.now() - started,
       details: { bypassList: proxy.bypassList, autoBypassDomains: proxy.autoBypassDomains },
     };
-  }
-
-  async usageStats(range: UsageRange = '24h'): Promise<UsageStats> {
-    return readUsageStats(this.workspaceRoot, range);
   }
 
   private async write(settings: AppSettings): Promise<void> {

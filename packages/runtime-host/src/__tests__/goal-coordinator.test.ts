@@ -46,6 +46,7 @@ test('one Host Goal is shared across clients with CAS control and crash-clear re
     const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -243,6 +244,7 @@ test('session retirement forgets a terminal Goal without recreating deleted auth
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -325,6 +327,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -360,6 +363,7 @@ test('restart settles the durable current Goal execution through Hosted Executio
       turnId: execution.turnId,
       status: 'created',
       backendKind: 'fake',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       modelId: 'fake-model',
       cwd: capability.canonicalPath,
@@ -441,6 +445,7 @@ test('restart replaces a stale current execution with the current durable Goal i
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -559,6 +564,7 @@ test('goal.arm creates one Goal per Session and refuses a second while it is unf
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -673,6 +679,7 @@ test('a Goal armed but never carried by a Turn does not start itself after a res
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -774,6 +781,7 @@ test('resuming an armed Goal drives it, and a restart puts that drive back', asy
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -919,6 +927,7 @@ test('an arm admitted before the drain creates no Goal after it', async () => {
   try {
     const session = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',

@@ -120,6 +120,7 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    isDeepStrictEqual(left.authorization, right.authorization) &&
     left.previousRootTurnId === right.previousRootTurnId &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
@@ -153,6 +154,9 @@ function snapshotAdmission(admission: RootTurnAdmission): RootTurnAdmission {
     execution: Object.freeze({ ...admission.execution }),
     ...(admission.turnOrchestration
       ? { turnOrchestration: Object.freeze({ ...admission.turnOrchestration }) }
+      : {}),
+    ...(admission.authorization
+      ? { authorization: Object.freeze({ ...admission.authorization }) }
       : {}),
     normalizedInput:
       admission.normalizedInput === null ? null : snapshotMessageContent(admission.normalizedInput),

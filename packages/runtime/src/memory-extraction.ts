@@ -78,7 +78,10 @@ export type MemoryExtractionGate =
 /** Frozen extraction request. Compaction may defer durable-prefix materialization to its lane. */
 export interface MemoryExtractionSourceSnapshot {
   readonly trigger: MemoryExtractionTrigger;
-  readonly sourceHeader: Pick<SessionHeader, 'llmConnectionSlug' | 'model' | 'thinkingLevel'>;
+  readonly sourceHeader: Pick<
+    SessionHeader,
+    'llmConnectionId' | 'llmConnectionSlug' | 'model' | 'thinkingLevel'
+  >;
   readonly sourceSystemPrompt?: string;
   readonly sourceMessages: readonly ModelMessage[];
   /** Compaction-only recipe: rebuild messages from its durable checkpoint boundary. */

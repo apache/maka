@@ -430,6 +430,9 @@ function transcriptRunHeader(input: {
     turnId: input.turn.turnId,
     status,
     backendKind: input.header.backend,
+    ...(input.header.llmConnectionId === undefined
+      ? {}
+      : { llmConnectionId: input.header.llmConnectionId }),
     llmConnectionSlug: input.header.llmConnectionSlug,
     modelId: input.header.model,
     cwd: input.header.cwd,

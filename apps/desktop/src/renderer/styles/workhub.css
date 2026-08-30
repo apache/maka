@@ -42,8 +42,8 @@
 .workhub-header,
 .workhub-empty,
 .workhub-turns {
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
+  width: min(var(--maka-reading-measure), 100%);
+  max-width: var(--maka-reading-measure);
   margin-inline: auto;
 }
 
@@ -123,12 +123,6 @@
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.workhub-assistant-bubble.maka-chat-message-bubble-assistant {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: none;
 }
 
 .workhub-assistant-bubble > small,
@@ -218,54 +212,18 @@
   color: var(--color-text-secondary, var(--muted-foreground));
 }
 
-.workhub-waiting,
-.workhub-correction {
+.workhub-waiting {
   margin-top: 12px;
 }
 
-.workhub-waiting small,
-.workhub-correction-note,
-.workhub-correction summary {
+.workhub-waiting small {
   color: var(--color-text-secondary, var(--muted-foreground));
   font-size: var(--font-size-body-xs, 12px);
 }
 
-.workhub-correction summary {
-  width: max-content;
-  cursor: pointer;
-}
-
-.workhub-correction > div {
-  display: flex;
-  flex-direction: column;
-  margin-top: 8px;
-  border-top: 1px solid var(--color-border-subtle, var(--border));
-}
-
-.workhub-correction button {
-  display: flex;
-  justify-content: space-between;
-  padding: 8px 0;
-  gap: 16px;
-  border: 0;
-  border-bottom: 1px solid var(--color-border-subtle, var(--border));
-  background: transparent;
-  color: var(--color-text-primary, var(--foreground));
-  font: inherit;
-  text-align: left;
-}
-
-.workhub-correction button:hover {
-  color: var(--color-accent, var(--accent));
-}
-
-.workhub-correction button:disabled {
-  opacity: 0.55;
-}
-
 .workhub-return {
   display: block;
-  width: min(680px, calc(100% - 48px));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   margin: 0 auto 8px;
   padding: 7px 12px;
   border: 1px solid var(--color-border-subtle, var(--border));

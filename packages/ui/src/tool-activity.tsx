@@ -493,7 +493,7 @@ function standardToolCall(
     // arguments says what happened instead.
     name: computerActionLabel(item, locale) ?? resolveToolDisplayName(item, locale),
     status: astryxToolStatus(item),
-    target: item.intent ? formatToolIntent(item.intent) : inferredTarget,
+    target: collapsedToolTarget(item, locale, inferredTarget),
     duration: formatDuration(item.durationMs) ?? undefined,
     errorMessage: toolCallErrorMessage(item, locale),
     stats: item.progress && isInFlightToolStatus(toolActivityPresentationStatus(item))
@@ -509,6 +509,27 @@ function standardToolCall(
       </ToolDetailReveal>
     ),
   };
+}
+
+/**
+ * What the collapsed row (and a collapsed group's header) says about the call.
+ * `intent` wins when the runtime authored one; otherwise fall back to the
+ * shared invocation line derived from the call's args — or, during the live
+ * window, from the bounded wire args preview (full args arrive at turn end).
+ * Only the first line is shown, hard-capped so a long command cannot stretch
+ * the group header (Astryx ellipsizes too, but the header row is shared).
+ */
+function collapsedToolTarget(
+  item: ToolActivityItem,
+  locale: UiLocale,
+  preferred?: string,
+): string | undefined {
+  if (item.intent) return formatToolIntent(item.intent);
+  const line = preferred ?? formatToolInvocationLine(item, locale);
+  if (!line) return undefined;
+  const firstLine = line.split('\n')[0]!.trim();
+  if (!firstLine) return undefined;
+  return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
 }
 
 function linkedAgentRows(

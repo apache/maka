@@ -243,6 +243,43 @@ describe('filesystem worker operations', () => {
     });
   });
 
+  test('passes option-like Grep patterns after a `--` separator', async () => {
+    const root = await temporaryDirectory('maka-worker-grep-option-like-');
+    const target = join(root, 'file.ts');
+    await writeFile(target, 'const style = "-webkit-box";', 'utf8');
+    let grepArgs: readonly string[] | undefined;
+
+    const response = await executeFilesystemWorkerRequest(
+      await requestFor(
+        {
+          kind: 'grep',
+          cwd: root,
+          path: target,
+          pattern: '-webkit-box',
+          maxCountPerFile: 50,
+          limit: 200,
+          timeoutMs: 1_000,
+        },
+        { enforcementPath: target, access: 'read', scope: 'exact', targetType: 'file' },
+      ),
+      {
+        grepExecutable: '/usr/bin/rg',
+        runGrep: async (input) => {
+          grepArgs = input.args;
+          return { exitCode: 0, stdout: '1:const style = "-webkit-box";\n', stderrTail: '' };
+        },
+      },
+    );
+
+    assert.deepEqual(grepArgs?.slice(-3), ['--', '-webkit-box', target]);
+    assert.deepEqual(response, {
+      version: FILESYSTEM_WORKER_PROTOCOL_VERSION,
+      requestId: 'request-1',
+      ok: true,
+      result: { kind: 'grep', matches: ['1:const style = "-webkit-box";'] },
+    });
+  });
+
   test('returns no Grep matches for exit code 1 and surfaces bounded stderr for failures', async () => {
     const root = await temporaryDirectory('maka-worker-grep-result-');
     const target = join(root, 'file.ts');

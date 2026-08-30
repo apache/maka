@@ -26,11 +26,13 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import type { RuntimeHostManagedLaunchClaim } from '@maka/runtime-host/operator';
 import { readFile } from 'node:fs/promises';
 
 export interface RuntimeHostServiceCliOptions {
   readonly rootPath: string;
   readonly json?: boolean;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocket?: {
     readonly host: string;
@@ -44,8 +46,11 @@ export interface RuntimeHostServiceCliOptions {
   readonly peer?: {
     readonly nativePath: string;
     readonly keyPath: string;
+    readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
+    readonly meshDataRoot?: string;
   };
 }
 
@@ -74,6 +79,7 @@ export async function runRuntimeHostServiceCli(
     : undefined;
   const host = await startExecutionRuntimeHostService({
     rootPath: options.rootPath,
+    ...(options.managedLaunchClaim ? { managedLaunchClaim: options.managedLaunchClaim } : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),

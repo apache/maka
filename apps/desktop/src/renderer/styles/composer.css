@@ -36,13 +36,13 @@
 }
 
 .maka-composer-astryx {
-  width: min(var(--maka-chat-measure), 100%);
-  max-width: var(--maka-chat-measure);
+  width: min(var(--maka-reading-measure), 100%);
+  max-width: var(--maka-reading-measure);
 }
 
 .maka-composer-queue {
-  width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-6))));
-  max-width: var(--maka-chat-measure);
+  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
+  max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-1);
   padding: var(--space-1);
   box-sizing: border-box;
@@ -59,6 +59,14 @@
   min-width: 0;
   max-height: 132px;
   overflow-y: auto;
+}
+
+.maka-composer-queue-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .maka-composer-queue-actions {
@@ -102,7 +110,7 @@
 
 @media (max-width: 640px) {
   .maka-composer-queue {
-    width: min(var(--maka-chat-measure), calc(100% - (2 * var(--space-3))));
+    width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-3))));
   }
 
   .maka-composer-queue-actions {
@@ -369,17 +377,17 @@
 
 /* U3 no-model dead-end hint. Sits ABOVE the composer form (outside its box, so
    it never touches the #740 constant footprint). Edged, not pill; quiet caption
-   text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the chat measure, matching the revision-notice layout. */
+   text + one link-button into Settings · 模型. Theme-aware via tokens. Centered to the reading measure, matching the revision-notice layout. */
 .maka-composer-no-model-hint {
   font: var(--maka-text-supporting);
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: min(
-    var(--maka-chat-measure),
+    var(--maka-reading-measure),
     calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
   );
-  max-width: var(--maka-chat-measure);
+  max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-1-5);
   padding: var(--space-1) var(--space-2-5);
   border: var(--border-width-hairline) solid var(--warning);
@@ -412,10 +420,10 @@
   align-items: center;
   gap: var(--space-1-5);
   width: min(
-    var(--maka-chat-measure),
+    var(--maka-reading-measure),
     calc(100% - (2 * var(--space-6)) - (2 * var(--space-3)))
   );
-  max-width: var(--maka-chat-measure);
+  max-width: var(--maka-reading-measure);
   margin: 0 auto var(--space-1);
   padding: 0 var(--space-1-5);
   box-sizing: border-box;

@@ -21,8 +21,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
@@ -144,6 +144,27 @@ const TEST_SANDBOX_DIAGNOSTICS = createSandboxDiagnosticsProvider({
   canonicalizePath: async (path) => path,
 });
 
+test('backend creation resolves a bound Session by immutable Connection identity', async () => {
+  let observedRef: unknown;
+  await createHostAiSdkBackend(
+    backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      resolveExecutionConnection: async (ref) => {
+        observedRef = ref;
+        return readyExecutionConnection();
+      },
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    }),
+  );
+
+  assert.deepEqual(observedRef, {
+    kind: 'bound',
+    connectionId: '11111111-1111-4111-8111-111111111111',
+    connectionSlug: 'backend-creation-connection',
+  });
+});
+
 test('backend creation aborts a stalled canonical connection read', async () => {
   const abort = new AbortController();
   const creating = createHostAiSdkBackend(
@@ -249,8 +270,9 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
   const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
   const root = join(base, 'interactive');
   const project = join(base, 'project');
+  let outsideRoot: string | undefined;
+  let sandboxPaths: ManagedSandboxPaths | undefined;
   const provider = await startProvider();
-  provider.configureManagedBashFlow();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -263,6 +285,16 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
   };
   let composition: Awaited<ReturnType<typeof createExecutionRuntimeHostComposition>> | undefined;
   try {
+    if (process.platform === 'darwin') {
+      outsideRoot = await mkdtemp(join(homedir(), '.maka-host-sandbox-boundary-'));
+      sandboxPaths = {
+        outsideBash: join(outsideRoot, 'bash-denied.txt'),
+        outsideWrite: join(outsideRoot, 'write-denied.txt'),
+        workspaceBash: join(project, 'bash-allowed.txt'),
+        workspaceWrite: join(project, 'write-allowed.txt'),
+      };
+    }
+    provider.configureManagedBashFlow(sandboxPaths);
     await mkdir(project);
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
     const created = await policy.connectionCatalog.create({
@@ -300,6 +332,7 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: project,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-managed-bash-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -428,6 +461,77 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     const refreshedRequestText = JSON.stringify(refreshedRequests[2]?.body);
     assert.match(refreshedRequestText, /<sandbox_context>/u);
     assert.match(refreshedRequestText, /Network: enabled/u);
+
+    if (sandboxPaths) {
+      const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
+      const sandboxTerminal = await waitForTerminal(
+        composition,
+        session.id,
+        sandboxTurnId,
+        await startTurn(
+          composition,
+          session.id,
+          sandboxTurnId,
+          'Exercise the enforced filesystem boundary.',
+          context,
+        ),
+        context,
+      );
+      assert.equal(sandboxTerminal.status, 'completed');
+
+      const sandboxRequests = provider.requests.filter((request) => request.body.stream === true);
+      assert.equal(sandboxRequests.length, 8);
+      assert.match(latestToolResultText(sandboxRequests[4]!.body) ?? '', /macos-seatbelt/u);
+      assert.match(
+        latestToolResultText(sandboxRequests[4]!.body) ?? '',
+        /Operation not permitted/u,
+      );
+      assert.match(
+        latestToolResultText(sandboxRequests[5]!.body) ?? '',
+        /sandbox_boundary_required/u,
+      );
+      assert.equal(await fileExists(sandboxPaths.outsideBash), false);
+      assert.equal(await fileExists(sandboxPaths.outsideWrite), false);
+      assert.equal(await readFile(sandboxPaths.workspaceBash, 'utf8'), 'bash allowed');
+      assert.equal(await readFile(sandboxPaths.workspaceWrite, 'utf8'), 'write allowed');
+
+      const sandboxEvents = await execution.runtimeEventStore.readRuntimeEvents(
+        session.id,
+        sandboxTerminal.runId,
+      );
+      const sandboxResponses = sandboxEvents.filter(
+        (event) => event.content?.kind === 'function_response',
+      );
+      assert.deepEqual(
+        sandboxResponses.map((event) =>
+          event.content?.kind === 'function_response'
+            ? {
+                name: event.content.name,
+                isError: event.content.isError === true,
+              }
+            : undefined,
+        ),
+        [
+          { name: 'Bash', isError: true },
+          { name: 'Write', isError: true },
+          { name: 'Bash', isError: false },
+          { name: 'Write', isError: false },
+        ],
+      );
+      assert.equal(
+        sandboxEvents.some(
+          (event) => event.actions?.stateDelta?.sandboxBoundaryRequest !== undefined,
+        ),
+        false,
+      );
+      assert.deepEqual(
+        await execution.sessionStore.listPendingSandboxBoundaryRequests(session.id),
+        [],
+      );
+      const sandboxBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+      assert.equal(sandboxBoundary.kind, 'managed');
+      assert.equal(sandboxBoundary.revision, expanded.boundary.revision);
+    }
   } finally {
     try {
       await composition?.close();
@@ -435,8 +539,15 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
       try {
         await owner.close();
       } finally {
-        await provider.close();
-        await rm(base, { recursive: true, force: true });
+        try {
+          await provider.close();
+        } finally {
+          try {
+            await rm(base, { recursive: true, force: true });
+          } finally {
+            if (outsideRoot) await rm(outsideRoot, { recursive: true, force: true });
+          }
+        }
       }
     }
   }
@@ -565,10 +676,24 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
   }
 });
 
-test('Codex OAuth history compaction uses the provider-native route and preserves failure facts', async () => {
+test('Codex OAuth history compaction falls back to a text checkpoint after native rejection', async () => {
   const modelId = 'gpt-5.6-sol';
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
   const attempts: ModelCallAttempt[] = [];
+  let recordedTextCheckpoint = false;
+  const fallbackSummary = [
+    '## Goal',
+    'Continue the existing task.',
+    '',
+    '## Progress',
+    '- Preserved the completed work.',
+    '',
+    '## Next Steps',
+    '1. Continue from the recent context.',
+    '',
+    '## Critical Context',
+    '- The portable fallback remains available.',
+  ].join('\n');
   const oauthTokens: OAuthSubscriptionTokens = {
     access_token: codexAccessToken('compact-account'),
     refresh_token: 'compact-refresh-token',
@@ -605,21 +730,59 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
         secretMaterial: { connection: { secret: 'oauth-material' } },
       }),
       readPricing: async () => ({ revision: 0, overrides: [] }),
-      recordHistoryCompactCheckpoint: async () => undefined,
+      recordHistoryCompactCheckpoint: async (checkpoint) => {
+        recordedTextCheckpoint = 'summary' in checkpoint;
+      },
       recordModelCallAttempt: async ({ attempt }) => {
         attempts.push(attempt);
       },
       createFetchTransport: () => ({
         fetch: async (url, init) => {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           requests.push({
             url: String(url),
-            body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+            body,
           });
+          const providerInput = Array.isArray(body.input) ? body.input : [];
+          if (
+            !providerInput.some(
+              (item) =>
+                typeof item === 'object' &&
+                item !== null &&
+                'type' in item &&
+                item.type === 'compaction_trigger',
+            )
+          ) {
+            return Response.json({
+              id: 'resp-text-fallback',
+              object: 'response',
+              created_at: 1,
+              status: 'completed',
+              model: modelId,
+              output: [
+                {
+                  type: 'message',
+                  id: 'msg-text-fallback',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: fallbackSummary,
+                      annotations: [],
+                      logprobs: [],
+                    },
+                  ],
+                },
+              ],
+              usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
+            });
+          }
           return Response.json(
             {
               error: {
                 message: 'request rejected without echoing this body',
-                code: 'invalid_request_error',
+                code: 'missing_required_parameter',
               },
             },
             {
@@ -663,23 +826,31 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
       runtimeContext,
     });
 
-    assert.equal(requests.length, 1, JSON.stringify(result));
+    assert.equal(requests.length, 2, JSON.stringify(result));
     assert.match(requests[0]!.url, /\/codex\/responses$/);
-    const requestText = JSON.stringify(requests[0]!.body);
-    assert.match(requestText, /"type":"compaction_trigger"/);
-    assert.doesNotMatch(requestText, /context summarization assistant/i);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'provider_error' });
-    assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'failedOpen');
-    assert.equal(attempts.length, 1);
+    assert.match(requests[1]!.url, /\/codex\/responses$/);
+    const nativeRequestText = JSON.stringify(requests[0]!.body);
+    const fallbackRequestText = JSON.stringify(requests[1]!.body);
+    assert.match(nativeRequestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(nativeRequestText, /context summarization assistant/i);
+    assert.doesNotMatch(fallbackRequestText, /"type":"compaction_trigger"/);
+    assert.match(fallbackRequestText, /context summarization assistant/i);
+    assert.equal(result.outcome.kind, 'compacted');
+    assert.equal(recordedTextCheckpoint, true);
+    assert.equal(attempts.length, 2);
     assert.equal(attempts[0]?.callKind, 'history_compact');
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
     assert.equal(attempts[0]?.errorClass, 'RequestRejected');
     assert.equal(attempts[0]?.httpStatus, 400);
-    assert.equal(attempts[0]?.providerCode, 'invalid_request_error');
+    assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
     assert.equal(attempts[0]?.retryable, false);
+    assert.equal(attempts[1]?.logicalCallId, attempts[0]?.logicalCallId);
+    assert.equal(attempts[1]?.attempt, 1);
+    assert.equal(attempts[1]?.historyCompactRoute, 'text_summary');
+    assert.equal(attempts[1]?.status, 'completed');
   } finally {
     await backend.dispose();
   }
@@ -753,9 +924,13 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     const firstCreation = createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: firstAbort.signal,
+        connectionId: connection.connectionId,
         modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
-          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+          policy.operations.resolveExecutionConnection({
+            kind: 'catalog_slug',
+            connectionSlug: 'backend-creation-connection',
+          }),
         runtimePolicy: policy,
         oauthCredentials: authority,
         readPricing: async () => ({ revision: 0, overrides: [] }),
@@ -777,9 +952,13 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     secondBackend = await createHostAiSdkBackend(
       backendCreationFixture({
         abortSignal: new AbortController().signal,
+        connectionId: connection.connectionId,
         modelId: subscriptionModelId,
         resolveExecutionConnection: () =>
-          policy.operations.resolveExecutionConnection('backend-creation-connection'),
+          policy.operations.resolveExecutionConnection({
+            kind: 'catalog_slug',
+            connectionSlug: 'backend-creation-connection',
+          }),
         runtimePolicy: policy,
         oauthCredentials: authority,
         readPricing: async () => ({ revision: 0, overrides: [] }),
@@ -788,9 +967,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
     );
     assert.equal(transports.refreshCalls, 1);
 
-    const resolved = await policy.operations.resolveExecutionConnection(
-      'backend-creation-connection',
-    );
+    const resolved = await policy.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: 'backend-creation-connection',
+    });
     assert.equal(resolved.kind, 'ready');
     if (resolved.kind === 'ready') {
       const persisted = JSON.parse(
@@ -1155,6 +1335,7 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
           workspace: { kind: 'host_path', path: root },
           modelTarget: {
             kind: 'explicit',
+            connectionId: connection.connectionId,
             connectionSlug: 'profile-deepseek',
             model: 'deepseek-v4-flash',
           },
@@ -1341,6 +1522,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-real-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -1451,40 +1633,21 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     // Tavily is selected but no web-search credential exists, so the provider
-    // must never see WebSearch in the effective root tool surface.
+    // must never see WebSearch in the effective root tool surface. Non-direct
+    // bound tools stay deferred behind tool_search until activated.
     assert.deepEqual(toolNames(request?.body), [
       'ArchiveRead',
       'AskUserQuestion',
       'Bash',
       'Edit',
-      'ExploreAgent',
-      'FormatJson',
       'Glob',
-      'GoalClear',
-      'GoalPause',
-      'GoalResume',
-      'GoalSet',
-      'GoalStatus',
       'Grep',
-      'MakaSettingsGet',
-      'MakaSettingsUpdate',
       'Read',
-      'ReadHistory',
-      'ScheduledTask',
-      'SearchHistory',
       'Skill',
       'SkillSearch',
       'StopBackgroundTask',
       'WebFetch',
       'Write',
-      'WriteStdin',
-      'memory_extract',
-      'memory_remember',
-      'request_sandbox_boundary',
-      'task_create',
-      'task_get',
-      'task_list',
-      'task_update',
       'tool_search',
     ]);
     assert.match(JSON.stringify(compactRequests[0]?.body), /context summarization assistant/);
@@ -1657,6 +1820,7 @@ test('production Host executes and durably supervises an Agent Graph over a real
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: project,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-graph-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -1856,6 +2020,7 @@ test('production Host executes a durable runnable child with an exact tool ceili
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -2053,6 +2218,7 @@ test('production Host publishes and retires an implementation child patch', asyn
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await execution.sessionStore.create({
       cwd: project,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'hosted-child-provider',
       model: MODEL_ID,
       permissionMode: 'bypass',
@@ -2307,6 +2473,7 @@ test('Host auxiliary calls preserve resolved DeepSeek reasoning settings', async
     await publishConnectionModel(policy, connection.connectionId, 'deepseek-v4-flash');
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'deepseek-auxiliary',
       model: 'deepseek-v4-flash',
       thinkingLevel: 'high',
@@ -2384,6 +2551,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
     const session = await execution.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: connection.connectionId,
       llmConnectionSlug: 'goal-evaluator-provider',
       model: MODEL_ID,
       permissionMode: 'ask',
@@ -3219,7 +3387,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
 
   assert.deepEqual(composition.tools, [boundTool]);
   assert.equal(
-    composition.toolAvailability.groups?.some((group) => group.id === 'client_fixture'),
+    composition.toolAvailability?.groups?.some((group) => group.id === 'client_fixture') ?? false,
     false,
   );
 });
@@ -3253,7 +3421,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
     composition.tools.map(({ name }) => name),
     ['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'apply_patch'],
   );
-  assert.deepEqual(composition.toolAvailability.groups, []);
+  assert.equal(composition.toolAvailability, undefined);
   assert.equal(
     (
       await composition.resolveSystemPrompt({
@@ -3451,7 +3619,8 @@ async function publishConnectionModel(
 
 function backendCreationFixture(input: {
   abortSignal: AbortSignal;
-  resolveExecutionConnection: () => Promise<unknown>;
+  connectionId?: string;
+  resolveExecutionConnection: (ref?: unknown) => Promise<unknown>;
   readPricing: () => Promise<unknown>;
   runtimePolicy?: RuntimePolicyStoresWriter;
   oauthCredentials?: HostOAuthExecutionAuthority;
@@ -3513,6 +3682,7 @@ function backendCreationFixture(input: {
       sessionId: 'backend-creation-session',
       workspaceRoot: '/workspace',
       header: {
+        llmConnectionId: input.connectionId ?? '11111111-1111-4111-8111-111111111111',
         llmConnectionSlug: 'backend-creation-connection',
         model: input.modelId ?? MODEL_ID,
         cwd: '/workspace',
@@ -3851,9 +4021,19 @@ interface ProviderRequest {
   readonly body: Record<string, unknown>;
 }
 
+interface ManagedSandboxPaths {
+  readonly outsideBash: string;
+  readonly outsideWrite: string;
+  readonly workspaceBash: string;
+  readonly workspaceWrite: string;
+}
+
 type ProviderFlow =
   | { readonly kind: 'default' }
-  | { readonly kind: 'managed_bash' }
+  | {
+      readonly kind: 'managed_bash';
+      readonly sandboxPaths?: ManagedSandboxPaths;
+    }
   | {
       readonly kind: 'client_capability';
       readonly groupId: string;
@@ -3870,7 +4050,7 @@ type ProviderFlow =
 async function startProvider(): Promise<{
   readonly baseUrl: string;
   readonly requests: ProviderRequest[];
-  configureManagedBashFlow(): void;
+  configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
@@ -3890,9 +4070,12 @@ async function startProvider(): Promise<{
   return {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
-    configureManagedBashFlow: () => {
+    configureManagedBashFlow: (sandboxPaths) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
-      flow = { kind: 'managed_bash' };
+      flow = {
+        kind: 'managed_bash',
+        ...(sandboxPaths ? { sandboxPaths } : {}),
+      };
     },
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -3984,6 +4167,34 @@ async function handleProviderRequest(
         },
         network: { enabled: true },
       },
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 4) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf denied > ${JSON.stringify(flow.sandboxPaths.outsideBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 5) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.outsideWrite,
+      content: 'write denied',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 6) {
+    respondProviderToolCall(response, streamRequestIndex, 'Bash', {
+      command: `printf 'bash allowed' > ${JSON.stringify(flow.sandboxPaths.workspaceBash)}`,
+      boundary_intent: 'current',
+    });
+    return;
+  }
+  if (flow.kind === 'managed_bash' && flow.sandboxPaths && streamRequestIndex === 7) {
+    respondProviderToolCall(response, streamRequestIndex, 'Write', {
+      path: flow.sandboxPaths.workspaceWrite,
+      content: 'write allowed',
     });
     return;
   }

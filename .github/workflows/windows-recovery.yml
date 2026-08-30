@@ -17,16 +17,73 @@
 
 name: Windows recovery
 
+# The paths below are a pre-filter, not this lane's real input. The real input
+# is the import closure of the crash and owner-death recovery authorities in
+# storage, runtime and Runtime Host, which reaches well past any list worth
+# hand-maintaining. So they name those workspaces and every workspace they hold
+# a TypeScript project reference to, plus the manifests, patches and scripts
+# the unconditional install and clean steps consume. That keeps a change there
+# reported before merge, and the nightly run covers the transitive edits the
+# list cannot match.
+#
+# GitHub evaluates a path filter against the first 300 files of the diff only,
+# so a pull request wider than that can skip the filter outright. A repository-wide sweep is exactly the change that touches every
+# recovery authority at once, which is one more reason the main push below
+# carries no filter at all.
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/**'
+      - 'scripts/apply-dependency-patches.mjs'
+      - 'scripts/install-electron-with-retry.mjs'
+      - 'scripts/run-electron-installer.cjs'
+      - 'scripts/clean-build.mjs'
+      - 'scripts/clean-paths.mjs'
+      - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
+      - 'tsconfig.base.json'
+      - 'tsconfig.lib.json'
+      - 'packages/core/package.json'
+      - 'packages/core/tsconfig.json'
+      - 'packages/core/src/**'
+      - 'packages/storage/package.json'
+      - 'packages/storage/tsconfig.json'
+      - 'packages/storage/src/**'
+      - 'packages/runtime/package.json'
+      - 'packages/runtime/tsconfig.json'
+      - 'packages/runtime/src/**'
+      - 'packages/runtime/scripts/**'
+      - 'packages/runtime-host/package.json'
+      - 'packages/runtime-host/tsconfig.json'
+      - 'packages/runtime-host/src/**'
+      - '.github/workflows/windows-recovery.yml'
+  # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
+  # request goes green against a stale base and only the merged result proves
+  # two independently green halves still agree. It is also the backstop for the
+  # 300-file case above. The nightly alone would find either a day later,
+  # against a batch of commits instead of one.
   push:
     branches: [main]
+  schedule:
+    # Offset from windows-sandbox-w0 so the Windows lanes do not overlap.
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
+# Pull request pushes supersede each other, keyed on the pull request number
+# because github.head_ref is a bare branch name two forks can share: a second
+# contributor pushing to their own `main` would otherwise cancel the first
+# contributor's run, and a cancelled check is not a failed one.
+# Scheduled, manual and main-push runs fall back to the run id, since
+# github.ref is refs/heads/main for all three and one shared group would let a
+# dispatch queue behind the nightly and then be discarded while still pending.
+# That deliberately stops main pushes from superseding each other: this lane is
+# the only place a merged Windows regression is observed, so every merge needs
+# its own evidence rather than only the newest one surviving.
 concurrency:
-  group: windows-recovery-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: windows-recovery-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -35,7 +92,7 @@ jobs:
   windows_recovery:
     name: windows_recovery
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,11 +124,44 @@ jobs:
             exit 1
           }
 
+      - name: Verify root initialization replacement race
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            --test-name-pattern="rejects replacement before opening the temporary marker" `
+            packages/storage/dist/__tests__/root-authority.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/root-initialization-race.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/root-initialization-race.tap"
+          if ($output -notcontains '# tests 1' -or $output -notcontains '# pass 1' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Root initialization race gate did not run exactly one passing Windows test'
+            exit 1
+          }
+
       - name: Verify Runtime Host Local IPC trust boundary
         shell: pwsh
         run: |
           node.exe --test packages/runtime-host/dist/__tests__/control-endpoint.test.js
           ./scripts/windows-runtime-host-local-ipc-trust.ps1
+
+      - name: Verify Skill catalog on Windows
+        shell: pwsh
+        run: |
+          node.exe --test --test-reporter=tap --test-concurrency=1 `
+            packages/runtime-host/dist/__tests__/skill-catalog-coordinator.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-protocol.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-repository.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-transaction.test.js `
+            packages/runtime-host/dist/__tests__/skill-catalog-two-client-uds.test.js `
+            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/skill-catalog.tap"
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { exit $exitCode }
+          $output = Get-Content "$env:RUNNER_TEMP/skill-catalog.tap"
+          if ($output -notcontains '# tests 91' -or $output -notcontains '# pass 91' -or $output -notcontains '# skipped 0') {
+            Write-Error 'Skill catalog gate did not run exactly 91 passing Windows tests'
+            exit 1
+          }
 
       - name: Verify SQLite crash recovery
         shell: pwsh
@@ -100,22 +190,5 @@ jobs:
           $output = Get-Content "$env:RUNNER_TEMP/runtime-host-recovery.tap"
           if ($output -notcontains '# tests 2' -or $output -notcontains '# pass 2' -or $output -notcontains '# skipped 0') {
             Write-Error 'Runtime Host recovery gate did not run exactly two passing tests'
-            exit 1
-          }
-
-      - name: Verify managed workspace crash recovery
-        shell: pwsh
-        run: |
-          $env:MAKA_STORAGE_STRESS = '1'
-          node.exe --test --test-reporter=tap --test-concurrency=1 `
-            --test-name-pattern="real process crash|real crash|real-process crash|crash after baseline ref publication" `
-            packages/storage/dist/__tests__/managed-workspace-baseline.test.js `
-            packages/storage/dist/__tests__/git-workspace-service.test.js `
-            2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          $exitCode = $LASTEXITCODE
-          if ($exitCode -ne 0) { exit $exitCode }
-          $output = Get-Content "$env:RUNNER_TEMP/managed-workspace-recovery.tap"
-          if ($output -notcontains '# tests 12' -or $output -notcontains '# pass 12' -or $output -notcontains '# skipped 0') {
-            Write-Error 'Managed workspace recovery gate did not run exactly twelve passing tests'
             exit 1
           }

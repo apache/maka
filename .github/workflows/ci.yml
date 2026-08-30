@@ -36,7 +36,7 @@ jobs:
   # workflow consumes one automatic job without dropping affected coverage.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +61,12 @@ jobs:
       - name: Test CI planner
         run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
 
+      # Pure Node like the planner test, and the labelling workflow imports this
+      # module directly, so a tier or exclusion change is caught here rather
+      # than by mislabelling live pull requests.
+      - name: Test PR effort classification
+        run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
+
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
       # an install.
@@ -78,8 +84,20 @@ jobs:
       - name: Test the epoch guard
         run: node --test --test-concurrency=1 scripts/protocol-epoch-check.test.mjs
 
-      - name: Test AX tree audit contract
-        run: node --test scripts/ax-tree-audit.test.mjs
+      - name: Test Computer Use script contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+
+      - name: Test script entrypoint contracts
+        run: node --test scripts/script-entrypoints.test.mjs
+
+      # Install-free like its neighbours: the gate reads one source file and
+      # compares it to a hand-edited inventory, so a hook that silently widens
+      # its scope to the whole tree fails here rather than in a profile (#4109).
+      - name: Check the hooks scoped to the whole shell
+        run: npm run check:app-shell-hooks
+
+      - name: Test the app-shell hook gate
+        run: node --test --test-concurrency=1 scripts/check-app-shell-hooks.test.mjs
 
       - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm
@@ -135,6 +153,20 @@ jobs:
         if: steps.plan.outputs.asf_source == 'true'
         run: npm run check:asf-source
 
+      # Parsed dependency rules and an exact legacy-debt ledger keep the
+      # renderer root from absorbing new feature or Desktop ownership while
+      # the existing AppShell is migrated behind stable boundaries.
+      - name: Check renderer architecture
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:renderer-architecture -- --base "$BASE_SHA"
+          else
+            npm run check:renderer-architecture
+          fi
+
       - name: Lint
         if: steps.plan.outputs.code == 'true'
         run: npm run lint
@@ -162,6 +194,15 @@ jobs:
       - name: Typecheck
         if: steps.plan.outputs.code == 'true'
         run: npm run typecheck
+
+      # Two drift contracts over the shipped app-icon artwork, sitting beside
+      # the theme drift check for the same reason: the committed bytes are a
+      # build output that nothing else re-derives, so without this a change to
+      # the generator, to DEFAULT_APP_ICON, or to the packaging config can go
+      # green while the artwork it names no longer matches.
+      - name: App icon artwork drift
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/verify-packaged-app-icons.test.mjs scripts/generate-app-icons.test.mjs
 
       - name: Astryx theme drift
         if: steps.plan.outputs.code == 'true'
@@ -238,10 +279,20 @@ jobs:
         if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
 
+      - name: Update stable Rust for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        run: rustup update stable --no-self-update
+
+      - name: Install cargo-deny for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        with:
+          tool: cargo-deny@0.20.2
+
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: npm run release:cli:pack
+        run: npm run release:cli:pack -- --allow-dirty
 
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
-        run: npm run release:cli:smoke
+        run: npm run release:cli:smoke -- packages/cli/release/*.tgz

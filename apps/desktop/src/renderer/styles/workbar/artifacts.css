@@ -199,7 +199,12 @@
   background: var(--background);
 }
 
+/* The workbar caps its own width (`SESSION_WORKBAR_MAX_WIDTH`), so this only
+   binds in the stacked layout a narrow window switches to, where that cap is
+   dropped and the preview can run the width of the window. Prose needs a
+   measure there; the pane's own width is one everywhere else. */
 .maka-artifact-preview-markdown {
+  max-width: var(--maka-reading-measure);
   min-width: 0;
   padding-inline: var(--space-1);
 }

@@ -62,6 +62,10 @@ test('renders steering where it arrived in the assistant timeline', () => {
   ];
   const [before, steering, after] = texts.map((text) => markup.indexOf(text));
   assert.equal(before < steering && steering < after, true);
+  // The failure banner is the turn's outcome, so it must follow the work it
+  // concludes. Without this the assertions above pass for either layout, and
+  // the banner could drift back to the head of the timeline unnoticed.
+  assert.equal(after < markup.indexOf('failure detail'), true);
   const visibleText = parseHTML(`<html><body>${markup}</body></html>`).document.body.textContent;
   for (const text of [...texts, 'failure detail']) {
     assert.equal(visibleText.split(text).length - 1, 1, `${text} should render exactly once`);

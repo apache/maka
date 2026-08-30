@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { SessionStartMode } from '@maka/core/explore-agent';
+import type { SessionStartMode } from '@maka/core/deep-research';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from '@maka/ui';
 import type { DesktopNewTaskTarget } from '../preload/bridge-contract.js';

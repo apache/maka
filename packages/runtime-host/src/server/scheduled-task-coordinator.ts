@@ -61,6 +61,8 @@ import type { SessionCreateInput } from '../protocol/session-catalog.js';
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const NATIVE_PROVIDER_RETRY_MS = 5_000;
+const SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED =
+  'ScheduledTask Agent runs require an immutable model connection identity';
 
 type ScheduledTaskSessions = Pick<ExecutionSessionWriter, 'readHeaderSnapshot'>;
 type ScheduledTaskRuntime = Pick<SessionManager, 'sendMessage'>;
@@ -163,15 +165,24 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     await this.#refreshResidency();
   }
 
-  async assertRecoveryAdmission(admission: RootTurnAdmission): Promise<void> {
+  async assertRecoveryAdmission(
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ): Promise<void> {
     if (!this.#prepared) {
       throw new Error('ScheduledTask recovery admission was inspected before Store recovery');
     }
     if (admission.execution.kind !== 'scheduled_task') return;
     const scheduledTaskId = admission.execution.scheduledTaskId;
     const claims = await this.#store.listPendingFires();
-    const claim = claims.find((candidate) => candidate.task.id === scheduledTaskId);
+    const claim = claims.find(
+      (candidate) =>
+        candidate.task.id === scheduledTaskId &&
+        candidate.execution?.sessionId === admission.sessionId &&
+        candidate.execution.turnId === admission.turnId,
+    );
     const execution = claim?.execution;
+    if (!claim && state === 'run_recorded') return;
     if (
       !claim ||
       !execution ||
@@ -582,6 +593,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       );
     }
 
+    // Persisted agent-run templates currently identify their model connection
+    // by reusable slug only. Do not resolve that slug to a potentially
+    // different Connection entity. #3927 will make the exact ID durable.
+    if (task.effect.kind === 'agent_run') {
+      return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+    }
+
     let execution = claim.execution;
     if (!execution) {
       execution = {
@@ -628,6 +646,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
     }
     const execution = task.effect.execution;
+    const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
+    const connection = catalog.connections.find(
+      (candidate) => candidate.slug === execution.llmConnectionSlug,
+    );
+    if (!connection) {
+      throw new Error('ScheduledTask model connection does not exist');
+    }
     await this.#createSession({
       sessionId: identity.sessionId,
       workspace:
@@ -638,6 +663,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       labels: ['scheduled-task'],
       modelTarget: {
         kind: 'explicit',
+        connectionId: connection.connectionId,
         connectionSlug: execution.llmConnectionSlug,
         model: execution.model,
       },

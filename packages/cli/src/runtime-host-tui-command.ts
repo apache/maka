@@ -22,13 +22,16 @@ import type { UiLocale } from '@maka/core/ui-locale';
 import { createInterface } from 'node:readline/promises';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { readRuntimeHostConnectionCatalog } from '@maka/runtime-host/client';
+import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import { createForeignSessionStore } from '@maka/storage/foreign-session-store';
 import { formatMakaResumeHint } from './cli-invocation.js';
 import {
   connectRuntimeHostCli,
+  resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
-  shouldRetryRuntimeHostConflict,
 } from './runtime-host-cli-context.js';
+import { resolveRuntimeHostNpmGlobalInstallation } from './runtime-host-cli-installation.js';
+import { restartRuntimeHostNpmGlobalDeployment } from './runtime-host-local-handoff.js';
 import { createRuntimeHostOnboardingSurface } from './runtime-host-onboarding.js';
 import type { MakaPiTuiTurnActivitySurface } from './pi-tui-contracts.js';
 import { runMakaPiTui } from './pi-tui-runner.js';
@@ -77,15 +80,23 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
   try {
     await runMakaPiTui({
       driver: context.driver,
-      title: context.profile.kind === 'local' ? 'Maka' : `Maka — ${context.profile.name}`,
+      title: runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? `Maka — ${context.profile.name}`
+        : 'Maka',
       cwd: context.cwd,
       locale: input.locale,
       model: context.model,
       models: context.modelChoices
-        .filter((choice) => choice.connectionSlug === context.connectionSlug)
+        .filter(
+          (choice) =>
+            choice.connectionId === context.connectionId &&
+            choice.connectionSlug === context.connectionSlug,
+        )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
       connectionSlug: context.connectionSlug,
+      connectionId: context.connectionId,
+      connectionIdentities: context.connectionIdentities,
       providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,
@@ -95,25 +106,27 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       onboarding: context.onboarding,
       ...(context.mcp ? { mcp: context.mcp } : {}),
       recap: context.recap,
-      ...(context.profile.kind === 'local'
-        ? { foreignSessions }
-        : {
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? {
             sessionListScope: 'all' as const,
             clientPathAuthority: 'none' as const,
-          }),
+          }
+        : { foreignSessions }),
       subscribeShellRunUpdates: (listener) => context.driver.subscribeShellRunUpdates(listener),
       listShellRunUpdates: (sessionId) => context.driver.listShellRunUpdates(sessionId),
       onProcessExit: input.onProcessExit,
       cliCommand: input.cliCommand,
       resumeSessionId: input.resumeSessionId,
       resumeCwd: input.resumeCwd,
-      ...(context.profile.kind === 'remote' && input.resumeSessionId
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind) && input.resumeSessionId
         ? { resumeFailure: 'exit' as const }
         : {}),
     });
     const sessionId = context.driver.getSessionId();
     const hint = formatMakaResumeHint(input.cliCommand, sessionId, {
-      ...(context.profile.kind === 'remote' ? { hostProfileId: context.profile.id } : {}),
+      ...(runtimeHostProfileUsesHostWorkspace(context.profile.kind)
+        ? { hostProfileId: context.profile.id }
+        : {}),
     });
     if (hint) process.stdout.write(`${hint}\n`);
     return 0;
@@ -126,23 +139,63 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
 async function createTuiContextWithHostConflictPrompt(
   input: Parameters<typeof createRuntimeHostTuiContext>[0],
 ): Promise<Awaited<ReturnType<typeof createRuntimeHostTuiContext>> | null> {
+  const blockedRestartEpochs = new Set<string>();
   while (true) {
     try {
       return await createRuntimeHostTuiContext(input);
     } catch (error) {
       if (!(error instanceof RuntimeHostCliConflictError) || !process.stdin.isTTY) throw error;
       process.stderr.write(`${error.message}\n`);
+      const canRestart =
+        error.registration.lifecycleMode === 'ephemeral' &&
+        !blockedRestartEpochs.has(error.registration.hostEpoch) &&
+        (await isPersistentNpmGlobalCli());
       const readline = createInterface({ input: process.stdin, output: process.stderr });
+      let decision;
       try {
         const answer = await readline.question(
-          'Wait only if the existing Host is expected to become idle, or cancel? [w/C] ',
+          canRestart
+            ? 'Restart this local Host if it is idle, wait for it to exit, or cancel? [r/w/C] '
+            : 'Wait only if the existing Host is expected to exit, or cancel? [w/C] ',
         );
-        if (!shouldRetryRuntimeHostConflict(answer)) return null;
+        decision = resolveRuntimeHostCliConflictDecision(answer, canRestart);
       } finally {
         readline.close();
       }
+      if (decision === 'cancel') return null;
+      if (decision === 'restart') {
+        const result = await restartRuntimeHostNpmGlobalDeployment({
+          rootPath: input.rootPath,
+          registration: error.registration,
+        });
+        if (result.kind === 'completed') continue;
+        if (result.kind === 'active_work') {
+          blockedRestartEpochs.add(error.registration.hostEpoch);
+          process.stderr.write(
+            'The existing Runtime Host still owns active or durable work and was not interrupted.\n',
+          );
+          continue;
+        }
+        if (result.kind === 'operator_required') {
+          blockedRestartEpochs.add(error.registration.hostEpoch);
+          continue;
+        }
+        if (result.kind === 'rejected') continue;
+        throw new Error(`Local Runtime Host restart requires recovery at ${result.phase}`, {
+          cause: result.cause,
+        });
+      }
       await waitForHostRetry();
     }
+  }
+}
+
+async function isPersistentNpmGlobalCli(): Promise<boolean> {
+  try {
+    await resolveRuntimeHostNpmGlobalInstallation();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -192,6 +245,8 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     getSessionId: () => null,
     listSessions: async () => [],
     preparePrompt: unavailable,
+    submitMessage: unavailable,
+    queryCancelledMessages: async () => ({ cancelledMessageIds: [] }),
     compactSession: async function* () {},
     respondToSandboxBoundary: async () => {},
     setModel: async () => {},
@@ -201,7 +256,7 @@ function createFirstRunSessionDriver(): MakaSessionDriver {
     switchSession: unavailable,
     listRewindTargets: async () => [],
     rewindToTurn: unavailable,
-    startNewSession: () => {},
+    startNewSession: () => Promise.resolve(),
     stop: async () => {},
   };
 }

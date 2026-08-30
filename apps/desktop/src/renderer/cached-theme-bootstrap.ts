@@ -18,6 +18,7 @@
  */
 
 import { safeLocalStorageGet } from './browser-storage';
+import { applyCachedFontAppearanceBeforeMount } from './theme';
 
 // Apply the cached theme before React mounts so dark-theme users don't get
 // a brief light-mode flash while settings.json loads. We persist the resolved
@@ -47,4 +48,8 @@ export function applyCachedThemeBeforeMount(): void {
   if (cachedPalette && cachedPalette !== 'default' && /^[a-z0-9-]{1,32}$/.test(cachedPalette)) {
     document.documentElement.setAttribute('data-maka-theme', cachedPalette);
   }
+  // Restore a cached non-default UI font scale (and seed the terminal size)
+  // the same way, so the first paint is at the user's chosen size rather than
+  // 1× snapping once app-shell applies settings.json.
+  applyCachedFontAppearanceBeforeMount();
 }

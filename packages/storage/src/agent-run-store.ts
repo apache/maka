@@ -28,6 +28,11 @@ import {
   decodeRuntimeEvent,
 } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
+import {
+  normalizeSubmittedTurnIntent,
+  submittedTurnIntentsEqual,
+  type SubmittedTurnIntent,
+} from './submitted-turn-intent.js';
 import { assertNoReservedWorkspaceAuthorityAppend } from './runtime-event-authority.js';
 import {
   acquireOperationalStateDatabase,
@@ -95,6 +100,14 @@ export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+  /**
+   * The exact-Turn intent this Message was submitted with — the Skill ids and
+   * the orchestration override. Content and placement do not describe it, so
+   * without this a retry that asks for a different execution mode under the
+   * same Message identity aliases the earlier success. Absent on a record
+   * written for a submit that carried no exact intent.
+   */
+  submittedIntent?: SubmittedTurnIntent;
   placement: 'current_turn' | 'next_turn';
   disposition: 'steering' | 'followup' | 'turn_started';
 }
@@ -110,8 +123,18 @@ export interface RootTurnAdmission {
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
+  authorization?: RootTurnAdmissionAuthorization;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
+}
+
+export interface RootTurnAdmissionAuthorization {
+  readonly kind: 'session_turn_access_request';
+  readonly requestId: string;
+  readonly principalId: string;
+  readonly grantId: string;
+  readonly approvedAt: number;
+  readonly approvedBy: string;
 }
 
 export interface RootTurnStartRejection {
@@ -133,6 +156,7 @@ export interface AdmitRootTurnInput {
   normalizedInput: MessageContent | null;
   turnOrchestration?: TurnOrchestration;
   skillInvocation?: SkillInvocationResult;
+  authorization?: RootTurnAdmissionAuthorization;
   sourceMessages: readonly RootTurnSourceMessage[];
   admittedAt: number;
 }
@@ -188,7 +212,6 @@ export interface DurableAgentRunStore
   extends AgentRunStore,
     RootTurnAdmissionStore,
     RootTurnStartRejectionStore {
-  findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
   listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEventsBounded(
@@ -404,28 +427,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
 
   async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
     return this.listSessionRunsForRecovery(sessionId);
-  }
-
-  async findRunsById(runId: string, limit: number): Promise<AgentRunIdentitySearchResult> {
-    assertSafeId(runId, 'Invalid run id');
-    assertIdentitySearchLimit(limit);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT session_id, record_json
-        FROM core_agent_runs
-        WHERE run_id = ?
-        ORDER BY session_id
-        LIMIT ?
-      `)
-      .all(runId, limit + 1) as Array<{ session_id?: unknown; record_json?: unknown }>;
-    const truncated = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => {
-      if (typeof row.session_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun identity row');
-      }
-      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), row.session_id, runId);
-    });
-    return { runs, truncated };
   }
 
   async listSessionRunsBounded(
@@ -1223,6 +1224,7 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     input.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(input.skillInvocation);
+  const authorization = normalizeRootTurnAdmissionAuthorization(input.authorization);
   const execution = normalizeRootExecutionDescriptor(input.execution);
   if (execution.kind === 'legacy_automation') {
     throw new Error('New root admission cannot use removed Automation authority');
@@ -1238,6 +1240,7 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
+    ...(authorization ? { authorization } : {}),
     sourceMessages,
     admittedAt: input.admittedAt,
   };
@@ -1452,6 +1455,7 @@ function normalizeRootTurnAdmission(
     record.skillInvocation === undefined
       ? undefined
       : decodeSkillInvocationResult(record.skillInvocation);
+  const authorization = normalizeRootTurnAdmissionAuthorization(record.authorization);
   const admission: RootTurnAdmission = {
     schemaVersion: ROOT_TURN_ADMISSION_SCHEMA_VERSION,
     sessionId,
@@ -1463,6 +1467,7 @@ function normalizeRootTurnAdmission(
     normalizedInput,
     ...(turnOrchestration ? { turnOrchestration } : {}),
     ...(skillInvocation ? { skillInvocation } : {}),
+    ...(authorization ? { authorization } : {}),
     sourceMessages,
     admittedAt: record.admittedAt as number,
   };
@@ -1653,11 +1658,13 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'placement',
         'disposition',
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, submittedContentDigest, placement, disposition } = item;
+    const { messageId, content, submittedContentDigest, submittedIntent, placement, disposition } =
+      item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1683,6 +1690,9 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         MAX_ATTACHMENT_COUNT,
       ),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
+      ...(submittedIntent !== undefined
+        ? { submittedIntent: normalizeSubmittedTurnIntent(submittedIntent) }
+        : {}),
       placement,
       disposition,
     });
@@ -1698,6 +1708,7 @@ function rootTurnAdmissionPayloadsEqual(
     isDeepStrictEqual(left.execution, right.execution) &&
     isDeepStrictEqual(left.turnOrchestration, right.turnOrchestration) &&
     isDeepStrictEqual(left.skillInvocation, right.skillInvocation) &&
+    isDeepStrictEqual(left.authorization, right.authorization) &&
     (left.normalizedInput === null || right.normalizedInput === null
       ? left.normalizedInput === right.normalizedInput
       : messageContentsEqual(left.normalizedInput, right.normalizedInput)) &&
@@ -1710,6 +1721,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
         messageContentsEqual(source.content, other.content)
       );
     })
@@ -1765,6 +1777,11 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
   if (admission.skillInvocation && execution.kind !== 'external_message') {
     throw new Error(
       'Invalid root turn admission contract: Skill invocation requires external message execution',
+    );
+  }
+  if (admission.authorization && execution.kind !== 'external_message') {
+    throw new Error(
+      'Invalid root turn admission contract: authorization proof requires external message execution',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -1828,6 +1845,7 @@ function deepFreezeRootTurnAdmission(admission: RootTurnAdmission): RootTurnAdmi
   Object.freeze(admission.execution);
   if (admission.turnOrchestration) Object.freeze(admission.turnOrchestration);
   if (admission.skillInvocation) Object.freeze(admission.skillInvocation);
+  if (admission.authorization) Object.freeze(admission.authorization);
   if (admission.normalizedInput) deepFreezeRootTurnMessageContent(admission.normalizedInput);
   for (const sourceMessage of admission.sourceMessages) {
     deepFreezeRootTurnMessageContent(sourceMessage.content);
@@ -1850,6 +1868,44 @@ function normalizeTurnOrchestration(value: unknown): TurnOrchestration | undefin
   return Object.freeze({ mode: value.mode, source: value.source });
 }
 
+function normalizeRootTurnAdmissionAuthorization(
+  value: unknown,
+): RootTurnAdmissionAuthorization | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, [
+      'kind',
+      'requestId',
+      'principalId',
+      'grantId',
+      'approvedAt',
+      'approvedBy',
+    ]) ||
+    value.kind !== 'session_turn_access_request' ||
+    typeof value.requestId !== 'string' ||
+    !isSafeId(value.requestId) ||
+    typeof value.principalId !== 'string' ||
+    !isGraphControlIdentity(value.principalId) ||
+    typeof value.grantId !== 'string' ||
+    !isSafeId(value.grantId) ||
+    !Number.isSafeInteger(value.approvedAt) ||
+    (value.approvedAt as number) < 0 ||
+    typeof value.approvedBy !== 'string' ||
+    !isGraphControlIdentity(value.approvedBy)
+  ) {
+    throw new Error('Invalid root turn admission authorization');
+  }
+  return Object.freeze({
+    kind: value.kind,
+    requestId: value.requestId,
+    principalId: value.principalId,
+    grantId: value.grantId,
+    approvedAt: value.approvedAt as number,
+    approvedBy: value.approvedBy,
+  });
+}
+
 function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
   const keys = [
     'schemaVersion',
@@ -1863,7 +1919,7 @@ function hasRootTurnAdmissionKeys(record: Record<string, unknown>): boolean {
     'sourceMessages',
     'admittedAt',
   ];
-  const optionalKeys = ['turnOrchestration', 'skillInvocation'].filter((key) =>
+  const optionalKeys = ['turnOrchestration', 'skillInvocation', 'authorization'].filter((key) =>
     Object.hasOwn(record, key),
   );
   return hasExactKeys(record, [...keys, ...optionalKeys]);

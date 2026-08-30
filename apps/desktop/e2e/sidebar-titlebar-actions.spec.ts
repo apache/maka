@@ -39,3 +39,21 @@ test('expanded sidebar chrome follows Astryx toolbar geometry', async ({ window 
   expect(trailingInset).toBeLessThanOrEqual(16);
   await expect(actions).toHaveCSS('column-gap', '4px');
 });
+
+test('collapsed sidebar removes its icon rail but keeps the titlebar restore action', async ({
+  window,
+}) => {
+  const sidebar = window.getByRole('navigation', { name: '任务列表' });
+  const collapseSidebar = window.getByRole('button', { name: '收起侧边栏' });
+
+  if (await collapseSidebar.isVisible()) await collapseSidebar.click();
+
+  await expect(sidebar).toBeHidden();
+  await expect(window.locator('.maka-sidenav-motion')).toHaveCSS('width', '0px');
+  const expandSidebar = window.getByRole('button', { name: '展开侧边栏' });
+  await expect(expandSidebar).toBeVisible();
+
+  await expandSidebar.click();
+  await expect(sidebar).toBeVisible();
+  await expect(window.getByRole('button', { name: '收起侧边栏' })).toBeVisible();
+});

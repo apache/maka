@@ -121,6 +121,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
+  readonly assertNoContextOffloadReferences?: (sessionIds: readonly string[]) => Promise<void>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
@@ -191,6 +192,7 @@ export class HostSessionRetirementCoordinator {
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
   readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
+  readonly #assertNoContextOffloadReferences: HostSessionRetirementCoordinatorOptions['assertNoContextOffloadReferences'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
@@ -218,6 +220,7 @@ export class HostSessionRetirementCoordinator {
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
     this.#taskLedger = options.taskLedger;
+    this.#assertNoContextOffloadReferences = options.assertNoContextOffloadReferences;
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
@@ -333,6 +336,7 @@ export class HostSessionRetirementCoordinator {
           if (plan.archive.sessionIds.length > 0) {
             archiveHandles = await this.#prepareRetirement(plan.archive, 'archive');
           }
+          await this.#assertNoContextOffloadReferences?.(plan.remove.sessionIds);
           const allSessionIds = [...plan.remove.sessionIds, ...plan.archive.sessionIds];
           await this.#finalizeWorkspacePatches(allSessionIds);
           await this.#disposeBackends(allSessionIds);

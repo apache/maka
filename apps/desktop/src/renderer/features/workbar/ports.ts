@@ -177,6 +177,7 @@ export interface WorkbarInspectorService {
 }
 
 export interface WorkbarAttachmentsService {
+  readBytes(sessionId: string, artifactId: string): Promise<ArtifactBinaryReadResult>;
   pickFiles(): Promise<
     | {
         ok: true;

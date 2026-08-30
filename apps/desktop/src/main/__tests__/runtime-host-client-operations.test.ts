@@ -98,6 +98,8 @@ test('restarts a paginated catalog read instead of mixing revisions', async () =
 test('resolves WorkHub coordination through the dedicated Host operation', async () => {
   const { client, requests } = clientWithResponses([
     { sessionId: 'maka_workhub_coordination' },
+    { candidateSetId: `sha256:${'a'.repeat(64)}`, candidates: [] },
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
     { turnId: 'answer-turn' },
     { turnId: 'summary-turn' },
   ]);
@@ -105,6 +107,18 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   assert.deepEqual(await client.resolveWorkHubCoordinationSession(), {
     sessionId: 'maka_workhub_coordination',
   });
+  assert.deepEqual(await client.listWorkHubCoordinationCandidates(), {
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidates: [],
+  });
+  assert.deepEqual(
+    await client.actWorkHubCoordination({
+      actionId: 'action',
+      userText: 'Question',
+      proposal: { disposition: 'answer_here' },
+    }),
+    { disposition: 'answer_here', coordinationTurnId: 'action-turn' },
+  );
   assert.deepEqual(
     await client.answerWorkHubCoordination({ turnId: 'answer-turn', text: 'Question' }),
     { turnId: 'answer-turn' },
@@ -119,6 +133,15 @@ test('resolves WorkHub coordination through the dedicated Host operation', async
   );
   assert.deepEqual(requests, [
     { operation: 'workhub.coordination.resolve', input: {} },
+    { operation: 'workhub.coordination.candidates', input: {} },
+    {
+      operation: 'workhub.coordination.act',
+      input: {
+        actionId: 'action',
+        userText: 'Question',
+        proposal: { disposition: 'answer_here' },
+      },
+    },
     {
       operation: 'workhub.coordination.answer',
       input: { turnId: 'answer-turn', text: 'Question' },
@@ -205,7 +228,7 @@ test('settles revision cleanup when abandon observes an already absent target', 
   assert.equal(await client.removeSessionCopy('revision-copy'), 'removed');
 });
 
-test('merges a configuration patch into each fresh CAS projection', async () => {
+test('replays one exact model patch across fresh CAS projections', async () => {
   const { client, requests } = clientWithResponses([
     { kind: 'session', session: session('session-1', 10) },
     { kind: 'revision_conflict', expectedRevision: 10, actualRevision: 11 },
@@ -217,16 +240,22 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       kind: 'committed',
       session: session('session-1', 12, {
         collaborationMode: 'plan',
-        permissionMode: 'ask',
+        llmConnectionId: 'connection-b',
+        model: 'model-b',
       }),
     },
   ]);
 
   const updated = await client.updateSessionConfiguration('session-1', {
-    permissionMode: 'ask',
+    modelTarget: {
+      kind: 'explicit',
+      connectionId: 'connection-b',
+      connectionSlug: 'test-connection',
+      model: 'model-b',
+    },
   });
 
-  assert.equal(updated.permissionMode, 'ask');
+  assert.equal(updated.llmConnectionId, 'connection-b');
   assert.equal(updated.collaborationMode, 'plan');
   assert.deepEqual(
     requests
@@ -236,31 +265,25 @@ test('merges a configuration patch into each fresh CAS projection', async () => 
       {
         sessionId: 'session-1',
         expectedRevision: 10,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
         },
       },
       {
         sessionId: 'session-1',
         expectedRevision: 11,
-        configuration: {
+        patch: {
           modelTarget: {
             kind: 'explicit',
+            connectionId: 'connection-b',
             connectionSlug: 'test-connection',
-            model: 'test-model',
+            model: 'model-b',
           },
-          thinkingLevel: null,
-          permissionMode: 'ask',
-          collaborationMode: 'plan',
-          orchestrationMode: 'default',
         },
       },
     ],
@@ -979,6 +1002,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

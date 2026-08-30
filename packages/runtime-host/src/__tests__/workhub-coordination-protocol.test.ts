@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import {
+  decodeWorkHubCoordinationActInput,
+  decodeWorkHubCoordinationActResult,
   decodeWorkHubCoordinationAnswerInput,
+  decodeWorkHubCoordinationCandidatesResult,
   decodeWorkHubCoordinationRecordInput,
   decodeWorkHubCoordinationResolveInput,
   decodeWorkHubCoordinationResolveResult,
@@ -78,6 +81,170 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
         turnId: 'turn',
         userText: 'user',
         assistantText: 'x'.repeat(8 * 1024 + 1),
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('WorkHub Coordination candidates are bounded and carry opaque proposal identities', () => {
+  const result = decodeWorkHubCoordinationCandidatesResult({
+    candidateSetId: `sha256:${'a'.repeat(64)}`,
+    candidates: [
+      {
+        candidateRef: 'candidate_a',
+        sessionId: 'session-a',
+        sessionName: 'Payments',
+        workspace: {
+          target: { kind: 'host_path', path: '/workspace/payments' },
+          hostCwd: '/workspace/payments',
+        },
+        state: 'active',
+        updatedAt: 7,
+      },
+    ],
+  });
+  assert.equal(result.candidates[0]?.candidateRef, 'candidate_a');
+  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.candidates'].mode, 'query');
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.candidates'), true);
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationCandidatesResult({
+        candidateSetId: 'caller-invented',
+        candidates: [],
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+});
+
+test('WorkHub Coordination action input is a closed disposition union', () => {
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-answer',
+      userText: 'What changed?',
+      proposal: { disposition: 'answer_here' },
+    }),
+    {
+      actionId: 'action-answer',
+      userText: 'What changed?',
+      proposal: { disposition: 'answer_here' },
+    },
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-delegate',
+      userText: 'Continue payments',
+      candidateSetId: `sha256:${'b'.repeat(64)}`,
+      proposal: { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
+    }).proposal,
+    { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-create',
+      userText: 'Create an accessibility audit',
+      proposal: { disposition: 'create_new', title: 'Accessibility audit' },
+      create: {
+        workspace: { kind: 'host_path', path: '/workspace' },
+      },
+    }).create,
+    {
+      workspace: { kind: 'host_path', path: '/workspace' },
+    },
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-create-with-identity',
+        userText: 'Create an accessibility audit',
+        proposal: { disposition: 'create_new', title: 'Accessibility audit' },
+        create: {
+          sessionId: 'renderer-invented',
+          workspace: { kind: 'host_path', path: '/workspace' },
+        },
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-bypass',
+        userText: 'Continue payments',
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: 'candidate_payments',
+          sessionId: 'invented-session',
+        },
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-escalate',
+        userText: 'Continue payments',
+        proposal: { disposition: 'answer_here' },
+        permissionMode: 'bypass',
+        tools: ['shell'],
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-implicit-create',
+        userText: 'Continue payments',
+        proposal: { disposition: 'delegate_existing', candidateRef: 'candidate_payments' },
+        candidateSetId: `sha256:${'d'.repeat(64)}`,
+        create: {
+          workspace: { kind: 'host_path', path: '/workspace' },
+        },
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-replace',
+        userText: 'No, use login instead',
+        candidateSetId: `sha256:${'e'.repeat(64)}`,
+        proposal: {
+          disposition: 'delegate_existing',
+          candidateRef: 'candidate_login',
+          replace: {
+            candidateRef: 'candidate_payments',
+            expectedTurnId: 'turn-payments',
+          },
+        },
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.equal(HOST_OPERATION_SPECS['workhub.coordination.act'].mode, 'command');
+  assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.act'), true);
+});
+
+test('WorkHub Coordination action results preserve the admitted disposition', () => {
+  assert.deepEqual(
+    decodeWorkHubCoordinationActResult({
+      disposition: 'delegate_existing',
+      targetSessionId: 'payments',
+      targetTurnId: 'turn-payments',
+      steered: true,
+    }),
+    {
+      disposition: 'delegate_existing',
+      targetSessionId: 'payments',
+      targetTurnId: 'turn-payments',
+      steered: true,
+    },
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActResult({
+        disposition: 'delegate_existing',
+        targetSessionId: 'payments',
+        targetTurnId: 'turn-payments',
+        permissionMode: 'bypass',
       }),
     (error) => error instanceof RuntimeHostProtocolError,
   );

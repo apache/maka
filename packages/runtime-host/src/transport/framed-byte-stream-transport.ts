@@ -87,11 +87,14 @@ export class FramedByteStreamTransport implements RuntimeHostMessageTransport {
       this.#drainInbound();
     });
     stream.onError((error) => this.#fail(transportFailure(error)));
-    void stream.closed.then(() => {
-      if (!this.#readTerminal && !this.#failure) {
-        this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
-      }
-    });
+    void stream.closed.then(
+      () => {
+        if (!this.#readTerminal && !this.#failure) {
+          this.#fail(new RuntimeHostTransportError('closed', 'Runtime Host transport closed'));
+        }
+      },
+      (error) => this.#fail(transportFailure(asError(error))),
+    );
   }
 
   async read(timeoutMs: number): Promise<unknown> {

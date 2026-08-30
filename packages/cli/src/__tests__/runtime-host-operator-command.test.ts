@@ -21,12 +21,14 @@ import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { decodeRuntimeHostActivationFrame } from '@maka/runtime-host/operator';
 import {
   HOST_OPERATION_SPECS,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import { runRuntimeHostManagedActivationCli } from '../runtime-host-activation-command.js';
 import {
   resolveRuntimeHostAccessIssue,
   type RuntimeHostAccessIssueOptions,
@@ -39,6 +41,104 @@ const projectRootA = process.platform === 'win32' ? 'C:\\srv\\projects' : '/srv/
 const projectRootB = process.platform === 'win32' ? 'D:\\data' : '/mnt/data';
 
 describe('Runtime Host operator commands', () => {
+  test('parses resident Peer Mesh management without accepting invitations in argv', () => {
+    const target = {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    };
+    const base = [
+      '--managed-root-id',
+      target.rootId,
+      '--operator-deployment-id',
+      target.deploymentId,
+      '--expected-service-id',
+      target.serviceId,
+      '--expected-root-path',
+      target.rootPath,
+      '--expected-root-id',
+      target.rootId,
+      '--expected-deployment-id',
+      target.deploymentId,
+    ];
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'mesh', 'join', '--framed', ...base]), {
+      kind: 'runtime-host-service-peer-mesh',
+      action: 'join',
+      json: false,
+      framed: true,
+      managedRootId: target.rootId,
+      operatorDeploymentId: target.deploymentId,
+      expectedTarget: target,
+    });
+    assert.equal(
+      parseRuntimeHostCommand(['service', 'mesh', 'join', '--invitation', 'secret', ...base]).kind,
+      'error',
+    );
+    assert.deepEqual(parseRuntimeHostCommand(['service', 'mesh', 'transit', '--off', ...base]), {
+      kind: 'runtime-host-service-peer-mesh',
+      action: 'transit',
+      json: false,
+      managedRootId: target.rootId,
+      operatorDeploymentId: target.deploymentId,
+      expectedTarget: target,
+      meshId: null,
+    });
+  });
+
+  test('parses and emits the stable framed managed activation contract', async () => {
+    const rootId = 'a'.repeat(64);
+    assert.deepEqual(parseRuntimeHostCommand(['activate', '--framed', '--root-id', rootId]), {
+      kind: 'runtime-host-managed-activate',
+      rootId,
+      framed: true,
+    });
+    assert.equal(parseRuntimeHostCommand(['activate', '--root-id', rootId]).kind, 'error');
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'connect',
+        '--framed',
+        '--root-id',
+        rootId,
+        '--repair-root-after-remount',
+      ]),
+      {
+        kind: 'runtime-host-managed-connect',
+        rootId,
+        framed: true,
+        repairRootAfterRemount: true,
+      },
+    );
+
+    let output = '';
+    assert.equal(
+      await runRuntimeHostManagedActivationCli(
+        { rootId },
+        {
+          activate: async () => ({
+            schemaVersion: 1,
+            kind: 'result',
+            deploymentId: '00000000-0000-4000-8000-000000000001',
+            configRevision: 1,
+            rootId,
+            hostEpoch: 'host-epoch',
+            pid: 1234,
+            protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
+            endpoint: {
+              host: '127.0.0.1',
+              port: 43_210,
+              websocketPath: '/runtime-host',
+            },
+          }),
+          writeOutput: (value) => {
+            output += value;
+          },
+        },
+      ),
+      0,
+    );
+    assert.equal(decodeRuntimeHostActivationFrame(output)?.kind, 'result');
+  });
   test('parses project management and machine-readable service readiness', () => {
     assert.deepEqual(parseRuntimeHostCommand(['project', 'list', '--root', '/srv/maka']), {
       kind: 'runtime-host-project-list',
@@ -69,6 +169,11 @@ describe('Runtime Host operator commands', () => {
         prefer: true,
       },
     );
+    assert.deepEqual(parseRuntimeHostCommand(['serve', '--json', '--no-project-roots']), {
+      kind: 'runtime-host-serve',
+      json: true,
+      projectDirectoryRoots: [],
+    });
     assert.deepEqual(
       parseRuntimeHostCommand([
         'serve',
@@ -86,6 +191,53 @@ describe('Runtime Host operator commands', () => {
           { label: 'Data', path: projectRootB },
         ],
       },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--project-root-json',
+        JSON.stringify({ label: 'Work=Primary', path: projectRootA }),
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        json: false,
+        projectDirectoryRoots: [{ label: 'Work=Primary', path: projectRootA }],
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--json',
+      ]),
+      {
+        kind: 'runtime-host-serve',
+        managedServiceConfigPath: '/config/Maka/runtime-host-service.json',
+        json: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--root',
+        '/srv/maka',
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'serve',
+        '--managed-service-config',
+        '/config/Maka/runtime-host-service.json',
+        '--peer-native-path',
+        '/opt/maka/peer.node',
+        '--peer-key',
+        '/config/Maka/peer.key',
+      ]).kind,
+      'error',
     );
     assert.deepEqual(
       parseRuntimeHostCommand([
@@ -168,6 +320,40 @@ describe('Runtime Host operator commands', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'access',
+        'issue',
+        '--kind',
+        'capability-provider',
+        '--principal',
+        'terminal-mcp-provider',
+        '--capability-owner-credential',
+        'terminal-owner-credential',
+      ]),
+      {
+        kind: 'runtime-host-access-issue',
+        principalKind: 'capability_provider',
+        principalId: 'terminal-mcp-provider',
+        operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+        canPublishClientCapabilities: true,
+        canUseHostPaths: false,
+        capabilityOwnerCredentialId: 'terminal-owner-credential',
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'access',
+        'issue',
+        '--principal',
+        'terminal-owner',
+        '--grant',
+        'session.catalog.query',
+        '--capability-owner-credential',
+        'terminal-owner-credential',
+      ]).kind,
+      'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
         'prepare',
         '--current-fingerprint',
         'a'.repeat(32),
@@ -225,9 +411,21 @@ describe('Runtime Host operator commands', () => {
         'access.credential.revoke',
         'access.credential.rotation.prepare',
         'access.credential.rotation.revoke',
+        'access.principal.revoke',
+        'collaboration.turn-request.acknowledge',
+        'collaboration.turn-request.create',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
+        'peer.mesh.close',
+        'peer.mesh.create',
+        'peer.mesh.invite',
+        'peer.mesh.join',
+        'peer.mesh.leave',
+        'peer.mesh.query',
+        'peer.mesh.reconcile',
+        'peer.mesh.remove',
+        'peer.mesh.transit.set',
       ],
     );
   });

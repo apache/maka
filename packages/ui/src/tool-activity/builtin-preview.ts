@@ -38,11 +38,13 @@ import type { ToolActivityItem } from '../materialize.js';
 
 /** Desktop-adapted wrapper with an explicit resolved locale. */
 export function formatToolInvocationLine(
-  item: Pick<ToolActivityItem, 'toolName' | 'args' | 'activityKind'>,
+  item: Pick<ToolActivityItem, 'toolName' | 'args' | 'argsPreview' | 'activityKind'>,
   locale: UiLocale,
 ): string | undefined {
+  // Live Runtime Host frames carry only the bounded args preview; the durable
+  // transcript supplies full args at turn end. Format from whichever exists.
   return coreFormatToolInvocationLine(
-    { toolName: item.toolName, args: item.args },
+    { toolName: item.toolName, args: item.args ?? item.argsPreview },
     locale,
   );
 }

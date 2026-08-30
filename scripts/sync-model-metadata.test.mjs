@@ -18,11 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { main, PROVIDERS } from './sync-model-metadata.mjs';
+import { loadTypeScriptModule, main, PROVIDERS } from './sync-model-metadata.mjs';
 
 function fixtureCatalog() {
   const catalog = {};
@@ -45,6 +45,73 @@ function fixtureCatalog() {
   catalog.unused = { id: 'unused', name: 'Unused', doc: 'https://example.test/unused', models: {} };
   return catalog;
 }
+
+test('the committed snapshot generates both TypeScript modules offline', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-build-'));
+  try {
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => assert.fail('offline generation must not fetch');
+    try {
+      await main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--output',
+        metadata,
+        '--pricing-output',
+        pricing,
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const [metadataSource, pricingSource] = await Promise.all([
+      readFile(metadata, 'utf8'),
+      readFile(pricing, 'utf8'),
+    ]);
+    const [metadataModule, pricingModule] = await Promise.all([
+      loadTypeScriptModule(metadataSource),
+      loadTypeScriptModule(pricingSource),
+    ]);
+
+    assert.ok(Object.keys(metadataModule.GENERATED_MODELS_DEV_METADATA).length > 0);
+    assert.ok(Array.isArray(pricingModule.GENERATED_MODEL_PRICING));
+    assert.ok(pricingModule.GENERATED_MODEL_PRICING.length > 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a no-op sync preserves generated output mtimes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-noop-'));
+  try {
+    const metadata = join(root, 'metadata.ts');
+    const pricing = join(root, 'pricing.ts');
+    const argv = [
+      'node',
+      'sync-model-metadata.mjs',
+      '--output',
+      metadata,
+      '--pricing-output',
+      pricing,
+    ];
+    await main(argv);
+
+    const oldTime = new Date('2001-01-01T00:00:00.000Z');
+    await Promise.all([utimes(metadata, oldTime, oldTime), utimes(pricing, oldTime, oldTime)]);
+    const before = await Promise.all([stat(metadata), stat(pricing)]);
+
+    await main(argv);
+
+    const after = await Promise.all([stat(metadata), stat(pricing)]);
+    assert.deepEqual(
+      after.map(({ mtimeMs }) => mtimeMs),
+      before.map(({ mtimeMs }) => mtimeMs),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('a refresh persists the exact selected input and check fails on stale output', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-'));
@@ -119,8 +186,8 @@ test('a refresh persists the exact selected input and check fails on stale outpu
     await writeFile(
       metadata,
       (await readFile(metadata, 'utf8')).replace(
-        "displayName: 'Corrected Model'",
-        "displayName: 'Stale'",
+        '"displayName":"Corrected Model"',
+        '"displayName":"Stale"',
       ),
     );
     await assert.rejects(

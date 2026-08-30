@@ -34,7 +34,7 @@ import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
-import type { SessionStartMode } from './explore-agent.js';
+import type { SessionStartMode } from './deep-research.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
 import type { TurnOrigin } from './turn-origin.js';
@@ -61,6 +61,8 @@ export interface CreateSessionInput {
    * legacy row is a real session whose connection slug resolves to nothing,
    * which is what the readiness projection already says about it.
    */
+  /** Immutable Connection entity identity. Omitted only while copying legacy state. */
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /** Falls back to the connection's defaultModel if omitted. */
   model?: string;
@@ -115,11 +117,6 @@ export interface UserMessageInput extends MessageContent {
   turnOrchestration?: TurnOrchestration;
   /** Trusted host-supplied tool protocol override for this run only. */
   toolMode?: ToolMode;
-  parentRunId?: string;
-  /** Child AgentRun whose durable conversation this child continues. */
-  resumedFromRunId?: string;
-  /** Immediate child AgentRun retried without appending another user prompt. */
-  retriedFromRunId?: string;
   agentId?: string;
   agentName?: string;
   parentTurnId?: string;
@@ -129,21 +126,6 @@ export interface UserMessageInput extends MessageContent {
   parentSessionId?: string;
   /** What triggered this turn, when it is not a direct user message. */
   origin?: TurnOrigin;
-}
-
-export interface AgentSpec {
-  id: string;
-  name: string;
-  systemPrompt: string;
-}
-
-export interface ChildAgentTurnInput {
-  turnId: string;
-  parentRunId: string;
-  spec: AgentSpec;
-  prompt: string;
-  /** Trusted, preflighted child AgentRun whose RuntimeEvent history is replayed. */
-  resumedFromRunId?: string;
 }
 
 export interface RegenerateTurnInput {

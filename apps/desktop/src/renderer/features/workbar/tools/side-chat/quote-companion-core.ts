@@ -26,6 +26,7 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import type { PermissionMode } from '@maka/core/permission';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
 import type { SessionSummary, TurnRecord } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -55,6 +56,21 @@ export type CompanionErrorCode =
   | 'fork_unsupported'
   | 'send_failed'
   | 'send_rejected';
+
+export function sessionHasExactModelChoice(
+  session: SessionSummary | undefined,
+  choices: readonly ChatModelChoice[],
+): boolean {
+  return Boolean(
+    session?.llmConnectionId &&
+    choices.some(
+      (choice) =>
+        choice.connectionId === session.llmConnectionId &&
+        choice.connectionSlug === session.llmConnectionSlug &&
+        choice.model === session.model,
+    ),
+  );
+}
 
 export type EnsureCompanionForkResult =
   | { status: 'ready'; session: SessionSummary }

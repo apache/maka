@@ -20,19 +20,28 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import type { UiLocale } from '@maka/core/ui-locale';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
-import { resolveStorageRoot } from '@maka/storage/root-authority';
+import {
+  resolveStorageRoot,
+  tryAcquireInteractiveRootOwner,
+} from '@maka/storage/root-authority';
+import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
+  PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_SESSION_ID,
   TURN_SESSION_ID,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
 import {
+  partialHistoryMessages,
+  partialHistorySession,
   promptRailMessages,
   promptRailSession,
   turnMessages,
@@ -46,13 +55,14 @@ import {
   writeScheduledTasks,
   writeSettings,
 } from './e2e-fixture/scenarios-settings.js';
-import { usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
+import { usageStatsRecords, usageStatsSessions } from './e2e-fixture/scenarios-usage.js';
 
 const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'settings-models',
   'turn-narrative',
   'turn-narrative-browser',
   'chat-prompt-rail',
+  'chat-partial-history',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -168,6 +178,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       // this window scrolls smoothly is a per-launch choice (`scrollMotion`),
       // because only the jump case needs it and it costs seconds of settling.
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
+    case 'chat-partial-history':
+      return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -211,13 +223,20 @@ export async function seedE2eFixture(input: {
   const scenario = input.fixture.scenario;
   await rm(input.workspaceRoot, { recursive: true, force: true });
   await mkdir(input.workspaceRoot, { recursive: true });
-  await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
+  const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
 
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));
+  }
+  if (scenario === 'chat-partial-history') {
+    await writeSession(
+      input.workspaceRoot,
+      partialHistorySession(now),
+      partialHistoryMessages(now),
+    );
   }
   if (scenario === 'sidebar-search-modal-open') {
     for (const seed of longSidebarSessions(now)) {
@@ -241,6 +260,42 @@ export async function seedE2eFixture(input: {
   if (scenario === 'settings-usage') {
     for (const seed of usageStatsSessions(now)) {
       await writeSession(input.workspaceRoot, seed.header, seed.messages);
+    }
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the E2E fixture storage root');
+    const usage = await openInteractiveUsageStoresForWrite(owner.lease);
+    // The AgentRun store and the interactive usage stores share one refcounted
+    // operational-state DB keyed by the lease's resolved path, so the canonical
+    // model-call events written here are visible to `catchUpModelCallProjection`
+    // below. It MUST be the lease's canonicalPath, not the raw workspaceRoot —
+    // a /var vs /private/var realpath difference would open a different DB.
+    const runStore = createSqliteAgentRunStore(owner.lease.canonicalPath);
+    try {
+      const records = usageStatsRecords(now);
+      // Model calls seed the CANONICAL ledger through the AgentRun event stream;
+      // tools stay on the legacy telemetry table (there is no canonical tool
+      // ledger). This is what actually exercises the canonical merge branch.
+      for (const { header: runHeader, attempt } of records.modelCalls) {
+        await runStore.createRun(runHeader);
+        await runStore.appendEvent(attempt.sessionId, attempt.runId, {
+          id: attempt.attemptId,
+          type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
+          ts: attempt.completedAt,
+          sessionId: attempt.sessionId,
+          runId: attempt.runId,
+          turnId: attempt.turnId,
+          data: { ...attempt },
+        });
+      }
+      for (const record of records.tools) await usage.telemetry.recordToolInvocation(record);
+      await runStore.close?.();
+      // Fold the appended attempts into the read model so the page's first read
+      // sees canonical usage (production's readCanonicalUsage also repairs).
+      await usage.modelCalls.catchUpModelCallProjection();
+      await usage.flush();
+    } finally {
+      await usage.close();
+      await owner.close();
     }
   }
 }

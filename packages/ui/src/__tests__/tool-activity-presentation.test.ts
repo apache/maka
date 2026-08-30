@@ -468,3 +468,73 @@ describe('tool activity presentation', () => {
     assert.match(enMarkup, /aria-label="Copy: BetaTool"/);
   });
 });
+
+describe('collapsed tool row target', () => {
+  const baseItem = {
+    toolUseId: 'tool-collapsed',
+    toolName: 'Bash',
+    status: 'running' as const,
+  };
+
+  it('shows the invocation line derived from args when no intent exists', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'git status --porcelain' },
+      }],
+    }));
+    assert.match(markup, /git status --porcelain/);
+  });
+
+  it('prefers the runtime-authored intent over the args-derived line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        intent: '检查渲染入口',
+        args: { command: 'rg renderEntry' },
+      }],
+    }));
+    assert.match(markup, /检查渲染入口/);
+  });
+
+  it('names a live call from the wire args preview before full args arrive', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: undefined,
+        argsPreview: { command: 'npm test' },
+      }],
+    }));
+    assert.match(markup, /npm test/);
+  });
+
+  it('caps a long command so the collapsed row stays single-line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: `echo ${'x'.repeat(300)}` },
+      }],
+    }));
+    const matches = markup.match(/x{100,}/g) ?? [];
+    for (const run of matches) {
+      assert.ok(run.length <= 119, `expected a capped run, got ${run.length}`);
+    }
+    assert.match(markup, /…/);
+  });
+
+  it('redacts secrets in the collapsed target', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'curl -H "Authorization: Bearer live-secret-token" https://example.com' },
+      }],
+    }));
+    assert.doesNotMatch(markup, /live-secret-token/);
+    assert.match(markup, /redacted/i);
+  });
+});

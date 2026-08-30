@@ -32,6 +32,7 @@ import {
   type McpServerConfig,
   type McpStdioServerConfig,
 } from '@maka/core/mcp';
+import { withProcessLifetimeFileUpdateLock } from './process-lifetime-file-update-lock.js';
 
 const MAX_SERVERS = 100;
 const MAX_ID_LENGTH = 128;
@@ -41,11 +42,13 @@ const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export interface McpConfigStore {
   get(): Promise<McpConfigFile>;
-  /** One serialized read-transform-write. `apply` sees the CURRENT on-disk
-   * config and returns the next one, inside the store's write queue — the
-   * seam for restore-plus-mutation flows whose separate get()-then-write
-   * would race a concurrent writer and roll a rotated secret back. */
-  transform(apply: (current: McpConfigFile) => McpConfigFile): Promise<McpConfigFile>;
+  /** One cross-process read-transform-write transaction. `apply` sees the
+   * current on-disk config and may finish asynchronous effects that must
+   * precede the commit, such as retiring credentials. The shared file lock
+   * remains held until the replacement document is durable. */
+  transform(
+    apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+  ): Promise<McpConfigFile>;
   upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile>;
   remove(serverId: string): Promise<McpConfigFile>;
 }
@@ -124,19 +127,26 @@ export function normalizeMcpImport(source: string): McpConfigFile {
 }
 
 class FileMcpConfigStore implements McpConfigStore {
-  private queue: Promise<void> = Promise.resolve();
+  private directoryReady: Promise<void> | undefined;
 
   constructor(private readonly path: string) {}
 
   async get(): Promise<McpConfigFile> {
-    return this.serial(async () => this.readOrCreate());
+    try {
+      return await this.read();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return this.withUpdateLock(() => this.readOrCreate());
+    }
   }
 
-  async transform(apply: (current: McpConfigFile) => McpConfigFile): Promise<McpConfigFile> {
-    return this.serial(async () => {
+  async transform(
+    apply: (current: McpConfigFile) => McpConfigFile | Promise<McpConfigFile>,
+  ): Promise<McpConfigFile> {
+    return this.withUpdateLock(async () => {
       const current = await this.readOrCreate();
-      const next = normalizeMcpConfig(apply(current));
-      enforceEndpointPolicyOnChanges(current, next);
+      const next = normalizeMcpConfig(await apply(current));
+      assertMcpEndpointPolicyOnChanges(current, next);
       await this.write(next);
       return next;
     });
@@ -144,35 +154,33 @@ class FileMcpConfigStore implements McpConfigStore {
 
   async upsert(serverId: string, config: McpServerConfig): Promise<McpConfigFile> {
     assertSafeKey(serverId, 'server id');
-    return this.serial(async () => {
-      const current = await this.readOrCreate();
-      const next = normalizeMcpConfig({
+    return this.transform((current) =>
+      normalizeMcpConfig({
         version: MCP_CONFIG_VERSION,
         mcpServers: { ...current.mcpServers, [serverId]: config },
-      });
-      enforceEndpointPolicyOnChanges(current, next);
-      await this.write(next);
-      return next;
-    });
+      }),
+    );
   }
 
   async remove(serverId: string): Promise<McpConfigFile> {
     assertSafeKey(serverId, 'server id');
-    return this.serial(async () => {
-      const current = await this.readOrCreate();
+    return this.transform((current) => {
       const { [serverId]: _removed, ...mcpServers } = current.mcpServers;
-      const next: McpConfigFile = { version: MCP_CONFIG_VERSION, mcpServers };
-      await this.write(next);
-      return next;
+      return { version: MCP_CONFIG_VERSION, mcpServers };
     });
+  }
+
+  private async read(): Promise<McpConfigFile> {
+    const text = await readFile(this.path, 'utf8');
+    if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
+      throw new Error('MCP config exceeds 1 MiB');
+    }
+    return normalizeMcpConfig(JSON.parse(text));
   }
 
   private async readOrCreate(): Promise<McpConfigFile> {
     try {
-      const text = await readFile(this.path, 'utf8');
-      if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES)
-        throw new Error('MCP config exceeds 1 MiB');
-      return normalizeMcpConfig(JSON.parse(text));
+      return await this.read();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const empty = createDefaultMcpConfig();
@@ -181,10 +189,14 @@ class FileMcpConfigStore implements McpConfigStore {
     }
   }
 
+  private async withUpdateLock<T>(operation: () => Promise<T>): Promise<T> {
+    await this.ensureDirectory();
+    return withProcessLifetimeFileUpdateLock(this.path, operation);
+  }
+
   private async write(config: McpConfigFile): Promise<void> {
     const dir = dirname(this.path);
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    if (process.platform !== 'win32') await chmod(dir, 0o700);
+    await this.ensureDirectory();
     const tempPath = join(dir, `.mcp-${randomUUID()}.tmp`);
     try {
       await writeFile(tempPath, `${JSON.stringify(config, null, 2)}\n`, {
@@ -200,18 +212,18 @@ class FileMcpConfigStore implements McpConfigStore {
     }
   }
 
-  private async serial<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.queue;
-    let release!: () => void;
-    this.queue = new Promise<void>((resolve) => {
-      release = resolve;
+  private ensureDirectory(): Promise<void> {
+    if (this.directoryReady) return this.directoryReady;
+    const dir = dirname(this.path);
+    const ready = (async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      if (process.platform !== 'win32') await chmod(dir, 0o700);
+    })();
+    this.directoryReady = ready;
+    void ready.catch(() => {
+      if (this.directoryReady === ready) this.directoryReady = undefined;
     });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
+    return ready;
   }
 }
 
@@ -234,7 +246,7 @@ export function assertMcpEndpointPolicy(server: McpServerConfig, serverId: strin
   }
 }
 
-function enforceEndpointPolicyOnChanges(
+export function assertMcpEndpointPolicyOnChanges(
   previous: McpConfigFile | undefined,
   next: McpConfigFile,
 ): void {

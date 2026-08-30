@@ -19,6 +19,10 @@
 
 import type { InteractiveRuntimeHostCandidateOptions } from './server/candidate.js';
 import { isCandidateStartupAttemptId } from './candidate-startup-failure.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  type RuntimeHostManagedLaunchClaim,
+} from './operator/managed-deployment.js';
 
 export interface ParsedInteractiveRuntimeHostCandidateArguments
   extends InteractiveRuntimeHostCandidateOptions {
@@ -36,6 +40,8 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     'idle-grace-ms',
     'handshake-timeout-ms',
     'generation',
+    'managed-deployment-id',
+    'managed-config-revision',
   ]);
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -60,6 +66,7 @@ export function parseInteractiveRuntimeHostCandidateArguments(
   if (!isCandidateStartupAttemptId(startupAttemptId)) {
     throw new Error('Runtime Host candidate requires a valid --startup-attempt-id');
   }
+  const managedLaunchClaim = readManagedLaunchClaim(values);
   return {
     rootPath,
     expectedRootId,
@@ -68,7 +75,27 @@ export function parseInteractiveRuntimeHostCandidateArguments(
     idleGraceMs: readOptionalInteger(values, 'idle-grace-ms'),
     handshakeTimeoutMs: readOptionalInteger(values, 'handshake-timeout-ms'),
     ...(values.has('generation') ? { generation: readGeneration(values) } : {}),
+    ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
   };
+}
+
+function readManagedLaunchClaim(
+  values: ReadonlyMap<string, string>,
+): RuntimeHostManagedLaunchClaim | undefined {
+  const deploymentId = values.get('managed-deployment-id');
+  const rawRevision = values.get('managed-config-revision');
+  if (deploymentId === undefined && rawRevision === undefined) return undefined;
+  if (deploymentId === undefined || rawRevision === undefined) {
+    throw new Error('Runtime Host candidate requires a complete managed launch claim');
+  }
+  const configRevision = Number(rawRevision);
+  if (!Number.isSafeInteger(configRevision) || configRevision <= 0) {
+    throw new Error('Invalid --managed-config-revision');
+  }
+  return decodeRuntimeHostManagedLaunchClaim({
+    deploymentId,
+    configRevision,
+  });
 }
 
 function readGeneration(values: Map<string, string>): string {

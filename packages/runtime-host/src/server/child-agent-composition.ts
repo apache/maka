@@ -32,24 +32,12 @@ import { type SessionManager } from '@maka/runtime/session-manager';
 
 type ChildAgentAuthority = Pick<
   SessionManager,
-  | 'spawnChildAgent'
-  | 'spawnChildSession'
-  | 'prepareChildAgentResume'
-  | 'resumeChildAgent'
-  | 'retryChildAgent'
-  | 'listChildAgents'
-  | 'readChildAgentOutput'
+  'spawnChildSession' | 'listChildAgents' | 'readChildAgentOutput'
 >;
 
 export type HostChildAgentBackendCapabilities = Pick<
   ConstructorParameters<typeof AiSdkBackend>[0],
-  | 'spawnChildAgent'
-  | 'spawnChildSession'
-  | 'prepareChildAgentResume'
-  | 'resumeChildAgent'
-  | 'retryChildAgent'
-  | 'listChildAgents'
-  | 'readChildAgentOutput'
+  'spawnChildSession' | 'listChildAgents' | 'readChildAgentOutput'
 >;
 
 export interface HostChildAgentToolComposition {
@@ -84,7 +72,6 @@ export function bindHostChildAgentBackend(
   parentSessionId: string,
 ): HostChildAgentBackendCapabilities {
   return {
-    spawnChildAgent: (input) => authority.spawnChildAgent(parentSessionId, input),
     spawnChildSession: (input) =>
       authority.spawnChildSession(parentSessionId, {
         spawnedBy: {
@@ -100,10 +87,6 @@ export function bindHostChildAgentBackend(
         ...(input.onReady ? { onReady: input.onReady } : {}),
         ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       }),
-    prepareChildAgentResume: (sourceRunId) =>
-      authority.prepareChildAgentResume(parentSessionId, sourceRunId),
-    resumeChildAgent: (input) => authority.resumeChildAgent(parentSessionId, input),
-    retryChildAgent: (input) => authority.retryChildAgent(parentSessionId, input),
     listChildAgents: () => authority.listChildAgents(parentSessionId),
     readChildAgentOutput: (input) => authority.readChildAgentOutput(parentSessionId, input),
   };

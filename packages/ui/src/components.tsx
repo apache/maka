@@ -28,8 +28,13 @@ export { ModuleHubSelector } from './module-hub-selector.js';
 export type { ModuleHubHeader } from './module-hub-selector.js';
 export { SearchModal } from './search-modal.js';
 export { SessionListPanel } from './session-list-panel.js';
-export type { SessionViewMode } from './session-list-panel.js';
-export type { SidebarBuildStamp, SidebarUpdateReminder } from './session-sidebar-nav.js';
+export { SessionRailProvider } from './session-rail-context.js';
+export type {
+  SessionRailChrome,
+  SessionRailData,
+  SessionViewMode,
+} from './session-rail-context.js';
+export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
 export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';
 export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolDisplayName } from './tool-format.js';
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
@@ -37,7 +42,11 @@ export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
 export { ChatSurfaceLayout } from './chat-surface-layout.js';
 export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
-export { ChatView, type LiveContentActivationSnapshot } from './chat-view.js';
+export {
+  ChatView,
+  type LiveContentActivationSnapshot,
+  type TransientUserMessageProjection,
+} from './chat-view.js';
 export { WorkspacePicker } from './workspace-picker.js';
 export type { WorkspacePickerModel } from './workspace-picker.js';
 export {

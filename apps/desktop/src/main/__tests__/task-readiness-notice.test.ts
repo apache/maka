@@ -26,14 +26,14 @@ import {
   resolveTaskReadinessModelTarget,
 } from '../../renderer/task-readiness-notice.js';
 
-test('an unlocked stale session checks the send projection rebind target', () => {
+test('an unlocked stale session keeps its stored target until explicit recovery', () => {
   assert.deepEqual(
     resolveTaskReadinessModelTarget(
       { llmConnectionSlug: 'stale', model: 'removed-model' },
-      { kind: 'rebind', connectionSlug: 'healthy', model: 'ready-model' },
+      { kind: 'blocked', reason: 'connection_missing', connectionLocked: false },
       undefined,
     ),
-    { connectionSlug: 'healthy', model: 'ready-model' },
+    { connectionSlug: 'stale', model: 'removed-model' },
   );
 });
 

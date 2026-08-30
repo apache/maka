@@ -214,7 +214,12 @@ async function checkedOpenAiCodexFetch(
       edgeRetry += 1;
       continue;
     }
-    throw openAiCodexHttpError(response, detail);
+    throw openAiCodexHttpError(
+      response,
+      detail,
+      edgeRetry === edgeRetryDelaysMs.length &&
+        isTransientOpenAiCodexEdgeRejection(response, detail),
+    );
   }
 }
 
@@ -267,6 +272,12 @@ function effectiveOpenAiCodexRequestSignal(
 
 function isTransientOpenAiCodexEdgeRejection(response: Response, detail: string): boolean {
   if (response.status !== 403) return false;
+  try {
+    const parsed = JSON.parse(detail) as unknown;
+    if (parsed !== null && typeof parsed === 'object') return false;
+  } catch {
+    // Non-JSON response bodies remain eligible for the edge rejection check.
+  }
   const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
   return contentType.includes('text/html') || /^\s*(?:<!doctype html|<html\b)/i.test(detail);
 }
@@ -332,12 +343,19 @@ function formatOpenAiCodexHttpError(statusCode: number, detail: string): string 
     : `Codex OAuth request failed: HTTP ${statusCode}`;
 }
 
-function openAiCodexHttpError(response: Response, detail: string): Error {
-  const providerCode = openAiCodexProviderCode(detail);
+function openAiCodexHttpError(
+  response: Response,
+  detail: string,
+  exhaustedEdgeRejection = false,
+): Error {
+  const providerCode = exhaustedEdgeRejection
+    ? 'openai_codex_edge_rejection'
+    : openAiCodexProviderCode(detail);
   const rawRequestId = response.headers.get('x-request-id')?.trim();
   const requestId = rawRequestId ? redactSecrets(rawRequestId).slice(0, 256) : undefined;
   return Object.assign(new Error(formatOpenAiCodexHttpError(response.status, detail)), {
-    name: 'OpenAiCodexHttpError',
+    name: exhaustedEdgeRejection ? 'OpenAiCodexEdgeRejectionError' : 'OpenAiCodexHttpError',
+    ...(exhaustedEdgeRejection ? { code: 'openai_codex_edge_rejection' } : {}),
     statusCode: response.status,
     ...(providerCode ? { data: { error: { code: providerCode } } } : {}),
     ...(requestId ? { responseHeaders: { 'x-request-id': requestId.slice(0, 256) } } : {}),

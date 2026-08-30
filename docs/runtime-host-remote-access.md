@@ -21,7 +21,7 @@
 
 [简体中文](./runtime-host-remote-access.zh-CN.md)
 
-Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket.
+Maka Desktop, TUI, and CLI can connect to a Runtime Host through TLS, SSH, or explicitly enabled plaintext WebSocket. The CLI and TUI also support the experimental direct-peer transport described below.
 
 ## Set up a Linux or macOS Host
 
@@ -30,7 +30,7 @@ Runtime Host in one command. Linux uses a systemd user service; macOS uses a Lau
 requires an active GUI login session for that user.
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -42,7 +42,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@latest maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup
@@ -55,7 +55,7 @@ npm --workspace maka-agent exec -- maka runtime-host project add /srv/projects/e
 npm --workspace maka-agent exec -- maka runtime-host project list --root /srv/maka
 ```
 
-The Desktop directory picker publishes the service user's home directory by default. To publish a different allowlist, pass one or more named roots when starting the service:
+The Desktop directory picker publishes the service user's home directory by default. Managed services persist that default as an explicit Project root policy. To publish a different allowlist, pass one or more named roots when starting the service:
 
 ```sh
 npm --workspace maka-agent exec -- maka runtime-host serve \
@@ -66,6 +66,10 @@ npm --workspace maka-agent exec -- maka runtime-host serve \
 ```
 
 When any `--project-root <label>=<absolute-path>` option is present, only those roots are available to remote directory browsing. The option is repeatable up to eight times. Maka resolves every root at startup and keeps browsing and registration contained within the selected root.
+
+Pass `--no-project-roots` to publish an explicit empty policy. This disables directory browsing and registration without removing Projects that are already registered. Desktop-managed SSH Hosts expose the same complete policy in Host settings. Applying it uses the SSH management plane, refuses to interrupt active tasks without confirmation, and restarts the service only when the effective policy changes.
+
+For a managed service, the Host-owned service configuration is the single authority for this policy. The system service starts from that configuration instead of retaining a second copy of the roots in its launch definition.
 
 Project paths stay on the Host. Issue a credential for each Client:
 
@@ -97,6 +101,45 @@ global Maka installation, not `npx`. A replacement is committed only after the n
 ready; failure restores the previous service.
 
 ## Choose a connection method
+
+### Experimental direct peer
+
+The released CLI and Desktop include the native direct-peer transport; the Host does not need Rust
+or a source checkout. For an SSH-managed Host, Desktop can enable it from that computer's management
+dialog and creates a separate experimental profile without deleting the SSH profile. Only one
+profile for the same State Root can be enabled at a time.
+
+The equivalent CLI flow uses the exact service target printed by setup:
+
+```sh
+maka runtime-host service peer enable \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+
+maka runtime-host service peer descriptor \
+  --expected-service-id '<serviceId>' \
+  --expected-root-path '<rootPath>' \
+  --expected-root-id '<rootId>'
+```
+
+The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
+Use those values with `runtime-host profile set --peer-id ... --peer-route ...`; supply the
+credential created by setup through `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL`. Disable and re-enable
+preserve the PeerId and listener settings; `peer rotate` intentionally changes the PeerId, and
+service uninstall removes its key while retaining the State Root. Pass
+`peer enable --clear-coordination-relays` to remove every configured coordination relay.
+
+This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
+does not replace an existing TLS, SSH, or overlay-network fallback. By default, the Host uses a
+bounded client-only view of the public IPFS DHT to discover Circuit Relay v2 candidates and fills a
+target of two accepted reservations after accounting for manual relays. Manually configured relays
+remain preferred. Disable or restore this
+best-effort discovery with `peer enable --no-automatic-relay-discovery` or
+`peer enable --automatic-relay-discovery`; disabling it leaves manual relays intact. Public peers can
+observe the discovery connection and may refuse or drop reservations. Only accepted reservations
+are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
+connection instead of carrying Session traffic through the relay.
 
 ### Direct TLS
 
@@ -147,6 +190,12 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
 
 Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
+
+To reach the current computer from another Desktop, enable **Remote access** in the same settings
+page. Maka keeps the existing Local Host and State Root, moves that Host under the OS service
+manager, and adds a Direct peer listener alongside Local IPC. Share the one-time connection code
+with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
+the background service returns Local Host ownership to Desktop and retains all data.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 

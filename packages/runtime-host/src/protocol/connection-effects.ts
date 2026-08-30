@@ -21,12 +21,13 @@ import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   decodeConnectionModelId,
   decodeConnectionModel,
+  decodeConnectionSlug,
   decodeProviderType,
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
-  normalizeCatalogConnectionBaseUrl,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
+  type ConnectionOnboardingTarget,
   type ModelDiscoverySource,
 } from '@maka/core/runtime-policy';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
@@ -85,15 +86,7 @@ export interface ConnectionTestRunInput {
 }
 
 export interface ConnectionOnboardingVerifyInput {
-  readonly providerType: ProviderType;
-  /**
-   * The existing connection this onboarding edits, when the client resolved
-   * one — connection identity stays authoritative instead of being re-derived
-   * from the provider type, so a relay created under a custom slug is updated
-   * in place rather than duplicated at the canonical slug. `null` targets the
-   * canonical-slug connection, creating it if absent.
-   */
-  readonly connectionId: string | null;
+  readonly target: ConnectionOnboardingTarget;
   readonly apiKey: string | null;
   /**
    * Endpoint override for providers whose registry entry carries none (the
@@ -116,12 +109,20 @@ export type ConnectionOnboardingVerifyResult =
         | 'connection_not_found'
         | 'credential_not_configured'
         | 'base_url_not_configured'
-        | 'slug_conflict';
+        | 'catalog_full';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };
 
 export type ConnectionOnboardingSaveResult =
-  | { readonly kind: 'saved' }
+  | {
+      readonly kind: 'saved';
+      readonly connection: {
+        readonly connectionId: string;
+        readonly revision: number;
+        readonly slug: string;
+        readonly providerType: ProviderType;
+      };
+    }
   | {
       readonly kind: 'rejected';
       readonly reason:
@@ -129,7 +130,7 @@ export type ConnectionOnboardingSaveResult =
         | 'connection_not_found'
         | 'credential_not_configured'
         | 'base_url_not_configured'
-        | 'slug_conflict'
+        | 'catalog_full'
         | 'model_unavailable'
         // The connection changed between model discovery and the commit; the
         // discovered inventory no longer describes it. Re-run the wizard.
@@ -240,15 +241,13 @@ export const CONNECTION_EFFECT_OPERATION_SPECS = {
 
 export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionOnboardingSaveInput {
   const input = requireExactRecord(value, 'connection onboarding save input', [
-    'providerType',
-    'connectionId',
+    'target',
     'apiKey',
     'baseUrl',
     'enabledModelIds',
   ]);
   const verified = decodeConnectionOnboardingVerifyInput({
-    providerType: input.providerType,
-    connectionId: input.connectionId,
+    target: input.target,
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
   });
@@ -273,8 +272,29 @@ export function decodeConnectionOnboardingSaveResult(
 ): ConnectionOnboardingSaveResult {
   const result = requireRecord(value, 'connection onboarding save result');
   if (result.kind === 'saved') {
-    requireExactRecord(result, 'saved connection onboarding result', ['kind']);
-    return { kind: 'saved' };
+    const saved = requireExactRecord(result, 'saved connection onboarding result', [
+      'kind',
+      'connection',
+    ]);
+    const connection = requireExactRecord(
+      saved.connection,
+      'saved connection onboarding identity',
+      ['connectionId', 'revision', 'slug', 'providerType'],
+    );
+    const basis = decodeDomain(() =>
+      decodeConnectionVersionBasis({
+        connectionId: connection.connectionId,
+        revision: connection.revision,
+      }),
+    );
+    return {
+      kind: 'saved',
+      connection: {
+        ...basis,
+        slug: decodeDomain(() => decodeConnectionSlug(connection.slug)),
+        providerType: decodeDomain(() => decodeProviderType(connection.providerType)),
+      },
+    };
   }
   if (result.kind === 'failed') {
     const failed = requireExactRecord(result, 'failed connection onboarding save result', [
@@ -293,7 +313,7 @@ export function decodeConnectionOnboardingSaveResult(
       rejected.reason !== 'connection_not_found' &&
       rejected.reason !== 'credential_not_configured' &&
       rejected.reason !== 'base_url_not_configured' &&
-      rejected.reason !== 'slug_conflict' &&
+      rejected.reason !== 'catalog_full' &&
       rejected.reason !== 'model_unavailable' &&
       rejected.reason !== 'superseded')
   ) {
@@ -306,30 +326,46 @@ export function decodeConnectionOnboardingVerifyInput(
   value: unknown,
 ): ConnectionOnboardingVerifyInput {
   const input = requireExactRecord(value, 'connection onboarding verification input', [
-    'providerType',
-    'connectionId',
+    'target',
     'apiKey',
     'baseUrl',
   ]);
-  const providerType = decodeDomain(() => decodeProviderType(input.providerType));
   return {
-    providerType,
-    connectionId:
-      input.connectionId === null ? null : requireEntityId(input.connectionId, 'connectionId'),
+    target: decodeConnectionOnboardingTarget(input.target),
     apiKey:
       input.apiKey === null
         ? null
         : requireString(input.apiKey, 'connection onboarding API key', 64 * 1024),
-    // The shared catalog normalizer owns the URL rules (http/https, no
-    // credentials/query/fragment, 2048-byte cap) and collapses a value equal
-    // to the provider default back to null, so the wire never carries a
-    // redundant override.
     baseUrl:
       input.baseUrl === null
         ? null
-        : (decodeDomain(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ??
-          null),
+        : requireString(input.baseUrl, 'connection onboarding base URL', 2048),
   };
+}
+
+function decodeConnectionOnboardingTarget(value: unknown): ConnectionOnboardingTarget {
+  const target = requireRecord(value, 'connection onboarding target');
+  if (target.kind === 'create') {
+    const exact = requireExactRecord(target, 'create connection onboarding target', [
+      'kind',
+      'providerType',
+    ]);
+    return {
+      kind: 'create',
+      providerType: decodeDomain(() => decodeProviderType(exact.providerType)),
+    };
+  }
+  if (target.kind === 'existing') {
+    const exact = requireExactRecord(target, 'existing connection onboarding target', [
+      'kind',
+      'connectionId',
+    ]);
+    return {
+      kind: 'existing',
+      connectionId: requireEntityId(exact.connectionId, 'connectionId'),
+    };
+  }
+  throw invalidProtocolFrame('Invalid connection onboarding target');
 }
 
 export function decodeConnectionOnboardingVerifyResult(
@@ -366,7 +402,7 @@ export function decodeConnectionOnboardingVerifyResult(
       rejected.reason !== 'connection_not_found' &&
       rejected.reason !== 'credential_not_configured' &&
       rejected.reason !== 'base_url_not_configured' &&
-      rejected.reason !== 'slug_conflict')
+      rejected.reason !== 'catalog_full')
   ) {
     throw invalidProtocolFrame('Invalid connection onboarding rejection');
   }

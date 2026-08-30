@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -85,6 +85,12 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  /**
+   * Live-only bounded/redacted args subset from the Runtime Host wire (full
+   * args arrive with the durable transcript at turn end). Display formatters
+   * read `args ?? argsPreview`; never rendered as raw JSON.
+   */
+  argsPreview?: unknown;
   origin?: 'provider' | 'code_mode';
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
@@ -132,16 +138,6 @@ export interface ToolActivityItem {
   shellRunSource?: "owned" | "unavailable";
 }
 
-// system_note kinds that we surface inline to the user. Everything else
-// (session_resume, connection_locked, mode_change-as-internal-audit, …)
-// stays in the JSONL audit trail but is hidden from the chat surface so
-// the conversation reads like a conversation, not a debug log.
-const VISIBLE_SYSTEM_NOTES = new Set<string>([
-  "context_compacted",
-  "context_compaction_failed_open",
-  "step_limit",
-]);
-
 function systemNoteLabel(kind: string, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages.systemNotes;
   if (kind === "context_compacted") return copy.contextCompacted;
@@ -183,7 +179,7 @@ export function materializeChat(
       });
     if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       items.push({
         id: message.id,
@@ -424,6 +420,17 @@ export function overlayLiveTurn(
   );
   if (
     targetIndex >= 0
+    && liveTurn.steps.length === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
+  ) {
+    return turns;
+  }
+  // A send arm is only a presentation claim that the next message may still
+  // arrive. It is not a Turn record and must not manufacture one while the
+  // canonical transcript is catching up. A real live step (or steering
+  // message) is sufficient evidence to project a missing external Turn.
+  if (
+    targetIndex < 0
     && liveTurn.steps.length === 0
     && (liveTurn.pendingSteering?.length ?? 0) === 0
   ) {
@@ -757,7 +764,7 @@ export function materializeTurns(
       }
     } else if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       turn.notes.push({
         id: message.id,

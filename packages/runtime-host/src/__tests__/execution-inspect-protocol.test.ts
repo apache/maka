@@ -24,25 +24,12 @@ import type { AgentRunInspectDocument, SessionInspectDocument } from '@maka/core
 import {
   decodeClientFrame,
   decodeHostFrame,
-  EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   HOST_OPERATION_SPECS,
 } from '../protocol/index.js';
 
 describe('execution inspect protocol', () => {
-  test('decodes closed resolution and evidence query shapes', () => {
-    assert.deepEqual(
-      decodeClientFrame({
-        requestId: 'request-resolve',
-        operation: 'execution.inspect.resolve',
-        input: { id: 'run-1', requestedKind: 'agent_run', sessionId: 'session-1' },
-      }),
-      {
-        requestId: 'request-resolve',
-        operation: 'execution.inspect.resolve',
-        input: { id: 'run-1', requestedKind: 'agent_run', sessionId: 'session-1' },
-      },
-    );
+  test('decodes closed evidence query shapes', () => {
     assert.deepEqual(
       decodeClientFrame({
         requestId: 'request-trace',
@@ -138,7 +125,7 @@ describe('execution inspect protocol', () => {
     );
   });
 
-  test('rejects open shapes, inconsistent resolution, and oversized payloads', () => {
+  test('rejects open shapes and oversized payloads', () => {
     assert.throws(
       () =>
         decodeClientFrame({
@@ -157,37 +144,6 @@ describe('execution inspect protocol', () => {
           result: {
             ...tracePage(),
             nextCursor: 'not a cursor',
-          },
-        }),
-      isProtocolError,
-    );
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          requestId: 'request-status',
-          operation: 'execution.inspect.resolve',
-          ok: true,
-          result: { status: 'resolved', candidates: [], truncated: false },
-        }),
-      isProtocolError,
-    );
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          requestId: 'request-page',
-          operation: 'execution.inspect.resolve',
-          ok: true,
-          result: {
-            status: 'ambiguous',
-            candidates: Array.from(
-              { length: EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS + 1 },
-              (_, index) => ({
-                kind: 'agent_run',
-                id: 'run-1',
-                sessionId: `session-${index}`,
-              }),
-            ),
-            truncated: true,
           },
         }),
       isProtocolError,
@@ -255,18 +211,6 @@ describe('execution inspect protocol', () => {
             },
           },
         }),
-      isProtocolError,
-    );
-    assert.throws(
-      () =>
-        HOST_OPERATION_SPECS['execution.inspect.resolve'].assertOutputForInput?.(
-          { id: 'run-1', requestedKind: 'agent_run', sessionId: 'session-1' },
-          {
-            status: 'resolved',
-            candidates: [{ kind: 'agent_run', id: 'run-1', sessionId: 'session-2' }],
-            truncated: false,
-          },
-        ),
       isProtocolError,
     );
   });

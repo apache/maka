@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { expect, test } from './fixtures';
+import { ensureSidebarExpanded, expect, test } from './fixtures';
 import type { Locator, Page } from '@playwright/test';
 
 /**
@@ -48,6 +48,7 @@ import type { Locator, Page } from '@playwright/test';
  */
 
 async function openSettingsPage(page: Page, section: string) {
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('button', { name: section, exact: true }).click();
 }

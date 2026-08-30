@@ -122,6 +122,11 @@
 
 .maka-mcp-choice-icon {
   margin-inline-start: var(--space-1);
+  /* The icon shares Item's startContent flex slot with the 24px radio circle.
+     That slot defaults to align-items: stretch, which top-aligns a definite-height
+     child, leaving the 14px icon riding above the radio dot and the centered label.
+     Center it so all three sit on the same axis. */
+  align-self: center;
 }
 
 .maka-mcp-manual-form,

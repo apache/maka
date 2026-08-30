@@ -165,22 +165,10 @@
      (connected/ok semantics); running/focus-ring/nav-active/selection follow
      --accent, while link text follows the solid tier below. */
   --accent: oklch(0.70 0.135 250);
-  /* Checked controls (--control) use a slightly deeper blue (L0.65, one step
-     below the accent) so the near-white glyph clears WCAG 1.4.11 non-text
-     contrast 3:1 (3.09:1); the logo L0.70 only reaches 2.55:1. */
-  /* PALETTE-LEAK-0: derive hue/chroma from --accent instead of hardcoding
-     blue h250 — palettes only override the base tokens, so literals here
-     kept the send button, onboarding CTA and every checked control blue
-     after a palette switch (same bug --brand-deep already had and fixed).
-     Lightness anchors stay literal to preserve the WCAG 1.4.11 tuning;
-     min(c, …) keeps the default palette byte-identical while following
-     low-chroma palettes down. */
-  --control: oklch(from var(--accent) 0.65 min(c, 0.135) h);
-  --control-foreground: oklch(from var(--accent) 0.985 min(c, 0.003) h);
   /* The SOLID accent tier: a filled accent surface that carries TEXT, and
-     accent-colored text/icons on a plain surface. --action (L0.85 chip) and
-     --control (L0.65, tuned for WCAG 1.4.11 non-text 3:1) are both too light
-     to clear 1.4.3's 4.5:1 for text, so neither can back a solid button label.
+     accent-colored text/icons on a plain surface. --action (L0.85 chip) is too
+     light to clear 1.4.3's 4.5:1 for text, so it cannot back a solid button
+     label.
      L0.52 is the lowest lightness that clears 4.5:1 against white for EVERY
      palette (weakest is tokyo-night at 4.78:1); chroma and hue follow --accent
      so palettes still read as themselves. This is the token the Astryx bridge
@@ -219,8 +207,7 @@
      different families — no longer the near-identical ambers they once were. */
   --warning: oklch(0.50 0.18 55);
 
-  /* Legacy brand affordance for a few emphasized surfaces. New checked
-     control states use --control instead.
+  /* Legacy brand affordance for a few emphasized surfaces.
      PR-THEME-APPLY-AND-DONE-POLISH-0 (WAWQAQ msg `dec85e5b`): was a static
      "Solarpunk deep" green, which made palette switching invisible on the
      Done CTA and made every palette read as olive-green. */
@@ -280,11 +267,8 @@
   --warning-wash:            oklch(from var(--warning)     l c h / 0.08);
   --warning-wash-border:     oklch(from var(--warning)     l c h / 0.24);
   --destructive-wash:        oklch(from var(--destructive) l c h / 0.08);
-  --destructive-wash-border: oklch(from var(--destructive) l c h / 0.24);
   --info-wash:               oklch(from var(--info)        l c h / 0.08);
   --info-wash-border:        oklch(from var(--info)        l c h / 0.24);
-  --destructive-wash-strong:        oklch(from var(--destructive) l c h / 0.12);
-  --destructive-wash-strong-border: oklch(from var(--destructive) l c h / 0.40);
 
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
@@ -342,7 +326,6 @@
      with no governance benefit. */
   --border-width-hairline: 1px;
   --border-width-thick:    2px;
-  --border-width-accent:   3px;
   --muted:         oklch(from var(--foreground) l c h / 0.05);
   /* Ink ladder (visual system 2.0, T1): three tiers about 2x apart, all above
      4.5:1. Measured against --surface-raised, light reads 19.1 / 9.8 / 4.8.
@@ -363,10 +346,9 @@
      (NOT the solid --foreground-N tints, which mix with --background and
      would change rendering — the ring would thicken, the wash would stop
      tracking the backdrop). The file-attachment card uses these for its bg
-     (0.06), icon-tile (0.10), and inset ring (0.12); other components at
+     (0.06) and inset ring (0.12); other components at
      the same density can reuse the tier instead of a fresh alpha. */
   --foreground-alpha-6:  oklch(from var(--foreground) l c h / 0.06);
-  --foreground-alpha-10: oklch(from var(--foreground) l c h / 0.10);
   --foreground-alpha-12: oklch(from var(--foreground) l c h / 0.12);
   /* Visual System 2.0 (T2/T3). Added so the three sites that were borrowing
      `--border-strong` as a strong neutral TINT can say what they mean: a
@@ -436,13 +418,9 @@
     oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
 
   /* === z-index scale (semantic) === */
-  --z-base: 0;
   --z-sticky: 20;
   --z-titlebar: 40;
-  --z-panel: 50;
-  --z-dropdown: 100;
   --z-tooltip: 150;
-  --z-modal: 200;
   --z-overlay: 300;
   /* PR-FE-BUG-HUNT-9 (kenji audit reminder 9, finding #4): named
      micro-z tokens for the two raw z-index sites styles.css used to
@@ -737,7 +715,6 @@
      so the scale governs padding/margin/gap only (not width/height/
      inset/grid), per the adversarial review in #430. */
   --spacing: 4px;              /* base step — the single ruler */
-  --space-0: 0;
   --space-0-5: calc(var(--spacing) * 0.5);   /* 2px */
   --space-1: calc(var(--spacing) * 1);       /* 4px */
   --space-1-5: calc(var(--spacing) * 1.5);   /* 6px */
@@ -752,20 +729,16 @@
   --space-12: calc(var(--spacing) * 12);     /* 48px */
   --space-16: calc(var(--spacing) * 16);     /* 64px */
 
-  /* Five-rung icon scale, mirroring ICON_SIZE in @maka/ui's icons.tsx —
-     these tokens exist for the CSS-clamped sites; pick by the role the
-     glyph plays, not by eye. */
+  /* ICON_SIZE in @maka/ui's icons.tsx is the icon scale; components pass it as
+     a prop. These two rungs exist only for the sites that size a glyph from
+     CSS — add a rung here when a CSS site needs one, not to mirror the TS. */
   --icon-meta: 13px;
   --icon-control: 14px;
-  --icon-chrome: 16px;
-  --icon-empty: 20px;
-  --icon-plate: 28px;
-  --icon-size: var(--icon-chrome); /* deprecated alias, one release */
 
   /* === motion ===
      Custom easing curves per emil-design-eng — the built-in CSS easings
      are too weak to feel intentional. Use --ease-out-strong for
-     feedback/state changes and --ease-in-out-strong for on-screen movement.
+     feedback/state changes.
 
      PR-MOTION-TOKEN-CONVERGE-0 (kenji's category 4, 2026-06-24):
      duration scale paired with the easing scale. The values come from
@@ -789,7 +762,6 @@
      (styles/chat-message.css does this for the tool detail row). Copy the
      neighbour, or use this scale — never split the difference by hand. */
    --ease-out-strong: cubic-bezier(0.16, 1, 0.3, 1);
-   --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
    --ease-linear: linear;
 
   --duration-quick: 120ms;
@@ -808,7 +780,6 @@
       PR-OPACITY-CONVERGE-0 (issue #520 PR2). */
    --opacity-disabled: 0.5;    /* disabled controls / strongly dimmed text */
    --opacity-muted: 0.65;     /* secondary text / icons / muted affordances */
-   --opacity-pending: 0.8;    /* pending / active / in-progress states */
    --opacity-overlay: 0.04;   /* body::after subtle overlay (light) */
 
    /* === focus-ring recipe ===
@@ -926,28 +897,21 @@
                                       sidebar nav row, session row,
                                       settings nav row, select, first-run
                                       stepper item                        */
-  /* #1879: this tier used to name "first-run checklist row" as a consumer.
-     Nothing in the renderer reads it — that row is the stepper item above, and
-     measured, its floor is 29px, so it takes `lg`. A tier documenting a
-     consumer it does not have is the same defect as an exemption documenting a
-     rule it does not govern; the tier stays (Astryx defines it and a prominent
-     button is a real future need) but it is honest about having no reader. */
-  --h-control-xl:  var(--size-element-lg);  /* 36px — no consumer today     */
-  --h-control-2xl: var(--space-10); /* 40px — toolbar, large touch target  */
 
-  /* === content measure (#520 PR4 item 16) ================================
-     The chat content max-width — the column the conversation, tool output,
-     composer, and onboarding hero share so prose + controls line up at one
-     measure. Previously a local token on .mainColumn with a 680px fallback
-     at every call site; promoted to :root so the token is canonical and the
-     fallbacks are redundant. */
-  --maka-chat-measure: 680px;
+  /* === reading measure (#520 PR4 item 16, DESIGN.md §7) ==================
+     One reading column, and the only one: the transcript turn, the composer,
+     header notices, hero, plan mode, WorkHub, the Daily Review report and the
+     Artifact Preview all stop at this edge, so a turn and the box you answer
+     it in line up.
 
-  /* Astryx's AI Chat conversation uses an 800px message area while Markdown
-     keeps prose at 680px and lets code/tables fill the wider container. Keep
-     that exception transcript-scoped so the shared Maka surfaces above do not
-     change width as a side effect of making source evidence readable. */
-  --maka-transcript-measure: 800px;
+     Markdown containers own this — `MarkdownBody` passes `contentWidth: 100%`
+     precisely so no component holds a measure of its own.
+
+     800px, not the 680px this token carried before: #3617 widened transcript
+     turns alone so code, tables, and tool output stayed readable, which left
+     the answer wider than the composer under it. Two measures for one column
+     is what put a second right edge inside a turn; there is one now. */
+  --maka-reading-measure: 800px;
 
   /* === settings ==========================================================
      One right-edge cap for a settings row's end slot — the read-only value
@@ -1004,23 +968,12 @@
 
   --accent: oklch(0.74 0.15 250);
   /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light
-     mode, so the "light, fresh button" reads consistently across themes;
-     --control uses the same L0.65 blue as light so the white glyph clears
-     WCAG 1.4.11 non-text contrast 3:1 (3.09:1) in both themes. */
-  /* PALETTE-LEAK-0: derive hue/chroma from --accent instead of hardcoding
-     blue h250 — palettes only override the base tokens, so literals here
-     kept the send button, onboarding CTA and every checked control blue
-     after a palette switch (same bug --brand-deep already had and fixed).
-     Lightness anchors stay literal to preserve the WCAG 1.4.11 tuning;
-     min(c, …) keeps the default palette byte-identical while following
-     low-chroma palettes down. */
-  --control: oklch(from var(--accent) 0.65 min(c, 0.135) h);
-  --control-foreground: oklch(from var(--accent) 0.985 min(c, 0.003) h);
+     mode, so the "light, fresh button" reads consistently across themes. */
   /* Dark mode inverts the solid tier: the fill goes LIGHT and carries dark
      ink, matching Astryx's own --color-on-accent (light-dark(#fff, #171717)).
      L0.76 clears 4.5:1 against that ink for every palette (weakest is coral
-     at 7.16:1). See the light-mode note above for why --action/--control
-     cannot serve this role. */
+     at 7.16:1). See the light-mode note above for why --action cannot serve
+     this role. */
   --accent-solid: oklch(from var(--accent) 0.76 c h);
   --accent-wash: oklch(from var(--accent) 0.28 min(c, 0.05) h);
   --link: var(--accent-solid);
@@ -1422,7 +1375,6 @@
   --maka-text-heading-4: var(--text-heading-4-weight) var(--text-heading-4-size)/var(--text-heading-4-leading) var(--maka-font-family);
   --maka-text-heading-5: var(--text-heading-5-weight) var(--text-heading-5-size)/var(--text-heading-5-leading) var(--maka-font-family);
   --maka-text-display-1: var(--text-display-1-weight) var(--text-display-1-size)/var(--text-display-1-leading) var(--maka-font-family);
-  --maka-text-display-2: var(--text-display-2-weight) var(--text-display-2-size)/var(--text-display-2-leading) var(--maka-font-family);
   --maka-text-display-3: var(--text-display-3-weight) var(--text-display-3-size)/var(--text-display-3-leading) var(--maka-font-family);
     --maka-text-code: var(--text-code-weight) var(--text-code-size)/var(--text-code-leading) var(--font-family-code);
   }
@@ -1513,7 +1465,7 @@
        between-turn gap (.maka-chatContent) — one density, no between/within
        split. */
     gap: var(--space-3);
-    max-width: var(--maka-transcript-measure);
+    max-width: var(--maka-reading-measure);
     margin: 0 auto;
     width: 100%;
     box-sizing: border-box;

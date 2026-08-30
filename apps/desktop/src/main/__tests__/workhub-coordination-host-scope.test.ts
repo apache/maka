@@ -19,10 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  desktopSessionKey,
-  parseDesktopSessionKey,
-} from '../../shared/runtime-host-identity.js';
+import { desktopSessionKey } from '../../shared/runtime-host-identity.js';
 import { scopeWorkHubSessionsToCoordinationHost } from '../../renderer/workhub-coordination-host-scope.js';
 import {
   startWorkHubCoordinationLifecycle,
@@ -30,7 +27,7 @@ import {
 } from '../../renderer/workhub-coordination-lifecycle.js';
 import type { WorkHubDesktopSessionBridge } from '../../renderer/workhub-session-port.js';
 
-test('WorkHub candidates follow the resolved Coordination Session Host only', async () => {
+test('WorkHub projections follow the resolved Coordination Session Host only', async () => {
   const sessionA = desktopSessionKey({ hostId: 'host-a', sessionId: 'ordinary-a' });
   const sessionB = desktopSessionKey({ hostId: 'host-b', sessionId: 'ordinary-b' });
   let coordinationSessionId: string | undefined;
@@ -44,18 +41,8 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
       completeHostIds: ['host-a', 'host-b'],
     }),
     listTurns: async () => [],
-    create: async () => {
-      throw new Error('unscoped create must not be used');
-    },
-    send: async () => ({ ok: true, turnId: 'turn' }),
-    stop: async () => undefined,
+    queryMessageExecutions: async () => ({ resolutions: [] }),
     subscribeChanges: () => () => undefined,
-  };
-  const createdFor: string[] = [];
-  const createOnCoordinationHost = async (coordinationId: string) => {
-    createdFor.push(coordinationId);
-    const { hostId } = parseDesktopSessionKey(coordinationId);
-    return ordinarySession(hostId === 'host-a' ? sessionA : sessionB);
   };
   const scopeSessions = () => {
     const generation = coordinationGeneration;
@@ -65,7 +52,6 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
         sessionId: coordinationSessionId,
         isCurrent: () => generation === coordinationGeneration,
       },
-      createOnCoordinationHost,
     );
   };
   let sessions = scopeSessions();
@@ -93,13 +79,11 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
   });
 
   const unresolvedList = sessions.list();
-  const unresolvedCreate = assert.rejects(sessions.create({ name: 'unsafe' }), /unresolved/);
   assert.deepEqual(await unresolvedList, []);
-  await unresolvedCreate;
   await Promise.resolve();
   assert.deepEqual((await sessions.list()).map((session) => session.id), [sessionA]);
   await assert.rejects(
-    () => sessions.send(sessionB, { type: 'send', turnId: 'turn', text: 'wrong Host' }),
+    () => sessions.listTurns(sessionB),
     /another Runtime Host/,
   );
   assert.deepEqual(await sessions.listWithCoverage?.(), {
@@ -113,12 +97,7 @@ test('WorkHub candidates follow the resolved Coordination Session Host only', as
   assert.deepEqual(await sessions.list(), []);
   await Promise.resolve();
   assert.deepEqual((await sessions.list()).map((session) => session.id), [sessionB]);
-  await assert.rejects(staleHostAScope.create({ name: 'stale A' }), /scope is revoked/);
-  assert.equal((await sessions.create({ name: 'current B' })).id, sessionB);
-  assert.deepEqual(
-    createdFor.map((sessionId) => parseDesktopSessionKey(sessionId).hostId),
-    ['host-b'],
-  );
+  await assert.rejects(staleHostAScope.listTurns(sessionA), /scope is revoked/);
   stop();
 });
 
