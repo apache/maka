@@ -257,6 +257,10 @@ describe('Client Capability protocol', () => {
     for (const inputSchema of [
       { type: 'string' },
       { type: 'object', unsupportedKeyword: true },
+      { type: 'object', $schema: 'https://example.test/custom-schema' },
+      { type: 'object', if: 'not-a-schema' },
+      { type: 'object', dependentRequired: { value: [] } },
+      { type: 'object', prefixItems: 'not-an-array' },
       { type: 'object', properties: { value: { $ref: 'https://example.test/schema' } } },
       { type: 'object', properties: { value: { $ref: '#/$defs/missing' } } },
     ]) {
@@ -294,6 +298,43 @@ describe('Client Capability protocol', () => {
                       anyOf: [{ type: 'string', maxLength: 128 }, { type: 'null' }],
                     },
                   },
+                },
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    assert.doesNotThrow(() =>
+      decodeClientFrame(
+        replaceFrame([
+          {
+            ...offer('conditional_schema', 'evaluate'),
+            tools: [
+              {
+                ...offer('conditional_schema', 'evaluate').tools[0],
+                inputSchema: {
+                  $schema: 'https://json-schema.org/draft/2020-12/schema',
+                  $id: 'https://example.test/conditional-schema',
+                  $comment: 'Exercises the bounded modern schema contract.',
+                  type: 'object',
+                  properties: {
+                    mode: { enum: ['echo', 'silent'] },
+                    value: { type: 'string' },
+                    tags: {
+                      type: 'array',
+                      prefixItems: [{ type: 'string' }],
+                      contains: { type: 'string', minLength: 1 },
+                      minContains: 1,
+                    },
+                  },
+                  patternProperties: { '^x-': { type: 'string' } },
+                  dependentRequired: { mode: ['value'] },
+                  dependentSchemas: { tags: { required: ['mode'] } },
+                  if: { properties: { mode: { const: 'echo' } }, required: ['mode'] },
+                  then: { required: ['value'] },
+                  else: { not: { required: ['value'] } },
+                  unevaluatedProperties: false,
                 },
               },
             ],

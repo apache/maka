@@ -96,6 +96,8 @@ export function buildMcpTools(
       // ordinary MCP servers retain the side-effecting network default.
       categoryHint: options.categoryHint ?? 'network_send',
       ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
+      // Preserve the MCP server's complete JSON Schema. Callers validate it through
+      // the shared tool-parameter boundary instead of a partial schema conversion.
       parameters: jsonSchema(descriptor.inputSchema),
       impl: async (args: unknown, context) => {
         // Managed network authority applies equally to Direct and nested CodeMode dispatch.

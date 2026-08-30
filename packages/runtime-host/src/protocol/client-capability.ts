@@ -687,39 +687,71 @@ const CLIENT_CAPABILITY_SCHEMA_TYPES = new Set([
   'object',
   'string',
 ]);
+const CLIENT_CAPABILITY_SCHEMA_DIALECTS = new Set([
+  'http://json-schema.org/draft-07/schema',
+  'http://json-schema.org/draft-07/schema#',
+  'https://json-schema.org/draft-07/schema',
+  'https://json-schema.org/draft-07/schema#',
+  'https://json-schema.org/draft/2019-09/schema',
+  'https://json-schema.org/draft/2020-12/schema',
+]);
 const CLIENT_CAPABILITY_SCHEMA_KEYWORDS = new Set([
+  '$comment',
   '$defs',
+  '$id',
   '$ref',
+  '$schema',
+  'additionalItems',
   'additionalProperties',
   'allOf',
   'anyOf',
+  'contains',
+  'contentEncoding',
+  'contentMediaType',
+  'contentSchema',
   'const',
   'default',
   'definitions',
+  'dependencies',
+  'dependentRequired',
+  'dependentSchemas',
+  'deprecated',
   'description',
+  'else',
   'enum',
   'examples',
   'exclusiveMaximum',
   'exclusiveMinimum',
   'format',
+  'if',
   'items',
+  'maxContains',
   'maxItems',
   'maxLength',
   'maxProperties',
   'maximum',
+  'minContains',
   'minItems',
   'minLength',
   'minProperties',
   'minimum',
   'multipleOf',
+  'not',
   'oneOf',
   'pattern',
+  'patternProperties',
+  'prefixItems',
   'propertyNames',
   'properties',
+  'readOnly',
   'required',
+  'then',
   'title',
   'type',
+  'unevaluatedItems',
+  'unevaluatedProperties',
   'uniqueItems',
+  'writeOnly',
 ]);
 
 function validateToolInputSchema(root: Record<string, unknown>): void {
@@ -734,10 +766,25 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
       throw invalidProtocolFrame('Unsupported Client Capability tool schema keyword');
     }
     if (schema.type !== undefined) validateSchemaType(schema.type);
-    for (const key of ['title', 'description', 'format', 'pattern'] as const) {
+    for (const key of [
+      '$comment',
+      '$id',
+      'title',
+      'description',
+      'format',
+      'pattern',
+      'contentEncoding',
+      'contentMediaType',
+    ] as const) {
       if (schema[key] !== undefined && typeof schema[key] !== 'string') {
         throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
       }
+    }
+    if (
+      schema.$schema !== undefined &&
+      (typeof schema.$schema !== 'string' || !CLIENT_CAPABILITY_SCHEMA_DIALECTS.has(schema.$schema))
+    ) {
+      throw invalidProtocolFrame('Unsupported Client Capability tool schema dialect');
     }
     if (typeof schema.pattern === 'string') {
       try {
@@ -766,6 +813,8 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     for (const key of [
       'minItems',
       'maxItems',
+      'minContains',
+      'maxContains',
       'minLength',
       'maxLength',
       'minProperties',
@@ -778,13 +827,30 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
         throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
       }
     }
-    if (schema.uniqueItems !== undefined && typeof schema.uniqueItems !== 'boolean') {
-      throw invalidProtocolFrame('Invalid Client Capability tool schema uniqueItems');
+    for (const key of ['deprecated', 'readOnly', 'uniqueItems', 'writeOnly'] as const) {
+      if (schema[key] !== undefined && typeof schema[key] !== 'boolean') {
+        throw invalidProtocolFrame(`Invalid Client Capability tool schema ${key}`);
+      }
     }
-    for (const key of ['properties', '$defs', 'definitions'] as const) {
+    for (const key of [
+      'properties',
+      'patternProperties',
+      'dependentSchemas',
+      '$defs',
+      'definitions',
+    ] as const) {
       if (schema[key] === undefined) continue;
       const entries = requireRecord(schema[key], `Client Capability tool schema ${key}`);
-      for (const nested of Object.values(entries)) visit(nested);
+      for (const [name, nested] of Object.entries(entries)) {
+        if (key === 'patternProperties') {
+          try {
+            new RegExp(name);
+          } catch {
+            throw invalidProtocolFrame('Invalid Client Capability tool schema patternProperties');
+          }
+        }
+        visit(nested);
+      }
     }
     if (schema.required !== undefined) {
       if (
@@ -795,14 +861,20 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
         throw invalidProtocolFrame('Invalid Client Capability tool schema required');
       }
     }
-    if (
-      schema.additionalProperties !== undefined &&
-      typeof schema.additionalProperties !== 'boolean'
-    ) {
-      visit(schema.additionalProperties);
-    }
-    if (schema.propertyNames !== undefined) {
-      visit(schema.propertyNames);
+    for (const key of [
+      'additionalItems',
+      'additionalProperties',
+      'contains',
+      'contentSchema',
+      'else',
+      'if',
+      'not',
+      'propertyNames',
+      'then',
+      'unevaluatedItems',
+      'unevaluatedProperties',
+    ] as const) {
+      if (schema[key] !== undefined) visit(schema[key]);
     }
     if (schema.items !== undefined) {
       if (Array.isArray(schema.items)) {
@@ -813,6 +885,12 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
       } else {
         visit(schema.items);
       }
+    }
+    if (schema.prefixItems !== undefined) {
+      if (!Array.isArray(schema.prefixItems) || schema.prefixItems.length === 0) {
+        throw invalidProtocolFrame('Invalid Client Capability tool schema prefixItems');
+      }
+      for (const nested of schema.prefixItems) visit(nested);
     }
     for (const key of ['allOf', 'anyOf', 'oneOf'] as const) {
       if (schema[key] === undefined) continue;
@@ -826,6 +904,12 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     }
     if (schema.examples !== undefined && !Array.isArray(schema.examples)) {
       throw invalidProtocolFrame('Invalid Client Capability tool schema examples');
+    }
+    if (schema.dependentRequired !== undefined) {
+      validateSchemaDependencies(schema.dependentRequired, 'dependentRequired', false, visit);
+    }
+    if (schema.dependencies !== undefined) {
+      validateSchemaDependencies(schema.dependencies, 'dependencies', true, visit);
     }
     if (schema.$ref !== undefined) {
       if (
@@ -842,6 +926,31 @@ function validateToolInputSchema(root: Record<string, unknown>): void {
     if (!resolveLocalSchemaReference(root, reference)) {
       throw invalidProtocolFrame('Client Capability tool schema reference is unresolved');
     }
+  }
+}
+
+function validateSchemaDependencies(
+  value: unknown,
+  keyword: 'dependencies' | 'dependentRequired',
+  allowSchemas: boolean,
+  visit: (value: unknown) => void,
+): void {
+  const entries = requireRecord(value, `Client Capability tool schema ${keyword}`);
+  for (const dependency of Object.values(entries)) {
+    if (Array.isArray(dependency)) {
+      if (
+        dependency.length === 0 ||
+        dependency.some((entry) => typeof entry !== 'string') ||
+        new Set(dependency).size !== dependency.length
+      ) {
+        throw invalidProtocolFrame(`Invalid Client Capability tool schema ${keyword}`);
+      }
+      continue;
+    }
+    if (!allowSchemas) {
+      throw invalidProtocolFrame(`Invalid Client Capability tool schema ${keyword}`);
+    }
+    visit(dependency);
   }
 }
 

@@ -20,6 +20,7 @@
 import { Buffer } from "node:buffer";
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import { parseToolParameters } from '@maka/runtime/tool-parameters';
 import {
   createOAuthPresentationClientProvider,
   type ClientCapabilityProvider,
@@ -328,8 +329,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const parameters = requireZodSchema(binding.tool);
-  const args = await parameters.parseAsync(frame.arguments);
+  const args = await parseToolParameters(binding.tool.parameters, frame.arguments);
   signal.throwIfAborted();
   await options.accept();
   signal.throwIfAborted();
@@ -399,29 +399,30 @@ function capabilityOffer(
 }
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
-  const schema = toJSONSchema(requireZodSchema(tool), {
-    io: "input",
-    target: "draft-07",
-    unrepresentable: "any",
-    cycles: "ref",
-    reused: "inline",
-  });
-  delete schema.$schema;
-  if (schema.type !== "object") {
-    throw new Error(
-      `Desktop native capability tool schema must be an object: ${tool.name}`,
-    );
-  }
-  return Object.freeze(schema);
-}
-
-function requireZodSchema(tool: MakaTool): z.ZodType {
-  if (!(tool.parameters instanceof z.ZodType)) {
+  const parameters = tool.parameters as { readonly jsonSchema?: unknown };
+  const zodParameters = tool.parameters instanceof z.ZodType ? tool.parameters : undefined;
+  const schema = zodParameters
+    ? toJSONSchema(zodParameters, {
+        io: "input",
+        target: "draft-07",
+        unrepresentable: "any",
+        cycles: "ref",
+        reused: "inline",
+      })
+    : structuredClone(parameters.jsonSchema ?? tool.parameters);
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     throw new Error(
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return tool.parameters;
+  const objectSchema = schema as Record<string, unknown>;
+  if (zodParameters) delete objectSchema.$schema;
+  if (objectSchema.type !== "object") {
+    throw new Error(
+      `Desktop native capability tool schema must be an object: ${tool.name}`,
+    );
+  }
+  return Object.freeze(objectSchema);
 }
 
 function indexBindings(
