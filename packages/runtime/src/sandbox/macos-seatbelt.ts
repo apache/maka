@@ -421,7 +421,15 @@ function buildReadableRootsPolicy(roots: ResolvedRoots): string {
       accessRootClause(seatbeltPathClause(root, `READABLE_ROOT_${index}`), denyRequirements),
     )
     .join('\n');
-  return `(allow file-read*\n${params})`;
+  const ancestorParams = roots.readableRoots
+    .map((_, index) =>
+      accessRootClause(`(path-ancestors (param "READABLE_ROOT_${index}"))`, [
+        '(vnode-type DIRECTORY)',
+        ...denyRequirements,
+      ]),
+    )
+    .join('\n');
+  return `(allow file-read*\n${params})\n\n(allow file-read-data\n${ancestorParams})`;
 }
 
 function buildWritableRootsPolicy(roots: ResolvedRoots): string {

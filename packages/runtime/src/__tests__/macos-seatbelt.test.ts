@@ -170,6 +170,15 @@ describe('buildSeatbeltPolicy', () => {
     ]);
   });
 
+  it('allows directory reads along every readable root ancestor chain', () => {
+    const policy = policyText(createReadOnlyPermissionProfile());
+
+    assert.match(
+      policy,
+      /\(allow file-read-data\n  \(require-all\n    \(path-ancestors \(param "READABLE_ROOT_0"\)\)\n    \(vnode-type DIRECTORY\)\n  \)\)/,
+    );
+  });
+
   it('keeps workspace metadata writable in the standard workspace profile', () => {
     const policy = policyText(createWorkspaceWritePermissionProfile());
 
@@ -197,6 +206,10 @@ describe('buildSeatbeltPolicy', () => {
     assert.match(
       policy,
       /\(allow file-write\*\n  \(require-all\n    \(subpath \(param "WRITABLE_ROOT_0"\)\)\n    \(require-not \(regex #"\^\/repo\/secret\(\/\.\*\)\?\$"\)\)\n  \)\)/,
+    );
+    assert.match(
+      policy,
+      /\(allow file-read-data\n  \(require-all\n    \(path-ancestors \(param "READABLE_ROOT_0"\)\)\n    \(vnode-type DIRECTORY\)\n    \(require-not \(regex #"\^\/repo\/secret\(\/\.\*\)\?\$"\)\)\n  \)\)/,
     );
   });
 
@@ -235,6 +248,7 @@ describe('buildSeatbeltPolicy', () => {
     assert.match(result.policy, /\(literal \(param "READABLE_ROOT_0"\)\)/);
     assert.match(result.policy, /\(subpath \(param "READABLE_ROOT_1"\)\)/);
     assert.match(result.policy, /\(literal \(param "WRITABLE_ROOT_0"\)\)/);
+    assert.match(result.policy, /\(path-ancestors \(param "READABLE_ROOT_0"\)\)/);
     assert.deepEqual(result.definitionArgs.slice(0, 3), [
       '-DREADABLE_ROOT_0=/outside/file.txt',
       '-DREADABLE_ROOT_1=/outside/tree',

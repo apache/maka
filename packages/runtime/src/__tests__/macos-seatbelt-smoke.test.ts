@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -108,6 +108,25 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
 
     assert.equal(child.status, 0, child.stderr);
     assert.equal(await readFile(join(workspaceRoot, 'allowed.txt'), 'utf8'), 'ok');
+  });
+
+  it('allows ancestor directory reads without exposing ancestor file contents', async () => {
+    const ancestorRoot = await realpath(await mkdtemp(join(tmpdir(), 'maka-seatbelt-ancestors-')));
+    const workspaceRoot = join(ancestorRoot, 'level-one', 'level-two');
+    const ancestorFile = join(ancestorRoot, 'private.txt');
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(ancestorFile, 'private');
+    cleanup.push(ancestorRoot);
+
+    const listAncestor = runSeatbeltCommand(workspaceRoot, '/bin/ls ..');
+    assert.equal(listAncestor.status, 0, listAncestor.stderr);
+
+    const readAncestorFile = runSeatbeltCommand(
+      workspaceRoot,
+      `/bin/cat ${JSON.stringify(ancestorFile)}`,
+    );
+    assert.notEqual(readAncestorFile.status, 0);
+    assert.match(readAncestorFile.stderr, /Operation not permitted/);
   });
 
   it('denies writes outside the workspace root', async () => {
