@@ -62,6 +62,7 @@ export {
   type RuntimeHostProfile,
   type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostConnectionPhase,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {

@@ -872,6 +872,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             ipcMain: this.#ipcMain.createTarget(target.epoch),
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
+            onConnectionPhase: (phase) => {
+              target.input.onConnectionPhase?.(phase);
+            },
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
           },
@@ -1154,6 +1157,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
     }
   }
+
 }
 
 function trackOwnedProcess(
