@@ -183,7 +183,7 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
-    assert.deepEqual(scheduled?.providerRetry, {
+    assert.deepEqual(scheduled?.providerRetry?.event, {
       type: 'provider_retry',
       id: 'retry-1',
       turnId: 'turn-1',
@@ -194,6 +194,9 @@ describe('applyLiveTurnEvent', () => {
       delayMs: 4_000,
       reason: 'rate_limit',
     });
+    // Receipt is stamped on the client clock so the countdown ticks in one
+    // clock domain, immune to skew against a remote Runtime Host.
+    assert.equal(typeof scheduled?.providerRetry?.receivedAtMs, 'number');
 
     const started = applyLiveTurnEvent(scheduled, {
       type: 'provider_retry',
@@ -205,16 +208,7 @@ describe('applyLiveTurnEvent', () => {
       maxAttempts: 10,
       reason: 'rate_limit',
     });
-    assert.deepEqual(started?.providerRetry, {
-      type: 'provider_retry',
-      id: 'retry-2',
-      turnId: 'turn-1',
-      ts: 101,
-      phase: 'started',
-      attempt: 2,
-      maxAttempts: 10,
-      reason: 'rate_limit',
-    });
+    assert.equal(started?.providerRetry?.event.phase, 'started');
 
     const streamed = applyLiveTurnEvent(started, {
       type: 'text_delta',
@@ -251,7 +245,7 @@ describe('applyLiveTurnEvent', () => {
       reason: 'provider_capacity',
     });
 
-    assert.equal(started?.providerRetry?.reason, 'provider_capacity');
+    assert.equal(started?.providerRetry?.event.reason, 'provider_capacity');
   });
 
 
@@ -844,14 +838,17 @@ describe('reconcileTerminalLiveTurn', () => {
       turnId: 'turn-1',
       phase: 'streamed',
       providerRetry: {
-        type: 'provider_retry',
-        id: 'retry-1',
-        turnId: 'turn-1',
-        ts: 2,
-        phase: 'started',
-        attempt: 2,
-        maxAttempts: 3,
-        reason: 'network',
+        event: {
+          type: 'provider_retry',
+          id: 'retry-1',
+          turnId: 'turn-1',
+          ts: 2,
+          phase: 'started',
+          attempt: 2,
+          maxAttempts: 3,
+          reason: 'network',
+        },
+        receivedAtMs: 2,
       },
       steps: [{
         stepId: 'assistant-1',

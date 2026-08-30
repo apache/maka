@@ -57,7 +57,7 @@ import type {
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
 import type { SessionContinuityService } from '../server/session-continuity-service.js';
 import {
-  createUnavailableAccessAuthorityOperationHandlers,
+  createUnavailableHostCoreOperationHandlers,
   createUnavailableDomainOperationHandlers,
   type OperationHandlerMap,
 } from '../server/operation-dispatcher.js';
@@ -155,7 +155,7 @@ test('transcript pages are serialized per connection before their responses are 
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -178,6 +178,8 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: null,
         },
       };
@@ -493,7 +495,7 @@ test('flushes concurrent subscription opens before activating their live frame s
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -679,7 +681,7 @@ test('connection reset while operation admission is pending does not execute the
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => {
       handlerCalls += 1;
       return {
@@ -768,7 +770,7 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createUnavailableDomainOperationHandlers(),
     }),
     resolveContinuity: () => undefined,
@@ -1066,7 +1068,7 @@ test('an in-flight status does not consume the final domain request slot', async
       };
     },
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => {
       const index = Number(input.turnId.slice('turn-'.length));
       domainEntered[index]?.resolve();
@@ -1164,7 +1166,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -1402,7 +1404,7 @@ async function openHalfClosedDispatchedSession(
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createHandlers(async (input) => {
         handlerEntered.resolve();
         await releaseHandler.promise;
@@ -1632,6 +1634,7 @@ function transcriptBootstrapFor(sessionId: string) {
   const contents = Buffer.from('t'.repeat(16 * 1024));
   return {
     throughSequence: 0,
+    durableCoverage: 'complete' as const,
     overlayMessageCount: 0,
     durable: {
       kind: 'page' as const,
@@ -1650,6 +1653,8 @@ function transcriptBootstrapFor(sessionId: string) {
           data: contents.toString('base64'),
         },
       ],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
     overlay: {
@@ -1660,6 +1665,8 @@ function transcriptBootstrapFor(sessionId: string) {
       throughSequence: 0,
       rawBytes: 0,
       fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
       nextCursor: null,
     },
   };

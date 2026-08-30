@@ -27,7 +27,7 @@ import {
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,
-  type AccessCredentialPrincipalKind,
+  type ManagedAccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
 import {
@@ -45,21 +45,32 @@ const PROTOCOL = {
   max: RUNTIME_HOST_PROTOCOL_VERSION,
 } as const;
 
+export class RuntimeHostAccessUnavailableError extends Error {
+  constructor(
+    readonly reason: string,
+    options?: ErrorOptions,
+  ) {
+    super(`Runtime Host service is not available (${reason})`, options);
+    this.name = 'RuntimeHostAccessUnavailableError';
+  }
+}
+
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
   readonly expectedRootId?: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly preset?: RuntimeHostAccessPreset;
+  readonly bindClientInstance?: boolean;
 }
 
 export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
 
 export interface ResolvedRuntimeHostAccessIssue {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -88,7 +99,7 @@ export interface IssuedRuntimeHostAccessCredential {
   readonly rootId: string;
   readonly credential: string;
   readonly credentialId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -217,6 +228,9 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation === 'access.credential.prepare' && options.bindClientInstance
+        ? { bindClientInstance: true }
+        : {}),
     });
     const credential = await consumeAccessCredentialDelivery(
       options.rootPath,
@@ -346,12 +360,13 @@ export async function revokeRuntimeHostAccessCredential(
 }
 
 async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
-  const result = await connectExistingRuntimeHost({
-    rootPath,
-    protocol: PROTOCOL,
-  });
+  const result = await connectExistingRuntimeHost({ rootPath, protocol: PROTOCOL }).catch(
+    (error: unknown) => {
+      throw new RuntimeHostAccessUnavailableError('connection_failed', { cause: error });
+    },
+  );
   if (result.kind !== 'connected') {
-    throw new Error(`Runtime Host service is not available (${result.kind})`);
+    throw new RuntimeHostAccessUnavailableError(result.kind);
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

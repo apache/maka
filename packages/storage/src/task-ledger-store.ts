@@ -193,7 +193,7 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
     }
 
     await chainWrite(this.writeQueues, input.targetSessionId, async () => {
-      this.copyConversationLedger(input.targetSessionId, selected, projection.tasks);
+      this.copyConversationLedger(input.targetSessionId, selected);
     });
   }
 
@@ -203,9 +203,6 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
       this.#lease.transaction('write', () => {
         this.#lease.database
           .prepare('DELETE FROM workflow_task_ledger_events WHERE session_id = ?')
-          .run(sessionId);
-        this.#lease.database
-          .prepare('DELETE FROM workflow_task_ledger_projections WHERE session_id = ?')
           .run(sessionId);
       });
     });
@@ -601,7 +598,6 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
         taskIds: [...new Set(mutationEvents.map((event) => event.taskId))],
         at: Date.now(),
       });
-      await this.write(sessionId, next);
     });
     return next;
   }
@@ -613,30 +609,15 @@ class SqliteTaskLedgerStoreImpl implements SqliteTaskLedgerStore {
     });
   }
 
-  private async write(sessionId: string, tasks: Task[]): Promise<void> {
-    this.#lease.transaction('write', () => {
-      writeTaskLedgerProjection(this.#lease.database, sessionId, tasks);
-    });
-  }
-
-  private copyConversationLedger(
-    sessionId: string,
-    events: readonly TaskLedgerEvent[],
-    tasks: readonly Task[],
-  ): void {
+  private copyConversationLedger(sessionId: string, events: readonly TaskLedgerEvent[]): void {
     this.#lease.transaction('write', () => {
       const existing = this.#lease.database
-        .prepare(`
-          SELECT
-            (SELECT COUNT(*) FROM workflow_task_ledger_events WHERE session_id = ?) +
-            (SELECT COUNT(*) FROM workflow_task_ledger_projections WHERE session_id = ?) AS count
-        `)
-        .get(sessionId, sessionId) as { count?: unknown };
+        .prepare('SELECT COUNT(*) AS count FROM workflow_task_ledger_events WHERE session_id = ?')
+        .get(sessionId) as { count?: unknown };
       if (existing.count !== 0) {
         throw new Error('Task Ledger conversation-copy target already exists');
       }
       for (const event of events) insertTaskLedgerEvent(this.#lease.database, sessionId, event);
-      writeTaskLedgerProjection(this.#lease.database, sessionId, [...tasks]);
     });
   }
 
@@ -716,16 +697,6 @@ function insertTaskLedgerEvent(
       ) VALUES (?, ?, ?, ?)
     `)
     .run(sessionId, row.sequence, event.eventId, JSON.stringify(event));
-}
-
-function writeTaskLedgerProjection(database: DatabaseSync, sessionId: string, tasks: Task[]): void {
-  database
-    .prepare(`
-      INSERT INTO workflow_task_ledger_projections(session_id, record_json)
-      VALUES (?, ?)
-      ON CONFLICT(session_id) DO UPDATE SET record_json = excluded.record_json
-    `)
-    .run(sessionId, JSON.stringify(tasks));
 }
 
 function nextTaskKey(tasks: readonly Task[], parent: Task | undefined): string {

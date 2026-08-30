@@ -15,11 +15,11 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 
 | Classification | Count |
 |---|---:|
-| windows-backend-gap | 24 |
-| portable-candidate | 8 |
-| platform-contract | 35 |
+| windows-backend-gap | 25 |
+| portable-candidate | 10 |
+| platform-contract | 31 |
 
-Total Windows-excluded declarations: **67**
+Total Windows-excluded declarations: **66**
 
 ## Inventory
 
@@ -45,15 +45,16 @@ Total Windows-excluded declarations: **67**
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` a non-reading Client overload is isolated to its connection | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/host-kernel.test.ts` reports one shutdown failure through close and closed while releasing ownership | `process.platform === 'win32'` |
 | platform-contract | `packages/runtime-host/src/__tests__/host-kernel.test.ts` publishes private POSIX endpoint and registration permissions | `process.platform === 'win32'` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/managed-activation.test.ts` two real managed activations converge on one Host and exit at true idle | `process.platform === 'win32' ? 'requires a POSIX package-entrypoint symlink' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/memory-two-client-uds.test.ts` two UDS clients share one recoverable Memory authority across Host death | `process.platform === 'win32' ? 'POSIX process death gate' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/project-catalog-two-client-uds.test.ts` two UDS clients converge on one Host-owned Project Catalog | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-policy-coordinator.test.ts` invalidates when a real published mutation loses its commit reply | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-process.test.ts` real Host Runtime Resource process lifecycle | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/runtime-resource-two-client-uds.test.ts` a Host-owned PTY survives Desktop disconnect and transfers control to TUI | `process.platform === 'win32' ? 'POSIX UDS and shell integration' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` two Clients share stable Session creation, CAS configuration, and catalog continuity | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
+| windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` deleted account identity survives same-slug reuse until explicit recovery | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-catalog-two-client-uds.test.ts` stable Session creation survives response loss and Host restart | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/session-revision-two-client-uds.test.ts` two Clients share exact retryable Session branch and revision authority | `process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false` |
-| windows-backend-gap | `packages/runtime-host/src/__tests__/skill-catalog-two-client-uds.test.ts` two UDS clients converge on one lease-bound Skill catalog authority | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` fails the connection for a canonical response with mismatched ${mismatch.name} | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-client-correlation.test.ts` rejects local invalid input without poisoning transport and correlates a private canonical copy | `process.platform === 'win32'` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/usage-pricing-two-client-uds.test.ts` two clients share usage projection and one revision-CAS pricing authority | `process.platform === 'win32'` |
@@ -73,15 +74,12 @@ Total Windows-excluded declarations: **67**
 | platform-contract | `packages/runtime/src/__tests__/shell-run-manager.test.ts` keeps SIGTERM final output and escalates an ignored SIGTERM without leaking slots | `process.platform === 'win32' ? 'Windows tree termination has no graceful SIGTERM phase' : false` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects an authority database whose file identity changes after registration | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database to replace its file identity' : false` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` does not return an accepted baseline when runtime.sqlite is replaced after the initial root check | `process.platform === 'win32' ? 'Windows cannot rename an open SQLite database during the verification race' : false` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-baseline.test.ts` rejects a source tree containing a non-UTF-8 Git path | `process.platform === 'win32'` |
-| platform-contract | `packages/storage/src/__tests__/managed-workspace-owner.test.ts` rejects execution when runtime.sqlite detaches from its canonical path after verification | `process.platform === 'win32' ? 'Open SQLite files cannot be renamed reliably on Windows' : false` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
 | platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
+| portable-candidate | `packages/storage/src/__tests__/root-authority.test.ts` cache deletion cannot create a second State Root owner | `process.platform === 'win32' ? 'Windows does not unlink an open native lock file' : false` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` validates an existing control directory without repairing its permissions | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` reports unknown outcome when credential persistence fails after clearing verified state | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` validates proxy policy mutations before clearing and reports failed follow-up commits as unknown | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
@@ -89,6 +87,7 @@ Total Windows-excluded declarations: **67**
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` preserves unknown commit semantics and consumes the completion ticket | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` rejects a symlink instead of following it | `process.platform === 'win32' ? 'POSIX no-follow semantics are required' : false` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |
 | portable-candidate | `scripts/release-cli-eval-support.test.mjs` preserves the primary process failure when diagnostics cannot be read | `process.platform === 'win32'` |

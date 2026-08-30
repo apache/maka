@@ -32,7 +32,7 @@ export * from './model/workbar-tool-definitions.js';
 export * from './tools/artifacts/artifact-list-keyboard.js';
 export * from './tools/artifacts/artifact-visibility.js';
 export * from './tools/inspector/session-inspector-panel-model.js';
-export { InspectorCompositionSection } from './tools/inspector/session-inspector-panel.js';
+export { compactNumberFormatter, InspectorCompositionSection } from './tools/inspector/session-inspector-panel.js';
 export * from './tools/inspector/session-inspector-overview-model.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
@@ -113,6 +113,7 @@ export function createFakeWorkbarServices(
       subscribeUsageChanges: noopSubscription,
     },
     attachments: {
+      readBytes: async () => ({ ok: false, reason: 'not_found' }),
       pickFiles: async () => ({ ok: false, reason: 'cancelled' }),
       previewApproval: async () => ({ ok: false, reason: 'not configured' }),
     },

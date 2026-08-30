@@ -351,3 +351,34 @@ test('Alibaba (China) catalogs Qwen3.8 Max as the default model on the China end
   assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
   assert.equal(model?.canUseAsChatDefault, true);
 });
+
+test('DeepSeek catalogs the V4 vision model display metadata from a bare provider id', () => {
+  const modelId = 'deepseek-v4-flash-vision-exp';
+  const [model] = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'deepseek',
+      providerType: 'deepseek',
+      defaultModel: modelId,
+      models: [{ id: modelId }],
+      modelSource: 'fetched',
+    },
+  });
+
+  assert.equal(model?.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+  assert.equal(
+    model?.description,
+    'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+  );
+  assert.equal(model?.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
+  assert.equal(model?.contextWindow, 1_000_000);
+  assert.equal(model?.maxOutputTokens, 384_000);
+  assert.equal(model?.structuredOutput, true);
+  assert.equal(model?.lastUpdated, '2026-08-21');
+  assert.deepEqual(model?.capabilities, {
+    reasoning: true,
+    functionCalling: true,
+    vision: true,
+  });
+  assert.deepEqual(model?.modalities, { input: ['text', 'image'], output: ['text'] });
+  assert.equal(model?.canUseAsChatDefault, true);
+});

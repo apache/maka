@@ -392,6 +392,7 @@ test('reassembles a large message from bounded backward pages', async () => {
       const openRequest = await acceptConnectionAndReadOpen(transport, hostEpoch, rootId);
       const opened = openResult(hostEpoch, 'subscription-fragmented', {
         throughSequence: 0,
+        durableCoverage: 'complete',
         overlayMessageCount: 0,
         durable: transcriptPage({
           rawBytes: encoded.byteLength - splitAt,
@@ -472,6 +473,7 @@ test('decodes one bounded page without walking the remaining transcript', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-bounded-page', {
       throughSequence: 4,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -540,6 +542,90 @@ test('decodes one bounded page without walking the remaining transcript', async 
     RangeError,
   );
   assert.deepEqual(requests, []);
+});
+
+test('assembles the complete edge Turn while paging newer transcript', async () => {
+  const prompt = {
+    type: 'user' as const,
+    id: 'user-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'prompt',
+  };
+  const answer = {
+    type: 'assistant' as const,
+    id: 'assistant-1',
+    turnId: 'turn-1',
+    ts: 2,
+    text: 'answer',
+    modelId: 'model-1',
+  };
+  const promptBytes = Buffer.from(JSON.stringify(prompt), 'utf8');
+  const answerBytes = Buffer.from(JSON.stringify(answer), 'utf8');
+  const requests: string[] = [];
+  const initial: SessionTranscriptPage = {
+    ...transcriptPage({
+      rawBytes: promptBytes.byteLength,
+      fragments: [
+        {
+          kind: 'durable',
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: promptBytes.byteLength,
+          payloadDigest: null,
+          data: promptBytes.toString('base64'),
+        },
+      ],
+      nextCursor: 'answer',
+    }),
+    direction: 'newer',
+    throughSequence: 1,
+    rangeBoundarySequence: 1,
+    protectedTurnSequence: 1,
+  };
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-newer-turn', {
+      throughSequence: 1,
+      durableCoverage: 'complete',
+      overlayMessageCount: 0,
+      durable: initial,
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 1 },
+    }),
+    async () => undefined,
+    async (input) => {
+      requests.push(input.cursor!);
+      return {
+        ...transcriptPage({
+          rawBytes: answerBytes.byteLength,
+          fragments: [
+            {
+              kind: 'durable',
+              sequence: 1,
+              byteOffset: 0,
+              totalBytes: answerBytes.byteLength,
+              payloadDigest: null,
+              data: answerBytes.toString('base64'),
+            },
+          ],
+        }),
+        direction: 'newer',
+        throughSequence: 1,
+        rangeBoundarySequence: 1,
+        protectedTurnSequence: 1,
+      };
+    },
+  );
+
+  const decoded = await subscription.decodeTranscriptPage(initial, decodeStoredMessage);
+
+  assert.deepEqual(
+    decoded.messages.map(({ identity, message }) => [identity, message.id]),
+    [
+      [0, 'user-1'],
+      [1, 'assistant-1'],
+    ],
+  );
+  assert.deepEqual(requests, ['answer']);
 });
 
 test('loads and releases only the active overlay', async () => {
@@ -811,6 +897,7 @@ test('rejects a durable sequence gap', async () => {
   const gap = new ClientSessionSubscription(
     openResult('host-1', 'subscription-gap', {
       throughSequence: 1,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: {
         ...transcriptPage({
@@ -832,6 +919,54 @@ test('rejects a durable sequence gap', async () => {
   );
 });
 
+test('loads a projected durable transcript with intentionally sparse sequences', async () => {
+  const messages = [0, 2].map((sequence) =>
+    Buffer.from(
+      JSON.stringify({
+        type: 'user',
+        id: `user-${sequence}`,
+        turnId: 'turn-1',
+        ts: sequence + 1,
+        text: `visible-${sequence}`,
+      }),
+      'utf8',
+    ),
+  );
+  const subscription = new ClientSessionSubscription(
+    openResult('host-1', 'subscription-projected', {
+      throughSequence: 2,
+      durableCoverage: 'projected',
+      overlayMessageCount: 0,
+      durable: {
+        ...transcriptPage({
+          rawBytes: messages.reduce((total, message) => total + message.byteLength, 0),
+          fragments: messages
+            .map((message, index) => ({
+              kind: 'durable' as const,
+              sequence: index * 2,
+              byteOffset: 0,
+              totalBytes: message.byteLength,
+              payloadDigest: null,
+              data: message.toString('base64'),
+            }))
+            .reverse(),
+        }),
+        throughSequence: 2,
+      },
+      overlay: { ...transcriptPage({ source: 'overlay' }), throughSequence: 2 },
+    }),
+    async () => undefined,
+    async () => {
+      throw new Error('unexpected page request');
+    },
+  );
+
+  assert.deepEqual(
+    (await subscription.loadTranscript(decodeStoredMessage)).map((message) => message.id),
+    ['user-0', 'user-2'],
+  );
+});
+
 test('rejects a durable message that does not match its payload digest', async () => {
   const message = Buffer.from(
     JSON.stringify({
@@ -846,6 +981,7 @@ test('rejects a durable message that does not match its payload digest', async (
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-digest-mismatch', {
       throughSequence: 0,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: message.byteLength,
@@ -910,6 +1046,7 @@ test('rejects a transcript cursor that does not advance', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-stuck-cursor', {
       throughSequence: 0,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: repeated,
       overlay: transcriptPage({ source: 'overlay' }),
@@ -939,6 +1076,7 @@ test('rejects an overlay that terminates before its declared high-water', async 
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-truncated-overlay', {
       throughSequence: null,
+      durableCoverage: 'complete',
       overlayMessageCount: 2,
       durable: { ...transcriptPage(), throughSequence: null },
       overlay: {
@@ -1030,6 +1168,7 @@ test('acknowledges a complete overlay before waiting for durable continuation pa
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-overlay-release-before-durable', {
       throughSequence: 0,
+      durableCoverage: 'complete',
       overlayMessageCount: 1,
       durable: transcriptPage({
         rawBytes: durableMessage.byteLength - split,
@@ -1103,6 +1242,7 @@ test('close stops transcript pagination after the in-flight page', async () => {
   const subscription = new ClientSessionSubscription(
     openResult('host-1', 'subscription-closing', {
       throughSequence: 0,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: transcriptPage({
         rawBytes: Math.floor(message.byteLength / 2),
@@ -1293,6 +1433,7 @@ function openResult(
 function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: 0,
+    durableCoverage: 'complete',
     overlayMessageCount: 0,
     durable: transcriptPage({
       rawBytes: message.byteLength,
@@ -1314,6 +1455,7 @@ function transcriptBootstrap(message: Buffer): SessionTranscriptBootstrap {
 function overlayBootstrap(message: Buffer): SessionTranscriptBootstrap {
   return {
     throughSequence: null,
+    durableCoverage: 'complete',
     overlayMessageCount: 1,
     durable: { ...transcriptPage(), throughSequence: null },
     overlay: {
@@ -1351,6 +1493,8 @@ function transcriptPage(
     throughSequence: 0,
     rawBytes: options.rawBytes ?? 0,
     fragments: options.fragments ?? [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: options.nextCursor ?? null,
   };
 }

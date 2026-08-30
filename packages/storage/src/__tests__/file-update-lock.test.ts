@@ -33,6 +33,48 @@ test('recovers a supervised legacy directory lock when its process is killed', a
   await assertKilledHolderCanBeRecovered(t, ['legacy']);
 });
 
+test('keeps the authority lease held by an inherited package-switch descriptor', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-inherited-file-update-lock-'));
+  const targetPath = join(root, 'state');
+  const holder = fork(
+    new URL('./fixtures/file-update-lock-holder.js', import.meta.url),
+    [targetPath, 'inherit'],
+    { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+  );
+  let inheritorPid: number | undefined;
+  t.after(async () => {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+    if (inheritorPid !== undefined) killIfRunning(inheritorPid);
+    await rm(root, { recursive: true, force: true });
+  });
+  inheritorPid = await new Promise<number>((resolve, reject) => {
+    holder.once('message', (message) => {
+      if (
+        typeof message === 'object' &&
+        message !== null &&
+        'kind' in message &&
+        message.kind === 'locked' &&
+        'inheritorPid' in message &&
+        typeof message.inheritorPid === 'number'
+      ) {
+        resolve(message.inheritorPid);
+      } else reject(new Error(`Unexpected child message: ${String(message)}`));
+    });
+    holder.once('error', reject);
+  });
+
+  holder.kill('SIGKILL');
+  await new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+  await assert.rejects(
+    withProcessLifetimeFileUpdateLock(targetPath, async () => undefined, 150),
+    /locked by another process/u,
+  );
+
+  killIfRunning(inheritorPid);
+  await waitForExit(inheritorPid);
+  await withProcessLifetimeFileUpdateLock(targetPath, async () => undefined, 2_000);
+});
+
 async function assertKilledHolderCanBeRecovered(
   t: TestContext,
   args: readonly string[],
@@ -71,4 +113,26 @@ async function assertKilledHolderCanBeRecovered(
     2_000,
   );
   assert.equal(entered, true);
+}
+
+function killIfRunning(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH')) throw error;
+  }
+}
+
+async function waitForExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Inherited lock holder ${pid} did not exit`);
 }

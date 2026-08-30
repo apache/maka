@@ -245,6 +245,55 @@ export function isMakaDevelopmentArtifact(relativePath) {
   );
 }
 
+function releaseExportTarget(target) {
+  if (typeof target === 'string') {
+    return isMakaDevelopmentArtifact(target) ? undefined : target;
+  }
+  if (Array.isArray(target)) {
+    const projected = target.map(releaseExportTarget).filter((entry) => entry !== undefined);
+    return projected.length === 0 ? undefined : projected;
+  }
+  if (target && typeof target === 'object') {
+    const projected = Object.fromEntries(
+      Object.entries(target)
+        .map(([condition, value]) => [condition, releaseExportTarget(value)])
+        .filter(([, value]) => value !== undefined),
+    );
+    return Object.keys(projected).length === 0 ? undefined : projected;
+  }
+  return target;
+}
+
+const WORKSPACE_RELEASE_MANIFEST_FIELDS = [
+  'name',
+  'version',
+  'description',
+  'license',
+  'type',
+  'sideEffects',
+  'main',
+  'exports',
+  'bin',
+  'engines',
+  'dependencies',
+  'optionalDependencies',
+  'peerDependencies',
+  'peerDependenciesMeta',
+];
+
+export function workspaceReleaseManifest(manifest) {
+  const releaseManifest = Object.fromEntries(
+    WORKSPACE_RELEASE_MANIFEST_FIELDS.filter((field) => manifest[field] !== undefined).map(
+      (field) => [field, manifest[field]],
+    ),
+  );
+  if (releaseManifest.exports !== undefined) {
+    const projected = releaseExportTarget(releaseManifest.exports);
+    releaseManifest.exports = projected === undefined ? {} : projected;
+  }
+  return releaseManifest;
+}
+
 export function isCurrentDevelopmentJavaScript(
   workspaceRoot,
   relativePath,

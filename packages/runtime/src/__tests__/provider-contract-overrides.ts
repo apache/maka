@@ -98,6 +98,42 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
     run: runZenMuxSignedReasoningReplay,
   },
   {
+    keys: ['deepseek:reasoning-replay'],
+    title: 'DeepSeek replays plaintext reasoning content on its Responses wire',
+    run: () =>
+      runOpenAIResponsesWire({
+        providerType: 'deepseek',
+        slug: 'deepseek',
+        name: 'DeepSeek',
+        basePath: '/v1',
+        modelId: 'deepseek-v4-flash',
+        apiKey: 'deepseek-test-key',
+        plaintextReasoning: true,
+      }),
+  },
+  {
+    keys: ['xai:reasoning-replay', 'xai-oauth:reasoning-replay'],
+    title: 'xAI API-key and OAuth paths retain encrypted Responses reasoning',
+    run: async () => {
+      for (const input of [
+        { providerType: 'xai' as const, slug: 'xai', apiKey: 'xai-test-key' },
+        {
+          providerType: 'xai-oauth' as const,
+          slug: 'xai-oauth',
+          apiKey: 'xai-oauth-test-token',
+        },
+      ]) {
+        await runOpenAIResponsesWire({
+          ...input,
+          name: input.slug,
+          basePath: `/${input.slug}/v1`,
+          modelId: 'grok-4.5',
+          statelessReasoning: true,
+        });
+      }
+    },
+  },
+  {
     keys: [
       'openai-responses-compatible:exact-model-id',
       'openai-responses-compatible:tool-loop',
@@ -133,7 +169,137 @@ export const PROVIDER_CONTRACT_OVERRIDE_BINDINGS: readonly ProviderContractOverr
         statelessReasoning: true,
       }),
   },
+  {
+    keys: ['alibaba-token-plan-cn:reasoning-replay', 'alibaba-token-plan:reasoning-replay'],
+    title: 'Alibaba Token Plan replays plaintext summary items on its Responses wire',
+    run: runAlibabaTokenPlanResponsesWire,
+  },
 ];
+
+async function runAlibabaTokenPlanResponsesWire(): Promise<void> {
+  for (const input of [
+    {
+      providerType: 'alibaba-token-plan-cn' as const,
+      slug: 'alibaba-token-plan-cn',
+      basePath: '/cn/compatible-mode/v1',
+      apiKey: 'alibaba-token-plan-cn-key',
+    },
+    {
+      providerType: 'alibaba-token-plan' as const,
+      slug: 'alibaba-token-plan',
+      basePath: '/global/compatible-mode/v1',
+      apiKey: 'alibaba-token-plan-global-key',
+    },
+  ]) {
+    const modelId = 'qwen3.8-max';
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, `${input.basePath}/responses`);
+      assert.equal(request.headers.authorization, `Bearer ${input.apiKey}`);
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        respondJson(response, 200, {
+          id: 'resp_alibaba_tool',
+          object: 'response',
+          created_at: 1,
+          status: 'completed',
+          model: modelId,
+          output: [
+            {
+              type: 'reasoning',
+              id: 'rs_alibaba_tool',
+              summary: [{ type: 'summary_text', text: 'Use echo.' }],
+            },
+            {
+              type: 'function_call',
+              id: 'fc_alibaba_echo',
+              call_id: 'call_alibaba_echo',
+              name: 'echo',
+              arguments: '{"text":"hello"}',
+              status: 'completed',
+            },
+          ],
+          usage: { input_tokens: 8, output_tokens: 4, total_tokens: 12 },
+        });
+        return;
+      }
+      respondJson(response, 200, {
+        id: 'resp_alibaba_final',
+        object: 'response',
+        created_at: 2,
+        status: 'completed',
+        model: modelId,
+        output: [
+          {
+            type: 'message',
+            id: 'msg_alibaba_final',
+            status: 'completed',
+            role: 'assistant',
+            content: [
+              { type: 'output_text', text: 'Echoed hello.', annotations: [], logprobs: [] },
+            ],
+          },
+        ],
+        usage: { input_tokens: 14, output_tokens: 3, total_tokens: 17 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: input.slug,
+      name: input.slug,
+      providerType: input.providerType,
+      baseUrl: `${server.url}${input.basePath}`,
+      defaultModel: modelId,
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = await generateText({
+      model: getAIModel({ connection, apiKey: input.apiKey, modelId }),
+      prompt: 'Call echo with hello.',
+      providerOptions: buildProviderOptions(connection, modelId),
+      stopWhen: isStepCount(2),
+      tools: {
+        echo: tool({
+          description: 'Echo text',
+          inputSchema: z.object({ text: z.string() }),
+          execute: async ({ text }) => ({ echoed: text }),
+        }),
+      },
+    });
+
+    assert.deepEqual(
+      requestBodies.map((body) => body.model),
+      [modelId, modelId],
+    );
+    assert.deepEqual(
+      requestBodies.map((body) => body.store),
+      [false, false],
+    );
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_alibaba_tool',
+        summary: [{ type: 'summary_text', text: 'Use echo.' }],
+      },
+    );
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'function_call_output',
+      ),
+      {
+        type: 'function_call_output',
+        call_id: 'call_alibaba_echo',
+        output: '{"echoed":"hello"}',
+      },
+    );
+    assert.equal(result.text, 'Echoed hello.');
+  }
+}
 
 async function runCloudflareDiscovery(): Promise<void> {
   const server = await startJsonServer((request, response) => {
@@ -883,8 +1049,19 @@ async function runOpenAIResponsesWire(input: {
   modelId: string;
   apiKey: string;
   statelessReasoning?: boolean;
+  plaintextReasoning?: boolean;
 }): Promise<void> {
-  const { providerType, slug, name, basePath, modelId, apiKey, statelessReasoning } = input;
+  const {
+    providerType,
+    slug,
+    name,
+    basePath,
+    modelId,
+    apiKey,
+    statelessReasoning,
+    plaintextReasoning,
+  } = input;
+  const hasReasoning = statelessReasoning || plaintextReasoning;
   const requestBodies: Array<Record<string, unknown>> = [];
   const server = await startJsonServer(async (request, response) => {
     assert.equal(request.method, 'POST');
@@ -908,7 +1085,16 @@ async function runOpenAIResponsesWire(input: {
                   encrypted_content: 'encrypted-relay-reasoning',
                 },
               ]
-            : []),
+            : plaintextReasoning
+              ? [
+                  {
+                    type: 'reasoning',
+                    id: 'rs_relay_tool',
+                    summary: [],
+                    content: [{ type: 'reasoning_text', text: 'Use echo.' }],
+                  },
+                ]
+              : []),
           {
             type: 'function_call',
             id: 'fc_relay_echo',
@@ -954,7 +1140,7 @@ async function runOpenAIResponsesWire(input: {
   const result = await generateText({
     model: getAIModel({ connection, apiKey, modelId }),
     prompt: 'Call echo with hello.',
-    ...(statelessReasoning ? { providerOptions: buildProviderOptions(connection, modelId) } : {}),
+    ...(hasReasoning ? { providerOptions: buildProviderOptions(connection, modelId) } : {}),
     stopWhen: isStepCount(2),
     tools: {
       echo: tool({
@@ -981,6 +1167,19 @@ async function runOpenAIResponsesWire(input: {
         id: 'rs_relay_tool',
         summary: [{ type: 'summary_text', text: 'Use echo.' }],
         encrypted_content: 'encrypted-relay-reasoning',
+      },
+    );
+  }
+  if (plaintextReasoning) {
+    assert.deepEqual(
+      (requestBodies[1].input as Array<Record<string, unknown>>).find(
+        ({ type }) => type === 'reasoning',
+      ),
+      {
+        type: 'reasoning',
+        id: 'rs_relay_tool',
+        summary: [],
+        content: [{ type: 'reasoning_text', text: 'Use echo.' }],
       },
     );
   }

@@ -28,7 +28,10 @@ import {
   Switch,
 } from "@astryxdesign/core";
 import type {
-  RemoteRuntimeHostProfile,
+  DesktopLocalRuntimeHostRemoteAccessSnapshot,
+  DesktopRuntimeHostPeerMeshTarget,
+} from '../../preload/bridge-contract.js';
+import type {
   RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
@@ -48,7 +51,14 @@ import { PasswordInput } from "./password-input.js";
 import { settingsActionErrorMessage } from "./settings-error-copy.js";
 import { SettingsField, SettingsRow, SettingsSection } from "./settings-section.js";
 import { RuntimeHostOnboardingDialog } from './runtime-host-onboarding-dialog.js';
-import { RuntimeHostManagementDialog } from './runtime-host-management-dialog.js';
+import {
+  RuntimeHostManagementDialog,
+  type RuntimeHostManagementTarget,
+} from './runtime-host-management-dialog.js';
+import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
+import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
+import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
+import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
 
@@ -73,6 +83,7 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const collaborationCopy = getSessionCollaborationCopy(locale);
   const mountedRef = useMountedRef();
   const toast = useToast();
   const [snapshot, setSnapshot] = useState<
@@ -80,13 +91,33 @@ export function RuntimeHostProfilesSection(props: {
   >();
   const [showAdd, setShowAdd] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [managedProfile, setManagedProfile] = useState<RemoteRuntimeHostProfile>();
+  const [showJoinSharedSession, setShowJoinSharedSession] = useState(false);
+  const [managedTarget, setManagedTarget] = useState<RuntimeHostManagementTarget>();
+  const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
+  const [connectionCodeDialog, setConnectionCodeDialog] = useState<
+    | { readonly mode: 'import' }
+    | {
+        readonly mode: 'share';
+        readonly connectionCode: string;
+        readonly openManagementOnClose?: true;
+      }
+  >();
+  const [peerMeshTarget, setPeerMeshTarget] = useState<{
+    readonly target: DesktopRuntimeHostPeerMeshTarget;
+    readonly name: string;
+  }>();
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
-    const next = await window.maka.runtimeHostProfiles.getSnapshot();
-    if (mountedRef.current) setSnapshot(next);
+    const [next, nextLocalAccess] = await Promise.all([
+      window.maka.runtimeHostProfiles.getSnapshot(),
+      window.maka.localRuntimeHostRemoteAccess.getSnapshot(),
+    ]);
+    if (mountedRef.current) {
+      setSnapshot(next);
+      setLocalAccess(nextLocalAccess);
+    }
   }, [mountedRef]);
 
   useEffect(() => {
@@ -228,9 +259,116 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
-  const remoteEntries = snapshot?.entries.filter((entry) => entry.profile.kind === "remote") ?? [];
+  async function enableLocalRemoteAccess(allowInterruptActiveTasks = false): Promise<void> {
+    setSwitching(true);
+    try {
+      const result = await window.maka.localRuntimeHostRemoteAccess.enable({
+        allowInterruptActiveTasks,
+        coordinationRelays: [],
+      });
+      if (result.kind === 'enabled') {
+        setConnectionCodeDialog({
+          mode: 'share',
+          connectionCode: result.connectionCode,
+          openManagementOnClose: true,
+        });
+      }
+      if (!mountedRef.current) return;
+      if (result.kind === 'active_tasks') {
+        const confirmed = await toast.confirm({
+          title: copy.remoteAccessActiveTasks,
+          description: copy.remoteAccessActiveTasksDescription,
+          confirmLabel: copy.interruptAndEnable,
+          cancelLabel: copy.cancel,
+          destructive: true,
+        });
+        if (confirmed) await enableLocalRemoteAccess(true);
+        return;
+      }
+      setLocalAccess(result.snapshot);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(
+          copy.remoteAccessFailed,
+          settingsActionErrorMessage(error, locale),
+        );
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function createLocalConnectionCode(): Promise<void> {
+    setSwitching(true);
+    try {
+      const code = await window.maka.localRuntimeHostRemoteAccess.createConnectionCode();
+      if (mountedRef.current) setConnectionCodeDialog({ mode: 'share', connectionCode: code });
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function disableLocalRemoteAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.disableRemoteAccessConfirm,
+      description: copy.disableRemoteAccessDescription,
+      confirmLabel: copy.disableRemoteAccess,
+      cancelLabel: copy.cancel,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    try {
+      const next = await window.maka.localRuntimeHostRemoteAccess.disable();
+      if (mountedRef.current) setLocalAccess(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  async function revokeLocalSharedAccess(): Promise<void> {
+    const confirmed = await toast.confirm({
+      title: copy.revokeSharedAccessConfirm,
+      description: copy.revokeSharedAccessDescription,
+      confirmLabel: copy.revokeSharedAccess,
+      cancelLabel: copy.cancel,
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    try {
+      const next = await window.maka.localRuntimeHostRemoteAccess.revokeSharedAccess();
+      if (mountedRef.current) {
+        setLocalAccess(next);
+        toast.success(copy.revokeSharedAccessDone);
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      }
+    } finally {
+      if (mountedRef.current) setSwitching(false);
+    }
+  }
+
+  const connectedEntries = snapshot?.entries.filter((entry) => entry.profile.kind !== 'local') ?? [];
+  const localProfile = snapshot?.entries.find((entry) => entry.profile.kind === 'local')?.profile;
+  const localManagementTarget = localProfile
+    ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
+    : undefined;
   const profileOptions = (snapshot?.entries ?? [])
-    .filter((entry) => entry.enabled)
+    .filter(
+      (entry) =>
+        entry.enabled &&
+        (entry.profile.kind !== 'remote' || entry.profile.access !== 'session_guest'),
+    )
     .map((entry) => ({
       value: entry.profile.id,
       label: entry.profile.name,
@@ -253,6 +391,103 @@ export function RuntimeHostProfilesSection(props: {
             />
           </HStack>}
         />
+        <SettingsRow
+          label={copy.thisComputerRemoteAccess}
+          description={
+            localAccess?.state === 'unsupported'
+              ? localAccess.message
+              : localAccess?.state === 'unavailable'
+                ? localAccess.message
+                : copy.thisComputerRemoteAccessHelp
+          }
+          end={(
+            <HStack gap={2} align="center">
+              <Badge
+                variant="neutral"
+                label={localAccess?.state === 'on' ? copy.remoteAccessOn : copy.remoteAccessOff}
+              />
+              {localManagementTarget && localAccess?.managedService ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  label={copy.manage}
+                  isDisabled={switching}
+                  onClick={() => setManagedTarget(localManagementTarget)}
+                />
+              ) : null}
+              {localAccess?.state === 'on' ? (
+                <MoreMenu
+                  label={copy.thisComputerRemoteAccess}
+                  size="sm"
+                  items={[
+                    {
+                      label: copy.createConnectionCode,
+                      isDisabled: switching,
+                      onClick: () => void createLocalConnectionCode(),
+                    },
+                    ...(localAccess.sharedAccess
+                      ? [{
+                          label: copy.revokeSharedAccess,
+                          isDisabled: switching,
+                          onClick: () => void revokeLocalSharedAccess(),
+                        }]
+                      : []),
+                    {
+                      label: copy.disableRemoteAccess,
+                      isDisabled: switching,
+                      onClick: () => void disableLocalRemoteAccess(),
+                    },
+                  ]}
+                />
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={copy.enableRemoteAccess}
+                    isDisabled={
+                      switching ||
+                      !localAccess ||
+                      localAccess.state === 'unsupported'
+                    }
+                    onClick={() => void enableLocalRemoteAccess()}
+                  />
+                  {localAccess?.state === 'off' && localAccess.managedService ? (
+                    <MoreMenu
+                      label={copy.thisComputerRemoteAccess}
+                      size="sm"
+                      items={[
+                        ...(localAccess.sharedAccess
+                          ? [{
+                              label: copy.revokeSharedAccess,
+                              isDisabled: switching,
+                              onClick: () => void revokeLocalSharedAccess(),
+                            }]
+                          : []),
+                      ]}
+                    />
+                  ) : null}
+                </>
+              )}
+            </HStack>
+          )}
+        />
+        <SettingsRow
+          label={copy.peerMesh}
+          description={copy.peerMeshHelp}
+          end={(
+            <Button
+              variant="secondary"
+              size="sm"
+              label={copy.managePeerMesh}
+              isDisabled={switching}
+              onClick={() => setPeerMeshTarget({
+                target: { kind: 'desktop' },
+                name: 'Local',
+              })}
+            />
+          )}
+        />
       </SettingsSection>
 
       <SettingsSection
@@ -269,12 +504,26 @@ export function RuntimeHostProfilesSection(props: {
                 setShowOnboarding(true);
               }}
             />
-            <Button
-              variant="secondary"
+            <MoreMenu
+              label={copy.moreActions(copy.remoteTitle)}
               size="sm"
-              label={showAdd ? copy.cancel : copy.configureManually}
-              isDisabled={switching}
-              onClick={toggleAdd}
+              items={[
+                {
+                  label: copy.useConnectionCode,
+                  isDisabled: switching,
+                  onClick: () => setConnectionCodeDialog({ mode: 'import' }),
+                },
+                {
+                  label: collaborationCopy.joinAction,
+                  isDisabled: switching,
+                  onClick: () => setShowJoinSharedSession(true),
+                },
+                {
+                  label: showAdd ? copy.cancel : copy.configureManually,
+                  isDisabled: switching,
+                  onClick: toggleAdd,
+                },
+              ]}
             />
           </HStack>
         }
@@ -379,60 +628,93 @@ export function RuntimeHostProfilesSection(props: {
             />
           </>
         ) : null}
-        {remoteEntries.length === 0 && !showAdd ? (
+        {connectedEntries.length === 0 && !showAdd ? (
           <SettingsRow label={copy.empty} />
         ) : (
           <List density="balanced" hasDividers aria-label={copy.remoteTitle}>
-            {remoteEntries.map((entry) => {
+            {connectedEntries.map((entry) => {
               const profile = entry.profile;
-              if (profile.kind !== "remote") return null;
+              if (profile.kind === 'local') return null;
+              const isSharedAccess =
+                profile.kind === 'remote' && profile.access === 'session_guest';
+              const managedSshDestination =
+                !isSharedAccess &&
+                profile.kind === 'remote' &&
+                profile.transport.kind === 'ssh' &&
+                entry.managedService
+                  ? profile.transport.destination
+                  : undefined;
               return (
                 <ListItem
                   key={profile.id}
                   label={profile.name}
-                description={
-                  profile.transport.kind === "ssh"
-                    ? profile.transport.destination
-                    : profile.transport.kind === "libp2p-direct"
-                      ? profile.transport.peerId
-                      : profile.transport.url
-                }
-                startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
-                endContent={
-                  <HStack gap={2} align="center">
-                    {entry.isDefault ? <Badge variant="neutral" label={copy.defaultBadge} /> : null}
-                    {entry.readiness === "unavailable" ? <Badge variant="neutral" label={copy.unavailable} /> : null}
-                    <Switch
-                      label={profile.name}
-                      isLabelHidden
-                      value={entry.enabled}
-                      isDisabled={switching || entry.isDefault}
-                      disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
-                      onChange={(enabled) => void setEnabled(profile.id, enabled)}
-                    />
-                    <MoreMenu
-                      label={copy.moreActions(profile.name)}
-                      size="sm"
-                      items={[
-                        ...(profile.transport.kind === "ssh" && entry.managedService
-                          ? [{
-                              label: copy.manage,
-                              isDisabled: switching,
-                              onClick: () => setManagedProfile(profile),
-                            }]
-                          : []),
-                        {
-                          label: copy.remove,
-                          isDisabled:
-                            switching ||
-                            entry.enabled ||
-                            entry.isDefault,
-                          onClick: () => void remove(profile.id),
-                        },
-                      ]}
-                    />
-                  </HStack>
-                }
+                  description={
+                    profile.kind === 'environment'
+                      ? profile.provider.distribution
+                      : profile.transport.kind === "ssh"
+                        ? profile.transport.destination
+                        : profile.transport.kind === "libp2p-direct"
+                          ? abbreviatePeerId(profile.transport.peerId)
+                          : profile.transport.url
+                  }
+                  startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
+                  endContent={
+                    <HStack gap={2} align="center">
+                      {entry.isDefault ? (
+                        <Badge variant="neutral" label={copy.defaultBadge} />
+                      ) : null}
+                      {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
+                        <Badge variant="warning" label={copy.experimentalBadge} />
+                      ) : null}
+                      {isSharedAccess ? (
+                        <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
+                      ) : null}
+                      {entry.readiness === "unavailable" ? (
+                        <Badge variant="neutral" label={copy.unavailable} />
+                      ) : null}
+                      <Switch
+                        label={profile.name}
+                        isLabelHidden
+                        value={entry.enabled}
+                        isDisabled={switching || entry.isDefault}
+                        disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
+                        onChange={(enabled) => void setEnabled(profile.id, enabled)}
+                      />
+                      <MoreMenu
+                        label={copy.moreActions(profile.name)}
+                        size="sm"
+                        items={[
+                          ...(managedSshDestination
+                            ? [{
+                                label: copy.manage,
+                                isDisabled: switching,
+                                onClick: () => setManagedTarget({
+                                  id: profile.id,
+                                  name: profile.name,
+                                  subtitle: managedSshDestination,
+                                  directPeerManagement: true,
+                                }),
+                              }, {
+                                label: copy.managePeerMesh,
+                                isDisabled: switching,
+                                onClick: () => setPeerMeshTarget({
+                                  target: { kind: 'managed_host', profileId: profile.id },
+                                  name: profile.name,
+                                }),
+                              }]
+                            : []),
+                          {
+                            label: copy.remove,
+                            isDisabled:
+                              switching ||
+                              entry.enabled ||
+                              entry.isDefault,
+                            onClick: () => void remove(profile.id),
+                          },
+                        ]}
+                      />
+                    </HStack>
+                  }
                 />
               );
             })}
@@ -448,15 +730,57 @@ export function RuntimeHostProfilesSection(props: {
         onRemoteHostAdded={props.onRemoteHostAdded}
       />
       <RuntimeHostManagementDialog
-        key={managedProfile ? `profile:${managedProfile.id}` : 'no-profile'}
-        profile={managedProfile}
+        key={managedTarget ? `profile:${managedTarget.id}` : 'no-profile'}
+        target={managedTarget}
         onClose={() => {
-          setManagedProfile(undefined);
+          setManagedTarget(undefined);
           void reload();
         }}
       />
+      {peerMeshTarget ? (
+        <RuntimeHostPeerMeshDialog
+          target={peerMeshTarget.target}
+          targetName={peerMeshTarget.name}
+          onClose={() => setPeerMeshTarget(undefined)}
+        />
+      ) : null}
+      {connectionCodeDialog?.mode === 'import' ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="import"
+          onClose={() => setConnectionCodeDialog(undefined)}
+          onImported={(profileId) => {
+            props.onRemoteHostAdded(profileId);
+            void reload();
+          }}
+        />
+      ) : connectionCodeDialog ? (
+        <RuntimeHostConnectionCodeDialog
+          mode="share"
+          connectionCode={connectionCodeDialog.connectionCode}
+          onClose={() => {
+            const openManagement = connectionCodeDialog.openManagementOnClose;
+            setConnectionCodeDialog(undefined);
+            if (openManagement && localManagementTarget) {
+              setManagedTarget(localManagementTarget);
+            }
+          }}
+        />
+      ) : null}
+      {showJoinSharedSession ? (
+        <SessionCollaborationDialog
+          mode="join"
+          onClose={() => setShowJoinSharedSession(false)}
+          onImported={() => {
+            void reload();
+          }}
+        />
+      ) : null}
     </>
   );
+}
+
+function abbreviatePeerId(peerId: string): string {
+  return peerId.length <= 20 ? peerId : `${peerId.slice(0, 10)}…${peerId.slice(-6)}`;
 }
 
 function createTransport(draft: ReturnType<typeof createRemoteHostDraft>): RuntimeHostRemoteTransport {

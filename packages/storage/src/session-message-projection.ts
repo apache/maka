@@ -40,7 +40,13 @@ export function catalogPreviewForUserMessage(message: UserMessage): string | und
 export function latestVisibleMessageAt(messages: readonly StoredMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (message.type === 'user' || message.type === 'assistant') return message.ts;
+    if (
+      message.type === 'user' ||
+      message.type === 'assistant' ||
+      message.type === 'workhub_coordination'
+    ) {
+      return message.ts;
+    }
   }
   return undefined;
 }
@@ -62,6 +68,10 @@ export function lastMessagePreviewForMessages(
     }
     if (message.type === 'assistant') {
       const text = normalizePreviewText(message.text);
+      if (text) return truncatePreview(text);
+    }
+    if (message.type === 'workhub_coordination') {
+      const text = normalizePreviewText(message.userText);
       if (text) return truncatePreview(text);
     }
   }

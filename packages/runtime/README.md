@@ -38,7 +38,7 @@ Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients exec
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.
 - Add tools through the builtin/tool composition seams; keep filesystem and shell effects behind `WorkspaceExecutor`.
-- Put shared pure contracts in `packages/core` and durable JSONL state in `packages/storage`.
+- Put shared pure contracts in `packages/core` and interactive Runtime state in the SQLite control plane owned by `packages/storage`.
 - Expose supported package APIs through the root barrel or a declared `package.json` subpath rather than importing internal files from another package.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 

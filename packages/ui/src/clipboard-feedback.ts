@@ -23,7 +23,7 @@
  * PR-UI-LIB-EXTRACT-7 (WAWQAQ msg `510fef52`, round 8/10): pulled
  * out of `components.tsx`. The hook is consumed at three sites
  * inside `@maka/ui` (message metadata copy, ToolActivity, and the
- * explore-agent preview); the `phase` type
+ * structured preview); the `phase` type
  * is also referenced by `TurnFooterActions` which keeps its own
  * inline copy-feedback state. None of these are part of the
  * public API.

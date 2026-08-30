@@ -34,15 +34,26 @@ const DOCUMENT_MAX_BYTES = 256 * 1024;
 const BINDING_COUNT_MAX = 32;
 const PATH_MAX_BYTES = 4 * 1024;
 
-export interface DesktopRuntimeHostManagedService {
+export interface DesktopRuntimeHostDeploymentBinding {
   readonly id: string;
   readonly rootPath: string;
+  readonly deploymentId?: string;
+}
+
+export interface DesktopRuntimeHostControlRoute {
+  readonly kind: "ssh_operator";
   readonly operatorPath: string;
+}
+
+export interface DesktopRuntimeHostManagedServiceTarget {
+  readonly deployment: DesktopRuntimeHostDeploymentBinding;
+  readonly control: DesktopRuntimeHostControlRoute;
 }
 
 export interface DesktopRuntimeHostManagedServiceBinding {
   readonly profile: RemoteRuntimeHostProfile;
-  readonly service: DesktopRuntimeHostManagedService;
+  readonly deployment: DesktopRuntimeHostDeploymentBinding;
+  readonly control: DesktopRuntimeHostControlRoute;
   readonly state: "active" | "uninstalling" | "cleanup_pending";
 }
 
@@ -55,24 +66,22 @@ export interface DesktopRuntimeHostManagedServiceStore {
   read(): Promise<DesktopRuntimeHostManagedServiceDocument>;
   save(
     profile: RemoteRuntimeHostProfile,
-    service: DesktopRuntimeHostManagedService,
+    target: DesktopRuntimeHostManagedServiceTarget,
   ): Promise<void>;
   removeIfCurrent(
-    profile: RemoteRuntimeHostProfile,
-    service: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean>;
-  removeForProfileIfCurrent(profile: RemoteRuntimeHostProfile): Promise<boolean>;
-  markUninstallingIfCurrent(
+  removeForProfileIfCurrent(
     profile: RemoteRuntimeHostProfile,
-    service: DesktopRuntimeHostManagedService,
+  ): Promise<boolean>;
+  markUninstallingIfCurrent(
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean>;
   markCleanupPendingIfCurrent(
-    profile: RemoteRuntimeHostProfile,
-    service: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean>;
   removeCleanupPendingIfCurrent(
-    profile: RemoteRuntimeHostProfile,
-    service: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean>;
 }
 
@@ -80,6 +89,7 @@ export function createDesktopRuntimeHostManagedServiceStore(
   clientDataRoot: string,
 ): DesktopRuntimeHostManagedServiceStore {
   return new FileDesktopRuntimeHostManagedServiceStore(
+    join(clientDataRoot, "runtime-host-deployments.json"),
     join(clientDataRoot, "runtime-host-managed-services.json"),
   );
 }
@@ -88,7 +98,9 @@ export function findDesktopRuntimeHostManagedServiceBinding(
   document: DesktopRuntimeHostManagedServiceDocument,
   profile: RemoteRuntimeHostProfile,
 ): DesktopRuntimeHostManagedServiceBinding | undefined {
-  const binding = document.bindings.find((candidate) => candidate.profile.id === profile.id);
+  const binding = document.bindings.find(
+    (candidate) => candidate.profile.id === profile.id,
+  );
   return binding && sameRemoteRuntimeHostProfileTarget(binding.profile, profile)
     ? binding
     : undefined;
@@ -102,119 +114,135 @@ export function sameDesktopRuntimeHostManagedServiceBinding(
     left.state === right.state &&
     left.profile.id === right.profile.id &&
     sameRemoteRuntimeHostProfileTarget(left.profile, right.profile) &&
-    sameService(left.service, right.service)
+    sameBindingTarget(left, right)
   );
 }
 
-class FileDesktopRuntimeHostManagedServiceStore
-  implements DesktopRuntimeHostManagedServiceStore
-{
+class FileDesktopRuntimeHostManagedServiceStore implements DesktopRuntimeHostManagedServiceStore {
   readonly #path: string;
+  readonly #legacyPath: string;
 
-  constructor(path: string) {
+  constructor(path: string, legacyPath: string) {
     this.#path = path;
+    this.#legacyPath = legacyPath;
   }
 
   async read(): Promise<DesktopRuntimeHostManagedServiceDocument> {
+    return this.#exclusive(() => this.#readUnlocked());
+  }
+
+  async #readUnlocked(): Promise<DesktopRuntimeHostManagedServiceDocument> {
     let contents: string;
     try {
       contents = await readFile(this.#path, "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyDocument();
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      try {
+        contents = await readFile(this.#legacyPath, "utf8");
+      } catch (legacyError) {
+        if ((legacyError as NodeJS.ErrnoException).code === "ENOENT")
+          return emptyDocument();
+        throw legacyError;
+      }
+      const migrated = decodeLegacyDocument(JSON.parse(contents));
+      await writeDocument(this.#path, migrated);
+      await removeLegacyDocument(this.#legacyPath);
+      return migrated;
     }
     if (Buffer.byteLength(contents, "utf8") > DOCUMENT_MAX_BYTES) {
       throw new Error("Runtime Host managed service document is too large");
     }
-    return decodeDocument(JSON.parse(contents));
+    const document = decodeDocument(JSON.parse(contents));
+    await removeLegacyDocument(this.#legacyPath);
+    return document;
   }
 
   save(
     value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
+    managedTarget: DesktopRuntimeHostManagedServiceTarget,
   ): Promise<void> {
     const profile = decodeRemoteRuntimeHostProfile(value);
     if (profile.transport.kind !== "ssh") {
-      return Promise.reject(new Error("A managed Runtime Host service requires SSH"));
+      return Promise.reject(
+        new Error("A managed Runtime Host service requires SSH"),
+      );
     }
-    const service = decodeService(managedService);
+    const deployment = decodeDeployment(managedTarget.deployment);
+    const control = decodeControlRoute(managedTarget.control);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readUnlocked();
       const bindings = current.bindings.filter(
         (binding) => binding.profile.id !== profile.id,
       );
       if (bindings.length >= BINDING_COUNT_MAX) {
-        throw new Error("Too many managed Runtime Host services are configured");
+        throw new Error(
+          "Too many managed Runtime Host services are configured",
+        );
       }
       await writeDocument(this.#path, {
         schemaVersion: SCHEMA_VERSION,
-        bindings: [...bindings, { profile, service, state: "active" }],
+        bindings: [
+          ...bindings,
+          {
+            profile,
+            deployment,
+            control,
+            state: "active",
+          },
+        ],
       });
     });
   }
 
   markUninstallingIfCurrent(
-    value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean> {
     return this.#setStateIfCurrent(
-      value,
-      managedService,
+      binding,
       ["active", "uninstalling"],
       "uninstalling",
     );
   }
 
   markCleanupPendingIfCurrent(
-    value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean> {
     return this.#setStateIfCurrent(
-      value,
-      managedService,
+      binding,
       ["uninstalling", "cleanup_pending"],
       "cleanup_pending",
     );
   }
 
   removeCleanupPendingIfCurrent(
-    value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
+    binding: DesktopRuntimeHostManagedServiceBinding,
   ): Promise<boolean> {
-    return this.#remove(
-      decodeRemoteRuntimeHostProfile(value),
-      decodeService(managedService),
-      "cleanup_pending",
-    );
+    return this.#remove(binding, "cleanup_pending");
   }
 
-  removeIfCurrent(
-    value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
-  ): Promise<boolean> {
-    const profile = decodeRemoteRuntimeHostProfile(value);
-    const service = decodeService(managedService);
-    return this.#remove(profile, service);
+  removeIfCurrent(binding: DesktopRuntimeHostManagedServiceBinding): Promise<boolean> {
+    return this.#remove(binding);
   }
 
   removeForProfileIfCurrent(value: RemoteRuntimeHostProfile): Promise<boolean> {
-    return this.#remove(decodeRemoteRuntimeHostProfile(value));
+    return this.#remove(undefined, undefined, decodeRemoteRuntimeHostProfile(value));
   }
 
   #remove(
-    profile: RemoteRuntimeHostProfile,
-    service?: DesktopRuntimeHostManagedService,
+    expected?: DesktopRuntimeHostManagedServiceBinding,
     state?: DesktopRuntimeHostManagedServiceBinding["state"],
+    profileOverride?: RemoteRuntimeHostProfile,
   ): Promise<boolean> {
+    const profile = expected?.profile ?? profileOverride!;
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readUnlocked();
       const binding = current.bindings.find(
         (candidate) => candidate.profile.id === profile.id,
       );
       if (
         !binding ||
         !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
-        (service && !sameService(binding.service, service)) ||
+        (expected && !sameBindingTarget(binding, expected)) ||
         (state && binding.state !== state)
       ) {
         return false;
@@ -230,22 +258,20 @@ class FileDesktopRuntimeHostManagedServiceStore
   }
 
   #setStateIfCurrent(
-    value: RemoteRuntimeHostProfile,
-    managedService: DesktopRuntimeHostManagedService,
+    expected: DesktopRuntimeHostManagedServiceBinding,
     allowedStates: readonly DesktopRuntimeHostManagedServiceBinding["state"][],
     state: DesktopRuntimeHostManagedServiceBinding["state"],
   ): Promise<boolean> {
-    const profile = decodeRemoteRuntimeHostProfile(value);
-    const service = decodeService(managedService);
+    const profile = expected.profile;
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readUnlocked();
       const binding = current.bindings.find(
         (candidate) => candidate.profile.id === profile.id,
       );
       if (
         !binding ||
         !sameRemoteRuntimeHostProfileTarget(binding.profile, profile) ||
-        !sameService(binding.service, service) ||
+        !sameBindingTarget(binding, expected) ||
         !allowedStates.includes(binding.state)
       ) {
         return false;
@@ -267,23 +293,31 @@ class FileDesktopRuntimeHostManagedServiceStore
   }
 }
 
-function decodeDocument(value: unknown): DesktopRuntimeHostManagedServiceDocument {
-  const record = requireExactRecord(value, "Runtime Host managed service document", [
-    "schemaVersion",
-    "bindings",
-  ]);
-  if (record.schemaVersion !== SCHEMA_VERSION || !Array.isArray(record.bindings)) {
+function decodeDocument(
+  value: unknown,
+): DesktopRuntimeHostManagedServiceDocument {
+  const record = requireExactRecord(
+    value,
+    "Runtime Host managed service document",
+    ["schemaVersion", "bindings"],
+  );
+  if (
+    record.schemaVersion !== SCHEMA_VERSION ||
+    !Array.isArray(record.bindings)
+  ) {
     throw new Error("Runtime Host managed service document is invalid");
   }
   if (record.bindings.length > BINDING_COUNT_MAX) {
-    throw new Error("Runtime Host managed service document has too many bindings");
+    throw new Error(
+      "Runtime Host managed service document has too many bindings",
+    );
   }
   const bindings = record.bindings.map((candidate) => {
-    const binding = requireExactRecord(candidate, "Runtime Host managed service binding", [
-      "profile",
-      "service",
-      "state",
-    ]);
+    const binding = requireExactRecord(
+      candidate,
+      "Runtime Host managed service binding",
+      ["control", "deployment", "profile", "state"],
+    );
     const profile = decodeRemoteRuntimeHostProfile(binding.profile);
     if (profile.transport.kind !== "ssh") {
       throw new Error("A managed Runtime Host service requires SSH");
@@ -297,24 +331,112 @@ function decodeDocument(value: unknown): DesktopRuntimeHostManagedServiceDocumen
     }
     return Object.freeze({
       profile,
-      service: decodeService(binding.service),
+      deployment: decodeDeployment(binding.deployment),
+      control: decodeControlRoute(binding.control),
       state: binding.state,
     });
   });
-  if (new Set(bindings.map((binding) => binding.profile.id)).size !== bindings.length) {
-    throw new Error("Runtime Host managed service bindings must have unique profile IDs");
+  if (
+    new Set(bindings.map((binding) => binding.profile.id)).size !==
+    bindings.length
+  ) {
+    throw new Error(
+      "Runtime Host managed service bindings must have unique profile IDs",
+    );
   }
-  return Object.freeze({ schemaVersion: SCHEMA_VERSION, bindings: Object.freeze(bindings) });
+  return Object.freeze({
+    schemaVersion: SCHEMA_VERSION,
+    bindings: Object.freeze(bindings),
+  });
 }
 
-function decodeService(value: unknown): DesktopRuntimeHostManagedService {
-  const record = requireExactRecord(value, "Managed Runtime Host service", [
-    "id",
-    "rootPath",
-    "operatorPath",
-  ]);
-  const rootPath = requirePath(record.rootPath, "Managed Runtime Host State Root");
-  const operatorPath = requirePath(record.operatorPath, "Managed Runtime Host operator path");
+function decodeLegacyDocument(
+  value: unknown,
+): DesktopRuntimeHostManagedServiceDocument {
+  const record = requireExactRecord(
+    value,
+    "Legacy Runtime Host managed service document",
+    ["schemaVersion", "bindings"],
+  );
+  if (record.schemaVersion !== 1 || !Array.isArray(record.bindings)) {
+    throw new Error("Legacy Runtime Host managed service document is invalid");
+  }
+  return decodeDocument({
+    schemaVersion: SCHEMA_VERSION,
+    bindings: record.bindings.map((candidate) => {
+      const binding = requireExactRecord(
+        candidate,
+        "Legacy Runtime Host service binding",
+        ["profile", "service", "state"],
+      );
+      const service = decodeLegacyService(binding.service);
+      return {
+        profile: binding.profile,
+        deployment: { id: service.id, rootPath: service.rootPath },
+        control: { kind: "ssh_operator", operatorPath: service.operatorPath },
+        state: binding.state,
+      };
+    }),
+  });
+}
+
+function decodeDeployment(value: unknown): DesktopRuntimeHostDeploymentBinding {
+  const hasDeploymentId =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, "deploymentId");
+  const record = requireExactRecord(
+    value,
+    "Managed Runtime Host deployment",
+    hasDeploymentId ? ["deploymentId", "id", "rootPath"] : ["id", "rootPath"],
+  );
+  return Object.freeze({
+    id: requireHostRootId(record.id),
+    rootPath: requirePath(record.rootPath, "Managed Runtime Host State Root"),
+    ...(record.deploymentId === undefined
+      ? {}
+      : { deploymentId: requireDeploymentId(record.deploymentId) }),
+  });
+}
+
+function decodeControlRoute(value: unknown): DesktopRuntimeHostControlRoute {
+  const record = requireExactRecord(
+    value,
+    "Managed Runtime Host control route",
+    ["kind", "operatorPath"],
+  );
+  if (record.kind !== "ssh_operator") {
+    throw new Error("Managed Runtime Host control route is invalid");
+  }
+  const operatorPath = requirePath(
+    record.operatorPath,
+    "Managed Runtime Host operator path",
+  );
+  if (!operatorPath.startsWith("/")) {
+    throw new Error("Managed Runtime Host operator path must be absolute");
+  }
+  return Object.freeze({ kind: "ssh_operator", operatorPath });
+}
+
+function decodeLegacyService(value: unknown): {
+  readonly id: string;
+  readonly rootPath: string;
+  readonly operatorPath: string;
+} {
+  const record = requireExactRecord(
+    value,
+    "Managed Runtime Host service",
+    ["id", "operatorPath", "rootPath"],
+  );
+  const rootPath = requirePath(
+    record.rootPath,
+    "Managed Runtime Host State Root",
+  );
+  const operatorPath = requirePath(
+    record.operatorPath,
+    "Managed Runtime Host operator path",
+  );
   if (!operatorPath.startsWith("/")) {
     throw new Error("Managed Runtime Host operator path must be absolute");
   }
@@ -323,6 +445,18 @@ function decodeService(value: unknown): DesktopRuntimeHostManagedService {
     rootPath,
     operatorPath,
   });
+}
+
+function requireDeploymentId(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      value,
+    )
+  ) {
+    throw new Error("Managed Runtime Host deployment identity is invalid");
+  }
+  return value;
 }
 
 function requirePath(value: unknown, label: string): string {
@@ -348,25 +482,33 @@ function requireExactRecord(
   const record = value as Record<string, unknown>;
   const actual = Object.keys(record).sort();
   const expected = [...keys].sort();
-  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
     throw new Error(`${label} has unexpected fields`);
   }
   return record;
 }
 
-function sameService(
-  left: DesktopRuntimeHostManagedService,
-  right: DesktopRuntimeHostManagedService,
+function sameBindingTarget(
+  left: DesktopRuntimeHostManagedServiceBinding,
+  right: DesktopRuntimeHostManagedServiceBinding,
 ): boolean {
   return (
-    left.id === right.id &&
-    left.rootPath === right.rootPath &&
-    left.operatorPath === right.operatorPath
+    left.deployment.id === right.deployment.id &&
+    left.deployment.rootPath === right.deployment.rootPath &&
+    left.deployment.deploymentId === right.deployment.deploymentId &&
+    left.control.kind === right.control.kind &&
+    left.control.operatorPath === right.control.operatorPath
   );
 }
 
 function emptyDocument(): DesktopRuntimeHostManagedServiceDocument {
-  return Object.freeze({ schemaVersion: SCHEMA_VERSION, bindings: Object.freeze([]) });
+  return Object.freeze({
+    schemaVersion: SCHEMA_VERSION,
+    bindings: Object.freeze([]),
+  });
 }
 
 async function writeDocument(
@@ -374,7 +516,10 @@ async function writeDocument(
   document: DesktopRuntimeHostManagedServiceDocument,
 ): Promise<void> {
   const validated = decodeDocument(document);
-  const temporaryPath = join(dirname(path), `.runtime-host-managed-services-${randomUUID()}.tmp`);
+  const temporaryPath = join(
+    dirname(path),
+    `.runtime-host-deployments-${randomUUID()}.tmp`,
+  );
   const handle = await open(temporaryPath, "wx", 0o600);
   try {
     try {
@@ -388,4 +533,14 @@ async function writeDocument(
   } finally {
     await rm(temporaryPath, { force: true });
   }
+}
+
+async function removeLegacyDocument(path: string): Promise<void> {
+  try {
+    await rm(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await syncDirectory(dirname(path));
 }

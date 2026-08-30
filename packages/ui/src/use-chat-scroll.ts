@@ -17,183 +17,125 @@
  * under the License.
  */
 
+/**
+ * The transcript's scroll commands, and the seam that hands the scroller to the
+ * authority that owns it (`transcript-scroll-authority.ts`).
+ *
+ * A command is one-shot — jump to a turn the reader picked, ask for the history
+ * above them — and it releases the pin first, because the authority writes
+ * nothing while the pin is released and so a command can never be fighting a
+ * policy. That was the shape every previous round of this code had.
+ *
+ * What decides whether the reader wants either thing is never re-derived here.
+ * "They have left the tail" is the pin, and the pin has one owner. Nothing here
+ * compensates for content that lands above them either; `overflow-anchor: auto`
+ * does that continuously, and for free.
+ */
+
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import type { StoredMessage } from '@maka/core/session';
-import { createArrivalBottomPin, type ArrivalBottomPin } from './arrival-bottom-pin.js';
-import { captureChatScrollAnchor, restoreChatScrollAnchor } from './chat-scroll-anchor.js';
+import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
 
 export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
   sessionId?: string;
-  hasTurns: boolean;
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  historyLoadPending?: boolean;
-  onLoadEarlierHistory?(): Promise<void> | void;
-  latestNavigationNonce?: number;
+  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
 }) {
   const [highlightedTurnId, setHighlightedTurnId] = useState<string | null>(null);
-  const arrivalPin = useRef<ArrivalBottomPin | null>(null);
+  const authority = useTranscriptScrollAuthority();
   const loadEarlierRef = useRef(input.onLoadEarlierHistory);
   loadEarlierRef.current = input.onLoadEarlierHistory;
-  const sessionIdRef = useRef(input.sessionId);
-  sessionIdRef.current = input.sessionId;
-  const historyLoadPendingRef = useRef(input.historyLoadPending);
-  historyLoadPendingRef.current = input.historyLoadPending;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
-  const earlierLoadRequest = useRef<object | null>(null);
-  const requestEarlierRef = useRef<() => void>(() => {});
+  const handledTarget = useRef<string | null>(null);
 
+  // A passive effect, not a layout one: the scroller is Astryx's layout root,
+  // an ancestor, and React attaches a parent's ref after its children's layout
+  // effects have already run. The growth signal is a ResizeObserver delivery,
+  // which lands after passive effects, so this is still installed in time.
+  useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
+
+  // A new conversation arrives at its tail. Nothing special positions it: the
+  // pin is set here and the first fill is growth like any other, so it takes
+  // the one path instead of a first-fill path of its own.
   useEffect(() => {
-    earlierLoadRequest.current = null;
+    authority.pinToTail();
   }, [input.sessionId]);
 
   useEffect(() => {
     const root = input.scrollRef.current;
     if (!root || !input.hasOlderHistory || !canLoadEarlier) return;
-    let previousScrollTop = root.scrollTop;
+    // Asking twice is the loader's problem, not this one's: it refuses a
+    // request while one is in flight, and asking for history the reader
+    // already has is idempotent anyway.
     const requestEarlier = (): void => {
-      if (historyLoadPendingRef.current || earlierLoadRequest.current) return;
-      const scrollHeight = root.scrollHeight;
-      const anchor = captureChatScrollAnchor(root);
-      const sessionId = sessionIdRef.current;
-      const request = {};
-      earlierLoadRequest.current = request;
-      arrivalPin.current?.release();
-      void Promise.resolve(loadEarlierRef.current?.()).catch(() => undefined).finally(() => {
-        window.requestAnimationFrame(() => {
-          if (
-            earlierLoadRequest.current === request &&
-            sessionIdRef.current === sessionId &&
-            input.scrollRef.current === root &&
-            root.isConnected &&
-            !restoreChatScrollAnchor(root, anchor)
-          ) {
-            root.scrollTop += root.scrollHeight - scrollHeight;
-          }
-          if (earlierLoadRequest.current === request) earlierLoadRequest.current = null;
-        });
-      });
+      const rootTop = root.getBoundingClientRect().top;
+      const anchor = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+        (turn) => turn.getBoundingClientRect().bottom > rootTop,
+      );
+      // The browser anchors the reader against everything that lands above
+      // them, with one exception: it declines while the scroller sits at zero,
+      // which is exactly where a wheel asks for history. One pixel is the whole
+      // fix — measured in Chromium, an insert of 501px above the reader moves
+      // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
+      if (root.scrollTop < 1) root.scrollTop = 1;
+      void Promise.resolve(loadEarlierRef.current?.(anchor?.dataset.turnId)).catch(() => undefined);
     };
+    /** Close enough to the start that the reader is about to reach it. */
     const nearStart = (): boolean =>
       root.scrollTop <= Math.max(640, root.clientHeight * 2);
-    const onScroll = (): void => {
-      const nextScrollTop = root.scrollTop;
-      if (nextScrollTop < previousScrollTop && nearStart()) requestEarlier();
-      previousScrollTop = nextScrollTop;
-    };
+    // Nearness alone does not mean the reader wants history — on a transcript
+    // shorter than about three viewports the tail is inside this band too, so
+    // following it would ask on every write, and content landing above would
+    // ask again on every anchoring correction until there was no history left.
+    // Which movements were the reader's is not re-derived here; the authority
+    // watches the scroller and says so.
+    const stopWatchingReader = authority.subscribeToReaderScroll(() => {
+      if (nearStart()) requestEarlier();
+    });
+    // A wheel is the reader asking to go up, which at `scrollTop === 0` is the
+    // only way they can: the scroller cannot move, so no scroll event follows
+    // and the authority never sees the gesture. Releasing here is what tells it
+    // — a reader who asked for what is above them is no longer following what
+    // is below.
     const onWheel = (event: WheelEvent): void => {
-      if (event.deltaY < 0 && nearStart()) requestEarlier();
+      if (event.deltaY >= 0 || !nearStart()) return;
+      for (const target of event.composedPath()) {
+        if (target === root) break;
+        if (!(target instanceof HTMLElement)) continue;
+        const overflowY = getComputedStyle(target).overflowY;
+        if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
+        if (target.scrollHeight > target.clientHeight && target.scrollTop > 0) return;
+      }
+      authority.releasePin();
+      requestEarlier();
     };
-    requestEarlierRef.current = requestEarlier;
-    root.addEventListener('scroll', onScroll, { passive: true });
     root.addEventListener('wheel', onWheel, { passive: true });
     return () => {
-      if (requestEarlierRef.current === requestEarlier) requestEarlierRef.current = () => {};
-      root.removeEventListener('scroll', onScroll);
+      stopWatchingReader();
       root.removeEventListener('wheel', onWheel);
     };
-  }, [
-    input.hasOlderHistory,
-    input.historyLoadPending,
-    canLoadEarlier,
-    input.scrollRef,
-    input.sessionId,
-  ]);
-
-  // A session switch is navigation, so its initial virtual tail arrives at the
-  // bottom instead of animating there as ordinary content growth.
-  useEffect(() => {
-    const viewport = input.scrollRef.current;
-    if (!viewport) return;
-    // Nothing to arrive: keep the plain positioning this effect has always done
-    // for a transcript that is empty (or still loading its first turn), and let
-    // the pin install on the commit those turns land in.
-    if (!input.hasTurns) {
-      viewport.scrollTop = viewport.scrollHeight;
-      return;
-    }
-    const pin = createArrivalBottomPin({
-      viewport,
-      content: viewport.querySelector('.maka-chat-message-list'),
-      onStateChange: (state) => { viewport.dataset.arrivalPin = state; },
-    });
-    arrivalPin.current = pin;
-    return () => {
-      pin.dispose();
-      arrivalPin.current = null;
-      delete viewport.dataset.arrivalPin;
-    };
-  }, [input.sessionId, input.hasTurns, input.scrollRef, input.latestNavigationNonce]);
-
-  useEffect(() => {
-    const root = input.scrollRef.current;
-    if (!root || !input.hasTurns) return;
-    let disposed = false;
-    let pollTimer: number | undefined;
-    let frame = 0;
-    let idle: number | undefined;
-    let idleTimer: number | undefined;
-    let polls = 0;
-    const finishArrival = () => {
-      if (disposed) return;
-      if (root.querySelector('.maka-markdown-pending') && polls < 50) {
-        polls += 1;
-        pollTimer = window.setTimeout(finishArrival, 100);
-        return;
-      }
-      frame = window.requestAnimationFrame(() => {
-        frame = window.requestAnimationFrame(() => {
-          if (disposed) return;
-          root.dataset.turnWindow = 'ready';
-          arrivalPin.current?.release();
-          const prefetch = () => {
-            if (root.scrollTop <= Math.max(640, root.clientHeight * 2)) {
-              requestEarlierRef.current();
-            }
-          };
-          if (typeof window.requestIdleCallback === 'function') {
-            idle = window.requestIdleCallback(prefetch, { timeout: 250 });
-          } else {
-            idleTimer = window.setTimeout(prefetch, 0);
-          }
-        });
-      });
-    };
-    const fontsReady: Promise<unknown> =
-      typeof document !== 'undefined' && document.fonts ? document.fonts.ready : Promise.resolve();
-    void fontsReady.then(finishArrival);
-    return () => {
-      disposed = true;
-      window.clearTimeout(pollTimer);
-      window.clearTimeout(idleTimer);
-      if (idle !== undefined) window.cancelIdleCallback(idle);
-      if (frame !== 0) window.cancelAnimationFrame(frame);
-      delete root.dataset.turnWindow;
-    };
-  }, [
-    input.sessionId,
-    input.hasTurns,
-    input.hasOlderHistory,
-    input.scrollRef,
-    input.latestNavigationNonce,
-    canLoadEarlier,
-  ]);
+  }, [authority, input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
     const target = input.target;
     if (!target?.turnId) return;
-    // Navigating to a turn is the reader choosing a position, so it outranks an
-    // arrival still in flight. (An upward scroll would release the pin on its
-    // own a frame later; releasing here keeps the first frame honest too.)
-    arrivalPin.current?.release();
+    // This effect re-runs on every transcript update so a target that arrives
+    // before its turn still lands. It stops for good once the turn is on
+    // screen — repeating the release afterwards would take the tail away from
+    // a reader who had already scrolled back to it.
+    const chosen = `${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`;
+    if (handledTarget.current === chosen) return;
+    authority.releasePin();
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
       if (!element || !('scrollIntoView' in element)) return;
+      handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
       targetElement.setAttribute('tabindex', '-1');
       targetElement.scrollIntoView({

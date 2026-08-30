@@ -24,18 +24,14 @@
  * This is the shared compatibility projection used by Desktop onboarding and
  * the renderer session-health notice above the composer. Runtime Host owns the
  * authoritative submission and execution path; this projection only explains
- * whether that target looks usable or whether an empty legacy session has a
- * compatible fallback for presentation and readiness checks.
+ * whether that exact target looks usable for presentation and readiness checks.
  *
  * The compatibility rules are:
  *   1. The session's own connection must pass `isConnectionReady` with
  *      the sticky session model.
- *   2. A locked session (has user messages) can never select a fallback — any
- *      failure of its own connection projects as blocked.
- *   3. An unlocked session may select a fallback only for reasons in
- *      `shouldRebindSessionToDefault`; the walk tries the default
- *      connection first, then every other persisted connection.
- *   4. Otherwise the compatibility projection is blocked.
+ *   2. Legacy Sessions without an immutable connection id are blocked until
+ *      the user explicitly selects an account.
+ *   3. A missing id, slug mismatch, or unusable exact connection is blocked.
  *
  * `lastTestStatus` deliberately plays no part here (E4): telemetry about
  * a past credential test must not gate send, so it must not gate the
@@ -47,7 +43,7 @@ import {
   normalizeOpenAiCodexConnection,
   type ChatConfigurationReason,
 } from './connection-readiness.js';
-import type { LlmConnection } from './llm-connections.js';
+import type { IdentifiedLlmConnection, LlmConnection } from './llm-connections.js';
 
 export interface SessionSendProjectionSession {
   /**
@@ -57,6 +53,7 @@ export interface SessionSendProjectionSession {
    * normal connection readiness gate.
    */
   backend: string;
+  llmConnectionId?: string;
   llmConnectionSlug: string;
   /** Sticky session model captured when the session was created. */
   model: string;
@@ -66,9 +63,8 @@ export interface SessionSendProjectionSession {
 
 export interface SessionSendProjectionInput {
   session: SessionSendProjectionSession;
-  /** Every persisted connection (the rebind walk considers all of them). */
-  connections: readonly LlmConnection[];
-  defaultSlug: string | null;
+  /** Every persisted connection. */
+  connections: readonly IdentifiedLlmConnection[];
   /**
    * Secret presence per connection slug, resolved by the caller. Only
    * consulted for connections that exist.
@@ -78,40 +74,24 @@ export interface SessionSendProjectionInput {
 
 export type SessionSendProjection =
   | { kind: 'ready' }
-  | { kind: 'rebind'; connectionSlug: string; model: string }
-  | { kind: 'blocked'; reason: ChatConfigurationReason; connectionLocked: boolean };
+  | {
+      kind: 'blocked';
+      reason:
+        | ChatConfigurationReason
+        | 'legacy_connection_identity'
+        | 'connection_identity_mismatch';
+      connectionLocked: boolean;
+    };
 
 export function projectSessionSendOutcome(
   input: SessionSendProjectionInput,
 ): SessionSendProjection {
-  const { session, connections, defaultSlug, hasSecret } = input;
+  const { session, connections, hasSecret } = input;
 
   const ownReason = ownConnectionBlockReason(session, connections, hasSecret);
   if (ownReason === undefined) return { kind: 'ready' };
 
-  // Once a session has user messages, its connection/model is sticky.
-  // Rebind remains only a recovery path for empty legacy placeholders.
-  if (session.connectionLocked) {
-    return { kind: 'blocked', reason: ownReason, connectionLocked: true };
-  }
-  if (!shouldRebindSessionToDefault(ownReason)) {
-    return { kind: 'blocked', reason: ownReason, connectionLocked: false };
-  }
-
-  for (const slug of new Set([defaultSlug, ...connections.map((connection) => connection.slug)])) {
-    if (!slug) continue;
-    const connection = connections.find((entry) => entry.slug === slug);
-    if (!connection) continue;
-    const normalized = normalizeOpenAiCodexConnection(connection);
-    const verdict = isConnectionReady({
-      connection: normalized,
-      hasSecret: hasSecret(normalized.slug),
-    });
-    if (verdict.ready) {
-      return { kind: 'rebind', connectionSlug: normalized.slug, model: verdict.model };
-    }
-  }
-  return { kind: 'blocked', reason: ownReason, connectionLocked: false };
+  return { kind: 'blocked', reason: ownReason, connectionLocked: session.connectionLocked };
 }
 
 /**
@@ -143,35 +123,20 @@ function sessionOwnConnectionBlockReason(
 
 function ownConnectionBlockReason(
   session: SessionSendProjectionSession,
-  connections: readonly LlmConnection[],
+  connections: readonly IdentifiedLlmConnection[],
   hasSecret: (slug: string) => boolean,
-): ChatConfigurationReason | undefined {
-  const own = connections.find((entry) => entry.slug === session.llmConnectionSlug) ?? null;
+):
+  | ChatConfigurationReason
+  | 'legacy_connection_identity'
+  | 'connection_identity_mismatch'
+  | undefined {
+  if (session.backend === 'fake') return 'fake_backend';
+  if (!session.llmConnectionId) return 'legacy_connection_identity';
+  const identified =
+    connections.find((entry) => entry.connectionId === session.llmConnectionId) ?? null;
+  if (identified && identified.slug !== session.llmConnectionSlug) {
+    return 'connection_identity_mismatch';
+  }
+  const own = identified;
   return sessionOwnConnectionBlockReason(session, own, hasSecret);
-}
-
-/**
- * Whether an unlocked session whose own connection failed with `reason` may
- * project another ready connection as a compatibility target. Failures not
- * listed here (e.g. `missing_api_key`, `connection_disabled`) stay blocked
- * even when unlocked because masking an explicitly configured connection
- * would make the health/readiness UI misleading.
- *
- * `fake_backend` is deliberately absent (#3211). Every reason listed here
- * names a broken *connection*, which another connection can stand in for. A
- * retired backend is not: activation dispatches off the session header's own
- * `backend`, so pointing the session at a healthy connection still leaves
- * `'fake'` in the header and still gets refused. Claiming a rebind for these
- * rows made the projection promise a recovery nothing performs — and the
- * surfaces that must answer "is this task usable?" had to bypass the
- * projection and read `backend` themselves to work around it.
- */
-function shouldRebindSessionToDefault(reason: string | undefined): boolean {
-  return (
-    reason === 'connection_missing' ||
-    reason === 'missing_model' ||
-    reason === 'empty_model_list' ||
-    reason === 'model_not_enabled' ||
-    reason === 'model_not_chat_capable'
-  );
 }

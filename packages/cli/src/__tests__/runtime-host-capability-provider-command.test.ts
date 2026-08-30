@@ -18,10 +18,24 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import type { McpToolBinding } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
+import { createMcpCapabilityProvider as createPureMcpCapabilityProvider } from '../mcp-capability-provider.js';
 import { createMcpCapabilityProvider } from '../runtime-host-capability-provider-command.js';
+
+test('TUI MCP control keeps its capability provider on the pure import boundary', async () => {
+  const [tuiSource, providerSource] = await Promise.all([
+    readFile(new URL('../tui-mcp-control.js', import.meta.url), 'utf8'),
+    readFile(new URL('../mcp-capability-provider.js', import.meta.url), 'utf8'),
+  ]);
+
+  assert.equal(createMcpCapabilityProvider, createPureMcpCapabilityProvider);
+  assert.match(tuiSource, /from ['"]\.\/mcp-capability-provider\.js['"]/u);
+  assert.doesNotMatch(tuiSource, /@maka\/runtime-host\/server/u);
+  assert.doesNotMatch(providerSource, /@maka\/runtime-host\/server/u);
+});
 
 test('MCP capability publication freezes an accepted callable tool snapshot', async () => {
   let accepted = false;

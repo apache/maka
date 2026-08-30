@@ -22,7 +22,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
-import { SessionListPanel } from '../src/session-list-panel.js';
+import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
 
 const NOW = Date.now();
 
@@ -39,7 +39,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type SessionListPanelProps = Parameters<typeof SessionListPanel>[0];
+type SessionListPanelProps = SessionRailStoryProps;
 
 const noop = () => undefined;
 
@@ -279,7 +279,7 @@ const liveRunAuthoritySessions: SessionSummary[] = [
 export const Empty: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({ sessions: [] })} />
+      <SessionRail {...panelProps({ sessions: [] })} />
     </StoryFrame>
   ),
 };
@@ -289,7 +289,7 @@ export const Empty: Story = {
 export const ConversationStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
@@ -305,7 +305,7 @@ export const ConversationStates: Story = {
 export const ActiveTaskActionsOpen: Story = {
   render: () => (
     <StoryFrame openSessionMenuId="status-waiting">
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
       })} />
@@ -324,7 +324,7 @@ export const ActiveTaskActionsOpen: Story = {
 export const LiveRunAuthorityStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: liveRunAuthoritySessions,
         activeId: 'live-remote-running',
         streamingSessionIds: new Set(['live-local-race']),
@@ -338,7 +338,7 @@ export const LiveRunAuthorityStates: Story = {
 export const LongTitlesAndNarrow: Story = {
   render: () => (
     <StoryFrame width={180}>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         width: 180,
         sessions: longTitleSessions,
         activeId: 'long-title-active',
@@ -353,7 +353,7 @@ export const LongTitlesAndNarrow: Story = {
 export const PinnedAndRecentSections: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel
+      <SessionRail
         {...panelProps({
           sessions: [
             makeSession({
@@ -431,7 +431,7 @@ export const ProjectGroups: Story = {
     ];
     return (
       <StoryFrame height={720}>
-        <SessionListPanel
+        <SessionRail
           {...panelProps({
             sessions,
             activeId: 'proj-worktree',

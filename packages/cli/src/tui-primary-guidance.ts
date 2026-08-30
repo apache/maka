@@ -34,6 +34,7 @@ export interface TuiPrimaryGuidanceCopy {
   readonly commands: Readonly<Record<TuiCommandId, string>>;
   readonly help: {
     readonly commandsHeading: string;
+    readonly userCommand: string;
     readonly keybindingsHeading: string;
     readonly keybindings: readonly string[];
   };
@@ -55,7 +56,7 @@ const TUI_PRIMARY_GUIDANCE = {
       goal: '查看自主目标状态',
       graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',
       help: '查看命令和快捷键',
-      mcp: '查看客户端 MCP 服务器和工具发布状态',
+      mcp: '管理客户端 MCP 服务器和工具发布状态',
       model: '选择模型',
       move: '将当前会话移到其他目录',
       new: '新建会话',
@@ -74,6 +75,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: '命令',
+      userCommand: '  !<command> — 执行一次仅用户可见的 shell 命令',
       keybindingsHeading: '快捷键',
       keybindings: [
         '  Ctrl+O — 展开或折叠所有工具输出',
@@ -104,7 +106,7 @@ const TUI_PRIMARY_GUIDANCE = {
       goal: 'Show autonomous goal status',
       graph: 'Show, enable, disable, or run one Graph turn',
       help: 'Show commands and keybindings',
-      mcp: 'Show client-owned MCP servers and tool publication status',
+      mcp: 'Manage client-owned MCP servers and tool publication status',
       model: 'Select model',
       move: 'Move current session to another directory',
       new: 'Start a new session',
@@ -123,6 +125,7 @@ const TUI_PRIMARY_GUIDANCE = {
     },
     help: {
       commandsHeading: 'Commands',
+      userCommand: '  !<command> — run one shell command visible only to you',
       keybindingsHeading: 'Keybindings',
       keybindings: [
         '  Ctrl+O — expand or collapse all tool output',

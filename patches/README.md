@@ -76,5 +76,8 @@ Streaming text and Markdown expose an explicit `settledText` seam so the
 renderer can verify and advance the exact prefix already presented without
 replaying it. The default remains progressive for a genuinely new stream, and
 rewritten or later text still reveals and fades from a parsed-visible boundary.
+Markdown can also transform the displayed prefix immediately before its
+existing incremental parser, so host syntax such as math stays behind the
+streaming cursor without adding another parser or scheduler.
 
 Delete each hunk when the corresponding behavior ships in Astryx.

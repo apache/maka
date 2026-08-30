@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
@@ -467,6 +468,123 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('a generated title fills an absence and never overwrites a rename', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-generated-title-'));
+    const store = createSessionStore(root);
+    try {
+      const unnamed = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(unnamed.id, 'draft the release notes'))?.name,
+        'draft the release notes',
+      );
+      assert.equal((await store.readHeaderSnapshot(unnamed.id)).name, 'draft the release notes');
+      // An already-named Session is never renamed by a later generation.
+      assert.equal(await store.setGeneratedTitleIfAbsent(unnamed.id, 'a second guess'), null);
+
+      // A rename landing between the check and the write wins: the write is
+      // conditional on the revision the check read.
+      const raced = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      const readHeaderRecordSnapshot = store.readHeaderRecordSnapshot.bind(store);
+      let renamed = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === raced.id && !renamed) {
+          renamed = true;
+          await store.rename(sessionId, '我自己起的名字');
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(raced.id, 'generated loses'), null);
+      const header = await readHeaderRecordSnapshot(raced.id);
+      assert.equal(header.header.name, '我自己起的名字');
+      assert.equal(header.header.titleIsManual, true);
+
+      // A revision that moved for any other reason is re-read, not mistaken
+      // for a rename.
+      const flagged = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flaggedOnce = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === flagged.id && !flaggedOnce) {
+          flaggedOnce = true;
+          await store.setFlagged(sessionId, true);
+        }
+        return record;
+      };
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(flagged.id, 'generated survives'))?.name,
+        'generated survives',
+      );
+
+      // A Session whose revision moves under every attempt answers null like any
+      // other lost race, so a caller reading null never has to also expect a throw.
+      const busy = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flips = 0;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === busy.id) {
+          flips += 1;
+          await store.setFlagged(sessionId, flips % 2 === 1);
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(busy.id, 'never lands'), null);
+      assert.equal((await readHeaderRecordSnapshot(busy.id)).header.name, DEFAULT_SESSION_NAME);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a Session freezes its route on the first user message, a subagent at birth', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-route-freeze-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ cwd: root }));
+      assert.equal(ordinary.connectionLocked, false);
+
+      // A subagent's route is chosen by the spawn that created it and is never
+      // re-targeted, so it needs no first Message to be frozen.
+      const child = await store.createSubagent(
+        makeInput({
+          cwd: root,
+          name: 'Child',
+          subagentParent: {
+            kind: 'subagent',
+            parentSessionId: ordinary.id,
+            spawnedBy: {
+              parentRunId: 'parent-run',
+              parentTurnId: 'parent-turn',
+              toolCallId: 'tool-call',
+            },
+            lifecycle: 'foreground',
+          },
+          subagentRuntime: {
+            schemaVersion: 1,
+            definitionVersion: 1,
+            agentId: 'local-read',
+            agentName: 'Local Read',
+            profile: 'local_read',
+            systemPrompt: 'Read the assigned workspace task.',
+            toolNames: ['Read'],
+            categoryPolicy: { read: 'allow' },
+          },
+          subagentSpawn: {
+            schemaVersion: 1,
+            requestFingerprint: 'a'.repeat(64),
+            initialTurnId: 'child-turn',
+            initialRunId: 'child-run',
+          },
+        }),
+      );
+      assert.equal(child.header.connectionLocked, true);
+      assert.equal((await store.readHeaderSnapshot(child.header.id)).connectionLocked, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('appending the first user message locks the session before any read', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-heal-'));
     const store = createSessionStore(root);
@@ -542,6 +660,15 @@ describe('SQLite SessionStore', () => {
         [3, 2],
       );
       assert.deepEqual(tail.next, { position: 1, byteOffset: null });
+
+      const decodedTail = await store.readTranscriptRecordsSnapshot(session.id, {
+        direction: 'older',
+        maxStoredBytes: 1,
+        maxMessages: 2,
+      });
+      assert.equal(decodedTail.throughSequence, 3);
+      assert.deepEqual(decodedTail.records, [{ sequence: 3, message: messages[3] }]);
+      assert.equal(decodedTail.nextPosition, 2);
 
       await store.appendMessage(session.id, {
         type: 'user',
@@ -1285,10 +1412,33 @@ describe('SQLite SessionStore', () => {
     try {
       const [header] = await reopened.listHeaders();
       assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionId, undefined);
       assert.equal(header?.llmConnectionSlug, 'fake');
       assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
     } finally {
       await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an immutable Connection identity when supplied by Host admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-connection-identity-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+      );
+      assert.equal(created.llmConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(
+        (await store.readHeader(created.id)).llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+      assert.equal(
+        (await store.readCatalogRecord(created.id)).summary.llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+    } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });

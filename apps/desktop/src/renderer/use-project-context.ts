@@ -18,8 +18,10 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useStableActions } from './use-stable-actions.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { UiLocale } from '@maka/core/ui-locale';
+import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import type {
   DesktopProjectCapabilities,
   DesktopRuntimeHostRef,
@@ -68,7 +70,7 @@ export function useAppShellProjectContext(options: {
   sessionId?: string;
   sessionCwd?: string;
   sessionProjectId?: string | null;
-  sessionProfileKind?: 'local' | 'remote';
+  sessionProfileKind?: RuntimeHostProfileKind;
   onProjectSelected(ownerSessionId?: string): void;
   toastApi: ToastApi;
 }): AppShellProjectActions & {
@@ -250,7 +252,11 @@ export function useAppShellProjectContext(options: {
         (project) =>
           project.id === currentProjectId || project.aliases?.includes(currentProjectId ?? ''),
       );
-  const actions = createAppShellProjectActions({
+  // Stable identities, because the rail's Project rows are built from these:
+  // rebuilt per render they put the whole list back on every AppShell commit
+  // (#4109). Same facade the shell's other action factories already use
+  // (#1043); this one was the last bare call site.
+  const actions = useStableActions(createAppShellProjectActions, {
     uiLocale,
     projectPickerPendingRef,
     projectPickerRequestRef,

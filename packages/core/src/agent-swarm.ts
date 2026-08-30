@@ -34,8 +34,8 @@ export interface AgentSwarmResultProjection {
 
 /**
  * Bounded presentation/diagnostic facts derived from the canonical settled
- * tool result. This is a projection only: child AgentRuns remain the authority
- * for child lifecycle and artifacts.
+ * tool result. This is a projection only: linked child Sessions remain the
+ * authority for child lifecycle and artifacts.
  */
 export function projectAgentSwarmResult(result: AgentSwarmResult): AgentSwarmResultProjection {
   let startedItemCount = 0;

@@ -77,7 +77,6 @@ import type {
   BackendSendInput,
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
-import type { AgentSpec } from '@maka/core/runtime-inputs';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
@@ -155,7 +154,6 @@ import {
   type ToolRuntimeInput,
 } from './tool-runtime.js';
 import type { RuntimeCommitSink } from './runtime-commit-sink.js';
-import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
   ModelAdapter,
   type ModelFactoryInput,
@@ -172,6 +170,11 @@ import {
   type RequestProjectionContext,
   type RequestProjectionStage,
 } from './request-projection.js';
+import {
+  decodePlaintextResponsesReasoningState,
+  replayPlaintextResponsesProviderOptions,
+  responsesReasoningItemId,
+} from './responses-reasoning-state.js';
 import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { toolResultOutput } from './tool-result-output.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
@@ -282,6 +285,7 @@ import {
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import { isMalformedHistoryCompactSummaryReason } from './history-compact-error.js';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
 export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -762,35 +766,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   ) => void | Promise<void>;
   /** Optional pricing lookup shared with telemetry; defaults to builtin public pricing. */
   lookupPricing?: (modelKey: string) => PricingConfig | null;
-  spawnChildAgent?: (input: {
-    parentRunId: string;
-    spec: AgentSpec;
-    prompt: string;
-    abortSignal: AbortSignal;
-    onReady?: (input: {
-      turnId: string;
-      agentId: string;
-      agentName: string;
-    }) => void | Promise<void>;
-    onEvent?: (event: SessionEvent) => void;
-  }) => Promise<unknown>;
   spawnChildSession?: ToolRuntimeInput['spawnChildSession'];
-  prepareChildAgentResume?: ToolRuntimeInput['prepareChildAgentResume'];
-  resumeChildAgent?: ToolRuntimeInput['resumeChildAgent'];
-  retryChildAgent?: (input: {
-    parentRunId: string;
-    sourceRunId: string;
-    execution?: SubagentExecutionRef;
-    abortSignal: AbortSignal;
-    onReady?: (input: {
-      childSessionId?: string;
-      turnId: string;
-      runId?: string;
-      agentId: string;
-      agentName: string;
-    }) => void | Promise<void>;
-    onEvent?: (event: SessionEvent) => void;
-  }) => Promise<unknown>;
   listChildAgents?: () => Promise<unknown>;
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
@@ -1367,11 +1343,7 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
       materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
         this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
-      spawnChildAgent: input.spawnChildAgent,
       spawnChildSession: input.spawnChildSession,
-      prepareChildAgentResume: input.prepareChildAgentResume,
-      resumeChildAgent: input.resumeChildAgent,
-      retryChildAgent: input.retryChildAgent,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
       getRunTrace: () => identity.scope().runTrace,
@@ -1483,6 +1455,7 @@ export class AiSdkBackend implements AgentBackend {
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
+    let stepResponsesThinkingPartsByItemId = new Map<string, AssistantThinkingPart>();
     let stepSignature: string | undefined;
     const startedAt = this.now();
 
@@ -1578,6 +1551,7 @@ export class AiSdkBackend implements AgentBackend {
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
       stepResponsesThinkingParts = [];
+      stepResponsesThinkingPartsByItemId = new Map();
       stepSignature = undefined;
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
@@ -1904,6 +1878,8 @@ export class AiSdkBackend implements AgentBackend {
         watchdogTimeoutState.current = null;
         return timeout;
       };
+      let lastCompletedStepHadToolResult = false;
+      let terminalProviderErrorReason: string | undefined;
       try {
         const startWatchdog = (): void => {
           watchdogState.current?.stop();
@@ -2387,32 +2363,58 @@ export class AiSdkBackend implements AgentBackend {
                   }
                   stepThinkingProviderOptions = event.providerOptions;
                 }
-                const openai = event.providerOptions?.openai;
                 const itemId =
-                  openai && typeof openai === 'object' && !Array.isArray(openai)
-                    ? (openai as { itemId?: unknown }).itemId
-                    : undefined;
+                  event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
                 if (typeof itemId === 'string' && itemId.length > 0) {
-                  let part = stepResponsesThinkingParts.find(
-                    (candidate) =>
-                      (candidate.providerOptions?.openai as { itemId?: unknown } | undefined)
-                        ?.itemId === itemId,
-                  );
+                  let part = stepResponsesThinkingPartsByItemId.get(itemId);
+                  if (
+                    part &&
+                    event.providerOptions === undefined &&
+                    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid'
+                  ) {
+                    // The SDK does not suppress a stray delta after
+                    // output_item.done. Keep it out of the finalized item or
+                    // its durable summary boundaries will no longer match.
+                    part = { text: '' };
+                    stepResponsesThinkingParts.push(part);
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                  }
                   if (!part) {
                     part = {
                       text:
                         stepResponsesThinkingParts.length === 0 && event.text.length === 0
                           ? stepThinking
                           : '',
-                      providerOptions: event.providerOptions,
                     };
                     stepResponsesThinkingParts.push(part);
-                  } else {
+                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                  }
+                  const nextPartText = part.text + event.text;
+                  if (
+                    event.reasoningSummaryText !== undefined &&
+                    event.reasoningSummaryText !== nextPartText
+                  ) {
+                    throw new Error(
+                      'Streamed plaintext Responses reasoning does not match final provider summary',
+                    );
+                  }
+                  part.text = nextPartText;
+                  if (event.providerOptions !== undefined) {
                     part.providerOptions = event.providerOptions;
                   }
-                  part.text += event.text;
                 } else if (stepResponsesThinkingParts.length > 0) {
-                  stepResponsesThinkingParts.at(-1)!.text += event.text;
+                  const lastPart = stepResponsesThinkingParts.at(-1)!;
+                  const lastState = decodePlaintextResponsesReasoningState(
+                    lastPart.providerOptions,
+                  );
+                  if (lastState.kind === 'valid') {
+                    // An invalid next item has no usable stream id. Do not
+                    // append its deltas to the finalized item: partial-error
+                    // flush must keep that item's durable boundaries valid.
+                    stepResponsesThinkingParts.push({ text: event.text });
+                  } else {
+                    lastPart.text += event.text;
+                  }
                 }
                 queue.push({
                   type: 'thinking_delta',
@@ -2518,6 +2520,10 @@ export class AiSdkBackend implements AgentBackend {
                   : providerOutcome.failure;
               if (scope.loopStopRequested) {
                 terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+                terminalProviderErrorReason =
+                  lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                    ? 'model_after_tool_timeout'
+                    : undefined;
                 break agentLoop;
               }
               // A retry is a fresh provider request that would run at least one
@@ -2611,6 +2617,7 @@ export class AiSdkBackend implements AgentBackend {
                   attempt: nextAttempt,
                   maxAttempts,
                   delayMs,
+                  remainingMs: delayMs,
                   reason,
                 } satisfies ProviderRetryEvent);
                 await this.providerRetrySleep(delayMs, turnAbortController.signal);
@@ -2632,6 +2639,10 @@ export class AiSdkBackend implements AgentBackend {
               // handler after settling any authoritative usage — never a
               // fabricated success.
               terminalProviderError = settledWatchdogTimeout?.error ?? failure;
+              terminalProviderErrorReason =
+                lastCompletedStepHadToolResult && failure.kind === 'timeout'
+                  ? 'model_after_tool_timeout'
+                  : undefined;
               break agentLoop;
             }
             break;
@@ -2786,6 +2797,7 @@ export class AiSdkBackend implements AgentBackend {
             toolCalls: returnedToolCalls,
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
+          lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
           const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
@@ -2863,68 +2875,9 @@ export class AiSdkBackend implements AgentBackend {
               activeToolResultPruneDiagnosticPatch,
               midTurnCompactDiagnosticPatch,
             );
-            const tu: TokenUsageMessage = {
-              type: 'token_usage',
-              id: this.newId(),
-              turnId,
-              ts: this.now(),
-              input: tokenUsage.inputTokens,
-              output: tokenUsage.outputTokens,
-              cacheHitInput: tokenUsage.cacheHitInputTokens,
-              cacheMissInput: tokenUsage.cacheMissInputTokens,
-              cacheMissInputSource: tokenUsage.cacheMissInputSource,
-              cacheWriteInput: tokenUsage.cacheWriteInputTokens,
-              reasoning: tokenUsage.reasoningTokens,
-              total: tokenUsage.totalTokens,
-              ...(tokenUsage.rawFinishReason !== undefined
-                ? { rawFinishReason: tokenUsage.rawFinishReason }
-                : {}),
-              ...(runtimeSteps > 0 ? { runtimeSteps } : {}),
-              ...(tokenUsage.cachedInputTokens > 0
-                ? { cacheRead: tokenUsage.cachedInputTokens }
-                : {}),
-              ...(tokenUsage.cacheWriteInputTokens > 0
-                ? { cacheCreation: tokenUsage.cacheWriteInputTokens }
-                : {}),
-              ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              promptSegments: turnDiagnostics.promptSegments,
-              ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
-              ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
-            };
-            await this.input.appendMessage(tu).catch(() => {});
-            if (
-              !contextCompactionFailedOpenNoteWritten &&
-              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
-            ) {
-              contextCompactionFailedOpenNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.newId(),
-                turnId,
-                ts: this.now(),
-                kind: 'context_compaction_failed_open',
-              };
-              await this.input.appendMessage(note).catch(() => {});
-            }
-            if (
-              !contextCompactedNoteWritten &&
-              shouldAppendContextCompactedNote(contextBudgetForUsage)
-            ) {
-              contextCompactedNoteWritten = true;
-              const note: SystemNoteMessage = {
-                type: 'system_note',
-                id: this.newId(),
-                turnId,
-                ts: this.now(),
-                kind: 'context_compacted',
-              };
-              await this.input.appendMessage(note).catch(() => {});
-            }
+            // Persisted alongside the live event so transcript rebuilds from
+            // stored messages keep the TUI ctx segment instead of degrading to
+            // `?/<window>` (#4019). Computed once; both writers share it.
             const contextRemainingForUsage = (() => {
               const contextWindow = resolveSelectedModelContextWindow(
                 this.input.connection,
@@ -2935,11 +2888,10 @@ export class AiSdkBackend implements AgentBackend {
               }
               return undefined;
             })();
-            queue.push({
-              type: 'token_usage',
-              id: this.newId(),
-              turnId,
-              ts: this.now(),
+            // One shared usage payload for the durable message and the live
+            // event: twin per-field literals drifted before (#4019), so a field
+            // now has exactly one definition site.
+            const usageFields = {
               input: tokenUsage.inputTokens,
               output: tokenUsage.outputTokens,
               cacheHitInput: tokenUsage.cacheHitInputTokens,
@@ -2970,6 +2922,49 @@ export class AiSdkBackend implements AgentBackend {
                 ? { contextRemaining: contextRemainingForUsage }
                 : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
+            };
+            const tu: TokenUsageMessage = {
+              type: 'token_usage',
+              id: this.newId(),
+              turnId,
+              ts: this.now(),
+              ...usageFields,
+            };
+            await this.input.appendMessage(tu).catch(() => {});
+            if (
+              !contextCompactionFailedOpenNoteWritten &&
+              shouldAppendContextCompactionFailedOpenNote(contextBudgetForUsage)
+            ) {
+              contextCompactionFailedOpenNoteWritten = true;
+              const note: SystemNoteMessage = {
+                type: 'system_note',
+                id: this.newId(),
+                turnId,
+                ts: this.now(),
+                kind: 'context_compaction_failed_open',
+              };
+              await this.input.appendMessage(note).catch(() => {});
+            }
+            if (
+              !contextCompactedNoteWritten &&
+              shouldAppendContextCompactedNote(contextBudgetForUsage)
+            ) {
+              contextCompactedNoteWritten = true;
+              const note: SystemNoteMessage = {
+                type: 'system_note',
+                id: this.newId(),
+                turnId,
+                ts: this.now(),
+                kind: 'context_compacted',
+              };
+              await this.input.appendMessage(note).catch(() => {});
+            }
+            queue.push({
+              type: 'token_usage',
+              id: this.newId(),
+              turnId,
+              ts: this.now(),
+              ...usageFields,
             } satisfies TokenUsageEvent);
           }
         } catch {
@@ -3045,7 +3040,7 @@ export class AiSdkBackend implements AgentBackend {
           } satisfies CompleteEvent);
         } else {
           const terminalError = currentWatchdogTimeout()?.error ?? err;
-          queue.push(this.makeErrorEvent(turnId, terminalError));
+          queue.push(this.makeErrorEvent(turnId, terminalError, terminalProviderErrorReason));
           trace.modelStreamFailed(
             streamErrorClass,
             terminalError,
@@ -3265,9 +3260,10 @@ export class AiSdkBackend implements AgentBackend {
       executionId: result.execution.executionId,
       storeVersion: result.storeVersion,
     });
-    if (result.kind === 'plan_execution_completed' || result.kind === 'plan_execution_cancelled') {
-      scope.loopStopRequested = true;
-    }
+    // Completing or cancelling the execution is a tool boundary, not the end of
+    // the conversational Turn. The execution prompt tells the model to persist
+    // final progress before its final response, so let it consume this result
+    // and produce that response on the next provider step.
   }
 
   private handleAgentGraphYieldToolResult(
@@ -3359,8 +3355,8 @@ export class AiSdkBackend implements AgentBackend {
     return this.modelAdapter.mapFinishReason(reason);
   }
 
-  private makeErrorEvent(turnId: string, err: unknown): ErrorEvent {
-    return this.modelAdapter.makeErrorEvent(turnId, err);
+  private makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
+    return this.modelAdapter.makeErrorEvent(turnId, err, reasonOverride);
   }
 
   private computeTokenUsageCostUsd(usage: NormalizedAiSdkUsage): number | undefined {
@@ -3625,7 +3621,9 @@ export class AiSdkBackend implements AgentBackend {
         compactionFailure =
           compactResult.outcome.reason === 'no_safe_completed_span'
             ? 'no_safe_completed_span'
-            : 'summarizer_failed';
+            : isMalformedHistoryCompactSummaryReason(compactResult.outcome.reason)
+              ? compactResult.outcome.reason
+              : 'summarizer_failed';
       }
       contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
         contextBudgetDiagnostic ??
@@ -3862,14 +3860,41 @@ export class AiSdkBackend implements AgentBackend {
             }
           : undefined;
       }
-      if (replaySupport.responsesReasoning === 'plaintext-content') {
-        if (item.text.length === 0) return undefined;
+      if (
+        typeof replaySupport.responsesReasoning === 'object' &&
+        replaySupport.responsesReasoning.kind === 'plaintext-item'
+      ) {
+        const decoded = decodePlaintextResponsesReasoningState(item.providerOptions);
+        if (decoded.kind === 'missing') return undefined;
+        if (decoded.kind === 'unsupported-version') return undefined;
+        if (decoded.kind === 'malformed') {
+          if (
+            decoded.profile !== undefined &&
+            decoded.profile !== replaySupport.responsesReasoning.profile
+          ) {
+            return undefined;
+          }
+          throw new Error('Malformed durable plaintext Responses reasoning state');
+        }
+        const state = decoded.state;
+        if (state.profile !== replaySupport.responsesReasoning.profile) {
+          return undefined;
+        }
         return {
           part: {
             type: 'reasoning' as const,
             text: item.text,
+            providerOptions: replayPlaintextResponsesProviderOptions({
+              providerOptionsKey: replaySupport.responsesReasoning.providerOptionsKey,
+              state,
+              text: item.text,
+            }),
           },
         };
+      }
+      if (replaySupport.responsesReasoning === 'plaintext-content') {
+        if (item.text.length === 0) return undefined;
+        return { part: { type: 'reasoning' as const, text: item.text } };
       }
       if (replaySupport.responsesReasoning === 'encrypted-content') {
         const openai = item.providerOptions?.openai;
@@ -5020,6 +5045,7 @@ function memoryExtractionModelHeader(
   header: SessionHeader,
 ): MemoryExtractionSourceSnapshot['sourceHeader'] {
   return {
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel !== undefined ? { thinkingLevel: header.thinkingLevel } : {}),

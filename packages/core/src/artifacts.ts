@@ -21,6 +21,71 @@ export const ARTIFACT_KINDS = ['file', 'diff', 'html', 'image', 'pdf'] as const;
 
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
+/** Maximum encoded image payload admitted to a renderer preview. */
+export const ARTIFACT_IMAGE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+const ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+};
+
+const ARTIFACT_IMAGE_PREVIEW_MIMES = new Set(
+  Object.values(ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION),
+);
+
+export interface ArtifactImagePreviewInput {
+  name: string;
+  kind: ArtifactKind;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+export type ArtifactImagePreviewResolution =
+  | { kind: 'image'; reason: 'mime_match' | 'ext_fallback' }
+  | {
+      kind: 'unsupported';
+      reason: 'kind_disallowed' | 'mime_disallowed' | 'no_mime_no_ext' | 'oversize';
+    };
+
+/** Normalize the raster MIME admitted to renderer image previews. */
+export function normalizeArtifactImagePreviewMime(
+  mimeType: string | undefined,
+  name?: string,
+): string | null {
+  if (typeof mimeType === 'string' && mimeType.trim() !== '') {
+    const normalized = mimeType.trim().toLowerCase();
+    return ARTIFACT_IMAGE_PREVIEW_MIMES.has(normalized) ? normalized : null;
+  }
+  if (!name) return null;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return null;
+  return ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION[name.slice(dot).toLowerCase()] ?? null;
+}
+
+/** One metadata policy shared by preview admission and renderer presentation. */
+export function resolveArtifactImagePreview(
+  input: ArtifactImagePreviewInput,
+): ArtifactImagePreviewResolution {
+  if (input.kind !== 'image') {
+    return { kind: 'unsupported', reason: 'kind_disallowed' };
+  }
+  if (input.sizeBytes !== undefined && input.sizeBytes > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+    return { kind: 'unsupported', reason: 'oversize' };
+  }
+  if (input.mimeType) {
+    return normalizeArtifactImagePreviewMime(input.mimeType)
+      ? { kind: 'image', reason: 'mime_match' }
+      : { kind: 'unsupported', reason: 'mime_disallowed' };
+  }
+  return normalizeArtifactImagePreviewMime(undefined, input.name)
+    ? { kind: 'image', reason: 'ext_fallback' }
+    : { kind: 'unsupported', reason: 'no_mime_no_ext' };
+}
+
 export const ARTIFACT_SOURCES = [
   'tool_result',
   'tool_result_archive',

@@ -540,6 +540,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -764,6 +765,7 @@ function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {
     turnId: 'turn-1',
     status: 'created',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/workspace',

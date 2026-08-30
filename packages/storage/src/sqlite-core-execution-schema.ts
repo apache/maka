@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 5;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 6;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -34,9 +34,6 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS core_agent_runs_session_order
       ON core_agent_runs(session_id, created_at, run_id);
-
-    CREATE INDEX IF NOT EXISTS core_agent_runs_identity
-      ON core_agent_runs(run_id, session_id);
 
     CREATE TABLE IF NOT EXISTS core_agent_run_events (
       session_id TEXT NOT NULL,
@@ -153,6 +150,8 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_agent_runs_model_call_high_water
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
+
+    DROP INDEX IF EXISTS core_agent_runs_identity;
 
     DROP TABLE IF EXISTS core_message_receipts;
     DROP TABLE IF EXISTS core_message_host_epochs;

@@ -483,6 +483,9 @@ export class RuntimeHostSessionProjector {
         recoverable: false,
         reason: root.failureClass,
         message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
+        ...(root.contextBudgetExhaustedDetail
+          ? { details: { contextBudgetExhaustedDetail: root.contextBudgetExhaustedDetail } }
+          : {}),
       });
     } else {
       events.push({
@@ -607,6 +610,10 @@ function projectSessionEvent(
       ...(event.operationId ? { operationId: event.operationId } : {}),
       ...(event.activityKind ? { activityKind: event.activityKind } : {}),
       ...(event.displayName ? { displayName: event.displayName } : {}),
+      ...(event.intent ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined
+        ? { argsPreview: structuredClone(event.argsPreview) }
+        : {}),
       ...(event.stepId ? { stepId: event.stepId } : {}),
       ...(event.shellRunRef ? { shellRunRef: event.shellRunRef } : {}),
     };
@@ -792,15 +799,40 @@ function providerRetryEvent(
   root: LiveTurnSnapshot,
   ts: number,
 ): Extract<SessionEvent, { type: 'provider_retry' }> {
-  if (!root.providerRetry) {
+  const retry = root.providerRetry;
+  if (!retry) {
     throw new Error('Non-terminal Turn snapshot has no provider retry');
   }
+  if (retry.phase !== 'scheduled') {
+    return {
+      type: 'provider_retry',
+      id: `host-seed:${root.runId}:provider_retry`,
+      turnId: root.turnId,
+      ts,
+      phase: 'started',
+      attempt: retry.attempt,
+      maxAttempts: retry.maxAttempts,
+      reason: retry.reason,
+    };
+  }
+  // remainingMs is the skew-free countdown authority for clients on another
+  // machine: a duration, recomputed from the host-clock schedule time stored
+  // in the snapshot, so a mid-wait re-projection (reconnect) does not restart
+  // the countdown. Snapshots from older runtimes lack `ts` and degrade to the
+  // full delay.
+  const remainingMs =
+    retry.ts === undefined ? retry.delayMs : Math.max(0, retry.delayMs - (ts - retry.ts));
   return {
     type: 'provider_retry',
     id: `host-seed:${root.runId}:provider_retry`,
     turnId: root.turnId,
     ts,
-    ...root.providerRetry,
+    phase: 'scheduled',
+    attempt: retry.attempt,
+    maxAttempts: retry.maxAttempts,
+    delayMs: retry.delayMs,
+    remainingMs,
+    reason: retry.reason,
   };
 }
 

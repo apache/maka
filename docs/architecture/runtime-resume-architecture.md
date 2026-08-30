@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-29
 owners:
   - maka-backend
 ---
@@ -491,6 +491,29 @@ sequenceDiagram
 
 CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
 
+### Current parked-reason boundary
+
+Runtime Host projects Runtime planner rejection reasons into the closed
+`TurnResumeParkReason` wire union. A CLI must not infer the Host's internal
+state again. The current Host preserves three previously conflated causes:
+
+- `resume_feature_disabled`: the feature flag is off;
+- `continuation_authority_unavailable`: the Host cannot obtain continuation authority;
+- `safety_observation_unavailable`: the Host cannot obtain authoritative safety observations.
+
+The current wire contract no longer contains `continuation_unavailable`. The
+`/resume` driver carries the exact reason in `SafeBoundaryResumeParkedError`.
+The TUI renders only expected user states as informational notices:
+`resume_feature_disabled`, `resume_candidate_missing`, and `session_busy`.
+Authority, safety, and other recovery failures remain red errors with the raw
+reason preserved for diagnosis.
+
+Because this changes a closed protocol union, Runtime Host compatibility epoch
+57 rejects mixed old/new Client-Host pairs during handshake instead of letting
+a Client misclassify a recovery failure as a disabled feature. This change only
+corrects Host projection and CLI presentation; it does not move ownership of
+the planner, durable continuation claim, or feature flag.
+
 ## Why continuation does not duplicate the user message
 
 A normal Run creates an initial user RuntimeEvent. A continuation already has a validated source history, so it:
@@ -753,18 +776,6 @@ Layer responsibilities:
 ### Runtime host
 
 The Runtime host uses strict recovery stores. It does not silently turn an unreadable ledger into best-effort fallback before admitting new writes.
-
-### Managed workspace execution admission (M1.1)
-
-The workspace plane now has a storage-owned execution-admission foundation, but it is not yet wired into the Runtime host:
-
-- baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
-- every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
-- one admission issues one callback-scoped opaque scope with `workspaceEffect: none`; the same handle may have multiple concurrent read-only scopes;
-- `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
-- the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
-
-M1.2 adds the owner-bound storage worker bridge and its runtime-host lifecycle composition in one delivery. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default in this slice; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
 ### Eval
 

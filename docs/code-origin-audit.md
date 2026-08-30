@@ -157,11 +157,11 @@ The SCANOSS table above covers only what its winnowing scanner fingerprints, whi
 - `truncateToolOutput` follows `truncate.output()` line for line, sharing the `2000`-line and `50 KiB` budgets, the `direction?: 'head' | 'tail'` option, the local names `out`, `bytes`, `hitBytes`, `size`, `preview`, `removed`, and `unit`, and the asymmetric newline accounting that uses `(i > 0 ? 1 : 0)` when keeping the head and `(out.length > 0 ? 1 : 0)` when keeping the tail. Maka added byte-safe single-line slicing, trailing-newline handling, and the recovery hint, and dropped the upstream spill-file machinery.
 - `edit-replace.ts` reuses the escape-normalizing replacer verbatim at the level of expression: the regular expression `/\\(n|t|r|'|"|`|\\|\n|\$)/g` is character-for-character identical and its nine branches appear in the same order, rewritten from a `switch` into an `if` chain. The line-trimmed and whitespace-normalized matchers follow the same upstream structure.
 
-Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `anomalyco/opencode`; the comparison used commit `fc80874`. Because opencode is not an npm dependency, `scripts/generate-third-party-notices.mjs` cannot reach it: that generator walks the npm production dependency trees of `@maka/desktop` and `maka-agent` only. "opencode" therefore appears in neither `LICENSE`, `NOTICE`, `packages/cli/THIRD_PARTY_NOTICES.txt`, nor the desktop notices, while both files ship in `@maka/runtime`. MIT requires the copyright and permission notice to travel with the material, so this is an open attribution obligation.
+Upstream is MIT, Copyright (c) 2025 opencode. The repository now resolves to `anomalyco/opencode`; the comparison used commit `fc80874`. Because opencode is not an npm dependency, `scripts/generate-third-party-notices.mjs` cannot discover it: that generator walks the npm production dependency trees of `@maka/desktop` and `maka-agent` only. The root `LICENSE` therefore records the fixed source revision, adapted files, upstream lineage, copyright, and MIT permission notice explicitly. No `NOTICE` addition is warranted because upstream ships none and the MIT attribution belongs in `LICENSE`.
 
 ### models.dev data snapshot
 
-`packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are checked-in, shipped derivations of `https://models.dev/api.json`, together about 27,800 lines. Upstream `sst/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, and it appears in none of the four attribution surfaces. The generated headers also record no snapshot date or upstream revision, so the fixed source cannot currently be identified.
+`packages/core/src/model-metadata.generated.ts` and `packages/runtime/src/telemetry/model-pricing.generated.ts` are build-time, untracked derivations of the committed `scripts/model-metadata/models-dev-api.snapshot.json` projection selected from `https://models.dev/api.json`. This is a two-level authority boundary: models.dev remains the upstream refresh source, while the committed snapshot is the sole build input for a particular repository revision and release. An explicit refresh imports upstream changes for review; normal installation and build paths never fetch a moving latest response. Upstream `anomalyco/models.dev` is MIT, Copyright (c) 2025 models.dev. The individual entries are facts and are not themselves copyrightable, but the selection and arrangement — which providers and fields are carried, and upstream's normalized structures such as `lifecycle` and `thinkingOptions.efforts` — come from that database. The same generator boundary applies: models.dev is not an npm dependency, so the root `LICENSE` records its source, repository, copyright, MIT permission notice, generated outputs, and snapshot provenance explicitly. The committed snapshot and generated headers bind the redistributed projection to recorded digests, making the fixed input identifiable without relying on the npm notice generator or a runtime network request.
 
 ### PawWork browser port
 
@@ -228,6 +228,24 @@ A maintainer confirmed that the following assets were AI-generated and that no t
 
 The first three used ChatGPT Image. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
 
+### Source archive non-text inventory
+
+The ASF source verifier reads this inventory from the candidate itself. A
+non-text image must match one of these paths; executable and archive magic is
+rejected even if a path is listed here.
+
+- `.github/assets/*.png`: the AI-generated hero images recorded above.
+- `apps/desktop/assets/icon.png`: the AI-generated application mark recorded above.
+- `apps/desktop/assets/app-icons/*.png`: `mono.png` is the contributor-submitted grayscale derivative of the application mark from pull request #3431; the remaining variants are reproducibly rendered from the Apache-licensed geometry and palette in `scripts/generate-app-icons.py` and byte-checked by `scripts/generate-app-icons.test.mjs`.
+- `apps/desktop/build/*.png`: contributor-submitted DMG artwork from pull request #3817; that contribution records Codex as review and verification assistance, not as the source of the artwork.
+- `apps/desktop/resources/status/*.png`: the status images recorded above and reproducibly rendered by `scripts/generate-cu-status-icons.mjs`.
+- `docs/images/**/*.png`: screenshots of Maka's own user interface committed as review evidence, including pull requests #3584 and #3588.
+- `packages/core/src/__tests__/foreign-session.test.ts`: Apache-licensed source fixture containing a literal NUL, bidi override, and zero-width character to verify imported-session sanitization.
+- `packages/runtime-host/src/protocol/artifact.ts`: Apache-licensed protocol source containing literal C0 and DEL characters in the control-character rejection expression.
+- `packages/storage/src/__tests__/foreign-session-store.test.ts`: Apache-licensed storage fixture containing literal bidi and bell characters to verify durable imported-title sanitization.
+- `packages/storage/src/__tests__/mcp-config-store.test.ts`: Apache-licensed validation fixture containing a literal control character in a rejected MCP tool name.
+- `packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite`: migration fixture created through Maka's public storage APIs at tag `v0.1.6`; its exact origin and SHA-256 are recorded in the adjacent `README.md`.
+
 ## Bootstrap generative tooling
 
 The initial commit is `8fd91a43cc64cdde58cfbd046256effce0cfa6f8` (2026-05-19). The current contributor account is expected to confirm the bootstrap history. The working account is that Raft orchestrated Claude and Codex, but the repository does not establish:
@@ -249,11 +267,10 @@ Before code transfer or release review:
 1. obtain and record the bootstrap contributor confirmation;
 2. obtain an appropriate human legal/ASF determination about retaining the specifically documented facts recovered through static inspection, or replace those facts and dependent code independently;
 3. have the human contributor of record review this report, the 25 classifications, and the final `LICENSE`/`NOTICE` decision;
-4. attribute the adapted opencode sources and the models.dev snapshot, and close the generator gap that hides them, under #3270.
 
 No additional source-removal issue is indicated by the recovered scan. A recurring cloud snippet scan is not recommended until the project chooses a service, data policy, stable thresholds, and an owner for false-positive review. The local dependency-notice check remains the narrower, deterministic CI control for shipped npm dependencies.
 
-That check has a structural blind spot worth stating plainly, because it produced both gaps in [Other provenance evidence](#other-provenance-evidence). `scripts/generate-third-party-notices.mjs` derives its inventory from npm production dependency trees, so material that enters the repository as vendored or adapted source, or as generated data, is invisible to it by construction — not missed by accident. Every such source must be registered by hand today, which means the next one will be missed the same way unless the generator gains a checked manual inventory.
+That check has a structural blind spot worth stating plainly. `scripts/generate-third-party-notices.mjs` derives its inventory from npm production dependency trees, so material that enters the repository as vendored or adapted source, or as generated data, is invisible to it by construction — not missed by accident. The opencode adaptations and models.dev snapshot are now registered explicitly in the root `LICENSE`; every future source of this kind must likewise be registered by hand unless the generator gains a checked manual inventory.
 
 The scanner has a comparable blind spot. Entry 17 was matched at 14% against an unrelated package, and what actually identified its origin was structural: near-verbatim doc comments, preserved declaration forms, and a reproduced upstream inconsistency. A follow-up sweep for the same pattern across the repository — comparing locally declared types against installed dependency declarations by name overlap and ordered property sequences — found no second instance. That sweep is still blind to a copy whose type and field names were renamed, and no comment, import, or architectural note suggests such a case exists.
 

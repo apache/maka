@@ -47,6 +47,7 @@ import {
   isSessionStatus,
   isWorkHubCoordinationSessionId,
   subagentSessionRuntimeSummary,
+  WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
 } from '@maka/core/session';
 import { isCollaborationMode } from '@maka/core/collaboration';
@@ -82,8 +83,13 @@ import {
   type TurnRecord,
   type TurnStateMessage,
   type UserMessage,
+  type WorkHubDelegationAssignedMessage,
 } from '@maka/core/session';
-import type { MessageAdmissionStore, PendingMessageAdmission } from './message-admission-store.js';
+import type {
+  MarkMessagesHandedOffInput,
+  MessageAdmissionStore,
+  PendingMessageAdmission,
+} from './message-admission-store.js';
 import {
   isVisibleSessionMessage,
   lastMessagePreviewForMessages,
@@ -175,6 +181,19 @@ export interface CreateStableSessionRequest {
   readonly input: StableSessionCreateInput;
 }
 
+export interface WorkHubMessageAssignmentRequest {
+  readonly assignment: WorkHubDelegationAssignedMessage;
+  readonly admission: PendingMessageAdmission;
+  /** Present exactly when the assignment creates its target Session. */
+  readonly create?: CreateStableSessionRequest;
+}
+
+export interface WorkHubMessageAssignmentResult {
+  readonly kind: 'assigned' | 'existing';
+  readonly targetCreated: boolean;
+  readonly assignment: WorkHubDelegationAssignedMessage;
+}
+
 export type StableSessionCreateInput = CreateSessionInput & {
   readonly conversationCopy?: SessionConversationCopy;
   readonly role?: SessionRole;
@@ -234,6 +253,20 @@ export interface SessionTranscriptStoragePage {
     readonly position: number;
     readonly byteOffset: number | null;
   } | null;
+}
+
+export interface SessionTranscriptRecordScanRequest {
+  readonly direction: 'older' | 'newer';
+  readonly throughSequence?: number | null;
+  readonly position?: number;
+  readonly maxStoredBytes: number;
+  readonly maxMessages: number;
+}
+
+export interface SessionTranscriptRecordScanPage {
+  readonly throughSequence: number | null;
+  readonly records: readonly { readonly sequence: number; readonly message: StoredMessage }[];
+  readonly nextPosition: number | null;
 }
 
 export interface SessionTurnContribution {
@@ -312,6 +345,11 @@ export interface SessionStore {
 }
 
 export interface SessionAuthorityStore extends SessionStore, MessageAdmissionStore {
+  /** Decode a bounded ledger range for an authority-owned wire projection. */
+  readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage>;
   /** Read a bounded set of durable messages at an inclusive transcript watermark. */
   readTranscriptMessagesSnapshot(
     sessionId: string,
@@ -373,6 +411,11 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: CreateStableSessionRequest,
     initialBoundary?: ExecutionBoundary,
   ): Promise<CreateStableSessionResult>;
+  /** Atomically persist a WorkHub linkage and the target Message admission. */
+  assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult>;
+  readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -574,6 +617,64 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return result.kind === 'created' || result.kind === 'existing'
       ? { kind: result.kind, record: projectHeaderSnapshot(result.record) }
       : result;
+  }
+
+  async assignWorkHubMessage(
+    request: WorkHubMessageAssignmentRequest,
+  ): Promise<WorkHubMessageAssignmentResult> {
+    await this.ensureReady();
+    const create = request.create;
+    if (create) {
+      assertCoordinationIdentityPairing(create.sessionId, create.input.role);
+      if (create.sessionId !== request.assignment.targetSessionId) {
+        throw new Error('WorkHub assignment create identity does not match its target');
+      }
+    }
+    const result = await this.metadata.assignWorkHubMessage({
+      assignment: request.assignment,
+      admission: request.admission,
+      projection: projectSessionCatalogMessages([request.assignment]),
+      ...(create
+        ? {
+            create: {
+              header: buildSessionHeader(
+                this.workspaceRoot,
+                create.input,
+                create.sessionId,
+                create.input.conversationCopy,
+              ),
+              requestFingerprint: create.requestFingerprint,
+            },
+          }
+        : {}),
+    });
+    if (result.kind === 'assigned') {
+      for (const listener of this.transcriptChangeListeners) {
+        listener(WORKHUB_COORDINATION_SESSION_ID);
+      }
+    }
+    return result;
+  }
+
+  async readWorkHubAssignment(
+    actionId: string,
+  ): Promise<WorkHubDelegationAssignedMessage | undefined> {
+    await this.ensureReady();
+    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
+    const throughSequence = await this.metadata.readTranscriptHighWater(
+      WORKHUB_COORDINATION_SESSION_ID,
+    );
+    if (throughSequence === null) return undefined;
+    const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
+      messageIds: [`wha_${suffix}`],
+      throughSequence,
+      maxMessages: 1,
+      maxBytes: 768 * 1024,
+    });
+    const message = messages[0];
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
+      ? message
+      : undefined;
   }
 
   async discardStableConversationCopy(
@@ -809,6 +910,14 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.readTranscriptMessages(sessionId, request);
   }
 
+  async readTranscriptRecordsSnapshot(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage> {
+    await this.ensureReady();
+    return this.metadata.readTranscriptRecords(sessionId, request);
+  }
+
   async readTranscriptHighWaterSnapshot(sessionId: string): Promise<number | null> {
     await this.ensureReady();
     return this.metadata.readTranscriptHighWater(sessionId);
@@ -898,11 +1007,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return this.metadata.listMessageAdmissions(sessionId);
   }
 
-  async markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void> {
+  async markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void> {
     await this.ensureReady();
     await this.metadata.markMessagesHandedOff(input);
     for (const listener of this.transcriptChangeListeners) listener(input.sessionId);
@@ -1045,15 +1150,31 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async setGeneratedTitleIfAbsent(sessionId: string, title: string): Promise<SessionHeader | null> {
     const normalized = normalizeUserSessionName(title);
     if (!normalized.ok) return null;
-    const current = await this.readHeaderSnapshot(sessionId);
-    if (
-      current.titleIsManual ||
-      current.name !== DEFAULT_SESSION_NAME ||
-      normalized.value === current.name
-    ) {
-      return null;
+    // A generated title only ever fills an absence. Writing at the revision the
+    // check read makes a rename that lands between the two a winner rather than
+    // something this silently overwrites; a revision that moved for any other
+    // reason is re-read, so losing the race stays the only way to answer null.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const record = await this.readHeaderRecordSnapshot(sessionId);
+      const current = record.header;
+      if (
+        current.titleIsManual ||
+        current.name !== DEFAULT_SESSION_NAME ||
+        normalized.value === current.name
+      ) {
+        return null;
+      }
+      try {
+        return (
+          await this.updateHeaderVersioned(sessionId, { name: normalized.value }, record.revision)
+        ).header;
+      } catch (error) {
+        if (!(error instanceof SessionMetadataVersionConflictError)) throw error;
+      }
     }
-    return this.updateHeader(sessionId, { name: normalized.value });
+    // Losing the race every attempt reads the same as losing it once: the
+    // Session keeps whichever name the writer that won gave it.
+    return null;
   }
 
   async remove(sessionId: string): Promise<void> {
@@ -1138,8 +1259,12 @@ function buildSessionHeader(
     ...(input.revisionState ? { revisionState: input.revisionState } : {}),
     hasUnread: false,
     backend: 'ai-sdk',
+    ...(input.llmConnectionId === undefined ? {} : { llmConnectionId: input.llmConnectionId }),
     llmConnectionSlug: input.llmConnectionSlug,
-    connectionLocked: false,
+    // A subagent Session's route is chosen by the spawn that created it and is
+    // never re-targeted, so it is born frozen. Every other Session freezes on
+    // its first user Message.
+    connectionLocked: input.subagentParent !== undefined,
     model: input.model ?? 'default',
     ...(input.toolProfile !== undefined ? { toolProfile: input.toolProfile } : {}),
     permissionMode: input.permissionMode,
@@ -1192,6 +1317,8 @@ export function normalizeSessionHeader(
     (header.lastReadMessageId === undefined || typeof header.lastReadMessageId === 'string') &&
     typeof header.hasUnread === 'boolean' &&
     isPersistedBackendKind(header.backend) &&
+    (header.llmConnectionId === undefined ||
+      (typeof header.llmConnectionId === 'string' && header.llmConnectionId.length > 0)) &&
     typeof header.llmConnectionSlug === 'string' &&
     typeof header.connectionLocked === 'boolean' &&
     typeof header.model === 'string' &&
@@ -1420,6 +1547,7 @@ function toSummary(header: SessionHeader, messages: StoredMessage[] = []): Sessi
     ...(header.revisionIndex !== undefined ? { revisionIndex: header.revisionIndex } : {}),
     ...(header.revisionState ? { revisionState: header.revisionState } : {}),
     backend: header.backend,
+    ...(header.llmConnectionId === undefined ? {} : { llmConnectionId: header.llmConnectionId }),
     llmConnectionSlug: header.llmConnectionSlug,
     connectionLocked: header.connectionLocked,
     model: header.model,

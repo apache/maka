@@ -7,7 +7,9 @@ apps/desktop/src/renderer/app.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx
+apps/desktop/src/renderer/chat-recovery-notice.tsx
 apps/desktop/src/renderer/command-palette.tsx
+apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
@@ -16,7 +18,9 @@ apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
-apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-host.tsx
+apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
+apps/desktop/src/renderer/features/task-entry/services-context.tsx
+apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -39,6 +43,8 @@ apps/desktop/src/renderer/onboarding-hero.tsx
 apps/desktop/src/renderer/plan-mode-panel.tsx
 apps/desktop/src/renderer/reference-shell.css
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
+apps/desktop/src/renderer/session-collaboration-dialog.tsx
+apps/desktop/src/renderer/session-turn-request-composer.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
 apps/desktop/src/renderer/settings/bot-chat-detail.tsx
@@ -70,9 +76,11 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
+apps/desktop/src/renderer/settings/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
+apps/desktop/src/renderer/settings/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
 apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
@@ -157,6 +165,7 @@ apps/desktop/src/renderer/work-board-panel.tsx
 apps/desktop/src/renderer/workhub-surface.tsx
 packages/ui/src/astryx-chat-reasoning.tsx
 packages/ui/src/astryx-i18n.tsx
+packages/ui/src/attachment-image.tsx
 packages/ui/src/attachment-kinds.tsx
 packages/ui/src/bot-brand-logo.tsx
 packages/ui/src/capability-audit-strip.tsx
@@ -175,6 +184,7 @@ packages/ui/src/inline-rename-input.tsx
 packages/ui/src/locale-context.tsx
 packages/ui/src/maka-wordmark.tsx
 packages/ui/src/markdown-body.tsx
+packages/ui/src/markdown-math.tsx
 packages/ui/src/markdown.tsx
 packages/ui/src/mermaid-diagram.tsx
 packages/ui/src/model-picker.tsx
@@ -196,6 +206,7 @@ packages/ui/src/search-modal.tsx
 packages/ui/src/session-context-layer.tsx
 packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
+packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/skill-inspector.tsx
@@ -205,10 +216,10 @@ packages/ui/src/task-ledger-panel.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx
-packages/ui/src/tool-activity/agent-preview.tsx
 packages/ui/src/tool-activity/diff-code-preview.tsx
 packages/ui/src/tool-activity/tool-code-block.tsx
 packages/ui/src/tool-activity/tool-result-preview.tsx
+packages/ui/src/transcript-scroll-authority.tsx
 packages/ui/src/ui.tsx
 packages/ui/src/user-question-prompt.tsx
 packages/ui/src/workspace-picker.tsx

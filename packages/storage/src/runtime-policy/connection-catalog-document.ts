@@ -47,11 +47,7 @@ import {
   type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import {
-  deriveConnectionSlug,
-  PROVIDER_DEFAULTS,
-  reconcileConnectionAfterModelFetch,
-} from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
@@ -516,40 +512,39 @@ export class ConnectionCatalogDocumentOwner {
   prepareOnboardingUpsert(
     current: ConnectionCatalogDocument,
     rawConnectionId: string,
+    rawSlug: string,
     rawProviderType: unknown,
     rawBaseUrl: string | null,
     rawEnabledModelIds: readonly string[],
     rawResult: ConnectionModelDiscoveryResult,
     invalidateLastTest: boolean,
-  ): PreparedOnboardingResult | { readonly kind: 'slug_conflict' } {
+  ):
+    | PreparedOnboardingResult
+    | { readonly kind: 'slug_conflict' }
+    | { readonly kind: 'catalog_full' } {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
+    const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
     const definition = PROVIDER_DEFAULTS[providerType];
     // Identity first: the intent's connectionId names the connection being
     // edited, whatever slug it lives under — a relay created in Desktop under
     // a custom slug is updated in place, never duplicated at the canonical
     // slug. Only a genuinely new connection lands at the derived slug.
-    let index = current.connections.findIndex(
+    const index = current.connections.findIndex(
       (connection) => connection.connectionId === connectionId,
     );
-    if (index < 0) {
-      index = current.connections.findIndex(
-        (connection) => connection.slug === deriveConnectionSlug(providerType),
-      );
-    }
     const previous = current.connections[index];
     if (previous && previous.providerType !== providerType) {
       return { kind: 'slug_conflict' };
     }
-    if (previous && previous.connectionId !== connectionId) {
-      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection id');
+    if (previous && previous.slug !== slug) {
+      throw codecError('invalid_document', 'Onboarding intent conflicts with the connection slug');
     }
-    const slug = previous?.slug ?? deriveConnectionSlug(providerType);
+    if (!previous && current.connections.some((connection) => connection.slug === slug)) {
+      return { kind: 'slug_conflict' };
+    }
     if (!previous && current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
-      throw codecError(
-        'invalid_connection_input',
-        `Connection catalog cannot exceed ${CONNECTION_CATALOG_MAX_CONNECTIONS} entries`,
-      );
+      return { kind: 'catalog_full' };
     }
     const result = decodeConnectionInput(() => normalizeConnectionModelDiscoveryResult(rawResult));
     // Non-empty is the requirement; `source` is write provenance, not a

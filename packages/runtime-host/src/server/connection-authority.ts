@@ -31,6 +31,7 @@ export interface RuntimeHostConnectionAuthority {
   readonly principalKind: 'local_owner' | AccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly credentialId?: string;
+  readonly clientInstanceId?: string;
   readonly operationGrants: 'all' | readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -56,6 +57,12 @@ export function createRuntimeHostConnectionAuthority(
   ) {
     throw new Error('Runtime Host access credential identity is invalid');
   }
+  if (
+    input.clientInstanceId !== undefined &&
+    (input.clientInstanceId.length === 0 || input.clientInstanceId.length > 128)
+  ) {
+    throw new Error('Runtime Host bound Client identity is invalid');
+  }
   const operationGrants =
     input.operationGrants === 'all'
       ? 'all'
@@ -74,7 +81,11 @@ export function authorizeRuntimeHostOperation(
   authority: RuntimeHostConnectionAuthority,
   frame: RequestFrame,
 ): boolean {
-  if (authority.principalKind !== 'local_owner' && !operationAllowsRemoteOwner(frame.operation)) {
+  if (
+    (authority.principalKind === 'remote_owner' ||
+      authority.principalKind === 'capability_provider') &&
+    !operationAllowsRemoteOwner(frame.operation)
+  ) {
     return false;
   }
   if (authority.operationGrants !== 'all' && !authority.operationGrants.includes(frame.operation)) {

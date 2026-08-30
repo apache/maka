@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
+import {
+  decodeMessageContent,
+  normalizeMessageContent,
+  type MessageContent,
+} from '@maka/core/events';
 import {
   normalizeSubmittedTurnIntent,
   submittedTurnIntentsEqual,
@@ -49,6 +53,32 @@ export interface PendingMessageAdmission {
   readonly admittedAt: number;
 }
 
+export interface ProvenRootMessageHandoff {
+  readonly messageId: string;
+  readonly content: MessageContent;
+  readonly admittedAt: number;
+}
+
+/** Immutable proof that an admission was delivered as steering by a later execution owner. */
+export interface ProvenSteeringMessageHandoff {
+  readonly messageId: string;
+  readonly admissionTurnId: string;
+  readonly admissionRunId: string;
+  readonly executionTurnId: string;
+  readonly eventId: string;
+  readonly eventTs: number;
+  readonly content: MessageContent;
+  readonly admittedAt: number;
+}
+
+export interface MarkMessagesHandedOffInput {
+  readonly sessionId: string;
+  readonly messageIds: readonly string[];
+  readonly turnId: string;
+  readonly provenRootMessages?: readonly ProvenRootMessageHandoff[];
+  readonly provenSteeringMessages?: readonly ProvenSteeringMessageHandoff[];
+}
+
 export interface MessageAdmissionStore {
   commitMessageAdmission(admission: PendingMessageAdmission): Promise<PendingMessageAdmission>;
   readMessageAdmission(
@@ -62,11 +92,7 @@ export interface MessageAdmissionStore {
    */
   hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean>;
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
-  markMessagesHandedOff(input: {
-    sessionId: string;
-    messageIds: readonly string[];
-    turnId: string;
-  }): Promise<void>;
+  markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void>;
   updateMessageAdmission(admission: PendingMessageAdmission): Promise<void>;
   reorderMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void>;
   cancelMessageAdmissions(sessionId: string, messageIds: readonly string[]): Promise<void>;
@@ -106,6 +132,36 @@ export function normalizePendingMessageAdmission(
     throw new Error('Invalid pending Message submitted content digest');
   }
   return normalized;
+}
+
+export function normalizeProvenRootMessageHandoff(
+  handoff: ProvenRootMessageHandoff,
+): ProvenRootMessageHandoff {
+  assertSafeId(handoff.messageId, 'Invalid proven Root Message identity');
+  if (!Number.isSafeInteger(handoff.admittedAt) || handoff.admittedAt < 0) {
+    throw new Error('Invalid proven Root Message timestamp');
+  }
+  return Object.freeze({
+    ...handoff,
+    content: decodeMessageContent(handoff.content),
+  });
+}
+
+export function normalizeProvenSteeringMessageHandoff(
+  handoff: ProvenSteeringMessageHandoff,
+): ProvenSteeringMessageHandoff {
+  assertSafeId(handoff.messageId, 'Invalid proven steering Message identity');
+  assertSafeId(handoff.admissionTurnId, 'Invalid proven steering admission Turn');
+  assertSafeId(handoff.admissionRunId, 'Invalid proven steering admission Run');
+  assertSafeId(handoff.executionTurnId, 'Invalid proven steering execution Turn');
+  assertSafeId(handoff.eventId, 'Invalid proven steering RuntimeEvent identity');
+  if (!Number.isSafeInteger(handoff.eventTs) || handoff.eventTs < 0) {
+    throw new Error('Invalid proven steering RuntimeEvent timestamp');
+  }
+  if (!Number.isSafeInteger(handoff.admittedAt) || handoff.admittedAt < 0) {
+    throw new Error('Invalid proven steering Message timestamp');
+  }
+  return Object.freeze({ ...handoff, content: decodeMessageContent(handoff.content) });
 }
 
 export function samePendingMessageAdmission(

@@ -57,6 +57,14 @@ import {
   clearCandidateStartupDiagnostic,
   selectCandidateStartupDiagnostic,
 } from '../control/startup-diagnostic.js';
+import {
+  decodeRuntimeHostManagedLaunchClaim,
+  readRuntimeHostManagedDeploymentConfig,
+  runtimeHostManagedLaunchRejection,
+  RuntimeHostManagedDeploymentError,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedLaunchClaim,
+} from '../operator/managed-deployment.js';
 import { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 
 const DEFAULT_ELECTION_DEADLINE_MS = 45_000;
@@ -76,7 +84,11 @@ export interface ConnectOrSpawnRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   candidateEntrypoint: string | URL;
+  candidateExecutable?: string;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   signal?: AbortSignal;
+  /** Existing authority lease inherited by a launch-owner-supervised Candidate. */
+  inheritableAuthorityLeaseFd?: number;
   /** Candidate-exit sink forwarded to the launcher; the embedder owns the sink. */
   onExit?: (details: CandidateExitDetails) => void;
 }
@@ -87,6 +99,8 @@ interface ConnectOrSpawnRuntimeHostDependencies {
   /** Defaults to `process.env`; injected so tests never mutate the real environment. */
   env?: NodeJS.ProcessEnv;
   connectHost?: typeof connectResolvedRuntimeHost;
+  /** Authority-location override for tests and embedded runtimes. */
+  managedDeploymentAuthority?: RuntimeHostManagedDeploymentAuthorityOptions;
 }
 
 type ElectionConnectionResult = Awaited<ReturnType<typeof connectResolvedRuntimeHost>>;
@@ -296,6 +310,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
   requireHostCompositionId(input.compositionId);
   requireOptionalTimeout(input.connectTimeoutMs, 'connectTimeoutMs', 1);
   requireOptionalTimeout(input.handshakeTimeoutMs, 'handshakeTimeoutMs', 1);
+  const managedLaunchClaim =
+    input.managedLaunchClaim === undefined
+      ? undefined
+      : decodeRuntimeHostManagedLaunchClaim(input.managedLaunchClaim);
   input.signal?.throwIfAborted();
   const clientInstanceId = requireClientInstanceId(input.clientInstanceId ?? randomUUID());
   const capability = await resolveStorageRoot({ path: input.rootPath, kind: 'interactive' });
@@ -408,6 +426,29 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
         !candidateInFlight &&
         now >= nextCandidateAt
       ) {
+        let managedDeployment;
+        try {
+          managedDeployment = await readRuntimeHostManagedDeploymentConfig(
+            capability,
+            dependencies.managedDeploymentAuthority,
+          );
+        } catch (error) {
+          if (
+            error instanceof RuntimeHostManagedDeploymentError &&
+            error.code === 'invalid_config'
+          ) {
+            return { kind: 'failed', reason: 'deployment_record_invalid' };
+          }
+          throw error;
+        }
+        const managedLaunchRejection = runtimeHostManagedLaunchRejection(
+          managedDeployment,
+          managedLaunchClaim,
+          'on_demand',
+        );
+        if (managedLaunchRejection !== undefined) {
+          return { kind: 'failed', reason: managedLaunchRejection };
+        }
         try {
           const remaining = deadline - performance.now();
           if (remaining <= 0) break;
@@ -415,9 +456,16 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             rootPath: capability.canonicalPath,
             expectedRootId: capability.rootId,
             entrypoint: input.candidateEntrypoint,
+            ...(input.candidateExecutable === undefined
+              ? {}
+              : { executable: input.candidateExecutable }),
             initialConnectionTimeoutMs: Math.ceil(remaining),
             ...(input.generation === undefined ? {} : { generation: input.generation }),
+            ...(managedLaunchClaim === undefined ? {} : { managedLaunchClaim }),
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
+            ...(input.inheritableAuthorityLeaseFd === undefined
+              ? {}
+              : { inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd }),
           });
           candidateLaunches.add(launch);
           const attempt = await settleBeforeDeadline(launch.spawned, deadline, input.signal);

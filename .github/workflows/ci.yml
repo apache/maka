@@ -36,7 +36,7 @@ jobs:
   # workflow consumes one automatic job without dropping affected coverage.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +61,12 @@ jobs:
       - name: Test CI planner
         run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
 
+      # Pure Node like the planner test, and the labelling workflow imports this
+      # module directly, so a tier or exclusion change is caught here rather
+      # than by mislabelling live pull requests.
+      - name: Test PR effort classification
+        run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
+
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
       # an install.
@@ -80,6 +86,20 @@ jobs:
 
       - name: Test Storybook audit contracts
         run: node --test scripts/ax-tree-audit.test.mjs scripts/storybook-visual-smoke.test.mjs
+      - name: Test Computer Use script contracts
+        run: node --test scripts/ax-tree-audit.test.mjs scripts/computer-use/lab-root.test.mjs
+
+      - name: Test script entrypoint contracts
+        run: node --test scripts/script-entrypoints.test.mjs
+
+      # Install-free like its neighbours: the gate reads one source file and
+      # compares it to a hand-edited inventory, so a hook that silently widens
+      # its scope to the whole tree fails here rather than in a profile (#4109).
+      - name: Check the hooks scoped to the whole shell
+        run: npm run check:app-shell-hooks
+
+      - name: Test the app-shell hook gate
+        run: node --test --test-concurrency=1 scripts/check-app-shell-hooks.test.mjs
 
       - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm
@@ -134,6 +154,20 @@ jobs:
       - name: Verify ASF source release mechanics
         if: steps.plan.outputs.asf_source == 'true'
         run: npm run check:asf-source
+
+      # Parsed dependency rules and an exact legacy-debt ledger keep the
+      # renderer root from absorbing new feature or Desktop ownership while
+      # the existing AppShell is migrated behind stable boundaries.
+      - name: Check renderer architecture
+        if: steps.plan.outputs.code == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]]; then
+            npm run check:renderer-architecture -- --base "$BASE_SHA"
+          else
+            npm run check:renderer-architecture
+          fi
 
       - name: Lint
         if: steps.plan.outputs.code == 'true'

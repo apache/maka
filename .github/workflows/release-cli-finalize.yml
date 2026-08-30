@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Finalize CLI npm channel
+name: Finalize product release
 
 on:
   workflow_dispatch:
@@ -28,6 +28,14 @@ on:
         description: Successful Stage CLI npm release workflow run attempt
         required: true
         type: string
+      release_run_id:
+        description: Successful Release workflow run ID that built the Draft assets
+        required: true
+        type: string
+      release_run_attempt:
+        description: Successful Release workflow run attempt that built the Draft assets
+        required: true
+        type: string
       version:
         description: Exact staged maka-agent product version
         required: true
@@ -38,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cli-npm-finalize
+  group: product-release
   cancel-in-progress: false
 
 jobs:
@@ -46,13 +54,20 @@ jobs:
     name: Verify the public npm channel
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      product_tag: ${{ steps.release.outputs.product_tag }}
+      product_version: ${{ steps.release.outputs.version }}
+      release_run_id: ${{ steps.release-run.outputs.run_id }}
+      release_run_attempt: ${{ steps.release-run.outputs.run_attempt }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      source_reference_tag: ${{ steps.authority.outputs.source_reference_tag }}
     steps:
       - name: Require main
         env:
           RELEASE_REF: ${{ github.ref }}
         run: |
           if [[ "$RELEASE_REF" != "refs/heads/main" ]]; then
-            echo "CLI npm finalization must be dispatched from main; found $RELEASE_REF" >&2
+            echo "Product finalization must be dispatched from main; found $RELEASE_REF" >&2
             exit 1
           fi
 
@@ -71,6 +86,25 @@ jobs:
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGE_RUN_ID/attempts/$STAGE_RUN_ATTEMPT" > "$RUNNER_TEMP/stage-run.json"
+
+      - name: Load the exact Release workflow run
+        id: release-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ inputs.release_run_attempt }}
+        run: |
+          if [[ ! "$RELEASE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Release workflow run ID must be a positive integer" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Release workflow run attempt must be a positive integer" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID/attempts/$RELEASE_RUN_ATTEMPT" > "$RUNNER_TEMP/release-run.json"
+          echo "run_id=$RELEASE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$RELEASE_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Check out the current release verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,6 +130,15 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.stage_run_id }}
 
+      - name: Download the publication record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: product-release-record-${{ inputs.release_run_attempt }}
+          path: ${{ runner.temp }}/product-release-record
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.release_run_id }}
+
       - name: Verify the stage run and release record
         id: release
         env:
@@ -108,13 +151,33 @@ jobs:
             "$GITHUB_OUTPUT"
 
       - name: Revalidate the product release authority
+        id: authority
         env:
           GH_TOKEN: ${{ github.token }}
           PRODUCT_SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
           PRODUCT_TAG: ${{ steps.release.outputs.product_tag }}
+          RELEASE_RUN_ATTEMPT: ${{ steps.release-run.outputs.run_attempt }}
+          RELEASE_RUN_ID: ${{ steps.release-run.outputs.run_id }}
         run: |
+          node scripts/product-release-authority.mjs verify-build-run \
+            "$RUNNER_TEMP/release-run.json" \
+            "$PRODUCT_TAG" \
+            "$PRODUCT_SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY" \
+            "$RELEASE_RUN_ID" \
+            "$RELEASE_RUN_ATTEMPT"
+          source_reference_tag="$(jq -r .head_branch "$RUNNER_TEMP/release-run.json")"
+          node scripts/product-release-artifacts.mjs inspect-record \
+            "$RUNNER_TEMP/product-release-record/product-release.json" \
+            "$GITHUB_REPOSITORY" \
+            "$PRODUCT_TAG" \
+            "$PRODUCT_SOURCE_COMMIT" \
+            "$source_reference_tag" \
+            "$RELEASE_RUN_ID" \
+            "$RELEASE_RUN_ATTEMPT"
           node scripts/product-release-authority.mjs verify-draft \
             "$PRODUCT_TAG" "$PRODUCT_SOURCE_COMMIT" "$GITHUB_REPOSITORY"
+          echo "source_reference_tag=$source_reference_tag" >> "$GITHUB_OUTPUT"
 
       - name: Fetch and verify the public registry bytes
         run: |
@@ -141,3 +204,123 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  publish:
+    name: Publish the attested convenience release
+    needs: inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: product-release
+      url: https://github.com/apache/maka/releases/tag/${{ needs.inspect.outputs.product_tag }}
+    permissions:
+      actions: read
+      artifact-metadata: write
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out the current release verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Download the exact verified Release run artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*-${{ needs.inspect.outputs.release_run_attempt }}
+          path: ${{ runner.temp }}/product-release
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.inspect.outputs.release_run_id }}
+
+      - name: Download the publication record
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: product-release-record-${{ needs.inspect.outputs.release_run_attempt }}
+          path: ${{ runner.temp }}/product-release-record
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.inspect.outputs.release_run_id }}
+
+      - name: Verify the exact publication input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ needs.inspect.outputs.source_commit }}
+          PRODUCT_SOURCE_REFERENCE_TAG: ${{ needs.inspect.outputs.source_reference_tag }}
+          PRODUCT_TAG: ${{ needs.inspect.outputs.product_tag }}
+          RELEASE_RUN_ATTEMPT: ${{ needs.inspect.outputs.release_run_attempt }}
+          RELEASE_RUN_ID: ${{ needs.inspect.outputs.release_run_id }}
+        run: |
+          node scripts/product-release-authority.mjs verify-publication \
+            "$PRODUCT_TAG" \
+            "$PRODUCT_SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/product-release" \
+            "$RUNNER_TEMP/product-release-record/product-release.json" \
+            "$PRODUCT_SOURCE_REFERENCE_TAG" \
+            "$RELEASE_RUN_ID" \
+            "$RELEASE_RUN_ATTEMPT"
+
+      - name: Attest the verified convenience artifacts
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        with:
+          subject-path: ${{ runner.temp }}/product-release/*
+
+      - name: Verify the issued provenance
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release-cli-finalize.yml@refs/heads/main
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verified=0
+          while IFS= read -r -d '' artifact; do
+            gh attestation verify "$artifact" \
+              --bundle "$ATTESTATION_BUNDLE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "$CERTIFICATE_IDENTITY" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com
+            verified=$((verified + 1))
+          done < <(find "$RUNNER_TEMP/product-release" -maxdepth 1 -type f -print0)
+          if (( verified == 0 )); then
+            echo "No product release artifacts were verified" >&2
+            exit 1
+          fi
+
+      - name: Name the offline verification bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          PRODUCT_VERSION: ${{ needs.inspect.outputs.product_version }}
+        run: >-
+          cp -- "$ATTESTATION_BUNDLE"
+          "$RUNNER_TEMP/Maka-${PRODUCT_VERSION}-attestation.sigstore.json"
+
+      - name: Publish the verified convenience release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT_SOURCE_COMMIT: ${{ needs.inspect.outputs.source_commit }}
+          PRODUCT_SOURCE_REFERENCE_TAG: ${{ needs.inspect.outputs.source_reference_tag }}
+          PRODUCT_TAG: ${{ needs.inspect.outputs.product_tag }}
+          PRODUCT_VERSION: ${{ needs.inspect.outputs.product_version }}
+          RELEASE_RUN_ATTEMPT: ${{ needs.inspect.outputs.release_run_attempt }}
+          RELEASE_RUN_ID: ${{ needs.inspect.outputs.release_run_id }}
+        run: |
+          node scripts/product-release-authority.mjs publish-draft \
+            "$PRODUCT_TAG" \
+            "$PRODUCT_SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/product-release" \
+            "$RUNNER_TEMP/product-release-record/product-release.json" \
+            "$PRODUCT_SOURCE_REFERENCE_TAG" \
+            "$RELEASE_RUN_ID" \
+            "$RELEASE_RUN_ATTEMPT" \
+            "$RUNNER_TEMP/Maka-${PRODUCT_VERSION}-attestation.sigstore.json"

@@ -49,7 +49,6 @@ import {
   useUiLocale,
   type ChatModelChoice,
 } from '@maka/ui';
-import type { ComposerProps } from '../../../../../../../packages/ui/dist/composer.d.ts';
 import {
   ICON_SIZE,
   Activity,
@@ -718,10 +717,6 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComposerProps['mentionSkills'];
-  mentionSkillsUnavailable?: ComposerProps['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComposerProps['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComposerProps['onSearchMentionFiles'];
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
   const sessionTasks = useSessionTasks(props.sessionId);
@@ -880,10 +875,6 @@ export function WorkbarSurface(props: {
                 initialPrompt={quote.initialPrompt}
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
-                mentionSkills={props.mentionSkills}
-                mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-                mentionSkillsLoading={props.mentionSkillsLoading}
-                onSearchMentionFiles={props.onSearchMentionFiles}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}

@@ -1,0 +1,134 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: PR effort label
+
+# Labels a pull request when it first asks for review, then re-checks the whole
+# open set once a day. A push changes the diff and so can change the tier, but
+# subscribing to every push would run this hundreds of times a day to correct a
+# label nobody is misled by in the meantime; the daily sweep absorbs that drift
+# and doubles as the recovery path for any event this misses.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Log the tier each open pull request would get without writing labels.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-effort-label-${{ github.event.pull_request.number || github.workflow }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # pull_request_target runs with a writable token, so the ref is pinned to
+      # the trusted default-branch commit rather than left to the event's
+      # default: pull_request_review and friends resolve to refs/pull/N/merge,
+      # and this job imports the checked-out script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        with:
+          script: |
+            const path = require("node:path")
+            const { pathToFileURL } = require("node:url")
+
+            const { planLabels } = await import(
+              pathToFileURL(path.join(process.env.GITHUB_WORKSPACE, "scripts/pr-effort.mjs")).href
+            )
+
+            const { owner, repo } = context.repo
+
+            // Reviewing a tier boundary or an exclusion means seeing it against
+            // real pull requests, which is this same sweep minus the writes.
+            const dryRun = process.env.DRY_RUN === "true"
+
+            const targets = context.payload.pull_request
+              ? [context.payload.pull_request.number]
+              : (
+                  await github.paginate(github.rest.pulls.list, {
+                    owner,
+                    repo,
+                    state: "open",
+                    per_page: 100,
+                  })
+                ).map((pull) => pull.number)
+
+            for (const pull_number of targets) {
+              const [files, current] = await Promise.all([
+                github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number, per_page: 100 }),
+                github.paginate(github.rest.issues.listLabelsOnIssue, {
+                  owner,
+                  repo,
+                  issue_number: pull_number,
+                  per_page: 100,
+                }),
+              ])
+
+              const plan = planLabels(
+                files,
+                current.map((label) => label.name),
+              )
+
+              if (dryRun) {
+                core.info(
+                  `#${pull_number}: ${plan.label} (${plan.lines} readable lines)` +
+                    ` +[${plan.addLabels.join(", ")}] -[${plan.removeLabels.join(", ")}]`,
+                )
+                continue
+              }
+
+              if (plan.addLabels.length > 0) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: pull_number,
+                  labels: plan.addLabels,
+                })
+              }
+
+              for (const name of plan.removeLabels) {
+                try {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number: pull_number, name })
+                } catch (error) {
+                  // Another run may have removed it first; anything else is real.
+                  if (error.status !== 404) throw error
+                }
+              }
+
+              core.info(`#${pull_number}: ${plan.label} (${plan.lines} readable lines)`)
+            }

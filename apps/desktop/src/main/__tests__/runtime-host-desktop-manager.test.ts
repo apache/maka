@@ -23,6 +23,7 @@ import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostSpawnedProcess,
 } from '@maka/runtime-host/client';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -59,7 +60,7 @@ test('replaces a disconnected Runtime Host generation', { timeout: 10_000 }, asy
   const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
     startCandidate: async (input) => {
       starts += 1;
-      interactions.push(input.remote?.sshInteraction);
+      interactions.push(input.profileTarget?.sshInteraction);
       if (starts === 2) {
         resolveSecondStart();
         await secondReleased;
@@ -137,6 +138,41 @@ test('quiesces reconnect and waits for the Host process before update install', 
   assert.equal(starts, 1);
   if (retirement.kind === 'retired') retirement.resume();
   await reconnected;
+  assert.equal(starts, 2);
+  await owner.close();
+});
+
+test('quiesces Local reconnect while a managed service changes', async () => {
+  const current = candidateHarness({ ownership: 'supervised' });
+  const replacement = candidateHarness({
+    ownership: 'supervised',
+    hostEpoch: 'service-after',
+  });
+  let starts = 0;
+  let finishChange!: () => void;
+  const change = new Promise<void>((resolve) => {
+    finishChange = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return ready(starts === 1 ? current.candidate : replacement.candidate);
+      },
+    },
+  );
+
+  const changing = owner.runManagedLocalHostChange(async () => {
+    current.disconnect();
+    await change;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(starts, 1);
+
+  finishChange();
+  await changing;
+  await owner.waitUntilReady('local', 'test-host-epoch');
   assert.equal(starts, 2);
   await owner.close();
 });
@@ -232,6 +268,33 @@ test('does not retire the local Host twice when an update handoff triggers quit'
 
   assert.equal(current.prepareRetirementCalls, 1);
   assert.deepEqual(waitedFor, [42]);
+  await owner.close();
+});
+
+test('does not block quit after a retired Local Host hands off to an unavailable supervisor', async () => {
+  const current = candidateHarness({ disconnectOnPrepare: true });
+  let starts = 0;
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      return starts === 1 ? ready(current.candidate) : incompatibleHost('wait_for_idle_exit');
+    },
+    waitForHostExit: async () => undefined,
+    onFatalError: reportFatal,
+  });
+
+  const handoff = await owner.retireOwnedLocalHost('interrupt_active_work');
+  assert.equal(handoff.kind, 'retired');
+  if (handoff.kind === 'retired') handoff.resume();
+  await fatalReported;
+
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
   await owner.close();
 });
 
@@ -442,12 +505,12 @@ test('keeps active-task confirmation bound to the current Host', async () => {
   await owner.close();
 });
 
-for (const lifecycleMode of ['service', 'remote'] as const) {
-  test(`does not retire a ${lifecycleMode} Host for a Desktop update`, async () => {
-    const current = candidateHarness({ lifecycleMode });
+for (const ownership of ['supervised', 'external'] as const) {
+  test(`leaves ${ownership} Host ownership intact during a Desktop update`, async () => {
+    const current = candidateHarness({ ownership });
     const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
       startCandidate: async () => ready(current.candidate),
-      waitForHostExit: async () => assert.fail(`${lifecycleMode} Host exit must not be awaited`),
+      waitForHostExit: async () => assert.fail(`${ownership} Host exit must not be awaited`),
     });
 
     const retirement = await owner.retireOwnedLocalHost('refuse_active_work');
@@ -461,7 +524,7 @@ for (const lifecycleMode of ['service', 'remote'] as const) {
 
 test('keeps Local and remote Hosts active and routes work by owning Host', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   const manager = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
@@ -528,6 +591,32 @@ test('replays pairing finalization after an unknown commit and reconnect', async
 
   assert.equal(first.finalizeCalls, 1);
   assert.equal(replacement.finalizeCalls, 1);
+  await manager.close();
+});
+
+test('reconnects after a pairing candidate becomes bound to this Client', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const candidate = candidateHarness({
+    hostId: remoteHostId,
+    finalizeReconnectRequired: true,
+  });
+  const claimed = candidateHarness({ hostId: remoteHostId });
+  const queue = [local.candidate, candidate.candidate, claimed.candidate];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => ready(queue.shift()!),
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.enable(remoteTarget('office'));
+
+  await manager.finalizePairing('office');
+
+  assert.equal(candidate.finalizeCalls, 1);
+  assert.equal(candidate.closeCalls, 1);
+  assert.equal(manager.current('office')?.candidate, claimed.candidate);
   await manager.close();
 });
 
@@ -696,7 +785,7 @@ test('bounds an in-flight pairing finalization and preserves its unknown outcome
 
 test('coalesces concurrent enable requests for one remote profile', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   let releaseRemote!: () => void;
   const remoteReady = new Promise<void>((resolve) => {
@@ -726,7 +815,7 @@ test('coalesces concurrent enable requests for one remote profile', async () => 
 
 test('waits for an in-flight remote enable before closing', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
-  const remote = candidateHarness({ hostId: 'host-b', lifecycleMode: 'remote' });
+  const remote = candidateHarness({ hostId: 'host-b', ownership: 'external' });
   let starts = 0;
   let releaseRemote!: () => void;
   const remoteReady = new Promise<void>((resolve) => {
@@ -833,8 +922,55 @@ test('keeps reconnecting through transient startup failures until the Desktop ad
   await owner.close();
 });
 
+test('reconciles interrupted managed setup after a Local discovery result', async () => {
+  const managed = candidateHarness({ ownership: 'supervised' });
+  const events: string[] = [];
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      events.push(`discover:${starts}`);
+      return starts === 1
+        ? { kind: 'failed', reason: 'managed_root_requires_operator' }
+        : ready(managed.candidate);
+    },
+    recoverLocalHost: async () => {
+      events.push('reconcile');
+      return true;
+    },
+  });
+
+  assert.deepEqual(events, ['discover:1', 'reconcile', 'discover:2']);
+  assert.equal(owner.current('local')?.candidate?.hostOwnership, 'supervised');
+  await owner.close();
+});
+
+test('reconciles interrupted managed setup after Local discovery throws', async () => {
+  const managed = candidateHarness({ ownership: 'supervised' });
+  const events: string[] = [];
+  let starts = 0;
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () => {
+      starts += 1;
+      events.push(`discover:${starts}`);
+      if (starts === 1) throw new Error('managed deployment transition is in progress');
+      return ready(managed.candidate);
+    },
+    recoverLocalHost: async () => {
+      events.push('reconcile');
+      return true;
+    },
+  });
+
+  assert.deepEqual(events, ['discover:1', 'reconcile', 'discover:2']);
+  assert.equal(owner.current('local')?.candidate?.hostOwnership, 'supervised');
+  await owner.close();
+});
+
 test('stops reconnecting when the replacement Host is incompatible', async () => {
-  const first = candidateHarness();
+  const first = candidateHarness({
+    ownedProcess: { pid: 42, exited: new Promise(() => undefined) },
+  });
   let reportFatal!: (error: Error) => void;
   const fatalReported = new Promise<Error>((resolve) => {
     reportFatal = resolve;
@@ -850,6 +986,62 @@ test('stops reconnecting when the replacement Host is incompatible', async () =>
   await first.candidate.close();
   const fatal = await fatalReported;
   assert.match(fatal.message, /older Runtime Host/);
+  await assert.rejects(
+    owner.retireOwnedLocalHost('interrupt_active_work'),
+    (error: unknown) =>
+      error instanceof DesktopLocalHostRetirementError &&
+      error.facts.pid === 42 &&
+      error.cause === fatal,
+  );
+  await owner.close();
+});
+
+test('does not retain manual-stop authority after the owned Host process exits', async () => {
+  const first = candidateHarness({
+    ownedProcess: {
+      pid: 42,
+      exited: Promise.resolve({ code: 0, signal: null, stderr: '', stderrTruncated: false }),
+    },
+  });
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () =>
+      first.closeCalls === 0
+        ? ready(first.candidate)
+        : incompatibleHost('wait_for_idle_exit'),
+    onFatalError: reportFatal,
+  });
+
+  await first.candidate.close();
+  await fatalReported;
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
+  await owner.close();
+});
+
+test('does not block quit after a supervised Local Host becomes permanently unavailable', async () => {
+  const first = candidateHarness({ ownership: 'supervised' });
+  let reportFatal!: (error: Error) => void;
+  const fatalReported = new Promise<Error>((resolve) => {
+    reportFatal = resolve;
+  });
+  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+    startCandidate: async () =>
+      first.closeCalls === 0
+        ? ready(first.candidate)
+        : incompatibleHost('wait_for_idle_exit'),
+    onFatalError: reportFatal,
+  });
+
+  await first.candidate.close();
+  await fatalReported;
+  assert.deepEqual(await owner.retireOwnedLocalHost('interrupt_active_work'), {
+    kind: 'not_owned',
+  });
   await owner.close();
 });
 
@@ -864,7 +1056,7 @@ test('restarts an idle generation-aware Host without prompting', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('idle Host must not prompt before restart'),
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -885,7 +1077,7 @@ test('prompts before restarting a generation-aware Host with active work', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -905,7 +1097,7 @@ test('prompts before restarting a generation-aware Host with a residency', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -925,7 +1117,7 @@ test('prompts before restarting a generation-aware Host with connections', async
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -945,7 +1137,7 @@ test('prompts when a restartable Host has no activity snapshot', async () => {
         prompts += 1;
         return 'restart';
       },
-      waitOnly: async () => assert.fail('restartable conflict used wait-only prompt'),
+      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
     },
   });
 
@@ -968,7 +1160,7 @@ test('waits passively for a Host that cannot be taken over', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('wait-only conflict used restart prompt'),
-      waitOnly: async () => 'wait',
+      nonRestartable: async () => 'wait',
     },
     waitForHostRetirement: async (registration) => {
       assert.equal(registration.hostEpoch, conflict.registration.hostEpoch);
@@ -983,6 +1175,41 @@ test('waits passively for a Host that cannot be taken over', async () => {
   await owner.close();
 });
 
+test('replaces a non-restartable Local Host through the supplied authority and retries', async () => {
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const replacement = candidateHarness();
+  let starts = 0;
+  let replaced: typeof observed.registration | undefined;
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, actions) => {
+          assert.deepEqual(actions, { canReplace: true, canWait: false });
+          return 'replace';
+        },
+      },
+      resolveLocalHostReplacement: async (registration) => ({
+        replace: async () => {
+          replaced = registration;
+        },
+      }),
+    },
+  );
+  assert.equal(starts, 2);
+  assert.equal(replaced?.hostEpoch, conflict.registration.hostEpoch);
+  await owner.close();
+});
+
 test('lets the user cancel startup when an incompatible Host owns the root', async () => {
   const conflict = incompatibleHost('blocked_by_residency');
   let presented: DesktopRuntimeHostCandidateStartResult | undefined;
@@ -991,8 +1218,9 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
       startCandidate: async () => conflict,
       upgradePrompts: {
         restartable: async () => assert.fail('incompatible Host used restart prompt'),
-        waitOnly: async (actual) => {
+        nonRestartable: async (actual, actions) => {
           presented = actual;
+          assert.deepEqual(actions, { canReplace: false, canWait: true });
           return 'cancel';
         },
       },
@@ -1098,10 +1326,12 @@ function candidateHarness(
     delayDisconnect?: boolean;
     disconnectOnPrepare?: boolean;
     activeTasks?: boolean | 'always';
-    lifecycleMode?: 'ephemeral' | 'service' | 'remote';
+    ownership?: 'owned_ephemeral' | 'supervised' | 'external';
+    ownedProcess?: RuntimeHostSpawnedProcess;
     hostId?: string;
     hostEpoch?: string;
     finalizeFailures?: Error[];
+    finalizeReconnectRequired?: boolean;
     disconnectOnFinalizeFailure?: boolean;
     onPrepare?: (mode: string) => unknown | Promise<unknown>;
   } = {},
@@ -1120,8 +1350,9 @@ function candidateHarness(
   const retirementModes: string[] = [];
   const candidate = {
     closed,
-    hostLifecycleMode: options.lifecycleMode ?? 'ephemeral',
+    hostOwnership: options.ownership ?? 'owned_ephemeral',
     hostPid: 42,
+    ...(options.ownedProcess ? { ownedProcess: options.ownedProcess } : {}),
     client: {
       hostId: options.hostId ?? 'test-host',
       hostEpoch: options.hostEpoch ?? 'test-host-epoch',
@@ -1158,7 +1389,7 @@ function candidateHarness(
           }
           throw failure;
         }
-        return {};
+        return { reconnectRequired: options.finalizeReconnectRequired ?? false };
       },
     },
     botIncoming: {
@@ -1211,7 +1442,7 @@ function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandid
 function remoteTarget(
   id: string,
   target = 'default',
-): NonNullable<DesktopRuntimeHostCandidateStartInput['remote']> {
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
       id,

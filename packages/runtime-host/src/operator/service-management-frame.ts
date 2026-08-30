@@ -34,6 +34,8 @@ export const RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY = 'access-manage
 export const RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST';
 export const RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY = 'process-lifetime-lock-v1';
+export const RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY = 'peer-management-v1';
+export const RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY = 'peer-relay-discovery-v1';
 export const RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY = 'update-scheduler-v1';
 export const RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV =
   'MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST';
@@ -63,7 +65,6 @@ const NON_RETIRE_SERVICE_ACTIONS = [
   'stop',
   'restart',
   'logs',
-  'uninstall',
 ] as const;
 const NON_UPDATE_SERVICE_ACTIONS = [
   'install',
@@ -90,6 +91,8 @@ const INSTALLED_SERVICE_STATES = ['stopped', 'starting', 'running', 'failed'] as
 const SERVICE_STATES = ['not_installed', ...INSTALLED_SERVICE_STATES] as const;
 const OPERATOR_CAPABILITIES = [
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
 ] as const;
@@ -118,6 +121,7 @@ const MANAGED_SERVICE_TARGET_SCHEMA = z
     serviceId: z.string().regex(/^[a-f0-9]{64}$/u),
     rootPath: boundedNonEmptyString(PATH_MAX_BYTES),
     rootId: z.string().regex(/^[a-f0-9]{64}$/u),
+    deploymentId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -231,6 +235,25 @@ const SERVICE_SUMMARY_SCHEMA = z
     pid: z.number().int().positive().nullable(),
     lastExitCode: z.number().int().nonnegative().nullable(),
     installedVersion: boundedString(FIELD_MAX_BYTES).nullable(),
+    lifecycle: z
+      .object({
+        mode: z.enum(['on_demand', 'supervised']),
+        availability: z.enum(['activation', 'session', 'environment', 'machine']),
+        provider: z
+          .enum(['systemd_user', 'launch_agent', 'openrc_user', 'openrc_system'])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    reconciliation: z
+      .object({
+        trigger: z.enum(['manual', 'activation', 'scheduled']),
+        provider: z
+          .enum(['systemd_timer', 'launch_agent_timer', 'openrc_supervised_loop'])
+          .optional(),
+      })
+      .strict()
+      .optional(),
     stateRoot: boundedString(PATH_MAX_BYTES).optional(),
     configurationFingerprint: z
       .string()
@@ -257,7 +280,9 @@ const SERVICE_RESULT_COMMON = {
   schemaVersion: z.literal(1),
   kind: z.literal('result'),
   service: SERVICE_SUMMARY_SCHEMA,
-  operatorCapabilities: z.array(z.enum(OPERATOR_CAPABILITIES)).max(16).optional(),
+  // Unknown tokens are ignored by callers. Keeping the wire field open lets
+  // older Clients decode status from a newer operator.
+  operatorCapabilities: z.array(boundedNonEmptyString(FIELD_MAX_BYTES)).max(16).optional(),
   retainedStateRoot: boundedString(PATH_MAX_BYTES).optional(),
   logs: boundedString(RUNTIME_HOST_SERVICE_LOG_MAX_BYTES).optional(),
 } as const;
@@ -382,7 +407,7 @@ const SERVICE_MANAGEMENT_FRAME_SCHEMA = z.union([
   z
     .object({
       ...SERVICE_RESULT_COMMON,
-      action: z.literal('retire'),
+      action: z.enum(['retire', 'uninstall']),
       retirement: RETIREMENT_RESULT_SCHEMA,
     })
     .strict(),

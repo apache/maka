@@ -563,9 +563,10 @@ test('Codex device login presents the one-time code and commits exchanged tokens
     assert.equal(polls, 1);
     assert.equal(fixture.invalidations, 1);
     assert.equal(fixture.activeResidencies, 0);
-    const resolved = await fixture.stores.operations.resolveExecutionConnection(
-      fixture.connection.slug,
-    );
+    const resolved = await fixture.stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: fixture.connection.slug,
+    });
     assert.equal(resolved.kind, 'ready');
     if (resolved.kind === 'ready') {
       assert.deepEqual(

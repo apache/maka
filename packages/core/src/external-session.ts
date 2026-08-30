@@ -22,7 +22,7 @@ import type { StoredMessage } from './session.js';
 /** Stable identifier for one external Agent integration, for example `codex`. */
 export type ExternalAgentId = string;
 
-/** A search term longer than this is refused rather than matched. */
+/** A search term longer than this is truncated to this length before matching. */
 export const EXTERNAL_SESSION_QUERY_TEXT_MAX_CHARS = 200;
 
 export interface ExternalSessionQuery {

@@ -18,7 +18,7 @@
  */
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet},
     convert::Infallible,
     future::{Ready, ready},
     io,
@@ -34,9 +34,8 @@ use libp2p::{
         upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo},
     },
     swarm::{
-        CloseConnection, ConnectionDenied, ConnectionHandler, ConnectionId, FromSwarm,
-        NetworkBehaviour, Stream, StreamProtocol, THandler, THandlerInEvent, THandlerOutEvent,
-        ToSwarm,
+        ConnectionDenied, ConnectionHandler, ConnectionId, FromSwarm, NetworkBehaviour, Stream,
+        StreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
         behaviour::ConnectionClosed,
         handler::{
             ConnectionEvent, DialUpgradeError, FullyNegotiatedInbound, FullyNegotiatedOutbound,
@@ -45,19 +44,19 @@ use libp2p::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use super::address::is_relayed_address;
+use super::address::relay_peer_id_from_circuit_address;
 
 const OUTBOUND_COMMAND_CAPACITY: usize = 1;
 
 pub(super) struct Behaviour {
     protocol: StreamProtocol,
+    trusted_transit_relays: Option<Arc<std::sync::RwLock<HashSet<PeerId>>>>,
     incoming: mpsc::Sender<InboundStream>,
     shared: Arc<Mutex<DirectConnections>>,
-    closing: VecDeque<(PeerId, ConnectionId)>,
 }
 
 pub(super) struct InboundStream {
-    pub(super) connection_id: ConnectionId,
+    pub(super) peer_id: PeerId,
     pub(super) stream: Stream,
 }
 
@@ -65,29 +64,45 @@ impl Behaviour {
     pub(super) fn new(
         protocol: StreamProtocol,
         incoming_capacity: usize,
+        trusted_transit_relays: Option<Arc<std::sync::RwLock<HashSet<PeerId>>>>,
     ) -> (Self, Control, mpsc::Receiver<InboundStream>) {
         let (incoming, receiver) = mpsc::channel(incoming_capacity);
         let shared = Arc::new(Mutex::new(DirectConnections::default()));
         (
             Self {
                 protocol,
+                trusted_transit_relays,
                 incoming,
                 shared: shared.clone(),
-                closing: VecDeque::new(),
             },
             Control { shared },
             receiver,
         )
     }
 
-    fn handler(&mut self, connection_id: ConnectionId, peer_id: PeerId, relayed: bool) -> Handler {
-        if relayed {
+    fn handler(
+        &mut self,
+        connection_id: ConnectionId,
+        peer_id: PeerId,
+        relay_peer_id: Option<PeerId>,
+        allow_relayed: bool,
+    ) -> Handler {
+        if relay_peer_id.is_some()
+            && !allow_relayed
+            && self.trusted_transit_relays.as_ref().is_some_and(|trusted| {
+                !trusted
+                    .read()
+                    .map(|peers| relay_peer_id.is_some_and(|peer| peers.contains(&peer)))
+                    .unwrap_or(false)
+            })
+        {
+            lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, None);
             return Handler::relayed();
         }
         let (sender, receiver) = mpsc::channel(OUTBOUND_COMMAND_CAPACITY);
-        lock(&self.shared).insert(connection_id, peer_id, sender);
+        lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, Some(sender));
         Handler::direct(
-            connection_id,
+            peer_id,
             self.protocol.clone(),
             self.incoming.clone(),
             receiver,
@@ -109,7 +124,9 @@ impl NetworkBehaviour for Behaviour {
         Ok(self.handler(
             connection_id,
             peer_id,
-            is_relayed_address(local_addr) || is_relayed_address(remote_addr),
+            relay_peer_id_from_circuit_address(local_addr)
+                .or_else(|| relay_peer_id_from_circuit_address(remote_addr)),
+            false,
         ))
     }
 
@@ -121,7 +138,12 @@ impl NetworkBehaviour for Behaviour {
         _: Endpoint,
         _: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.handler(connection_id, peer_id, is_relayed_address(address)))
+        Ok(self.handler(
+            connection_id,
+            peer_id,
+            relay_peer_id_from_circuit_address(address),
+            true,
+        ))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -132,21 +154,15 @@ impl NetworkBehaviour for Behaviour {
 
     fn on_connection_handler_event(
         &mut self,
-        peer_id: PeerId,
-        connection_id: ConnectionId,
-        _: THandlerOutEvent<Self>,
+        _: PeerId,
+        _: ConnectionId,
+        event: THandlerOutEvent<Self>,
     ) {
-        self.closing.push_back((peer_id, connection_id));
+        libp2p::core::util::unreachable(event);
     }
 
     fn poll(&mut self, _: &mut Context<'_>) -> Poll<ToSwarm<Self::ToSwarm, THandlerInEvent<Self>>> {
-        let Some((peer_id, connection_id)) = self.closing.pop_front() else {
-            return Poll::Pending;
-        };
-        Poll::Ready(ToSwarm::CloseConnection {
-            peer_id,
-            connection: CloseConnection::One(connection_id),
-        })
+        Poll::Pending
     }
 }
 
@@ -156,28 +172,71 @@ pub(super) struct Control {
 }
 
 impl Control {
-    pub(super) fn has_connection(&self, peer_id: PeerId) -> bool {
-        lock(&self.shared).sender(peer_id).is_some()
+    pub(super) fn connections_via(&self, relays: &HashSet<PeerId>) -> Vec<ConnectionId> {
+        lock(&self.shared)
+            .connections
+            .iter()
+            .filter_map(|(connection_id, connection)| {
+                connection
+                    .relay_peer_id
+                    .is_some_and(|relay| relays.contains(&relay))
+                    .then_some(*connection_id)
+            })
+            .collect()
     }
 
-    pub(super) async fn open_stream(&mut self, peer_id: PeerId) -> Result<Stream, OpenStreamError> {
-        let sender = lock(&self.shared)
-            .sender(peer_id)
-            .ok_or(OpenStreamError::NoDirectConnection)?;
+    pub(super) fn has_connection(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> bool {
+        lock(&self.shared)
+            .connection(peer_id, excluded, allowed_relays)
+            .is_some()
+    }
+
+    pub(super) fn has_relayed_connection(&self, peer_id: PeerId) -> bool {
+        lock(&self.shared)
+            .connections
+            .values()
+            .any(|connection| connection.peer_id == peer_id && connection.relay_peer_id.is_some())
+    }
+
+    pub(super) async fn open_stream(
+        &mut self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Result<OpenedStream, OpenStreamError> {
+        let (connection_id, relay_peer_id, sender) = lock(&self.shared)
+            .connection(peer_id, excluded, allowed_relays)
+            .ok_or(OpenStreamError::NoEligibleConnection)?;
         let (result, receiver) = oneshot::channel();
         sender
             .send(NewStream { result })
             .await
             .map_err(|_| OpenStreamError::ConnectionClosed)?;
-        receiver
+        let stream = receiver
             .await
-            .map_err(|_| OpenStreamError::ConnectionClosed)?
+            .map_err(|_| OpenStreamError::ConnectionClosed)??;
+        Ok(OpenedStream {
+            connection_id,
+            relay_peer_id,
+            stream,
+        })
     }
+}
+
+pub(super) struct OpenedStream {
+    pub(super) connection_id: ConnectionId,
+    pub(super) relay_peer_id: Option<PeerId>,
+    pub(super) stream: Stream,
 }
 
 #[derive(Debug)]
 pub(super) enum OpenStreamError {
-    NoDirectConnection,
+    NoEligibleConnection,
     ConnectionClosed,
     UnsupportedProtocol,
     Io(io::Error),
@@ -186,7 +245,12 @@ pub(super) enum OpenStreamError {
 impl std::fmt::Display for OpenStreamError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoDirectConnection => write!(formatter, "peer has no verified direct connection"),
+            Self::NoEligibleConnection => {
+                write!(
+                    formatter,
+                    "peer has no verified direct or approved transit connection"
+                )
+            }
             Self::ConnectionClosed => write!(formatter, "direct connection closed"),
             Self::UnsupportedProtocol => {
                 write!(formatter, "peer does not support the application protocol")
@@ -203,7 +267,8 @@ struct DirectConnections {
 
 struct DirectConnection {
     peer_id: PeerId,
-    sender: mpsc::Sender<NewStream>,
+    relay_peer_id: Option<PeerId>,
+    sender: Option<mpsc::Sender<NewStream>>,
 }
 
 impl DirectConnections {
@@ -211,21 +276,41 @@ impl DirectConnections {
         &mut self,
         connection_id: ConnectionId,
         peer_id: PeerId,
-        sender: mpsc::Sender<NewStream>,
+        relay_peer_id: Option<PeerId>,
+        sender: Option<mpsc::Sender<NewStream>>,
     ) {
-        self.connections
-            .insert(connection_id, DirectConnection { peer_id, sender });
+        self.connections.insert(
+            connection_id,
+            DirectConnection {
+                peer_id,
+                relay_peer_id,
+                sender,
+            },
+        );
     }
 
     fn remove(&mut self, connection_id: ConnectionId) {
         self.connections.remove(&connection_id);
     }
 
-    fn sender(&self, peer_id: PeerId) -> Option<mpsc::Sender<NewStream>> {
+    fn connection(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Option<(ConnectionId, Option<PeerId>, mpsc::Sender<NewStream>)> {
         self.connections
-            .values()
-            .find(|connection| connection.peer_id == peer_id && !connection.sender.is_closed())
-            .map(|connection| connection.sender.clone())
+            .iter()
+            .find_map(|(connection_id, connection)| {
+                let sender = connection.sender.as_ref()?;
+                (connection.peer_id == peer_id
+                    && !excluded.contains(connection_id)
+                    && connection
+                        .relay_peer_id
+                        .is_none_or(|relay| allowed_relays.contains(&relay))
+                    && !sender.is_closed())
+                .then(|| (*connection_id, connection.relay_peer_id, sender.clone()))
+            })
     }
 }
 
@@ -236,53 +321,50 @@ fn lock(shared: &Arc<Mutex<DirectConnections>>) -> MutexGuard<'_, DirectConnecti
 }
 
 pub(super) struct Handler {
-    connection_id: Option<ConnectionId>,
+    peer_id: Option<PeerId>,
     protocol: Option<StreamProtocol>,
     incoming: Option<mpsc::Sender<InboundStream>>,
     commands: Option<mpsc::Receiver<NewStream>>,
-    pending: Option<oneshot::Sender<Result<Stream, OpenStreamError>>>,
-    accepted_inbound: bool,
-    close: bool,
+    pending: HashMap<u64, oneshot::Sender<Result<Stream, OpenStreamError>>>,
+    next_request_id: u64,
 }
 
 impl Handler {
     fn direct(
-        connection_id: ConnectionId,
+        peer_id: PeerId,
         protocol: StreamProtocol,
         incoming: mpsc::Sender<InboundStream>,
         commands: mpsc::Receiver<NewStream>,
     ) -> Self {
         Self {
-            connection_id: Some(connection_id),
+            peer_id: Some(peer_id),
             protocol: Some(protocol),
             incoming: Some(incoming),
             commands: Some(commands),
-            pending: None,
-            accepted_inbound: false,
-            close: false,
+            pending: HashMap::new(),
+            next_request_id: 0,
         }
     }
 
     fn relayed() -> Self {
         Self {
-            connection_id: None,
+            peer_id: None,
             protocol: None,
             incoming: None,
             commands: None,
-            pending: None,
-            accepted_inbound: false,
-            close: false,
+            pending: HashMap::new(),
+            next_request_id: 0,
         }
     }
 }
 
 impl ConnectionHandler for Handler {
     type FromBehaviour = Infallible;
-    type ToBehaviour = ();
+    type ToBehaviour = Infallible;
     type InboundProtocol = ProtocolUpgrade;
     type OutboundProtocol = ProtocolUpgrade;
     type InboundOpenInfo = ();
-    type OutboundOpenInfo = ();
+    type OutboundOpenInfo = u64;
 
     fn listen_protocol(
         &self,
@@ -300,75 +382,68 @@ impl ConnectionHandler for Handler {
     fn poll(
         &mut self,
         context: &mut Context<'_>,
-    ) -> Poll<libp2p::swarm::ConnectionHandlerEvent<Self::OutboundProtocol, (), Self::ToBehaviour>>
+    ) -> Poll<libp2p::swarm::ConnectionHandlerEvent<Self::OutboundProtocol, u64, Self::ToBehaviour>>
     {
-        if std::mem::take(&mut self.close) {
-            return Poll::Ready(libp2p::swarm::ConnectionHandlerEvent::NotifyBehaviour(()));
-        }
-        if self.pending.is_some() {
-            return Poll::Pending;
-        }
         let Some(commands) = self.commands.as_mut() else {
             return Poll::Pending;
         };
-        match commands.poll_recv(context) {
-            Poll::Ready(Some(command)) => {
-                let protocol = self
-                    .protocol
-                    .clone()
-                    .expect("only direct handlers receive stream commands");
-                self.pending = Some(command.result);
-                Poll::Ready(
-                    libp2p::swarm::ConnectionHandlerEvent::OutboundSubstreamRequest {
-                        protocol: libp2p::swarm::SubstreamProtocol::new(
-                            ProtocolUpgrade(vec![protocol]),
-                            (),
-                        ),
-                    },
-                )
+        loop {
+            match commands.poll_recv(context) {
+                Poll::Ready(Some(command)) if command.result.is_closed() => continue,
+                Poll::Ready(Some(command)) => {
+                    let protocol = self
+                        .protocol
+                        .clone()
+                        .expect("only direct handlers receive stream commands");
+                    let request_id = self.next_request_id;
+                    self.next_request_id = self.next_request_id.wrapping_add(1);
+                    self.pending.insert(request_id, command.result);
+                    return Poll::Ready(
+                        libp2p::swarm::ConnectionHandlerEvent::OutboundSubstreamRequest {
+                            protocol: libp2p::swarm::SubstreamProtocol::new(
+                                ProtocolUpgrade(vec![protocol]),
+                                request_id,
+                            ),
+                        },
+                    );
+                }
+                Poll::Ready(None) | Poll::Pending => return Poll::Pending,
             }
-            Poll::Ready(None) | Poll::Pending => Poll::Pending,
         }
     }
 
     fn on_connection_event(
         &mut self,
-        event: ConnectionEvent<Self::InboundProtocol, Self::OutboundProtocol>,
+        event: ConnectionEvent<
+            Self::InboundProtocol,
+            Self::OutboundProtocol,
+            Self::InboundOpenInfo,
+            Self::OutboundOpenInfo,
+        >,
     ) {
         match event {
             ConnectionEvent::FullyNegotiatedInbound(FullyNegotiatedInbound {
                 protocol: (stream, _),
                 ..
             }) => {
-                if self.accepted_inbound {
-                    self.close = true;
-                    return;
-                }
-                self.accepted_inbound = true;
-                if self.incoming.as_ref().is_none_or(|incoming| {
-                    incoming
-                        .try_send(InboundStream {
-                            connection_id: self
-                                .connection_id
-                                .expect("direct handlers have a connection id"),
-                            stream,
-                        })
-                        .is_err()
-                }) {
-                    self.close = true;
+                if let Some(incoming) = self.incoming.as_ref() {
+                    let _ = incoming.try_send(InboundStream {
+                        peer_id: self.peer_id.expect("direct handlers have a peer id"),
+                        stream,
+                    });
                 }
             }
             ConnectionEvent::FullyNegotiatedOutbound(FullyNegotiatedOutbound {
                 protocol: (stream, _),
-                ..
+                info,
             }) => {
-                let Some(result) = self.pending.take() else {
+                let Some(result) = self.pending.remove(&info) else {
                     return;
                 };
                 let _ = result.send(Ok(stream));
             }
-            ConnectionEvent::DialUpgradeError(DialUpgradeError { error, .. }) => {
-                let Some(result) = self.pending.take() else {
+            ConnectionEvent::DialUpgradeError(DialUpgradeError { info, error }) => {
+                let Some(result) = self.pending.remove(&info) else {
                     return;
                 };
                 let error = match error {
@@ -431,30 +506,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn application_protocol_is_registered_only_on_direct_connections() {
+    fn application_protocol_is_registered_only_on_direct_or_trusted_transit_connections() {
         let protocol = StreamProtocol::new("/maka/test/1");
         let peer_id = PeerId::random();
-        let (mut behaviour, control, _) = Behaviour::new(protocol.clone(), 1);
+        let relay_peer_id = PeerId::random();
+        let trusted = Arc::new(std::sync::RwLock::new(HashSet::new()));
+        let (mut behaviour, control, _) =
+            Behaviour::new(protocol.clone(), 1, Some(Arc::clone(&trusted)));
+        let relay_address: Multiaddr =
+            format!("/ip4/127.0.0.1/udp/1/quic-v1/p2p/{relay_peer_id}/p2p-circuit")
+                .parse()
+                .expect("relay address");
 
         let relayed = behaviour
-            .handle_established_outbound_connection(
+            .handle_established_inbound_connection(
                 ConnectionId::new_unchecked(1),
                 peer_id,
-                &"/memory/1/p2p-circuit".parse().expect("relay address"),
-                Endpoint::Dialer,
-                PortUse::Reuse,
+                &relay_address,
+                &relay_address,
             )
             .expect("relayed handler");
         assert_eq!(
             relayed.listen_protocol().upgrade().protocol_info().count(),
             0
         );
-        assert!(lock(&control.shared).sender(peer_id).is_none());
-        assert!(!control.has_connection(peer_id));
+        assert!(
+            lock(&control.shared)
+                .connection(peer_id, &HashSet::new(), &HashSet::new())
+                .is_none()
+        );
+        assert!(!control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
+        assert!(control.has_relayed_connection(peer_id));
+
+        trusted
+            .write()
+            .expect("trusted relays")
+            .insert(relay_peer_id);
+        let trusted_relay = behaviour
+            .handle_established_inbound_connection(
+                ConnectionId::new_unchecked(2),
+                peer_id,
+                &relay_address,
+                &relay_address,
+            )
+            .expect("trusted relayed handler");
+        assert_eq!(
+            trusted_relay
+                .listen_protocol()
+                .upgrade()
+                .protocol_info()
+                .collect::<Vec<_>>(),
+            vec![protocol.clone()]
+        );
+        assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::from([relay_peer_id]),));
+        let relay_connections = control.connections_via(&HashSet::from([relay_peer_id]));
+        assert_eq!(relay_connections.len(), 2);
+        assert!(relay_connections.contains(&ConnectionId::new_unchecked(1)));
+        assert!(relay_connections.contains(&ConnectionId::new_unchecked(2)));
 
         let direct = behaviour
             .handle_established_outbound_connection(
-                ConnectionId::new_unchecked(2),
+                ConnectionId::new_unchecked(3),
                 peer_id,
                 &"/ip4/127.0.0.1/udp/1/quic-v1"
                     .parse()
@@ -471,7 +583,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![protocol]
         );
-        assert!(lock(&control.shared).sender(peer_id).is_some());
-        assert!(control.has_connection(peer_id));
+        assert!(
+            lock(&control.shared)
+                .connection(peer_id, &HashSet::new(), &HashSet::new())
+                .is_some()
+        );
+        assert!(control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
+        assert!(!control.has_connection(
+            peer_id,
+            &HashSet::from([
+                ConnectionId::new_unchecked(2),
+                ConnectionId::new_unchecked(3),
+            ]),
+            &HashSet::new(),
+        ));
     }
 }

@@ -199,7 +199,12 @@ function isAutomaticUpdatePolicy(value: unknown): value is AutomaticUpdatePolicy
 function isManagedServiceTarget(value: unknown): value is RuntimeHostManagedServiceTarget {
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['serviceId', 'rootPath', 'rootId']) &&
+    hasOnlyKeys(
+      value,
+      value.deploymentId === undefined
+        ? ['serviceId', 'rootPath', 'rootId']
+        : ['deploymentId', 'serviceId', 'rootPath', 'rootId'],
+    ) &&
     typeof value.serviceId === 'string' &&
     /^[a-f0-9]{64}$/u.test(value.serviceId) &&
     typeof value.rootId === 'string' &&
@@ -208,7 +213,12 @@ function isManagedServiceTarget(value: unknown): value is RuntimeHostManagedServ
     isAbsolute(value.rootPath) &&
     value.rootPath.length > 0 &&
     Buffer.byteLength(value.rootPath, 'utf8') <= 4 * 1024 &&
-    !/[\u0000-\u001f\u007f]/u.test(value.rootPath)
+    !/[\u0000-\u001f\u007f]/u.test(value.rootPath) &&
+    (value.deploymentId === undefined ||
+      (typeof value.deploymentId === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+          value.deploymentId,
+        )))
   );
 }
 

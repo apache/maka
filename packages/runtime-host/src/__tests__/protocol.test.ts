@@ -21,7 +21,8 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { CONTEXT_BUDGET_EXHAUSTED_DETAILS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
   decodeClientFrame,
@@ -58,11 +59,47 @@ import {
   TURN_MESSAGE_QUOTE_MAX_COUNT,
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
   TURN_FAILURE_MESSAGE_MAX_BYTES,
+  decodeMessageContent,
   TURN_SKILL_ID_MAX_COUNT,
   TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
 
 describe('Runtime Host bootstrap protocol', () => {
+  test('accepts only authenticated-listener registration endpoints on IPv4 loopback', () => {
+    const registration = {
+      kind: 'maka-runtime-host',
+      schemaVersion: 1,
+      rootId: 'a'.repeat(64),
+      hostEpoch: 'host-epoch',
+      endpoint: '/tmp/runtime-host.sock',
+      websocketEndpoints: ['ws://127.0.0.1:43210/runtime-host'],
+      protocolMin: RUNTIME_HOST_PROTOCOL_VERSION,
+      protocolMax: RUNTIME_HOST_PROTOCOL_VERSION,
+      compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+      compositionId: 'maka.interactive',
+      compositionRevision: 'revision',
+      lifecycleMode: 'ephemeral',
+      state: 'ready',
+      pid: 1234,
+      createdAt: new Date(0).toISOString(),
+    } as const;
+    assert.deepEqual(decodeHostRegistration(registration).websocketEndpoints, [
+      'ws://127.0.0.1:43210/runtime-host',
+    ]);
+    assert.throws(() =>
+      decodeHostRegistration({
+        ...registration,
+        websocketEndpoints: ['ws://0.0.0.0:43210/runtime-host'],
+      }),
+    );
+    assert.throws(() =>
+      decodeHostRegistration({
+        ...registration,
+        websocketEndpoints: ['ws://127.0.0.1:43210/runtime-host?credential=secret'],
+      }),
+    );
+  });
+
   test('decodes a Client hello without a surface identity', () => {
     const hello = {
       kind: 'hello',
@@ -172,6 +209,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 44);
   });
 
+  test('publishes a new compatibility epoch for explicit onboarding targets', () => {
+    // Epoch 51 peers require nullable connectionId targeting and decode a
+    // successful save without its committed Connection identity.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 52);
+  });
+
   test('publishes a new compatibility epoch for queued message editing', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
   });
@@ -189,6 +232,22 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
   });
 
+  test('publishes a new compatibility epoch for context-budget failure detail', () => {
+    // Epoch 50 is already used by WorkHub coordination summaries on main.
+    // The context-budget detail therefore needs its own strictly newer
+    // handshake boundary so peers cannot accept the wrong closed shape.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
+  });
+
+  test('publishes a new compatibility epoch for the removed execution.inspect.resolve operation', () => {
+    // Epoch 63 peers still know execution.inspect.resolve and would send it
+    // only to fail mid-connection now that it is gone, so its removal must
+    // fail the handshake instead.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 63);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.resolve'), false);
+    assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'execution.inspect.query'), true);
+  });
+
   test('adds credential rotation without changing existing credential inputs', () => {
     const issueInput = {
       principalKind: 'remote_owner',
@@ -200,6 +259,19 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.deepEqual(
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput(issueInput),
       issueInput,
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        ...issueInput,
+        bindClientInstance: true,
+      }),
+      { ...issueInput, bindClientInstance: true },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.credential.finalize'].decodeOutput({
+        reconnectRequired: true,
+      }),
+      { reconnectRequired: true },
     );
     assert.throws(() =>
       HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
@@ -230,6 +302,28 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('decodes atomic principal revocation and publishes its compatibility boundary', () => {
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.principal.revoke'].decodeInput({
+        principalKind: 'remote_owner',
+        principalId: 'desktop-owner:local-sharing',
+      }),
+      {
+        principalKind: 'remote_owner',
+        principalId: 'desktop-owner:local-sharing',
+      },
+    );
+    assert.deepEqual(
+      HOST_OPERATION_SPECS['access.principal.revoke'].decodeOutput({ revoked: true }),
+      { revoked: true },
+    );
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 54);
+  });
+
+  test('publishes a new compatibility epoch for Client-bound pairing claims', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 53);
+  });
+
   test('publishes a new compatibility epoch for provider capacity retry progress', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 41);
   });
@@ -244,6 +338,14 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for durable Message lifecycle queries', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 50);
+  });
+
+  test('publishes a new compatibility epoch for Message execution ownership', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 61);
+  });
+
+  test('publishes a new compatibility epoch for exact Session Connection identity', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -321,6 +423,24 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeSessionContinuitySnapshot(retrying), retrying);
+    // Snapshots written after #3393 carry the host-clock schedule time so a
+    // re-projection can recompute the remaining wait; the field is optional
+    // for older snapshots.
+    const retryingWithTs = {
+      ...continuitySnapshot('epoch-1'),
+      rootTurn: {
+        ...continuitySnapshot('epoch-1').rootTurn,
+        providerRetry: {
+          phase: 'scheduled' as const,
+          attempt: 8,
+          maxAttempts: 10,
+          delayMs: 40_000,
+          ts: 1_700_000_000_000,
+          reason: 'rate_limit' as const,
+        },
+      },
+    };
+    assert.deepEqual(decodeSessionContinuitySnapshot(retryingWithTs), retryingWithTs);
     assert.throws(
       () =>
         decodeSessionContinuitySnapshot({
@@ -392,6 +512,13 @@ describe('Runtime Host bootstrap protocol', () => {
       },
       {
         ...identity,
+        type: 'tool_start',
+        toolName: 'Bash',
+        intent: '只读探索:定位渲染入口',
+        argsPreview: { command: 'git status --porcelain' },
+      },
+      {
+        ...identity,
         type: 'tool_output_delta',
         seq: 0,
         stream: 'stdout',
@@ -429,6 +556,18 @@ describe('Runtime Host bootstrap protocol', () => {
         type: 'tool_start',
         toolName: 'read',
         args: { path: '/private' },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        argsPreview: { command: 'x'.repeat(9 * 1024) },
+      },
+      {
+        ...identity,
+        type: 'tool_start',
+        toolName: 'read',
+        intent: 42,
       },
       {
         ...identity,
@@ -705,6 +844,35 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('keeps the connection update model limit aligned with the catalog', () => {
+    const updateConnection = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.update'];
+    const enabledModelIds = Array.from(
+      { length: CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS },
+      (_, index) => `model-${index}`,
+    );
+    const input = {
+      expected: { connectionId: '00000000-0000-4000-8000-000000000001', revision: 1 },
+      changes: {
+        name: 'OpenRouter',
+        enabled: true,
+        enabledModelIds,
+      },
+    };
+
+    assert.doesNotThrow(() => updateConnection.decodeInput(input));
+    assert.throws(
+      () =>
+        updateConnection.decodeInput({
+          ...input,
+          changes: {
+            ...input.changes,
+            enabledModelIds: [...enabledModelIds, 'model-too-many'],
+          },
+        }),
+      isInvalidFrame,
+    );
+  });
+
   test('keeps Runtime Policy request and response codecs exact', () => {
     assert.deepEqual(
       decodeClientFrame({
@@ -958,6 +1126,25 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(parked), parked);
+    for (const reason of [
+      'resume_feature_disabled',
+      'continuation_authority_unavailable',
+      'safety_observation_unavailable',
+    ] as const) {
+      const unavailable = {
+        ...parked,
+        result: { ...parked.result, reason },
+      };
+      assert.deepEqual(decodeHostFrame(unavailable), unavailable);
+    }
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...parked,
+          result: { ...parked.result, reason: 'continuation_unavailable' },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -1009,8 +1196,13 @@ describe('Runtime Host bootstrap protocol', () => {
       operation: 'turn.message.query' as const,
       input: {
         sessionId: 'session-1',
-        messageIds: ['message-1', 'message-2'],
+        messageIds: ['message-1', 'message-2', 'message-3'],
       },
+    };
+    const executionQuery = {
+      requestId: 'execution-query-request-1',
+      operation: 'turn.message.execution.query' as const,
+      input: query.input,
     };
     const submit = {
       requestId: 'submit-request-1',
@@ -1040,6 +1232,36 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeClientFrame(query), query);
+    assert.deepEqual(decodeClientFrame(executionQuery), executionQuery);
+    const queried = {
+      requestId: executionQuery.requestId,
+      operation: executionQuery.operation,
+      ok: true as const,
+      result: {
+        resolutions: [
+          { messageId: 'message-1', state: 'pending' as const },
+          {
+            messageId: 'message-2',
+            state: 'owned' as const,
+            turnId: 'turn-2',
+            runId: 'run-2',
+          },
+          { messageId: 'message-3', state: 'cancelled' as const },
+        ],
+      },
+    };
+    assert.deepEqual(decodeHostFrame(queried), queried);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...queried,
+          result: {
+            ...queried.result,
+            resolutions: [...queried.result.resolutions, ...queried.result.resolutions],
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.deepEqual(decodeClientFrame(submit), submit);
     assert.deepEqual(decodeClientFrame(retract), retract);
     assert.deepEqual(decodeClientFrame(interrupt), interrupt);
@@ -1331,6 +1553,18 @@ describe('Runtime Host bootstrap protocol', () => {
         ),
       }),
     );
+    const contextContent = {
+      text: 'valid context ref',
+      attachments: [
+        attachmentRef({
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        }),
+      ],
+    };
+    assert.throws(() => submit(contextContent), isInvalidFrame);
+    assert.deepEqual(decodeMessageContent(contextContent), contextContent);
     assert.throws(
       () =>
         submit({
@@ -1351,6 +1585,8 @@ describe('Runtime Host bootstrap protocol', () => {
       { ...attachmentRef({ kind: 'workspace_file', relativePath: 'a.ts' }), mimeType: '' },
       attachmentRef({ kind: 'workspace_file', relativePath: 'a'.repeat(4097) }),
       attachmentRef({ kind: 'session_file', sessionId: 'bad/id', relativePath: 'a.ts' }),
+      attachmentRef({ kind: 'session_context', sessionId: 'session-1', refId: '' }),
+      attachmentRef({ kind: 'session_context', sessionId: 'session-1', refId: 'a'.repeat(513) }),
       attachmentRef({ kind: 'workspace_file', relativePath: '../secret' }),
       attachmentRef({ kind: 'workspace_file', relativePath: 'src//a.ts' }),
       attachmentRef({ kind: 'external_file', absolutePath: 'relative/a.ts' }),
@@ -1651,6 +1887,28 @@ describe('Runtime Host bootstrap protocol', () => {
     };
 
     assert.deepEqual(decodeHostFrame(response), response);
+    for (const contextBudgetExhaustedDetail of CONTEXT_BUDGET_EXHAUSTED_DETAILS) {
+      const withContextDetail = {
+        ...response,
+        result: {
+          ...response.result,
+          failureClass: 'context_budget_exhausted',
+          contextBudgetExhaustedDetail,
+        },
+      };
+      assert.deepEqual(decodeHostFrame(withContextDetail), withContextDetail);
+    }
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...response,
+          result: {
+            ...response.result,
+            contextBudgetExhaustedDetail: 'unknown_detail',
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -1809,6 +2067,7 @@ function retractedMessage(text = 'do this next') {
 function attachmentRef(
   ref:
     | { kind: 'session_file'; sessionId: string; relativePath: string }
+    | { kind: 'session_context'; sessionId: string; refId: string }
     | { kind: 'workspace_file'; relativePath: string }
     | { kind: 'external_file'; absolutePath: string },
 ) {

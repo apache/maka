@@ -54,9 +54,29 @@ afterEach(async () => {
 });
 
 describe('Runtime Host profiles', () => {
-  test('keeps the local profile built in and profile documents remote-only', async () => {
-    const catalog = createFileRuntimeHostProfileCatalog(await profilePath(), memoryCredentials());
-    assert.deepEqual(await catalog.read(), { schemaVersion: 1, profiles: [] });
+  test('persists WSL environments without projecting a remote credential', async () => {
+    const path = await profilePath();
+    const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
+    assert.deepEqual(await catalog.read(), { schemaVersion: 3, profiles: [] });
+    await catalog.create({
+      id: 'ubuntu',
+      name: 'Ubuntu',
+      kind: 'environment',
+      provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+      rootId: ROOT_A,
+      operatorPath: '/home/operator/.local/share/maka/operator',
+    });
+    assert.deepEqual(await catalog.resolve('ubuntu'), {
+      profile: {
+        id: 'ubuntu',
+        name: 'Ubuntu',
+        kind: 'environment',
+        provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
+        rootId: ROOT_A,
+        operatorPath: '/home/operator/.local/share/maka/operator',
+      },
+    });
+    assert.doesNotMatch(await readFile(path, 'utf8'), /credential/u);
     await assert.rejects(() => catalog.remove('local'), /cannot be removed/);
   });
 
@@ -97,7 +117,7 @@ describe('Runtime Host profiles', () => {
     );
 
     assert.deepEqual(await catalog.read(), {
-      schemaVersion: 1,
+      schemaVersion: 3,
       profiles: [
         {
           id: 'office',
@@ -120,7 +140,7 @@ describe('Runtime Host profiles', () => {
     if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
 
     assert.deepEqual(await catalog.remove('office'), {
-      schemaVersion: 1,
+      schemaVersion: 3,
       profiles: [
         {
           id: 'backup',
@@ -131,6 +151,63 @@ describe('Runtime Host profiles', () => {
         },
       ],
     });
+  });
+
+  test('keeps connect-only catalogs on disk as schema 1 until activation is persisted', async () => {
+    const path = await profilePath();
+    await writeFile(
+      path,
+      JSON.stringify({
+        schemaVersion: 1,
+        profiles: [
+          {
+            id: 'ssh-lab',
+            name: 'SSH Lab',
+            kind: 'remote',
+            transport: {
+              kind: 'ssh',
+              destination: 'operator@example.com',
+              remotePort: 7443,
+              websocketPath: '/runtime-host',
+            },
+            rootId: ROOT_A,
+          },
+        ],
+      }),
+    );
+
+    const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
+    const document = await catalog.read();
+    assert.equal(document.schemaVersion, 3);
+    assert.equal(
+      (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
+      1,
+    );
+
+    await catalog.save(document.profiles[0], 'opaque-token');
+    assert.equal(
+      (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
+      1,
+    );
+
+    await catalog.save(
+      {
+        id: 'activated',
+        name: 'Activated SSH',
+        kind: 'remote',
+        transport: {
+          kind: 'ssh',
+          destination: 'operator@example.com',
+          activation: { kind: 'ssh_operator', operatorPath: '/opt/maka/bin/operator' },
+        },
+        rootId: ROOT_B,
+      },
+      'activated-token',
+    );
+    assert.equal(
+      (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
+      2,
+    );
   });
 
   test('preserves concurrent updates from independent store instances', async () => {
@@ -181,7 +258,7 @@ describe('Runtime Host profiles', () => {
     assert.deepEqual(await desktop.removeIfCurrent(created), {
       removed: false,
       document: {
-        schemaVersion: 1,
+        schemaVersion: 3,
         profiles: [
           {
             ...profile,
@@ -194,7 +271,7 @@ describe('Runtime Host profiles', () => {
     const rotated = await desktop.resolve(profile.id);
     assert.equal(rotated.credential, 'rotated-token');
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
-    assert.deepEqual(await desktop.read(), { schemaVersion: 1, profiles: [] });
+    assert.deepEqual(await desktop.read(), { schemaVersion: 3, profiles: [] });
   });
 
   test('conditionally updates one Host connection and credential', async () => {
@@ -514,6 +591,68 @@ describe('Runtime Host profiles', () => {
       },
     );
     assert.equal(tunnelClosed, false);
+  });
+
+  test('activates an on-demand SSH profile before tunneling to its verified endpoint', async () => {
+    const events: string[] = [];
+    const resource = {
+      closed: new Promise<void>(() => undefined),
+      close: async () => undefined,
+    };
+    const connection = { close: async () => undefined } as never;
+    await connectRemoteRuntimeHostProfile(
+      {
+        profile: {
+          id: 'ssh-on-demand',
+          name: 'SSH on demand',
+          kind: 'remote',
+          transport: {
+            kind: 'ssh',
+            destination: 'operator@example.com',
+            activation: { kind: 'ssh_operator', operatorPath: '/opt/maka/operator' },
+          },
+          rootId: ROOT_A,
+        },
+        credential: 'opaque-token',
+        clientInstanceId: 'client-1',
+        sshInteraction: 'terminal',
+      },
+      {
+        activateSshOperator: async (input) => {
+          events.push('activate');
+          assert.equal(input.operatorPath, '/opt/maka/operator');
+          assert.equal(input.rootId, ROOT_A);
+          assert.equal(input.interaction, 'terminal');
+          return {
+            schemaVersion: 1,
+            kind: 'result',
+            deploymentId: '00000000-0000-4000-8000-000000000001',
+            configRevision: 1,
+            rootId: ROOT_A,
+            hostEpoch: 'host-epoch',
+            pid: 1234,
+            protocolVersion: RUNTIME_HOST_PROTOCOL_VERSION,
+            endpoint: {
+              host: '127.0.0.1',
+              port: 43_210,
+              websocketPath: '/runtime-host/activated',
+            },
+          };
+        },
+        openSshTunnel: async (input) => {
+          events.push('tunnel');
+          assert.equal(input.remotePort, 43_210);
+          assert.equal(input.websocketPath, '/runtime-host/activated');
+          return { url: 'ws://127.0.0.1:43211/runtime-host/activated', resource };
+        },
+        connect: async () => {
+          events.push('connect');
+          return { kind: 'connected', connection };
+        },
+        waitForReady: async () => undefined,
+      },
+    );
+    assert.deepEqual(events, ['activate', 'tunnel', 'connect']);
   });
 
   test('fails permanently when a remote profile reaches the wrong root', async () => {

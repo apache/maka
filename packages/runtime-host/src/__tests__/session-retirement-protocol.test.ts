@@ -128,6 +128,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     hasUnread: false,
     status: 'active',
     backend: 'fake',
+    llmConnectionId: null,
     llmConnectionSlug: 'fake',
     connectionLocked: false,
     model: 'fake-model',

@@ -33,6 +33,7 @@ import { type SessionEvent, type ShellRunUpdate } from '@maka/core/events';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
+import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -41,7 +42,7 @@ import type {
 } from '@maka/runtime-host/protocol';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type ContextDiagnostics } from '@maka/runtime/context-diagnostics';
-import type { GoalProjection } from '@maka/runtime-host/protocol';
+import type { GoalProjection, TurnResumeParkReason } from '@maka/runtime-host/protocol';
 import type {
   MakaPreparePromptOptions,
   MakaPreparedSessionTurn,
@@ -53,20 +54,25 @@ import type {
   MakaSessionSwitchOptions,
   MakaSessionSwitchResult,
   MakaSubmitMessageOptions,
+  MakaTranscriptReplacementReason,
   RewindTarget,
   SessionResumeAvailability,
 } from '../session-driver.js';
 import { skillInvocationBlockedMessage } from '../session-driver.js';
+import { SafeBoundaryResumeParkedError } from '../runtime-host-session-driver.js';
 import { listApiKeyOnboardableProviders } from '../onboarding-catalog.js';
+import { projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
+import { modelChoiceConnectionLabels } from '../pi-tui-pickers.js';
 import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   OnboardingProviderEntry,
+  OnboardingSaveInput,
   OnboardingSaveResult,
+  OnboardingVerifyInput,
   OnboardingVerifyResult,
 } from '../pi-tui-contracts.js';
-import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import {
   resolveTaskbarProgress,
   runMakaPiTui as runMakaPiTuiImpl,
@@ -74,6 +80,8 @@ import {
 } from '../pi-tui-runner.js';
 import { AUTO_RECAP_IDLE_MS } from '../session-recap.js';
 import { BUSY_SPINNER_FRAMES } from '../tui-attention.js';
+import { EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS } from '../pi-transcript.js';
+import type { TuiMcpAction, TuiMcpManagement } from '../tui-mcp-control.js';
 import {
   autocompleteSuggestionLines,
   assertBottomPickerPlacement,
@@ -177,25 +185,16 @@ function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
 function defaultOnboardingProviders(): OnboardingProviderEntry[] {
   return listApiKeyOnboardableProviders().map((provider) => ({
     ...provider,
-    hasConnection: false,
+    target: { kind: 'create', providerType: provider.providerType },
+    label: `${provider.label} · 添加账号`,
     enabledModelIds: [],
   }));
 }
 
 interface FakeOnboardingOpts {
   providers?: OnboardingProviderEntry[];
-  verify?: (input: {
-    providerType: ProviderType;
-    apiKey?: string;
-    baseUrl?: string;
-  }) => Promise<OnboardingVerifyResult>;
-  save?: (input: {
-    providerType: ProviderType;
-    apiKey?: string;
-    baseUrl?: string;
-    enabledModelIds: readonly string[];
-    models: readonly ModelInfo[];
-  }) => Promise<OnboardingSaveResult>;
+  verify?: (input: OnboardingVerifyInput) => Promise<OnboardingVerifyResult>;
+  save?: (input: OnboardingSaveInput) => Promise<OnboardingSaveResult>;
 }
 
 /** A controllable `/setup` surface: the wizard calls `listProviders` to open,
@@ -208,7 +207,39 @@ function fakeOnboardingSurface(opts: FakeOnboardingOpts = {}): MakaOnboardingSur
     verify:
       opts.verify ??
       (async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }, { id: 'gpt-5.5-mini' }] })),
-    save: opts.save ?? (async () => ({ kind: 'ok', modelChoices: [] })),
+    save: opts.save ?? (async () => savedOnboardingResult()),
+  };
+}
+
+function savedOnboardingResult(
+  modelChoices: ModelChoice[] = [],
+  connectionId = 'saved-connection-id',
+): OnboardingSaveResult {
+  return {
+    kind: 'ok',
+    connection: {
+      connectionId,
+      revision: 1,
+      slug: 'openai',
+      providerType: 'openai',
+    },
+    refresh: { kind: 'ok', modelChoices },
+  };
+}
+
+function savedOnboardingRefreshFailed(connectionId = 'saved-connection-id'): OnboardingSaveResult {
+  return {
+    kind: 'ok',
+    connection: {
+      connectionId,
+      revision: 1,
+      slug: 'openai',
+      providerType: 'openai',
+    },
+    refresh: {
+      kind: 'failed',
+      warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+    },
   };
 }
 
@@ -233,6 +264,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('快捷键'));
     const output = plainTerminalOutput(terminal.output());
     assert.match(output, /\/compact\s+— 压缩会话上下文/);
+    assert.match(output, /!<command> — 执行一次仅用户可见的 shell 命令/);
     assert.match(output, /Ctrl\+D — 输入为空时退出/);
 
     exitMaka(terminal);
@@ -242,6 +274,268 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('!<command> runs once without opening an agent turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('pwd'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a second leading bang remains part of the shell command', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!!pwd');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.includes('!pwd'));
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a submitted bare ! shows usage without starting a turn', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new UserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'zh',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Usage: !<command>'));
+    assert.deepEqual(driver.commands, []);
+    assert.deepEqual(driver.prompts, []);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('Ctrl-C stops a running user command without exiting the TUI', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a rejected startNewSession aborts /new with identity and transcript intact (#3210 review)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    let attempted = 0;
+    driver.startNewSession = async () => {
+      attempted += 1;
+      // Mirrors the real driver: the barrier-aware user-command stop rejected,
+      // so the identity swap must not commit.
+      throw new Error('host_draining');
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      listShellRunUpdates: async () => [],
+    });
+
+    await waitForTuiPaint(terminal);
+    const transcriptBefore = plainTerminalOutput(terminal.screenOutput());
+    terminal.input('/new');
+    terminal.input('\r');
+    await waitFor(() => attempted === 1);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+
+    // Identity untouched…
+    assert.equal(driver.getSessionId(), 'session-1');
+    // …and the transcript was not wiped by the aborted /new.
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
+    assert.ok(transcriptBefore.length > 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a rejected user-command stop hands Ctrl-C back to the exit chord (#3210)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const processExitCodes: number[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      onProcessExit: (exitCode) => processExitCodes.push(exitCode),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!sleep 3600');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    // The first Ctrl+C is captured to stop the command, but the stop rejects:
+    // no terminal update is published, so the card still reads running.
+    terminal.input('\x03');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    // The capture must disarm: the next press shows the exit prompt and the
+    // one after exits.
+    terminal.input('\x03');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Press Ctrl+C again to exit.'),
+    );
+    assert.equal(driver.stopUserCommandCalls, 1);
+    assert.equal(terminal.stopCalls, 0);
+
+    terminal.input('\x03');
+    await run;
+    assert.deepEqual(processExitCodes, [0]);
+  });
+
+  test('a new user command re-arms Ctrl-C after an earlier stop rejection', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RejectingUserCommandStopDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!first');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.length === 1);
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 1);
+
+    terminal.input('!second');
+    terminal.input('\r');
+    await waitFor(() => driver.commands.length === 2);
+    terminal.input('\x03');
+    await waitFor(() => driver.stopUserCommandCalls === 2);
+    assert.equal(terminal.stopCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('same-session reconnect keeps a user-command card for its terminal update', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new RunningUserCommandDriver();
+    let publishShellRun: ((update: ShellRunUpdate) => void) | undefined;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      subscribeShellRunUpdates: (listener) => {
+        publishShellRun = listener;
+        return () => {
+          publishShellRun = undefined;
+        };
+      },
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('!printf done');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('User command'));
+
+    driver.publishReconnect();
+    publishShellRun?.({
+      sessionId: 'session-1',
+      ownership: { kind: 'local' },
+      sourceTurnId: 'user-command-1',
+      sourceToolCallId: 'user-command-1',
+      result: {
+        kind: 'shell_run',
+        ref: 'maka://runtime/background-tasks/user-command-1',
+        mode: 'pipes',
+        status: 'completed',
+        cwd: '/repo',
+        cmd: 'printf done',
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 2,
+        output: pipeOutput('done\n'),
+      },
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('done'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /User command/);
+
+    exitMaka(terminal);
+    await run;
   });
 
   test('disables taskbar progress on Windows and Windows Terminal by default', () => {
@@ -556,6 +850,81 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('threads the selected same-provider account identity through verify and save', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const saveCalls: OnboardingSaveInput[] = [];
+    const provider = listApiKeyOnboardableProviders().find(
+      (candidate) => candidate.providerType === 'openai',
+    );
+    assert.ok(provider);
+    const providers: OnboardingProviderEntry[] = [
+      {
+        ...provider,
+        label: 'OpenAI · openai',
+        target: { kind: 'existing', connectionId: 'connection-openai-1' },
+        connectionSlug: 'openai',
+        enabledModelIds: [],
+      },
+      {
+        ...provider,
+        label: 'OpenAI · openai-2',
+        target: { kind: 'existing', connectionId: 'connection-openai-2' },
+        connectionSlug: 'openai-2',
+        enabledModelIds: [],
+      },
+    ];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'gpt-5.5',
+      connectionId: 'connection-openai-1',
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers,
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+        save: async (input) => {
+          saveCalls.push(input);
+          return savedOnboardingResult([], 'connection-openai-2');
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('openai-2'));
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('\r'); // reuse the selected account's stored key
+    await waitFor(() => verifyCalls.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+
+    const expectedTarget = { kind: 'existing' as const, connectionId: 'connection-openai-2' };
+    assert.deepEqual(verifyCalls[0]?.target, expectedTarget);
+    assert.deepEqual(saveCalls[0]?.target, expectedTarget);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
   test('an armed key prompt routes a slash command instead of swallowing it as the key', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
@@ -686,7 +1055,7 @@ describe('Maka Pi TUI runner', () => {
           throw new Error('storage read failed');
         },
         verify: async () => ({ kind: 'ok', models: [] }),
-        save: async () => ({ kind: 'ok', modelChoices: [] }),
+        save: async () => savedOnboardingResult(),
       },
     });
 
@@ -804,10 +1173,10 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('wizard ignores a save result from an abandoned attempt', async () => {
+  test('an abandoned create save keeps its committed identity for retry', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
-    const saveCalls: Array<{ enabledModelIds: readonly string[] }> = [];
+    const saveCalls: OnboardingSaveInput[] = [];
     let resolveFirstSave!: (value: OnboardingSaveResult) => void;
     const run = runMakaPiTui({
       title: 'Maka',
@@ -824,7 +1193,7 @@ describe('Maka Pi TUI runner', () => {
             ? new Promise<OnboardingSaveResult>((r) => {
                 resolveFirstSave = r;
               })
-            : Promise.resolve<OnboardingSaveResult>({ kind: 'ok', modelChoices: [] });
+            : Promise.resolve(savedOnboardingResult([], 'committed-openai-id'));
         },
       }),
     });
@@ -869,14 +1238,87 @@ describe('Maka Pi TUI runner', () => {
         return false;
       }
     });
-    // A's save now resolves ok. It must not show success or refresh choices.
-    resolveFirstSave({ kind: 'ok', modelChoices: [] });
+    // A's durable create succeeds but its follow-up catalog refresh fails. The
+    // abandoned attempt must not show stale success, while its exact committed
+    // identity must still replace the create target for a later submit.
+    resolveFirstSave(savedOnboardingRefreshFailed('committed-openai-id'));
     // Sentinel render: typing into the key field forces a repaint that lands
     // after A's settled save continuation, so a wrongly-shown success frame
     // would be in this exact frame.
     terminal.input('sk-z');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('sk-z'));
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /已启用/);
+
+    terminal.input('\r'); // verify the now-existing Connection
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input('\r'); // preserve the prior selection and save again
+    await waitFor(() => saveCalls.length === 2);
+    assert.deepEqual(saveCalls[1]?.target, {
+      kind: 'existing',
+      connectionId: 'committed-openai-id',
+    });
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('a late save cannot rebind a reselected create row', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const saveCalls: OnboardingSaveInput[] = [];
+    let resolveFirstSave!: (value: OnboardingSaveResult) => void;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        save: (input) => {
+          saveCalls.push(input);
+          return saveCalls.length === 1
+            ? new Promise<OnboardingSaveResult>((resolve) => {
+                resolveFirstSave = resolve;
+              })
+            : Promise.resolve(savedOnboardingResult([], 'second-account-id'));
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-a');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+
+    terminal.input('\x1b'); // models -> key
+    terminal.input('\x1b'); // key -> provider search
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
+    terminal.input('\r'); // reselect the same add-account row as a new intent
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    resolveFirstSave(savedOnboardingRefreshFailed('first-account-id'));
+    terminal.input('sk-b');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 2);
+    assert.deepEqual(saveCalls[1]?.target, saveCalls[0]?.target);
+    assert.equal(saveCalls[1]?.target.kind, 'create');
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -907,7 +1349,7 @@ describe('Maka Pi TUI runner', () => {
         },
         save: async (input) => {
           saveCalls.push(input);
-          return { kind: 'ok', modelChoices: [] };
+          return savedOnboardingRefreshFailed('relay-connection-id');
         },
       }),
     });
@@ -952,6 +1394,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => saveCalls.length === 1);
     assert.equal(saveCalls[0]?.baseUrl, 'https://relay.example.test/v1');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('已启用'));
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /账号已保存，但模型列表暂未刷新/);
 
     process.emit('SIGTERM');
     await Promise.race([
@@ -962,7 +1405,7 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
-  test('save refreshes the running model choices even when the user backs out during saving', async () => {
+  test('a late abandoned save cannot replace the running model choices', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver();
     let resolveFirstSave!: (value: OnboardingSaveResult) => void;
@@ -1022,12 +1465,10 @@ describe('Maka Pi TUI runner', () => {
     // The wizard frame leaving the screen proves the overlay released input
     // focus, so the next line routes to the editor.
     await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('2/3'));
-    // The save completes after the user left. The running TUI's ready model
-    // choices are still authoritatively refreshed — abandoning the wizard only
-    // drops the in-frame success UI, not the background state sync.
-    resolveFirstSave({
-      kind: 'ok',
-      modelChoices: [
+    // The save completes after the user left. Its projection may be older than
+    // a newer attempt, so it must not replace the running model choices.
+    resolveFirstSave(
+      savedOnboardingResult([
         {
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
@@ -1035,15 +1476,14 @@ describe('Maka Pi TUI runner', () => {
           model: 'gpt-5.5-new',
           isDefaultConnection: true,
         },
-      ],
-    });
-    // The refresh (`modelChoices = result.modelChoices`) lands in the save
-    // promise's first continuation; one macrotask turn runs strictly after
-    // every queued microtask, so the choices are applied by the time it fires.
+      ]),
+    );
+    // One macrotask turn lands after the save continuation.
     await delay(0);
     terminal.input('/model');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('gpt-5.5-new'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Select Model'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /gpt-5\.5-new/);
     assert.deepEqual(driver.models, []);
 
     process.emit('SIGTERM');
@@ -1119,6 +1559,41 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close after SIGTERM');
       }),
     ]);
+  });
+
+  test('first-run closes after a durable save even when catalog refresh fails', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: '',
+      connectionSlug: '',
+      permissionMode: 'bypass',
+      terminal,
+      firstRun: true,
+      onboarding: fakeOnboardingSurface({
+        save: async () => savedOnboardingRefreshFailed('first-run-connection-id'),
+      }),
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-test');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('first-run TUI did not close after the committed save');
+      }),
+    ]);
+    assert.equal(terminal.stopCalls, 1);
   });
 
   test('freezes and preserves the editor draft while a boundary request owns input', async () => {
@@ -1573,6 +2048,112 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('a confirmed second Ctrl+T collapses a head-scrolled block with one full redraw (#4011)', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    // Expand: the 80-line thinking block renders in full and pushes its own
+    // head above the 24-row viewport.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // First collapse press: the block's head is stranded in scrollback, so the
+    // toggle flips the default, names the stranded block, offers the second
+    // press — and does NOT redraw. (Match a wrap-safe early fragment: the
+    // notice line wraps at 80 columns.)
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+    assert.equal(terminal.output().includes('\x1b[3J'), false);
+
+    // Confirmed second press inside the window: one deliberate
+    // scrollback-clearing full redraw collapses the stranded block.
+    terminal.input('\x14');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'));
+    assert.equal(terminal.output().includes('\x1b[3J'), true);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('an expired Ctrl+T confirmation re-offers collapse instead of reversing it (#4011)', async (t) => {
+    const terminal = new FakeTerminal();
+    const driver = new ThinkingDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('run');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Thinking…'));
+
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().includes('reason-row-0'));
+    terminal.input('\x14');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('stayed expanded in scrollback'),
+    );
+
+    const beforeExpiredPress = terminal.output().length;
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    t.mock.timers.tick(EXPANSION_COLLAPSE_CONFIRM_WINDOW_MS + 1);
+    terminal.input('\x14');
+    t.mock.timers.reset();
+
+    await waitFor(() => terminal.output().length > beforeExpiredPress);
+    const expiredPressOutput = terminal.output().slice(beforeExpiredPress);
+    assert.equal(expiredPressOutput.includes('\x1b[3J'), false);
+    assert.equal(
+      plainTerminalOutput(expiredPressOutput).includes('stayed expanded in scrollback'),
+      true,
+    );
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('reason-row-0'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('stayed expanded in scrollback'),
+      true,
+    );
+
+    // The new offer arms a fresh window. This second press is the only one
+    // that clears scrollback and collapses the above-viewport block.
+    terminal.input('\x14');
+    await waitFor(() => terminal.output().slice(beforeExpiredPress).includes('\x1b[3J'));
+    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('Thinking…'), true);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not treat a kitty Escape press+release as a double Escape', async () => {
     const terminal = new FakeTerminal();
     const driver = new InterruptibleTurnDriver();
@@ -1847,11 +2428,14 @@ describe('Maka Pi TUI runner', () => {
       mcp: {
         snapshot: () => ({
           initialization: 'ready',
+          configuration: 'ready',
           publication: 'published',
           toolCount: 1,
           servers: [
             {
               serverId: 'filesystem',
+              configured: true,
+              synchronized: true,
               state: 'connected',
               transport: 'stdio',
               negotiatedProtocol: { era: 'modern', revision: '2026-07-28' },
@@ -1860,6 +2444,10 @@ describe('Maka Pi TUI runner', () => {
           ],
         }),
         subscribe: () => () => undefined,
+        configForEdit: () => undefined,
+        previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
+        discardImportPreview: () => undefined,
+        execute: async () => ({ status: 'failed', reason: 'manager-failed' }),
       },
     });
 
@@ -1869,6 +2457,185 @@ describe('Maka Pi TUI runner', () => {
     assert.match(plainTerminalOutput(terminal.screenOutput()), /filesystem/u);
     terminal.input('q');
     await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/mcp previews pasted JSON and completes guided setup in-frame', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const actions: TuiMcpAction[] = [];
+    const discardedPreviews: string[] = [];
+    let previewSource = '';
+    const mcp: TuiMcpManagement = {
+      snapshot: () => ({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [],
+      }),
+      subscribe: () => () => undefined,
+      configForEdit: () => undefined,
+      previewImport: (source) => {
+        previewSource = source;
+        return {
+          status: 'ready',
+          preview: {
+            previewId: 'preview-1',
+            entries: [
+              {
+                serverId: 'docs',
+                change: 'add',
+                transport: 'remote',
+                protocol: 'auto',
+              },
+            ],
+          },
+        };
+      },
+      discardImportPreview: (previewId) => discardedPreviews.push(previewId),
+      execute: async (action) => {
+        actions.push(action);
+        return { status: 'applied', effect: 'published' };
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp,
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('MCP SERVERS'));
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('secret-draft');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('secret-draft'));
+    terminal.input('\x1b');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('secret-draft'));
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('\x1f');
+    await delay(0);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /secret-draft/u);
+    terminal.input('{"docs":{"url":"https://docs.example/mcp","protocol":"auto"}}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import MCP servers?'),
+    );
+    assert.equal(actions.length, 0);
+    assert.equal(previewSource.includes('docs.example'), true);
+    terminal.input('\x1b');
+    assert.deepEqual(discardedPreviews, ['preview-1']);
+    terminal.input('a');
+    terminal.input('j');
+    terminal.input('{"docs":{"url":"https://docs.example/mcp","protocol":"auto"}}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Import MCP servers?'),
+    );
+    terminal.input('y');
+    await waitFor(() => actions.length === 1);
+    assert.deepEqual(actions[0], { kind: 'commit_import', previewId: 'preview-1' });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('tools refreshed'));
+
+    terminal.input('a');
+    terminal.input('g');
+    terminal.input('local');
+    terminal.input('\r');
+    terminal.input('1');
+    terminal.input('mcp-server');
+    terminal.input('\r');
+    terminal.input('[]');
+    terminal.input('\r');
+    terminal.input('3');
+    terminal.input('\r');
+    terminal.input('{}');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Add this MCP server?'),
+    );
+    terminal.input('y');
+    await waitFor(() => actions.length === 2);
+    assert.deepEqual(actions[1], {
+      kind: 'add',
+      serverId: 'local',
+      config: {
+        enabled: true,
+        command: 'mcp-server',
+        args: [],
+        env: {},
+        protocol: '2026-07-28',
+      },
+    });
+    terminal.input('q');
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/mcp ignores a late action result after the user cancels its busy view', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const result = deferred<Awaited<ReturnType<TuiMcpManagement['execute']>>>();
+    const actions: TuiMcpAction[] = [];
+    const mcp: TuiMcpManagement = {
+      snapshot: () => ({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'not_published',
+        toolCount: 0,
+        servers: [
+          {
+            serverId: 'docs',
+            configured: true,
+            synchronized: true,
+            enabled: false,
+            configuredTransport: 'remote',
+            configuredProtocol: 'auto',
+            state: 'disabled',
+            toolCount: 0,
+          },
+        ],
+      }),
+      subscribe: () => () => undefined,
+      configForEdit: () => undefined,
+      previewImport: () => ({ status: 'invalid', reason: 'invalid-config' }),
+      discardImportPreview: () => undefined,
+      execute: async (action) => {
+        actions.push(action);
+        return result.promise;
+      },
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'deepseek-v4-flash',
+      connectionSlug: 'deepseek',
+      permissionMode: 'ask',
+      terminal,
+      mcp,
+    });
+
+    terminal.input('/mcp');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('docs'));
+    terminal.input(' ');
+    await waitFor(() => actions.length === 1);
+    assert.deepEqual(actions[0], { kind: 'set_enabled', serverId: 'docs', enabled: true });
+    terminal.input('\x1b');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('docs'));
+    result.resolve({ status: 'failed', reason: 'manager-failed' });
+    await delay(0);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /connection action failed/u);
+    terminal.input('q');
     exitMaka(terminal);
     await run;
   });
@@ -2887,10 +3654,12 @@ describe('Maka Pi TUI runner', () => {
       driver,
       cwd: '/repo',
       model: 'gpt-5.5',
+      connectionId: 'connection-openai',
       connectionSlug: 'openai',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -2899,6 +3668,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-zai',
           connectionSlug: 'zai',
           connectionName: 'Z.ai',
           providerType: 'openai',
@@ -2933,7 +3703,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.modelConnections, ['zai']);
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes(
-        'Model changed: gpt-5.5 (OpenAI) → glm-5.2 (Z.ai)',
+        'Model changed: gpt-5.5 (OpenAI · openai) → glm-5.2 (Z.ai · zai)',
       ),
     );
     // The status line now reflects both the new model and the new connection.
@@ -3005,7 +3775,6 @@ describe('Maka Pi TUI runner', () => {
       plainTerminalOutput(terminal.screenOutput()),
       /切换模型可能需要重建提示缓存/,
     );
-
     // Each query isolates exactly one of the five match criteria named by #1098
     // (model id, connection name, connection slug, provider type, provider
     // label) and keeps only its matching choice. The fixture's three distinct
@@ -3055,10 +3824,12 @@ describe('Maka Pi TUI runner', () => {
       driver,
       cwd: '/repo',
       model: 'gpt-5.5',
+      connectionId: 'connection-openai',
       connectionSlug: 'openai',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3066,6 +3837,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3085,7 +3857,6 @@ describe('Maka Pi TUI runner', () => {
       plainTerminalOutput(terminal.screenOutput()),
       /切换模型可能需要重建提示缓存/,
     );
-
     terminal.input('\x1b[B');
     terminal.input('\r');
     await waitFor(() => driver.models.length === 1);
@@ -3104,16 +3875,19 @@ describe('Maka Pi TUI runner', () => {
 
   test('names both connections when the model id stays the same', async () => {
     const terminal = new FakeTerminal();
+    terminal.resize(120, 40);
     const driver = new SlashCommandDriver();
     const run = runMakaPiTui({
       title: 'Maka',
       driver,
       cwd: '/repo',
       model: 'shared-model',
+      connectionId: 'connection-primary',
       connectionSlug: 'primary',
       providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-primary',
           connectionSlug: 'primary',
           connectionName: 'Primary',
           providerType: 'openai',
@@ -3121,6 +3895,7 @@ describe('Maka Pi TUI runner', () => {
           isDefaultConnection: true,
         },
         {
+          connectionId: 'connection-relay',
           connectionSlug: 'relay',
           connectionName: 'Relay',
           providerType: 'openai',
@@ -3143,7 +3918,7 @@ describe('Maka Pi TUI runner', () => {
     assert.deepEqual(driver.modelConnections, ['relay']);
     await waitFor(() =>
       plainTerminalOutput(terminal.screenOutput()).includes(
-        'Model changed: shared-model (Primary) → shared-model (Relay)',
+        'Model changed: shared-model (Primary · primary) → shared-model (Relay · relay)',
       ),
     );
 
@@ -3154,6 +3929,136 @@ describe('Maka Pi TUI runner', () => {
         throw new Error('TUI did not close during test cleanup');
       }),
     ]);
+  });
+
+  test('disambiguates same-name onboarded accounts and selects the exact slug', async () => {
+    const terminal = new FakeTerminal();
+    terminal.resize(180, 40);
+    const driver = new SlashCommandDriver();
+    const catalog: ConnectionCatalogSnapshot = {
+      revision: 2,
+      defaultTarget: { connectionId: 'openai-account-1', modelId: 'shared-model' },
+      connections: [
+        {
+          connectionId: 'openai-account-1',
+          revision: 1,
+          slug: 'openai',
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['shared-model'],
+          models: [{ id: 'shared-model' }],
+        },
+        {
+          connectionId: 'openai-account-2',
+          revision: 1,
+          slug: 'openai-2',
+          name: 'OpenAI',
+          providerType: 'openai',
+          enabled: true,
+          enabledModelIds: ['shared-model'],
+          models: [{ id: 'shared-model' }],
+        },
+      ],
+    };
+    const modelChoices = projectRuntimeHostModelChoices(catalog);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'shared-model',
+      connectionSlug: 'openai',
+      providerType: 'openai',
+      modelChoices,
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.screenOutput());
+      return output.includes('OpenAI · openai') && output.includes('OpenAI · openai-2');
+    });
+    terminal.input('\x1b[B');
+    terminal.input('\r');
+
+    await waitFor(() => driver.modelConnections.length === 1);
+    assert.deepEqual(driver.modelConnections, ['openai-2']);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes(
+        'Model changed: shared-model (OpenAI · openai) → shared-model (OpenAI · openai-2)',
+      ),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('disambiguates a connection name that collides with another fallback slug', () => {
+    assert.deepEqual(
+      [
+        ...modelChoiceConnectionLabels([
+          {
+            connectionSlug: 'openai',
+            connectionName: 'openai-2',
+            providerType: 'openai',
+            model: 'model-a',
+            isDefaultConnection: true,
+          },
+          {
+            connectionSlug: 'openai-2',
+            connectionName: '   ',
+            providerType: 'openai',
+            model: 'model-b',
+            isDefaultConnection: false,
+          },
+        ]),
+      ],
+      [
+        ['openai-2', 'openai-2'],
+        ['openai', 'openai-2 · openai'],
+      ],
+    );
+  });
+
+  test('keeps final account labels globally unique after formatting collisions', () => {
+    const labels = modelChoiceConnectionLabels([
+      {
+        connectionId: 'connection-a',
+        connectionSlug: 'openai',
+        connectionName: 'OpenAI',
+        providerType: 'openai',
+        model: 'model-a',
+        isDefaultConnection: true,
+      },
+      {
+        connectionId: 'connection-b',
+        connectionSlug: 'openai-2',
+        connectionName: 'OpenAI',
+        providerType: 'openai',
+        model: 'model-b',
+        isDefaultConnection: false,
+      },
+      {
+        connectionId: 'connection-c',
+        connectionSlug: 'relay',
+        connectionName: 'OpenAI · openai',
+        providerType: 'openai',
+        model: 'model-c',
+        isDefaultConnection: false,
+      },
+    ]);
+
+    assert.equal(new Set(labels.values()).size, 3);
+    assert.equal(labels.get('openai'), 'OpenAI · openai');
+    assert.equal(labels.get('relay'), 'OpenAI · openai · relay');
   });
 
   test('ignores a delayed title refresh after switching sessions', async () => {
@@ -5467,6 +6372,144 @@ describe('Maka Pi TUI runner', () => {
       await run;
     });
 
+    test('/resume parked by the host is informational, not a red error', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'resume_feature_disabled';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      // Attach a session first so the driver actually has one to resume.
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Safe-boundary resume is not enabled on this runtime',
+        ),
+      );
+      assert.equal(driver.resumeCalls, 1);
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume with no interrupted run explains there is nothing to resume', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'resume_candidate_missing';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Nothing to resume: no interrupted run exists in this session.',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    test('/resume keeps genuine parked recovery failures red', async () => {
+      const terminal = new FakeTerminal();
+      const driver = new SlashCommandDriver();
+      driver.parkedResumeReason = 'safety_check_failed';
+      const run = runMakaPiTui({
+        title: 'Maka',
+        driver,
+        cwd: '/repo',
+        model: 'm',
+        connectionSlug: 'c',
+        permissionMode: 'bypass',
+        terminal,
+      });
+
+      terminal.input('/session');
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+      terminal.input('\r');
+      await waitFor(() => driver.sessionIds.length === 1);
+
+      terminal.input('/resume');
+      terminal.input('\r');
+      await waitFor(() =>
+        plainTerminalOutput(terminal.output()).includes(
+          'Error: Safe-boundary resume parked: safety_check_failed',
+        ),
+      );
+
+      terminal.input('/exit');
+      terminal.input('\r');
+      await run;
+    });
+
+    for (const reason of [
+      'continuation_authority_unavailable',
+      'safety_observation_unavailable',
+    ] as const) {
+      test(`/resume keeps ${reason} red`, async () => {
+        const terminal = new FakeTerminal();
+        const driver = new SlashCommandDriver();
+        driver.parkedResumeReason = reason;
+        const run = runMakaPiTui({
+          title: 'Maka',
+          driver,
+          cwd: '/repo',
+          model: 'm',
+          connectionSlug: 'c',
+          permissionMode: 'bypass',
+          terminal,
+        });
+
+        terminal.input('/session');
+        terminal.input('\r');
+        await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session'));
+        terminal.input('\r');
+        await waitFor(() => driver.sessionIds.length === 1);
+
+        terminal.input('/resume');
+        terminal.input('\r');
+        await waitFor(() =>
+          plainTerminalOutput(terminal.output()).includes(
+            `Error: Safe-boundary resume parked: ${reason}`,
+          ),
+        );
+
+        terminal.input('/exit');
+        terminal.input('\r');
+        await run;
+      });
+    }
     test('/model refuses instead of opening the picker behind the running turn', async () => {
       const terminal = new FakeTerminal();
       const driver = new SteeringTurnDriver();
@@ -6532,6 +7575,104 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('tells a legacy Session exactly how to choose an account', async () => {
+    const terminal = new FakeTerminal(160, 24);
+    const { llmConnectionId: _legacyConnectionId, ...legacy } = fakeSessionSummary('session-2');
+    const driver = new SlashCommandDriver([legacy]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: legacy.model,
+      connectionSlug: legacy.llmConnectionSlug,
+      connectionIdentities: [
+        { connectionId: 'connection-openrouter', connectionSlug: 'openrouter', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-openrouter',
+          connectionSlug: 'openrouter',
+          connectionName: 'OpenRouter',
+          providerType: 'openrouter',
+          model: legacy.model,
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: legacy.id,
+    });
+
+    await waitFor(() => driver.sessionIds.length === 1);
+    await waitForTuiPaint(terminal);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('one-time account confirmation'),
+    );
+    const output = plainTerminalOutput(terminal.screenOutput());
+    assert.match(output, /one-time account confirmation/);
+    assert.match(output, /Run \/model/);
+    assert.match(output, /run \/setup for API-key connections/);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('reports a deleted original account and recovers only through an exact model pick', async () => {
+    const terminal = new FakeTerminal();
+    const deleted = {
+      ...fakeSessionSummary('session-2'),
+      llmConnectionId: 'connection-a',
+      llmConnectionSlug: 'shared',
+      model: 'shared-model',
+    };
+    const driver = new SlashCommandDriver([deleted]);
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: deleted.model,
+      connectionId: deleted.llmConnectionId,
+      connectionSlug: deleted.llmConnectionSlug,
+      connectionIdentities: [
+        { connectionId: 'connection-b', connectionSlug: 'shared', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-b',
+          connectionSlug: 'shared',
+          connectionName: 'Replacement',
+          providerType: 'openai',
+          model: 'shared-model',
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      resumeSessionId: deleted.id,
+    });
+
+    await waitFor(() => driver.sessionIds.length === 1);
+    await waitForTuiPaint(terminal);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('The original account was deleted'),
+    );
+    const recoveryNotice = plainTerminalOutput(terminal.screenOutput());
+    assert.match(recoveryNotice, /Run \/model/);
+    assert.match(recoveryNotice, /run \/setup for API-key connections/);
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => terminal.output().includes('Replacement'));
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Replacement · current/);
+    terminal.input('\r');
+    await waitFor(() => driver.modelConnectionIds.length === 1);
+    assert.deepEqual(driver.modelConnectionIds, ['connection-b']);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('resumes an active Host turn from its atomic transcript and continues live output', async () => {
     const terminal = new FakeTerminal();
     const driver = new ActiveResumeDriver();
@@ -6732,7 +7873,7 @@ abstract class FakeSessionDriver implements MakaSessionDriver {
   async stop(): Promise<void> {}
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
   async renameSession(_name: string): Promise<string | void> {}
-  async setModel(_model: string, _connectionSlug?: string): Promise<void> {}
+  async setModel(_model: string, _connectionSlug?: string, _connectionId?: string): Promise<void> {}
   async setPermissionMode(_mode: PermissionMode): Promise<void> {}
   async setThinkingLevel(_level: ThinkingLevel | undefined): Promise<void> {}
 
@@ -6748,7 +7889,9 @@ abstract class FakeSessionDriver implements MakaSessionDriver {
     throw new Error('rewind not supported in this fake');
   }
 
-  startNewSession(): void {}
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
 
   getSessionId(): string | null {
     return this.sessionId;
@@ -6864,6 +8007,26 @@ class SandboxBoundaryPromptDriver extends FakeSessionDriver {
     this.boundaryResponseWaiter = null;
     waiter?.();
   }
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class UserQuestionPromptDriver extends FakeSessionDriver {
@@ -6907,6 +8070,12 @@ class UserQuestionPromptDriver extends FakeSessionDriver {
   async rewindToTurn(): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported');
   }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class InterruptibleTurnDriver extends FakeSessionDriver {
@@ -6941,6 +8110,28 @@ class InterruptibleTurnDriver extends FakeSessionDriver {
     this.stopCalls += 1;
     this.releaseTurn?.();
     this.releaseTurn = null;
+  }
+
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 
@@ -7175,6 +8366,50 @@ class ToolOutputDriver extends FakeSessionDriver {
       stopReason: 'end_turn',
     };
   }
+
+  async stop(): Promise<void> {}
+  async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {}
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
+}
+
+// #4011: an 80-line thinking block renders in full when expanded, so one
+// Ctrl+T pushes its head above the 24-row viewport into scrollback.
+class ThinkingDriver extends ToolOutputDriver {
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'thinking_delta',
+      id: 'event-thinking-1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: Array.from({ length: 80 }, (_, i) => `reason-row-${i}`).join('\n'),
+    };
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
+      stopReason: 'end_turn',
+    };
+  }
 }
 
 class BackgroundShellRunDriver extends ToolOutputDriver {
@@ -7346,6 +8581,7 @@ class SlashCommandDriver extends FakeSessionDriver {
   readonly displayPrompts: string[] = [];
   readonly models: string[] = [];
   readonly modelConnections: Array<string | undefined> = [];
+  readonly modelConnectionIds: Array<string | undefined> = [];
   readonly permissionModes: PermissionMode[] = [];
   readonly thinkingLevelUpdates: Array<ThinkingLevel | undefined> = [];
   readonly orchestrationModes: OrchestrationMode[] = [];
@@ -7356,6 +8592,8 @@ class SlashCommandDriver extends FakeSessionDriver {
   readonly moves: string[] = [];
   startNewSessionCalls = 0;
   resumeCalls = 0;
+  /** When set, resumeLatest throws SafeBoundaryResumeParkedError with this reason. */
+  parkedResumeReason: TurnResumeParkReason | undefined;
   contextDiagnosticsRequests = 0;
   goal: GoalProjection | null = null;
   readonly goalListeners = new Set<(goal: GoalProjection | null) => void>();
@@ -7480,6 +8718,9 @@ class SlashCommandDriver extends FakeSessionDriver {
 
   async *resumeLatest(): AsyncIterable<SessionEvent> {
     this.resumeCalls += 1;
+    if (this.parkedResumeReason !== undefined) {
+      throw new SafeBoundaryResumeParkedError(this.parkedResumeReason);
+    }
     yield {
       type: 'text_complete',
       id: 'event-resume-text',
@@ -7497,9 +8738,10 @@ class SlashCommandDriver extends FakeSessionDriver {
     };
   }
 
-  async setModel(model: string, connectionSlug?: string): Promise<void> {
+  async setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void> {
     this.models.push(model);
     this.modelConnections.push(connectionSlug);
+    this.modelConnectionIds.push(connectionId);
   }
   async renameSession(name: string): Promise<string> {
     this.renames.push(name);
@@ -7544,7 +8786,7 @@ class SlashCommandDriver extends FakeSessionDriver {
   async rewindToTurn(_turnId: string): Promise<MakaSessionRewindResult> {
     throw new Error('rewind not supported in this fake');
   }
-  startNewSession(): void {
+  async startNewSession(): Promise<void> {
     this.startNewSessionCalls += 1;
     this.sessionId = 'session-new';
     this.activeBoundaryDisplayMode = undefined;
@@ -7557,6 +8799,94 @@ class SlashCommandDriver extends FakeSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class UserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'completed' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 2,
+        completedAt: 2,
+        exitCode: 0,
+        revision: 1,
+        output: pipeOutput(command),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+}
+
+class RunningUserCommandDriver extends SlashCommandDriver {
+  readonly commands: string[] = [];
+  stopUserCommandCalls = 0;
+  readonly #transcriptListeners = new Set<
+    (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void
+  >();
+
+  async runUserCommand(command: string) {
+    this.commands.push(command);
+    return {
+      commandId: `user-command-${this.commands.length}`,
+      result: {
+        kind: 'shell_run' as const,
+        ref: `maka://runtime/background-tasks/user-command-${this.commands.length}`,
+        mode: 'pipes' as const,
+        status: 'running' as const,
+        cwd: '/repo',
+        cmd: command,
+        startedAt: 1,
+        updatedAt: 1,
+        revision: 1,
+        output: pipeOutput(''),
+      },
+      takeRacedUpdate: () => undefined,
+    };
+  }
+
+  async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+  }
+
+  subscribeTranscriptReplacements(
+    listener: (
+      sessionId: string,
+      turnId: string,
+      messages: StoredMessage[],
+      reason: MakaTranscriptReplacementReason,
+    ) => void,
+  ): () => void {
+    this.#transcriptListeners.add(listener);
+    return () => this.#transcriptListeners.delete(listener);
+  }
+
+  publishReconnect(): void {
+    for (const listener of this.#transcriptListeners) {
+      listener('session-1', 'turn-1', [], 'reconnect');
+    }
+  }
+}
+
+class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
+  override async stopUserCommands(): Promise<void> {
+    this.stopUserCommandCalls += 1;
+    if (this.stopUserCommandCalls === 1) throw new Error('host_draining');
   }
 }
 
@@ -8107,6 +9437,26 @@ class DeferredControlDriver extends FakeSessionDriver {
     this.resolveSetModel?.();
     this.resolveSetModel = null;
   }
+
+  async renameSession(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
 }
 
 class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
@@ -8138,6 +9488,27 @@ class RejectingSandboxBoundaryDriver extends FakeSessionDriver {
   async respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void> {
     this.responses.push(response);
     throw new Error('sandbox boundary response rejected');
+  }
+
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 
@@ -8195,6 +9566,27 @@ class SandboxBoundaryThenErrorDriver extends FakeSessionDriver {
 
   async respondToSandboxBoundary(_response: SandboxBoundaryResponse): Promise<void> {
     this.respondCalls += 1;
+  }
+
+  async renameSession(): Promise<void> {}
+  async setModel(): Promise<void> {}
+  async setPermissionMode(): Promise<void> {}
+  async setThinkingLevel(): Promise<void> {}
+  async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
+    return switchResult(fakeSessionSummary(sessionId));
+  }
+
+  async listRewindTargets(): Promise<RewindTarget[]> {
+    return [];
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported in this fake');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
   }
 }
 

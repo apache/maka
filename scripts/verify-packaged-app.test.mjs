@@ -58,6 +58,7 @@ test('legacy packaged resources require the historical bundled Git contract', as
     requireWindowsSandbox: false,
     bundledGitContract: 'legacy-required',
     requireCanonicalIcon: false,
+    requireDirectPeerArtifact: false,
   });
 
   for (const path of [

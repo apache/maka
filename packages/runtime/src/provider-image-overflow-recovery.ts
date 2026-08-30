@@ -47,6 +47,13 @@ function storageRefLabel(value: unknown): string | undefined {
     return value.relativePath;
   }
   if (
+    value.kind === 'session_context' &&
+    typeof value.refId === 'string' &&
+    value.refId.length > 0
+  ) {
+    return value.refId;
+  }
+  if (
     value.kind === 'external_file' &&
     typeof value.absolutePath === 'string' &&
     value.absolutePath.length > 0

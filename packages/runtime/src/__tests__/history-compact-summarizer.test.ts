@@ -166,6 +166,67 @@ describe('buildLlmHistorySummarizer', () => {
     assert.equal(attempt.costUsd, undefined);
   });
 
+  test('attributes a malformed completion and its repair to separate logical steps', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    let providerCalls = 0;
+    let id = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () =>
+        new MockLanguageModelV4({
+          doGenerate: async () => {
+            providerCalls += 1;
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: providerCalls === 1 ? 'free-form incomplete summary' : VALID_SUMMARY,
+                },
+              ],
+              finishReason: { unified: 'stop' as const, raw: 'stop' },
+              usage: {
+                inputTokens: { total: 7, noCache: 7, cacheRead: 0, cacheWrite: 0 },
+                outputTokens: { total: 3, text: 3, reasoning: 0 },
+              },
+              warnings: [],
+            };
+          },
+        }),
+    });
+
+    await summarize({
+      ...inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      providerRequestTracker: new ProviderRequestTracker({
+        traceId: 'trace-id',
+        turnId: 'turn-1',
+        now: () => 100 + id,
+        newId: () => `request-${++id}`,
+        persistCapture: async () => ({ artifactId: `artifact-${id}` }),
+        recordAttempt: () => {},
+        accounting: {
+          sessionId: 'sess-1',
+          resolveRunId: () => 'run-1',
+          connectionSlug: 'connection',
+          providerId: 'provider',
+          callKind: 'history_compact',
+          record: ({ attempt }: ModelCallCommit<ModelCallAttempt>) => {
+            recorded.push(attempt);
+          },
+        },
+      }),
+    });
+
+    assert.equal(providerCalls, 2);
+    assert.deepEqual(
+      recorded.map((attempt) => attempt.step),
+      [0, 1],
+    );
+    assert.deepEqual(
+      recorded.map((attempt) => attempt.attempt),
+      [0, 0],
+    );
+    assert.notEqual(recorded[0]?.logicalCallId, recorded[1]?.logicalCallId);
+  });
+
   test('produces schema-valid tool-result messages (toolName + wrapped output) and does not fall back', async () => {
     const seen: Array<{ messages: unknown[] }> = [];
     const generateText: AiSdkGenerateTextLike = async (opts) => {
@@ -642,6 +703,120 @@ describe('buildLlmHistorySummarizer', () => {
       ),
       /malformed_summary_missing_section/,
     );
+  });
+
+  test('repairs one malformed completion with a single stricter retry', async () => {
+    const instructions: string[] = [];
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async (options) => {
+        instructions.push(options.instructions);
+        return {
+          text: instructions.length === 1 ? 'free-form incomplete summary' : VALID_SUMMARY,
+          finishReason: 'stop',
+        };
+      },
+    });
+
+    const result = await summarize(
+      inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+    );
+
+    assert.equal(result, VALID_SUMMARY);
+    assert.equal(instructions.length, 2);
+    assert.match(instructions[1] ?? '', /malformed_summary_missing_section/);
+  });
+
+  test('bounds a persistently malformed completion at two provider calls', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        return { text: 'free-form incomplete summary', finishReason: 'stop' };
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError &&
+        error.reason === 'malformed_summary_missing_section',
+    );
+    assert.equal(calls, 2);
+  });
+
+  test('preserves the initial malformed defect when the repair request fails', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1) return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        throw new Error('model down during repair');
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError &&
+        error.reason === 'malformed_summary_missing_section' &&
+        error.cause instanceof HistoryCompactSummarizerError &&
+        error.cause.reason === 'provider_error' &&
+        error.cause.cause instanceof Error &&
+        error.cause.cause.message === 'model down during repair',
+    );
+    assert.equal(calls, 2);
+  });
+
+  test('preserves cancellation when a malformed-summary repair is aborted', async () => {
+    let calls = 0;
+    const abortError = Object.assign(new Error('stopped during repair'), { name: 'AbortError' });
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        if (calls === 1) return { text: 'free-form incomplete summary', finishReason: 'stop' };
+        throw abortError;
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) => error === abortError,
+    );
+    assert.equal(calls, 2);
+  });
+
+  test('preserves the initial malformed defect when the repair is empty', async () => {
+    let calls = 0;
+    const summarize = buildLlmHistorySummarizer({
+      resolveModel: () => 'fake-model',
+      generateText: async () => {
+        calls += 1;
+        return {
+          text: calls === 1 ? 'free-form incomplete summary' : '',
+          finishReason: 'stop',
+        };
+      },
+    });
+
+    await assert.rejects(
+      summarize(
+        inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
+      ),
+      (error) =>
+        error instanceof HistoryCompactSummarizerError &&
+        error.reason === 'malformed_summary_missing_section',
+    );
+    assert.equal(calls, 2);
   });
 
   test('a deeper heading level cannot stand in for a mandated section', async () => {

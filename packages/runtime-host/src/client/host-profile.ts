@@ -19,7 +19,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { createFileCredentialStore, type CredentialStore } from '@maka/storage/credential-store';
 import { withFileUpdateLock } from '@maka/storage/file-update-lock';
 import {
@@ -28,6 +28,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   requireHostRootId,
 } from '../protocol/index.js';
+import type { RuntimeHostProfileOfKind } from '../profile-kind.js';
 import {
   connectRemoteRuntimeHost,
   connectRuntimeHostMessageTransport,
@@ -40,9 +41,9 @@ import {
   RuntimeHostPeerByteStream,
   RuntimeHostPeerError,
   readRuntimeHostPeerAuthenticationResult,
-  startRuntimeHostPeerEndpoint,
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
+import type { RuntimeHostPeerClient } from './peer-client.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -50,9 +51,16 @@ import {
   openRuntimeHostSshTunnel,
   type RuntimeHostSshInteraction,
 } from './ssh-tunnel.js';
+import { activateRuntimeHostSshOperator } from './ssh-operator-activation.js';
 import { waitForRuntimeHostReady } from './wait-for-ready.js';
+import {
+  connectRuntimeHostWslEnvironment,
+  normalizeRuntimeHostWslDistribution,
+  normalizeRuntimeHostWslOperatorPath,
+  type RuntimeHostWslProcessFactory,
+} from './wsl-environment.js';
 
-const PROFILE_SCHEMA_VERSION = 1;
+const PROFILE_SCHEMA_VERSION = 3;
 const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
@@ -67,16 +75,39 @@ export const LOCAL_RUNTIME_HOST_PROFILE = Object.freeze({
   id: 'local',
   name: 'Local',
   kind: 'local',
-} as const);
-
-export type RuntimeHostProfile = typeof LOCAL_RUNTIME_HOST_PROFILE | RemoteRuntimeHostProfile;
-
-export interface RemoteRuntimeHostProfile {
+} as const satisfies RuntimeHostProfileOfKind<'local'> & {
   readonly id: string;
   readonly name: string;
-  readonly kind: 'remote';
+});
+
+export type RuntimeHostProfile = typeof LOCAL_RUNTIME_HOST_PROFILE | PersistedRuntimeHostProfile;
+
+export type PersistedRuntimeHostProfile = EnvironmentRuntimeHostProfile | RemoteRuntimeHostProfile;
+
+export interface EnvironmentRuntimeHostProfile extends RuntimeHostProfileOfKind<'environment'> {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: {
+    readonly kind: 'wsl';
+    readonly distribution: string;
+  };
+  readonly rootId: string;
+  readonly operatorPath: string;
+}
+
+export interface RemoteRuntimeHostProfile extends RuntimeHostProfileOfKind<'remote'> {
+  readonly id: string;
+  readonly name: string;
   readonly transport: RuntimeHostRemoteTransport;
   readonly rootId: string;
+  /** Present only when this profile carries a restricted Session Guest credential. */
+  readonly access?: 'session_guest';
+}
+
+export type RuntimeHostProfileAccess = 'owner' | 'session_guest';
+
+export function runtimeHostProfileAccess(profile: RuntimeHostProfile): RuntimeHostProfileAccess {
+  return profile.kind === 'remote' ? (profile.access ?? 'owner') : 'owner';
 }
 
 export type RuntimeHostRemoteTransport =
@@ -95,6 +126,18 @@ export type RuntimeHostRemoteTransport =
       readonly sshPort?: number;
       readonly remotePort: number;
       readonly websocketPath: string;
+      readonly activation?: never;
+    }
+  | {
+      readonly kind: 'ssh';
+      readonly destination: string;
+      readonly sshPort?: number;
+      readonly activation: {
+        readonly kind: 'ssh_operator';
+        readonly operatorPath: string;
+      };
+      readonly remotePort?: never;
+      readonly websocketPath?: never;
     }
   | {
       readonly kind: 'libp2p-direct';
@@ -105,7 +148,7 @@ export type RuntimeHostRemoteTransport =
 
 export interface RuntimeHostProfileDocument {
   readonly schemaVersion: typeof PROFILE_SCHEMA_VERSION;
-  readonly profiles: readonly RemoteRuntimeHostProfile[];
+  readonly profiles: readonly PersistedRuntimeHostProfile[];
 }
 
 export interface ResolvedRuntimeHostProfile {
@@ -119,6 +162,9 @@ export function sameResolvedRuntimeHostProfileTarget(
 ): boolean {
   if (left.profile.kind !== right.profile.kind) return false;
   if (left.profile.kind === 'local' || right.profile.kind === 'local') return true;
+  if (left.profile.kind === 'environment' || right.profile.kind === 'environment') {
+    return profileTargetBinding(left.profile) === profileTargetBinding(right.profile);
+  }
   return (
     left.profile.id === right.profile.id &&
     profileCredentialBinding(left.profile) === profileCredentialBinding(right.profile) &&
@@ -130,17 +176,23 @@ export function sameRemoteRuntimeHostProfileTarget(
   left: RemoteRuntimeHostProfile,
   right: RemoteRuntimeHostProfile,
 ): boolean {
-  return profileCredentialBinding(left) === profileCredentialBinding(right);
+  return (
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
+    profileCredentialBinding(left) === profileCredentialBinding(right)
+  );
 }
 
 export interface RuntimeHostProfileCatalog {
   read(): Promise<RuntimeHostProfileDocument>;
   resolve(profileId?: string): Promise<ResolvedRuntimeHostProfile>;
   create(
-    profile: RemoteRuntimeHostProfile,
-    credential: string,
+    profile: PersistedRuntimeHostProfile,
+    credential?: string,
   ): Promise<RuntimeHostProfileDocument>;
-  save(profile: RemoteRuntimeHostProfile, credential?: string): Promise<RuntimeHostProfileDocument>;
+  save(
+    profile: PersistedRuntimeHostProfile,
+    credential?: string,
+  ): Promise<RuntimeHostProfileDocument>;
   remove(profileId: string): Promise<RuntimeHostProfileDocument>;
   removeIfCurrent(target: ResolvedRuntimeHostProfile): Promise<{
     readonly removed: boolean;
@@ -209,6 +261,60 @@ export function createRuntimeHostProfileCredentialStore(
   };
 }
 
+export async function connectRuntimeHostProfile(
+  input: {
+    readonly profile: PersistedRuntimeHostProfile;
+    readonly credential?: string;
+    readonly clientInstanceId: string;
+    readonly signal?: AbortSignal;
+    readonly connectTimeoutMs?: number;
+    readonly handshakeTimeoutMs?: number;
+    readonly readyTimeoutMs?: number;
+    readonly sshInteraction?: RuntimeHostSshInteraction;
+    readonly peerClient?: RuntimeHostPeerClient;
+  },
+  overrides: {
+    connect?: typeof connectRemoteRuntimeHost;
+    connectPeer?: typeof connectPeerRuntimeHost;
+    waitForReady?: typeof waitForRuntimeHostReady;
+    openSshTunnel?: typeof openRuntimeHostSshTunnel;
+    activateSshOperator?: typeof activateRuntimeHostSshOperator;
+    connectWsl?: typeof connectRuntimeHostWslEnvironment;
+    wslProcessFactory?: RuntimeHostWslProcessFactory;
+    wslExecutable?: string;
+  } = {},
+): Promise<RuntimeHostConnection> {
+  if (input.profile.kind === 'environment') {
+    return (overrides.connectWsl ?? connectRuntimeHostWslEnvironment)(
+      {
+        distribution: input.profile.provider.distribution,
+        operatorPath: input.profile.operatorPath,
+        rootId: input.profile.rootId,
+        clientInstanceId: input.clientInstanceId,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.handshakeTimeoutMs === undefined
+          ? {}
+          : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+        ...(input.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: input.readyTimeoutMs }),
+      },
+      {
+        ...(overrides.waitForReady ? { waitForReady: overrides.waitForReady } : {}),
+        ...(overrides.wslProcessFactory ? { processFactory: overrides.wslProcessFactory } : {}),
+        ...(overrides.wslExecutable ? { wslExecutable: overrides.wslExecutable } : {}),
+      },
+    );
+  }
+  if (!input.credential) {
+    throw new RuntimeHostPermanentReconnectError(
+      `Runtime Host profile ${input.profile.id} has no access credential`,
+    );
+  }
+  return connectRemoteRuntimeHostProfile(
+    { ...input, profile: input.profile, credential: input.credential },
+    overrides,
+  );
+}
+
 export async function connectRemoteRuntimeHostProfile(
   input: {
     readonly profile: RemoteRuntimeHostProfile;
@@ -219,12 +325,14 @@ export async function connectRemoteRuntimeHostProfile(
     readonly handshakeTimeoutMs?: number;
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
+    readonly peerClient?: RuntimeHostPeerClient;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
     connectPeer?: typeof connectPeerRuntimeHost;
     waitForReady?: typeof waitForRuntimeHostReady;
     openSshTunnel?: typeof openRuntimeHostSshTunnel;
+    activateSshOperator?: typeof activateRuntimeHostSshOperator;
   } = {},
 ): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
@@ -237,6 +345,7 @@ export async function connectRemoteRuntimeHostProfile(
       credential: input.credential,
       expectedRootId: input.profile.rootId,
       clientInstanceId: input.clientInstanceId,
+      peerClient: requireRuntimeHostPeerClient(input.peerClient),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
       ...(input.handshakeTimeoutMs === undefined
@@ -244,13 +353,28 @@ export async function connectRemoteRuntimeHostProfile(
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     });
   } else {
+    const activation =
+      transport.kind === 'ssh' && transport.activation
+        ? await (overrides.activateSshOperator ?? activateRuntimeHostSshOperator)({
+            destination: transport.destination,
+            ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+            operatorPath: transport.activation.operatorPath,
+            rootId: input.profile.rootId,
+            interaction: input.sshInteraction ?? 'batch',
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : undefined;
+    const sshEndpoint =
+      transport.kind === 'ssh'
+        ? (activation?.endpoint ?? requireConnectOnlySshEndpoint(transport))
+        : undefined;
     const tunnel =
       transport.kind === 'ssh'
         ? await (overrides.openSshTunnel ?? openRuntimeHostSshTunnel)({
             destination: transport.destination,
             ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-            remotePort: transport.remotePort,
-            websocketPath: transport.websocketPath,
+            remotePort: sshEndpoint!.port,
+            websocketPath: sshEndpoint!.websocketPath,
             interaction: input.sshInteraction ?? 'batch',
             ...(input.signal === undefined ? {} : { signal: input.signal }),
           })
@@ -308,48 +432,44 @@ export async function connectRemoteRuntimeHostProfile(
   }
 }
 
+function requireConnectOnlySshEndpoint(
+  transport: Extract<RuntimeHostRemoteTransport, { kind: 'ssh' }>,
+): {
+  readonly port: number;
+  readonly websocketPath: string;
+} {
+  if (transport.remotePort === undefined || transport.websocketPath === undefined) {
+    throw new Error('SSH activation did not return a Runtime Host endpoint');
+  }
+  return { port: transport.remotePort, websocketPath: transport.websocketPath };
+}
+
 export async function connectPeerRuntimeHost(input: {
   readonly profileId: string;
   readonly transport: Extract<RuntimeHostRemoteTransport, { kind: 'libp2p-direct' }>;
   readonly credential: string;
   readonly expectedRootId: string;
   readonly clientInstanceId: string;
+  readonly peerClient: RuntimeHostPeerClient;
   readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
-  const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
-  const keyPath = process.env.MAKA_RUNTIME_HOST_PEER_KEY_PATH;
-  if (!nativePath || !keyPath) {
-    throw new RuntimeHostPeerError(
-      'peer_native_unavailable',
-      'Experimental direct peer requires MAKA_RUNTIME_HOST_PEER_NATIVE_PATH and MAKA_RUNTIME_HOST_PEER_KEY_PATH',
-    );
-  }
-  const endpoint = startRuntimeHostPeerEndpoint({ nativePath, keyPath });
-  let resolveResourceClosed!: () => void;
-  let closeTask: Promise<void> | undefined;
-  const resource = {
-    closed: new Promise<void>((resolve) => {
-      resolveResourceClosed = resolve;
-    }),
-    close: () => {
-      closeTask ??= endpoint.close().finally(resolveResourceClosed);
-      return closeTask;
-    },
-  };
-  const abort = () => void resource.close().catch(() => undefined);
-  input.signal?.addEventListener('abort', abort, { once: true });
-  if (input.signal?.aborted) abort();
-  let transferred = false;
-  try {
-    const stream = await endpoint.connect({
+  const stream = await input.peerClient.connect(
+    {
       peerId: input.transport.peerId,
       routeHints: input.transport.routeHints,
       coordinationRelays: input.transport.coordinationRelays,
       directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
-    });
+    },
+    input.signal,
+  );
+  const abort = () => stream.abort();
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) abort();
+  let transferred = false;
+  try {
     input.signal?.throwIfAborted();
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
@@ -375,8 +495,8 @@ export async function connectPeerRuntimeHost(input: {
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
-      connectionResource: resource,
     });
+    input.signal?.throwIfAborted();
     if (result.kind === 'incompatible') {
       throw new RuntimeHostRemoteCompatibilityError(input.profileId, result.handshake);
     }
@@ -388,8 +508,18 @@ export async function connectPeerRuntimeHost(input: {
     return result.connection;
   } finally {
     input.signal?.removeEventListener('abort', abort);
-    if (!transferred) await resource.close().catch(() => undefined);
+    if (!transferred) stream.abort();
   }
+}
+
+function requireRuntimeHostPeerClient(
+  peerClient: RuntimeHostPeerClient | undefined,
+): RuntimeHostPeerClient {
+  if (peerClient) return peerClient;
+  throw new RuntimeHostPeerError(
+    'peer_native_unavailable',
+    'Experimental direct peer requires a Client peer endpoint owner',
+  );
 }
 
 export function remoteRuntimeHostUnavailableError(
@@ -425,13 +555,33 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
     'schemaVersion',
     'profiles',
   ]);
-  if (record.schemaVersion !== PROFILE_SCHEMA_VERSION) {
+  if (
+    record.schemaVersion !== 1 &&
+    record.schemaVersion !== 2 &&
+    record.schemaVersion !== PROFILE_SCHEMA_VERSION
+  ) {
     throw new Error('Runtime Host profile document has an unsupported schema');
   }
   if (!Array.isArray(record.profiles) || record.profiles.length > PROFILE_COUNT_MAX) {
     throw new Error('Runtime Host profile document has an invalid profile list');
   }
-  const profiles = record.profiles.map(decodeRemoteRuntimeHostProfile);
+  const profiles = record.profiles.map(decodePersistedRuntimeHostProfile);
+  if (
+    record.schemaVersion === 1 &&
+    profiles.some(
+      (profile) =>
+        profile.kind === 'environment' ||
+        (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+    )
+  ) {
+    throw new Error('Runtime Host profile schema 1 cannot contain activation');
+  }
+  if (
+    record.schemaVersion !== PROFILE_SCHEMA_VERSION &&
+    profiles.some((profile) => profile.kind === 'remote' && profile.access === 'session_guest')
+  ) {
+    throw new Error('Runtime Host profile schema 3 is required for restricted access');
+  }
   const ids = new Set<string>();
   for (const profile of profiles) {
     if (ids.has(profile.id)) throw new Error(`Duplicate Runtime Host profile: ${profile.id}`);
@@ -452,20 +602,25 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   ) {}
 
   async read(): Promise<RuntimeHostProfileDocument> {
+    return this.#readSnapshot();
+  }
+
+  async #readSnapshot(): Promise<RuntimeHostProfileDocument> {
     let bytes: Buffer;
     try {
       bytes = await readFile(this.path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyProfileDocument();
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return emptyProfileDocument();
+      }
       throw error;
     }
     if (bytes.length > PROFILE_DOCUMENT_MAX_BYTES) {
       throw new Error('Runtime Host profile document exceeds its size limit');
     }
     try {
-      return decodeRuntimeHostProfileDocument(
-        JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
-      );
+      const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      return decodeRuntimeHostProfileDocument(value);
     } catch (error) {
       throw new Error('Runtime Host profile document is invalid', { cause: error });
     }
@@ -481,6 +636,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     if (!profile) {
       throw new RuntimeHostPermanentReconnectError(`Unknown Runtime Host profile: ${id}`);
     }
+    if (profile.kind === 'environment') return { profile };
     const credential = await this.credentials.get(profile);
     if (!credential) {
       throw new RuntimeHostPermanentReconnectError(
@@ -491,42 +647,49 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   }
 
   save(
-    value: RemoteRuntimeHostProfile,
+    value: PersistedRuntimeHostProfile,
     suppliedCredential?: string,
   ): Promise<RuntimeHostProfileDocument> {
     return this.#save(value, suppliedCredential, false);
   }
 
   create(
-    value: RemoteRuntimeHostProfile,
-    suppliedCredential: string,
+    value: PersistedRuntimeHostProfile,
+    suppliedCredential?: string,
   ): Promise<RuntimeHostProfileDocument> {
     return this.#save(value, suppliedCredential, true);
   }
 
   #save(
-    value: RemoteRuntimeHostProfile,
+    value: PersistedRuntimeHostProfile,
     suppliedCredential: string | undefined,
     requireNew: boolean,
   ): Promise<RuntimeHostProfileDocument> {
-    const profile = decodeRemoteRuntimeHostProfile(value);
+    const profile = decodePersistedRuntimeHostProfile(value);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
       if (requireNew && previousProfile) {
         throw new Error('A new Runtime Host profile must use a new profile id');
       }
       const targetChanged = previousProfile
-        ? profileCredentialBinding(previousProfile) !== profileCredentialBinding(profile)
+        ? profileTargetBinding(previousProfile) !== profileTargetBinding(profile) ||
+          runtimeHostProfileAccess(previousProfile) !== runtimeHostProfileAccess(profile)
         : false;
       if (targetChanged) {
         throw new Error('A Runtime Host profile target cannot be changed; create a new profile id');
       }
-      const previousCredential = previousProfile
-        ? await this.credentials.get(previousProfile)
-        : null;
-      if (suppliedCredential === undefined && (!previousProfile || !previousCredential)) {
-        throw new Error('A Runtime Host access credential is required');
+      if (profile.kind === 'environment' && suppliedCredential !== undefined) {
+        throw new Error('A WSL Runtime Host environment does not accept an access credential');
+      }
+      const previousCredential =
+        previousProfile?.kind === 'remote' ? await this.credentials.get(previousProfile) : null;
+      if (
+        profile.kind === 'remote' &&
+        suppliedCredential === undefined &&
+        (!previousProfile || !previousCredential)
+      ) {
+        throw new Error('A remote Runtime Host access credential is required');
       }
       const next = decodeRuntimeHostProfileDocument({
         schemaVersion: PROFILE_SCHEMA_VERSION,
@@ -534,17 +697,17 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
           ? current.profiles.map((candidate) => (candidate.id === profile.id ? profile : candidate))
           : [...current.profiles, profile],
       });
-      if (suppliedCredential !== undefined) {
+      if (profile.kind === 'remote' && suppliedCredential !== undefined) {
         await this.credentials.set(profile, suppliedCredential);
       }
       try {
         await writeProfileDocument(this.path, next);
       } catch (error) {
-        if (suppliedCredential !== undefined) {
+        if (profile.kind === 'remote' && suppliedCredential !== undefined) {
           try {
             await restoreCredential(
               this.credentials,
-              previousProfile ?? profile,
+              previousProfile?.kind === 'remote' ? previousProfile : profile,
               previousCredential,
             );
           } catch (rollbackError) {
@@ -566,7 +729,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const id = requireProfileId(profileId);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const profile = current.profiles.find((candidate) => candidate.id === id);
       if (!profile) return current;
       return this.#removeProfile(current, profile);
@@ -577,17 +740,19 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     readonly removed: boolean;
     readonly document: RuntimeHostProfileDocument;
   }> {
-    if (target.profile.kind !== 'remote' || target.credential === undefined) {
-      return Promise.reject(new Error('Expected a resolved remote Runtime Host profile'));
+    if (target.profile.kind === 'local') {
+      return Promise.reject(new Error('Expected a resolved persisted Runtime Host profile'));
     }
-    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const expectedProfile = decodePersistedRuntimeHostProfile(target.profile);
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const profile = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
       if (
         !profile ||
-        !sameRemoteRuntimeHostProfile(profile, expectedProfile) ||
-        (await this.credentials.get(profile)) !== target.credential
+        !samePersistedRuntimeHostProfile(profile, expectedProfile) ||
+        (profile.kind === 'remote' &&
+          (target.credential === undefined ||
+            (await this.credentials.get(profile)) !== target.credential))
       ) {
         return { removed: false, document: current };
       }
@@ -610,15 +775,17 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     const profile = decodeRemoteRuntimeHostProfile(value);
     if (
       profile.id !== expectedProfile.id ||
-      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)
+      !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile) ||
+      runtimeHostProfileAccess(profile) !== runtimeHostProfileAccess(expectedProfile)
     ) {
       return Promise.reject(new Error('A Runtime Host profile rebind must retain its connection'));
     }
     return this.#exclusive(async () => {
-      const current = await this.read();
+      const current = await this.#readSnapshot();
       const stored = current.profiles.find((candidate) => candidate.id === expectedProfile.id);
       if (
         !stored ||
+        stored.kind !== 'remote' ||
         !sameRemoteRuntimeHostProfile(stored, expectedProfile) ||
         (await this.credentials.get(stored)) !== target.credential
       ) {
@@ -650,13 +817,14 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
 
   async #removeProfile(
     current: RuntimeHostProfileDocument,
-    profile: RemoteRuntimeHostProfile,
+    profile: PersistedRuntimeHostProfile,
   ): Promise<RuntimeHostProfileDocument> {
     const next = decodeRuntimeHostProfileDocument({
       schemaVersion: PROFILE_SCHEMA_VERSION,
       profiles: current.profiles.filter((candidate) => candidate.id !== profile.id),
     });
     await writeProfileDocument(this.path, next);
+    if (profile.kind === 'environment') return next;
     try {
       await this.credentials.delete(profile);
     } catch (error) {
@@ -686,25 +854,70 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   }
 }
 
-export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
-  const record = requireExactRecord(value, 'Remote Runtime Host profile', [
+export function decodePersistedRuntimeHostProfile(value: unknown): PersistedRuntimeHostProfile {
+  return requireRecord(value, 'Runtime Host profile').kind === 'environment'
+    ? decodeEnvironmentRuntimeHostProfile(value)
+    : decodeRemoteRuntimeHostProfile(value);
+}
+
+export function decodeEnvironmentRuntimeHostProfile(value: unknown): EnvironmentRuntimeHostProfile {
+  const record = requireExactRecord(value, 'WSL Runtime Host environment profile', [
     'id',
     'name',
     'kind',
-    'transport',
+    'provider',
     'rootId',
+    'operatorPath',
   ]);
+  if (record.kind !== 'environment') {
+    throw new Error('Runtime Host environment profile kind must be environment');
+  }
+  const provider = requireExactRecord(record.provider, 'WSL Runtime Host environment provider', [
+    'kind',
+    'distribution',
+  ]);
+  if (provider.kind !== 'wsl') throw new Error('Runtime Host environment provider must be WSL');
+  return Object.freeze({
+    id: requireProfileId(record.id),
+    name: requireProfileName(record.name),
+    kind: 'environment',
+    provider: Object.freeze({
+      kind: 'wsl',
+      distribution: normalizeRuntimeHostWslDistribution(
+        requireString(provider.distribution, 'WSL distribution'),
+      ),
+    }),
+    rootId: requireHostRootId(record.rootId),
+    operatorPath: normalizeRuntimeHostWslOperatorPath(
+      requireString(record.operatorPath, 'WSL operator path'),
+    ),
+  });
+}
+
+export function decodeRemoteRuntimeHostProfile(value: unknown): RemoteRuntimeHostProfile {
+  const candidate = requireRecord(value, 'Remote Runtime Host profile');
+  const record = requireExactRecord(
+    value,
+    'Remote Runtime Host profile',
+    candidate.access === undefined
+      ? ['id', 'name', 'kind', 'transport', 'rootId']
+      : ['id', 'name', 'kind', 'transport', 'rootId', 'access'],
+  );
   if (record.kind !== 'remote') throw new Error('Runtime Host profile kind must be remote');
+  if (record.access !== undefined && record.access !== 'session_guest') {
+    throw new Error('Runtime Host profile access is invalid');
+  }
   return Object.freeze({
     id: requireProfileId(record.id),
     name: requireProfileName(record.name),
     kind: 'remote',
     transport: decodeRuntimeHostRemoteTransport(record.transport),
     rootId: requireHostRootId(record.rootId),
+    ...(record.access === undefined ? {} : { access: record.access }),
   });
 }
 
-function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
+export function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTransport {
   const kind = requireRecord(value, 'Runtime Host transport').kind;
   if (kind === 'tls') {
     const record = requireExactRecord(value, 'Runtime Host TLS transport', ['kind', 'url']);
@@ -736,16 +949,41 @@ function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRemoteTran
     });
   }
   if (kind === 'ssh') {
-    const record = requireExactRecord(
-      value,
-      'Runtime Host SSH transport',
-      ['kind', 'destination', 'remotePort', 'websocketPath'],
-      ['sshPort'],
-    );
+    const candidate = requireRecord(value, 'Runtime Host SSH transport');
+    const activated = candidate.activation !== undefined;
+    const record = activated
+      ? requireExactRecord(
+          value,
+          'Runtime Host activated SSH transport',
+          ['kind', 'destination', 'activation'],
+          ['sshPort'],
+        )
+      : requireExactRecord(
+          value,
+          'Runtime Host connect-only SSH transport',
+          ['kind', 'destination', 'remotePort', 'websocketPath'],
+          ['sshPort'],
+        );
     const destination = normalizeRuntimeHostSshDestination(
       requireString(record.destination, 'Runtime Host SSH destination'),
     );
     const sshPort = optionalPort(record.sshPort, 'Runtime Host SSH port');
+    if (activated) {
+      const activation = requireExactRecord(record.activation, 'Runtime Host SSH activation', [
+        'kind',
+        'operatorPath',
+      ]);
+      if (activation.kind !== 'ssh_operator') {
+        throw new Error('Runtime Host SSH activation kind is invalid');
+      }
+      const operatorPath = requireOperatorPath(activation.operatorPath);
+      return Object.freeze({
+        kind: 'ssh',
+        destination,
+        ...(sshPort === undefined ? {} : { sshPort }),
+        activation: Object.freeze({ kind: 'ssh_operator', operatorPath }),
+      });
+    }
     const remotePort = requirePort(record.remotePort, 'Runtime Host SSH remote port');
     const websocketPath = requireWebSocketPath(record.websocketPath);
     return Object.freeze({
@@ -794,6 +1032,18 @@ function profileCredentialSlot(profile: RemoteRuntimeHostProfile): string {
   return `runtime-host-profile:${requireProfileId(profile.id)}:${profileCredentialBinding(profile)}`;
 }
 
+function profileTargetBinding(profile: PersistedRuntimeHostProfile): string {
+  if (profile.kind === 'remote') return `remote\0${profileCredentialBinding(profile)}`;
+  const normalized = decodeEnvironmentRuntimeHostProfile(profile);
+  return [
+    'environment',
+    normalized.provider.kind,
+    normalized.provider.distribution,
+    normalized.operatorPath,
+    normalized.rootId,
+  ].join('\0');
+}
+
 function profileCredentialBinding(profile: RemoteRuntimeHostProfile): string {
   const normalized = decodeRemoteRuntimeHostProfile(profile);
   return createHash('sha256')
@@ -812,7 +1062,9 @@ function transportCredentialBinding(transport: RuntimeHostRemoteTransport): stri
     case 'plaintext':
       return `${transport.url}\0${transport.acknowledgement}`;
     case 'ssh':
-      return `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
+      return transport.activation
+        ? `${transport.destination}\0${transport.sshPort ?? ''}\0activate\0${transport.activation.operatorPath}`
+        : `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
     case 'libp2p-direct':
       return transport.peerId;
   }
@@ -858,7 +1110,20 @@ function sameRemoteRuntimeHostProfile(
   return (
     left.id === right.id &&
     left.name === right.name &&
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
     profileCredentialBinding(left) === profileCredentialBinding(right)
+  );
+}
+
+function samePersistedRuntimeHostProfile(
+  left: PersistedRuntimeHostProfile,
+  right: PersistedRuntimeHostProfile,
+): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    runtimeHostProfileAccess(left) === runtimeHostProfileAccess(right) &&
+    profileTargetBinding(left) === profileTargetBinding(right)
   );
 }
 
@@ -908,6 +1173,18 @@ function requireWebSocketPath(value: unknown): string {
   return path;
 }
 
+function requireOperatorPath(value: unknown): string {
+  const path = requireString(value, 'Runtime Host SSH operator path');
+  if (
+    !posix.isAbsolute(path) ||
+    Buffer.byteLength(path, 'utf8') > 4_096 ||
+    /[\u0000-\u001f\u007f]/u.test(path)
+  ) {
+    throw new Error('Runtime Host SSH operator path must be an absolute POSIX path');
+  }
+  return posix.normalize(path);
+}
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -943,7 +1220,18 @@ async function writeProfileDocument(
   path: string,
   document: RuntimeHostProfileDocument,
 ): Promise<void> {
-  const encoded = `${JSON.stringify(document, null, 2)}\n`;
+  const schemaVersion = document.profiles.some(
+    (profile) => profile.kind === 'remote' && profile.access === 'session_guest',
+  )
+    ? PROFILE_SCHEMA_VERSION
+    : document.profiles.some(
+          (profile) =>
+            profile.kind === 'environment' ||
+            (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+        )
+      ? 2
+      : 1;
+  const encoded = `${JSON.stringify({ ...document, schemaVersion }, null, 2)}\n`;
   if (Buffer.byteLength(encoded, 'utf8') > PROFILE_DOCUMENT_MAX_BYTES) {
     throw new Error('Runtime Host profile document exceeds its size limit');
   }

@@ -18,6 +18,7 @@
  */
 
 import type { SearchResult } from '@maka/core/search';
+import { runThreadSearch } from '@maka/core/thread-search';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { toDesktopHostSessionSummary } from './runtime-host-session-catalog-ipc-main.js';
 import {
@@ -25,7 +26,6 @@ import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
-import { runThreadSearch } from './search/thread-search.js';
 
 interface RuntimeHostSearchIpcDeps {
   readonly ipcMain: ReconnectableReadIpcMain;
