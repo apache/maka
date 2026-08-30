@@ -390,7 +390,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 4363
+        "nonTriviaTokens": 4376
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 5,
@@ -714,7 +714,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 23,
-        "nonTriviaTokens": 2931
+        "nonTriviaTokens": 3042
       },
       "src/renderer/app-shell-session-settings-actions.ts": {
         "importDeclarations": 9,
@@ -3146,9 +3146,9 @@
           "setTimeout": 2
         },
         "hookCalls": {
-          "useEffect": 4,
+          "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 3,
+          "useRef": 5,
           "useRuntimeHostSettingsTarget": 1,
           "useState": 18,
           "useUiLocale": 1
