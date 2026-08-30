@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { List, ListItem } from '@astryxdesign/core/List';
@@ -29,7 +29,10 @@ import {
   useToast,
 } from '@maka/ui';
 import { useSessionCollaborationServices } from '../services-context.js';
-import type { SessionCollaborationMountSummary } from '../ports.js';
+import type {
+  SessionCollaborationImportPhase,
+  SessionCollaborationMountSummary,
+} from '../ports.js';
 
 export interface SessionCollaborationJoinCopy {
   readonly joinTitle: string;
@@ -43,7 +46,13 @@ export interface SessionCollaborationJoinCopy {
   readonly directPathUnavailable: string;
   readonly code: string;
   readonly join: string;
-  readonly joining: string;
+  readonly validatingInvitation: string;
+  readonly discoveringHost: string;
+  readonly preparingRoute: string;
+  readonly connectingHost: string;
+  readonly authenticatingGuest: string;
+  readonly finalizingAccess: string;
+  readonly loadingSession: string;
   readonly retainedTasks: string;
   readonly disconnect: string;
   readonly disconnectFailed: string;
@@ -59,15 +68,18 @@ export function SessionCollaborationJoinDialog(props: {
   const [code, setCode] = useState('');
   const [mounts, setMounts] = useState<readonly SessionCollaborationMountSummary[]>([]);
   const [removingMountId, setRemovingMountId] = useState<string>();
+  const activeOperationId = useRef<string | undefined>(undefined);
+  const open = useRef(true);
   const [joinState, setJoinState] = useState<
     | { readonly kind: 'idle' }
-    | { readonly kind: 'working' }
+    | { readonly kind: 'working'; readonly phase: SessionCollaborationImportPhase }
     | { readonly kind: 'failed'; readonly message: string }
   >({ kind: 'idle' });
   const working = joinState.kind === 'working';
   const failure = joinState.kind === 'failed' ? joinState.message : undefined;
 
   useEffect(() => {
+    open.current = true;
     let disposed = false;
     void services.listMounts().then(
       (next) => {
@@ -77,16 +89,27 @@ export function SessionCollaborationJoinDialog(props: {
     );
     return () => {
       disposed = true;
+      open.current = false;
+      const operationId = activeOperationId.current;
+      if (operationId) void services.cancelImport(operationId);
     };
   }, [services]);
 
   async function join(allowInsecure = false): Promise<void> {
-    setJoinState({ kind: 'working' });
+    const operationId = services.createOperationId();
+    activeOperationId.current = operationId;
+    setJoinState({ kind: 'working', phase: 'validating_invitation' });
     try {
       const result = await services.importInvitation({
         code: code.trim(),
         allowInsecure,
+        operationId,
+      }, (phase) => {
+        if (open.current && activeOperationId.current === operationId) {
+          setJoinState({ kind: 'working', phase });
+        }
       });
+      if (!open.current || activeOperationId.current !== operationId) return;
       if (result.kind === 'error' && result.reason === 'insecure_confirmation_required') {
         const confirmed = await toast.confirm({
           title: props.copy.insecureTitle,
@@ -95,7 +118,9 @@ export function SessionCollaborationJoinDialog(props: {
           cancelLabel: props.copy.close,
           destructive: true,
         });
-        if (confirmed) await join(true);
+        if (confirmed && open.current && activeOperationId.current === operationId) {
+          await join(true);
+        }
         return;
       }
       if (result.kind === 'error') {
@@ -107,11 +132,42 @@ export function SessionCollaborationJoinDialog(props: {
       props.onImported();
       props.onClose();
     } catch (error) {
+      if (!open.current || activeOperationId.current !== operationId) return;
       const message = errorMessage(error);
       setJoinState({ kind: 'failed', message });
       toast.error(props.copy.joinTitle, message);
     } finally {
-      setJoinState((current) => current.kind === 'working' ? { kind: 'idle' } : current);
+      if (activeOperationId.current === operationId) activeOperationId.current = undefined;
+      if (open.current) {
+        setJoinState((current) => current.kind === 'working' ? { kind: 'idle' } : current);
+      }
+    }
+  }
+
+  function finishClose(): void {
+    open.current = false;
+    props.onClose();
+  }
+
+  async function requestClose(): Promise<void> {
+    const operationId = activeOperationId.current;
+    if (!operationId) {
+      finishClose();
+      return;
+    }
+    try {
+      const result = await services.cancelImport(operationId);
+      if (!open.current || activeOperationId.current !== operationId) return;
+      if (result === 'settling') {
+        setJoinState({ kind: 'working', phase: 'finalizing_access' });
+        return;
+      }
+      finishClose();
+    } catch (error) {
+      if (!open.current || activeOperationId.current !== operationId) return;
+      const message = errorMessage(error);
+      setJoinState({ kind: 'failed', message });
+      toast.error(props.copy.joinTitle, message);
     }
   }
 
@@ -130,7 +186,9 @@ export function SessionCollaborationJoinDialog(props: {
   return (
     <Dialog
       isOpen
-      onOpenChange={(open) => !open && !working && props.onClose()}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) void requestClose();
+      }}
       purpose="form"
       width={560}
     >
@@ -139,13 +197,17 @@ export function SessionCollaborationJoinDialog(props: {
           <DialogHeader
             title={props.copy.joinTitle}
             subtitle={props.copy.joinDescription}
-            onOpenChange={(open) => !open && !working && props.onClose()}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) void requestClose();
+            }}
           />
         )}
         content={(
           <LayoutContent padding={4}>
             <FormLayout>
-              {working ? <Banner status="info" title={props.copy.joining} /> : null}
+              {joinState.kind === 'working' ? (
+                <Banner status="info" title={importPhaseLabel(props.copy, joinState.phase)} />
+              ) : null}
               {failure ? (
                 <Banner
                   status="error"
@@ -189,8 +251,8 @@ export function SessionCollaborationJoinDialog(props: {
             <Button
               variant="secondary"
               label={props.copy.close}
-              isDisabled={working}
-              onClick={props.onClose}
+              isDisabled={joinState.kind === 'working' && joinState.phase === 'finalizing_access'}
+              onClick={() => void requestClose()}
             />
             <Button
               variant="primary"
@@ -219,6 +281,21 @@ function importError(
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
   if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
   return message ?? copy.connectionFailed;
+}
+
+function importPhaseLabel(
+  copy: SessionCollaborationJoinCopy,
+  phase: SessionCollaborationImportPhase,
+): string {
+  switch (phase) {
+    case 'validating_invitation': return copy.validatingInvitation;
+    case 'discovering_host': return copy.discoveringHost;
+    case 'preparing_route': return copy.preparingRoute;
+    case 'connecting': return copy.connectingHost;
+    case 'authenticating': return copy.authenticatingGuest;
+    case 'finalizing_access': return copy.finalizingAccess;
+    case 'loading_session': return copy.loadingSession;
+  }
 }
 
 function errorMessage(error: unknown): string {

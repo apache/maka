@@ -514,7 +514,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
 });
 const guestSessionMountService = createDesktopGuestSessionMountService({
   store: createGuestSessionMountStore(runtimeHostCredentialStore),
-  mount: async (target, signal) => {
+  mount: async (target, signal, onConnectionPhase) => {
     if (target.profile.kind !== 'remote' || !target.credential) {
       throw new Error('A shared Session requires a remote Guest target');
     }
@@ -522,6 +522,7 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     await runtimeHostManager.mountGuest(
       { profile: target.profile, credential: target.credential },
       signal,
+      onConnectionPhase,
     );
   },
   finalizeAccess: async (mountId, signal) => {

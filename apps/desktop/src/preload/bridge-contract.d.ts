@@ -334,6 +334,17 @@ export type DesktopSessionCollaborationImportResult = SessionCollaborationImport
 
 export type DesktopGuestSessionMountSummary = SessionCollaborationMountSummary;
 
+export type DesktopSessionCollaborationImportPhase =
+  | 'validating_invitation'
+  | 'discovering_host'
+  | 'preparing_route'
+  | 'connecting'
+  | 'authenticating'
+  | 'finalizing_access'
+  | 'loading_session';
+
+export type DesktopSessionCollaborationCancelResult = 'cancelled' | 'settling' | 'idle';
+
 export type DesktopSessionCollaborationPrepareResult =
   | {
       readonly kind: 'prepared';
@@ -705,7 +716,9 @@ export interface MakaBridge {
     importInvitation(input: {
       readonly code: string;
       readonly allowInsecure?: boolean;
-    }): Promise<DesktopSessionCollaborationImportResult>;
+      readonly operationId: string;
+    }, onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void): Promise<DesktopSessionCollaborationImportResult>;
+    cancelImport(operationId: string): Promise<DesktopSessionCollaborationCancelResult>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     removeMount(mountId: string): Promise<void>;
     requestTurn(

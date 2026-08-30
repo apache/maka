@@ -26,8 +26,11 @@ export function createDesktopSessionCollaborationServices(
   bridge: DesktopSessionCollaborationBridge = window.maka,
 ): SessionCollaborationServices {
   return {
-    importInvitation: (input) => bridge.sessionCollaboration.importInvitation(input),
+    importInvitation: (input, onProgress) =>
+      bridge.sessionCollaboration.importInvitation(input, onProgress),
+    cancelImport: (operationId) => bridge.sessionCollaboration.cancelImport(operationId),
     listMounts: () => bridge.sessionCollaboration.listMounts(),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
+    createOperationId: () => crypto.randomUUID(),
   };
 }
