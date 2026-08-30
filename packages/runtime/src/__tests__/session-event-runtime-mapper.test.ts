@@ -624,6 +624,48 @@ const projectionRunHeader: AgentRunHeader = {
 };
 
 describe('SessionEvent projection coverage', () => {
+  test('preserves assistant text phase through mapping, projection, and legacy backfill', () => {
+    const runtimeEvent = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'text_complete',
+        messageId: 'message-1',
+        text: 'I am checking the implementation.',
+        phase: 'commentary',
+        providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
+      }),
+      ctx,
+      createSessionEventMapMemory(),
+    );
+    assert.deepEqual(runtimeEvent.content, {
+      kind: 'text',
+      text: 'I am checking the implementation.',
+      phase: 'commentary',
+      providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
+    });
+
+    const projected = projectRuntimeEventsToStoredMessages([runtimeEvent], {
+      runHeaders: [projectionRunHeader],
+    });
+    assert.deepEqual(projected.messages[0], {
+      type: 'assistant',
+      id: 'message-1',
+      turnId: 'turn-1',
+      ts: runtimeEvent.ts,
+      text: 'I am checking the implementation.',
+      phase: 'commentary',
+      modelId: 'model-1',
+      providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
+    });
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: projectionRunHeader,
+      messages: projected.messages,
+      newId: () => 'backfilled-1',
+      now: () => 100,
+    });
+    assert.deepEqual(backfilled.events[0]?.content, runtimeEvent.content);
+  });
+
   test('keeps Host admission facts out of durable Runtime events', () => {
     assert.throws(
       () =>

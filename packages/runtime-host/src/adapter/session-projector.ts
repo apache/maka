@@ -18,7 +18,11 @@
  */
 
 import { isDeepStrictEqual } from 'node:util';
-import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  AssistantTextPhase,
+  SessionEvent,
+} from '@maka/core/events';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import type {
   InteractionPendingSnapshot,
@@ -38,6 +42,7 @@ interface AssistantAccumulator {
   turnId: string;
   messageId: string;
   text: string;
+  phase?: AssistantTextPhase;
   complete: boolean;
   replacing: boolean;
 }
@@ -128,6 +133,7 @@ export class RuntimeHostSessionProjector {
           turnId: root.turnId,
           messageId: message.id,
           text: message.text,
+          ...(message.phase !== undefined ? { phase: message.phase } : {}),
           complete: true,
           replacing: false,
         });
@@ -137,11 +143,13 @@ export class RuntimeHostSessionProjector {
       if (stream.turnId !== root.turnId) continue;
       const key = accumulatorKey(stream.kind, stream.messageId);
       const current = this.#accumulators.get(key);
+      const phase = stream.kind === 'text' ? (stream.phase ?? current?.phase) : undefined;
       this.#accumulators.set(key, {
         kind: stream.kind,
         turnId: stream.turnId,
         messageId: stream.messageId,
         text: current?.text ?? '',
+        ...(phase !== undefined ? { phase } : {}),
         complete: false,
         replacing: false,
       });
@@ -177,15 +185,18 @@ export class RuntimeHostSessionProjector {
       for (const accumulator of this.#accumulators.values()) {
         if (accumulator.complete) continue;
         seededAssistantText = true;
-        events.push({
-          type: accumulator.kind === 'text' ? 'text_delta' : 'thinking_delta',
-          id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
-          turnId: accumulator.turnId,
-          messageId: accumulator.messageId,
-          ts: this.#now(),
-          startOffset: 0,
-          text: accumulator.text,
-        });
+        events.push(
+          assistantDeltaEvent({
+            kind: accumulator.kind,
+            phase: accumulator.phase,
+            id: `host-seed:${root.runId}:${accumulator.kind}:${accumulator.messageId}`,
+            turnId: accumulator.turnId,
+            messageId: accumulator.messageId,
+            ts: this.#now(),
+            startOffset: 0,
+            text: accumulator.text,
+          }),
+        );
       }
     }
     if (root.providerRetry && !seededAssistantText) {
@@ -352,33 +363,41 @@ export class RuntimeHostSessionProjector {
       const current = this.#accumulators.get(key);
       const folded = foldRuntimeHostAssistantDelta(delta.reset ? '' : (current?.text ?? ''), delta);
       const replacing = delta.reset === true || (current?.replacing ?? false);
+      const phase = delta.kind === 'text' ? (delta.phase ?? current?.phase) : undefined;
       this.#accumulators.set(key, {
         kind: delta.kind,
         turnId: delta.turnId,
         messageId: delta.messageId,
         text: folded.text,
+        ...(phase !== undefined ? { phase } : {}),
         complete: delta.complete === true,
         replacing: delta.complete === true ? false : replacing,
       });
       if (delta.complete === true) {
-        events.push({
-          type: delta.kind === 'text' ? 'text_complete' : 'thinking_complete',
-          id: frameIdentity(frame),
-          turnId: delta.turnId,
-          messageId: delta.messageId,
-          ts: this.#now(),
-          text: folded.text,
-        });
+        events.push(
+          assistantCompleteEvent({
+            kind: delta.kind,
+            phase,
+            id: frameIdentity(frame),
+            turnId: delta.turnId,
+            messageId: delta.messageId,
+            ts: this.#now(),
+            text: folded.text,
+          }),
+        );
       } else if (folded.tail && !replacing) {
-        events.push({
-          type: delta.kind === 'text' ? 'text_delta' : 'thinking_delta',
-          id: frameIdentity(frame),
-          turnId: delta.turnId,
-          messageId: delta.messageId,
-          ts: this.#now(),
-          startOffset: folded.text.length - folded.tail.length,
-          text: folded.tail,
-        });
+        events.push(
+          assistantDeltaEvent({
+            kind: delta.kind,
+            phase,
+            id: frameIdentity(frame),
+            turnId: delta.turnId,
+            messageId: delta.messageId,
+            ts: this.#now(),
+            startOffset: folded.text.length - folded.tail.length,
+            text: folded.tail,
+          }),
+        );
       }
       return emptyUpdate(events);
     }
@@ -457,14 +476,17 @@ export class RuntimeHostSessionProjector {
     const events: SessionEvent[] = [];
     for (const accumulator of this.#accumulators.values()) {
       if (accumulator.turnId !== root.turnId || (!includeSettled && accumulator.complete)) continue;
-      events.push({
-        type: accumulator.kind === 'text' ? 'text_complete' : 'thinking_complete',
-        id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,
-        turnId: root.turnId,
-        messageId: accumulator.messageId,
-        ts: this.#now(),
-        text: accumulator.text,
-      });
+      events.push(
+        assistantCompleteEvent({
+          kind: accumulator.kind,
+          phase: accumulator.phase,
+          id: `${root.terminalEventId}:${accumulator.kind}:${accumulator.messageId}`,
+          turnId: root.turnId,
+          messageId: accumulator.messageId,
+          ts: this.#now(),
+          text: accumulator.text,
+        }),
+      );
     }
     if (root.status === 'completed') {
       events.push({
@@ -655,6 +677,60 @@ function projectSessionEvent(
     ...(event.operationId ? { operationId: event.operationId } : {}),
     ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
   };
+}
+
+function assistantDeltaEvent(input: {
+  kind: 'text' | 'thinking';
+  phase?: AssistantTextPhase;
+  id: string;
+  turnId: string;
+  messageId: string;
+  ts: number;
+  startOffset: number;
+  text: string;
+}): SessionEvent {
+  const base = {
+    id: input.id,
+    turnId: input.turnId,
+    messageId: input.messageId,
+    ts: input.ts,
+    startOffset: input.startOffset,
+    text: input.text,
+  };
+  if (input.kind === 'text') {
+    return {
+      type: 'text_delta',
+      ...base,
+      ...(input.phase !== undefined ? { phase: input.phase } : {}),
+    };
+  }
+  return { type: 'thinking_delta', ...base };
+}
+
+function assistantCompleteEvent(input: {
+  kind: 'text' | 'thinking';
+  phase?: AssistantTextPhase;
+  id: string;
+  turnId: string;
+  messageId: string;
+  ts: number;
+  text: string;
+}): SessionEvent {
+  const base = {
+    id: input.id,
+    turnId: input.turnId,
+    messageId: input.messageId,
+    ts: input.ts,
+    text: input.text,
+  };
+  if (input.kind === 'text') {
+    return {
+      type: 'text_complete',
+      ...base,
+      ...(input.phase !== undefined ? { phase: input.phase } : {}),
+    };
+  }
+  return { type: 'thinking_complete', ...base };
 }
 
 export function foldRuntimeHostAssistantDelta(

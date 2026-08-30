@@ -6017,6 +6017,363 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('continues once after an explicit commentary-only provider step', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const phase = calls === 1 ? 'commentary' : 'final_answer';
+        const text =
+          calls === 1 ? 'I am checking the implementation.' : 'The implementation is ready.';
+        const chunks: LanguageModelV4StreamPart[] = [
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'text-start',
+            id: `text-${calls}`,
+            providerMetadata: { openai: { phase } },
+          },
+          { type: 'text-delta', id: `text-${calls}`, delta: text },
+          {
+            type: 'text-end',
+            id: `text-${calls}`,
+            providerMetadata: { openai: { phase } },
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 1, text: 1, reasoning: 0 },
+            },
+          },
+        ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'inspect the implementation');
+    const assistants: AssistantMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [
+        { text: 'I am checking the implementation.', phase: 'commentary' },
+        { text: 'The implementation is ready.', phase: 'final_answer' },
+      ],
+    );
+    assert.deepEqual(
+      assistants.map((message) => ({ text: message.text, phase: message.phase })),
+      [
+        { text: 'I am checking the implementation.', phase: 'commentary' },
+        { text: 'The implementation is ready.', phase: 'final_answer' },
+      ],
+    );
+    assert.match(JSON.stringify(model.doStreamCalls[1]), /commentary_continuation/);
+  });
+
+  test('keeps commentary and final answer as separate messages within one provider step', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            {
+              type: 'text-start',
+              id: 'text-commentary',
+              providerMetadata: { openai: { phase: 'commentary' } },
+            },
+            {
+              type: 'text-delta',
+              id: 'text-commentary',
+              delta: 'I am checking the implementation.',
+            },
+            {
+              type: 'text-end',
+              id: 'text-commentary',
+              providerMetadata: {
+                openai: { itemId: 'text-commentary', phase: 'commentary' },
+              },
+            },
+            {
+              type: 'text-start',
+              id: 'text-final',
+              providerMetadata: { openai: { phase: 'final_answer' } },
+            },
+            {
+              type: 'text-delta',
+              id: 'text-final',
+              delta: 'The implementation is ready.',
+            },
+            {
+              type: 'text-end',
+              id: 'text-final',
+              providerMetadata: { openai: { itemId: 'text-final', phase: 'final_answer' } },
+            },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ] satisfies LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const assistants: AssistantMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events: SessionEvent[] = [];
+    await collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'inspect the implementation', context: [] }),
+      events,
+    );
+
+    assert.deepEqual(
+      assistants.map((message) => ({ text: message.text, phase: message.phase })),
+      [
+        { text: 'I am checking the implementation.', phase: 'commentary' },
+        { text: 'The implementation is ready.', phase: 'final_answer' },
+      ],
+    );
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete'
+          ? [{ messageId: event.messageId, text: event.text, phase: event.phase }]
+          : [],
+      ),
+      [
+        {
+          messageId: assistants[0]?.id,
+          text: 'I am checking the implementation.',
+          phase: 'commentary',
+        },
+        {
+          messageId: assistants[1]?.id,
+          text: 'The implementation is ready.',
+          phase: 'final_answer',
+        },
+      ],
+    );
+  });
+
+  test('fails after one bounded continuation when the provider repeats commentary', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] = [
+          { type: 'stream-start', warnings: [] },
+          {
+            type: 'text-start',
+            id: `text-${calls}`,
+            providerMetadata: { openai: { phase: 'commentary' } },
+          },
+          {
+            type: 'text-delta',
+            id: `text-${calls}`,
+            delta: `Progress update ${calls}.`,
+          },
+          {
+            type: 'text-end',
+            id: `text-${calls}`,
+            providerMetadata: { openai: { phase: 'commentary' } },
+          },
+          {
+            type: 'finish',
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+              outputTokens: { total: 1, text: 1, reasoning: 0 },
+            },
+          },
+        ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'inspect the implementation');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: { ...connection(), slug: 'openai', providerType: 'openai' },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.4',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.type === 'error' && event.message.includes('commentary instead of a final answer'),
+      ),
+      true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'error'),
+      true,
+    );
+  });
+
+  test('infers commentary for phase-less text followed by a client tool call', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-commentary' },
+                {
+                  type: 'text-delta',
+                  id: 'text-commentary',
+                  delta: 'I will inspect the file.',
+                },
+                { type: 'text-end', id: 'text-commentary' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'tool-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'README.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                { type: 'text-delta', id: 'text-final', delta: 'README inspected.' },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                    outputTokens: { total: 1, text: 1, reasoning: 0 },
+                  },
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'inspect README');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [
+        { text: 'I will inspect the file.', phase: 'commentary' },
+        { text: 'README inspected.', phase: 'final_answer' },
+      ],
+    );
+  });
+
+  test('does not carry a tool-only step into the next step text phase', async () => {
+    const loop = countingToolLoopModel(1);
+    const durable = durableTurnHarness('turn-1', 'inspect README');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => loop.model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const textComplete = events.find((event) => event.type === 'text_complete');
+
+    assert.equal(
+      textComplete?.type === 'text_complete' ? textComplete.phase : undefined,
+      'final_answer',
+    );
+  });
+
   test('after-step stop preserves the current provider step usage and prevents another step', async () => {
     const loop = countingToolLoopModel();
     const durable = durableTurnHarness('turn-1', 'hi');

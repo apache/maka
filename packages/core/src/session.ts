@@ -19,7 +19,9 @@
 
 import {
   decodeMessageContent,
+  isAssistantTextPhase,
   TOOL_ACTIVITY_KINDS,
+  type AssistantTextPhase,
   type MessageContent,
   type ToolActivityKind,
   type ToolResultContent,
@@ -797,6 +799,8 @@ export interface AssistantMessage {
   turnId: string;
   ts: number;
   text: string;
+  /** User-visible role of this model-authored text. */
+  phase?: AssistantTextPhase;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
   thinking?: AssistantThinking;
@@ -1020,7 +1024,7 @@ const USER_MESSAGE_SHAPE = defineObjectShape<UserMessage>()(
 );
 const ASSISTANT_MESSAGE_SHAPE = defineObjectShape<AssistantMessage>()(
   ['type', 'id', 'turnId', 'ts', 'text', 'modelId'],
-  ['thinking', 'contentOrder', 'providerOptions'],
+  ['thinking', 'contentOrder', 'phase', 'providerOptions'],
 );
 const TOOL_CALL_MESSAGE_SHAPE = defineObjectShape<ToolCallMessage>()(
   ['type', 'id', 'turnId', 'ts', 'toolName', 'args'],
@@ -1195,6 +1199,7 @@ function decodeMessage(
         hasMessageEnvelope(message, true) &&
         typeof message.text === 'string' &&
         typeof message.modelId === 'string' &&
+        (message.phase === undefined || isAssistantTextPhase(message.phase)) &&
         (message.providerOptions === undefined || isRecord(message.providerOptions)) &&
         (message.thinking === undefined || isAssistantThinking(message.thinking)) &&
         (message.contentOrder === undefined ||

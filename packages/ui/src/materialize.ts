@@ -27,6 +27,7 @@ import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 import type {
+  AssistantTextPhase,
   AttachmentRef,
   InlineReference,
   MessageContent,
@@ -340,6 +341,7 @@ export type TurnTimelineItem =
       kind: "text";
       text: string;
       messageId: string;
+      phase?: AssistantTextPhase;
       ts?: number;
       live?: boolean;
       complete?: boolean;
@@ -533,6 +535,7 @@ export function overlayLiveTurn(
           kind: "text",
           text: step.text.text,
           messageId: step.stepId,
+          ...(step.text.phase !== undefined ? { phase: step.text.phase } : {}),
           live: true,
           complete: step.text.complete,
           truncated: step.text.truncated,
@@ -826,11 +829,16 @@ export function materializeTurns(
  * turns with no timeline text entry.
  */
 export function finalAssistantReplyText(turn: TurnViewModel): string {
+  let legacyReply: string | undefined;
+  let sawPhasedText = false;
   for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
     const item = turn.timeline[index];
-    if (item?.kind === "text" && item.text.length > 0) return item.text;
+    if (item?.kind !== "text" || item.text.length === 0) continue;
+    if (item.phase === "final_answer") return item.text;
+    if (item.phase !== undefined) sawPhasedText = true;
+    else legacyReply ??= item.text;
   }
-  return turn.assistant?.text ?? "";
+  return legacyReply ?? (sawPhasedText ? "" : (turn.assistant?.text ?? ""));
 }
 
 /**
@@ -1036,6 +1044,7 @@ function buildTurnTimeline(
               kind: "text",
               text: message.text,
               messageId: rowId,
+              ...(message.phase !== undefined ? { phase: message.phase } : {}),
               ts: message.ts,
             });
           } else if (kind === "tools") {
@@ -1059,6 +1068,7 @@ function buildTurnTimeline(
             kind: "text",
             text: message.text,
             messageId: rowId,
+            ...(message.phase !== undefined ? { phase: message.phase } : {}),
             ts: message.ts,
           });
         }

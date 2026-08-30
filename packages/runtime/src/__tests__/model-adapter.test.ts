@@ -541,6 +541,45 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
+  test('preserves OpenAI Responses assistant text phases', () => {
+    const adapter = newAdapter();
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-commentary',
+        providerMetadata: { openai: { phase: 'commentary' } },
+      } as Chunk),
+      [{ kind: 'text-start', phase: 'commentary' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-final',
+        providerMetadata: { openai: { itemId: 'message-final', phase: 'final_answer' } },
+      } as Chunk),
+      [
+        {
+          kind: 'text-metadata',
+          phase: 'final_answer',
+          providerOptions: { openai: { itemId: 'message-final', phase: 'final_answer' } },
+        },
+      ],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-unknown',
+        providerMetadata: {
+          openai: { phase: 'analysis' },
+          otherProvider: { phase: 'commentary' },
+        },
+      } as Chunk),
+      [{ kind: 'text-start' }],
+    );
+  });
+
   test('normalizes Anthropic web search results and server-tool errors', () => {
     const adapter = newAdapter();
     type Chunk = Parameters<typeof adapter.translateChunk>[0];

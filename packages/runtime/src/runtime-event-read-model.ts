@@ -652,6 +652,7 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
+      ...(event.content.phase !== undefined ? { phase: event.content.phase } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }
         : {}),

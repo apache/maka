@@ -2179,6 +2179,94 @@ describe('SessionManager claimed graph intent execution', () => {
 });
 
 describe('SessionManager child-session runtime primitive', () => {
+  test('does not use commentary as a completed child summary', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register('ai-sdk', (ctx) =>
+      ctx.header.subagentRuntime
+        ? new CommentaryOnlyBackend(ctx)
+        : new TestBackend(ctx, parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(80),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-commentary', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-commentary',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'inspect the storage boundary',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('');
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('prefers a child final answer over later unphased compatibility text', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register('ai-sdk', (ctx) =>
+      ctx.header.subagentRuntime
+        ? new FinalThenLegacyBackend(ctx)
+        : new TestBackend(ctx, parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(80),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-final', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-final',
+      },
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      prompt: 'inspect the storage boundary',
+    });
+
+    expect(result.status).toBe('completed');
+    expect(result.summary).toBe('Final child answer.');
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('creates a fresh read-only child with a session-inline first run and no parent history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -12818,6 +12906,91 @@ class TestBackend implements AgentBackend {
       this.ctx.store.disposeCount += 1;
     }
   }
+}
+
+class CommentaryOnlyBackend implements AgentBackend {
+  readonly kind = 'ai-sdk' as const;
+  readonly sessionId: string;
+
+  constructor(ctx: BackendFactoryContext) {
+    this.sessionId = ctx.sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: `${input.turnId}-commentary-delta`,
+      turnId: input.turnId,
+      ts: 1,
+      messageId: `${input.turnId}-commentary`,
+      text: 'Inspecting the storage boundary.',
+      phase: 'commentary',
+    };
+    yield {
+      type: 'text_complete',
+      id: `${input.turnId}-commentary-complete`,
+      turnId: input.turnId,
+      ts: 2,
+      messageId: `${input.turnId}-commentary`,
+      text: 'Inspecting the storage boundary.',
+      phase: 'commentary',
+    };
+    yield {
+      type: 'complete',
+      id: `${input.turnId}-complete`,
+      turnId: input.turnId,
+      ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+
+  async respondToSandboxBoundary(): Promise<void> {}
+
+  async dispose(): Promise<void> {}
+}
+
+class FinalThenLegacyBackend implements AgentBackend {
+  readonly kind = 'ai-sdk' as const;
+  readonly sessionId: string;
+
+  constructor(ctx: BackendFactoryContext) {
+    this.sessionId = ctx.sessionId;
+  }
+
+  async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_complete',
+      id: `${input.turnId}-final`,
+      turnId: input.turnId,
+      ts: 1,
+      messageId: `${input.turnId}-final-message`,
+      text: 'Final child answer.',
+      phase: 'final_answer',
+    };
+    yield {
+      type: 'text_complete',
+      id: `${input.turnId}-legacy`,
+      turnId: input.turnId,
+      ts: 2,
+      messageId: `${input.turnId}-legacy-message`,
+      text: 'Legacy compatibility text.',
+    };
+    yield {
+      type: 'complete',
+      id: `${input.turnId}-complete`,
+      turnId: input.turnId,
+      ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+
+  async stop(): Promise<void> {}
+
+  async respondToSandboxBoundary(): Promise<void> {}
+
+  async dispose(): Promise<void> {}
 }
 
 class PermissionBroadcastBackend extends TestBackend {

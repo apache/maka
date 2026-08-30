@@ -24,6 +24,7 @@ import {
   materializeChat,
   materializeTools,
   materializeTurns,
+  finalAssistantReplyText,
   overlayLiveTurn,
   type TurnTimelineItem,
 } from "../materialize.js";
@@ -60,6 +61,93 @@ function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefi
     item.kind === "user" ? `user:${item.message.text}` : `${item.kind}:${"text" in item ? item.text : ""}`,
   ) ?? [];
 }
+
+describe("assistant text phases", () => {
+  test("keeps commentary in the timeline while selecting only the final answer", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "commentary",
+        turnId: "t1",
+        ts: 2,
+        text: "I am checking the implementation.",
+        phase: "commentary",
+        modelId: "fixture",
+      },
+      {
+        type: "assistant",
+        id: "final",
+        turnId: "t1",
+        ts: 3,
+        text: "The implementation is ready.",
+        phase: "final_answer",
+        modelId: "fixture",
+      },
+    ]);
+
+    assert.deepEqual(
+      turn?.timeline.flatMap((item) =>
+        item.kind === "text" ? [{ text: item.text, phase: item.phase }] : [],
+      ),
+      [
+        { text: "I am checking the implementation.", phase: "commentary" },
+        { text: "The implementation is ready.", phase: "final_answer" },
+      ],
+    );
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "The implementation is ready.");
+  });
+
+  test("keeps an unphased legacy final answer in a mixed imported timeline", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "commentary",
+        turnId: "t1",
+        ts: 2,
+        text: "I am checking the implementation.",
+        phase: "commentary",
+        modelId: "fixture",
+      },
+      {
+        type: "assistant",
+        id: "legacy-final",
+        turnId: "t1",
+        ts: 3,
+        text: "Legacy final answer",
+        modelId: "fixture",
+      },
+    ]);
+
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "Legacy final answer");
+  });
+
+  test("prefers an explicit final answer over later unphased compatibility text", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "final",
+        turnId: "t1",
+        ts: 2,
+        text: "Explicit final answer",
+        phase: "final_answer",
+        modelId: "fixture",
+      },
+      {
+        type: "assistant",
+        id: "legacy-after-final",
+        turnId: "t1",
+        ts: 3,
+        text: "Legacy compatibility text",
+        modelId: "fixture",
+      },
+    ]);
+
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "Explicit final answer");
+  });
+});
 
 describe("steering timeline", () => {
   test("keeps a steering message at its conversational position", () => {

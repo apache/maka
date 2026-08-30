@@ -68,6 +68,21 @@ export const TOOL_ACTIVITY_KINDS = [
   'tool',
 ] as const;
 export type ToolActivityKind = (typeof TOOL_ACTIVITY_KINDS)[number];
+export const ASSISTANT_TEXT_PHASES = ['commentary', 'final_answer'] as const;
+/**
+ * Maka-owned assistant text semantics.
+ *
+ * OpenAI Responses can provide this explicitly. Phase-less protocols such as
+ * Chat Completions and Anthropic Messages are normalized by the Runtime from
+ * the response shape: text followed by a client tool call is commentary, while
+ * terminal text is a final answer.
+ */
+export type AssistantTextPhase = (typeof ASSISTANT_TEXT_PHASES)[number];
+
+export function isAssistantTextPhase(value: unknown): value is AssistantTextPhase {
+  return typeof value === 'string' && (ASSISTANT_TEXT_PHASES as readonly string[]).includes(value);
+}
+
 type TerminalToolResultStatus = Exclude<ShellRunTerminalStatus, 'orphaned'>;
 
 // ============================================================================
@@ -539,6 +554,8 @@ export type SessionEvent =
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
   messageId: string;
+  /** User-visible role when known before or during streaming. */
+  phase?: AssistantTextPhase;
   /** Absolute UTF-16 offset for replay-safe streams; absent for append-only backends. */
   startOffset?: number;
   text: string;
@@ -548,6 +565,8 @@ export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
   messageId: string;
   text: string;
+  /** User-visible role of this assistant text after runtime normalization. */
+  phase?: AssistantTextPhase;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
 }

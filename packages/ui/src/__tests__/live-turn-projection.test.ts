@@ -500,6 +500,30 @@ describe('applyLiveTurnEvent', () => {
     );
   });
 
+  it('preserves commentary phase in the live timeline', () => {
+    const streaming = applyLiveTurnEvent(undefined, {
+      type: 'text_delta',
+      id: 'commentary-delta',
+      messageId: 'step-1',
+      turnId: 'turn-1',
+      ts: 100,
+      text: 'Checking',
+      phase: 'commentary',
+    });
+    const completed = applyLiveTurnEvent(streaming, {
+      type: 'text_complete',
+      id: 'commentary-complete',
+      messageId: 'step-1',
+      turnId: 'turn-1',
+      ts: 101,
+      text: 'Checking the repository',
+      phase: 'commentary',
+    });
+
+    const item = overlayLiveTurn([], completed)[0]?.timeline[0];
+    assert.equal(item?.kind === 'text' ? item.phase : undefined, 'commentary');
+  });
+
 
   it('appends late thinking without moving an already visible tool', () => {
     const tool = applyLiveTurnEvent(undefined, {

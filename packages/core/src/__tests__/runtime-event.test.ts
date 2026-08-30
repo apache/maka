@@ -87,6 +87,42 @@ test('Stored assistant reasoning parts survive recovery decoding', () => {
   assert.deepEqual(stored.thinking?.parts, parts);
 });
 
+test('assistant text phase survives canonical decoding and rejects unknown values', () => {
+  const message = decodeCanonicalMessage({
+    type: 'assistant',
+    id: 'message-1',
+    turnId: 'turn-1',
+    ts: 1,
+    text: 'I am checking the repository now.',
+    phase: 'commentary',
+    modelId: 'gpt-5.4',
+  });
+  assert.equal(message.type === 'assistant' ? message.phase : undefined, 'commentary');
+
+  const event = decodeRuntimeEvent(
+    baseEvent({
+      content: {
+        kind: 'text',
+        text: 'The change is complete.',
+        phase: 'final_answer',
+      },
+    }),
+  );
+  assert.equal(event.content?.kind === 'text' ? event.content.phase : undefined, 'final_answer');
+
+  assert.throws(() =>
+    decodeCanonicalMessage({
+      type: 'assistant',
+      id: 'message-2',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'hidden reasoning',
+      phase: 'analysis',
+      modelId: 'gpt-5.4',
+    }),
+  );
+});
+
 test('decodes released Automation origins as read-only legacy provenance', () => {
   const message = decodeCanonicalMessage({
     type: 'user',

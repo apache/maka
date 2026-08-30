@@ -17,8 +17,16 @@
  * under the License.
  */
 
-import { TOOL_ACTIVITY_KINDS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import type { SandboxBoundaryFailureSignal, ToolResultPreviewContent } from '@maka/core/events';
+import {
+  isAssistantTextPhase,
+  TOOL_ACTIVITY_KINDS,
+  TOOL_OUTPUT_DELTA_MAX_CHARS,
+} from '@maka/core/events';
+import type {
+  AssistantTextPhase,
+  SandboxBoundaryFailureSignal,
+  ToolResultPreviewContent,
+} from '@maka/core/events';
 import { decodeToolResultPreviewContent } from '@maka/core/tool-result-preview';
 import type { ToolActivityKind } from '@maka/core/events';
 import type { SessionStatus } from '@maka/core/session';
@@ -29,6 +37,7 @@ import {
   requireExactRecord,
   requireId,
   requireRecord,
+  requireShapedRecord,
 } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { decodeSessionStatus } from './session-status.js';
@@ -120,6 +129,7 @@ export interface SessionAssistantStreamIdentity {
   kind: 'text' | 'thinking';
   turnId: string;
   messageId: string;
+  phase?: AssistantTextPhase;
 }
 
 export interface SubscriptionCloseInput {
@@ -148,6 +158,7 @@ export interface SessionAssistantDelta {
   messageId: string;
   startOffset: number;
   text: string;
+  phase?: AssistantTextPhase;
   reset?: true;
   complete?: true;
 }
@@ -650,11 +661,12 @@ function decodeActiveAssistantStreams(
   }
   const root = snapshot.rootTurn;
   const identities = value.map((candidate): SessionAssistantStreamIdentity => {
-    const record = requireExactRecord(candidate, 'active Session assistant stream', [
-      'kind',
-      'turnId',
-      'messageId',
-    ]);
+    const record = requireShapedRecord(
+      candidate,
+      'active Session assistant stream',
+      ['kind', 'turnId', 'messageId'],
+      ['phase'],
+    );
     if (record.kind !== 'text' && record.kind !== 'thinking') {
       throw invalidProtocolFrame('Invalid active Session assistant stream kind');
     }
@@ -663,7 +675,16 @@ function decodeActiveAssistantStreams(
       kind,
       turnId: requireEntityId(record.turnId, 'turnId'),
       messageId: requireEntityId(record.messageId, 'messageId'),
+      ...(record.phase !== undefined && isAssistantTextPhase(record.phase)
+        ? { phase: record.phase }
+        : {}),
     };
+    if (
+      (record.phase !== undefined && !isAssistantTextPhase(record.phase)) ||
+      (kind === 'thinking' && record.phase !== undefined)
+    ) {
+      throw invalidProtocolFrame('Invalid active Session assistant stream phase');
+    }
     if (
       !root ||
       root.status === 'completed' ||
@@ -709,6 +730,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
     'messageId',
     'startOffset',
     'text',
+    'phase',
     'reset',
     'complete',
   ]);
@@ -722,6 +744,12 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   ]);
   if (record.kind !== 'text' && record.kind !== 'thinking') {
     throw invalidProtocolFrame('Invalid Session assistant delta kind');
+  }
+  if (
+    (record.phase !== undefined && !isAssistantTextPhase(record.phase)) ||
+    (record.kind === 'thinking' && record.phase !== undefined)
+  ) {
+    throw invalidProtocolFrame('Invalid Session assistant delta phase');
   }
   if (record.complete !== undefined && record.complete !== true) {
     throw invalidProtocolFrame('Invalid Session assistant delta completion');
@@ -749,6 +777,7 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
             'Session assistant delta text',
             SESSION_LIVE_DELTA_MAX_BYTES,
           ),
+    ...(record.phase !== undefined ? { phase: record.phase } : {}),
     ...(record.reset === true ? { reset: true as const } : {}),
     ...(record.complete === true ? { complete: true as const } : {}),
   };

@@ -39,6 +39,7 @@
  */
 
 import type {
+  AssistantTextPhase,
   SessionEvent,
   CompleteEvent,
   AbortEvent,
@@ -310,6 +311,13 @@ const CHILD_STEP_BUDGET_FINALIZATION_PROMPT = [
   '</step_budget_finalization>',
 ].join('\n');
 
+const COMMENTARY_CONTINUATION_PROMPT = [
+  '<commentary_continuation>',
+  'Your previous assistant message was a progress update, not the final answer.',
+  'Continue the task now. If the work is complete, provide the final answer.',
+  '</commentary_continuation>',
+].join('\n');
+
 function providerToolResultContent(
   toolName: string,
   output: unknown,
@@ -500,6 +508,25 @@ function mergeTextProviderOptions(
     merged.openai = openai as NonNullable<ModelMessage['providerOptions']>[string];
   }
   return merged;
+}
+
+function normalizedAssistantTextPhase(input: {
+  providerPhase: AssistantTextPhase | undefined;
+  hasClientToolCall: boolean;
+  completedStep: boolean;
+}): AssistantTextPhase | undefined {
+  // Responses supplies phase directly. Chat Completions and Anthropic Messages
+  // do not, so their response topology is the portable signal: text before a
+  // client tool call is progress, and completed text-only output is terminal.
+  if (input.hasClientToolCall) return 'commentary';
+  return input.providerPhase ?? (input.completedStep ? 'final_answer' : undefined);
+}
+
+function crossesCommentaryBoundary(
+  current: AssistantTextPhase | undefined,
+  next: AssistantTextPhase | undefined,
+): boolean {
+  return current !== next && (current === 'commentary' || next === 'commentary');
 }
 
 // ============================================================================
@@ -1442,15 +1469,16 @@ export class AiSdkBackend implements AgentBackend {
     const queue = new AsyncEventQueue<SessionEvent>();
     const codeModeExecTool = this.createCodeModeExecTool(scope, queue);
 
-    // One AssistantMessage is flushed per provider step (not per turn), so the
-    // ledger records the text↔tool timeline at step granularity and each step's
-    // Anthropic thinking signature stays paired with its own thinking text. The
-    // turn's first step reuses this id; every later step rotates to a fresh one
-    // at its step boundary (see the stream loop below).
+    // AssistantMessages normally flush per provider step, but an explicit
+    // commentary↔final phase transition within one response also starts a new
+    // message. This preserves the model-authored progress/final boundary while
+    // keeping same-phase text items and their annotations coalesced.
     let currentStepMessageId = this.newId();
     let stepText = '';
+    let stepTextPhase: AssistantTextPhase | undefined;
     let stepTextProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepTextPartStartOffset = 0;
+    let stepHasClientToolCall = false;
     let stepThinking = '';
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
@@ -1468,10 +1496,26 @@ export class AiSdkBackend implements AgentBackend {
     // precedes text_complete so the read-model attaches this step's reasoning to
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
-    const flushStep = async (): Promise<void> => {
+    let lastFlushedTextPhase: AssistantTextPhase | undefined;
+    let lastFlushedTextPhaseWasExplicit = false;
+    const flushStep = async (completedStep = true): Promise<void> => {
       const hasThinking = sawStepThinking || stepSignature !== undefined;
-      if (stepText.length === 0 && !hasThinking) return;
+      if (stepText.length === 0 && !hasThinking) {
+        stepTextPhase = undefined;
+        stepHasClientToolCall = false;
+        return;
+      }
       const stepId = currentStepMessageId;
+      const textPhase =
+        stepText.length > 0
+          ? normalizedAssistantTextPhase({
+              providerPhase: stepTextPhase,
+              hasClientToolCall: stepHasClientToolCall,
+              completedStep,
+            })
+          : undefined;
+      lastFlushedTextPhase = textPhase;
+      lastFlushedTextPhaseWasExplicit = stepTextPhase !== undefined;
       const thinkingParts: AssistantThinkingPart[] =
         stepResponsesThinkingParts.length > 0
           ? stepResponsesThinkingParts
@@ -1490,6 +1534,7 @@ export class AiSdkBackend implements AgentBackend {
         turnId,
         ts: this.now(),
         text: stepText,
+        ...(textPhase !== undefined ? { phase: textPhase } : {}),
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
@@ -1539,14 +1584,18 @@ export class AiSdkBackend implements AgentBackend {
         ts: this.now(),
         messageId: stepId,
         text: stepText,
+        ...(textPhase !== undefined ? { phase: textPhase } : {}),
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
       } satisfies TextCompleteEvent);
-      scope.finalAssistantText = stepText.length > 0 ? stepText : undefined;
+      scope.finalAssistantText =
+        textPhase === 'final_answer' && stepText.length > 0 ? stepText : undefined;
       stepText = '';
+      stepTextPhase = undefined;
       stepTextProviderOptions = undefined;
       stepTextPartStartOffset = 0;
+      stepHasClientToolCall = false;
       stepThinking = '';
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
@@ -2148,6 +2197,8 @@ export class AiSdkBackend implements AgentBackend {
         let providerOutcome: ModelStepOutcome;
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
+        let commentaryContinuationPending = false;
+        let commentaryContinuationUsed = false;
         agentLoop: for (;;) {
           await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
@@ -2194,11 +2245,15 @@ export class AiSdkBackend implements AgentBackend {
               : boundaryAwareToolNames(shaped?.activeTools ?? plan.currentRepairToolNames());
           const requestSystemPrompt = joinPromptFragments([
             systemPrompt,
+            commentaryContinuationPending ? COMMENTARY_CONTINUATION_PROMPT : undefined,
             finalChildSummaryStep ? CHILD_STEP_BUDGET_FINALIZATION_PROMPT : undefined,
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
+          commentaryContinuationPending = false;
           providerRequestTracker?.setStep(runtimeSteps);
+          lastFlushedTextPhase = undefined;
+          lastFlushedTextPhaseWasExplicit = false;
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
@@ -2332,7 +2387,14 @@ export class AiSdkBackend implements AgentBackend {
                 }
               }
               if (event.kind === 'text-start') {
+                if (stepText.length > 0 && crossesCommentaryBoundary(stepTextPhase, event.phase)) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 stepTextPartStartOffset = stepText.length;
+                if (event.phase !== undefined || stepText.length === 0) {
+                  stepTextPhase = event.phase;
+                }
               } else if (event.kind === 'text') {
                 stepText += event.text;
                 if (event.text.length > 0) attemptSawText = true;
@@ -2343,9 +2405,11 @@ export class AiSdkBackend implements AgentBackend {
                   ts: this.now(),
                   messageId: currentStepMessageId,
                   text: event.text,
+                  ...(stepTextPhase !== undefined ? { phase: stepTextPhase } : {}),
                 } satisfies TextDeltaEvent);
               } else if (event.kind === 'text-metadata') {
                 attemptSawContinuationMetadata = true;
+                if (event.phase !== undefined) stepTextPhase = event.phase;
                 stepTextProviderOptions = mergeTextProviderOptions(
                   stepTextProviderOptions,
                   stripUndefinedDeep(event.providerOptions) as NonNullable<
@@ -2456,6 +2520,7 @@ export class AiSdkBackend implements AgentBackend {
                       : {}),
                   } satisfies ToolStartEvent);
                 } else {
+                  stepHasClientToolCall = true;
                   returnedToolCalls.push(event.toolCall);
                 }
               } else if (event.kind === 'provider-tool-result') {
@@ -2814,6 +2879,28 @@ export class AiSdkBackend implements AgentBackend {
             currentStepMessageId = this.newId();
             continue agentLoop;
           }
+          const endedWithExplicitCommentary =
+            returnedToolCalls.length === 0 &&
+            lastFlushedTextPhaseWasExplicit &&
+            lastFlushedTextPhase === 'commentary';
+          if (endedWithExplicitCommentary) {
+            if (
+              mayTakeAnotherStep &&
+              this.input.loadTurnRuntimeEvents &&
+              !commentaryContinuationUsed
+            ) {
+              commentaryContinuationUsed = true;
+              commentaryContinuationPending = true;
+              currentStepMessageId = this.newId();
+              continue agentLoop;
+            }
+            throw {
+              type: 'model_failure',
+              kind: 'unknown',
+              retryable: false,
+              message: 'Provider ended the turn with commentary instead of a final answer',
+            } satisfies ModelFailure;
+          }
           // Continuing the turn needs the durable current-run reader, for the
           // same reason the tool-call edge above demands it: the next request
           // has to carry the assistant output this step just produced, and only
@@ -3009,7 +3096,7 @@ export class AiSdkBackend implements AgentBackend {
         // `finish-step`; this keeps their and this step's streamed-out output on
         // BOTH exits — user stop and provider error / watchdog timeout — so
         // partialOutputRetained reflects what the user actually saw.
-        await flushStep().catch(() => {});
+        await flushStep(false).catch(() => {});
         if (!scope.aborted && midTurnState?.exhaustedDetail) {
           // Mid-turn compaction could not produce a provider-safe request: end
           // the turn with the explicit first-class outcome, not a raw error.

@@ -381,6 +381,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
   });
 
+  test('publishes a new compatibility epoch for assistant text phases', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 76);
+  });
+
   test('selects the highest mutually supported protocol and rejects a gap', () => {
     assert.equal(negotiateProtocol({ min: 0, max: 0 }, { min: 0, max: 0 }), 0);
     assert.equal(negotiateProtocol({ min: 1, max: 3 }, { min: 2, max: 4 }), 3);
@@ -404,6 +408,37 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(opened), opened);
+    const commentaryOpen = {
+      ...opened,
+      result: {
+        ...opened.result,
+        activeAssistantStreams: [
+          {
+            kind: 'text' as const,
+            turnId: 'turn-1',
+            messageId: 'message-commentary',
+            phase: 'commentary' as const,
+          },
+        ],
+      },
+    };
+    assert.deepEqual(decodeHostFrame(commentaryOpen), commentaryOpen);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...commentaryOpen,
+          result: {
+            ...commentaryOpen.result,
+            activeAssistantStreams: [
+              {
+                ...commentaryOpen.result.activeAssistantStreams[0],
+                phase: 'analysis',
+              },
+            ],
+          },
+        }),
+      isInvalidFrame,
+    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -710,6 +745,35 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(completion), completion);
+    const commentary = {
+      ...completion,
+      delta: {
+        kind: 'text' as const,
+        turnId: 'turn-1',
+        runId: 'run-1',
+        messageId: 'message-commentary',
+        startOffset: 0,
+        text: 'checking',
+        phase: 'commentary' as const,
+      },
+    };
+    assert.deepEqual(decodeHostFrame(commentary), commentary);
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...commentary,
+          delta: { ...commentary.delta, phase: 'analysis' },
+        }),
+      isInvalidFrame,
+    );
+    assert.throws(
+      () =>
+        decodeHostFrame({
+          ...completion,
+          delta: { ...completion.delta, phase: 'commentary' },
+        }),
+      isInvalidFrame,
+    );
     const replacement = {
       ...completion,
       delta: {

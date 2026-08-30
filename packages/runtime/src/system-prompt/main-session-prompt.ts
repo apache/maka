@@ -55,10 +55,26 @@ Prefer descriptive link text for external sources when it is available.
 Follow a more specific format requested by the user or task.`;
 }
 
+function buildProgressUpdatesPromptFragment(): string {
+  return `## Progress updates
+
+For tasks that require tools or multiple steps, send a brief user-facing progress update before the first non-trivial tool call.
+Send another update only when you reach a meaningful phase change, discover information that changes the plan, or finish a long-running operation.
+When more work remains, put the progress update before the next tool call in the same response. Do not end a response after merely saying what you will do.
+Keep updates to one or two concise sentences. Describe your intent or findings; do not expose hidden reasoning or repeat raw tool activity that the interface already shows.
+Skip progress updates for simple answers and trivial single-step actions.
+End the turn with a distinct final answer that states the outcome.`;
+}
+
 export function assembleMainSessionSystemPrompt(
   fragments: readonly (string | undefined)[],
 ): string {
-  return [buildIdentityPromptFragment(), buildResponseFormatPromptFragment(), ...fragments]
+  return [
+    buildIdentityPromptFragment(),
+    buildResponseFormatPromptFragment(),
+    buildProgressUpdatesPromptFragment(),
+    ...fragments,
+  ]
     .filter((fragment): fragment is string => Boolean(fragment?.trim()))
     .join('\n\n');
 }

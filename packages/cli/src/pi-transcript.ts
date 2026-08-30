@@ -19,6 +19,7 @@
 
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
+  AssistantTextPhase,
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
   SandboxBoundaryRequestEvent,
@@ -164,7 +165,7 @@ export type MakaPiTranscriptEntry =
   | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
-  | { kind: 'assistant'; messageId: string; text: string }
+  | { kind: 'assistant'; messageId: string; text: string; phase?: AssistantTextPhase }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
       kind: 'tool';
@@ -788,12 +789,12 @@ export function applyMakaSessionEventToTranscript(
   }
   switch (event.type) {
     case 'text_delta':
-      appendAssistantText(state, event.messageId, event.text);
+      appendAssistantText(state, event.messageId, event.text, event.phase);
       break;
 
     case 'text_complete':
-      if (!setAssistantText(state, event.messageId, event.text) && event.text) {
-        appendAssistantText(state, event.messageId, event.text);
+      if (!setAssistantText(state, event.messageId, event.text, event.phase) && event.text) {
+        appendAssistantText(state, event.messageId, event.text, event.phase);
       }
       break;
 
@@ -1087,7 +1088,12 @@ function storedMessagesToTranscriptEntries(
             expanded: false,
           });
         }
-        entries.push({ kind: 'assistant', messageId: message.id, text: message.text });
+        entries.push({
+          kind: 'assistant',
+          messageId: message.id,
+          text: message.text,
+          ...(message.phase !== undefined ? { phase: message.phase } : {}),
+        });
         break;
       }
       case 'tool_call':
@@ -1934,20 +1940,37 @@ function formatCost(costUsd: number): string {
   return costUsd.toFixed(2);
 }
 
-function appendAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): void {
+function appendAssistantText(
+  state: MakaPiTranscriptState,
+  messageId: string,
+  text: string,
+  phase?: AssistantTextPhase,
+): void {
   const last = state.entries[state.entries.length - 1];
   if (last?.kind === 'assistant' && last.messageId === messageId) {
     last.text += text;
+    if (phase !== undefined) last.phase = phase;
     return;
   }
-  state.entries.push({ kind: 'assistant', messageId, text });
+  state.entries.push({
+    kind: 'assistant',
+    messageId,
+    text,
+    ...(phase !== undefined ? { phase } : {}),
+  });
 }
 
-function setAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): boolean {
+function setAssistantText(
+  state: MakaPiTranscriptState,
+  messageId: string,
+  text: string,
+  phase?: AssistantTextPhase,
+): boolean {
   for (let index = state.entries.length - 1; index >= 0; index -= 1) {
     const entry = state.entries[index];
     if (entry?.kind === 'assistant' && entry.messageId === messageId) {
       entry.text = text;
+      if (phase !== undefined) entry.phase = phase;
       return true;
     }
   }

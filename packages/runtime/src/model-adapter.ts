@@ -17,7 +17,12 @@
  * under the License.
  */
 
-import type { ErrorEvent, CompleteEvent } from '@maka/core/events';
+import {
+  isAssistantTextPhase,
+  type AssistantTextPhase,
+  type ErrorEvent,
+  type CompleteEvent,
+} from '@maka/core/events';
 import { openai } from '@ai-sdk/openai';
 import { anthropic } from '@ai-sdk/anthropic';
 import {
@@ -948,6 +953,14 @@ function plaintextSummaryItemIdFromChunk(
   return safePlaintextResponsesReasoningItemId((chunk as { id?: unknown }).id);
 }
 
+function assistantTextPhaseFromProviderMetadata(metadata: unknown): AssistantTextPhase | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  const openai = (metadata as { openai?: unknown }).openai;
+  if (!openai || typeof openai !== 'object' || Array.isArray(openai)) return undefined;
+  const phase = (openai as { phase?: unknown }).phase;
+  return isAssistantTextPhase(phase) ? phase : undefined;
+}
+
 /**
  * Translate one raw AI SDK stream chunk into zero or more Maka-owned
  * `ModelStreamEvent`s. The sole site that parses SDK chunk names; the backend
@@ -964,18 +977,22 @@ function translateChunk(
       const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
       return reasoningItemId ? [{ kind: 'thinking', text: '', reasoningItemId }] : [];
     }
-    case 'text-start':
-      return [{ kind: 'text-start' }];
+    case 'text-start': {
+      const phase = assistantTextPhaseFromProviderMetadata(chunk.providerMetadata);
+      return [{ kind: 'text-start', ...(phase !== undefined ? { phase } : {}) }];
+    }
     case 'text-delta': {
       const text = chunk.text ?? chunk.textDelta ?? chunk.delta ?? '';
       return text ? [{ kind: 'text', text }] : [];
     }
     case 'text-end': {
       if (!chunk.providerMetadata || typeof chunk.providerMetadata !== 'object') return [];
+      const phase = assistantTextPhaseFromProviderMetadata(chunk.providerMetadata);
       return [
         {
           kind: 'text-metadata',
           providerOptions: chunk.providerMetadata as NonNullable<ModelMessage['providerOptions']>,
+          ...(phase !== undefined ? { phase } : {}),
         },
       ];
     }

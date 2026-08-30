@@ -145,7 +145,14 @@ export function backfillRuntimeEventsFromStoredMessages(
             id: newId(),
             role: 'model',
             author: 'agent',
-            content: { kind: 'text', text: message.text },
+            content: {
+              kind: 'text',
+              text: message.text,
+              ...(message.phase !== undefined ? { phase: message.phase } : {}),
+              ...(message.providerOptions !== undefined
+                ? { providerOptions: structuredClone(message.providerOptions) }
+                : {}),
+            },
             actions: { stateDelta: recoveryState(now, message) },
             refs: { storedMessageId: message.id },
           });

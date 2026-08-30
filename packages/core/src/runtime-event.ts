@@ -35,7 +35,9 @@
 
 import {
   isMessageContent,
+  isAssistantTextPhase,
   normalizeMessageContent,
+  type AssistantTextPhase,
   type MessageContent,
   type PermissionClosureReason,
 } from './events.js';
@@ -144,6 +146,8 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 
 export interface RuntimeEventTextContent extends MessageContent {
   kind: 'text';
+  /** User-visible role of model-authored text; absent on user and legacy events. */
+  phase?: AssistantTextPhase;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
   /** Durable provenance for a host-authored user-role turn. */
@@ -535,6 +539,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'quotes',
     'inlineReferences',
     'steering',
+    'phase',
     'providerOptions',
   ],
 );
@@ -727,6 +732,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
+        ...(value.content.phase !== undefined ? { phase: value.content.phase } : {}),
       },
     } as unknown as RuntimeEvent;
   }
@@ -741,6 +747,7 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
+        (value.phase !== undefined && !isAssistantTextPhase(value.phase)) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
         return false;

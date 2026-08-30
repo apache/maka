@@ -182,7 +182,11 @@ function mapBackendSessionEvent(
         partial: true,
         role: 'model',
         author: 'agent',
-        content: { kind: 'text', text: event.text },
+        content: {
+          kind: 'text',
+          text: event.text,
+          ...(event.phase !== undefined ? { phase: event.phase } : {}),
+        },
         refs: { providerEventId: event.messageId },
       };
     case 'text_complete':
@@ -193,6 +197,7 @@ function mapBackendSessionEvent(
         content: {
           kind: 'text',
           text: event.text,
+          ...(event.phase !== undefined ? { phase: event.phase } : {}),
           ...(event.providerOptions !== undefined
             ? { providerOptions: structuredClone(event.providerOptions) }
             : {}),

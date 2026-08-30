@@ -282,7 +282,10 @@ test('open identifies every assistant stream that is still active and round-trip
   );
   coordinator.attachConnection('connection-1', new RecordingSink());
   await open(coordinator, 'connection-1');
-  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', textEvent(1));
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textEvent(1),
+    phase: 'commentary',
+  });
   await coordinator.acceptRuntimeEvent(
     SESSION_ID,
     'run-1',
@@ -296,7 +299,7 @@ test('open identifies every assistant stream that is still active and round-trip
   coordinator.attachConnection('connection-2', new RecordingSink());
   const active = await open(coordinator, 'connection-2');
   assert.deepEqual(active.activeAssistantStreams, [
-    { kind: 'text', turnId: 'turn-1', messageId: 'message-1' },
+    { kind: 'text', turnId: 'turn-1', messageId: 'message-1', phase: 'commentary' },
     { kind: 'thinking', turnId: 'turn-1', messageId: 'message-2' },
     { kind: 'text', turnId: 'turn-1', messageId: 'message-3' },
   ]);
@@ -315,11 +318,10 @@ test('open identifies every assistant stream that is still active and round-trip
   if (!('ok' in decoded) || !decoded.ok || decoded.operation !== 'subscription.open') return;
   assert.deepEqual(decoded.result.activeAssistantStreams, active.activeAssistantStreams);
 
-  await coordinator.acceptRuntimeEvent(
-    SESSION_ID,
-    'run-1',
-    textCompleteEvent('message-1', 'chunk-1'),
-  );
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    ...textCompleteEvent('message-1', 'chunk-1'),
+    phase: 'commentary',
+  });
   coordinator.attachConnection('connection-3', new RecordingSink());
   const remaining = await open(coordinator, 'connection-3');
   assert.deepEqual(remaining.activeAssistantStreams, [

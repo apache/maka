@@ -21,6 +21,7 @@ import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
+import { isAssistantTextPhase, type AssistantTextPhase } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
 import { externalSessionMatchesQuery } from '@maka/core/external-session';
@@ -327,6 +328,7 @@ function convertCodexRollout(
         if (itemType === 'agentmessage') {
           const text = codexCompletedItemText(item);
           if (text.length === 0) continue;
+          const phase = codexAssistantTextPhase(item);
           messages.push({
             type: 'assistant',
             id:
@@ -335,6 +337,7 @@ function convertCodexRollout(
             turnId: ensureTurnId(record.line),
             ts: timestampFor(record),
             text,
+            ...(phase !== undefined ? { phase } : {}),
             modelId: activeModel,
             contentOrder: ['text'],
           });
@@ -383,12 +386,14 @@ function convertCodexRollout(
       if (eventType === 'agent_message') {
         const text = stringField(payload, 'message');
         if (!text) continue;
+        const phase = codexAssistantTextPhase(payload);
         messages.push({
           type: 'assistant',
           id: generatedCodexId(expectedSessionId, 'assistant', record.line),
           turnId: ensureTurnId(record.line),
           ts: timestampFor(record),
           text,
+          ...(phase !== undefined ? { phase } : {}),
           modelId: activeModel,
           contentOrder: ['text'],
         });
@@ -771,6 +776,11 @@ function isRecord(value: unknown): value is JsonRecord {
 function stringField(record: JsonRecord | undefined, field: string): string | undefined {
   const value = record?.[field];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function codexAssistantTextPhase(record: JsonRecord | undefined): AssistantTextPhase | undefined {
+  const phase = record?.phase;
+  return isAssistantTextPhase(phase) ? phase : undefined;
 }
 
 function isSafeCodexSessionId(value: unknown): value is string {

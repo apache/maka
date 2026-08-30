@@ -43,6 +43,7 @@ import type {
   PermissionRequestEvent,
   ShellRunUpdate,
   MessageContent,
+  AssistantTextPhase,
 } from '@maka/core/events';
 import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import type {
@@ -3212,12 +3213,13 @@ export class SessionManager {
       this.finalizeAndListChildTurnArtifacts(child.id, run.turnId, run.status),
     ]);
     const storedSummary =
-      messages
-        .filter(
-          (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
-            message.type === 'assistant' && message.turnId === run.turnId,
-        )
-        .at(-1)?.text ?? '';
+      preferredAssistantText(
+        messages.flatMap((message) =>
+          message.type === 'assistant' && message.turnId === run.turnId
+            ? [{ text: message.text, phase: message.phase }]
+            : [],
+        ),
+      ) ?? '';
     const runtimeText = runtimeEvents.filter(
       (
         event,
@@ -3225,10 +3227,13 @@ export class SessionManager {
         content: Extract<NonNullable<RuntimeEvent['content']>, { kind: 'text' }>;
       } => event.role === 'model' && event.content?.kind === 'text',
     );
-    const durableRuntimeSummary = runtimeText.filter((event) => !event.partial).at(-1)
-      ?.content.text;
+    const durableRuntimeSummary = preferredAssistantText(
+      runtimeText
+        .filter((event) => !event.partial)
+        .map((event) => ({ text: event.content.text, phase: event.content.phase })),
+    );
     const partialRuntimeSummary = runtimeText
-      .filter((event) => event.partial)
+      .filter((event) => event.partial && event.content.phase !== 'commentary')
       .map((event) => event.content.text)
       .join('');
     const completedAt = run.completedAt ?? run.updatedAt;
@@ -5287,11 +5292,24 @@ function trimSummary(text: string): string {
     : `${trimmed.slice(0, CHILD_AGENT_SUMMARY_MAX_CHARS - 1)}…`;
 }
 
+function preferredAssistantText(
+  texts: readonly { readonly text: string; readonly phase?: AssistantTextPhase }[],
+): string | undefined {
+  let explicitFinal: string | undefined;
+  let legacyFallback: string | undefined;
+  for (const text of texts) {
+    if (text.phase === 'final_answer') explicitFinal = text.text;
+    else if (text.phase === undefined) legacyFallback = text.text;
+  }
+  return explicitFinal ?? legacyFallback;
+}
+
 class ChildAgentSummaryAccumulator {
   eventCount = 0;
   failureClass: string | undefined;
   private terminalStatus: SpawnChildSessionResult['status'] | undefined;
-  private lastTextComplete = '';
+  private lastFinalTextComplete = '';
+  private lastLegacyTextComplete = '';
   private textDeltaTail = '';
   private textDeltaTruncated = false;
   private lastError = '';
@@ -5300,10 +5318,19 @@ class ChildAgentSummaryAccumulator {
     this.eventCount += 1;
     switch (event.type) {
       case 'text_complete':
-        this.lastTextComplete = trimSummary(event.text);
+        if (event.phase === 'commentary') {
+          this.textDeltaTail = '';
+          this.textDeltaTruncated = false;
+          break;
+        }
+        if (event.phase === 'final_answer') {
+          this.lastFinalTextComplete = trimSummary(event.text);
+        } else {
+          this.lastLegacyTextComplete = trimSummary(event.text);
+        }
         break;
       case 'text_delta':
-        this.appendTextDelta(event.text);
+        if (event.phase !== 'commentary') this.appendTextDelta(event.text);
         break;
       case 'error':
         this.terminalStatus = 'failed';
@@ -5327,7 +5354,8 @@ class ChildAgentSummaryAccumulator {
   }
 
   text(): string {
-    if (this.lastTextComplete.trim()) return this.lastTextComplete;
+    if (this.lastFinalTextComplete.trim()) return this.lastFinalTextComplete;
+    if (this.lastLegacyTextComplete.trim()) return this.lastLegacyTextComplete;
     if (this.textDeltaTail.trim()) {
       return this.textDeltaTruncated
         ? `…${this.textDeltaTail.slice(1)}`

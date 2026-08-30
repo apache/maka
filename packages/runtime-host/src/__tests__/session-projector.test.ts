@@ -74,6 +74,57 @@ test('applies authoritative replacement once and does not complete it again at T
   );
 });
 
+test('preserves commentary phase across active stream seeding and completion', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed(
+      [{ ...assistant('message-1', 'checking'), phase: 'commentary' }],
+      snapshot(),
+    ),
+    () => 10,
+    [
+      {
+        kind: 'text',
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        phase: 'commentary',
+      },
+    ],
+  );
+
+  assert.deepEqual(projector.seedActive(true), [
+    {
+      type: 'text_delta',
+      id: 'host-seed:run-1:text:message-1',
+      turnId: 'turn-1',
+      messageId: 'message-1',
+      ts: 10,
+      startOffset: 0,
+      text: 'checking',
+      phase: 'commentary',
+    },
+  ]);
+  assert.deepEqual(
+    projector.accept(
+      deltaFrame(1, 'checking'.length, ' the repository', {
+        complete: true,
+        phase: 'commentary',
+      }),
+    ).events,
+    [
+      {
+        type: 'text_complete',
+        id: 'host-frame:host-1:subscription-1:1',
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        ts: 10,
+        text: 'checking the repository',
+        phase: 'commentary',
+      },
+    ],
+  );
+});
+
 test('keeps a revocable in-flight lease pending', () => {
   const previous = snapshot({
     queue: {
@@ -732,7 +783,7 @@ function deltaFrame(
   sequence: number,
   startOffset: number,
   text: string,
-  flags: { reset?: true; complete?: true } = {},
+  flags: { reset?: true; complete?: true; phase?: 'commentary' | 'final_answer' } = {},
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',

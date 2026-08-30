@@ -774,6 +774,31 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'), /final/);
   });
 
+  test('keeps the assistant text phase when completion replaces streamed text', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'message-1',
+        text: 'checking',
+        phase: 'commentary',
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_complete',
+        messageId: 'message-1',
+        text: 'checking the repository',
+        phase: 'commentary',
+      }),
+    );
+
+    const entry = state.entries[0];
+    assert.equal(entry?.kind === 'assistant' ? entry.phase : undefined, 'commentary');
+  });
+
   test('allows text_complete to replace streamed assistant text with empty text', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(

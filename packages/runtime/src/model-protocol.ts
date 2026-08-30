@@ -36,6 +36,7 @@
  * for this seam.
  */
 
+import type { AssistantTextPhase } from '@maka/core/events';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 
 // ---------------------------------------------------------------------------
@@ -386,9 +387,13 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
-  | { kind: 'text-start' }
+  | { kind: 'text-start'; phase?: AssistantTextPhase }
   | { kind: 'text'; text: string }
-  | { kind: 'text-metadata'; providerOptions: ProviderOptions }
+  | {
+      kind: 'text-metadata';
+      providerOptions: ProviderOptions;
+      phase?: AssistantTextPhase;
+    }
   | {
       kind: 'thinking';
       text: string;

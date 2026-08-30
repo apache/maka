@@ -19,6 +19,7 @@
 
 import {
   decodeToolStepProgress,
+  type AssistantTextPhase,
   type MessageContent,
   type ProviderRetryEvent,
   type SessionEvent,
@@ -75,6 +76,7 @@ export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
   text: string;
+  phase?: AssistantTextPhase;
   truncated: boolean;
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
@@ -343,6 +345,9 @@ export function applyLiveTurnEvent(
       ...step,
       text: {
         text: applied.text,
+        ...(event.phase ?? step.text?.phase
+          ? { phase: event.phase ?? step.text?.phase }
+          : {}),
         truncated: (step.text?.truncated ?? false) || applied.truncated,
         complete: false,
         ...(delta.sourceEndOffset === undefined
@@ -359,6 +364,9 @@ export function applyLiveTurnEvent(
       ...step,
       text: {
         text: applied.text,
+        ...(event.phase ?? step.text?.phase
+          ? { phase: event.phase ?? step.text?.phase }
+          : {}),
         truncated: applied.truncated,
         complete: true,
         ...(step.text?.sourceEndOffset === undefined

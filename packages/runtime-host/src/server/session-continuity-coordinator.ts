@@ -134,6 +134,7 @@ interface ActiveAssistantStream {
   messageId: string;
   kind: SessionAssistantDelta['kind'];
   text: string;
+  phase?: SessionAssistantDelta['phase'];
   completedParts?: string[];
 }
 
@@ -709,11 +710,13 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         const prefixKey = assistantStreamKey(kind, event.messageId);
         const current = state.assistantStreams.get(prefixKey);
         const startOffset = current?.text.length ?? 0;
+        const phase = event.type === 'text_delta' ? (event.phase ?? current?.phase) : undefined;
         state.assistantStreams.set(prefixKey, {
           turnId: event.turnId,
           messageId: event.messageId,
           kind,
           text: (current?.text ?? '') + event.text,
+          ...(phase !== undefined ? { phase } : {}),
         });
         for (const subscriber of state.subscribers.values()) {
           this.#enqueueAssistantDelta(subscriber, sessionId, runId, event, kind, startOffset);
@@ -762,6 +765,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
               messageId: event.messageId,
               text: '',
             } satisfies ActiveAssistantStream);
+          if (event.phase !== undefined) current.phase = event.phase;
           for (const subscriber of state.subscribers.values()) {
             this.#enqueueAssistantCompletion(
               subscriber,
@@ -897,7 +901,12 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
 
             const subscriptionId = randomUUID();
             const activeAssistantStreams = [...committed.state.assistantStreams.values()].map(
-              ({ kind, turnId, messageId }) => ({ kind, turnId, messageId }),
+              ({ kind, turnId, messageId, phase }) => ({
+                kind,
+                turnId,
+                messageId,
+                ...(phase !== undefined ? { phase } : {}),
+              }),
             );
             let transcript: SubscriberTranscriptState | undefined;
             let retainedTranscriptOverlay: RetainedTranscriptOverlay | undefined;
@@ -1563,7 +1572,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber: Subscriber,
     sessionId: string,
     runId: string,
-    current: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
+    current: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text' | 'phase'>,
     kind: SessionAssistantDelta['kind'],
     finalText: string,
   ): void {
@@ -1595,6 +1604,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         messageId: current.messageId,
         startOffset: finalText.length,
         text: '',
+        ...(kind === 'text' && current.phase !== undefined ? { phase: current.phase } : {}),
         ...(!extendsPrefix && finalText.length === 0 ? { reset: true as const } : {}),
         complete: true,
       },
@@ -1605,7 +1615,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
     subscriber: Subscriber,
     sessionId: string,
     runId: string,
-    event: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text'>,
+    event: Pick<ActiveAssistantStream, 'turnId' | 'messageId' | 'text' | 'phase'>,
     kind: SessionAssistantDelta['kind'],
     startOffset: number,
     text: string,
@@ -1628,6 +1638,7 @@ export class SessionContinuityCoordinator implements SessionContinuityService {
         messageId: event.messageId,
         startOffset: startOffset + emittedCharacters,
         text,
+        ...(kind === 'text' && event.phase !== undefined ? { phase: event.phase } : {}),
         ...(reset && emittedCharacters === 0 ? { reset: true } : {}),
       },
     });
