@@ -354,6 +354,8 @@ function sessionConnectionIdentityNotice(
   return undefined;
 }
 
+const SESSION_RESUME_AVAILABILITY_CONCURRENCY = 8;
+
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
   const primaryGuidance = getTuiPrimaryGuidance(locale);
@@ -1798,7 +1800,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // serial lock like any control action; mid-turn that lock is held by the
   // running Turn, so the switch goes through the detach path instead of
   // silently no-oping on the busy gate.
-  const goToSession = async (sessionId: string): Promise<void> => {
+  const goToSession = async (sessionId: string): Promise<boolean> => {
     const pair = sideConversation;
     if (
       pair &&
@@ -1806,24 +1808,31 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (sessionId === pair.parentSessionId || sessionId === pair.sideSessionId)
     ) {
       await toggleSideConversation();
-      return;
+      return true;
     }
     const leavesPair =
       pair !== undefined && sessionId !== pair.parentSessionId && sessionId !== pair.sideSessionId;
     if (!turnRunning) {
+      let switched = false;
       await runControl(async () => {
         await switchSession(sessionId);
+        switched = true;
         if (leavesPair) await discardCurrentSidePair();
       });
-      return;
+      return switched;
     }
     // One detach at a time (#3380): a second mid-turn switch while the first
     // is still handing the view over would clear `detaching` early, reopen
     // the interrupt window, and double-apply the adoption.
-    if (detaching) return;
-    await switchAwayMidTurn(sessionId)
-      .then(() => (leavesPair ? discardCurrentSidePair() : undefined))
-      .catch(reportError);
+    if (detaching) return false;
+    try {
+      await switchAwayMidTurn(sessionId);
+      if (leavesPair) await discardCurrentSidePair();
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
+    }
   };
 
   const openSideConversation = async (prompt: string): Promise<void> => {
@@ -2408,6 +2417,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   let sessionListPromise: Promise<SessionSummary[]> | undefined;
+  let activeResumeAvailabilityChecks = 0;
+  const queuedResumeAvailabilityChecks: Array<() => void> = [];
+  const runResumeAvailabilityCheck = async <T>(task: () => Promise<T>): Promise<T> => {
+    if (activeResumeAvailabilityChecks >= SESSION_RESUME_AVAILABILITY_CONCURRENCY) {
+      await new Promise<void>((resolve) => queuedResumeAvailabilityChecks.push(resolve));
+    }
+    activeResumeAvailabilityChecks += 1;
+    try {
+      return await task();
+    } finally {
+      activeResumeAvailabilityChecks -= 1;
+      queuedResumeAvailabilityChecks.shift()?.();
+    }
+  };
   const listSessions = (): Promise<SessionSummary[]> => {
     if (!sessionListPromise) {
       sessionListPromise = input.driver.listSessions().finally(() => {
@@ -2472,19 +2495,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       Promise.all(
         sessions.map(async (session) => {
           try {
-            if (!session.cwd) {
-              return [
-                session.id,
-                { available: false, reason: 'Missing working directory' },
-              ] as const;
-            }
-            const availability = options.onlyResumable
-              ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
-                (await input.driver.getSessionResumeAvailability?.(session)) ??
-                (await inspectSessionResumeAvailability(session)))
-              : ((await input.driver.getSessionResumeAvailability?.(session)) ??
-                (await inspectSessionResumeAvailability(session)));
-            return [session.id, availability] as const;
+            return await runResumeAvailabilityCheck(async () => {
+              if (!session.cwd) {
+                return [
+                  session.id,
+                  { available: false, reason: 'Missing working directory' },
+                ] as const;
+              }
+              const availability = options.onlyResumable
+                ? ((await input.driver.getSessionResumeCandidateAvailability?.(session)) ??
+                  (await input.driver.getSessionResumeAvailability?.(session)) ??
+                  (await inspectSessionResumeAvailability(session)))
+                : ((await input.driver.getSessionResumeAvailability?.(session)) ??
+                  (await inspectSessionResumeAvailability(session)));
+              return [session.id, availability] as const;
+            });
           } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
             return [session.id, { available: false, reason: detail }] as const;
@@ -2583,8 +2608,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         closeOverlay();
         void (async () => {
-          await goToSession(item.value);
-          if (options.onlyResumable) await runControl(resumeSession);
+          const switched = await goToSession(item.value);
+          if (switched && options.onlyResumable) await runControl(resumeSession);
         })().catch(reportError);
       };
       list.onCancel = () => closeOverlay();
@@ -2616,7 +2641,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         sessions.find((candidate) => candidate.id === sessionId) ??
         sessions.find((candidate) => candidate.cwd === cwd);
       if (!session) return;
-      const availability = await input.driver.getSessionResumeCandidateAvailability(session);
+      const availability = await runResumeAvailabilityCheck(() =>
+        input.driver.getSessionResumeCandidateAvailability!(session),
+      );
       if (availability.available) {
         state.entries.push({
           kind: 'notice',

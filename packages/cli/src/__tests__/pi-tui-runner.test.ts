@@ -4006,6 +4006,61 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('/resume does not resume after a stale selection fails to switch', async () => {
+    const terminal = new FakeTerminal();
+    const session = fakeSessionSummary('stale', '/repo');
+    const driver = new RejectingSwitchSessionDriver([session]);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    terminal.input('\r');
+    await waitFor(() => driver.switchCalls === 1);
+    await delay(0);
+    assert.equal(driver.resumeCalls, 0);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('/resume bounds concurrent resumability checks for large session catalogs', async () => {
+    const terminal = new FakeTerminal();
+    const sessions = Array.from({ length: 24 }, (_, index) =>
+      fakeSessionSummary(`session-${index}`, '/repo'),
+    );
+    const driver = new BoundedResumeAvailabilityDriver(sessions);
+    (driver as unknown as { sessionId: string | null }).sessionId = null;
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('/resume');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Resume Session Current'));
+    assert.ok(driver.availabilityCalls >= sessions.length);
+    assert.ok(driver.maxActiveCalls <= 8);
+
+    terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
+  });
+
   test('/resume excludes foreign sessions when none is attached', async () => {
     const terminal = new FakeTerminal();
     const driver = new SlashCommandDriver([]);
@@ -8535,6 +8590,32 @@ class SlashCommandDriver extends FakeSessionDriver {
   }
   getPermissionMode(): PermissionMode {
     return this.activeBoundaryDisplayMode ?? 'ask';
+  }
+}
+
+class RejectingSwitchSessionDriver extends SlashCommandDriver {
+  switchCalls = 0;
+
+  override async switchSession(_sessionId: string): Promise<MakaSessionSwitchResult> {
+    this.switchCalls += 1;
+    throw new Error('session became unavailable');
+  }
+}
+
+class BoundedResumeAvailabilityDriver extends SlashCommandDriver {
+  availabilityCalls = 0;
+  activeCalls = 0;
+  maxActiveCalls = 0;
+
+  async getSessionResumeCandidateAvailability(
+    _session: SessionSummary,
+  ): Promise<SessionResumeAvailability> {
+    this.availabilityCalls += 1;
+    this.activeCalls += 1;
+    this.maxActiveCalls = Math.max(this.maxActiveCalls, this.activeCalls);
+    await delay(1);
+    this.activeCalls -= 1;
+    return { available: true };
   }
 }
 
