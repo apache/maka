@@ -35,7 +35,9 @@ import {
   RuntimeHostSubscriptionError,
 } from '@maka/runtime-host/client';
 import {
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
   SESSION_CONTINUITY_SCHEMA_VERSION,
+  type ArtifactIngestResult,
   type GoalProjection,
   type InteractionPendingSnapshot,
   type OperationInput,
@@ -1691,6 +1693,7 @@ describe('Runtime Host Maka Session driver', () => {
     assert.deepEqual(await driver.retractQueued!(), {
       text: 'Later',
       messageIds: ['message-1'],
+      entries: [{ text: 'Later', attachments: [] }],
     });
     assert.deepEqual(
       connection.requests.filter(
@@ -1882,6 +1885,208 @@ describe('Runtime Host Maka Session driver', () => {
         messageId: 'message-interrupted',
         placement: 'current_turn',
       }),
+    );
+  });
+
+  test('ingests an attachment through begin/chunk/commit and resolves the committed ref', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const content = new Uint8Array(ARTIFACT_INGEST_CHUNK_MAX_BYTES + 10).fill(7);
+    const committed = {
+      kind: 'image',
+      name: 'shot.png',
+      mimeType: 'image/png',
+      bytes: content.byteLength,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+    } as const;
+    connection.artifactIngestOutcomes.push(
+      { kind: 'upload_opened', uploadId: 'upload-1', nextOffset: 0 },
+      { kind: 'chunk_accepted', uploadId: 'upload-1', nextOffset: ARTIFACT_INGEST_CHUNK_MAX_BYTES },
+      {
+        kind: 'chunk_accepted',
+        uploadId: 'upload-1',
+        nextOffset: ARTIFACT_INGEST_CHUNK_MAX_BYTES + 10,
+      },
+      { kind: 'committed', uploadId: 'upload-1', attachment: { ...committed } },
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    const ref = await driver.ingestAttachment!({
+      name: 'shot.png',
+      mimeType: 'image/png',
+      content,
+    });
+
+    assert.deepEqual(ref, committed);
+    const ingestRequests = connection.requests.filter(
+      ({ operation }) => operation === 'artifact.ingest',
+    );
+    // begin → two chunks (one full window, one 10-byte tail) → commit.
+    assert.deepEqual(
+      ingestRequests.map(({ input }) => (input as { kind: string }).kind),
+      ['begin', 'chunk', 'chunk', 'commit'],
+    );
+    const begin = ingestRequests[0]!.input as {
+      sessionId: string;
+      name: string;
+      mimeType: string;
+      totalBytes: number;
+      contentSha256: string;
+    };
+    assert.equal(begin.sessionId, 'session-1');
+    assert.equal(begin.name, 'shot.png');
+    assert.equal(begin.totalBytes, content.byteLength);
+    assert.match(begin.contentSha256, /^sha256:[0-9a-f]{64}$/);
+    const firstChunk = ingestRequests[1]!.input as { offset: number; chunkBase64: string };
+    assert.equal(firstChunk.offset, 0);
+    assert.equal(
+      Buffer.from(firstChunk.chunkBase64, 'base64').byteLength,
+      ARTIFACT_INGEST_CHUNK_MAX_BYTES,
+    );
+    const tailChunk = ingestRequests[2]!.input as { offset: number };
+    assert.equal(tailChunk.offset, ARTIFACT_INGEST_CHUNK_MAX_BYTES);
+  });
+
+  test('aborts a staged attachment upload when the Host refuses a chunk', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    connection.artifactIngestOutcomes.push(
+      { kind: 'upload_opened', uploadId: 'upload-1', nextOffset: 0 },
+      new RuntimeHostOperationError('artifact.ingest', 'operation_conflict', 'bad offset'),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    await assert.rejects(
+      driver.ingestAttachment!({
+        name: 'shot.png',
+        mimeType: 'image/png',
+        content: new Uint8Array([1]),
+      }),
+      /bad offset/,
+    );
+    assert.deepEqual(
+      connection.requests
+        .filter(({ operation }) => operation === 'artifact.ingest')
+        .map(({ input }) => (input as { kind: string }).kind),
+      ['begin', 'chunk', 'abort'],
+    );
+  });
+
+  test('deletes an abandoned attachment artifact by its exact reference, tolerating not-found', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    const ref = {
+      kind: 'image',
+      name: 'gone.png',
+      mimeType: 'image/png',
+      bytes: 2,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-9' },
+    } as const;
+    await driver.deleteAttachment!(ref);
+    const deleteRequest = connection.requests.find(
+      ({ operation }) => operation === 'artifact.delete',
+    );
+    assert.deepEqual(deleteRequest?.input, {
+      sessionId: 'session-1',
+      artifactId: 'attachment-9',
+    });
+
+    connection.artifactDeleteOutcome = new RuntimeHostOperationError(
+      'artifact.delete',
+      'not_found',
+      'Artifact was not found',
+    );
+    await assert.doesNotReject(() => driver.deleteAttachment!(ref));
+    assert.equal(
+      connection.requests.filter(({ operation }) => operation === 'artifact.delete').length,
+      2,
+    );
+  });
+
+  test('carries message attachments on the wire and groups retracted entries per message', async () => {
+    const subscription = new FakeSubscription(continuitySnapshot(), Promise.resolve([]));
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+    });
+    await driver.switchSession('session-1');
+
+    const ref = {
+      kind: 'image',
+      name: 'wire.png',
+      mimeType: 'image/png',
+      bytes: 5,
+      ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-2' },
+    } as const;
+    await driver.submitMessage('look [image 1]', {
+      messageId: 'message-attached',
+      placement: 'current_turn',
+      attachments: [ref],
+    });
+    const submitRequest = connection.requests.find(
+      ({ operation }) => operation === 'turn.message.submit',
+    );
+    assert.deepEqual(
+      (submitRequest?.input as { content: { attachments?: unknown[] } } | undefined)?.content
+        .attachments,
+      [ref],
+    );
+
+    connection.queueRetractOutcome = {
+      hostEpoch: 'host-1',
+      queueRevision: 4,
+      retracted: [
+        {
+          entryId: 'entry-1',
+          messageId: 'message-attached',
+          content: {
+            text: 'look [image 1]',
+            attachments: [ref],
+          },
+          placement: 'current_turn',
+        },
+        {
+          entryId: 'entry-2',
+          messageId: 'message-plain',
+          content: { text: 'plain text' },
+          placement: 'next_turn',
+        },
+      ],
+    };
+    const retracted = await driver.retractQueued!();
+    assert.equal(retracted.text, 'look [image 1]\n\nplain text');
+    assert.deepEqual(
+      retracted.entries?.map((entry) => ({
+        text: entry.text,
+        attachments: entry.attachments,
+      })),
+      [
+        { text: 'look [image 1]', attachments: [ref] },
+        { text: 'plain text', attachments: [] },
+      ],
     );
   });
 
@@ -2528,6 +2733,12 @@ class FakeConnection {
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
   readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
+  /** Scripted artifact.ingest results, shifted per call (begin → chunk… → commit/abort). */
+  readonly artifactIngestOutcomes: Array<ArtifactIngestResult | Error> = [];
+  /** The one scripted artifact.delete result (or error); defaults to a deletion. */
+  artifactDeleteOutcome: { kind: 'deleted'; artifact: Record<string, unknown> } | Error | undefined;
+  /** When set, replaces the default queue.retract projection. */
+  queueRetractOutcome: unknown | undefined;
   /**
    * Operations held open by a test. The request is recorded on entry and then
    * waits, so a test can hold one round trip and observe what the driver does
@@ -2701,7 +2912,7 @@ class FakeConnection {
                 );
               })()
             : operation === 'queue.retract'
-              ? {
+              ? (this.queueRetractOutcome ?? {
                   hostEpoch: 'host-1',
                   queueRevision: 3,
                   retracted: [
@@ -2712,43 +2923,56 @@ class FakeConnection {
                       placement: 'next_turn',
                     },
                   ],
-                }
-              : operation === 'interaction.answer'
-                ? {
-                    ...pendingQuestion(),
-                    revision: 2,
-                    status: 'answered',
-                    outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
-                  }
-                : operation === 'interaction.query'
-                  ? this.interactionQuery
-                  : operation === 'turn.start'
-                    ? this.skillStartBlocked
-                      ? {
-                          kind: 'blocked',
-                          skillInvocation: {
-                            loaded: [],
-                            failed: [{ request: 'missing', reason: 'not_found' }],
-                            receipts: [],
-                          },
-                        }
-                      : {
-                          kind: 'started',
-                          turn: {
-                            sessionId: turnInput.sessionId,
-                            turnId: turnInput.turnId,
-                            runId: 'run-1',
-                            status: 'running',
-                          },
-                          skillInvocation: turnInput.content.text.includes('/skill:')
-                            ? {
-                                loaded: [{ id: 'alpha', name: 'Alpha' }],
-                                failed: [],
+                })
+              : operation === 'artifact.ingest'
+                ? (() => {
+                    const outcome = this.artifactIngestOutcomes.shift();
+                    if (outcome instanceof Error) throw outcome;
+                    if (!outcome) throw new Error('No scripted artifact.ingest outcome');
+                    return outcome;
+                  })()
+                : operation === 'artifact.delete'
+                  ? (() => {
+                      const outcome = this.artifactDeleteOutcome;
+                      if (outcome instanceof Error) throw outcome;
+                      return outcome ?? { kind: 'deleted', artifact: {} };
+                    })()
+                  : operation === 'interaction.answer'
+                    ? {
+                        ...pendingQuestion(),
+                        revision: 2,
+                        status: 'answered',
+                        outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+                      }
+                    : operation === 'interaction.query'
+                      ? this.interactionQuery
+                      : operation === 'turn.start'
+                        ? this.skillStartBlocked
+                          ? {
+                              kind: 'blocked',
+                              skillInvocation: {
+                                loaded: [],
+                                failed: [{ request: 'missing', reason: 'not_found' }],
                                 receipts: [],
-                              }
-                            : { loaded: [], failed: [], receipts: [] },
-                        }
-                    : undefined;
+                              },
+                            }
+                          : {
+                              kind: 'started',
+                              turn: {
+                                sessionId: turnInput.sessionId,
+                                turnId: turnInput.turnId,
+                                runId: 'run-1',
+                                status: 'running',
+                              },
+                              skillInvocation: turnInput.content.text.includes('/skill:')
+                                ? {
+                                    loaded: [{ id: 'alpha', name: 'Alpha' }],
+                                    failed: [],
+                                    receipts: [],
+                                  }
+                                : { loaded: [], failed: [], receipts: [] },
+                            }
+                        : undefined;
     if (result === undefined) throw new Error(`Unexpected fake operation: ${operation}`);
     return result as OperationOutput<K>;
   }

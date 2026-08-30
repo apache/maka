@@ -267,8 +267,10 @@ export const TUI_COPY_RESOURCES = {
         setup: 'Set up a model provider',
       },
       commands: {
+        attach: 'Attach an image to the draft (/attach <path>)',
         compact: 'Compact session context',
         context: 'Show latest request context usage',
+        detach: 'Remove a staged image (/detach <number>)',
         exit: 'Exit Maka',
         goal: 'Show autonomous goal status',
         graph: 'Show, enable, disable, or run one Graph turn',
@@ -317,8 +319,10 @@ export const TUI_COPY_RESOURCES = {
         setup: '配置模型提供商',
       },
       commands: {
+        attach: '附加一张图片到草稿（/attach <路径>）',
         compact: '压缩会话上下文',
         context: '查看最近一次请求的上下文用量',
+        detach: '移除一张已附加的图片（/detach <编号>）',
         exit: '退出 Maka',
         goal: '查看自主目标状态',
         graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',

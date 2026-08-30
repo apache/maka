@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
@@ -31,6 +31,7 @@ import {
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   type ActiveInteractionRequestEvent,
+  type AttachmentRef,
   type SessionEvent,
   type ShellRunSnapshotResult,
   type ShellRunUpdate,
@@ -71,6 +72,7 @@ import {
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   WorkspaceTarget,
+  ARTIFACT_INGEST_CHUNK_MAX_BYTES,
   type GoalControlAction,
   type GoalProjection,
   type SessionContinuitySnapshot,
@@ -353,6 +355,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         content: {
           text: modelText,
           ...(modelText === prompt ? {} : { displayText: prompt }),
+          ...(options.attachments && options.attachments.length > 0
+            ? { attachments: [...options.attachments] }
+            : {}),
         },
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
@@ -535,6 +540,9 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         content: {
           text: modelText,
           ...(modelText === text ? {} : { displayText: text }),
+          ...(options.attachments && options.attachments.length > 0
+            ? { attachments: [...options.attachments] }
+            : {}),
         },
         placement: options.placement,
         ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
@@ -557,6 +565,101 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return this.#request('turn.message.query', { sessionId, messageIds });
   }
 
+  /**
+   * Ingest one attachment through the Host-owned artifact authority
+   * (`artifact.ingest`): the bytes are staged, chunked, and committed as a
+   * canonical Session Artifact, and the returned AttachmentRef is the exact
+   * durable reference turns must carry. The Host stays the only store — local
+   * and remote Hosts are reached through the same protocol path, so this
+   * client never writes to an ArtifactStore directly.
+   *
+   * A failed ingest aborts the staged upload; a Host whose outcome stayed
+   * unknown rethrows without retrying (command-mode semantics), and the Host's
+   * own upload TTL reclaims any staging that never committed.
+   */
+  async ingestAttachment(input: {
+    name: string;
+    mimeType: string;
+    content: Uint8Array;
+  }): Promise<AttachmentRef> {
+    const sessionId = await this.#ensureSession();
+    const uploadId = this.#newId();
+    const contentSha256 =
+      `sha256:${createHash('sha256').update(input.content).digest('hex')}` as const;
+    let opened = false;
+    try {
+      const begin = await this.#request('artifact.ingest', {
+        kind: 'begin',
+        sessionId,
+        uploadId,
+        name: input.name,
+        mimeType: input.mimeType,
+        totalBytes: input.content.byteLength,
+        contentSha256,
+      });
+      if (begin.kind === 'committed') return begin.attachment;
+      if (begin.kind !== 'upload_opened') {
+        throw new Error('Runtime Host did not open the Attachment upload');
+      }
+      opened = true;
+      let offset = begin.nextOffset;
+      while (offset < input.content.byteLength) {
+        const chunk = input.content.subarray(
+          offset,
+          Math.min(input.content.byteLength, offset + ARTIFACT_INGEST_CHUNK_MAX_BYTES),
+        );
+        const accepted = await this.#request('artifact.ingest', {
+          kind: 'chunk',
+          sessionId,
+          uploadId,
+          offset,
+          chunkBase64: Buffer.from(chunk).toString('base64'),
+        });
+        if (accepted.kind !== 'chunk_accepted' || accepted.nextOffset <= offset) {
+          throw new Error('Runtime Host did not advance the Attachment upload');
+        }
+        offset = accepted.nextOffset;
+      }
+      const committed = await this.#request('artifact.ingest', {
+        kind: 'commit',
+        sessionId,
+        uploadId,
+      });
+      if (committed.kind !== 'committed') {
+        throw new Error('Runtime Host did not commit the Attachment upload');
+      }
+      return committed.attachment;
+    } catch (error) {
+      if (opened) {
+        await this.#request('artifact.ingest', {
+          kind: 'abort',
+          sessionId,
+          uploadId,
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Best-effort deletion of one user-upload Artifact by its exact reference.
+   * The reference carries the owning Session, so cleanup stays correct even
+   * after this client attached a different Session. Not-found is success: the
+   * abandoned-draft cleanup only needs the artifact gone.
+   */
+  async deleteAttachment(attachment: AttachmentRef): Promise<void> {
+    if (attachment.ref.kind !== 'session_file') return;
+    try {
+      await this.#request('artifact.delete', {
+        sessionId: attachment.ref.sessionId,
+        artifactId: attachment.ref.relativePath,
+      });
+    } catch (error) {
+      if (error instanceof RuntimeHostOperationError && error.code === 'not_found') return;
+      throw error;
+    }
+  }
+
   async retractQueued(): Promise<MakaRetractedMessages> {
     if (!this.#sessionId) return { text: '', messageIds: [] };
     const result = await this.#request('queue.retract', {
@@ -567,6 +670,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return {
       text: result.retracted.map((entry) => entry.content.text).join('\n\n'),
       messageIds: result.retracted.map((entry) => entry.messageId),
+      entries: result.retracted.map((entry) => ({
+        text: entry.content.displayText ?? entry.content.text,
+        attachments: entry.content.attachments ?? [],
+      })),
     };
   }
 

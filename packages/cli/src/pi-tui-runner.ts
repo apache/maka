@@ -46,7 +46,8 @@ import {
   slashCommandsForSurface,
   type SlashCommandIdForSurface,
 } from '@maka/core/slash-command-catalog';
-import { type ShellRunUpdate } from '@maka/core/events';
+import { type AttachmentRef, type ShellRunUpdate } from '@maka/core/events';
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   latestAssistantModelId,
   type SessionSummary,
@@ -88,10 +89,18 @@ import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessages,
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
   type MakaSessionSwitchResult,
 } from './session-driver.js';
+import {
+  isImageMimeType,
+  readFileCapped,
+  resolveLocalImageFile,
+  stagedImageLabel,
+  TuiImageStaging,
+} from './tui-attachments.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
 import {
   appendExpansionCollapseConfirmation,
@@ -879,6 +888,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (closed) return;
     closed = true;
     restoreTerminal();
+    // Abandoned-draft cleanup: retained refs (retracted-queue artifacts) leave
+    // no orphans behind on a graceful exit. Best-effort — the connection may
+    // already be tearing down, and the Host's artifact list remains the
+    // authority for anything that slips through.
+    resetImageStaging();
     if (error) rejectClosed(error);
     else resolveClosed();
     // Runtime stop is best-effort after the shell has its terminal back. A
@@ -956,6 +970,106 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     state.steering = [];
     state.followup = [];
     restoreDraft(joined);
+  };
+
+  // Draft-scoped staging for image attachments (#4171), mirroring the Desktop
+  // composer: a `/attach` pick stages only a client-local descriptor (the
+  // editable draft text is never touched); the bytes are read and ingested
+  // through the Runtime Host artifact authority inside the submit boundary,
+  // and the committed Message's AttachmentRef is the durable identity. The
+  // staged list renders as a separate strip — never as text in the draft.
+  const imageAttachments = new TuiImageStaging();
+  const deleteAttachmentBestEffort = (attachment: AttachmentRef): void => {
+    input.driver.deleteAttachment?.(attachment).catch(() => undefined);
+  };
+  /** Mirror the staged list into the composer strip above the editor. */
+  const syncStagedImagesStrip = (): void => {
+    state.stagedImages = imageAttachments.list().map(stagedImageLabel);
+  };
+  /**
+   * Abandon every staged image. Nothing was ingested at stage time, so only
+   * retained refs (retracted-queue artifacts) hold committed bytes — those are
+   * deleted best-effort; local descriptors just drop.
+   */
+  const resetImageStaging = (): void => {
+    for (const staged of imageAttachments.clear()) {
+      if (staged.kind === 'retained') deleteAttachmentBestEffort(staged.attachment);
+    }
+    syncStagedImagesStrip();
+  };
+
+  // `/attach <path>`: the explicit image attachment action. Stage-time work is
+  // descriptor-only (resolve + MIME check); reading bytes and ingesting happen
+  // at submit, so abandoning the draft needs no Host round trip.
+  const attachImage = (rawPath: string): void => {
+    const path = rawPath.trim();
+    if (!path) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Usage: /attach <image-path> — the image rides the next message you send.',
+      });
+      requestRender();
+      return;
+    }
+    if (!input.driver.ingestAttachment) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: 'Image attachments need a Runtime Host connection; this session has no attachment authority.',
+      });
+      requestRender();
+      return;
+    }
+    if (imageAttachments.size >= MAX_ATTACHMENT_COUNT) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: `At most ${MAX_ATTACHMENT_COUNT} attachments can ride one message.`,
+      });
+      requestRender();
+      return;
+    }
+    const file = resolveLocalImageFile(path, cwd);
+    if (!isImageMimeType(file.mimeType, file.name)) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text: `Only image files can be attached in the terminal (png, jpg, gif, webp, bmp): ${file.name}`,
+      });
+      requestRender();
+      return;
+    }
+    imageAttachments.stageFile({
+      name: file.name,
+      mimeType: file.mimeType,
+      path: file.absolutePath,
+      bytes: 0,
+    });
+    syncStagedImagesStrip();
+    requestRender();
+  };
+
+  // `/detach <number>`: remove one staged image from the draft. Nothing was
+  // ingested yet, so removal is purely client-local.
+  const detachImage = (rawTail: string): void => {
+    const index = Number.parseInt(rawTail.trim(), 10);
+    if (!Number.isInteger(index) || index < 1 || index > imageAttachments.size) {
+      state.entries.push({
+        kind: 'notice',
+        level: 'error',
+        text:
+          imageAttachments.size === 0
+            ? 'No images are staged on the current draft.'
+            : `Usage: /detach <number> — 1..${imageAttachments.size}.`,
+      });
+      requestRender();
+      return;
+    }
+    const removed = imageAttachments.list()[index - 1]!;
+    imageAttachments.remove(removed.stagingKey);
+    syncStagedImagesStrip();
+    requestRender();
   };
 
   const pendingEnqueueTasks = new Set<Promise<void>>();
@@ -1062,8 +1176,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (index >= 0) state.entries.splice(index, 1);
   };
 
-  const acceptRetraction = (retracted: { text: string; messageIds: readonly string[] }) => {
+  const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
+    // Retracted messages carry their committed attachments back: re-stage each
+    // reference as a retained item, so resubmitting reuses the exact Artifact
+    // instead of re-ingesting the same bytes into a second copy.
+    for (const entry of retracted.entries ?? []) {
+      for (const attachment of entry.attachments) imageAttachments.stageRetained(attachment);
+    }
+    if ((retracted.entries ?? []).some((entry) => entry.attachments.length > 0)) {
+      syncStagedImagesStrip();
+    }
     refillEditorFromQueues(retracted.text);
   };
 
@@ -1081,9 +1204,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const messageId = randomUUID();
     appendUserPrompt(state, text, messageId, true);
     requestRender();
-    const task = input.driver
-      .submitMessage(text, { messageId, placement, ...options })
-      .then((result) => {
+    const task = (async () => {
+      // The message-submit boundary owns ingestion, exactly like the Desktop
+      // composer: staged descriptors are read and ingested here, in staging
+      // order, before the Message dispatches. Each committed ref replaces its
+      // descriptor in staging, so a failed dispatch or refusal retries with the
+      // same Artifact instead of orphaning a second copy of the bytes.
+      const attachments: AttachmentRef[] = [];
+      const freshlyIngested: AttachmentRef[] = [];
+      for (const item of imageAttachments.list()) {
+        if (item.kind === 'retained') {
+          attachments.push(item.attachment);
+          continue;
+        }
+        try {
+          const content = await readFileCapped(item.path, MAX_ATTACHMENT_BYTES);
+          const attachment = await input.driver.ingestAttachment!({
+            name: item.name,
+            mimeType: item.mimeType,
+            content,
+          });
+          imageAttachments.replace(item.stagingKey, attachment);
+          attachments.push(attachment);
+          freshlyIngested.push(attachment);
+        } catch (error) {
+          // Nothing dispatched, so this attempt's Artifacts would be orphaned:
+          // delete them and leave staging untouched for the retry.
+          for (const ref of freshlyIngested) deleteAttachmentBestEffort(ref);
+          removeTransientUserMessage(messageId);
+          reportError(error);
+          requestRender();
+          return;
+        }
+      }
+      if (attachments.length > 0) {
+        appendUserPrompt(state, text, messageId, true, attachments);
+        syncStagedImagesStrip();
+        requestRender();
+      }
+      try {
+        const result = await input.driver.submitMessage(text, {
+          messageId,
+          placement,
+          ...(attachments.length > 0 ? { attachments } : {}),
+          ...options,
+        });
         // Runtime Host resolved the Skills this Message named and refused it.
         // Retire the row it belongs to and report the failure in its place.
         if (result?.disposition === 'blocked') {
@@ -1091,6 +1256,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           showSkillInvocation(result.skillInvocation);
           return;
         }
+        // The Message is the attachments' durable owner now.
+        imageAttachments.clear();
+        syncStagedImagesStrip();
         // It admitted them instead. The receipt says what was loaded and what
         // was dropped, and the submit answer is the only place it appears: the
         // Turn arrives through the started-Turn subscription, which carries
@@ -1099,16 +1267,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           const { loaded, failed } = result.skillInvocation;
           if (loaded.length > 0 || failed.length > 0) showSkillInvocation(result.skillInvocation);
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         // The Message never became anything, so its row goes with the failure
-        // notice that replaces it. The text stays in editor history for a retry.
+        // notice that replaces it. The text stays in editor history for a
+        // retry, and staging keeps the retained refs so that retry reuses the
+        // exact Artifacts it already committed.
         removeTransientUserMessage(messageId);
         reportError(error);
-      })
-      .finally(() => {
+      } finally {
         requestRender();
-      });
+      }
+    })();
     trackEnqueue(task);
   };
 
@@ -1607,6 +1776,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages,
     activeTurn,
   }: MakaSessionSwitchResult): Promise<void> => {
+    // The draft's staged images belong to the Session they were staged into:
+    // a switch abandons them rather than submitting another Session's Artifact
+    // references, which the Host would refuse. Retained refs (retracted-queue
+    // artifacts) are deleted best-effort; descriptors just drop.
+    resetImageStaging();
     adoptSessionMetadata(summary, false);
     replaceTranscript(messages);
     if (connectionIdentityNotice) {
@@ -2641,6 +2815,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode = input.driver.getPermissionMode?.() ?? input.permissionMode;
     attention.setBaseTitle(input.title);
     shellRunHydration.reset();
+    resetImageStaging();
     // Fresh transcript for the fresh session; the next prompt creates it on disk.
     // Leave the transcript empty (no confirmation notice) so /new opens on the
     // same welcome block as a cold start — the welcome block is the "fresh
@@ -3230,6 +3405,25 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           });
           requestRender();
         });
+      },
+    },
+    attach: {
+      description: primaryGuidance.commands.attach,
+      // Staging is client-local (resolve + MIME check + list entry); it
+      // neither races the running Turn nor enters runControl, so an image can
+      // be staged mid-turn and ride the next steering message.
+      midTurn: 'local',
+      run: (_parts: string[], rawTail: string | undefined) => {
+        attachImage(rawTail ?? '');
+      },
+    },
+    detach: {
+      description: primaryGuidance.commands.detach,
+      // Same client-local staging surface as /attach: dropping a staged image
+      // is a list mutation with no Host round trip.
+      midTurn: 'local',
+      run: (_parts: string[], rawTail: string | undefined) => {
+        detachImage(rawTail ?? '');
       },
     },
     compact: {
@@ -3827,6 +4021,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     if (!turnRunning && matchesKey(data, Key.ctrl('c')) && editor.getText().length > 0) {
       lastIdleCtrlCAt = 0;
       editor.setText('');
+      // The draft is destroyed by choice: staged images abandon with it.
+      resetImageStaging();
       requestRender();
       return { consume: true };
     }

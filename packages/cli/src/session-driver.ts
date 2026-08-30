@@ -18,7 +18,12 @@
  */
 
 import { realpath } from 'node:fs/promises';
-import type { SessionEvent, ShellRunSnapshotResult, ShellRunUpdate } from '@maka/core/events';
+import type {
+  AttachmentRef,
+  SessionEvent,
+  ShellRunSnapshotResult,
+  ShellRunUpdate,
+} from '@maka/core/events';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -99,6 +104,8 @@ export interface MakaAttachedSessionTurn extends MakaPreparedSessionTurn {
 export interface MakaPreparePromptOptions {
   turnId?: string;
   modelText?: string;
+  /** Committed Session AttachmentRefs carried on the opening user message. */
+  attachments?: readonly AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
   maxSteps?: number;
 }
@@ -107,6 +114,8 @@ export interface MakaSubmitMessageOptions {
   messageId: string;
   placement: 'current_turn' | 'next_turn';
   modelText?: string;
+  /** Committed Session AttachmentRefs carried alongside the message text. */
+  attachments?: readonly AttachmentRef[];
   /** Exact-Turn intent carried to Runtime Host, which decides how to admit it. */
   turnOrchestration?: TurnOrchestration;
 }
@@ -114,6 +123,18 @@ export interface MakaSubmitMessageOptions {
 export interface MakaRetractedMessages {
   text: string;
   messageIds: readonly string[];
+  /**
+   * One restorable entry per retracted message, in queue order, with the
+   * committed attachments each message carried. Present only on drivers whose
+   * queue authority can prove per-message grouping; `text` stays the joined
+   * fallback for surfaces that do not re-stage attachments.
+   */
+  entries?: readonly MakaRetractedMessageEntry[];
+}
+
+export interface MakaRetractedMessageEntry {
+  text: string;
+  attachments: readonly AttachmentRef[];
 }
 
 /**
@@ -163,6 +184,22 @@ export interface MakaSessionDriver {
   compactSession(): AsyncIterable<SessionEvent>;
   resumeLatest?(): AsyncIterable<SessionEvent>;
   retractQueued?(): Promise<MakaRetractedMessages>;
+  /**
+   * Ingest raw bytes through the Runtime Host artifact authority and resolve to
+   * the exact committed Session AttachmentRef. Optional: drivers without a
+   * Host-backed artifact authority reject attachment staging up front.
+   */
+  ingestAttachment?(input: {
+    name: string;
+    mimeType: string;
+    content: Uint8Array;
+  }): Promise<AttachmentRef>;
+  /**
+   * Delete a committed user-upload Artifact by its exact reference. Best-effort
+   * cleanup for abandoned drafts; the Host remains the deletion authority and
+   * refuses protected runtime evidence. Optional: mirrors `ingestAttachment`.
+   */
+  deleteAttachment?(attachment: AttachmentRef): Promise<void>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion?(response: UserQuestionResponse): Promise<void>;
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void>;
