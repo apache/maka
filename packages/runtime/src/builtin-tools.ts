@@ -79,6 +79,7 @@ import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-m
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
+import { macosBashExecutableRoots } from './sandbox/macos-seatbelt.js';
 import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
@@ -747,6 +748,14 @@ function sandboxCommand(
       ? { profile: boundary.profile, workspaceRoots: [cwd] }
       : effectivePermissionProfile(explicitProfile, ctx.permissionMode ?? 'ask', cwd);
   const env = { ...process.env };
+  if (platform === 'darwin' && env.GIT_CONFIG_GLOBAL === undefined) {
+    // Restricted Seatbelt profiles cannot read ~/.gitconfig. Treat it as absent
+    // by default so ordinary repository-local Git commands do not fail closed.
+    env.GIT_CONFIG_GLOBAL = '/dev/null';
+  }
+  if (platform === 'darwin' && env.GIT_CONFIG_SYSTEM === undefined) {
+    env.GIT_CONFIG_SYSTEM = '/dev/null';
+  }
   if (pty) {
     if (profileRequiresSandbox(effective.profile)) {
       throw new SandboxCommandError({
@@ -833,7 +842,10 @@ function sandboxCommand(
           ...(platform === 'win32' ? {} : { slashTmp: '/tmp' }),
           ...(platform === 'darwin'
             ? {
-                executableRoots: macosRuntimeExecutableRoots(process.execPath),
+                executableRoots: macosBashExecutableRoots({
+                  execPath: process.execPath,
+                  path: env.PATH,
+                }),
               }
             : {}),
           ...(platform === 'linux'
@@ -1082,14 +1094,6 @@ function canonicalExistingPath(path: string): string {
   } catch {
     return path;
   }
-}
-
-function macosRuntimeExecutableRoots(execPath: string): readonly string[] {
-  return [
-    ...linuxExecutableRoots({ execPath }),
-    ...(execPath.startsWith('/opt/homebrew/') ? ['/opt/homebrew'] : []),
-    ...(execPath.startsWith('/usr/local/') ? ['/usr/local'] : []),
-  ];
 }
 
 function effectivePermissionProfile(

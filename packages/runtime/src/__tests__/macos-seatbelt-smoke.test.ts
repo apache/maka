@@ -32,7 +32,11 @@ import {
   type PermissionProfile,
 } from '@maka/core/permission-profile';
 
-import { MACOS_SEATBELT_EXECUTABLE, MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
+import {
+  MACOS_SEATBELT_EXECUTABLE,
+  MacosSeatbeltBackend,
+  macosBashExecutableRoots,
+} from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 
 const canRunSeatbelt = process.platform === 'darwin' && existsSync(MACOS_SEATBELT_EXECUTABLE);
@@ -69,6 +73,8 @@ function runSeatbeltCommand(
   command: string,
   profile: PermissionProfile = createWorkspaceWritePermissionProfile(),
   includeTempRoots = false,
+  executableRoots: readonly string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
 ) {
   const manager = new SandboxManager([new MacosSeatbeltBackend()]);
   const result = manager.transform({
@@ -81,6 +87,7 @@ function runSeatbeltCommand(
       pathContext: {
         workspaceRoots: [workspaceRoot],
         ...(includeTempRoots ? { tmpdir: tmpdir(), slashTmp: '/tmp' } : {}),
+        ...(executableRoots.length > 0 ? { executableRoots } : {}),
       },
     },
   });
@@ -90,7 +97,7 @@ function runSeatbeltCommand(
 
   return spawnSync(result.exec.argv[0], result.exec.argv.slice(1), {
     cwd: result.exec.cwd,
-    env: { ...process.env, ...result.exec.env },
+    env: { ...env, ...result.exec.env },
     encoding: 'utf8',
   });
 }
@@ -144,6 +151,83 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
     );
 
     assert.equal(child.status, 0, child.stderr);
+  });
+
+  it('runs a repository-local Homebrew Git command with its runtime dependencies', {
+    skip: !existsSync('/opt/homebrew/bin/git'),
+  }, async () => {
+    const workspaceRoot = await makeWorkspace();
+    cleanup.push(workspaceRoot);
+    const gitEnvironment = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+    };
+    for (const args of [
+      ['init'],
+      ['config', 'user.name', 'Maka Test'],
+      ['config', 'user.email', 'maka@example.test'],
+    ]) {
+      const setup = spawnSync('/opt/homebrew/bin/git', args, {
+        cwd: workspaceRoot,
+        env: gitEnvironment,
+        encoding: 'utf8',
+      });
+      assert.equal(setup.status, 0, setup.stderr);
+    }
+    await writeFile(join(workspaceRoot, 'fixture.txt'), 'fixture\n');
+    for (const args of [
+      ['add', 'fixture.txt'],
+      ['commit', '-m', 'fixture commit'],
+    ]) {
+      const setup = spawnSync('/opt/homebrew/bin/git', args, {
+        cwd: workspaceRoot,
+        env: gitEnvironment,
+        encoding: 'utf8',
+      });
+      assert.equal(setup.status, 0, setup.stderr);
+    }
+    const executableRoots = macosBashExecutableRoots({
+      execPath: process.execPath,
+      path: '/opt/homebrew/bin:/usr/bin:/bin',
+    });
+
+    const child = runSeatbeltCommand(
+      workspaceRoot,
+      '/opt/homebrew/bin/git log -1 --pretty=format:"%s"',
+      createWorkspaceWritePermissionProfile(),
+      true,
+      executableRoots,
+      gitEnvironment,
+    );
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, 'fixture commit');
+  });
+
+  it('allows Apple Git to load the selected developer toolchain', async () => {
+    const workspaceRoot = await makeWorkspace();
+    cleanup.push(workspaceRoot);
+    const executableRoots = macosBashExecutableRoots({
+      execPath: process.execPath,
+      path: '/usr/bin:/bin',
+    });
+
+    const child = runSeatbeltCommand(
+      workspaceRoot,
+      '/usr/bin/git --version',
+      createWorkspaceWritePermissionProfile(),
+      true,
+      executableRoots,
+      {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_CONFIG_SYSTEM: '/dev/null',
+      },
+    );
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /^git version /);
   });
 
   it('denies writes outside the workspace root', async () => {

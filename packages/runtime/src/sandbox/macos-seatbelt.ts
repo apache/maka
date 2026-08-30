@@ -18,7 +18,17 @@
  */
 
 import { readlinkSync, realpathSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
@@ -31,6 +41,49 @@ import type {
 } from './types.js';
 
 export const MACOS_SEATBELT_EXECUTABLE = '/usr/bin/sandbox-exec';
+
+const MACOS_PACKAGE_TOOLCHAIN_ROOTS = ['/opt/homebrew', '/usr/local'] as const;
+const MACOS_PACKAGE_TOOLCHAIN_SUBPATHS = [
+  'bin',
+  'sbin',
+  'Cellar',
+  'opt',
+  'lib',
+  'libexec',
+  'share',
+] as const;
+const MACOS_APPLE_DEVELOPER_ROOTS = [
+  '/Applications/Xcode.app/Contents',
+  '/Library/Developer/CommandLineTools',
+] as const;
+
+export function macosBashExecutableRoots(input: {
+  execPath: string;
+  path?: string;
+}): readonly string[] {
+  const roots = [runtimeExecutableRoot(input.execPath)];
+  const pathEntries = (input.path ?? '')
+    .split(delimiter)
+    .filter(isAbsolute)
+    .map((path) => normalize(path));
+
+  for (const toolchainRoot of MACOS_PACKAGE_TOOLCHAIN_ROOTS) {
+    if (
+      isPathWithin(input.execPath, toolchainRoot) ||
+      pathEntries.some((path) => isPathWithin(path, toolchainRoot))
+    ) {
+      roots.push(
+        ...MACOS_PACKAGE_TOOLCHAIN_SUBPATHS.map((subpath) => join(toolchainRoot, subpath)),
+      );
+    }
+  }
+
+  roots.push(...MACOS_APPLE_DEVELOPER_ROOTS);
+  const uniqueRoots = [...new Set(roots)];
+  return uniqueRoots.filter(
+    (root) => !uniqueRoots.some((candidate) => candidate !== root && isPathWithin(root, candidate)),
+  );
+}
 
 export const MACOS_SEATBELT_BASE_POLICY = `(version 1)
 (deny default)
@@ -569,6 +622,18 @@ function protectedMetadataRequirement(root: string, name: string): string {
 function trimTrailingSlash(path: string): string {
   if (path === '/') return path;
   return path.replace(/\/+$/g, '');
+}
+
+function runtimeExecutableRoot(execPath: string): string {
+  const executableDirectory = dirname(normalize(execPath));
+  return basename(executableDirectory) === 'bin'
+    ? dirname(executableDirectory)
+    : executableDirectory;
+}
+
+function isPathWithin(path: string, root: string): boolean {
+  const delta = relative(root, normalize(path));
+  return delta === '' || (delta !== '..' && !delta.startsWith(`..${sep}`));
 }
 
 function buildNetworkPolicy(profile: PermissionProfile): string {

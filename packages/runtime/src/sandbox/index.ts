@@ -78,6 +78,7 @@ export {
   buildSeatbeltPolicy,
   createSeatbeltExecArgs,
   escapeSeatbeltRegex,
+  macosBashExecutableRoots,
 } from './macos-seatbelt.js';
 export type {
   BuildSeatbeltPolicyInput,

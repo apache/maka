@@ -1471,6 +1471,8 @@ describe('builtin Bash streaming output', () => {
       if (process.execPath.startsWith('/usr/local/')) {
         assert.ok(hasExecutableRoot('/usr/local'));
       }
+      assert.equal(input?.env?.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_GLOBAL ?? '/dev/null');
+      assert.equal(input?.env?.GIT_CONFIG_SYSTEM, process.env.GIT_CONFIG_SYSTEM ?? '/dev/null');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

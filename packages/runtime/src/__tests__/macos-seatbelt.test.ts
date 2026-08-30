@@ -36,6 +36,7 @@ import {
   buildSeatbeltPolicy,
   createSeatbeltExecArgs,
   escapeSeatbeltRegex,
+  macosBashExecutableRoots,
 } from '../sandbox/macos-seatbelt.js';
 import type { SandboxTransformRequest } from '../sandbox/types.js';
 
@@ -133,6 +134,48 @@ function policyText(profile: PermissionProfile): string {
 describe('escapeSeatbeltRegex', () => {
   it('escapes regex metacharacters before inserting paths into SBPL regex literals', () => {
     assert.equal(escapeSeatbeltRegex('/tmp/repo.(test)+[x]'), '/tmp/repo\\.\\(test\\)\\+\\[x\\]');
+  });
+});
+
+describe('macosBashExecutableRoots', () => {
+  it('provides fixed Homebrew and Apple developer toolchain roots', () => {
+    assert.deepEqual(
+      macosBashExecutableRoots({
+        execPath: '/Applications/Maka.app/Contents/MacOS/Maka',
+        path: '/Users/test/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+      }),
+      [
+        '/Applications/Maka.app/Contents/MacOS',
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        '/opt/homebrew/Cellar',
+        '/opt/homebrew/opt',
+        '/opt/homebrew/lib',
+        '/opt/homebrew/libexec',
+        '/opt/homebrew/share',
+        '/usr/local/bin',
+        '/usr/local/sbin',
+        '/usr/local/Cellar',
+        '/usr/local/opt',
+        '/usr/local/lib',
+        '/usr/local/libexec',
+        '/usr/local/share',
+        '/Applications/Xcode.app/Contents',
+        '/Library/Developer/CommandLineTools',
+      ],
+    );
+  });
+
+  it('does not expose unrelated PATH directories as executable roots', () => {
+    const roots = macosBashExecutableRoots({
+      execPath: '/Applications/Maka.app/Contents/MacOS/Maka',
+      path: '/Users/test/private:/custom/toolchain/bin:/usr/bin:/bin',
+    });
+
+    assert.equal(roots.includes('/Users/test/private'), false);
+    assert.equal(roots.includes('/custom/toolchain/bin'), false);
+    assert.equal(roots.includes('/opt/homebrew/etc'), false);
+    assert.equal(roots.includes('/usr/local/etc'), false);
   });
 });
 
