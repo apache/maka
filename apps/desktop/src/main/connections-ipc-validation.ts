@@ -20,6 +20,7 @@
 import {
   normalizeConnectionBaseUrl,
   type CreateConnectionInput,
+  type ProviderType,
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
@@ -129,4 +130,40 @@ export function normalizeConnectionBaseUrlValueForIpc(
   const result = normalizeConnectionBaseUrl(value);
   if (!result.ok) throw new Error(result.error);
   return result.value;
+}
+
+/** The probe's contract over the renderer boundary: a provider type, the
+ * endpoint the catalog should be read from, and an optional API key. */
+export interface ConnectionCatalogProbeInput {
+  readonly providerType: ProviderType;
+  readonly baseUrl: string;
+  readonly apiKey: string | null;
+}
+
+/**
+ * Validate and canonicalize the catalog-probe IPC payload. The endpoint is
+ * required — this probe exists to read a catalog from an endpoint the app
+ * has not met yet, so there is nothing to probe without one. Reuses the
+ * connection base URL normalization so a malformed endpoint rejects with the
+ * same copy the connection form already shows.
+ */
+export function normalizeConnectionCatalogProbeInput(value: unknown): ConnectionCatalogProbeInput {
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('Invalid connection catalog probe');
+  }
+  const raw = value as Record<string, unknown>;
+  const providerType = raw.providerType;
+  if (typeof providerType !== 'string' || !PROVIDER_DEFAULTS[providerType as ProviderType]) {
+    throw new Error('Invalid provider type');
+  }
+  const typedProviderType = providerType as ProviderType;
+  const apiKey = typeof raw.apiKey === 'string' && raw.apiKey.trim().length > 0
+    ? raw.apiKey.trim()
+    : null;
+  const baseUrl = normalizeConnectionBaseUrlValueForIpc(
+    typedProviderType,
+    String(raw.baseUrl ?? ''),
+  );
+  if (baseUrl.length === 0) throw new Error('An endpoint is required to probe the model catalog');
+  return { providerType: typedProviderType, baseUrl, apiKey };
 }

@@ -37,6 +37,7 @@ export function runtimeHostConnectionsBridge(
     delete: (slug) => window.maka.connections.delete(slug, host),
     test: (slug, options) => window.maka.connections.test(slug, options, host),
     fetchModels: (slug) => window.maka.connections.fetchModels(slug, host),
+    probeModels: (request) => window.maka.connections.probeModels(request, host),
     hasSecret: (slug) => window.maka.connections.hasSecret(slug, host),
     getRequestHeaders: (slug) => window.maka.connections.getRequestHeaders(slug, host),
     setRequestHeaders: (slug, headers) =>

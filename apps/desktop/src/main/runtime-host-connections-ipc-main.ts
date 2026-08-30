@@ -39,7 +39,12 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
-import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
+import type {
+  ConnectionOnboardingVerifyResult,
+  ConnectionTestRunResult,
+} from '@maka/runtime-host/protocol';
+import { normalizeConnectionCatalogProbeInput } from './connections-ipc-validation.js';
+import type { ConnectionCatalogProbeOutcome } from '../shared/connection-catalog-probe.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
   handleReconnectableRead,
@@ -60,6 +65,7 @@ type HostConnectionsClient = Pick<
   | 'fetchConnectionModels'
   | 'getConnectionRequestHeaders'
   | 'loadConnectionCatalog'
+  | 'probeConnectionModels'
   | 'queryCredential'
   | 'removeConnection'
   | 'replaceConnectionRequestHeaders'
@@ -289,6 +295,20 @@ export function registerRuntimeHostConnectionsIpc(
       fetchedAt: result.fetchedAt,
     };
   });
+  // Probe the model catalog an endpoint serves BEFORE a connection exists, so
+  // the custom-relay form can offer a real choice instead of a guess. Runs the
+  // same discovery the post-create fetch uses against a transient connection;
+  // `connectionId` is null because there is nothing to edit yet.
+  deps.ipcMain.handle('connections:probeModels', async (_event, raw: unknown) => {
+    const input = normalizeConnectionCatalogProbeInput(raw);
+    const result = await deps.client.probeConnectionModels({
+      providerType: input.providerType,
+      connectionId: null,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+    });
+    return projectConnectionCatalogProbe(result);
+  });
   deps.ipcMain.handle(
     'connections:test',
     async (_event, slug: unknown, options?: { model?: unknown }) => {
@@ -324,6 +344,25 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
       ? 'unknown'
       : result.test.errorClass,
   };
+}
+
+/** Project the host's onboarding-verify result onto the renderer's shared
+ * probe contract. The ready branch carries the discovered catalog; the
+ * rejected and failed branches report why there is none. */
+export function projectConnectionCatalogProbe(
+  result: ConnectionOnboardingVerifyResult,
+): ConnectionCatalogProbeOutcome {
+  if (result.kind === 'verified') return { kind: 'ready', models: [...result.models] };
+  if (result.kind === 'rejected') {
+    // The probe targets no existing connection (a fresh relay), so a
+    // connection-identity rejection cannot describe it — surface it as a
+    // generic failure instead of a rejected reason the form cannot render.
+    if (result.reason === 'connection_not_found') {
+      return { kind: 'failed', errorClass: 'connection_not_found' };
+    }
+    return { kind: 'rejected', reason: result.reason };
+  }
+  return { kind: 'failed', errorClass: result.errorClass };
 }
 
 export function projectHostConnections(

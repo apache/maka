@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
@@ -27,11 +27,12 @@ import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
-import { Banner, HStack, VStack } from '@astryxdesign/core';
+import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
   FormLayout,
+  Selector,
   TextInput,
   useMountedRef,
   useUiLocale,
@@ -58,6 +59,16 @@ import {
   validateAddProviderDraft,
   type AddProviderIssue,
 } from './provider-add-submission';
+import {
+  catalogProbeChoices,
+  catalogProbeRequest,
+  runCatalogProbe,
+  type CatalogProbeView,
+} from './provider-add-catalog-probe';
+import type {
+  ConnectionCatalogProbeOutcome,
+  ConnectionCatalogProbeRequest,
+} from '../../shared/connection-catalog-probe.js';
 
 /* No `defaultModel`: the creation gate has no rule that can fail on the model
    id, so an error could never be reported against that field. The union is
@@ -355,14 +366,25 @@ export function AddProviderForm(props: {
           />
         )}
         {showsDefaultModel && (
-          <TextInput
-            value={defaultModel}
-            onChange={setDefaultModel}
-            placeholder={copy.defaultModelPlaceholder}
-            isDisabled={isExperimental || busy}
-            label={copy.defaultModel}
-            description={copy.defaultModelHelp}
-          />
+          <VStack gap={2}>
+            <TextInput
+              value={defaultModel}
+              onChange={setDefaultModel}
+              placeholder={copy.defaultModelPlaceholder}
+              isDisabled={isExperimental || busy}
+              label={copy.defaultModel}
+              description={copy.defaultModelHelp}
+            />
+            <CatalogProbeField
+              providerType={props.providerType}
+              baseUrl={baseUrl}
+              apiKey={apiKey}
+              value={defaultModel}
+              isDisabled={isExperimental || busy}
+              probeModels={(request) => props.bridge.probeModels(request)}
+              onPickModel={setDefaultModel}
+            />
+          </VStack>
         )}
         {advancedRequestEditor}
       </FormLayout>
@@ -373,6 +395,111 @@ export function AddProviderForm(props: {
         <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
         <Button variant="primary" isDisabled={busy || isExperimental} onClick={submit} label={busy ? copy.saving : copy.save} />
       </HStack>
+    </VStack>
+  );
+}
+
+/** The catalog probe for a custom relay: a button that reads the model list
+ * the endpoint serves, then a chooser that fills the default-model field from
+ * it. The view is the host's verdict (see provider-add-catalog-probe); it
+ * resets the moment the endpoint or key the user typed changes, so a picked
+ * model can never belong to a catalog probed from different inputs. */
+function CatalogProbeField(props: {
+  providerType: ProviderType;
+  baseUrl: string;
+  apiKey: string;
+  value: string;
+  isDisabled: boolean;
+  probeModels: (
+    request: ConnectionCatalogProbeRequest,
+  ) => Promise<ConnectionCatalogProbeOutcome>;
+  onPickModel: (modelId: string) => void;
+}) {
+  const locale = useUiLocale();
+  const copy = getProviderSettingsCopy(locale).add;
+  const probeGuard = useActionGuard<'probe'>();
+  const mountedRef = useMountedRef();
+  const [view, setView] = useState<CatalogProbeView>({ kind: 'idle' });
+  const requestToken = useRef(0);
+
+  useEffect(() => {
+    requestToken.current += 1;
+    setView({ kind: 'idle' });
+  }, [props.baseUrl, props.apiKey]);
+
+  async function probe() {
+    const request = catalogProbeRequest({
+      providerType: props.providerType,
+      baseUrl: props.baseUrl,
+      apiKey: props.apiKey,
+    });
+    if (!request || !probeGuard.begin('probe')) return;
+    const token = ++requestToken.current;
+    setView({ kind: 'probing' });
+    try {
+      const outcome = await runCatalogProbe(props.probeModels, request);
+      // Discard a verdict for inputs that changed while the probe ran.
+      if (requestToken.current !== token || !mountedRef.current) return;
+      setView(outcome);
+    } finally {
+      probeGuard.finish();
+    }
+  }
+
+  const busy = props.isDisabled || view.kind === 'probing';
+  const models = view.kind === 'ready' ? view.models : [];
+  const selectedInCatalog =
+    view.kind === 'ready' && models.some(({ id }) => id === props.value);
+
+  let message: string | null = null;
+  if (view.kind === 'rejected') {
+    message =
+      view.reason === 'credential_not_configured'
+        ? copy.probeCatalogNeedsKey
+        : view.reason === 'base_url_not_configured'
+          ? copy.probeCatalogNeedsEndpoint
+          : view.reason === 'provider_unsupported'
+            ? copy.probeCatalogUnsupported
+            : copy.probeCatalogFailed;
+  } else if (view.kind === 'failed') {
+    message = copy.probeCatalogFailed;
+  }
+
+  return (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Button
+          variant="secondary"
+          size="sm"
+          isDisabled={busy || props.baseUrl.trim().length === 0}
+          isLoading={view.kind === 'probing'}
+          clickAction={() => void probe()}
+          label={view.kind === 'probing' ? copy.probeCatalogReading : copy.probeCatalog}
+        />
+        {view.kind === 'ready' && models.length > 0 && (
+          <Text type="supporting" color="secondary">
+            {copy.probeCatalogLoaded(models.length)}
+          </Text>
+        )}
+      </HStack>
+      {message && <Banner status="warning" title={message} />}
+      {view.kind === 'ready' && models.length === 0 && (
+        <Text type="supporting" color="secondary">{copy.probeCatalogEmpty}</Text>
+      )}
+      {view.kind === 'ready' && models.length > 0 && (
+        <Selector
+          label={copy.defaultModel}
+          isLabelHidden
+          width={280}
+          value={selectedInCatalog ? props.value : ''}
+          options={[
+            { value: '', label: copy.probeCatalogPickPlaceholder },
+            ...catalogProbeChoices(models),
+          ]}
+          onChange={(value) => props.onPickModel(value)}
+          isDisabled={busy}
+        />
+      )}
     </VStack>
   );
 }
