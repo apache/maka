@@ -350,7 +350,7 @@ test('oversized single Turn upward scroll metrics', async ({
     (elements as HTMLElement[]).filter((element) =>
       !element.checkVisibility({ contentVisibilityAuto: true })).length,
   );
-  console.log(`OVERSIZED_TURN_PERF ${JSON.stringify({
+  const result = {
     distance,
     taskMs: metricDelta(before, after, 'TaskDuration') * 1_000,
     layoutMs: metricDelta(before, after, 'LayoutDuration') * 1_000,
@@ -362,11 +362,16 @@ test('oversized single Turn upward scroll metrics', async ({
     loafMaxMs: Math.max(0, ...frames.loafDurations),
     loafSupported: frames.loafSupported,
     skippedSegments,
-  })}`);
+  };
+  console.log(`OVERSIZED_TURN_PERF ${JSON.stringify(result)}`);
   expect(
     frames.loafSupported,
     'Chromium does not support the long-animation-frame release metric',
   ).toBe(true);
+  expect(
+    result.loafOver50Ms,
+    `oversized-Turn upward scroll exceeded the 50 ms Long Animation Frame gate: ${JSON.stringify(result)}`,
+  ).toBe(0);
 });
 
 test('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
