@@ -125,6 +125,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
           ...(peerId ? { peerId } : {}),
           ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
           ...(displayName !== undefined ? { displayName } : {}),
+          signal,
         });
       });
     }
@@ -165,6 +166,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       ...(peerId ? { peerId } : {}),
       ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
       ...(displayName !== undefined ? { displayName } : {}),
+      signal,
     });
   };
 
@@ -322,13 +324,13 @@ async function executeLocal(
       return { invitation: created, snapshot: snapshot() };
     }
     case 'join':
-      await mesh.join(requiredValue(invitation, 'Peer Mesh invitation'));
+      await mesh.join(requiredValue(invitation, 'Peer Mesh invitation'), signal);
       return snapshot();
     case 'remove':
       await mesh.remove(requiredValue(meshId, 'Mesh ID'), requiredValue(peerId, 'Peer ID'));
       return snapshot();
     case 'leave':
-      await mesh.leave(requiredValue(meshId, 'Mesh ID'));
+      await mesh.leave(requiredValue(meshId, 'Mesh ID'), signal);
       return snapshot();
     case 'close':
       await mesh.closeMesh(requiredValue(meshId, 'Mesh ID'));

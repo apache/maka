@@ -274,6 +274,7 @@ struct CoordinationRelay {
     transit_bootstrap_references: usize,
     reservation_addresses: Vec<Multiaddr>,
     connections: HashSet<ConnectionId>,
+    owned_connections: HashSet<ConnectionId>,
     relayed_connections: HashSet<ConnectionId>,
     direct_connection_addresses: HashMap<ConnectionId, Multiaddr>,
     pending_connection: Option<ConnectionId>,
@@ -300,6 +301,7 @@ impl Default for CoordinationRelay {
             transit_bootstrap_references: 0,
             reservation_addresses: Vec::new(),
             connections: HashSet::new(),
+            owned_connections: HashSet::new(),
             relayed_connections: HashSet::new(),
             direct_connection_addresses: HashMap::new(),
             pending_connection: None,
@@ -372,6 +374,7 @@ pub(super) enum StreamCompletion {
         connection_id: ConnectionId,
     },
     MeshControl {
+        connection_id: ConnectionId,
         coordination_relay_peers: Vec<PeerId>,
     },
 }
@@ -553,7 +556,13 @@ async fn run_endpoint_async(
     for relay in &options.coordination_relays {
         register_coordination_relay(&mut coordination_relays, relay, local_peer_id, true, false)?;
     }
-    maintain_coordination_relays(&mut swarm, &mut coordination_relays, false, Instant::now());
+    maintain_coordination_relays(
+        &mut swarm,
+        &mut coordination_relays,
+        &HashMap::new(),
+        false,
+        Instant::now(),
+    );
 
     let startup_deadline = Instant::now() + Duration::from_secs(10);
     let mut address_quiet_deadline = None;
@@ -626,6 +635,7 @@ async fn run_endpoint_async(
                         &options,
                         local_peer_id,
                         stream_kind,
+                        &direct.active,
                     ) {
                         Ok(peers) => peers,
                         Err(error) => {
@@ -702,6 +712,7 @@ async fn run_endpoint_async(
                         &stream_control,
                         &mut coordination_relays,
                         &mut transit,
+                        &direct.active,
                         policy,
                         local_peer_id,
                     );
@@ -739,13 +750,34 @@ async fn run_endpoint_async(
                 None => return Ok(()),
             },
             Some(stream) = incoming_streams.recv() => {
-                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
+                *direct.active.entry(stream.connection_id).or_default() += 1;
+                let peer_stream = spawn_stream(
+                    stream.peer_id,
+                    stream.stream,
+                    Some((
+                        StreamCompletion::Application {
+                            connection_id: stream.connection_id,
+                        },
+                        stream_completed_tx.clone(),
+                    )),
+                );
                 if incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
             }
             Some(stream) = mesh_incoming.recv() => {
-                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
+                *direct.active.entry(stream.connection_id).or_default() += 1;
+                let peer_stream = spawn_stream(
+                    stream.peer_id,
+                    stream.stream,
+                    Some((
+                        StreamCompletion::MeshControl {
+                            connection_id: stream.connection_id,
+                            coordination_relay_peers: Vec::new(),
+                        },
+                        stream_completed_tx.clone(),
+                    )),
+                );
                 if mesh_incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream applies bounded backpressure to Mesh control callers.
                 }
@@ -765,6 +797,7 @@ async fn run_endpoint_async(
                 rebalance_automatic_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     Instant::now(),
                 );
                 publish_active_coordination_relays(
@@ -774,6 +807,7 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     external_candidate_ready,
                     Instant::now(),
                 );
@@ -781,14 +815,13 @@ async fn run_endpoint_async(
             Some(completed) = stream_completed_rx.recv() => {
                 match completed.kind {
                     StreamCompletion::Application { connection_id } => {
-                        if let Some(streams) = direct.active.get_mut(&connection_id) {
-                            *streams -= 1;
-                            if *streams == 0 {
-                                direct.active.remove(&connection_id);
-                            }
-                        }
+                        release_active_stream(&mut direct.active, connection_id);
                     }
-                    StreamCompletion::MeshControl { coordination_relay_peers } => {
+                    StreamCompletion::MeshControl {
+                        connection_id,
+                        coordination_relay_peers,
+                    } => {
+                        release_active_stream(&mut direct.active, connection_id);
                         release_coordination_relays(
                             &mut swarm,
                             &mut coordination_relays,
@@ -860,17 +893,20 @@ async fn run_endpoint_async(
                                 ))
                             }
                             StreamKind::MeshControl => {
+                                let connection_id = opened.connection_id;
                                 retire_direct_dials(
                                     &mut swarm,
                                     &mut direct.retiring_connections,
                                     waiter.dials,
                                     None,
                                 );
+                                *direct.active.entry(connection_id).or_default() += 1;
                                 Ok(spawn_stream(
                                     waiter.peer_id,
                                     opened.stream,
                                     Some((
                                         StreamCompletion::MeshControl {
+                                            connection_id,
                                             coordination_relay_peers: waiter
                                                 .coordination_relay_peers,
                                         },
@@ -917,6 +953,7 @@ async fn run_endpoint_async(
                 rebalance_automatic_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     Instant::now(),
                 );
                 publish_active_coordination_relays(
@@ -926,6 +963,7 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     external_candidate_ready,
                     Instant::now(),
                 );
@@ -943,7 +981,12 @@ async fn run_endpoint_async(
             }
             _ = deadline_tick.tick() => {
                 let now = Instant::now();
-                rebalance_automatic_relays(&mut swarm, &mut coordination_relays, now);
+                rebalance_automatic_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    &direct.active,
+                    now,
+                );
                 publish_active_coordination_relays(
                     &coordination_relays,
                     &active_coordination_relays,
@@ -951,6 +994,7 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     external_candidate_ready,
                     now,
                 );
@@ -1102,6 +1146,7 @@ fn start_connect(
     options: &ConnectOptions,
     local_peer_id: PeerId,
     stream_kind: StreamKind,
+    active_streams: &HashMap<ConnectionId, usize>,
 ) -> Result<StartedConnect, PeerError> {
     if options.route_hints.is_empty()
         && options.coordination_relays.is_empty()
@@ -1156,7 +1201,13 @@ fn start_connect(
             referenced.insert(relay_peer),
         )?;
     }
-    maintain_coordination_relays(swarm, coordination_relays, false, Instant::now());
+    maintain_coordination_relays(
+        swarm,
+        coordination_relays,
+        active_streams,
+        false,
+        Instant::now(),
+    );
     Ok(StartedConnect {
         direct_routes: direct_targets,
         coordination_relay_peers: relay_peers,
@@ -1184,6 +1235,16 @@ fn validate_relay_target(
         ));
     }
     Ok(())
+}
+
+fn release_active_stream(active: &mut HashMap<ConnectionId, usize>, connection_id: ConnectionId) {
+    let Some(streams) = active.get_mut(&connection_id) else {
+        return;
+    };
+    *streams -= 1;
+    if *streams == 0 {
+        active.remove(&connection_id);
+    }
 }
 
 fn maybe_open_peer_stream(
@@ -1257,11 +1318,15 @@ fn handle_swarm_event(
                 return;
             }
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
-                if relay.pending_connection == Some(connection_id) {
+                let lifecycle_owned = relay.pending_connection == Some(connection_id);
+                if lifecycle_owned {
                     relay.pending_connection = None;
                 }
                 if relay.is_active() {
                     relay.connections.insert(connection_id);
+                    if lifecycle_owned {
+                        relay.owned_connections.insert(connection_id);
+                    }
                     if endpoint.is_relayed() {
                         relay.relayed_connections.insert(connection_id);
                     } else {
@@ -1271,8 +1336,6 @@ fn handle_swarm_event(
                             address_with_peer(endpoint.get_remote_address().clone(), peer_id),
                         );
                     }
-                } else {
-                    let _ = swarm.close_connection(connection_id);
                 }
             }
             for connect in direct.pending.values_mut() {
@@ -1291,6 +1354,7 @@ fn handle_swarm_event(
             direct.active.remove(&connection_id);
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
                 relay.connections.remove(&connection_id);
+                relay.owned_connections.remove(&connection_id);
                 relay.relayed_connections.remove(&connection_id);
                 relay.direct_connection_addresses.remove(&connection_id);
             }
@@ -1311,7 +1375,12 @@ fn handle_swarm_event(
                 discard_automatic = relay.is_automatic() && !was_accepted;
             }
             if discard_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
             if reservation_changed {
                 publish_active_coordination_relays(
@@ -1341,7 +1410,12 @@ fn handle_swarm_event(
                 }
             }
             if let Some(peer_id) = failed_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
@@ -1404,7 +1478,12 @@ fn handle_swarm_event(
                     if let Some(relay) = coordination_relays.get_mut(&relay_peer) {
                         relay.reservation_accepted = false;
                     }
-                    discard_automatic_relay_candidate(swarm, coordination_relays, relay_peer);
+                    discard_automatic_relay_candidate(
+                        swarm,
+                        coordination_relays,
+                        relay_peer,
+                        &direct.active,
+                    );
                 }
                 publish_active_coordination_relays(
                     coordination_relays,
@@ -1474,7 +1553,12 @@ fn handle_swarm_event(
                 }
             }
             if let Some(peer_id) = rejected_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
             if changed {
                 publish_active_coordination_relays(
@@ -1512,6 +1596,7 @@ fn configure_transit(
     application_stream: &application_stream::Control,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     transit: &mut TransitRuntime,
+    active_streams: &HashMap<ConnectionId, usize>,
     policy: TransitPolicy,
     local_peer_id: PeerId,
 ) -> HashSet<PeerId> {
@@ -1583,7 +1668,13 @@ fn configure_transit(
     for connection_id in application_stream.connections_via(&changed_relays) {
         let _ = swarm.close_connection(connection_id);
     }
-    reconcile_transit_reservations(swarm, coordination_relays, relays, local_peer_id);
+    reconcile_transit_reservations(
+        swarm,
+        coordination_relays,
+        relays,
+        local_peer_id,
+        active_streams,
+    );
     publish_transit_snapshot(transit);
     revoked_relays
 }
@@ -1686,6 +1777,7 @@ fn reconcile_transit_reservations(
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     candidates: Vec<TransitRelayCandidate>,
     local_peer_id: PeerId,
+    active_streams: &HashMap<ConnectionId, usize>,
 ) {
     let desired = candidates
         .into_iter()
@@ -1711,24 +1803,39 @@ fn reconcile_transit_reservations(
     peer_ids.extend(bootstrap.keys().copied());
     for peer_id in peer_ids {
         let relay = relays.entry(peer_id).or_default();
-        if let Some(candidate) = desired.get(&peer_id) {
-            relay.transit_addresses = candidate.addresses.clone();
-            relay.transit_coordination_relays = candidate.coordination_relays.clone();
-        } else {
-            relay.transit_addresses.clear();
-            relay.transit_coordination_relays.clear();
-        }
-        if let Some((addresses, references)) = bootstrap.get(&peer_id) {
-            relay.transit_bootstrap_addresses = addresses.clone();
-            relay.transit_bootstrap_references = *references;
-        } else {
-            relay.transit_bootstrap_addresses.clear();
-            relay.transit_bootstrap_references = 0;
-        }
-        relay.next_connection_attempt = Instant::now();
-        relay.next_reservation_attempt = Instant::now();
-        if relay.direct_connection_addresses.is_empty() && !relay.relayed_connections.is_empty() {
-            relay.replace_relayed_at = Some(Instant::now());
+        let next_transit_addresses = desired
+            .get(&peer_id)
+            .map(|candidate| candidate.addresses.clone())
+            .unwrap_or_default();
+        let next_transit_coordination_relays = desired
+            .get(&peer_id)
+            .map(|candidate| candidate.coordination_relays.clone())
+            .unwrap_or_default();
+        let (next_bootstrap_addresses, next_bootstrap_references) =
+            bootstrap.get(&peer_id).cloned().unwrap_or_default();
+        let reachability_changed = relay.transit_addresses != next_transit_addresses
+            || relay.transit_coordination_relays != next_transit_coordination_relays
+            || relay.transit_bootstrap_addresses != next_bootstrap_addresses
+            || relay.transit_bootstrap_references != next_bootstrap_references;
+        relay.transit_addresses = next_transit_addresses;
+        relay.transit_coordination_relays = next_transit_coordination_relays;
+        relay.transit_bootstrap_addresses = next_bootstrap_addresses;
+        relay.transit_bootstrap_references = next_bootstrap_references;
+        if reachability_changed {
+            let now = Instant::now();
+            relay.next_connection_attempt = now;
+            relay.next_reservation_attempt = now;
+            let has_direct_connection = relay
+                .connections
+                .iter()
+                .any(|connection| !relay.relayed_connections.contains(connection));
+            let has_owned_relayed_connection = relay
+                .owned_connections
+                .iter()
+                .any(|connection| relay.relayed_connections.contains(connection));
+            if !has_direct_connection && has_owned_relayed_connection {
+                relay.replace_relayed_at = Some(now + TRANSIT_HOLE_PUNCH_RETRY_INTERVAL);
+            }
         }
     }
 
@@ -1745,12 +1852,14 @@ fn reconcile_transit_reservations(
         if let Some(listener) = relay.reservation_listener.take() {
             swarm.remove_listener(listener);
         }
-        for connection_id in relay.connections.drain() {
-            let _ = swarm.close_connection(connection_id);
+        for connection_id in relay.owned_connections.drain() {
+            if !active_streams.contains_key(&connection_id) {
+                let _ = swarm.close_connection(connection_id);
+            }
         }
         relay.direct_connection_addresses.clear();
     }
-    maintain_coordination_relays(swarm, relays, true, Instant::now());
+    maintain_coordination_relays(swarm, relays, active_streams, true, Instant::now());
 }
 
 fn handle_transit_event(transit: &mut TransitRuntime, event: relay::Event) {
@@ -1860,6 +1969,7 @@ fn register_automatic_relay_candidate(
 fn rebalance_automatic_relays(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
+    active_streams: &HashMap<ConnectionId, usize>,
     now: Instant,
 ) {
     let manual_reservations = relays
@@ -1908,8 +2018,10 @@ fn rebalance_automatic_relays(
             swarm.remove_listener(listener);
         }
         if relay.client_references == 0 {
-            for connection_id in relay.connections.drain() {
-                let _ = swarm.close_connection(connection_id);
+            for connection_id in relay.owned_connections.iter().copied() {
+                if !active_streams.contains_key(&connection_id) {
+                    let _ = swarm.close_connection(connection_id);
+                }
             }
         }
     }
@@ -2049,6 +2161,7 @@ fn discard_automatic_relay_candidate(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     peer_id: PeerId,
+    active_streams: &HashMap<ConnectionId, usize>,
 ) {
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
@@ -2073,8 +2186,10 @@ fn discard_automatic_relay_candidate(
     let mut relay = relays
         .remove(&peer_id)
         .expect("automatic relay candidate was read from the same map");
-    for connection_id in relay.connections.drain() {
-        let _ = swarm.close_connection(connection_id);
+    for connection_id in relay.owned_connections.drain() {
+        if !active_streams.contains_key(&connection_id) {
+            let _ = swarm.close_connection(connection_id);
+        }
     }
 }
 
@@ -2097,7 +2212,7 @@ fn release_coordination_relays(
         if let Some(listener) = relay.reservation_listener.take() {
             swarm.remove_listener(listener);
         }
-        for connection_id in relay.connections.drain() {
+        for connection_id in relay.owned_connections.iter().copied() {
             if !active_outbound.contains_key(&connection_id) {
                 let _ = swarm.close_connection(connection_id);
             }
@@ -2132,6 +2247,7 @@ fn dial_coordination_relay(
 fn maintain_coordination_relays(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
+    active_streams: &HashMap<ConnectionId, usize>,
     external_candidate_ready: bool,
     now: Instant,
 ) {
@@ -2148,16 +2264,25 @@ fn maintain_coordination_relays(
             .connections
             .iter()
             .any(|connection| !relay.relayed_connections.contains(connection));
-        if transit_provider && !has_direct_connection && !relay.connections.is_empty() {
+        let owned_relayed_connections = relay
+            .owned_connections
+            .intersection(&relay.relayed_connections)
+            .copied()
+            .collect::<Vec<_>>();
+        if transit_provider && !has_direct_connection && !owned_relayed_connections.is_empty() {
             if relay.replace_relayed_at.is_some_and(|retry| retry <= now) {
-                let stale = relay
-                    .relayed_connections
+                let stale = owned_relayed_connections
                     .iter()
                     .copied()
+                    .filter(|connection| !active_streams.contains_key(connection))
                     .collect::<Vec<_>>();
                 if let Some(relay) = relays.get_mut(&peer_id) {
-                    relay.replace_relayed_at = None;
-                    relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
+                    if stale.is_empty() {
+                        relay.replace_relayed_at = Some(now + TRANSIT_HOLE_PUNCH_RETRY_INTERVAL);
+                    } else {
+                        relay.replace_relayed_at = None;
+                        relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
+                    }
                 }
                 for connection_id in stale {
                     let _ = swarm.close_connection(connection_id);
@@ -2166,11 +2291,9 @@ fn maintain_coordination_relays(
             continue;
         }
         // A connection may have been established before this peer became a
-        // coordination or transit relay. Such a connection is intentionally
-        // absent from `relay.connections`, so `Swarm::is_connected` alone is
-        // not enough to make reservation progress. Establish one connection
-        // owned by this lifecycle instead of waiting forever on unrelated
-        // application traffic.
+        // coordination or transit relay. Establish one lifecycle-owned
+        // connection when no observed direct path can carry the reservation;
+        // unrelated application streams remain outside lifecycle cleanup.
         if !has_direct_connection {
             let addresses = relay_dial_addresses(peer_id, relay, relays);
             if let Some(relay) = relays.get_mut(&peer_id) {
