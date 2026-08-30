@@ -474,11 +474,12 @@ function importError(
   reason:
     | 'invalid_code'
     | 'insecure_confirmation_required'
+    | 'peer_path_unavailable'
     | 'connection_failed',
   message?: string,
 ): string {
   if (reason === 'invalid_code') return copy.invalidCode;
   if (reason === 'insecure_confirmation_required') return copy.insecureBody;
-  if (message?.startsWith('direct_path_unavailable:')) return copy.directPathUnavailable;
+  if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
   return message ?? copy.connectionFailed;
 }

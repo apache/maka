@@ -890,7 +890,10 @@ function MeshCard(props: {
               />
             </div>
           ) : null}
-          {props.onAddLocalHost && !localHostIsMember && !mesh.closed ? (
+          {props.onAddLocalHost &&
+          mesh.role === 'authority' &&
+          !localHostIsMember &&
+          !mesh.closed ? (
             <Banner
               status="info"
               title={copy.localHostMissing}

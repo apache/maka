@@ -85,10 +85,15 @@ export interface PeerMeshStateStore {
   readonly terminalFailure: Promise<never>;
   read(): PeerMeshStoredStateV1;
   mutate<T>(
-    operation: (state: PeerMeshStoredStateV1) => {
-      readonly state: PeerMeshStoredStateV1;
-      readonly result: T;
-    },
+    operation: (state: PeerMeshStoredStateV1) =>
+      | {
+          readonly state: PeerMeshStoredStateV1;
+          readonly result: T;
+        }
+      | Promise<{
+          readonly state: PeerMeshStoredStateV1;
+          readonly result: T;
+        }>,
   ): Promise<T>;
   close(): Promise<void>;
 }
@@ -173,15 +178,20 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   }
 
   mutate<T>(
-    operation: (state: PeerMeshStoredStateV1) => {
-      readonly state: PeerMeshStoredStateV1;
-      readonly result: T;
-    },
+    operation: (state: PeerMeshStoredStateV1) =>
+      | {
+          readonly state: PeerMeshStoredStateV1;
+          readonly result: T;
+        }
+      | Promise<{
+          readonly state: PeerMeshStoredStateV1;
+          readonly result: T;
+        }>,
   ): Promise<T> {
     this.#assertOpen();
     const task = this.#tail.then(async () => {
       if (this.#failure) throw this.#failure;
-      const updated = operation(this.#state);
+      const updated = await operation(this.#state);
       if (updated.state === this.#state) return updated.result;
       const candidate = pruneUnreferencedRoutes(updated.state, this.localPeerId);
       const canonical = decodePeerMeshStoredState(candidate, this.localPeerId);

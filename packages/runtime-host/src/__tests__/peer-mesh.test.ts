@@ -362,6 +362,9 @@ test('persists the endpoint name and selected transit Mesh together', async () =
   let node = await openPeerMeshNode({ dataRoot: root, peer });
   try {
     const meshId = (await node.create()).roster.roster.meshId;
+    peer.failNextSignature();
+    await assert.rejects(node.setDisplayName('Rejected alias'), /identity signing failed/u);
+    assert.equal(node.displayName(), undefined);
     await node.setDisplayName('Alice Host');
     await node.setTransitMesh(meshId);
     await node.close();
@@ -506,6 +509,7 @@ class MemoryPeerClient implements PeerMeshTransport {
     }[],
   };
   #failNextTransitConfiguration = false;
+  #failNextSignature = false;
 
   constructor(
     private readonly peerId: string,
@@ -538,7 +542,15 @@ class MemoryPeerClient implements PeerMeshTransport {
     this.#failNextTransitConfiguration = true;
   }
 
+  failNextSignature(): void {
+    this.#failNextSignature = true;
+  }
+
   signIdentity(payload: Buffer) {
+    if (this.#failNextSignature) {
+      this.#failNextSignature = false;
+      return Promise.reject(new Error('identity signing failed'));
+    }
     return Promise.resolve({
       publicKey: Buffer.from(this.peerId),
       signature: memorySignature(this.peerId, payload),

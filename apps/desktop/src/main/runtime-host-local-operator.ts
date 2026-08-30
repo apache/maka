@@ -37,6 +37,7 @@ import {
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
+  RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
   RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
@@ -651,6 +652,7 @@ function runPeerMeshFrameProcess(input: {
     result: () => result,
     failure: () => failure,
     acceptNonzeroResult: true,
+    pendingMaxBytes: RUNTIME_HOST_PEER_MESH_MANAGEMENT_FRAME_MAX_BYTES,
   });
 }
 
@@ -777,6 +779,7 @@ function runFramedProcess<Frame, Result>(input: {
   readonly failure: () => Error | undefined;
   readonly acceptNonzeroResult?: boolean;
   readonly inputLine?: string;
+  readonly pendingMaxBytes?: number;
 }): Promise<Result> {
   input.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
@@ -795,7 +798,7 @@ function runFramedProcess<Frame, Result>(input: {
     let settled = false;
     const filter = createRuntimeHostFramedOutputFilter({
       prefix: input.prefix,
-      pendingMaxBytes: SETUP_FRAME_PENDING_MAX,
+      pendingMaxBytes: input.pendingMaxBytes ?? SETUP_FRAME_PENDING_MAX,
       decode: input.decode,
       label: input.label,
       onFrame: (frame) => {

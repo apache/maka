@@ -18,6 +18,7 @@
  */
 
 import {
+  normalizePeerError,
   RuntimeHostPeerError,
   signRuntimeHostPeerIdentity,
   startRuntimeHostPeerEndpoint,
@@ -190,7 +191,11 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly allowedPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void> {
-    return this.#requireEndpoint().configureTransit(input);
+    return this.#requireEndpoint()
+      .configureTransit(input)
+      .catch((error: unknown) => {
+        throw normalizePeerError(error);
+      });
   }
 
   async connect(
@@ -329,7 +334,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       return stream;
     } catch (error) {
       signal?.throwIfAborted();
-      throw error;
+      throw normalizePeerError(error);
     } finally {
       settled = true;
       signal?.removeEventListener('abort', cancel);

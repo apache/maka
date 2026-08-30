@@ -1056,7 +1056,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
         : 'runtime-host service mesh requires status, create, invite, join, remove, leave, close, reconcile, transit, rename, or rename-mesh',
     );
   }
-  let clientDataRoot: string | undefined;
   let meshId: string | null | undefined;
   let peerId: string | undefined;
   let displayName: string | null | undefined;
@@ -1064,11 +1063,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     allowConfiguration: false,
     allowFramed: true,
     valueOptions: {
-      '--client-data-root': (value) => {
-        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
-        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
-        clientDataRoot = value;
-      },
       '--mesh': (value) => {
         if (meshId !== undefined) return error('Duplicate --mesh');
         if (!value || value.length > 128) return error('--mesh requires a valid Mesh ID');
@@ -1141,7 +1135,6 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
     action,
     json: options.json,
     ...(options.framed ? { framed: true as const } : {}),
-    ...(clientDataRoot ? { clientDataRoot } : {}),
     managedRootId: options.managedRootId,
     operatorDeploymentId: options.operatorDeploymentId,
     expectedTarget: options.expectedTarget,

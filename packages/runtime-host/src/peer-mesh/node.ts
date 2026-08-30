@@ -57,6 +57,7 @@ import {
   type PeerMeshReplicaStateV1,
   type PeerMeshStateStore,
   type PeerMeshStateV1,
+  type PeerMeshStoredStateV1,
 } from './store.js';
 
 const CONTROL_FRAME_MAX_BYTES = 64 * 1024;
@@ -256,16 +257,27 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return this.#store.read().displayName ?? undefined;
   }
 
-  async setDisplayName(displayName: string | null): Promise<void> {
-    this.#assertOpen();
-    const canonical = displayName === null ? null : canonicalPeerMeshDisplayName(displayName);
-    if (this.#store.read().displayName === canonical) return;
-    await this.#store.mutate((state) => ({
-      state: { ...state, displayName: canonical },
-      result: undefined,
-    }));
-    await this.#refreshLocalRoute();
-    void this.reconcile().catch(() => undefined);
+  setDisplayName(displayName: string | null): Promise<void> {
+    return this.#admitMesh(async () => {
+      const canonical = displayName === null ? null : canonicalPeerMeshDisplayName(displayName);
+      await this.#store.mutate(async (current) => {
+        if (current.displayName === canonical) return { state: current, result: undefined };
+        const state = { ...current, displayName: canonical };
+        const localPeerId = this.#peer.identity().peerId;
+        if (!state.meshes.some((mesh) => isActiveMembership(mesh, localPeerId))) {
+          return { state, result: undefined };
+        }
+        const route = await this.#signLocalRoute(state);
+        return {
+          state: {
+            ...state,
+            routes: mergeRoutes(state.routes, [route], this.#now()),
+          },
+          result: undefined,
+        };
+      });
+      void this.reconcile().catch(() => undefined);
+    });
   }
 
   setMeshDisplayName(meshId: string, displayName: string | null): Promise<PeerMeshStatus> {
@@ -837,35 +849,37 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #refreshLocalRouteOnce(): Promise<SignedPeerMeshRouteRecordV1 | undefined> {
     const identity = this.#peer.identity();
-    const current = this.#store.read();
-    const active = current.meshes.filter((state) => isActiveMembership(state, identity.peerId));
-    if (active.length === 0) return undefined;
-    const existing = current.routes
-      .filter(({ route }) => route.peerId === identity.peerId)
-      .sort((left, right) => right.route.sequence - left.route.sequence)[0];
     const now = this.#now();
-    if (
-      existing &&
-      existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
-      sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
-      sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays) &&
-      existing.route.endpointKind === this.#endpointKind &&
-      existing.route.displayName === (current.displayName ?? undefined) &&
-      existing.route.transitMeshId === current.transitMeshId
-    ) {
-      return existing;
-    }
-    const route = await this.#signLocalRoute();
-    await this.#store.mutate((states) => ({
-      state: { ...states, routes: mergeRoutes(states.routes, [route], now) },
-      result: undefined,
-    }));
-    return route;
+    return this.#store.mutate(async (current) => {
+      if (!current.meshes.some((state) => isActiveMembership(state, identity.peerId))) {
+        return { state: current, result: undefined };
+      }
+      const existing = current.routes
+        .filter(({ route }) => route.peerId === identity.peerId)
+        .sort((left, right) => right.route.sequence - left.route.sequence)[0];
+      if (
+        existing &&
+        existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
+        sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
+        sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays) &&
+        existing.route.endpointKind === this.#endpointKind &&
+        existing.route.displayName === (current.displayName ?? undefined) &&
+        existing.route.transitMeshId === current.transitMeshId
+      ) {
+        return { state: current, result: existing };
+      }
+      const route = await this.#signLocalRoute(current);
+      return {
+        state: { ...current, routes: mergeRoutes(current.routes, [route], now) },
+        result: route,
+      };
+    });
   }
 
-  async #signLocalRoute(): Promise<SignedPeerMeshRouteRecordV1> {
+  async #signLocalRoute(
+    stored: PeerMeshStoredStateV1 = this.#store.read(),
+  ): Promise<SignedPeerMeshRouteRecordV1> {
     const identity = this.#peer.identity();
-    const stored = this.#store.read();
     const maxSequence = stored.routes
       .filter(({ route }) => route.peerId === identity.peerId)
       .reduce((maximum, { route }) => Math.max(maximum, route.sequence), 0);

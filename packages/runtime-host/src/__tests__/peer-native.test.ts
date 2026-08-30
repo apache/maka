@@ -71,6 +71,7 @@ module.exports = {
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
+        if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
         if (peerId === 'ready') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
@@ -133,6 +134,9 @@ module.exports = {
     await control;
 
     await client.connect(peerConnectInput('ready'));
+    await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
+      return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';
+    });
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
@@ -161,6 +165,13 @@ module.exports = {
         {
           requestId: 4,
           peerId: 'ready',
+          routeHints: ['/memory/discovered', '/memory/1'],
+          coordinationRelays: ['/memory/relay'],
+          transitRelayPeerIds: ['transit-peer'],
+        },
+        {
+          requestId: 5,
+          peerId: 'unreachable',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
           transitRelayPeerIds: ['transit-peer'],

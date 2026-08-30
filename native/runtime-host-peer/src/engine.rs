@@ -2089,10 +2089,13 @@ fn request_coordination_reservation(
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
     };
+    // Transit policy can be installed after Identify has already completed on an
+    // existing connection. The reservation request still negotiates Relay v2.
+    let identified =
+        !relay.transit_addresses.is_empty() || (relay.identify_received && relay.identify_sent);
     if !(relay.reserve || !relay.transit_addresses.is_empty())
         || relay.reservation_listener.is_some()
-        || !relay.identify_received
-        || !relay.identify_sent
+        || !identified
         || !external_candidate_ready
         || relay.next_reservation_attempt > now
     {
@@ -2366,7 +2369,7 @@ mod tests {
     async fn approved_peers_can_exchange_an_application_stream_through_transit() {
         let root = std::env::temp_dir().join(format!("maka-peer-transit-{}", PeerId::random()));
         std::fs::create_dir_all(&root).expect("create test root");
-        let relay = start(test_endpoint_options(root.join("relay.key"))).expect("start relay");
+        let mut relay = start(test_endpoint_options(root.join("relay.key"))).expect("start relay");
         let source = start(test_endpoint_options(root.join("source.key"))).expect("start source");
         let target_key = root.join("target.key");
         let target_peer_id = ensure_identity(target_key.clone())
@@ -2379,6 +2382,19 @@ mod tests {
             .expect("relay listen address")
             .clone();
         let mut target = start(test_endpoint_options(target_key)).expect("start target");
+        let target_relay_stream = connect_test_stream(
+            &target,
+            relay.peer_id,
+            relay_address.clone(),
+            1,
+            StreamKind::Application,
+        )
+        .await;
+        let relay_target_stream =
+            tokio::time::timeout(Duration::from_secs(5), relay.incoming.recv())
+                .await
+                .expect("relay bootstrap inbound timeout")
+                .expect("relay bootstrap inbound stream");
         configure_test_transit_with_reservations(
             &target,
             HashSet::new(),
@@ -2479,6 +2495,8 @@ mod tests {
 
         close_test_stream(source_stream).await;
         close_test_stream(target_stream).await;
+        close_test_stream(target_relay_stream).await;
+        close_test_stream(relay_target_stream).await;
 
         configure_test_transit(&relay, HashSet::from([source.peer_id, target.peer_id])).await;
         let response = begin_test_connect(

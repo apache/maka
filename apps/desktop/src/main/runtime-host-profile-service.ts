@@ -803,7 +803,7 @@ export function createDesktopRuntimeHostProfileService(input: {
       } catch (error) {
         return {
           kind: 'error',
-          reason: 'connection_failed',
+          reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
           message: asError(error).message,
         };
       }
@@ -1350,6 +1350,16 @@ function connectionCodeImportFailure(
     }
   }
   return 'unknown';
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+
+function isPeerPathUnavailable(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'direct_path_unavailable' || code === 'transit_unavailable';
 }
 
 function requireSaveInput(value: unknown): asserts value is {

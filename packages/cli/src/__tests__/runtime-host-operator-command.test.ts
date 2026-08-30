@@ -61,15 +61,12 @@ describe('Runtime Host operator commands', () => {
       target.rootId,
       '--expected-deployment-id',
       target.deploymentId,
-      '--client-data-root',
-      '/srv/maka-control',
     ];
     assert.deepEqual(parseRuntimeHostCommand(['service', 'mesh', 'join', '--framed', ...base]), {
       kind: 'runtime-host-service-peer-mesh',
       action: 'join',
       json: false,
       framed: true,
-      clientDataRoot: '/srv/maka-control',
       managedRootId: target.rootId,
       operatorDeploymentId: target.deploymentId,
       expectedTarget: target,
@@ -82,7 +79,6 @@ describe('Runtime Host operator commands', () => {
       kind: 'runtime-host-service-peer-mesh',
       action: 'transit',
       json: false,
-      clientDataRoot: '/srv/maka-control',
       managedRootId: target.rootId,
       operatorDeploymentId: target.deploymentId,
       expectedTarget: target,

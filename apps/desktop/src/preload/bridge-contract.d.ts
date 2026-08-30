@@ -331,6 +331,7 @@ export type DesktopSessionCollaborationImportResult =
       readonly reason:
         | 'invalid_code'
         | 'insecure_confirmation_required'
+        | 'peer_path_unavailable'
         | 'connection_failed';
       readonly message?: string;
     };
