@@ -313,6 +313,37 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.assignments.length, 1);
   });
 
+  test('rejects a changed candidate when replaying an action after restart', async () => {
+    const effects = fakeEffects([session('payments'), session('login')]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const payments = snapshot.candidates.find((candidate) => candidate.sessionId === 'payments')!;
+    const login = snapshot.candidates.find((candidate) => candidate.sessionId === 'login')!;
+    const input = {
+      actionId: 'delegate-restart-conflict',
+      userText: 'Continue the work',
+      candidateSetId: snapshot.candidateSetId,
+      proposal: {
+        disposition: 'delegate_existing' as const,
+        candidateRef: payments.candidateRef,
+      },
+    };
+
+    await gate.act(input, CONTEXT);
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          ...input,
+          proposal: { ...input.proposal, candidateRef: login.candidateRef },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.assignments.length, 1);
+  });
+
   test('replaces only an explicitly confirmed durable delegation', async () => {
     const effects = fakeEffects([session('source'), session('destination')]);
     effects.assignmentRecords.set(
@@ -443,6 +474,72 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.retirements.length, 2);
     assert.equal(effects.assignmentRecords.has(input.actionId), true);
     assert.equal(effects.supersessions.has('delegation-source-action'), true);
+  });
+
+  test('refreshes replacement target display identity before retiring the source', async () => {
+    const effects = fakeEffects([
+      session('source'),
+      session('destination', { name: 'Destination' }),
+    ]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'d'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Wrong target',
+        },
+        'source-turn',
+      ),
+    );
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const destination = snapshot.candidates.find(
+      (candidate) => candidate.sessionId === 'destination',
+    )!;
+    const prepareReplacement = effects.prepareReplacement;
+    effects.prepareReplacement = async (input) => {
+      const prepared = await prepareReplacement.call(effects, input);
+      effects.sessions = effects.sessions.map((candidate) =>
+        candidate.id === 'destination' ? { ...candidate, name: 'Renamed destination' } : candidate,
+      );
+      return prepared;
+    };
+    const assign = effects.assign;
+    effects.assign = async (input) => {
+      const current = effects.sessions.find((candidate) => candidate.id === input.targetSessionId);
+      if (current?.name !== input.targetSessionName) {
+        throw new WorkHubActionEffectFailure(
+          'internal_failure',
+          'Target Session changed before replacement assignment',
+        );
+      }
+      return assign.call(effects, input);
+    };
+
+    const result = await gate.act(
+      {
+        actionId: 'rename-race',
+        userText: 'No, move this to destination',
+        candidateSetId: snapshot.candidateSetId,
+        confirmation: { kind: 'user_correction' },
+        proposal: {
+          disposition: 'replace',
+          replacesActionId: 'source-action',
+          target: {
+            disposition: 'delegate_existing',
+            candidateRef: destination.candidateRef,
+          },
+        },
+      },
+      CONTEXT,
+    );
+    assert.equal(result.disposition, 'replace');
+    assert.equal(effects.retirements.length, 1);
+    assert.equal(effects.assignments[0]?.targetSessionName, 'Renamed destination');
   });
 
   test('the first durable correction intent owns a delegation', async () => {

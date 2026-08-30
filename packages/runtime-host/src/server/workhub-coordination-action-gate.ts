@@ -411,6 +411,7 @@ export class WorkHubCoordinationActionGate {
         'WorkHub replacement source identity changed',
       );
     }
+    let assignment = assignmentInputFromReplacement(replacement);
     if (replacement.disposition === 'delegate_existing') {
       const target = (await this.#effects.listSessions()).find(
         (session) => session.id === replacement.targetSessionId,
@@ -429,9 +430,15 @@ export class WorkHubCoordinationActionGate {
         state: candidateState(target.status),
         updatedAt: updatedAt(target),
       });
+      // A replacement intent owns the stable target Session id. Its display
+      // name can legitimately change after that intent is prepared, so carry
+      // the freshly validated name into the post-retirement assignment. This
+      // keeps SQLite's display-identity guard from turning a recoverable rename
+      // into a permanently unassignable replacement.
+      assignment = { ...assignment, targetSessionName: target.name };
     }
     await this.#effects.retireDelegation(source);
-    return this.#assign(assignmentInputFromReplacement(replacement), context);
+    return this.#assign(assignment, context);
   }
 
   async #assign(
@@ -594,6 +601,9 @@ function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string
   return digest({
     userText: input.userText,
     disposition: input.proposal.disposition,
+    ...(input.proposal.disposition === 'delegate_existing'
+      ? { candidateRef: input.proposal.candidateRef }
+      : {}),
     ...(input.proposal.disposition === 'create_new'
       ? {
           title: input.proposal.title,
