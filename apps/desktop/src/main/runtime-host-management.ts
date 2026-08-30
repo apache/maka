@@ -81,6 +81,7 @@ export function createDesktopRuntimeHostManagement(input: {
   readonly profiles: Pick<
     DesktopRuntimeHostProfileService,
     | 'resolveManagedService'
+    | 'assertPairingComplete'
     | 'resolveManagedAccess'
     | 'rotateManagedCredential'
     | 'markManagedServiceUninstalling'
@@ -284,6 +285,9 @@ export function createDesktopRuntimeHostManagement(input: {
     }
     const provider = providers.get(profileId);
     const execute = async (): Promise<DesktopRuntimeHostManagementResponse> => {
+      if (managementAction !== 'status') {
+        input.profiles.assertPairingComplete(profileId);
+      }
       if (!provider) {
         return runManagedAction(profileId, managementAction, allowInterruptActiveTasksValue);
       }
@@ -341,6 +345,7 @@ export function createDesktopRuntimeHostManagement(input: {
 
   const managedMutationTarget = async (profileIdValue: unknown) => {
     const profileId = requireProfileId(profileIdValue);
+    input.profiles.assertPairingComplete(profileId);
     const managed = await resolveManagedService(profileId);
     const transport = managed.profile.transport;
     if (managed.state !== 'active' || transport.kind !== 'ssh') {
@@ -553,6 +558,7 @@ export function createDesktopRuntimeHostManagement(input: {
       throw new Error('Runtime Host update interruption authority is invalid');
     }
     const profileId = requireProfileId(profileIdValue);
+    input.profiles.assertPairingComplete(profileId);
     const provider = providers.get(profileId);
     let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
     let reconnect: () => Promise<void>;
@@ -624,6 +630,7 @@ export function createDesktopRuntimeHostManagement(input: {
       throw new Error('Runtime Host configuration interruption authority is invalid');
     }
     const profileId = requireProfileId(profileIdValue);
+    input.profiles.assertPairingComplete(profileId);
     const provider = providers.get(profileId);
     let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
     let reconnect: () => Promise<void>;
@@ -690,6 +697,9 @@ export function createDesktopRuntimeHostManagement(input: {
   ): Promise<DesktopRuntimeHostUpdatePolicySnapshot> => {
     const policy = policyValue === undefined ? undefined : requireUpdatePolicy(policyValue);
     const providerProfileId = requireProfileId(profileIdValue);
+    if (policy !== undefined) {
+      input.profiles.assertPairingComplete(providerProfileId);
+    }
     const provider = providers.get(providerProfileId);
     const execute = provider
       ? async (next?: RuntimeHostManagedUpdatePolicy) =>
@@ -729,6 +739,7 @@ export function createDesktopRuntimeHostManagement(input: {
     profileIdValue: unknown,
   ): Promise<DesktopRuntimeHostUpdateReconciliationResponse> => {
     const profileId = requireProfileId(profileIdValue);
+    input.profiles.assertPairingComplete(profileId);
     const provider = providers.get(profileId);
     let execute: () => Promise<DesktopRuntimeHostManagementTerminalFrame>;
     let reconnect: () => Promise<void>;

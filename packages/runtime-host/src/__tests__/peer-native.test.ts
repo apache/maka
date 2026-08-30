@@ -72,7 +72,7 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'fallback') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
@@ -99,21 +99,30 @@ module.exports = {
 };
 `,
     );
+    let routesPrepared = false;
     const client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
       routeResolver: {
-        resolveRoutes: () => ({
-          routeHints: ['/memory/discovered'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        }),
+        prepareRoutes: async (peerId) => {
+          routesPrepared = true;
+          if (peerId === 'fallback') throw new Error('Mesh refresh failed');
+        },
+        resolveRoutes: () =>
+          routesPrepared
+            ? {
+                routeHints: ['/memory/discovered'],
+                coordinationRelays: ['/memory/relay'],
+                transitRelayPeerIds: ['transit-peer'],
+              }
+            : undefined,
       },
     });
     const native = await import(nativePath);
     const abort = new AbortController();
     const pending = client.connect(peerConnectInput('pending'), abort.signal);
     await waitForRequestCount(native.default.stats, 1);
+    assert.equal(routesPrepared, true);
     abort.abort();
     await assert.rejects(pending, /aborted/u);
 
@@ -134,6 +143,7 @@ module.exports = {
     await control;
 
     await client.connect(peerConnectInput('ready'));
+    await client.connect(peerConnectInput('fallback'));
     await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
       return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';
     });
@@ -171,6 +181,13 @@ module.exports = {
         },
         {
           requestId: 5,
+          peerId: 'fallback',
+          routeHints: ['/memory/discovered', '/memory/1'],
+          coordinationRelays: ['/memory/relay'],
+          transitRelayPeerIds: ['transit-peer'],
+        },
+        {
+          requestId: 6,
           peerId: 'unreachable',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],

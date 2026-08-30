@@ -734,6 +734,7 @@ export class RuntimeHostKernel {
               this.#options.accessAuthority,
               context.credentialId,
               context.clientInstanceId,
+              context.credentialClientInstanceId,
             ),
           ),
         'collaboration.invitation.prepare': async (input) =>

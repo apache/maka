@@ -149,6 +149,7 @@ export interface PeerMeshNode {
         readonly transitRelayPeerIds: readonly string[];
       }
     | undefined;
+  prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
   reconcile(signal?: AbortSignal): Promise<void>;
   serve(): Promise<void>;
   close(): Promise<void>;
@@ -188,6 +189,7 @@ export interface PeerMeshTransport {
       readonly peerId: string;
       readonly routeHints: readonly string[];
       readonly coordinationRelays?: readonly string[];
+      readonly transitRelayPeerIds?: readonly string[];
       readonly directDeadlineMs: number;
     },
     signal?: AbortSignal,
@@ -484,6 +486,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           throw new Error('Peer Mesh authority returned an unrelated roster');
         }
         const routes = await this.#validateRoutes(response.routes, roster, this.#now());
+        operationSignal.throwIfAborted();
         await this.#store.mutate((current) => {
           const existing = findMesh(current.meshes, invitation.meshId);
           if (existing?.role === 'authority') {
@@ -669,14 +672,35 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     });
   }
 
+  async prepareRoutes(peerId: string, signal: AbortSignal): Promise<void> {
+    this.#assertOpen();
+    signal.throwIfAborted();
+    const localPeerId = this.#peer.identity().peerId;
+    const stored = this.#store.read();
+    const visible = stored.meshes.some(
+      (mesh) =>
+        isActiveMembership(mesh, localPeerId) && mesh.roster.roster.members.includes(peerId),
+    );
+    if (!visible) return;
+    if (
+      stored.routes.some(({ route }) => route.peerId === peerId && route.expiresAt > this.#now())
+    ) {
+      return;
+    }
+    await this.reconcile(signal);
+  }
+
   reconcile(signal?: AbortSignal): Promise<void> {
     if (this.#lifetime.signal.aborted) return Promise.reject(new Error('Peer Mesh node is closed'));
-    const task = this.#reconcileTail.then(() => this.#reconcile(signal));
-    this.#reconcileTail = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
+    const previous = this.#reconcileTail;
+    let release!: () => void;
+    const turn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#reconcileTail = previous.then(() => turn);
+    return waitForTurn(previous, signal)
+      .then(() => this.#reconcile(signal))
+      .finally(release);
   }
 
   async serve(): Promise<void> {
@@ -772,6 +796,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const start = this.#reconcileCursor % pending.length;
     const deadline = AbortSignal.timeout(RECONCILE_DEADLINE_MS);
     const operationSignal = AbortSignal.any([lifetimeSignal, deadline]);
+    const failures: unknown[] = [];
     let next = 0;
     const worker = async () => {
       while (!operationSignal.aborted) {
@@ -782,8 +807,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           pending[(start + offset) % pending.length]!;
         try {
           await this.#syncTargets(meshId, targets, authorityRouteExpired, operationSignal);
-        } catch {
+        } catch (error) {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
+          failures.push(error);
           if (deadline.aborted) return;
         }
       }
@@ -794,6 +820,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     this.#reconcileCursor = (start + Math.min(next, pending.length)) % pending.length;
     await this.#reconcileTransit();
     lifetimeSignal.throwIfAborted();
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        'Peer Mesh synchronization did not reach every membership',
+      );
+    }
   }
 
   async #syncTargets(
@@ -813,15 +845,29 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       return;
     }
     const controllers = targets.map(() => new AbortController());
-    const attempts = targets.map((target, index) =>
-      this.#syncPeer(meshId, target, AbortSignal.any([signal, controllers[index]!.signal])),
-    );
+    const authorityPeerId = targets[0]!.peerId;
+    const attempts = targets.map(async (target, index) => {
+      await this.#syncPeer(meshId, target, AbortSignal.any([signal, controllers[index]!.signal]));
+      if (index > 0 && !this.#hasFreshRoute(meshId, authorityPeerId)) {
+        throw new Error('Peer Mesh gossip did not recover the authority route');
+      }
+    });
     try {
       await Promise.any(attempts);
     } finally {
       for (const controller of controllers) controller.abort();
       await Promise.allSettled(attempts);
     }
+  }
+
+  #hasFreshRoute(meshId: string, peerId: string): boolean {
+    const stored = this.#store.read();
+    const mesh = findMesh(stored.meshes, meshId);
+    return Boolean(
+      mesh &&
+        isActiveMembership(mesh, this.#peer.identity().peerId) &&
+        stored.routes.some(({ route }) => route.peerId === peerId && route.expiresAt > this.#now()),
+    );
   }
 
   async #syncPeer(
@@ -837,11 +883,16 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       if (!state || !isActiveMembership(state, localPeerId)) return;
       const route = stored.routes.find((candidate) => candidate.route.peerId === localPeerId);
       if (!route) throw new Error('Peer Mesh local route is unavailable');
+      const discovered = this.resolveRoutes(target.peerId);
       const stream = await this.#peer.connectMeshControl(
         {
           peerId: target.peerId,
-          routeHints: target.routeHints,
-          coordinationRelays: target.coordinationRelays,
+          routeHints: mergeAddresses(discovered?.routeHints ?? [], target.routeHints),
+          coordinationRelays: mergeAddresses(
+            discovered?.coordinationRelays ?? [],
+            target.coordinationRelays,
+          ),
+          transitRelayPeerIds: discovered?.transitRelayPeerIds,
           directDeadlineMs: CONNECT_DEADLINE_MS,
         },
         signal,
@@ -1391,7 +1442,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           route.peerId === localPeerId ||
           route.expiresAt <= now ||
           route.transitMeshId === undefined ||
-          route.routeHints.length === 0
+          route.routeHints.length + route.coordinationRelays.length === 0
         ) {
           return false;
         }
@@ -1415,12 +1466,25 @@ function transitRelayCandidates(
   const candidates: RuntimeHostPeerTransitRelayCandidate[] = [];
   for (const { route } of routes) {
     if (remaining === 0) break;
-    const addresses = [
+    const routeHints = [
       ...new Set(route.routeHints.filter((address) => isBaseRelayFor(address, route.peerId))),
     ].slice(0, Math.min(PEER_MESH_MAX_TRANSIT_ADDRESSES_PER_RELAY, remaining));
-    if (addresses.length === 0) continue;
-    candidates.push(Object.freeze({ peerId: route.peerId, addresses: Object.freeze(addresses) }));
-    remaining -= addresses.length;
+    const coordinationRelays = [...new Set(route.coordinationRelays)].slice(
+      0,
+      Math.min(
+        PEER_MESH_MAX_TRANSIT_ADDRESSES_PER_RELAY - routeHints.length,
+        remaining - routeHints.length,
+      ),
+    );
+    if (routeHints.length + coordinationRelays.length === 0) continue;
+    candidates.push(
+      Object.freeze({
+        peerId: route.peerId,
+        addresses: Object.freeze(routeHints),
+        coordinationRelays: Object.freeze(coordinationRelays),
+      }),
+    );
+    remaining -= routeHints.length + coordinationRelays.length;
   }
   return Object.freeze(candidates);
 }
@@ -1687,6 +1751,26 @@ function responseRoutes(
 
 function sameAddresses(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((address, index) => address === right[index]);
+}
+
+function mergeAddresses(
+  primary: readonly string[],
+  fallback: readonly string[],
+): readonly string[] {
+  return Object.freeze([...new Set([...primary, ...fallback])].slice(0, 32));
+}
+
+function waitForTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return previous;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    });
+  });
 }
 
 function mergeTargets(

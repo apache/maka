@@ -551,6 +551,94 @@ test('imports shared access without requiring or persisting an Owner credential'
   assert.deepEqual(finalized, [sharedProfileId]);
 });
 
+test('keeps separate Guest principals for sessions shared by the same Host', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const connected: ResolvedRuntimeHostProfile[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal(), ...connected.map(ready)],
+    enable: async (target) => {
+      connected.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  const invitation = (credential: string) => encodeDesktopCollaborationInvitation({
+    invitationCode: encodeCollaborationInvitationCode({
+      schemaVersion: 1,
+      rootId: ROOT_ID,
+      credential,
+    }),
+    target: { name: PROFILE.name, transport: PROFILE.transport },
+  });
+
+  assert.equal((await service.importCollaborationInvitation(invitation('guest-one'), false)).kind, 'connected');
+  assert.equal((await service.importCollaborationInvitation(invitation('guest-two'), false)).kind, 'connected');
+
+  const profiles = await catalog.read();
+  assert.equal(profiles.profiles.length, 2);
+  assert.notEqual(profiles.profiles[0]?.id, profiles.profiles[1]?.id);
+  assert.deepEqual(
+    await Promise.all(profiles.profiles.map(async ({ id }) => (await catalog.resolve(id)).credential)),
+    ['guest-one', 'guest-two'],
+  );
+});
+
+test('lets the user discard an interrupted shared-session pairing', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async () => undefined,
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      throw new RuntimeHostPairingFinalizationInterruptedError();
+    },
+  });
+
+  const result = await service.importCollaborationInvitation(
+    encodeDesktopCollaborationInvitation({
+      invitationCode: encodeCollaborationInvitationCode({
+        schemaVersion: 1,
+        rootId: ROOT_ID,
+        credential: 'guest-token',
+      }),
+      target: {
+        name: PROFILE.name,
+        transport: PROFILE.transport,
+      },
+    }),
+    false,
+  );
+
+  assert.equal(result.kind, 'pairing_pending');
+  if (result.kind !== 'pairing_pending') return;
+  const pending = (await service.getSnapshot()).entries.find(
+    (entry) => entry.pairingPending,
+  );
+  assert.ok(pending);
+  assert.equal(result.profileId, pending.profile.id);
+  assert.equal(pending.enabled, true);
+
+  const discarded = await service.discardPairing(pending.profile.id);
+  assert.equal(discarded.pairingRecoveryPending, undefined);
+  assert.deepEqual((await catalog.read()).profiles, []);
+  assert.deepEqual(
+    (await resolveDesktopRuntimeHostStartup(root, { catalog })).pairingIntents,
+    [],
+  );
+});
+
 test('requires explicit confirmation before importing plaintext shared access', async () => {
   const root = await clientRoot();
   const catalog = createClientRuntimeHostProfileCatalog(root);
@@ -689,6 +777,11 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
     finalizePairing: async () => undefined,
   });
 
+  await assert.rejects(
+    service.resolveCollaborationConnectionTarget(MANAGED_PROFILE),
+    /Enable Direct peer access/u,
+  );
+
   await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, {
     peerId: "12D3KooWpeer",
     routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
@@ -709,6 +802,10 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
     routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
     coordinationRelays: [],
   });
+  assert.deepEqual(
+    await service.resolveCollaborationConnectionTarget(MANAGED_PROFILE),
+    { name: MANAGED_PROFILE.name, transport: direct.profile.transport },
+  );
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
 
   const beforeRejectedRemoval = {
@@ -959,7 +1056,7 @@ test("reactivates the previous credential after a pre-rebind rotation crash", as
   );
 });
 
-test("does not let unfinished pairing recovery override a later disable", async () => {
+test("does not let journal cleanup failure lock a completed pairing", async () => {
   const root = await clientRoot();
   const credentials = createClientRuntimeHostCredentialStore(root);
   const credentialStore = {
@@ -1000,10 +1097,88 @@ test("does not let unfinished pairing recovery override a later disable", async 
 
   await service.rotateManagedCredential(access, "new-token");
 
-  assert.equal((await service.getSnapshot()).pairingRecoveryPending, true);
+  assert.equal((await service.getSnapshot()).pairingRecoveryPending, undefined);
+  await service.setEnabled(MANAGED_PROFILE.id, false);
+  assert.equal(
+    (await service.getSnapshot()).entries.find(({ profile }) => profile.id === MANAGED_PROFILE.id)
+      ?.enabled,
+    false,
+  );
+
+  const restarted = await resolveDesktopRuntimeHostStartup(root, { catalog, credentialStore });
+  assert.equal(restarted.pairingIntents.length, 1);
+  const reenabled: ResolvedRuntimeHostProfile[] = [];
+  const restartedService = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: restarted,
+    catalog,
+    credentialStore,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      reenabled.push(target);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  await restartedService.startEnabledProfiles();
+  assert.deepEqual(reenabled, []);
+  assert.equal(
+    (await restartedService.getSnapshot()).entries.find(
+      ({ profile }) => profile.id === MANAGED_PROFILE.id,
+    )?.enabled,
+    false,
+  );
+});
+
+test('discarding a committed rotation unlocks the restored local profile', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  await catalog.create(MANAGED_PROFILE, 'old-token');
+  await createDesktopRuntimeHostManagedServiceStore(root).save(
+    MANAGED_PROFILE,
+    MANAGED_SERVICE,
+  );
+  await writeFile(
+    join(root, 'runtime-host-profile-selection.json'),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      defaultProfileId: LOCAL_RUNTIME_HOST_PROFILE.id,
+      enabledRemoteProfileIds: [MANAGED_PROFILE.id],
+    })}\n`,
+  );
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  let restoringOldCredential = false;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      if (restoringOldCredential && target.credential === 'old-token') {
+        throw new Error('old credential was revoked remotely');
+      }
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => {
+      throw new RuntimeHostPairingFinalizationInterruptedError();
+    },
+  });
+  const access = await service.resolveManagedAccess(MANAGED_PROFILE.id);
+  assert.ok(access);
   await assert.rejects(
-    () => service.setEnabled(MANAGED_PROFILE.id, false),
-    /unfinished pairing/u,
+    service.rotateManagedCredential(access, 'new-token'),
+    RuntimeHostPairingFinalizationInterruptedError,
+  );
+
+  restoringOldCredential = true;
+  const discarded = await service.discardPairing(MANAGED_PROFILE.id);
+  assert.equal(discarded.pairingRecoveryPending, undefined);
+  assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, 'old-token');
+  assert.equal(
+    discarded.entries.find(({ profile }) => profile.id === MANAGED_PROFILE.id)?.readiness,
+    'unavailable',
   );
 });
 

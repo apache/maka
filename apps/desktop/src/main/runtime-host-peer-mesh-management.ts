@@ -50,6 +50,7 @@ interface ManagedPeerMeshCommand {
   readonly peerId?: string;
   readonly invitation?: string;
   readonly displayName?: string | null;
+  readonly signal?: AbortSignal;
 }
 
 type RunManagedPeerMeshCommand = (command: ManagedPeerMeshCommand) => Promise<PeerMeshResult>;
@@ -57,11 +58,12 @@ type RunManagedPeerMeshCommand = (command: ManagedPeerMeshCommand) => Promise<Pe
 export function createDesktopRuntimeHostPeerMeshManagement(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly localMesh?: () => PeerMeshNode | undefined;
-  readonly localHost: Pick<DesktopLocalRuntimeHostRemoteAccess, 'inspectManaged'>;
+  readonly localHost: Pick<DesktopLocalRuntimeHostRemoteAccess, 'getSnapshot' | 'inspectManaged'>;
   readonly runLocal: LocalOperator['runPeerMesh'];
   readonly profiles: Pick<DesktopRuntimeHostProfileService, 'resolveManagedService'>;
   readonly runRemote: SshTerminal['runPeerMeshManagement'];
 }): { close(): void } {
+  const activeOperations = new Map<string, AbortController>();
   const execute = async (
     targetValue: unknown,
     actionValue: unknown,
@@ -69,6 +71,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     peerIdValue?: unknown,
     invitationValue?: unknown,
     displayNameValue?: unknown,
+    signal?: AbortSignal,
   ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> => {
     const target = requireTarget(targetValue);
     const action = requireAction(actionValue);
@@ -85,7 +88,23 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
         ? requireDisplayName(displayNameValue)
         : undefined;
     if (target.kind === 'desktop') {
-      return executeLocal(input.localMesh?.(), action, meshId, peerId, invitation, displayName);
+      if (action === 'reconcile') {
+        return reconcileDesktopTarget(
+          input.localMesh?.(),
+          input.localHost,
+          input.runLocal,
+          signal,
+        );
+      }
+      return executeLocal(
+        input.localMesh?.(),
+        action,
+        meshId,
+        peerId,
+        invitation,
+        displayName,
+        signal,
+      );
     }
     if (target.kind === 'local_host') {
       return input.localHost.inspectManaged(async (managed) => {
@@ -94,11 +113,12 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
             operatorPath: managed.operatorPath,
             target: managedTarget(managed),
             ...command,
+            signal: command.signal,
           });
           if (response.kind === 'error') throw new Error(response.error.message);
           return response.result;
         };
-        if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run);
+        if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run, signal);
         return run({
           action,
           ...(meshId !== undefined ? { meshId } : {}),
@@ -130,6 +150,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
           deploymentId: managed.deployment.deploymentId,
         },
         ...command,
+        signal: command.signal,
       });
       if (response.kind === 'error') throw new Error(response.error.message);
       if (response.action !== command.action) {
@@ -137,7 +158,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       }
       return response.result;
     };
-    if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run);
+    if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run, signal);
     return run({
       action,
       ...(meshId !== undefined ? { meshId } : {}),
@@ -150,20 +171,88 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   const channel = 'runtime-host-peer-mesh:execute';
   input.ipcMain.handle(
     channel,
-    (_event, target, action, meshId, peerId, invitation, displayName) =>
-      execute(target, action, meshId, peerId, invitation, displayName),
+    async (_event, target, action, meshId, peerId, invitation, displayName, operationIdValue) => {
+      const operationId = requireOperationId(operationIdValue);
+      if (!operationId) {
+        return execute(target, action, meshId, peerId, invitation, displayName);
+      }
+      const controller = new AbortController();
+      if (activeOperations.has(operationId)) throw new Error('Peer Mesh operation is already active');
+      activeOperations.set(operationId, controller);
+      try {
+        return await execute(
+          target,
+          action,
+          meshId,
+          peerId,
+          invitation,
+          displayName,
+          controller.signal,
+        );
+      } finally {
+        activeOperations.delete(operationId);
+      }
+    },
   );
-  return { close: () => input.ipcMain.removeHandler(channel) };
+  const cancelChannel = 'runtime-host-peer-mesh:cancel';
+  input.ipcMain.handle(cancelChannel, (_event, operationIdValue) => {
+    const operationId = requireOperationId(operationIdValue, true);
+    if (!operationId) throw new Error('Peer Mesh operation ID is required');
+    activeOperations.get(operationId)?.abort(new Error('Peer Mesh operation was cancelled'));
+  });
+  return {
+    close: () => {
+      for (const controller of activeOperations.values()) {
+        controller.abort(new Error('Peer Mesh management closed'));
+      }
+      activeOperations.clear();
+      input.ipcMain.removeHandler(channel);
+      input.ipcMain.removeHandler(cancelChannel);
+    },
+  };
+}
+
+async function reconcileDesktopTarget(
+  desktopMesh: PeerMeshNode | undefined,
+  localHost: Pick<DesktopLocalRuntimeHostRemoteAccess, 'getSnapshot' | 'inspectManaged'>,
+  runLocal: LocalOperator['runPeerMesh'],
+  signal?: AbortSignal,
+): Promise<PeerMeshQueryResult> {
+  if (!desktopMesh) throw new Error('This Desktop build does not include Direct peer support');
+  const failures: unknown[] = [];
+  const localSnapshot = await localHost.getSnapshot();
+  if (localSnapshot.state === 'on') {
+    await localHost.inspectManaged(async (managed) => {
+      const run: RunManagedPeerMeshCommand = async (command) => {
+        const response = await runLocal({
+          operatorPath: managed.operatorPath,
+          target: managedTarget(managed),
+          ...command,
+        });
+        if (response.kind === 'error') throw new Error(response.error.message);
+        return response.result;
+      };
+      await reconcileManagedTarget(desktopMesh, run, signal);
+    }).catch((error) => failures.push(error));
+  }
+  await desktopMesh.reconcile(signal).catch((error) => failures.push(error));
+  if (failures.length > 0) {
+    throw failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, 'Peer Mesh synchronization failed');
+  }
+  return projectPeerMeshQuery(desktopMesh);
 }
 
 async function reconcileManagedTarget(
   desktopMesh: PeerMeshNode | undefined,
   run: RunManagedPeerMeshCommand,
+  signal?: AbortSignal,
 ): Promise<PeerMeshQueryResult> {
-  if (!desktopMesh) return requireQueryResult(await run({ action: 'reconcile' }));
+  if (!desktopMesh) return requireQueryResult(await run({ action: 'reconcile', signal }));
 
   const desktop = projectPeerMeshQuery(desktopMesh);
-  const managed = requireQueryResult(await run({ action: 'status' }));
+  const managed = requireQueryResult(await run({ action: 'status', signal }));
   const managedById = new Map(managed.meshes.map((mesh) => [mesh.meshId, mesh]));
   let recovered = false;
   for (const desktopMembership of desktop.meshes) {
@@ -175,7 +264,7 @@ async function reconcileManagedTarget(
       authorityRouteNeedsRecovery(managedMembership)
     ) {
       const invitation = await desktopMesh.invite(desktopMembership.meshId);
-      await run({ action: 'join', invitation: JSON.stringify(invitation) });
+      await run({ action: 'join', invitation: JSON.stringify(invitation), signal });
       recovered = true;
       continue;
     }
@@ -184,13 +273,13 @@ async function reconcileManagedTarget(
       managedMembership.role === 'authority' &&
       authorityRouteNeedsRecovery(desktopMembership)
     ) {
-      const invited = await run({ action: 'invite', meshId: managedMembership.meshId });
+      const invited = await run({ action: 'invite', meshId: managedMembership.meshId, signal });
       const invitation = requireInvitationResult(invited).invitation;
-      await desktopMesh.join(invitation);
+      await desktopMesh.join(invitation, signal);
       recovered = true;
     }
   }
-  return requireQueryResult(await run({ action: recovered ? 'status' : 'reconcile' }));
+  return requireQueryResult(await run({ action: recovered ? 'status' : 'reconcile', signal }));
 }
 
 function authorityRouteNeedsRecovery(mesh: PeerMeshQueryResult['meshes'][number]): boolean {
@@ -215,6 +304,7 @@ async function executeLocal(
   peerId: string | undefined,
   invitation: ReturnType<typeof decodePeerMeshInvitation> | undefined,
   displayName: string | null | undefined,
+  signal?: AbortSignal,
 ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult> {
   if (!mesh) {
     if (action === 'status') return { available: false, meshes: [] };
@@ -244,7 +334,7 @@ async function executeLocal(
       await mesh.closeMesh(requiredValue(meshId, 'Mesh ID'));
       return snapshot();
     case 'reconcile':
-      await mesh.reconcile();
+      await mesh.reconcile(signal);
       return snapshot();
     case 'transit':
       await mesh.setTransitMesh(meshId ?? null);
@@ -337,6 +427,19 @@ function actionNeedsMesh(action: PeerMeshAction): boolean {
 function requireIdentifier(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
     throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireOperationId(value: unknown, required = false): string | undefined {
+  if (value === undefined && !required) return undefined;
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 128 ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new Error('Peer Mesh operation ID is invalid');
   }
   return value;
 }

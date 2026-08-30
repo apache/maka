@@ -119,6 +119,7 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
   const [switching, setSwitching] = useState(false);
+  const [pairingWorking, setPairingWorking] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
   const reload = useCallback(async () => {
@@ -254,20 +255,57 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
-  async function resolvePairingRecovery() {
+  async function resolvePairingRecovery(profileId?: string) {
     setSwitching(true);
+    setPairingWorking(true);
     try {
-      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
+      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery(profileId);
       if (mountedRef.current) setSnapshot(next);
     } catch (error) {
       if (mountedRef.current) {
+        await reload().catch(() => undefined);
         toast.error(
           copy.resolvePairingRecoveryFailed,
           settingsActionErrorMessage(error, locale),
         );
       }
     } finally {
-      if (mountedRef.current) setSwitching(false);
+      if (mountedRef.current) {
+        setSwitching(false);
+        setPairingWorking(false);
+      }
+    }
+  }
+
+  async function discardPairing(profileId: string) {
+    const confirmed = await toast.confirm({
+      title: copy.discardPairingConfirmTitle,
+      description: copy.discardPairingConfirmBody,
+      confirmLabel: copy.discardPairing,
+      cancelLabel: copy.cancel,
+      destructive: true,
+    });
+    if (!confirmed) return;
+    setSwitching(true);
+    setPairingWorking(true);
+    try {
+      const next = await window.maka.runtimeHostProfiles.discardPairing(profileId);
+      if (mountedRef.current) setSnapshot(next);
+    } catch (error) {
+      if (mountedRef.current) {
+        await reload().catch(() => undefined);
+        toast.error(
+          copy.discardPairingFailed,
+          settingsActionErrorMessage(error, locale),
+          undefined,
+          { profileId },
+        );
+      }
+    } finally {
+      if (mountedRef.current) {
+        setSwitching(false);
+        setPairingWorking(false);
+      }
     }
   }
 
@@ -550,6 +588,7 @@ export function RuntimeHostProfilesSection(props: {
                 size="sm"
                 label={copy.resolvePairingRecovery}
                 isDisabled={switching}
+                isLoading={pairingWorking}
                 onClick={() => void resolvePairingRecovery()}
               />
             )}
@@ -705,6 +744,9 @@ export function RuntimeHostProfilesSection(props: {
                       {isSharedAccess ? (
                         <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
                       ) : null}
+                      {entry.pairingPending ? (
+                        <Badge variant="warning" label={copy.pairingPendingBadge} />
+                      ) : null}
                       {entry.readiness === "unavailable" ? (
                         <Badge variant="neutral" label={copy.unavailable} />
                       ) : null}
@@ -712,15 +754,33 @@ export function RuntimeHostProfilesSection(props: {
                         label={profile.name}
                         isLabelHidden
                         value={entry.enabled}
-                        isDisabled={switching || entry.isDefault}
-                        disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
+                        isDisabled={switching || entry.isDefault || entry.pairingPending}
+                        disabledMessage={entry.pairingPending
+                          ? copy.pairingRecoveryDescription
+                          : entry.isDefault
+                            ? copy.defaultDisableHelp
+                            : undefined}
                         onChange={(enabled) => void setEnabled(profile.id, enabled)}
                       />
                       <MoreMenu
                         label={copy.moreActions(profile.name)}
                         size="sm"
                         items={[
-                          ...(managedSshDestination
+                          ...(entry.pairingPending
+                            ? [
+                                {
+                                  label: copy.resolvePairingRecovery,
+                                  isDisabled: switching,
+                                  onClick: () => void resolvePairingRecovery(profile.id),
+                                },
+                                {
+                                  label: copy.discardPairing,
+                                  isDisabled: switching,
+                                  onClick: () => void discardPairing(profile.id),
+                                },
+                              ]
+                            : []),
+                          ...(managedSshDestination && !entry.pairingPending
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,

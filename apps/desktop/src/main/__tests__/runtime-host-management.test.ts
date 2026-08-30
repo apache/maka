@@ -1243,6 +1243,7 @@ function unusedUpdateDependencies() {
 
 function unusedDirectPeerProfileDependencies() {
   return {
+    assertPairingComplete: () => undefined,
     resolveManagedDirectPeerProfile: async (): Promise<never> =>
       assert.fail('direct peer profile inspection is not expected'),
     upsertManagedDirectPeerProfile: async (): Promise<never> =>

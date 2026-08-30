@@ -151,6 +151,9 @@ export interface DesktopRuntimeHostCandidateDeps {
   ) => Promise<RuntimeHostActivationResult>;
   readonly resolveLocalCollaborationConnectionTarget?: () =>
     Promise<DesktopCollaborationConnectionTarget>;
+  readonly resolveProfileCollaborationConnectionTarget?: (
+    profile: PersistedRuntimeHostProfile,
+  ) => Promise<DesktopCollaborationConnectionTarget>;
   readonly createSessionCopyCleanup: (input: {
     removeSession: (sessionId: string) => Promise<SessionCopyCleanupDisposition>;
     resumeSessionCopy: (input: {
@@ -454,11 +457,8 @@ async function startProfileDesktopRuntimeHostCandidate(
         runtimeHostProfileAccess(profileTarget.profile),
         undefined,
         undefined,
-        profileTarget.profile.kind === 'remote'
-          ? {
-              name: profileTarget.profile.name,
-              transport: profileTarget.profile.transport,
-            }
+        profileTarget.profile.kind === 'remote' && input.resolveProfileCollaborationConnectionTarget
+          ? () => input.resolveProfileCollaborationConnectionTarget!(profileTarget.profile)
           : undefined,
       ),
     };
@@ -477,7 +477,9 @@ export async function createDesktopRuntimeHostCandidate(
   targetAccess: RuntimeHostProfileAccess = 'owner',
   hostPid?: number,
   ownedProcess?: RuntimeHostSpawnedProcess,
-  collaborationConnectionTarget?: DesktopCollaborationConnectionTarget,
+  resolveCollaborationConnectionTarget?: () =>
+    | DesktopCollaborationConnectionTarget
+    | Promise<DesktopCollaborationConnectionTarget>,
 ): Promise<DesktopRuntimeHostCandidate> {
   const target: DesktopRuntimeHostTargetPolicy = {
     kind: targetKind,
@@ -812,7 +814,7 @@ export async function createDesktopRuntimeHostCandidate(
       );
     }
     registerRuntimeHostCollaborationIpc(client, ipc, async () => {
-      if (collaborationConnectionTarget) return collaborationConnectionTarget;
+      if (resolveCollaborationConnectionTarget) return resolveCollaborationConnectionTarget();
       if (target.kind === 'local' && deps.resolveLocalCollaborationConnectionTarget) {
         return deps.resolveLocalCollaborationConnectionTarget();
       }

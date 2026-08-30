@@ -391,10 +391,12 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
   const [code, setCode] = useState('');
   const [working, setWorking] = useState(false);
   const [failure, setFailure] = useState<string>();
+  const [pairingPending, setPairingPending] = useState(false);
 
   async function join(allowInsecure = false): Promise<void> {
     setWorking(true);
     setFailure(undefined);
+    setPairingPending(false);
     try {
       const result = await window.maka.sessionCollaboration.importInvitation({
         code: code.trim(),
@@ -417,6 +419,11 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
         toast.error(copy.joinTitle, message);
         return;
       }
+      if (result.kind === 'pairing_pending') {
+        setPairingPending(true);
+        props.onImported();
+        return;
+      }
       props.onImported();
       props.onClose();
     } catch (error) {
@@ -436,13 +443,14 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
           <LayoutContent padding={4}>
             <FormLayout>
               {working ? <Banner status="info" title={copy.joining} /> : null}
+              {pairingPending ? <Banner status="warning" title={copy.pairingPending} /> : null}
               {failure ? <Banner status="error" title={copy.connectionFailed} description={failure} /> : null}
               <TextArea
                 label={copy.code}
                 value={code}
                 rows={6}
                 hasSpellCheck={false}
-                isDisabled={working}
+                isDisabled={working || pairingPending}
                 onChange={setCode}
               />
             </FormLayout>
@@ -454,7 +462,7 @@ function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }
             <Button
               variant="primary"
               label={copy.join}
-              isDisabled={working || !code.trim()}
+              isDisabled={working || pairingPending || !code.trim()}
               isLoading={working}
               onClick={() => void join()}
             />

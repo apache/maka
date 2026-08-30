@@ -310,6 +310,7 @@ export type AppUpdateInstallResult =
 export interface DesktopRuntimeHostProfileEntry {
   readonly profile: RuntimeHostProfile;
   readonly managedService?: true;
+  readonly pairingPending?: true;
   readonly enabled: boolean;
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
@@ -326,6 +327,7 @@ export interface DesktopRuntimeHostProfileSnapshot {
 
 export type DesktopSessionCollaborationImportResult =
   | { readonly kind: 'connected' }
+  | { readonly kind: 'pairing_pending'; readonly profileId: string }
   | {
       readonly kind: 'error';
       readonly reason:
@@ -734,9 +736,10 @@ export interface MakaBridge {
     ): Promise<DesktopRuntimeHostProfileAddResult>;
     importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
     remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
+    discardPairing(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     setEnabled(profileId: string, enabled: boolean): Promise<DesktopRuntimeHostProfileSnapshot>;
     setDefault(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
-    resolvePairingRecovery(): Promise<DesktopRuntimeHostProfileSnapshot>;
+    resolvePairingRecovery(profileId?: string): Promise<DesktopRuntimeHostProfileSnapshot>;
     subscribeChanges(
       handler: (event: DesktopRuntimeHostProfileChangedEvent) => void,
     ): () => void;
@@ -819,8 +822,10 @@ export interface MakaBridge {
         readonly peerId?: string;
         readonly invitation?: string;
         readonly displayName?: string | null;
+        readonly operationId?: string;
       },
     ): Promise<DesktopRuntimeHostPeerMeshResult>;
+    cancel(operationId: string): Promise<void>;
   };
 
   newTasks: {

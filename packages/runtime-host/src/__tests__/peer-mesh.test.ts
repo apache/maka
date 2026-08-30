@@ -197,9 +197,12 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c/p2p/peer-c']);
 
     now += 6 * 60 * 1_000;
+    await authority.reconcile();
     await memberC.setDisplayName('Peer C');
+    await memberC.reconcile();
     authorityPeer.stallNextControl();
     await memberB.reconcile(AbortSignal.timeout(1_000));
+    assert.deepEqual(memberB.resolveRoutes('peer-a')?.routeHints, ['/memory/peer-a/p2p/peer-a']);
 
     memberCPeer.setRouteHints(['/memory/peer-c-moved/p2p/peer-c']);
     await memberC.reconcile();
@@ -292,7 +295,11 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     assert.equal(authority.transitMeshId(), meshId);
     assert.deepEqual(authorityPeer.transitPolicy.allowedPeerIds, ['peer-b', 'peer-c', 'peer-d']);
     assert.deepEqual(memberBPeer.transitPolicy.relayCandidates, [
-      { peerId: 'peer-a', addresses: ['/memory/peer-a/p2p/peer-a'] },
+      {
+        peerId: 'peer-a',
+        addresses: ['/memory/peer-a/p2p/peer-a'],
+        coordinationRelays: ['/memory/relay/peer-a'],
+      },
     ]);
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
 
@@ -302,9 +309,18 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
     await memberD.reconcile();
     await memberB.reconcile();
     assert.deepEqual(memberBPeer.transitPolicy.relayCandidates, [
-      { peerId: 'peer-a', addresses: ['/memory/peer-a/p2p/peer-a'] },
+      {
+        peerId: 'peer-a',
+        addresses: ['/memory/peer-a/p2p/peer-a'],
+        coordinationRelays: ['/memory/relay/peer-a'],
+      },
+      {
+        peerId: 'peer-d',
+        addresses: [],
+        coordinationRelays: ['/memory/relay/peer-d'],
+      },
     ]);
-    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
+    assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a', 'peer-d']);
     const secondMeshId = (await memberB.create()).roster.roster.meshId;
     await memberD.join(await memberB.invite(secondMeshId));
     await authority.remove(meshId, 'peer-d');
@@ -511,6 +527,7 @@ class MemoryPeerClient implements PeerMeshTransport {
     relayCandidates: [] as readonly {
       readonly peerId: string;
       readonly addresses: readonly string[];
+      readonly coordinationRelays: readonly string[];
     }[],
   };
   #failNextTransitConfiguration = false;
@@ -591,6 +608,7 @@ class MemoryPeerClient implements PeerMeshTransport {
     readonly relayCandidates: readonly {
       readonly peerId: string;
       readonly addresses: readonly string[];
+      readonly coordinationRelays: readonly string[];
     }[];
   }): Promise<void> {
     if (this.#failNextTransitConfiguration) {
@@ -599,9 +617,10 @@ class MemoryPeerClient implements PeerMeshTransport {
     }
     this.transitPolicy = {
       allowedPeerIds: [...input.allowedPeerIds],
-      relayCandidates: input.relayCandidates.map(({ peerId, addresses }) => ({
+      relayCandidates: input.relayCandidates.map(({ peerId, addresses, coordinationRelays }) => ({
         peerId,
         addresses: [...addresses],
+        coordinationRelays: [...coordinationRelays],
       })),
     };
     return Promise.resolve();

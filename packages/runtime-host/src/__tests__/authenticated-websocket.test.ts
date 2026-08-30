@@ -961,7 +961,7 @@ test('credential rotation preserves authority and cannot outlive its active sour
 
     await authority.revoke({ credentialId: source.credentialId });
     await assert.rejects(
-      authority.finalize(replacement.credentialId, 'rotation-client'),
+      authority.finalize(replacement.credentialId, 'rotation-client', false),
       /no longer active/u,
     );
     await assert.rejects(
@@ -1000,11 +1000,14 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
     assert.deepEqual(pending?.operationGrants, ['host.status', 'access.credential.finalize']);
     assert.equal(pending?.canPublishClientCapabilities, false);
 
-    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', false), {
       reconnectRequired: true,
     });
-    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', false), {
       reconnectRequired: true,
+    });
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', true), {
+      reconnectRequired: false,
     });
     const claimed = authority.authenticate(credential);
     assert.equal(claimed?.clientInstanceId, 'desktop-a');
@@ -1013,7 +1016,7 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
         claimed?.operationGrants.includes('session.catalog.query'),
     );
     await assert.rejects(
-      authority.finalize(candidate.credentialId, 'desktop-b'),
+      authority.finalize(candidate.credentialId, 'desktop-b', true),
       /claimed by another Client/u,
     );
   } finally {
@@ -1060,13 +1063,13 @@ test('principal revocation is atomic with pairing finalization', async () => {
       );
 
       if (order === 'finalize-first') {
-        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new', false);
         const revoked = authority.revokePrincipal(principal);
         assert.deepEqual(await finalized, { reconnectRequired: true });
         assert.deepEqual(await revoked, { revoked: true });
       } else {
         const revoked = authority.revokePrincipal(principal);
-        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new', false);
         assert.deepEqual(await revoked, { revoked: true });
         await assert.rejects(finalized, /no longer active/u);
       }
@@ -1093,7 +1096,7 @@ test('a revoked Client-bound credential remains readable after restart', async (
     bindClientInstance: true,
   });
   try {
-    await authority.finalize(candidate.credentialId, 'desktop-a');
+    await authority.finalize(candidate.credentialId, 'desktop-a', false);
     await authority.revoke({ credentialId: candidate.credentialId });
   } finally {
     await authority.close();

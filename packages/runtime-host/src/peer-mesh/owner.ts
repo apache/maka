@@ -62,6 +62,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
         : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
       routeResolver: {
         resolveRoutes: (peerId) => resolverMesh?.resolveRoutes(peerId),
+        prepareRoutes: async (peerId, signal) => resolverMesh?.prepareRoutes(peerId, signal),
       },
     });
   } catch (error) {

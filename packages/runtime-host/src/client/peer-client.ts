@@ -47,6 +47,7 @@ export interface RuntimeHostPeerRouteResolver {
         readonly transitRelayPeerIds?: readonly string[];
       }
     | undefined;
+  prepareRoutes?(peerId: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface RuntimeHostPeerClient {
@@ -202,7 +203,24 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
   ): Promise<RuntimeHostPeerNativeStream> {
+    await this.#prepareRoutes(input, signal);
     return this.#connect(input, signal, 'application');
+  }
+
+  async #prepareRoutes(
+    input: RuntimeHostPeerConnectInput,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (!this.#routeResolver?.prepareRoutes) return;
+    const deadline = AbortSignal.timeout(Math.min(10_000, input.directDeadlineMs));
+    const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    try {
+      await this.#routeResolver.prepareRoutes(input.peerId, operationSignal);
+    } catch {
+      // Route preparation enriches an invitation/profile with fresher Mesh
+      // routes. It must not suppress explicit routes the caller already has.
+      signal?.throwIfAborted();
+    }
   }
 
   async connectMeshControl(
