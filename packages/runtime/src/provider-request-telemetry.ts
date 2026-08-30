@@ -19,6 +19,7 @@
 
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type HistoryCompactRoute,
   type ModelCallAttempt,
   type ModelCallKind,
   type ModelCallUsageBasis,
@@ -217,6 +218,8 @@ export interface TrackProviderStreamInput {
    * may never have seen.
    */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
 }
 
 export interface TrackProviderGenerateInput {
@@ -224,6 +227,8 @@ export interface TrackProviderGenerateInput {
   modelId: string;
   /** As `TrackProviderStreamInput.historyCompactBoundary`. */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
@@ -255,6 +260,7 @@ export function withProviderGenerateTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -265,6 +271,7 @@ export function withProviderGenerateTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           doGenerate,
         }),
     },
@@ -277,6 +284,7 @@ export function withProviderStreamTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -287,6 +295,7 @@ export function withProviderStreamTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           doStream,
         }),
     },
@@ -476,7 +485,7 @@ export class ProviderRequestTracker {
     capture: StoredCapture,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
-      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary'
+      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary' | 'historyCompactRoute'
     >,
   ): {
     observeOutput(): void;
@@ -563,6 +572,8 @@ export class ProviderRequestTracker {
           // mid-flight by another turn cannot be sealed into a prompt built
           // before it existed.
           historyCompactBoundary: input.historyCompactBoundary,
+          historyCompactRoute:
+            input.historyCompactRoute ?? this.input.accounting?.historyCompactRoute,
         });
       });
       await accountingSettlement;
@@ -601,6 +612,7 @@ export class ProviderRequestTracker {
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
       historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
+      historyCompactRoute: HistoryCompactRoute | undefined;
     },
   ): Promise<void> {
     const accounting = this.input.accounting;
@@ -629,8 +641,8 @@ export class ProviderRequestTracker {
       step: Math.max(0, record.step),
       attempt: Math.max(0, record.attempt - 1),
       callKind: accounting.callKind,
-      ...(accounting.historyCompactRoute !== undefined
-        ? { historyCompactRoute: accounting.historyCompactRoute }
+      ...(context.historyCompactRoute !== undefined
+        ? { historyCompactRoute: context.historyCompactRoute }
         : {}),
       providerId: accounting.providerId ?? record.providerId,
       modelId: record.modelId,
