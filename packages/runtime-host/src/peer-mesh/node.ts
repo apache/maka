@@ -742,10 +742,15 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const pending: Array<{
       readonly meshId: string;
       readonly targets: readonly PeerMeshAuthorityTarget[];
+      readonly authorityRouteExpired: boolean;
     }> = [];
     const gossipCursor = this.#gossipCursor;
     this.#gossipCursor = (this.#gossipCursor + 1) % PEER_MESH_MAX_MEMBERS;
+    const now = this.#now();
     for (const [index, state] of memberships.entries()) {
+      const authorityRoute = stored.routes.find(
+        ({ route }) => route.peerId === state.authority.peerId,
+      );
       const targets = [currentAuthorityTarget(state, stored.routes)];
       const gossipRoutes = state.roster.roster.members
         .filter((peerId) => peerId !== identity.peerId && peerId !== state.authority.peerId)
@@ -756,7 +761,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       if (gossipRoutes.length > 0) {
         targets.push(gossipRoutes[(gossipCursor + index) % gossipRoutes.length]!);
       }
-      pending.push({ meshId: state.roster.roster.meshId, targets });
+      pending.push({
+        meshId: state.roster.roster.meshId,
+        targets,
+        authorityRouteExpired:
+          authorityRoute !== undefined && authorityRoute.route.expiresAt <= now,
+      });
     }
     if (pending.length === 0) return;
     const start = this.#reconcileCursor % pending.length;
@@ -768,17 +778,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         const offset = next;
         next += 1;
         if (offset >= pending.length) return;
-        const { meshId, targets } = pending[(start + offset) % pending.length]!;
+        const { meshId, targets, authorityRouteExpired } =
+          pending[(start + offset) % pending.length]!;
         try {
-          try {
-            await this.#syncPeer(meshId, targets[0]!, operationSignal);
-          } catch (authorityFailure) {
-            const fallbackTargets = targets.slice(1);
-            if (fallbackTargets.length === 0) throw authorityFailure;
-            await Promise.any(
-              fallbackTargets.map((target) => this.#syncPeer(meshId, target, operationSignal)),
-            );
-          }
+          await this.#syncTargets(meshId, targets, authorityRouteExpired, operationSignal);
         } catch {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
           if (deadline.aborted) return;
@@ -791,6 +794,34 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     this.#reconcileCursor = (start + Math.min(next, pending.length)) % pending.length;
     await this.#reconcileTransit();
     lifetimeSignal.throwIfAborted();
+  }
+
+  async #syncTargets(
+    meshId: string,
+    targets: readonly PeerMeshAuthorityTarget[],
+    authorityRouteExpired: boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!authorityRouteExpired || targets.length === 1) {
+      try {
+        await this.#syncPeer(meshId, targets[0]!, signal);
+      } catch (authorityFailure) {
+        const fallbackTargets = targets.slice(1);
+        if (fallbackTargets.length === 0) throw authorityFailure;
+        await Promise.any(fallbackTargets.map((target) => this.#syncPeer(meshId, target, signal)));
+      }
+      return;
+    }
+    const controllers = targets.map(() => new AbortController());
+    const attempts = targets.map((target, index) =>
+      this.#syncPeer(meshId, target, AbortSignal.any([signal, controllers[index]!.signal])),
+    );
+    try {
+      await Promise.any(attempts);
+    } finally {
+      for (const controller of controllers) controller.abort();
+      await Promise.allSettled(attempts);
+    }
   }
 
   async #syncPeer(

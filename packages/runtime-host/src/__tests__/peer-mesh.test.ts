@@ -196,6 +196,11 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     await memberB.reconcile();
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.routeHints, ['/memory/peer-c/p2p/peer-c']);
 
+    now += 6 * 60 * 1_000;
+    await memberC.setDisplayName('Peer C');
+    authorityPeer.stallNextControl();
+    await memberB.reconcile(AbortSignal.timeout(1_000));
+
     memberCPeer.setRouteHints(['/memory/peer-c-moved/p2p/peer-c']);
     await memberC.reconcile();
     await memberB.reconcile();
