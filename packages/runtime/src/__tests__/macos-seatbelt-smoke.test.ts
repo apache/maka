@@ -68,6 +68,7 @@ function runSeatbeltCommand(
   workspaceRoot: string,
   command: string,
   profile: PermissionProfile = createWorkspaceWritePermissionProfile(),
+  includeTempRoots = false,
 ) {
   const manager = new SandboxManager([new MacosSeatbeltBackend()]);
   const result = manager.transform({
@@ -79,6 +80,7 @@ function runSeatbeltCommand(
       profile,
       pathContext: {
         workspaceRoots: [workspaceRoot],
+        ...(includeTempRoots ? { tmpdir: tmpdir(), slashTmp: '/tmp' } : {}),
       },
     },
   });
@@ -127,6 +129,21 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
     );
     assert.notEqual(readAncestorFile.status, 0);
     assert.match(readAncestorFile.stderr, /Operation not permitted/);
+  });
+
+  it('allows temp writes when workspace and temp roots use symlinked paths', async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-seatbelt-temp-workspace-'));
+    const slashTmpFile = join('/tmp', `maka-seatbelt-slash-tmp-${process.pid}-${Date.now()}`);
+    cleanup.push(workspaceRoot, slashTmpFile);
+
+    const child = runSeatbeltCommand(
+      workspaceRoot,
+      `created=$(/usr/bin/mktemp -d "$TMPDIR/maka-seatbelt.XXXXXX") && /usr/bin/touch ${JSON.stringify(slashTmpFile)} && /bin/rm -rf "$created" ${JSON.stringify(slashTmpFile)}`,
+      createWorkspaceWritePermissionProfile(),
+      true,
+    );
+
+    assert.equal(child.status, 0, child.stderr);
   });
 
   it('denies writes outside the workspace root', async () => {
