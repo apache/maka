@@ -43,6 +43,7 @@ import {
 } from './ipc-reconnect-policy.js';
 import type {
   OAuthExternalPresentation,
+  OAuthPresentationExpectation,
   RuntimeHostOAuthPresentation,
 } from './runtime-host-oauth-presentation.js';
 
@@ -108,9 +109,10 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         }
       }
       const attemptId = randomUUID();
-      const expectation = deps.presentation.expect(attemptId);
+      let expectation: OAuthPresentationExpectation | undefined;
       let startedOnHost = false;
       try {
+        expectation = deps.presentation.expect(attemptId);
         const started = await deps.client.startOAuthLogin(
           attemptId,
           connectionId
@@ -129,7 +131,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         });
         return { authRequestId: attemptId, stateHint: presented.stateHint };
       } catch (error) {
-        expectation.cancel(error);
+        expectation?.cancel(error);
         if (startedOnHost) {
           await deps.client.cancelOAuthLogin(attemptId).catch(() => undefined);
         }

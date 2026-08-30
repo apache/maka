@@ -369,7 +369,7 @@ test('malformed OAuth Connection IDs fail closed before catalog or credential ac
   assert.equal(mutations, 0);
 });
 
-test('a second OAuth start surfaces Host conflict without cancelling the active attempt', async () => {
+test('a second OAuth start cannot replace or cancel a pending active attempt', async () => {
   const provider = 'openai-codex' as const;
   const connectionId = '00000000-0000-4000-8000-000000000011';
   const configuredConnections = [
@@ -412,6 +412,11 @@ test('a second OAuth start surfaces Host conflict without cancelling the active 
   let starts = 0;
   let cancels = 0;
   let firstAttemptId = '';
+  let phase: 'awaiting_authorization' | 'authenticated' = 'awaiting_authorization';
+  let markFirstPresentationPoll!: () => void;
+  const firstPresentationPoll = new Promise<void>((resolve) => {
+    markFirstPresentationPoll = resolve;
+  });
   const client = {
     loadConnectionCatalog: async () => ({
       revision: 1,
@@ -454,15 +459,12 @@ test('a second OAuth start surfaces Host conflict without cancelling the active 
       starts += 1;
       if (starts === 2) throw new Error('Another OAuth login is already in progress');
       firstAttemptId = attemptId;
-      await presentation.openExternal(
-        'https://auth.example/device',
-        'FIRST',
-        new AbortController().signal,
-      );
       return oauthProjection(attemptId, connectionId, 'awaiting_authorization');
     },
-    queryOAuthLogin: async (attemptId: string) =>
-      oauthProjection(attemptId, connectionId, 'authenticated'),
+    queryOAuthLogin: async (attemptId: string) => {
+      markFirstPresentationPoll();
+      return oauthProjection(attemptId, connectionId, phase);
+    },
     cancelOAuthLogin: async (attemptId: string) => {
       cancels += 1;
       return oauthProjection(attemptId, connectionId, 'cancelled');
@@ -476,7 +478,22 @@ test('a second OAuth start surfaces Host conflict without cancelling the active 
     isProviderEnabled: () => true,
   });
 
+  const firstAuthorization = invoke(handlers, 'openai-codex:get-auth-url');
+  await firstPresentationPoll;
   assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+    ok: false,
+    reason: 'unknown',
+    message: 'Another OAuth login is already in progress',
+  });
+  assert.equal(starts, 1);
+  assert.equal(cancels, 0);
+  await presentation.openExternal(
+    'https://auth.example/device',
+    'FIRST',
+    new AbortController().signal,
+  );
+  phase = 'authenticated';
+  assert.deepEqual(await firstAuthorization, {
     authRequestId: firstAttemptId,
     stateHint: 'FIRST',
   });
@@ -498,12 +515,6 @@ test('a second OAuth start surfaces Host conflict without cancelling the active 
     await invoke(handlers, 'openai-codex:logout', configuredConnections[0]?.connectionId),
     { ok: true },
   );
-  assert.equal(cancels, 0);
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
-    ok: false,
-    reason: 'unknown',
-    message: 'Another OAuth login is already in progress',
-  });
   assert.equal(cancels, 0);
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:complete-authorization', firstAttemptId),
