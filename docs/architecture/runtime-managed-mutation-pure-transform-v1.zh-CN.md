@@ -4,6 +4,8 @@
 
 managed Write/Edit 不读写 live checkout。Runtime 使用自己的原始工具参数和 Host 提供的 immutable accepted-tree base content，计算唯一 result content 与 provider result。
 
+该转换允许 recovery 在 T2 前根据完全相同的 durable input 重新计算；它不拥有 filesystem、network 或 process 副作用。跨进程安全性来自 deterministic input/output 与后续 at-most-one acceptance，而不是 invocation count。
+
 ```text
 Runtime-owned args + T1 expectedPath + accepted base content
   -> pure Write/Edit transform

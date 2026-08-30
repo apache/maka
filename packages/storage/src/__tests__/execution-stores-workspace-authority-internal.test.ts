@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '../execution-stores.js';
 import {
   issueExecutionStoresWorkspaceMutationAuthorityInternal,
@@ -64,5 +65,100 @@ test('binds workspace mutation persistence to one execution-stores owner capabil
     await stores.sessionStore.close?.();
     await rootOwner.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a no-effect proof issued by another execution store', async () => {
+  const rootA = await mkdtemp(join(tmpdir(), 'maka-no-effect-authority-a-'));
+  const rootB = await mkdtemp(join(tmpdir(), 'maka-no-effect-authority-b-'));
+  const [capabilityA, capabilityB] = await Promise.all([
+    resolveStorageRoot({ path: rootA, kind: 'interactive' }),
+    resolveStorageRoot({ path: rootB, kind: 'interactive' }),
+  ]);
+  const [rootOwnerA, rootOwnerB] = await Promise.all([
+    tryAcquireInteractiveRootOwner(capabilityA),
+    tryAcquireInteractiveRootOwner(capabilityB),
+  ]);
+  assert.ok(rootOwnerA);
+  assert.ok(rootOwnerB);
+  if (!rootOwnerA || !rootOwnerB) return;
+  const [storesA, storesB] = await Promise.all([
+    openInteractiveExecutionStoresForWrite(rootOwnerA.lease),
+    openInteractiveExecutionStoresForWrite(rootOwnerB.lease),
+  ]);
+  try {
+    const ownerTokenA = {};
+    const ownerTokenB = {};
+    const authorityA = requireExecutionStoresWorkspaceMutationAuthorityInternal(
+      ownerTokenA,
+      issueExecutionStoresWorkspaceMutationAuthorityInternal({
+        ownerToken: ownerTokenA,
+        stores: storesA,
+        verifyCandidate: () => {
+          throw new Error('not used');
+        },
+      }),
+    );
+    const authorityB = requireExecutionStoresWorkspaceMutationAuthorityInternal(
+      ownerTokenB,
+      issueExecutionStoresWorkspaceMutationAuthorityInternal({
+        ownerToken: ownerTokenB,
+        stores: storesB,
+        verifyCandidate: () => {
+          throw new Error('not used');
+        },
+      }),
+    );
+    const claim = {
+      operationId: 'operation-cross-store',
+      dispatchEventId: 'dispatch-cross-store',
+      workspaceInstanceId: `instance_${'8'.repeat(32)}`,
+      terminalKind: 'no_workspace_change' as const,
+    };
+    const runtimeEvent: RuntimeEvent = {
+      id: 'outcome-cross-store',
+      sessionId: 'session-cross-store',
+      invocationId: 'run-cross-store',
+      runId: 'run-cross-store',
+      turnId: 'turn-cross-store',
+      ts: 2,
+      partial: false,
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'call-cross-store',
+        name: 'Write',
+        result: 'unchanged',
+      },
+      actions: {
+        managedMutationTerminal: {
+          protocol: 'managed_mutation_terminal_v1',
+          ...claim,
+        },
+      },
+      refs: { operationId: claim.operationId, toolCallId: 'call-cross-store' },
+    };
+
+    await assert.rejects(
+      async () =>
+        authorityB.commitTerminal({
+          noEffectOutcome: authorityA.issueNoEffectOutcome(claim),
+          toolOutcome: {
+            operationId: claim.operationId,
+            journalEventId: 'journal-cross-store',
+            runtimeEvent,
+            committedAt: 2,
+          },
+        }),
+      /no-effect proof is invalid/i,
+    );
+  } finally {
+    await Promise.all([storesA.sessionStore.close?.(), storesB.sessionStore.close?.()]);
+    await Promise.all([rootOwnerA.close(), rootOwnerB.close()]);
+    await Promise.all([
+      rm(rootA, { recursive: true, force: true }),
+      rm(rootB, { recursive: true, force: true }),
+    ]);
   }
 });

@@ -1654,6 +1654,12 @@ export class ToolRuntime {
                   : value.mutationResult && !value.mutationResult.changed
                     ? ('no_workspace_change' as const)
                     : undefined;
+                const durableOutcome = durableAttempt.prepareOutcome(
+                  value.outcome.content,
+                  value.outcome.isError,
+                  value.outcome.durationMs,
+                  terminalKind,
+                );
                 return {
                   // The canonical content is already recursively immutable, so
                   // the owner can read it without receiving a mutable alias.
@@ -1661,21 +1667,12 @@ export class ToolRuntime {
                   isError: value.outcome.isError,
                   durationMs: value.outcome.durationMs,
                   ...(value.mutationResult ? { mutationResult: value.mutationResult } : {}),
-                  durableOutcome: durableAttempt.prepareOutcome(
-                    value.outcome.content,
-                    value.outcome.isError,
-                    value.outcome.durationMs,
-                  ),
+                  durableOutcome,
                   ...(terminalKind
                     ? {
                         terminalOutcome: Object.freeze({
                           kind: terminalKind,
-                          durableOutcome: durableAttempt.prepareOutcome(
-                            value.outcome.content,
-                            value.outcome.isError,
-                            value.outcome.durationMs,
-                            terminalKind,
-                          ),
+                          durableOutcome,
                         }),
                       }
                     : {}),

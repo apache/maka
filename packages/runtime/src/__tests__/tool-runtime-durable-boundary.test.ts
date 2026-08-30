@@ -324,6 +324,11 @@ describe('ToolRuntime durable boundary', () => {
             const proof = await operation();
             assert.equal(proof.mutationResult?.changed, false);
             assert.equal(proof.terminalOutcome?.kind, 'no_workspace_change');
+            assert.equal(
+              proof.durableOutcome,
+              proof.terminalOutcome?.durableOutcome,
+              'one operation must expose one canonical durable outcome event',
+            );
             assert.deepEqual(proof.terminalOutcome?.durableOutcome.actions, {
               stateDelta: { durationMs: proof.durationMs },
               managedMutationTerminal: {

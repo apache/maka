@@ -2,7 +2,9 @@
 
 ## 1. 主要不变量
 
-managed Write/Edit 跨过 T1 后，provider result 与 durable response 只能由 Runtime 生成一次。Host 可以选择并提交 workspace terminal，但不能重建、替换或重新解释 provider 结果。
+在一次存活的 Runtime execution 内，managed Write/Edit 的 provider result 与 durable response 由 Runtime 从同一个 strict-JSON snapshot 构造，并且只构造一个 response event。Host 可以选择并提交 workspace terminal，但不能替换或重新解释 provider 结果。
+
+本切片不承诺跨进程的 transform invocation exactly-once。T2 前进程退出后，后续 recovery owner 可以基于同一个 durable operation、accepted base 与冻结参数重新计算无外部副作用的 deterministic transform；安全属性是“最多接受一个精确 successor”，不是“纯函数只调用一次”。
 
 ```text
 Runtime-owned strict JSON result
@@ -30,8 +32,8 @@ Runtime-owned strict JSON result
 - T1 前失败：不产生 reservation，可直接返回拒绝。
 - T1 后 proof 缺失、被修改或 owner 抛错：`unsettled`，禁止 generic T2 fallback。
 - no-change / failed-no-effect：使用 Runtime-issued terminal event 原子释放 reservation。
-- candidate 已产生但 SQLite 未接受：保持未接受派生物，后续按相同 operation identity 收敛。
-- SQLite 已接受但 Git accepted ref 尚未投影：由后续 accepted-ref projection slice 幂等推进；禁止重跑 Write/Edit。
+- candidate 已产生但 SQLite 未接受：保持未接受派生物；如何 reopen、重新计算或 park 由后续 managed-recovery owner 明确定义。
+- SQLite 已接受但 Git accepted ref 尚未投影：由后续 accepted-ref projection slice 直接采用 durable candidate evidence 幂等推进，不依赖当前 transform 实现。
 
 ## 5. 平台承诺
 
