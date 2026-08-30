@@ -305,7 +305,6 @@ export const Composer = forwardRef<
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
-    modelChangePending?: boolean;
     onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
     activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
@@ -368,7 +367,6 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     permissionMode?: PermissionMode;
-    permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
@@ -1891,7 +1889,6 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || props.permissionModePending === true
                     || Boolean(props.permissionModeDisabledReason)
                   }
                   disabledReason={props.permissionModeDisabledReason}
@@ -1912,7 +1909,6 @@ export const Composer = forwardRef<
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}
                     hasConversationHistory={props.modelSwitchHasHistory}
-                    pending={props.modelChangePending}
                     disabledReason={modelSwitcherDisabledReason}
                     renderProviderMark={props.renderProviderMark}
                     onChange={props.onModelChange}
@@ -1942,9 +1938,8 @@ export const Composer = forwardRef<
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
                     onChange={props.onThinkingLevelChange}
-                    disabled={Boolean(modelSwitcherDisabledReason) || props.modelChangePending}
+                    disabled={Boolean(modelSwitcherDisabledReason)}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={props.modelChangePending}
                   />
                 ) : (
                   <ThinkingLevelSelector

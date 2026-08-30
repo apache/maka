@@ -74,8 +74,12 @@ function seededState(): AppShellSessionUiState {
       drop: [boundaryRequest('drop')],
       keep: [boundaryRequest('keep')],
     },
-    pendingPermissionModeBySession: { drop: true, keep: true },
-    pendingSessionModelBySession: { drop: true, keep: true },
+    optimisticPermissionModeBySession: { drop: 'bypass', keep: 'bypass' },
+    optimisticSessionModelBySession: {
+      drop: { llmConnectionSlug: 'e2e', model: 'claude-opus' },
+      keep: { llmConnectionSlug: 'e2e', model: 'claude-opus' },
+    },
+    optimisticSessionThinkingLevelBySession: { drop: 'high', keep: 'high' },
   };
 }
 
@@ -233,8 +237,9 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(Object.keys(next.stopPendingBySession), ['keep']);
     assert.deepEqual(Object.keys(next.liveTurnBySession), ['keep']);
     assert.deepEqual(Object.keys(next.interactionBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingPermissionModeBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingSessionModelBySession), ['keep']);
+    assert.deepEqual(Object.keys(next.optimisticPermissionModeBySession), ['keep']);
+    assert.deepEqual(Object.keys(next.optimisticSessionModelBySession), ['keep']);
+    assert.deepEqual(Object.keys(next.optimisticSessionThinkingLevelBySession), ['keep']);
   });
 
   it('keeps state identity for no-op map updates and only replaces the selected map', () => {

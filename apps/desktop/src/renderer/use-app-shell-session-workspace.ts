@@ -112,8 +112,9 @@ export function useAppShellSessionWorkspace(toastApi: ToastApi) {
     setInteractionBySession: sessionUi.setInteractionBySession,
     setMessageQueueBySession: sessionUi.setMessageQueueBySession,
     setSessionEventHealthBySession: sessionUi.setSessionEventHealthBySession,
-    setPendingPermissionModeBySession: sessionUi.setPendingPermissionModeBySession,
-    setPendingSessionModelBySession: sessionUi.setPendingSessionModelBySession,
+    setOptimisticPermissionModeBySession: sessionUi.setOptimisticPermissionModeBySession,
+    setOptimisticSessionModelBySession: sessionUi.setOptimisticSessionModelBySession,
+    setOptimisticSessionThinkingLevelBySession: sessionUi.setOptimisticSessionThinkingLevelBySession,
     confirmLiveTurn: sessionUi.confirmLiveTurn,
   };
 }

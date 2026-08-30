@@ -20,8 +20,11 @@
 import { useRef } from 'react';
 import type { MessageQueueEntryProjection } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import { confirmLiveTurn, type InteractionQueues, type LiveTurnProjection } from '@maka/ui';
 import type { ShellRunUpdatesBySession } from './shell-run-update-state.js';
+import type { NewChatModel } from './shell-chat-model-selection.js';
 
 type StateUpdater<T> = (updater: (current: T) => T) => void;
 
@@ -33,8 +36,12 @@ export interface AppShellSessionUiState {
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
+  /** Optimistic value for an in-flight change, keyed by session. Absent key
+   * means "no override"; check with `in`, not truthiness — a thinking-level
+   * override can itself be `undefined`. */
+  optimisticPermissionModeBySession: Record<string, PermissionMode>;
+  optimisticSessionModelBySession: Record<string, NewChatModel>;
+  optimisticSessionThinkingLevelBySession: Record<string, ThinkingLevel | undefined>;
 }
 
 // The pending plate mirrors the Host's follow-up queue only: steering entries
@@ -51,8 +58,9 @@ const SESSION_UI_MAP_KEYS = [
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
-  'pendingPermissionModeBySession',
-  'pendingSessionModelBySession',
+  'optimisticPermissionModeBySession',
+  'optimisticSessionModelBySession',
+  'optimisticSessionThinkingLevelBySession',
 ] as const satisfies readonly AppShellSessionUiStateMapKey[];
 
 type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSION_UI_MAP_KEYS[number]>;
@@ -61,10 +69,11 @@ void allSessionUiMapsAreListed;
 
 // An authoritative session-list refresh heals a session whose turn ended while
 // its SessionEvent stream wasn't being followed, and must drop only the live
-// projection. The independently-scoped maps (message load error / retry, pending
-// permission-mode / model toggles, the permission queue, stop-pending) each have
-// their own lifecycle and must survive a mere turn settle — a full
-// `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
+// projection. The independently-scoped maps (message load error / retry,
+// optimistic permission-mode / model / thinking-level overlays, the permission
+// queue, stop-pending) each have their own lifecycle and must survive a mere
+// turn settle — a full `clearAppShellSessionUiStateForSession` (session
+// deletion) would wipe them too.
 // Event-stream health is scoped the same way but lives outside this state; see
 // `sessionEventHealthBySessionRef`.
 const TURN_TRANSIENT_MAP_KEYS = [
@@ -181,8 +190,9 @@ export function createAppShellSessionUiStateController(
     setSessionEventHealthBySession: ((updater) => {
       sessionEventHealthBySessionRef.current = updater(sessionEventHealthBySessionRef.current);
     }) satisfies StateUpdater<Record<string, SessionEventStreamSnapshot>>,
-    setPendingPermissionModeBySession: createMapSetter('pendingPermissionModeBySession'),
-    setPendingSessionModelBySession: createMapSetter('pendingSessionModelBySession'),
+    setOptimisticPermissionModeBySession: createMapSetter('optimisticPermissionModeBySession'),
+    setOptimisticSessionModelBySession: createMapSetter('optimisticSessionModelBySession'),
+    setOptimisticSessionThinkingLevelBySession: createMapSetter('optimisticSessionThinkingLevelBySession'),
     /**
      * The authority said something about `turnId` — it started, failed to
      * start, or ended. Drop that arm's `unconfirmed` claim so a session list
@@ -243,8 +253,9 @@ export function useAppShellSessionUiState() {
     setInteractionBySession: controller.setInteractionBySession,
     setMessageQueueBySession: controller.setMessageQueueBySession,
     setSessionEventHealthBySession: controller.setSessionEventHealthBySession,
-    setPendingPermissionModeBySession: controller.setPendingPermissionModeBySession,
-    setPendingSessionModelBySession: controller.setPendingSessionModelBySession,
+    setOptimisticPermissionModeBySession: controller.setOptimisticPermissionModeBySession,
+    setOptimisticSessionModelBySession: controller.setOptimisticSessionModelBySession,
+    setOptimisticSessionThinkingLevelBySession: controller.setOptimisticSessionThinkingLevelBySession,
     confirmLiveTurn: controller.confirmLiveTurn,
     clearSessionUiState: controller.clearSessionUiState,
     clearTurnTransientStateIfCurrent: controller.clearTurnTransientStateIfCurrent,

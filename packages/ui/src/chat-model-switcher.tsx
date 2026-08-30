@@ -232,7 +232,7 @@ export function ChatModelSwitcher(props: {
           isLoading: pending,
           tooltip: title,
           className: 'maka-model-switcher-trigger',
-          'aria-label': copy.switchAriaLabel,
+          'aria-label': displayLabel ? `${copy.switchAriaLabel}: ${displayLabel}` : copy.switchAriaLabel,
         }}
       >
         {announceWarning ? (

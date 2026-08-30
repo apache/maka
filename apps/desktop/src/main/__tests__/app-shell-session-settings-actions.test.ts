@@ -19,8 +19,8 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection } from '@maka/core/llm-connections';
-import type { StoredMessage } from '@maka/core/session';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
 
@@ -55,26 +55,29 @@ function session(id: string): DesktopSessionSummary {
   };
 }
 
+type ModelValue = { llmConnectionSlug: string; model: string };
+
 function createHarness(options: {
   confirm?: () => Promise<boolean>;
-  connections?: LlmConnection[];
-  messages?: StoredMessage[];
   permissionModeResult?: 'ask' | 'bypass';
 } = {}) {
   const activeIdRef = { current: 'session-a' as string | undefined };
   const sessions = [session('session-a'), session('session-b')];
   const sessionsRef = { current: sessions };
-  const pending = new Set<string>();
-  const pendingBySession: Record<string, boolean> = {};
+  const optimisticState = {
+    optimisticPermissionModeBySession: {} as Record<string, PermissionMode>,
+    optimisticSessionModelBySession: {} as Record<string, ModelValue>,
+    optimisticSessionThinkingLevelBySession: {} as Record<string, ThinkingLevel | undefined>,
+  };
   const modelCalls: string[] = [];
-  const permissionCalls: string[] = [];
+  const modelDeferreds: Array<ReturnType<typeof deferred<DesktopSessionSummary>>> = [];
   const thinkingCalls: string[] = [];
+  const thinkingDeferreds: Array<ReturnType<typeof deferred<DesktopSessionSummary>>> = [];
+  const permissionCalls: string[] = [];
   const errors: string[] = [];
   const errorTargets: Array<{ sessionId: string } | undefined> = [];
-  const successes: Array<{ title: string; description?: string }> = [];
   const newTaskPermissionModes: string[] = [];
-  const modelResult = deferred<DesktopSessionSummary>();
-  const thinkingResult = deferred<DesktopSessionSummary>();
+  const composerDefaults: ModelValue[] = [];
 
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -90,11 +93,15 @@ function createHarness(options: {
           },
           setModel: async (sessionId: string) => {
             modelCalls.push(sessionId);
-            return modelResult.promise;
+            const d = deferred<DesktopSessionSummary>();
+            modelDeferreds.push(d);
+            return d.promise;
           },
           setThinkingLevel: async (sessionId: string) => {
             thinkingCalls.push(sessionId);
-            return thinkingResult.promise;
+            const d = deferred<DesktopSessionSummary>();
+            thinkingDeferreds.push(d);
+            return d.promise;
           },
         },
       },
@@ -104,25 +111,26 @@ function createHarness(options: {
   const actions = createAppShellSessionSettingsActions({
     uiLocale: 'zh',
     activeIdRef,
-    connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E' }] as LlmConnection[]),
-    messages: options.messages ?? [],
-    pendingPermissionModeChangesRef: { current: new Set() },
-    pendingSessionModelChangesRef: { current: pending },
+    getOptimisticState: () => optimisticState,
     refreshSessions: async () => sessions,
-    saveComposerDefaults: () => undefined,
+    saveComposerDefaults: (patch) => composerDefaults.push(patch.model),
     sessionsRef,
     setNewTaskPermissionMode: (mode) => void newTaskPermissionModes.push(mode),
-    setPendingPermissionModeBySession: () => undefined,
-    setPendingSessionModelBySession: (update) => {
-      const next = update(pendingBySession);
-      for (const key of Object.keys(pendingBySession)) delete pendingBySession[key];
-      Object.assign(pendingBySession, next);
+    setOptimisticPermissionModeBySession: (update) => {
+      optimisticState.optimisticPermissionModeBySession = update(optimisticState.optimisticPermissionModeBySession);
+    },
+    setOptimisticSessionModelBySession: (update) => {
+      optimisticState.optimisticSessionModelBySession = update(optimisticState.optimisticSessionModelBySession);
+    },
+    setOptimisticSessionThinkingLevelBySession: (update) => {
+      optimisticState.optimisticSessionThinkingLevelBySession = update(
+        optimisticState.optimisticSessionThinkingLevelBySession,
+      );
     },
     setSessions: (update) => {
       sessionsRef.current = update(sessionsRef.current);
     },
     toastApi: {
-      success: (title, description) => successes.push({ title, description }),
       error: (title, _description, _details, target) => {
         errors.push(title);
         errorTargets.push(target);
@@ -134,18 +142,17 @@ function createHarness(options: {
   return {
     actions,
     activeIdRef,
+    composerDefaults,
     errors,
     errorTargets,
     modelCalls,
-    modelResult,
+    modelDeferreds,
     newTaskPermissionModes,
-    pending,
-    pendingBySession,
+    optimisticState,
     permissionCalls,
     sessionsRef,
     thinkingCalls,
-    thinkingResult,
-    successes,
+    thinkingDeferreds,
   };
 }
 
@@ -175,15 +182,18 @@ describe('AppShell session settings actions', () => {
     assert.equal(switched, false);
     assert.equal(confirmations, 1);
     assert.deepEqual(harness.permissionCalls, []);
+    assert.equal(harness.optimisticState.optimisticPermissionModeBySession['session-a'], undefined);
   });
 
-  it('reports a confirmed bypass switch as successful', async () => {
+  it('commits a confirmed bypass switch and clears its overlay afterward', async () => {
     const harness = createHarness();
 
     const switched = await harness.actions.setPermissionMode('bypass');
 
     assert.equal(switched, true);
     assert.deepEqual(harness.permissionCalls, ['session-a:bypass']);
+    assert.equal(harness.optimisticState.optimisticPermissionModeBySession['session-a'], undefined);
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.permissionMode, 'bypass');
   });
 
   it('does not report success when the Host returns another permission mode', async () => {
@@ -215,143 +225,133 @@ describe('AppShell session settings actions', () => {
     assert.deepEqual(harness.permissionCalls, []);
   });
 
-  it('blocks a thinking-level mutation while the same session model mutation is pending', async () => {
+  it('applies a model change optimistically and clears the overlay once committed', async () => {
     const harness = createHarness();
 
-    const modelChange = harness.actions.setSessionModel({
+    const modelChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
+    assert.deepEqual(harness.optimisticState.optimisticSessionModelBySession['session-a'], {
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
-    await harness.actions.setSessionThinkingLevel('high');
+
+    harness.modelDeferreds[0].resolve({ ...session('session-a'), model: 'claude-opus' });
+    await modelChange;
+
+    assert.equal(harness.optimisticState.optimisticSessionModelBySession['session-a'], undefined);
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.model, 'claude-opus');
+    assert.deepEqual(harness.composerDefaults, [{ llmConnectionSlug: 'e2e', model: 'claude-opus' }]);
+  });
+
+  it('rolls back the overlay and shows one error on a terminal failure', async () => {
+    const harness = createHarness();
+
+    const modelChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
+    harness.modelDeferreds[0].reject(new Error('fixture failure'));
+    await modelChange;
+
+    assert.equal(harness.optimisticState.optimisticSessionModelBySession['session-a'], undefined);
+    assert.equal(harness.errors.length, 1);
+    assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
+    assert.deepEqual(harness.composerDefaults, []);
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.model, 'claude-sonnet');
+  });
+
+  it('lets a newer model selection win over a slower in-flight one (latest wins)', async () => {
+    const harness = createHarness();
+
+    const firstChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
+    const secondChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-haiku' });
+    assert.deepEqual(harness.modelCalls, ['session-a', 'session-a']);
+    assert.deepEqual(harness.optimisticState.optimisticSessionModelBySession['session-a'], {
+      llmConnectionSlug: 'e2e',
+      model: 'claude-haiku',
+    });
+
+    harness.modelDeferreds[0].resolve({ ...session('session-a'), model: 'claude-opus' });
+    await firstChange;
+
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.model, 'claude-sonnet');
+    assert.equal(harness.errors.length, 0);
+    assert.deepEqual(harness.optimisticState.optimisticSessionModelBySession['session-a'], {
+      llmConnectionSlug: 'e2e',
+      model: 'claude-haiku',
+    });
+
+    harness.modelDeferreds[1].resolve({ ...session('session-a'), model: 'claude-haiku' });
+    await secondChange;
+
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.model, 'claude-haiku');
+    assert.equal(harness.optimisticState.optimisticSessionModelBySession['session-a'], undefined);
+  });
+
+  it('does not roll back a newer selection when a superseded call fails', async () => {
+    const harness = createHarness();
+
+    const firstChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
+    const secondChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-haiku' });
+
+    harness.modelDeferreds[0].reject(new Error('stale failure'));
+    await firstChange;
+
+    assert.deepEqual(harness.optimisticState.optimisticSessionModelBySession['session-a'], {
+      llmConnectionSlug: 'e2e',
+      model: 'claude-haiku',
+    });
+    assert.equal(harness.errors.length, 0);
+
+    harness.modelDeferreds[1].resolve({ ...session('session-a'), model: 'claude-haiku' });
+    await secondChange;
+    assert.equal(harness.sessionsRef.current.find((s) => s.id === 'session-a')?.model, 'claude-haiku');
+  });
+
+  it('model and thinking-level writes for the same session do not block each other', async () => {
+    const harness = createHarness();
+
+    const modelChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
+    const thinkingChange = harness.actions.setSessionThinkingLevel('high');
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
-    assert.deepEqual(harness.thinkingCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
+    assert.deepEqual(harness.thinkingCalls, ['session-a']);
 
-    harness.modelResult.resolve(session('session-a'));
-    await modelChange;
+    harness.modelDeferreds[0].resolve({ ...session('session-a'), model: 'claude-opus' });
+    harness.thinkingDeferreds[0].resolve({ ...session('session-a'), thinkingLevel: 'high' });
+    await Promise.all([modelChange, thinkingChange]);
   });
 
-  it('confirms both sides of a successful model change', async () => {
-    const harness = createHarness({
-      messages: [{
-        type: 'assistant',
-        id: 'assistant-1',
-        turnId: 'turn-1',
-        ts: 1,
-        text: 'done',
-        modelId: 'claude-haiku',
-      }],
-    });
+  it('records an explicit "use model default" thinking-level choice distinctly from no override', async () => {
+    const harness = createHarness();
+    // Must start on a concrete level, or the "already at this value" guard skips.
+    harness.sessionsRef.current = harness.sessionsRef.current.map((s) => (
+      s.id === 'session-a' ? { ...s, thinkingLevel: 'high' } : s
+    )) as typeof harness.sessionsRef.current;
 
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'e2e',
-      model: 'claude-opus',
-    });
-    harness.modelResult.resolve({ ...session('session-a'), model: 'claude-opus' });
-    await modelChange;
+    const thinkingChange = harness.actions.setSessionThinkingLevel(undefined);
+    assert.equal('session-a' in harness.optimisticState.optimisticSessionThinkingLevelBySession, true);
+    assert.equal(harness.optimisticState.optimisticSessionThinkingLevelBySession['session-a'], undefined);
 
-    assert.deepEqual(harness.successes, [
-      {
-        title: '已切换当前任务模型',
-        description: 'claude-haiku → claude-opus',
-      },
-    ]);
+    harness.thinkingDeferreds[0].resolve({ ...session('session-a'), thinkingLevel: undefined });
+    await thinkingChange;
+    assert.equal('session-a' in harness.optimisticState.optimisticSessionThinkingLevelBySession, false);
   });
 
-  it('falls back to the configured model for a fresh conversation', async () => {
+  it('keeps two sessions fully independent', async () => {
     const harness = createHarness();
 
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'e2e',
-      model: 'claude-opus',
-    });
-    harness.modelResult.resolve({ ...session('session-a'), model: 'claude-opus' });
-    await modelChange;
-
-    assert.equal(harness.successes[0]?.description, 'claude-sonnet → claude-opus');
-  });
-
-  it('includes connection names when a switch rebinds the connection', async () => {
-    const harness = createHarness({
-      connections: [
-        { slug: 'e2e', name: 'Primary' },
-        { slug: 'relay', name: 'Relay' },
-      ] as LlmConnection[],
-    });
-
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'relay',
-      model: 'claude-sonnet',
-    });
-    harness.modelResult.resolve({
-      ...session('session-a'),
-      llmConnectionSlug: 'relay',
-    });
-    await modelChange;
-
-    assert.equal(
-      harness.successes[0]?.description,
-      'claude-sonnet (Primary) → claude-sonnet (Relay)',
-    );
-  });
-
-  it('keeps another session available while the first session mutation is pending', async () => {
-    const harness = createHarness();
-
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'e2e',
-      model: 'claude-opus',
-    });
+    const modelChange = harness.actions.setSessionModel({ llmConnectionSlug: 'e2e', model: 'claude-opus' });
     harness.activeIdRef.current = 'session-b';
     const thinkingChange = harness.actions.setSessionThinkingLevel('high');
 
     assert.deepEqual(harness.modelCalls, ['session-a']);
     assert.deepEqual(harness.thinkingCalls, ['session-b']);
-    assert.deepEqual(harness.pending, new Set(['session-a', 'session-b']));
-
-    harness.thinkingResult.resolve(session('session-b'));
-    await thinkingChange;
-    harness.modelResult.resolve(session('session-a'));
-    await modelChange;
-  });
-
-  it('blocks a model mutation while the same session thinking mutation is pending', async () => {
-    const harness = createHarness();
-
-    const thinkingChange = harness.actions.setSessionThinkingLevel('high');
-    await harness.actions.setSessionModel({
+    assert.deepEqual(harness.optimisticState.optimisticSessionModelBySession['session-a'], {
       llmConnectionSlug: 'e2e',
       model: 'claude-opus',
     });
+    assert.equal(harness.optimisticState.optimisticSessionThinkingLevelBySession['session-b'], 'high');
 
-    assert.deepEqual(harness.thinkingCalls, ['session-a']);
-    assert.deepEqual(harness.modelCalls, []);
-    assert.equal(harness.pendingBySession['session-a'], true);
-
-    harness.thinkingResult.resolve(session('session-a'));
+    harness.thinkingDeferreds[0].resolve(session('session-b'));
     await thinkingChange;
-    assert.equal(harness.pendingBySession['session-a'], undefined);
-  });
-
-  it('releases the session owner after a failed mutation so the next action can run', async () => {
-    const harness = createHarness();
-
-    const thinkingChange = harness.actions.setSessionThinkingLevel('high');
-    harness.thinkingResult.reject(new Error('fixture failure'));
-    await thinkingChange;
-
-    assert.equal(harness.pending.has('session-a'), false);
-    assert.equal(harness.pendingBySession['session-a'], undefined);
-    assert.equal(harness.errors.length, 1);
-    assert.deepEqual(harness.errorTargets, [{ sessionId: 'session-a' }]);
-
-    const modelChange = harness.actions.setSessionModel({
-      llmConnectionSlug: 'e2e',
-      model: 'claude-opus',
-    });
-    assert.deepEqual(harness.modelCalls, ['session-a']);
-    harness.modelResult.resolve(session('session-a'));
+    harness.modelDeferreds[0].resolve(session('session-a'));
     await modelChange;
   });
 });

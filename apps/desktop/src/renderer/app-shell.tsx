@@ -389,8 +389,9 @@ function AppShellContent({
     setInteractionBySession,
     setMessageQueueBySession,
     setSessionEventHealthBySession,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
+    setOptimisticPermissionModeBySession,
+    setOptimisticSessionModelBySession,
+    setOptimisticSessionThinkingLevelBySession,
   } = useAppShellSessionWorkspace(toastApi);
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -495,8 +496,9 @@ function AppShellContent({
     stopPendingBySession,
     interactionBySession,
     messageQueueBySession,
-    pendingPermissionModeBySession,
-    pendingSessionModelBySession,
+    optimisticPermissionModeBySession,
+    optimisticSessionModelBySession,
+    optimisticSessionThinkingLevelBySession,
     streamingSessionIds,
     activeLiveTurnSnapshot,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
@@ -907,6 +909,9 @@ function AppShellContent({
     usePersistedComposerDefaults: modelSettingsOwnsComposerHost,
     defaultThinkingLevel: newTask.selectedHost?.chatDefaults.thinkingLevel,
     openSettingsSection,
+    optimisticModel: activeId ? optimisticSessionModelBySession[activeId] : undefined,
+    hasOptimisticThinkingLevel: activeId ? activeId in optimisticSessionThinkingLevelBySession : false,
+    optimisticThinkingLevel: activeId ? optimisticSessionThinkingLevelBySession[activeId] : undefined,
   });
   const newChatProviderType = newChatModel
     ? connections.find((connection) => connection.slug === newChatModel.llmConnectionSlug)?.providerType
@@ -917,24 +922,23 @@ function AppShellContent({
   // mask. Per @kenji PR109d review: pending state prevents double-click
   // duplicate sibling turns by disabling the action button between
   // click and `sessions:changed turn-status-change` arriving.
-  // The four de-dup registries (turn-footer actions, session-row actions,
-  // per-session permission-mode / model changes) all share the same keyed-Set
-  // shape; see useKeyedPendingRegistry. Only the turn-footer registry mirrors
-  // into React state (drives the disabled mask) and arms a 5s auto-clear
-  // fallback timer; the other three stay ref-only and clear in their action's
-  // `finally`.
+  // The de-dup registries (turn-footer actions, session-row actions) share
+  // the same keyed-Set shape; see useKeyedPendingRegistry. Only the
+  // turn-footer registry mirrors into React state (drives the disabled mask)
+  // and arms a 5s auto-clear fallback timer; the others stay ref-only and
+  // clear in their action's `finally`. Model/thinking-level/permission-mode
+  // changes use the optimistic-overlay maps in app-shell-session-ui-state.ts
+  // instead, with no re-entrancy guard.
   const turnActionRegistry = useKeyedPendingRegistry({
     trackState: true,
     autoClearMs: 5000,
   });
   const pendingTurnActions = turnActionRegistry.keys;
   const sessionRowActionRegistry = useKeyedPendingRegistry();
-  const permissionModeChangeRegistry = useKeyedPendingRegistry();
   // One registry per persisted field. The two controls are independent, so a
   // Plan transition in flight is no reason to hold the orchestration choice.
   const collaborationModeChangeRegistry = useKeyedPendingRegistry();
   const orchestrationModeChangeRegistry = useKeyedPendingRegistry();
-  const sessionModelChangeRegistry = useKeyedPendingRegistry();
   const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
     `${sessionId}:${turnId}:${actionId}`;
   function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
@@ -971,9 +975,10 @@ function AppShellContent({
   }
 
   function clearSessionRendererState(sessionId: string): void {
+    // clearOwnedSessionState clears every AppShellSessionUiState map,
+    // including the optimistic overlays — no extra cleanup needed here.
     clearOwnedSessionState(sessionId);
     turnActionRegistry.clearForSession(sessionId);
-    permissionModeChangeRegistry.keysRef.current.delete(sessionId);
     collaborationModeChangeRegistry.keysRef.current.delete(sessionId);
     orchestrationModeChangeRegistry.keysRef.current.delete(sessionId);
     // Queued mode intents die with the Session's renderer lifecycle: an
@@ -981,7 +986,6 @@ function AppShellContent({
     // Session this cleanup has already let go of.
     queuedCollaborationModeBySession.current.delete(sessionId);
     queuedOrchestrationModeBySession.current.delete(sessionId);
-    sessionModelChangeRegistry.keysRef.current.delete(sessionId);
   }
 
   const sessionRowActionHandlers = useStableActions(createAppShellSessionRowActions, {
@@ -1013,16 +1017,14 @@ function AppShellContent({
   } = useStableActions(createAppShellSessionSettingsActions, {
     uiLocale,
     activeIdRef,
-    connections,
-    messages,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
+    getOptimisticState: () => sessionUiController.getState(),
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
+    setOptimisticPermissionModeBySession,
+    setOptimisticSessionModelBySession,
+    setOptimisticSessionThinkingLevelBySession,
     setSessions,
     toastApi,
   });
@@ -2413,8 +2415,6 @@ function AppShellContent({
     handleConnectionEvent,
     openHelp,
     openSettings,
-    pendingPermissionModeChangesRef: permissionModeChangeRegistry.keysRef,
-    pendingSessionModelChangesRef: sessionModelChangeRegistry.keysRef,
     pendingTurnActionTimersRef: turnActionRegistry.timersRef,
     pendingTurnActionsRef: turnActionRegistry.keysRef,
     projectPickerPendingRef,
@@ -3174,7 +3174,6 @@ function AppShellContent({
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   renderProviderMark={(type) => <ProviderBrandMark type={type} />}
-                  modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
                   onModelChange={(input) => setSessionModel(input)}
                   activeThinkingLevels={activeThinkingLevels}
                   activeThinkingLevel={activeThinkingLevel}
@@ -3200,8 +3199,11 @@ function AppShellContent({
                     sessionHealthNotice?.tone === 'destructive' ||
                     taskSubmissionHardBlocked
                   }
-                  permissionMode={activePermissionMode}
-                  permissionModePending={activeId ? pendingPermissionModeBySession[activeId] === true : false}
+                  permissionMode={
+                    activeId && activeId in optimisticPermissionModeBySession
+                      ? optimisticPermissionModeBySession[activeId]
+                      : activePermissionMode
+                  }
                   // Every "cannot change this mid-turn" gate reads `turnActive`,
                   // the same witness Stop reads. Reading the persisted status
                   // here instead left these toggles live through the whole
@@ -3209,15 +3211,13 @@ function AppShellContent({
                   // mode change to land before the run registers and alter the
                   // execution config of the turn already sent.
                   permissionModeDisabledReason={
-                    activeId && pendingPermissionModeBySession[activeId] === true
-                        ? shellCopy.permissionModeChanging
-                      : activeStreamingLive
-                          ? shellCopy.permissionModeStreaming
-                        : activeId && turnActive
-                            ? shellCopy.permissionModeRunning
-                          : activeId && activeSessionForView?.status === 'waiting_for_user'
-                              ? shellCopy.permissionModeWaiting
-                            : undefined
+                    activeStreamingLive
+                      ? shellCopy.permissionModeStreaming
+                      : activeId && turnActive
+                        ? shellCopy.permissionModeRunning
+                        : activeId && activeSessionForView?.status === 'waiting_for_user'
+                          ? shellCopy.permissionModeWaiting
+                          : undefined
                   }
                   onPermissionModeChange={
                     activeBoundarySurface.localInteractionAvailable
@@ -3277,7 +3277,6 @@ function AppShellContent({
                 activeProviderType={activeConnection?.providerType}
                 renderProviderMark={(type) => <ProviderLogo type={type} compact />}
                 modelChoices={chatModelChoices}
-                modelChangePending={activeId ? pendingSessionModelBySession[activeId] === true : false}
                 onModelChange={(input) => setSessionModel(input)}
                 userLabel={userLabel}
                 memoryActive={memoryActive}

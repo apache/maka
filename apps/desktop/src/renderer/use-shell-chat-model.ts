@@ -70,6 +70,12 @@ export function useShellChatModel(options: {
   /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
   defaultThinkingLevel?: ThinkingLevel;
   openSettingsSection: (section: SettingsSection) => void;
+  /** In-flight/just-committed value shown instead of `activeSession`'s field.
+   * `hasOptimisticThinkingLevel` distinguishes "no override" from an
+   * override that is itself `undefined` ("use the model's default"). */
+  optimisticModel?: NewChatModel;
+  hasOptimisticThinkingLevel?: boolean;
+  optimisticThinkingLevel?: ThinkingLevel;
 }): {
   chatModelChoices: ChatModelChoice[];
   activeConnection: LlmConnection | undefined;
@@ -88,8 +94,9 @@ export function useShellChatModel(options: {
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
-  const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection } = options;
+  const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection, optimisticModel, hasOptimisticThinkingLevel, optimisticThinkingLevel } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
+  const activeConnectionSlug = optimisticModel?.llmConnectionSlug ?? activeSession?.llmConnectionSlug;
   const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
     NewChatModel | null
   >(
@@ -100,8 +107,8 @@ export function useShellChatModel(options: {
     : options.usePersistedComposerDefaults
       ? persistedComposerDefaults?.model ?? null
       : null;
-  const activeConnection = activeSession
-    ? connections.find((connection) => connection.slug === activeSession.llmConnectionSlug)
+  const activeConnection = activeConnectionSlug
+    ? connections.find((connection) => connection.slug === activeConnectionSlug)
     : undefined;
   const { chatModelChoices } = options;
   // Home / empty-state composer: which model the next NEW chat starts with.
@@ -147,28 +154,31 @@ export function useShellChatModel(options: {
     options.sessionSendOutcome.reason === 'fake_backend';
   const activeConnectionLabel = isRetiredBackend
     ? conversationCopy.model.fakeBackendLabel
-    : activeConnection?.name ?? activeSession?.llmConnectionSlug;
+    : activeConnection?.name ?? activeConnectionSlug;
   const activeModel = isRetiredBackend
     ? undefined
-    : activeSession?.model || activeConnection?.defaultModel;
+    : optimisticModel?.model ?? (activeSession?.model || activeConnection?.defaultModel);
   const activeModelLabel = isRetiredBackend
     ? undefined
-    : chatModelChoiceLabel(chatModelChoices, activeSession?.llmConnectionSlug, activeModel);
+    : chatModelChoiceLabel(chatModelChoices, activeConnectionSlug, activeModel);
   const activeThinkingLevels = useMemo(
     () => chatModelChoices.find(
-      (choice) => choice.connectionSlug === activeSession?.llmConnectionSlug && choice.model === activeModel,
+      (choice) => choice.connectionSlug === activeConnectionSlug && choice.model === activeModel,
     )?.thinkingLevels ?? [],
-    [activeSession?.llmConnectionSlug, activeModel, chatModelChoices],
+    [activeConnectionSlug, activeModel, chatModelChoices],
   );
   // Only surface a stored level when the current model still supports it;
   // if the model changed (setModel clears it) or the catalog reconfigured so
   // the level is no longer offered, the chip falls back to 默认 instead of
   // advertising a level the runtime would silently drop. The runtime's
   // `buildProviderOptions` is the wire-level guard; this keeps the UI honest.
-  const activeThinkingLevel =
-    activeSession?.thinkingLevel && activeThinkingLevels.includes(activeSession.thinkingLevel)
-      ? activeSession.thinkingLevel
-      : undefined;
+  const activeThinkingLevel = hasOptimisticThinkingLevel
+    ? (optimisticThinkingLevel !== undefined && activeThinkingLevels.includes(optimisticThinkingLevel)
+        ? optimisticThinkingLevel
+        : undefined)
+    : (activeSession?.thinkingLevel && activeThinkingLevels.includes(activeSession.thinkingLevel)
+        ? activeSession.thinkingLevel
+        : undefined);
   const newChatThinkingLevels = useMemo(
     () => {
       if (!newChatModel) return [];

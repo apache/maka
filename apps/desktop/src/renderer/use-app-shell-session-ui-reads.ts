@@ -18,11 +18,14 @@
  */
 
 import type { InteractionQueues } from '@maka/ui';
+import type { PermissionMode } from '@maka/core/permission';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type {
   AppShellSessionUiState,
   AppShellSessionUiStateController,
   MessageQueueUiState,
 } from './app-shell-session-ui-state.js';
+import type { NewChatModel } from './shell-chat-model-selection.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
@@ -37,8 +40,10 @@ const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messa
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
-const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
-const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
+const selectOptimisticPermissionMode = (state: AppShellSessionUiState) => state.optimisticPermissionModeBySession;
+const selectOptimisticSessionModel = (state: AppShellSessionUiState) => state.optimisticSessionModelBySession;
+const selectOptimisticSessionThinkingLevel = (state: AppShellSessionUiState) =>
+  state.optimisticSessionThinkingLevelBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
 
 /**
@@ -77,8 +82,9 @@ export function useAppShellSessionUiReads(
   stopPendingBySession: Record<string, boolean>;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
+  optimisticPermissionModeBySession: Record<string, PermissionMode>;
+  optimisticSessionModelBySession: Record<string, NewChatModel>;
+  optimisticSessionThinkingLevelBySession: Record<string, ThinkingLevel | undefined>;
   streamingSessionIds: Set<string>;
   activeLiveTurnSnapshot: LiveTurnSnapshot;
 } {
@@ -88,8 +94,12 @@ export function useAppShellSessionUiReads(
     stopPendingBySession: useAppShellSessionUiSelector(controller, selectStopPending),
     interactionBySession: useAppShellSessionUiSelector(controller, selectInteraction),
     messageQueueBySession: useAppShellSessionUiSelector(controller, selectMessageQueue),
-    pendingPermissionModeBySession: useAppShellSessionUiSelector(controller, selectPendingPermissionMode),
-    pendingSessionModelBySession: useAppShellSessionUiSelector(controller, selectPendingSessionModel),
+    optimisticPermissionModeBySession: useAppShellSessionUiSelector(controller, selectOptimisticPermissionMode),
+    optimisticSessionModelBySession: useAppShellSessionUiSelector(controller, selectOptimisticSessionModel),
+    optimisticSessionThinkingLevelBySession: useAppShellSessionUiSelector(
+      controller,
+      selectOptimisticSessionThinkingLevel,
+    ),
     streamingSessionIds: useAppShellSessionUiSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
     activeLiveTurnSnapshot: useAppShellSessionUiSelector(
       controller,

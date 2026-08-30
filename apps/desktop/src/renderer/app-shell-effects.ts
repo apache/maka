@@ -187,8 +187,6 @@ export function useAppShellBootstrapSubscriptions(options: {
   handleConnectionEvent: (event: ConnectionEvent) => void;
   openHelp: () => void;
   openSettings: () => void;
-  pendingPermissionModeChangesRef: RefBox<Set<string>>;
-  pendingSessionModelChangesRef: RefBox<Set<string>>;
   pendingTurnActionTimersRef: RefBox<Map<string, ReturnType<typeof setTimeout>>>;
   pendingTurnActionsRef: RefBox<Set<string>>;
   projectPickerPendingRef: RefBox<boolean>;
@@ -351,8 +349,6 @@ export function useAppShellBootstrapSubscriptions(options: {
     }
     options.pendingTurnActionTimersRef.current.clear();
     options.pendingTurnActionsRef.current.clear();
-    options.pendingPermissionModeChangesRef.current.clear();
-    options.pendingSessionModelChangesRef.current.clear();
   });
 
   useEffect(() => {

@@ -18,22 +18,17 @@
  */
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
-import {
-  deriveModelSwitchTranscript,
-  type StoredMessage,
-} from '@maka/core/session';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import { getShellCopy, localizedShellErrorMessage } from './locales/shell-copy.js';
+import type { NewChatModel } from './shell-chat-model-selection.js';
 
 type RefBox<T> = { current: T };
-type BooleanRecordUpdater = (updater: (current: Record<string, boolean>) => Record<string, boolean>) => void;
+type RecordUpdater<T> = (updater: (current: Record<string, T>) => Record<string, T>) => void;
 
 type ToastApi = {
-  success(title: string, description?: string): void;
   error(
     title: string,
     description?: string,
@@ -49,28 +44,47 @@ type ToastApi = {
   }): Promise<boolean>;
 };
 
+/** The three optimistic overlays this file reads back synchronously to detect
+ * a superseded request — sourced from `AppShellSessionUiState`. */
+type OptimisticSettingsState = {
+  optimisticPermissionModeBySession: Record<string, PermissionMode>;
+  optimisticSessionModelBySession: Record<string, NewChatModel>;
+  optimisticSessionThinkingLevelBySession: Record<string, ThinkingLevel | undefined>;
+};
+
 export interface AppShellSessionSettingsActions {
   setPermissionMode(mode: PermissionMode): Promise<boolean>;
-  setSessionModel(input: { llmConnectionSlug: string; model: string }): Promise<void>;
+  setSessionModel(input: NewChatModel): Promise<void>;
   setSessionThinkingLevel(level: ThinkingLevel | undefined): Promise<void>;
+}
+
+function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
+  if (!(sessionId in current)) return current;
+  const next = { ...current };
+  delete next[sessionId];
+  return next;
+}
+
+/** True while `sessionId`'s overlay still holds the exact value this call
+ * requested — false once a newer call has overwritten or cleared it. Uses
+ * `in` (not truthiness) so a thinking-level request for `undefined` isn't
+ * mistaken for an absent override. */
+function isStillLatest<T>(map: Record<string, T>, sessionId: string, value: T): boolean {
+  return sessionId in map && map[sessionId] === value;
 }
 
 export function createAppShellSessionSettingsActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  connections: readonly LlmConnection[];
-  messages: readonly StoredMessage[];
-  pendingPermissionModeChangesRef: RefBox<Set<string>>;
-  pendingSessionModelChangesRef: RefBox<Set<string>>;
+  getOptimisticState: () => OptimisticSettingsState;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
-  saveComposerDefaults: (patch: {
-    model: { llmConnectionSlug: string; model: string };
-  }) => void;
+  saveComposerDefaults: (patch: { model: NewChatModel }) => void;
   sessionsRef: RefBox<DesktopSessionSummary[]>;
   /** Persists the chat default; awaited so a failure surfaces as one. */
   setNewTaskPermissionMode: (mode: ChatDefaultPermissionMode) => void | Promise<void>;
-  setPendingPermissionModeBySession: BooleanRecordUpdater;
-  setPendingSessionModelBySession: BooleanRecordUpdater;
+  setOptimisticPermissionModeBySession: RecordUpdater<PermissionMode>;
+  setOptimisticSessionModelBySession: RecordUpdater<NewChatModel>;
+  setOptimisticSessionThinkingLevelBySession: RecordUpdater<ThinkingLevel | undefined>;
   setSessions: (
     updater: (current: DesktopSessionSummary[]) => DesktopSessionSummary[],
   ) => void;
@@ -79,40 +93,18 @@ export function createAppShellSessionSettingsActions(deps: {
   const {
     uiLocale,
     activeIdRef,
-    connections,
-    messages,
-    pendingPermissionModeChangesRef,
-    pendingSessionModelChangesRef,
+    getOptimisticState,
     refreshSessions,
     saveComposerDefaults,
     sessionsRef,
     setNewTaskPermissionMode,
-    setPendingPermissionModeBySession,
-    setPendingSessionModelBySession,
+    setOptimisticPermissionModeBySession,
+    setOptimisticSessionModelBySession,
+    setOptimisticSessionThinkingLevelBySession,
     setSessions,
     toastApi,
   } = deps;
   const copy = getShellCopy(uiLocale).sessionSettingsActions;
-
-  function omitSessionKey<T>(current: Record<string, T>, sessionId: string): Record<string, T> {
-    if (!(sessionId in current)) return current;
-    const next = { ...current };
-    delete next[sessionId];
-    return next;
-  }
-
-  function modelLabel(connectionSlug: string, model: string): string {
-    const connection = connections.find((entry) => entry.slug === connectionSlug);
-    const displayName = connection?.models?.find((entry) => entry.id === model)?.displayName?.trim();
-    return displayName || model;
-  }
-
-  function modelEndpointLabel(connectionSlug: string, model: string, includeConnection: boolean): string {
-    const label = modelLabel(connectionSlug, model);
-    if (!includeConnection) return label;
-    const connection = connections.find((entry) => entry.slug === connectionSlug);
-    return `${label} (${connection?.name ?? connectionSlug})`;
-  }
 
   async function setPermissionMode(mode: PermissionMode): Promise<boolean> {
     if (mode !== 'ask' && mode !== 'bypass') return false;
@@ -121,8 +113,6 @@ export function createAppShellSessionSettingsActions(deps: {
       ? sessionsRef.current.find((session) => session.id === sessionId)?.permissionMode
       : undefined;
     if (currentMode === mode) return true;
-    const pendingKey = sessionId ?? '__global_permission_mode__';
-    if (pendingPermissionModeChangesRef.current.has(pendingKey)) return false;
     if (
       mode === 'bypass' &&
       !(await toastApi.confirm({
@@ -136,78 +126,63 @@ export function createAppShellSessionSettingsActions(deps: {
       return false;
     }
 
-    pendingPermissionModeChangesRef.current.add(pendingKey);
-    if (sessionId)
-      setPendingPermissionModeBySession((current) => ({
-        ...current,
-        [sessionId]: true,
-      }));
-    try {
-      let nextMode = mode;
-      if (sessionId) {
-        const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
-        nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
-        setSessions((prev) =>
-          prev.map((session) => (session.id === sessionId ? next : session)),
-        );
-      } else {
+    if (!sessionId) {
+      // No active task — this is the chat-default permission mode, which has
+      // no per-session overlay to manage.
+      try {
         await setNewTaskPermissionMode(mode);
+        return true;
+      } catch (error) {
+        toastApi.error(
+          copy.permissionFailedTitle,
+          localizedShellErrorMessage(error, copy.permissionFallback, uiLocale),
+        );
+        return false;
       }
-      toastApi.success(
-        copy.permissionSwitched(copy.permissionLabels[nextMode]),
-        copy.permissionDescriptions[nextMode],
+    }
+
+    setOptimisticPermissionModeBySession((current) => ({ ...current, [sessionId]: mode }));
+    try {
+      const next = await window.maka.sessions.setPermissionMode(sessionId, mode);
+      const nextMode = next.permissionMode === 'bypass' ? 'bypass' : 'ask';
+      if (!isStillLatest(getOptimisticState().optimisticPermissionModeBySession, sessionId, mode)) {
+        return nextMode === mode;
+      }
+      setSessions((prev) =>
+        prev.map((session) => (session.id === sessionId ? next : session)),
       );
-      if (sessionId) await refreshSessions();
+      setOptimisticPermissionModeBySession((current) => omitSessionKey(current, sessionId));
+      await refreshSessions();
       return nextMode === mode;
     } catch (error) {
+      if (!isStillLatest(getOptimisticState().optimisticPermissionModeBySession, sessionId, mode)) {
+        return false;
+      }
+      setOptimisticPermissionModeBySession((current) => omitSessionKey(current, sessionId));
       toastApi.error(
         copy.permissionFailedTitle,
         localizedShellErrorMessage(error, copy.permissionFallback, uiLocale),
         undefined,
-        sessionId ? { sessionId } : undefined,
+        { sessionId },
       );
       return false;
-    } finally {
-      pendingPermissionModeChangesRef.current.delete(pendingKey);
-      if (sessionId) setPendingPermissionModeBySession((current) => omitSessionKey(current, sessionId));
     }
   }
 
-  async function setSessionModel(input: { llmConnectionSlug: string; model: string }) {
+  async function setSessionModel(input: NewChatModel) {
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
-    const previous = sessionsRef.current.find((session) => session.id === sessionId);
-    const transcript = deriveModelSwitchTranscript(messages);
-    if (pendingSessionModelChangesRef.current.has(sessionId)) return;
-    pendingSessionModelChangesRef.current.add(sessionId);
-    setPendingSessionModelBySession((current) => ({
-      ...current,
-      [sessionId]: true,
-    }));
+    setOptimisticSessionModelBySession((current) => ({ ...current, [sessionId]: input }));
     try {
       const next = await window.maka.sessions.setModel(sessionId, input);
+      if (!isStillLatest(getOptimisticState().optimisticSessionModelBySession, sessionId, input)) return;
       setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
-      if (activeIdRef.current === sessionId) {
-        const connectionChanged = previous?.llmConnectionSlug !== next.llmConnectionSlug;
-        const to = modelEndpointLabel(next.llmConnectionSlug, next.model, connectionChanged);
-        const previousModel = transcript.lastUsedModel ?? previous?.model;
-        toastApi.success(
-          copy.modelSwitchedTitle,
-          previous && previousModel
-            ? copy.modelSwitchedDescription(
-                modelEndpointLabel(
-                  previous.llmConnectionSlug,
-                  previousModel,
-                  connectionChanged,
-                ),
-                to,
-              )
-            : to,
-        );
-      }
       saveComposerDefaults({ model: input });
+      setOptimisticSessionModelBySession((current) => omitSessionKey(current, sessionId));
       await refreshSessions();
     } catch (error) {
+      if (!isStillLatest(getOptimisticState().optimisticSessionModelBySession, sessionId, input)) return;
+      setOptimisticSessionModelBySession((current) => omitSessionKey(current, sessionId));
       if (activeIdRef.current === sessionId) {
         toastApi.error(
           copy.modelFailedTitle,
@@ -216,9 +191,6 @@ export function createAppShellSessionSettingsActions(deps: {
           { sessionId },
         );
       }
-    } finally {
-      pendingSessionModelChangesRef.current.delete(sessionId);
-      setPendingSessionModelBySession((current) => omitSessionKey(current, sessionId));
     }
   }
 
@@ -227,20 +199,20 @@ export function createAppShellSessionSettingsActions(deps: {
     if (!sessionId) return;
     const current = sessionsRef.current.find((session) => session.id === sessionId);
     if (current && current.thinkingLevel === level) return;
-    if (pendingSessionModelChangesRef.current.has(sessionId)) return;
-    pendingSessionModelChangesRef.current.add(sessionId);
-    setPendingSessionModelBySession((currentPending) => ({
-      ...currentPending,
-      [sessionId]: true,
-    }));
+    setOptimisticSessionThinkingLevelBySession((currentPending) => ({ ...currentPending, [sessionId]: level }));
     try {
       const next = await window.maka.sessions.setThinkingLevel(sessionId, level);
-      setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
-      if (activeIdRef.current === sessionId) {
-        toastApi.success(copy.thinkingUpdatedTitle, level ? copy.thinkingLabels[level] : copy.thinkingDefault);
+      if (!isStillLatest(getOptimisticState().optimisticSessionThinkingLevelBySession, sessionId, level)) {
+        return;
       }
+      setSessions((prev) => prev.map((session) => (session.id === next.id ? next : session)));
+      setOptimisticSessionThinkingLevelBySession((currentPending) => omitSessionKey(currentPending, sessionId));
       await refreshSessions();
     } catch (error) {
+      if (!isStillLatest(getOptimisticState().optimisticSessionThinkingLevelBySession, sessionId, level)) {
+        return;
+      }
+      setOptimisticSessionThinkingLevelBySession((currentPending) => omitSessionKey(currentPending, sessionId));
       if (activeIdRef.current === sessionId) {
         toastApi.error(
           copy.thinkingFailedTitle,
@@ -249,9 +221,6 @@ export function createAppShellSessionSettingsActions(deps: {
           { sessionId },
         );
       }
-    } finally {
-      pendingSessionModelChangesRef.current.delete(sessionId);
-      setPendingSessionModelBySession((currentPending) => omitSessionKey(currentPending, sessionId));
     }
   }
 
