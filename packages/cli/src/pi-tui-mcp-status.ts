@@ -19,6 +19,7 @@
 
 import {
   Editor,
+  Input,
   Key,
   matchesKey,
   truncateToWidth,
@@ -72,6 +73,14 @@ const MCP_STATUS_COPY = resolveUiMessageCatalog(
   defineUiMessageCatalog<TuiMcpStatusCopy>()(TUI_COPY_RESOURCES['mcp-status']),
 );
 
+interface OverlayTextInput extends Component {
+  focused: boolean;
+  onSubmit?: (value: string) => void;
+  onChange?: (value: string) => void;
+  setText(value: string): void;
+  handleInput(data: string): void;
+}
+
 type GuidedDraft = {
   serverId: string;
   transport?: 'stdio' | 'remote';
@@ -115,7 +124,7 @@ type McpOverlayPhase =
   | { kind: 'busy'; label: string };
 
 /** One in-frame state machine for status, editing, confirmation, and errors.
- * Raw config values live only in the editor and are cleared on every exit;
+ * Raw config values live only in the input component and are cleared on every exit;
  * no management result is written into the conversation transcript. */
 export class McpManagementOverlay implements Component {
   private top = 0;
@@ -126,7 +135,7 @@ export class McpManagementOverlay implements Component {
   private phase: McpOverlayPhase = { kind: 'list' };
   private notice: { level: 'info' | 'error'; text: string } | undefined;
   private readonly dispose: () => void;
-  private editor: Editor | undefined;
+  private editor: OverlayTextInput | undefined;
   private closed = false;
   private actionAttempt = 0;
 
@@ -332,7 +341,10 @@ export class McpManagementOverlay implements Component {
     this.clearEditor();
     this.notice = undefined;
     this.phase = { kind: 'input', input, draft, serverId, revision };
-    this.editor = new Editor(this.input.tui, editorTheme(), { paddingX: 0 });
+    this.editor =
+      input === 'publication_credential'
+        ? new MaskedTextInput()
+        : new Editor(this.input.tui, editorTheme(), { paddingX: 0 });
     this.editor.onSubmit = (submitted) => this.submitInput(submitted);
     this.editor.setText(value);
     this.editor.focused = true;
@@ -605,6 +617,50 @@ export class McpManagementOverlay implements Component {
   private maxTop(): number {
     return Math.max(0, this.documentRows - this.bodyRows);
   }
+}
+
+class MaskedTextInput implements OverlayTextInput {
+  readonly #input = new Input();
+  onSubmit?: (value: string) => void;
+  onChange?: (value: string) => void;
+
+  constructor() {
+    this.#input.onSubmit = (value) => this.onSubmit?.(value);
+  }
+
+  get focused(): boolean {
+    return this.#input.focused;
+  }
+
+  set focused(value: boolean) {
+    this.#input.focused = value;
+  }
+
+  setText(value: string): void {
+    this.#input.setValue(value);
+  }
+
+  handleInput(data: string): void {
+    this.#input.handleInput(data);
+    this.onChange?.(this.#input.getValue());
+  }
+
+  invalidate(): void {
+    this.#input.invalidate();
+  }
+
+  render(width: number): string[] {
+    return this.#input.render(width).map(maskInputLine);
+  }
+}
+
+function maskInputLine(line: string): string {
+  const prompt = line.slice(0, 2);
+  const value = line.slice(2);
+  return `${prompt}${value.replaceAll(
+    /\x1b(?:\[[0-?]*[ -/]*[@-~]|_[^\x07]*\x07)|[^\s]/gu,
+    (token) => (token.startsWith('\x1b') ? token : '•'),
+  )}`;
 }
 
 function normalizeOneServer(serverId: string, source: string): McpServerConfig {
