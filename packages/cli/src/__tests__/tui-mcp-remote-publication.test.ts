@@ -24,6 +24,7 @@ import {
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
+  type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
 import { createRemoteTuiMcpPublicationTarget } from '../tui-mcp-remote-publication.js';
 import { waitFor } from './tui-terminal-mock.js';
@@ -48,6 +49,7 @@ test('remote TUI publication activates, rotates, and removes one profile-bound c
       ownerClientInstanceId: 'terminal-client',
     },
     {
+      ...profileDeps(),
       credentials: credentials.store,
       loadClientInstanceId: async (path) => {
         identityPaths.push(path);
@@ -103,6 +105,7 @@ test('remote TUI publication surfaces rejected credentials without a retry autho
       ownerClientInstanceId: 'terminal-client',
     },
     {
+      ...profileDeps(),
       credentials: credentials.store,
       loadClientInstanceId: async () => 'provider-client',
       connectProfile: async () => {
@@ -133,6 +136,7 @@ test('remote TUI publication aborts an in-flight connection before closing', asy
       ownerClientInstanceId: 'terminal-client',
     },
     {
+      ...profileDeps(),
       credentials: credentials.store,
       loadClientInstanceId: async () => 'provider-client',
       connectProfile: async (input) => {
@@ -150,6 +154,87 @@ test('remote TUI publication aborts an in-flight connection before closing', asy
   await target.closePublication?.();
 
   assert.equal(observedSignal?.aborted, true);
+});
+
+test('remote TUI publication retires when another process removes its profile', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const connection = connectionHarness('connection-1');
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => connection.connection,
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'provider companion to connect');
+
+  profiles.remove();
+
+  await waitFor(() => {
+    const current = latest();
+    return current.kind === 'unavailable' && current.reason === 'target_mismatch';
+  }, 'removed profile to retire provider companion');
+  assert.equal(connection.closes, 1);
+  await assert.rejects(async () => {
+    await target.setCredential?.('replacement-secret');
+  });
+});
+
+test('remote TUI publication closes its direct peer after a permanent reconnect failure', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profile: RemoteRuntimeHostProfile = {
+    ...PROFILE,
+    transport: {
+      kind: 'libp2p-direct',
+      peerId: 'peer-a',
+      routeHints: ['/ip4/127.0.0.1/tcp/4001'],
+      coordinationRelays: [],
+    },
+  };
+  const profiles = profileHarness(profile);
+  const initial = connectionHarness('connection-1');
+  let peerCloses = 0;
+  let fatal: ((error: Error) => void) | undefined;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => initial.connection,
+      createPeerClient: () =>
+        ({ close: async () => void (peerCloses += 1) }) as ReturnType<
+          typeof import('@maka/runtime-host/client').createRuntimeHostPeerClientFromEnvironment
+        >,
+      createReconnectingConnection: async (input) => {
+        fatal = input.onFatalError;
+        return reconnectingConnection(initial.connection);
+      },
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'direct provider companion to connect');
+
+  fatal?.(new RuntimeHostProfileConnectionError('credential_rejected', 'revoked'));
+
+  await waitFor(() => peerCloses === 1, 'direct peer endpoint to close');
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'credential_rejected' });
+  await target.closePublication?.();
+  assert.equal(peerCloses, 1);
 });
 
 async function availability(target: ReturnType<typeof createRemoteTuiMcpPublicationTarget>) {
@@ -179,6 +264,30 @@ function credentialHarness(initial?: string) {
     },
   };
   return { store, values };
+}
+
+function profileDeps(profile: RemoteRuntimeHostProfile = PROFILE) {
+  const profiles = profileHarness(profile);
+  return { profiles: profiles.catalog, subscribeProfileChanges: profiles.subscribe };
+}
+
+function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
+  let profiles: RemoteRuntimeHostProfile[] = [initial];
+  const listeners = new Set<(error?: Error) => void>();
+  const catalog = {
+    read: async () => ({ schemaVersion: 3 as const, profiles }),
+  } as unknown as RuntimeHostProfileCatalog;
+  return {
+    catalog,
+    subscribe: (listener: (error?: Error) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    remove: () => {
+      profiles = [];
+      for (const listener of listeners) listener();
+    },
+  };
 }
 
 interface ConnectionHarness {
@@ -220,4 +329,25 @@ function connectionHarness(connectionId: string): ConnectionHarness {
     },
   } as unknown as RuntimeHostConnection;
   return harness;
+}
+
+function reconnectingConnection(connection: RuntimeHostConnection) {
+  return {
+    ...connection,
+    reconnecting: true as const,
+    subscribeConnectionAvailability: (
+      listener: (availability: {
+        kind: 'connected';
+        hostEpoch: string;
+        connectionId: string;
+      }) => void,
+    ) => {
+      listener({
+        kind: 'connected',
+        hostEpoch: connection.hostEpoch,
+        connectionId: connection.connectionId,
+      });
+      return () => undefined;
+    },
+  };
 }

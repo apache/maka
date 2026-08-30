@@ -22,18 +22,22 @@ import { join } from 'node:path';
 import {
   connectRuntimeHostProfile,
   createClientRuntimeHostCredentialStore,
+  createClientRuntimeHostProfileCatalog,
   createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostPeerClientFromEnvironment,
   createRuntimeHostReconnectingConnection,
   loadOrCreateRuntimeHostClientInstanceId,
   RuntimeHostPermanentReconnectError,
   RuntimeHostProfileConnectionError,
+  sameRemoteRuntimeHostProfileTarget,
+  subscribeClientRuntimeHostProfileCatalogChanges,
   RuntimeHostRemoteCompatibilityError,
   runtimeHostProfileTargetFingerprint,
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
   type RuntimeHostPeerClient,
+  type RuntimeHostProfileCatalog,
   type RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
@@ -48,6 +52,9 @@ interface RemoteTuiMcpPublicationDeps {
   readonly loadClientInstanceId: typeof loadOrCreateRuntimeHostClientInstanceId;
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
+  readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
+  readonly profiles: RuntimeHostProfileCatalog;
+  readonly subscribeProfileChanges: (listener: (error?: Error) => void) => () => void;
 }
 
 export function createRemoteTuiMcpPublicationTarget(
@@ -65,6 +72,10 @@ export function createRemoteTuiMcpPublicationTarget(
     loadClientInstanceId: loadOrCreateRuntimeHostClientInstanceId,
     connectProfile: connectRuntimeHostProfile,
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
+    createReconnectingConnection: createRuntimeHostReconnectingConnection,
+    profiles: createClientRuntimeHostProfileCatalog(input.clientDataRoot),
+    subscribeProfileChanges: (listener) =>
+      subscribeClientRuntimeHostProfileCatalogChanges(input.clientDataRoot, listener),
     ...overrides,
   };
   return new RemoteTuiMcpPublicationTarget(input, deps);
@@ -90,6 +101,9 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   #generation = 0;
   #closed = false;
   #closeTask: Promise<void> | undefined;
+  #disposeProfileChanges: (() => void) | undefined;
+  #profileValidationQueued = false;
+  #profileValidationError: Error | undefined;
 
   constructor(
     input: {
@@ -101,7 +115,19 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   ) {
     this.#input = input;
     this.#deps = deps;
+    try {
+      this.#disposeProfileChanges = deps.subscribeProfileChanges((error) => {
+        this.#scheduleProfileValidation(error);
+      });
+    } catch (error) {
+      this.#scheduleProfileValidation(error instanceof Error ? error : new Error(String(error)));
+    }
     void this.#serialize(async () => {
+      const profileCurrent = await this.#profileStillCurrent().catch(() => undefined);
+      if (profileCurrent !== true) {
+        await this.#retire(profileCurrent === false ? 'target_mismatch' : 'host_unavailable');
+        return;
+      }
       const credential = await deps.credentials.get(input.profile, input.ownerClientInstanceId);
       if (this.#closed) return;
       if (!credential) {
@@ -202,12 +228,16 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
         await peerClient?.close().catch(() => undefined);
         return;
       }
-      const connection = await createRuntimeHostReconnectingConnection({
+      const connection = await this.#deps.createReconnectingConnection({
         initialConnection: initial,
         connect,
         onFatalError: (error) => {
           if (!this.#closed && generation === this.#generation) {
             this.#setUnavailable(classifyUnavailable(error));
+            if (this.#peerClient === peerClient) {
+              this.#peerClient = undefined;
+              void peerClient?.close().catch(() => undefined);
+            }
           }
         },
       });
@@ -252,7 +282,46 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   async #close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#disposeProfileChanges?.();
+    this.#disposeProfileChanges = undefined;
     await this.#operation.catch(() => undefined);
+    await this.#disconnect();
+    this.#listeners.clear();
+  }
+
+  #scheduleProfileValidation(error?: Error): void {
+    if (this.#closed) return;
+    this.#profileValidationError ??= error;
+    if (this.#profileValidationQueued) return;
+    this.#profileValidationQueued = true;
+    void this.#serialize(async () => {
+      const profileCurrent = await this.#profileStillCurrent().catch(() => undefined);
+      const validationError = this.#profileValidationError;
+      this.#profileValidationError = undefined;
+      this.#profileValidationQueued = false;
+      if (this.#closed) return;
+      if (validationError || profileCurrent !== true) {
+        await this.#retire(
+          validationError || profileCurrent === undefined ? 'host_unavailable' : 'target_mismatch',
+        );
+      }
+    });
+  }
+
+  async #profileStillCurrent(): Promise<boolean> {
+    const document = await this.#deps.profiles.read();
+    const current = document.profiles.find((profile) => profile.id === this.#input.profile.id);
+    return (
+      current?.kind === 'remote' && sameRemoteRuntimeHostProfileTarget(current, this.#input.profile)
+    );
+  }
+
+  async #retire(reason: TuiMcpPublicationUnavailableReason): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#disposeProfileChanges?.();
+    this.#disposeProfileChanges = undefined;
+    this.#setUnavailable(reason);
     await this.#disconnect();
     this.#listeners.clear();
   }

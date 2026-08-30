@@ -56,6 +56,7 @@ export {
   runtimeHostProfileTargetFingerprint,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  subscribeClientRuntimeHostProfileCatalogChanges,
   type EnvironmentRuntimeHostProfile,
   type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,

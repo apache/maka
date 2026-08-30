@@ -18,6 +18,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { watch } from 'node:fs';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join, posix } from 'node:path';
 import { createFileCredentialStore, type CredentialStore } from '@maka/storage/credential-store';
@@ -62,6 +63,7 @@ import {
 } from './wsl-environment.js';
 
 const PROFILE_SCHEMA_VERSION = 3;
+const CLIENT_PROFILE_DOCUMENT_NAME = 'runtime-host-profiles.json';
 const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
@@ -258,9 +260,20 @@ export function createClientRuntimeHostProfileCatalog(
   credentialStore: CredentialStore = createClientRuntimeHostCredentialStore(clientDataRoot),
 ): RuntimeHostProfileCatalog {
   return createFileRuntimeHostProfileCatalog(
-    join(clientDataRoot, 'runtime-host-profiles.json'),
+    join(clientDataRoot, CLIENT_PROFILE_DOCUMENT_NAME),
     createRuntimeHostProfileCredentialStore(credentialStore),
   );
+}
+
+export function subscribeClientRuntimeHostProfileCatalogChanges(
+  clientDataRoot: string,
+  listener: (error?: Error) => void,
+): () => void {
+  const watcher = watch(clientDataRoot, (_eventType, filename) => {
+    if (filename === null || filename.toString() === CLIENT_PROFILE_DOCUMENT_NAME) listener();
+  });
+  watcher.on('error', (error) => listener(error));
+  return () => watcher.close();
 }
 
 export function createClientRuntimeHostCredentialStore(clientDataRoot: string): CredentialStore {
