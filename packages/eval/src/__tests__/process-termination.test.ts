@@ -41,22 +41,22 @@ function childProcess(pid = 123): {
   };
 }
 
-test('uses native graceful termination on Windows without a POSIX signal', async () => {
+test('uses taskkill for first-stage Windows termination so descendants cannot outlive the root', async () => {
   const { child, signals } = childProcess();
-  let taskkills = 0;
+  const pids: number[] = [];
 
   assert.equal(
     await terminateProcess(child, 'SIGTERM', {
       platform: 'win32',
-      runTaskkill: async () => {
-        taskkills += 1;
+      runTaskkill: async (pid) => {
+        pids.push(pid);
         return true;
       },
     }),
     true,
   );
-  assert.deepEqual(signals, [undefined]);
-  assert.equal(taskkills, 0);
+  assert.deepEqual(pids, [123]);
+  assert.deepEqual(signals, []);
 });
 
 test('uses taskkill for forced Windows termination and preserves the process tree', async () => {

@@ -30,8 +30,9 @@ export interface ProcessTerminationOptions {
 
 /**
  * Terminates a child using the platform's process lifecycle semantics.
- * Windows does not implement POSIX signals: a graceful stop uses Node's
- * default child termination, while a forced stop must include descendants.
+ * Windows does not implement POSIX signals, so every termination request must
+ * include descendants. Otherwise the root can exit before forced escalation
+ * and leave its workers running.
  */
 export function terminateProcess(
   child: ChildProcess | undefined,
@@ -42,7 +43,6 @@ export function terminateProcess(
 
   const platform = options.platform ?? process.platform;
   if (platform === 'win32') {
-    if (signal !== 'SIGKILL') return killChild(child);
     const pid = child.pid;
     if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) {
       return killChild(child);
