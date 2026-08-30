@@ -27,7 +27,7 @@ import {
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,
-  type AccessCredentialPrincipalKind,
+  type ManagedAccessCredentialPrincipalKind,
   type OperationKey,
 } from '@maka/runtime-host/protocol';
 import {
@@ -58,11 +58,12 @@ export class RuntimeHostAccessUnavailableError extends Error {
 export interface RuntimeHostAccessIssueOptions {
   readonly rootPath: string;
   readonly expectedRootId?: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
   readonly preset?: RuntimeHostAccessPreset;
   readonly bindClientInstance?: boolean;
 }
@@ -70,7 +71,7 @@ export interface RuntimeHostAccessIssueOptions {
 export type RuntimeHostAccessPreset = 'desktop-client' | 'terminal-client';
 
 export interface ResolvedRuntimeHostAccessIssue {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -99,7 +100,7 @@ export interface IssuedRuntimeHostAccessCredential {
   readonly rootId: string;
   readonly credential: string;
   readonly credentialId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
@@ -228,6 +229,9 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation !== 'access.credential.prepare' && options.capabilityOwnerCredentialId
+        ? { capabilityOwnerCredentialId: options.capabilityOwnerCredentialId }
+        : {}),
       ...(operation === 'access.credential.prepare' && options.bindClientInstance
         ? { bindClientInstance: true }
         : {}),
@@ -366,7 +370,9 @@ async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
     },
   );
   if (result.kind !== 'connected') {
-    throw new RuntimeHostAccessUnavailableError(result.kind);
+    throw new RuntimeHostAccessUnavailableError(
+      result.kind === 'unavailable' ? result.reason : result.kind,
+    );
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

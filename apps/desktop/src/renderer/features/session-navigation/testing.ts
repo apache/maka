@@ -43,6 +43,8 @@ export { deriveSessionRail } from './model/session-rail.js';
 export { deriveSessionRevisionNavigation } from './model/session-revisions.js';
 export {
   readSessionListViewMode,
+  SESSION_LIST_EXPANDED_MAX_WIDTH,
+  SESSION_LIST_EXPANDED_MIN_WIDTH,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
 export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';

@@ -38,7 +38,7 @@ owners:
 
 本文主要讨论 **RuntimeEvent history compaction**：compactor 生成 continuation summary 或 provider-native compact state，checkpoint 覆盖一段安全的 RuntimeEvent 前缀，并在以后请求中用该投影替代前缀。手动、pre-turn、mid-turn 与 overflow 触发器共用同一个 planner 和 checkpoint transaction。本文不完整展开单个 Tool Result 的 active/stale prune；它们会缩小 provider messages，但不会形成另一套 LLM compaction 机制。
 
-本文描述截至 2026-08-28 的当前实现。ledger-backed checkpoint 中，schema V2 保存文本摘要，schema V3 保存 provider-native state。OpenAI Codex 订阅模型默认使用 Codex remote compaction V2，其他 provider 维持文本摘要行为。
+本文描述截至 2026-08-30 的当前实现。ledger-backed checkpoint 中，schema V2 保存文本摘要，schema V3 保存 provider-native state。OpenAI Codex 订阅模型优先使用 Codex remote compaction V2，并保留文本 summarizer 作为范围严格的 liveness fallback；其他 provider 直接使用文本摘要行为。
 
 ## 从一个长期会话开始
 
@@ -232,9 +232,11 @@ Repair 之外的 malformed retry 也有上限。Runtime 为每个 Session backen
 
 当所选 connection 的 `providerType` 为 `openai-codex` 时，Maka 默认使用 Codex 服务端 compactor，不再让模型生成文本摘要。provider request 仍由已校验的 RuntimeEvent prefix 构建。专用 compactor 会设置 `providerOptions.openai.compactionTrigger: true`，从而追加唯一一个位于 input 末尾的 `{ "type": "compaction_trigger" }` item。compactor 使用流式 Responses 路径并消费完整 stream，因为只有 compaction output 的响应不存在普通 generated-text result；普通 Codex 请求不会设置这个选项，因此行为不变。
 
+可移植的文本 summarizer 仍作为有界的 liveness fallback。当 native request 收到不可重试的协议级 `RequestRejected`、没有返回唯一合法的 compact state，或无法容纳 native history projection 时，Maka 会通过文本 summarizer 重试一次。Cancellation、鉴权、计费、限流和 provider 不可用仍保留原始结果，不会向同一个异常连接发送双倍流量。两次物理请求属于同一个逻辑 compaction call，但 telemetry 会分别记录 `provider_native` 与 `text_summary`。
+
 Compaction input 会保留 assistant step 的时序。由于 Responses converter 在 `store:false` 下无法重新发送 provider-executed tool result，已经完整结算的 hosted call/result 只在这次 compaction request 中降级为成对的普通 function call 与 output，之后再放 grounded assistant text。这样既保留了现有 tool evidence，也不会生成悬空 output。
 
-Compaction call 会收到当前 history input budget。若 RuntimeEvent projection 超出该估算值，Maka 会把较旧的 Tool Result payload 替换为固定 omission marker，同时保留每一组 call/result 配对和之后的 grounded text。若剩余的非工具历史仍无法容纳，Runtime 不会发送一条已经超出容量的 compaction request，而是进入正常 fail-open 路径。
+Compaction call 会收到当前 history input budget。若 RuntimeEvent projection 超出该估算值，Maka 会把较旧的 Tool Result payload 替换为固定 omission marker，同时保留每一组 call/result 配对和之后的 grounded text。若剩余的非工具历史仍无法容纳，Runtime 不会发送一条已经超出容量的 native request，而是先给文本 summarizer 一次 fallback 机会，再进入正常 fail-open 路径。
 
 这是有意设计成 history-only 的契约。与 Codex CLI 的 whole-request assembly 不同，Maka 不会把当前 system prompt 或 tool catalog 发给 remote compactor；它们既不属于 checkpoint source coverage，也不会被冻结进 checkpoint，后续模型请求始终使用当时最新的 system prompt 和 tools。这样 provider-native 与 text-summary compactor 可以共享同一份小契约，代价是 compactor 无法利用这部分额外的 request-shape context。
 
@@ -393,8 +395,8 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 | 未超过 high water | 保持原投影或普通预算裁剪 | 为了“提前优化”制造无来源摘要 |
 | LLM 返回空 summary | 不记录新 checkpoint。自动 pre-turn compaction 保留原有的 source-derived projection；如果它仍然超出预算，则以 `context_budget_exhausted` 结束且不写入失败 note；手动 compaction 则记录一次可见的 `context_compaction_failed_open` note | 把空 projection 当作 covered history |
 | Text summary 格式不合法 | 只进行一次更严格的 repair，之后以细分 reason fail open；同一失败 fingerprint 不再 dispatch | 持久化不完整结构，或在相同 doomed input 上循环 |
-| Codex 没有返回唯一且合法的 compact item | 不记录新 checkpoint，走同一 fail-open 路径 | 持久化残缺或有歧义的 provider state |
-| Compaction input 在有界省略 Tool Result 后仍无法容纳 | 不发送 compaction request，走同一 fail-open 路径 | 要求 provider 压缩一条已经超出容量的请求 |
+| Codex 没有返回唯一且合法的 compact item | 尝试一次可移植文本摘要 checkpoint；若仍失败再 fail open | 持久化残缺或有歧义的 provider state |
+| Native compaction input 在有界省略 Tool Result 后仍无法容纳 | 不发送 native request，尝试一次有界文本摘要 checkpoint | 要求 provider 压缩一条已经超出容量的请求 |
 | Rolling summarizer 失败 | 若旧 checkpoint 仍匹配且符合当前限制，则复用它并拼接能容纳的最新完整 raw Turns | 假装旧 checkpoint 已覆盖 newly evicted events |
 | Durable checkpoint append 失败 | 不使用 candidate；回退旧 checkpoint 或安全 tail | 让未提交 projection 进入模型后再声称可恢复 |
 | Prefix 或 digest 不匹配 | 拒绝 checkpoint | 用近似匹配替代 canonical events |

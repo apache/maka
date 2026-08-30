@@ -110,9 +110,32 @@ describe('single live-turn handoff', () => {
       onNew() {},
     } satisfies Parameters<typeof ChatView>[0]));
 
-    assert.equal((markup.match(/data-virtual-turn-id=/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id=/g) ?? []).length, 1);
     assert.match(markup, /data-transient-message-id="message-pending"/);
     assert.match(markup, />send now</);
+  });
+
+  it('does not flash the empty-chat Maka hero before a first transient message', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          id: 'message-pending', ts: 1,
+          text: 'inspect this image', transientPlacement: 'current_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.match(markup, /data-transient-message-id="message-pending"/);
+    assert.match(markup, />inspect this image</);
+    assert.doesNotMatch(markup, /maka-hero-empty-chat/);
   });
 
   it('shows a loading transient before its real live Turn answer', () => {
@@ -146,7 +169,7 @@ describe('single live-turn handoff', () => {
     assert.doesNotMatch(markup, /maka-chat-message-loading/);
     assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
     assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
-    assert.equal((markup.match(/data-virtual-turn-id="turn-1"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
   });
 
   it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {

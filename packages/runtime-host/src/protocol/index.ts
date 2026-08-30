@@ -81,6 +81,7 @@ export * from './operations.js';
 export * from './runtime-resource.js';
 export * from './session-continuity.js';
 export * from './session-catalog-change.js';
+export * from './session-collaboration.js';
 export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
@@ -94,9 +95,21 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 69 as const;
-// 69: Message content carries Host-bound directory references. Older peers
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 75 as const;
+// 75: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
+// 74: Capability-provider credentials may carry one Host-authenticated owner
+// identity. Older peers cannot preserve the association and could select an
+// unrelated provider for an interactive Session.
+// 73: Transcript pages carry a Host-owned Turn range boundary. Older peers
+// cannot preserve both the complete edge Turn and the bounded projection.
+// 71: Session Guests can submit durable exact Turn access requests and Owners
+// can decide them. Older peers do not understand this execution-authority flow.
+// 70: Session Guest connections receive resource-scoped shared catalog and
+// continuity projections. Older peers cannot enforce the Session grant fence.
+// 69: Runtime Host access authority recognizes restricted Session Guest
+// principals and typed Session collaboration grants. Older Hosts would either
+// reject the new operations or misclassify the authenticated principal.
 // 68: Connection onboarding replaces nullable canonical-slug targeting with
 // explicit create/existing identity and returns the committed Connection.
 // Older peers reject the closed target and saved-result shapes.

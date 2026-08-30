@@ -302,6 +302,39 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('decodes Host-bound capability-provider ownership at a new compatibility boundary', () => {
+    const input = {
+      principalKind: 'capability_provider',
+      principalId: 'terminal-mcp-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+      capabilityOwnerCredentialId: 'terminal-owner-credential',
+    };
+    assert.deepEqual(HOST_OPERATION_SPECS['access.credential.issue'].decodeInput(input), input);
+    assert.throws(() =>
+      HOST_OPERATION_SPECS['access.credential.prepare'].decodeInput({
+        ...input,
+        bindClientInstance: true,
+      }),
+    );
+    const output = {
+      credentialId: 'provider-credential',
+      deliveryId: 'provider-delivery',
+      principalKind: 'capability_provider',
+      principalId: 'terminal-mcp-provider',
+      operationGrants: ['client.capability.replace', 'client.capability.unregister'],
+      canPublishClientCapabilities: true,
+      canUseHostPaths: false,
+      capabilityOwner: {
+        principalId: 'terminal-owner',
+        clientInstanceId: 'terminal-client',
+      },
+    };
+    assert.deepEqual(HOST_OPERATION_SPECS['access.credential.issue'].decodeOutput(output), output);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 67);
+  });
+
   test('decodes atomic principal revocation and publishes its compatibility boundary', () => {
     assert.deepEqual(
       HOST_OPERATION_SPECS['access.principal.revoke'].decodeInput({

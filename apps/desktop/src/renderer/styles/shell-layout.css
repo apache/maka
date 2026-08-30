@@ -391,6 +391,12 @@ dialog:modal {
   display: flex;
   padding-left: var(--space-3);
   -webkit-app-region: no-drag;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.maka-titlebar-identity__action {
+  flex: 0 0 auto;
 }
 
 /* Every box between the strip's column and the text has to agree to shrink, or
@@ -574,4 +580,52 @@ dialog:modal {
 .maka-window-titlebar :is(button, [role="button"]):focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+.sessionTurnRequestSurface {
+  border-top: var(--border-width-hairline) solid var(--border);
+  background: var(--background);
+}
+
+.sessionTurnRequestComposer {
+  padding: var(--space-3);
+}
+
+.sessionCollaborationReadOnly {
+  padding: var(--space-3);
+  color: var(--foreground-secondary);
+  text-align: center;
+}
+
+.sessionTurnRequestHistory {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: var(--border-width-hairline) solid var(--border);
+}
+
+.sessionTurnRequestHistoryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.sessionTurnRequestHistoryText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionTurnRequestComposer {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.sessionTurnRequestComposerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }

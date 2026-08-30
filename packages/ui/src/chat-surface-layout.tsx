@@ -40,7 +40,7 @@ export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'au
    * their own content rather than a `ChatView`. `host` turns Astryx's scroll
    * layer off entirely — no listeners, no spring — and hands `scrollTop` to
    * Maka's single authority, which is what a `ChatView` transcript needs: it
-   * knows turn identity, the virtual window and the navigation the reader
+   * knows turn identity, the Host active range and the navigation the reader
    * asked for, none of which a generic scroll container can see.
    */
   scrollOwner?: 'astryx' | 'host';

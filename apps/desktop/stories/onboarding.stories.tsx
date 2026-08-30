@@ -85,7 +85,11 @@ function DetailPane(props: { children?: ReactNode }) {
       >
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
-            <ChatSurfaceLayout scrollOwner="host" composer={null}>
+            <ChatSurfaceLayout
+              scrollOwner="host"
+              composer={null}
+              data-maka-onboarding={props.children === undefined ? undefined : 'true'}
+            >
               <ChatView messages={[]} scrollBehavior="smooth" onNew={() => undefined} emptyOverride={emptyOverride} />
             </ChatSurfaceLayout>
           </div>

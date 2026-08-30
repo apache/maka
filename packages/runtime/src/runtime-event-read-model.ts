@@ -323,6 +323,13 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.managedMutationTerminal) {
+      // The matching function_response owns the provider-visible row. This
+      // action only proves that the managed reservation reached a no-effect
+      // terminal through its dedicated atomic writer.
+      projected = true;
+    }
+
     if (event.actions?.artifactDelta) {
       // Artifact counters are storage bookkeeping. The tool result that owns the
       // artifact owns its row; this delta has none of its own.

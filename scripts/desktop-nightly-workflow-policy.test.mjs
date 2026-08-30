@@ -120,12 +120,16 @@ test('the protected Desktop publisher appends payloads before advancing the feed
     (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
   );
   assert.equal(transport.env.NIGHTLIES_RSYNC_KEY, '${{ secrets.NIGHTLIES_RSYNC_KEY }}');
-  assert.equal(
-    transport.env.NIGHTLIES_RSYNC_KNOWN_HOSTS,
-    '${{ secrets.NIGHTLIES_RSYNC_KNOWN_HOSTS }}',
-  );
-  assert.match(transport.run, /StrictHostKeyChecking=yes/u);
-  assert.doesNotMatch(transport.run, /ssh-keyscan|StrictHostKeyChecking=no/u);
+  assert.deepEqual(Object.keys(transport.env).toSorted(), [
+    'NIGHTLIES_RSYNC_HOST',
+    'NIGHTLIES_RSYNC_KEY',
+    'NIGHTLIES_RSYNC_PATH',
+    'NIGHTLIES_RSYNC_PORT',
+    'NIGHTLIES_RSYNC_USER',
+  ]);
+  assert.match(transport.run, /StrictHostKeyChecking=no/u);
+  assert.match(transport.run, /UserKnownHostsFile=\/dev\/null/u);
+  assert.doesNotMatch(transport.run, /ssh-keyscan|KNOWN_HOSTS/u);
   const steps = publish.steps;
   const positions = [
     'Attest the exact Nightly payloads',

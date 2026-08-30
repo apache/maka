@@ -47,6 +47,16 @@ import { transcriptReader } from './fixtures/session-transcript-reader.js';
 
 const HOST_EPOCH = 'host-epoch';
 const SESSION_ID = 'session-1';
+const TEST_OWNER_IDENTITY = {
+  principalId: 'local_owner',
+  principalKind: 'local_owner',
+} as const;
+type TestIdentity =
+  | typeof TEST_OWNER_IDENTITY
+  | {
+      readonly principalId: string;
+      readonly principalKind: 'session_guest';
+    };
 
 test('open is an inactive publication barrier and live sequence starts at nextSequence', async () => {
   const read = deferred<CanonicalSessionProjection | null>();
@@ -88,6 +98,53 @@ test('open is an inactive publication barrier and live sequence starts at nextSe
   coordinator.close();
 });
 
+test('Guest revocation wins a concurrent subscription open', async () => {
+  const read = deferred<CanonicalSessionProjection | null>();
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  let active = true;
+  let publishRevocation: ((revoked: typeof grant) => void) | undefined;
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    () => read.promise,
+    new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => (active ? grant : undefined),
+      subscribeGrantRevocations: (listener) => {
+        publishRevocation = listener;
+        return () => undefined;
+      },
+    },
+  );
+  coordinator.attachConnection('guest-connection', new RecordingSink());
+
+  const opening = coordinator.handlers['subscription.open'](
+    { sessionId: SESSION_ID, transcript: { kind: 'none' } },
+    connectionContext('guest-connection', {
+      principalId: 'guest-1',
+      principalKind: 'session_guest',
+    }),
+  );
+  await delayImmediate();
+  active = false;
+  publishRevocation?.(grant);
+  read.resolve(canonical());
+
+  assert.deepEqual(await opening, {
+    ok: false,
+    error: { code: 'not_found', message: 'Session was not found' },
+  });
+  coordinator.close();
+});
+
 test('forwards the durable steering echo to subscribers as a session event', async () => {
   const sink = new RecordingSink();
   const coordinator = new SessionContinuityCoordinator(
@@ -118,6 +175,86 @@ test('forwards the durable steering echo to subscribers as a session event', asy
   assert.deepEqual(frame.event, steering);
 
   connection.abort(opened.subscriptionId);
+  coordinator.close();
+});
+
+test('projects model-only user content out of Guest queue and steering frames', async () => {
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  const sink = new RecordingSink();
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () =>
+      canonical({
+        queue: {
+          hostEpoch: HOST_EPOCH,
+          queueRevision: 1,
+          steering: [],
+          followup: [
+            {
+              entryId: 'entry-1',
+              messageId: 'message-1',
+              content: { text: 'private skill body', displayText: 'visible prompt' },
+              placement: 'next_turn',
+              state: 'queued',
+            },
+          ],
+        },
+      }),
+    new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => grant,
+      subscribeGrantRevocations: () => () => undefined,
+    },
+  );
+  const connection = coordinator.attachConnection('guest-connection', sink);
+  const opened = await open(
+    coordinator,
+    'guest-connection',
+    { kind: 'none' },
+    {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    },
+  );
+  assert.deepEqual(opened.snapshot.queue.followup[0]?.content, { text: 'visible prompt' });
+  connection.activate(opened.subscriptionId);
+  coordinator.enqueueAgentGraphChanged({
+    rootSessionId: SESSION_ID,
+    graphId: 'private-graph',
+    reason: 'observation',
+  });
+  await delayImmediate();
+  assert.equal(sink.frames.length, 0);
+  await coordinator.acceptRuntimeEvent(SESSION_ID, 'run-1', {
+    type: 'steering_message',
+    id: 'steering-event-1',
+    turnId: 'turn-1',
+    ts: 7,
+    messageId: 'steering-message-1',
+    content: { text: 'private skill body', displayText: 'visible steer' },
+  });
+
+  const frame = sink.frames.find((candidate) => candidate.kind === 'subscription.session_event');
+  assert.equal(frame?.kind, 'subscription.session_event');
+  if (frame?.kind === 'subscription.session_event') {
+    assert.deepEqual(frame.event, {
+      type: 'steering_message',
+      id: 'steering-event-1',
+      turnId: 'turn-1',
+      ts: 7,
+      messageId: 'steering-message-1',
+      content: { text: 'visible steer' },
+    });
+  }
   coordinator.close();
 });
 
@@ -597,10 +734,24 @@ test('coalesces typed domain invalidations without publishing continuity project
 
 test('fans one bounded Runtime Resource burst out to an inherited Session view', async () => {
   const childSessionId = 'child-session';
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: childSessionId,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
   const coordinator = new SessionContinuityCoordinator(
     HOST_EPOCH,
     async (sessionId) => canonicalFor(sessionId),
     new SessionAdmissionGate(),
+    undefined,
+    undefined,
+    undefined,
+    {
+      activeSessionGrant: () => grant,
+      subscribeGrantRevocations: () => () => undefined,
+    },
   );
   const sink = new RecordingSink();
   const connection = coordinator.attachConnection('connection-1', sink);
@@ -611,6 +762,18 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
   assert.equal(outcome.ok, true);
   if (!outcome.ok) return;
   connection.activate(outcome.result.subscriptionId);
+  const guestSink = new RecordingSink();
+  const guestConnection = coordinator.attachConnection('guest-connection', guestSink);
+  const guestOutcome = await coordinator.handlers['subscription.open'](
+    { sessionId: childSessionId, transcript: { kind: 'none' } },
+    connectionContext('guest-connection', {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    }),
+  );
+  assert.equal(guestOutcome.ok, true);
+  if (!guestOutcome.ok) return;
+  guestConnection.activate(guestOutcome.result.subscriptionId);
   const updates = Array.from({ length: 64 }, (_, index) => {
     const update = shellRunUpdate({
       sessionId: 'parent-session',
@@ -619,6 +782,7 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
     update.result.ref = `shell:run-${index}`;
     return update;
   });
+  updates[updates.length - 1]!.sessionId = childSessionId;
 
   for (const update of updates) coordinator.enqueueRuntimeResourceChanged(update);
   await waitFor(() => sink.frames.length === 1);
@@ -634,6 +798,20 @@ test('fans one bounded Runtime Resource burst out to an inherited Session view',
       sourceSessionId: update.sessionId,
       ref: update.result.ref,
     })),
+  });
+  assert.deepEqual(guestSink.frames[0], {
+    kind: 'subscription.session_domain_changed',
+    hostEpoch: HOST_EPOCH,
+    subscriptionId: guestOutcome.result.subscriptionId,
+    sequence: 1,
+    sessionId: childSessionId,
+    domain: 'runtime_resource',
+    resources: [
+      {
+        sourceSessionId: childSessionId,
+        ref: updates[updates.length - 1]!.result.ref,
+      },
+    ],
   });
   coordinator.close();
 });
@@ -1672,6 +1850,87 @@ test('an in-flight transcript page cannot outlive its owning connection', async 
   coordinator.close();
 });
 
+test('an in-flight transcript page cannot outlive its Guest observation grant', async () => {
+  const message = assistantMessage('界'.repeat(20_000));
+  const continued = deferred<void>();
+  const baseReader = transcriptReader([message]);
+  let blockPage = false;
+  const reader: SessionTranscriptReader = {
+    ...baseReader,
+    readDurableRecords: async (sessionId, request) => {
+      if (blockPage) await continued.promise;
+      return baseReader.readDurableRecords(sessionId, request);
+    },
+  };
+  const grant = {
+    kind: 'session_observation' as const,
+    grantId: 'grant-1',
+    principalId: 'guest-1',
+    sessionId: SESSION_ID,
+    createdAt: '2026-08-30T00:00:00.000Z',
+  };
+  let active = true;
+  let publishRevocation: ((revoked: typeof grant) => void) | undefined;
+  const coordinator = new SessionContinuityCoordinator(
+    HOST_EPOCH,
+    async () => canonical(),
+    new SessionAdmissionGate(),
+    undefined,
+    reader,
+    undefined,
+    {
+      activeSessionGrant: () => (active ? grant : undefined),
+      subscribeGrantRevocations: (listener) => {
+        publishRevocation = listener;
+        return () => undefined;
+      },
+    },
+  );
+  coordinator.attachConnection('guest-connection', new RecordingSink());
+  const opened = await open(
+    coordinator,
+    'guest-connection',
+    {
+      kind: 'tail',
+      maxBytes: SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+    },
+    {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    },
+  );
+  const cursor = opened.transcript?.durable.nextCursor;
+  assert.ok(cursor);
+  if (!opened.transcript || !cursor) return;
+
+  blockPage = true;
+  const reading = coordinator.handlers['session.transcript.page'](
+    {
+      subscriptionId: opened.subscriptionId,
+      source: 'durable',
+      direction: 'older',
+      throughSequence: opened.transcript.throughSequence,
+      cursor,
+      anchorSequence: null,
+      maxBytes: 1024,
+    },
+    connectionContext('guest-connection', {
+      principalId: grant.principalId,
+      principalKind: 'session_guest',
+    }),
+  );
+  await delayImmediate();
+  active = false;
+  publishRevocation?.(grant);
+  continued.resolve();
+
+  assert.deepEqual(await reading, {
+    ok: false,
+    error: { code: 'not_found', message: 'Session subscription was not found' },
+  });
+  coordinator.close();
+});
+
 test('a durable append refresh advances transcript before its completion event', async () => {
   const durable = [assistantMessage('first')];
   const reader = transcriptReader(durable);
@@ -2048,10 +2307,11 @@ async function open(
   transcript: { readonly kind: 'none' } | { readonly kind: 'tail'; readonly maxBytes: number } = {
     kind: 'none',
   },
+  identity: TestIdentity = TEST_OWNER_IDENTITY,
 ) {
   const outcome = await coordinator.handlers['subscription.open'](
     { sessionId: SESSION_ID, transcript },
-    connectionContext(connectionId),
+    connectionContext(connectionId, identity),
   );
   if (!outcome.ok) throw new Error(outcome.error.message);
   assert.equal(outcome.ok, true);
@@ -2153,11 +2413,15 @@ async function consumeBootstrapOverlay(
   );
 }
 
-function connectionContext(connectionId: string): ConnectionContext {
+function connectionContext(
+  connectionId: string,
+  identity: TestIdentity = TEST_OWNER_IDENTITY,
+): ConnectionContext {
   return {
     hostEpoch: HOST_EPOCH,
     connectionId,
-    principal: 'local_os_user',
+    principal: identity.principalId,
+    principalKind: identity.principalKind,
     acquireResidency: () => ({ release() {} }),
   };
 }

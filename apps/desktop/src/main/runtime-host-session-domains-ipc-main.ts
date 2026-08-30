@@ -46,6 +46,7 @@ import {
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
 import {
+  registerRuntimeHostShellRunQueriesIpc,
   registerRuntimeHostShellRunsIpc,
   type RuntimeHostShellRunsClient,
 } from './runtime-host-shell-runs-ipc-main.js';
@@ -102,6 +103,14 @@ export function registerRuntimeHostSessionDomainsIpc(
   const now = deps.now ?? Date.now;
   const shellRuns = registerRuntimeHostShellRunsIpc(
     { client: deps.client, newId, sessionObserver: deps.sessionObserver },
+    ipcMain,
+  );
+  const shellRunQueries = registerRuntimeHostShellRunQueriesIpc(
+    {
+      client: deps.client,
+      sendToRenderer: deps.sendToRenderer,
+      onError: deps.onError,
+    },
     ipcMain,
   );
 
@@ -340,7 +349,7 @@ export function registerRuntimeHostSessionDomainsIpc(
         deps.sendToRenderer?.('usage:changed', { sessionId: change.sessionId });
         break;
       case 'runtime_resource':
-        void refreshRuntimeResources(deps, change.sessionId, change.resources);
+        shellRunQueries.sessionDomainChanged(change);
         break;
     }
   };
@@ -359,25 +368,10 @@ export function registerRuntimeHostSessionDomainsIpc(
       sessionDomainChanged({ sessionId, domain: 'plan' });
       sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
-      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
+      shellRunQueries.sessionSubscriptionRecovered(sessionId);
     },
     close: () => shellRuns.close(),
   };
-}
-
-async function refreshRuntimeResources(
-  deps: RuntimeHostSessionDomainsIpcDeps,
-  sessionId: string,
-  resources: readonly { ref: string }[],
-): Promise<void> {
-  for (const resource of resources) {
-    try {
-      const update = await deps.client.getRuntimeResource(sessionId, resource.ref);
-      if (update) deps.sendToRenderer?.('shell-runs:update', update);
-    } catch (error) {
-      deps.onError?.(error);
-    }
-  }
 }
 
 interface CanonicalGoalArmRequest {

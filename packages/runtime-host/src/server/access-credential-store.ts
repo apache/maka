@@ -22,12 +22,20 @@ import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   type AccessCredentialPrincipalKind,
+  type ClientCapabilityOwnerIdentity,
   HOST_OPERATION_SPECS,
   operationAllowsRemoteOwner,
+  type SessionCollaborationGrant,
+  decodeSessionTurnAccessRequest,
+  type SessionTurnAccessRequest,
   type OperationKey,
 } from '../protocol/index.js';
 
-const ACCESS_FILE_SCHEMA_VERSION = 1;
+// Schema 4 makes provider ownership downgrade-safe once an association exists.
+// Ordinary access files remain schema 3 so this feature does not fence a
+// downgrade before there is an owner association to preserve.
+const ACCESS_FILE_SCHEMA_VERSION = 4;
+const PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION = 3;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
 const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
 const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
@@ -54,6 +62,20 @@ const RETIRED_OPERATION_GRANTS = new Set([
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
 
+export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
+  'host.status',
+  'artifact.query',
+  'collaboration.turn-request.create',
+  'collaboration.turn-request.acknowledge',
+  'collaboration.turn-request.query',
+  'runtime.resource.query',
+  'session.shared.query',
+  'subscription.open',
+  'subscription.close',
+  'session.transcript.page',
+  'session.transcript.overlay.release',
+] as const satisfies readonly OperationKey[]);
+
 export interface StoredAccessCredential {
   readonly credentialId: string;
   readonly credentialHash: string;
@@ -63,6 +85,7 @@ export interface StoredAccessCredential {
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   readonly createdAt: string;
   readonly bindClientInstanceOnFinalize?: true;
   readonly clientInstanceId?: string;
@@ -71,8 +94,12 @@ export interface StoredAccessCredential {
 }
 
 export interface AccessCredentialFile {
-  readonly schemaVersion: typeof ACCESS_FILE_SCHEMA_VERSION;
+  readonly schemaVersion:
+    | typeof PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION
+    | typeof ACCESS_FILE_SCHEMA_VERSION;
   readonly credentials: readonly StoredAccessCredential[];
+  readonly sessionGrants: readonly SessionCollaborationGrant[];
+  readonly turnAccessRequests: readonly SessionTurnAccessRequest[];
 }
 
 export class RuntimeHostAccessInputError extends Error {
@@ -98,8 +125,17 @@ export class RuntimeHostAccessCommitOutcomeUnknownError extends Error {
 
 export function createAccessCredentialFile(
   credentials: readonly StoredAccessCredential[],
+  sessionGrants: readonly SessionCollaborationGrant[] = [],
+  turnAccessRequests: readonly SessionTurnAccessRequest[] = [],
 ): AccessCredentialFile {
-  return { schemaVersion: ACCESS_FILE_SCHEMA_VERSION, credentials };
+  return {
+    schemaVersion: credentials.some((credential) => credential.capabilityOwner !== undefined)
+      ? ACCESS_FILE_SCHEMA_VERSION
+      : PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION,
+    credentials,
+    sessionGrants,
+    turnAccessRequests,
+  };
 }
 
 export function issuedAccessGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
@@ -117,8 +153,27 @@ export function assertAccessCredentialFileCapacity(file: AccessCredentialFile): 
             revokedAt: '9999-12-31T23:59:59.999Z',
           },
     ),
+    file.sessionGrants,
+    file.turnAccessRequests.map(reserveTurnAccessRequestCompletionCapacity),
   );
   serializeAccessCredentialFile(fullyRevoked);
+}
+
+function reserveTurnAccessRequestCompletionCapacity(
+  request: SessionTurnAccessRequest,
+): SessionTurnAccessRequest {
+  if (request.state.kind !== 'pending' && request.state.kind !== 'approved') return request;
+  if (request.state.kind === 'approved' && request.state.admission !== 'pending') return request;
+  return {
+    ...request,
+    state: {
+      kind: 'approved',
+      decidedAt:
+        request.state.kind === 'approved' ? request.state.decidedAt : '9999-12-31T23:59:59.999Z',
+      decidedBy: request.state.kind === 'approved' ? request.state.decidedBy : 'x'.repeat(128),
+      admission: 'failed',
+    },
+  };
 }
 
 export async function readAccessCredentialFile(path: string): Promise<AccessCredentialFile> {
@@ -178,11 +233,23 @@ function serializeAccessCredentialFile(file: AccessCredentialFile): string {
 }
 
 function decodeAccessFile(value: unknown): AccessCredentialFile {
-  if (!isRecord(value) || value.schemaVersion !== ACCESS_FILE_SCHEMA_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 &&
+      value.schemaVersion !== 2 &&
+      value.schemaVersion !== 3 &&
+      value.schemaVersion !== 4)
+  ) {
     throw new Error('Unsupported Runtime Host access file');
   }
   if (!Array.isArray(value.credentials)) throw new Error('Invalid Runtime Host access file');
   const credentials = value.credentials.map(decodeStoredCredential);
+  if (
+    value.schemaVersion < ACCESS_FILE_SCHEMA_VERSION &&
+    credentials.some((credential) => credential.capabilityOwner !== undefined)
+  ) {
+    throw new Error('Pre-association Runtime Host access files cannot declare capability owners');
+  }
   if (
     new Set(credentials.map((credential) => credential.credentialId)).size !== credentials.length
   ) {
@@ -194,7 +261,40 @@ function decodeAccessFile(value: unknown): AccessCredentialFile {
   if (new Set(pendingPrincipals).size !== pendingPrincipals.length) {
     throw new Error('Duplicate Runtime Host pending credential principal');
   }
-  return createAccessCredentialFile(credentials);
+  const sessionGrants =
+    value.schemaVersion === 1
+      ? []
+      : Array.isArray(value.sessionGrants)
+        ? value.sessionGrants.map(decodeStoredSessionGrant)
+        : (() => {
+            throw new Error('Invalid Runtime Host access grants');
+          })();
+  if (new Set(sessionGrants.map((grant) => grant.grantId)).size !== sessionGrants.length) {
+    throw new Error('Duplicate Runtime Host Session grant identity');
+  }
+  const sessionByGuest = new Map<string, string>();
+  for (const grant of sessionGrants) {
+    const existing = sessionByGuest.get(grant.principalId);
+    if (existing !== undefined && existing !== grant.sessionId) {
+      throw new Error('A Session Guest cannot be granted multiple Sessions');
+    }
+    sessionByGuest.set(grant.principalId, grant.sessionId);
+  }
+  const turnAccessRequests =
+    value.schemaVersion < 3
+      ? []
+      : Array.isArray(value.turnAccessRequests)
+        ? value.turnAccessRequests.map(decodeSessionTurnAccessRequest)
+        : (() => {
+            throw new Error('Invalid Runtime Host Turn access requests');
+          })();
+  if (
+    new Set(turnAccessRequests.map((request) => request.requestId)).size !==
+    turnAccessRequests.length
+  ) {
+    throw new Error('Duplicate Runtime Host Turn access request identity');
+  }
+  return createAccessCredentialFile(credentials, sessionGrants, turnAccessRequests);
 }
 
 function decodeStoredCredential(value: unknown): StoredAccessCredential {
@@ -205,7 +305,11 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   const principalId = requireStoredString(value.principalId, 'principalId');
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) throw new Error('Invalid principalId');
   const principalKind = value.principalKind === undefined ? 'remote_owner' : value.principalKind;
-  if (principalKind !== 'remote_owner' && principalKind !== 'capability_provider') {
+  if (
+    principalKind !== 'remote_owner' &&
+    principalKind !== 'capability_provider' &&
+    principalKind !== 'session_guest'
+  ) {
     throw new Error('Invalid principalKind');
   }
   if (value.status !== 'pending' && value.status !== 'active' && value.status !== 'revoked') {
@@ -218,10 +322,21 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   if (new Set(storedOperationGrants).size !== storedOperationGrants.length) {
     throw new Error('Duplicate Runtime Host access operation grant');
   }
+  const migratedOperationGrants = validateStoredGrants(
+    migrateStoredOperationGrants(storedOperationGrants),
+  );
+  if (
+    principalKind === 'session_guest' &&
+    migratedOperationGrants.some(
+      (grant) => !(SESSION_GUEST_OPERATION_GRANTS as readonly OperationKey[]).includes(grant),
+    )
+  ) {
+    throw new Error('Session Guest credential has an invalid operation grant');
+  }
   const operationGrants = Object.freeze(
-    validateStoredGrants(migrateStoredOperationGrants(storedOperationGrants)).filter(
-      operationAllowsRemoteOwner,
-    ),
+    principalKind === 'session_guest'
+      ? [...SESSION_GUEST_OPERATION_GRANTS]
+      : migratedOperationGrants.filter(operationAllowsRemoteOwner),
   );
   if (!operationGrants.includes('host.status')) {
     throw new Error('Runtime Host access credential lacks its liveness grant');
@@ -253,6 +368,10 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
   ) {
     throw new Error('Invalid access credential Client binding state');
   }
+  const capabilityOwner = decodeCapabilityOwner(value.capabilityOwner);
+  if (capabilityOwner && principalKind !== 'capability_provider') {
+    throw new Error('Only a capability provider may declare a Client Capability owner');
+  }
   const expiresAt = value.expiresAt;
   if (value.status === 'pending') {
     if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
@@ -274,12 +393,51 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     operationGrants,
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
+    ...(capabilityOwner ? { capabilityOwner } : {}),
     createdAt,
     ...(bindClientInstanceOnFinalize === true ? { bindClientInstanceOnFinalize } : {}),
     ...(typeof clientInstanceId === 'string' ? { clientInstanceId } : {}),
     ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
     ...(revokedAt === undefined ? {} : { revokedAt }),
   };
+}
+
+function decodeStoredSessionGrant(value: unknown): SessionCollaborationGrant {
+  if (!isRecord(value)) throw new Error('Invalid Runtime Host Session grant');
+  if (value.kind !== 'session_observation' && value.kind !== 'session_turn_request') {
+    throw new Error('Invalid Runtime Host Session grant kind');
+  }
+  const grantId = requireStoredString(value.grantId, 'grantId');
+  const principalId = requireStoredString(value.principalId, 'principalId');
+  const sessionId = requireStoredString(value.sessionId, 'sessionId');
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) throw new Error('Invalid principalId');
+  if (!/^[A-Za-z0-9_.:-]{1,256}$/u.test(grantId)) throw new Error('Invalid grantId');
+  if (!/^[A-Za-z0-9_.:-]{1,256}$/u.test(sessionId)) throw new Error('Invalid sessionId');
+  const createdAt = requireStoredTimestamp(value.createdAt, 'createdAt');
+  return Object.freeze({
+    kind: value.kind,
+    grantId,
+    principalId,
+    sessionId,
+    createdAt,
+  });
+}
+
+function decodeCapabilityOwner(value: unknown): ClientCapabilityOwnerIdentity | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('Invalid Client Capability owner identity');
+  const principalId = requireStoredString(value.principalId, 'capabilityOwner.principalId');
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(principalId)) {
+    throw new Error('Invalid capabilityOwner.principalId');
+  }
+  const clientInstanceId = requireStoredString(
+    value.clientInstanceId,
+    'capabilityOwner.clientInstanceId',
+  );
+  if (clientInstanceId.length > 128) {
+    throw new Error('Invalid capabilityOwner.clientInstanceId');
+  }
+  return Object.freeze({ principalId, clientInstanceId });
 }
 
 function migrateStoredOperationGrants(grants: readonly string[]): readonly string[] {
@@ -340,4 +498,10 @@ function requireStoredString(value: unknown, label: string): string {
     throw new Error(`Invalid Runtime Host access ${label}`);
   }
   return value;
+}
+
+function requireStoredTimestamp(value: unknown, label: string): string {
+  const timestamp = requireStoredString(value, label);
+  if (!Number.isFinite(Date.parse(timestamp))) throw new Error(`Invalid ${label}`);
+  return timestamp;
 }

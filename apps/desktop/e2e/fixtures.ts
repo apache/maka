@@ -72,6 +72,21 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
 }
 
 /**
+ * Wait for the default Host's Coordination Session and the WorkHub projection
+ * to agree that the surface is ready. A mounted WorkHub main is not sufficient:
+ * it is also rendered while the Host reconnects and the projection reloads.
+ */
+export async function waitForWorkHubReady(page: Page, workCount: number): Promise<void> {
+  await expect
+    .poll(async () => {
+      const snapshot = await page.evaluate(() => window.maka.runtimeHostProfiles.getSnapshot());
+      return snapshot.entries.find(({ isDefault }) => isDefault)?.readiness;
+    })
+    .toBe('ready');
+  await expect(page.getByText(`${workCount} 项工作`, { exact: true })).toBeVisible();
+}
+
+/**
  * Wait for Runtime's authoritative Skill projection, not merely for the
  * composer DOM to mount. The renderer requests this projection after its first
  * render, so a visible editor can still have an empty `/` source during cold

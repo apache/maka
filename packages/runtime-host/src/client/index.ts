@@ -51,6 +51,7 @@ export {
   decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
+  runtimeHostProfileAccess,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
   type EnvironmentRuntimeHostProfile,
@@ -59,6 +60,7 @@ export {
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfile,
+  type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';

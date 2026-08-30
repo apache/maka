@@ -55,6 +55,7 @@ type PeerMeshDialogView =
       readonly meshId: string;
       readonly code: string;
       readonly expiresAt: number;
+      readonly hasCoordinationRelay: boolean;
     };
 
 export function RuntimeHostPeerMeshDialog(props: {
@@ -126,6 +127,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         meshId,
         code: JSON.stringify(result.invitation),
         expiresAt: result.invitation.expiresAt,
+        hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
       });
       setSnapshot(result.snapshot);
     } catch (failure) {
@@ -474,6 +476,14 @@ function InvitationView(props: {
           {props.copy.invitationWarning}
         </Text>
       </div>
+      {!props.invitation.hasCoordinationRelay ? (
+        <div className="settingsPeerMeshInvitationNote">
+          <Network size={ICON_SIZE.control} aria-hidden="true" />
+          <Text type="supporting" color="secondary">
+            {props.copy.invitationDirectOnly}
+          </Text>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -740,6 +750,8 @@ function peerMeshCopy(locale: string) {
         invitationTitle: '邀请成员',
         invitationFor: (value: string) => `Mesh ${value}`,
         invitationWarning: '该代码只能使用一次；获得代码的人可以让一个 peer 加入此 Mesh。',
+        invitationDirectOnly:
+          '尚未连接到协调节点。此邀请码只包含直接地址，跨 NAT 时可能无法连接。',
         invitationExpires: (value: string) => `有效期至 ${value}`,
         invitationCopied: '邀请码已复制',
         copyInvitation: '复制邀请码',
@@ -807,6 +819,8 @@ function peerMeshCopy(locale: string) {
         invitationFor: (value: string) => `Mesh ${value}`,
         invitationWarning:
           'This code works once. Anyone holding it can admit one peer to this Mesh.',
+        invitationDirectOnly:
+          'No coordination peer is available yet. This invitation contains direct routes only and may not work across NATs.',
         invitationExpires: (value: string) => `Expires ${value}`,
         invitationCopied: 'Invitation copied',
         copyInvitation: 'Copy invitation',

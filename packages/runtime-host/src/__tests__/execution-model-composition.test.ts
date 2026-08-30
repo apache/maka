@@ -676,10 +676,24 @@ test('provider dispatch fails closed when the Run Composition commit fails', asy
   }
 });
 
-test('Codex OAuth history compaction uses the provider-native route and preserves failure facts', async () => {
+test('Codex OAuth history compaction falls back to a text checkpoint after native rejection', async () => {
   const modelId = 'gpt-5.6-sol';
   const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
   const attempts: ModelCallAttempt[] = [];
+  let recordedTextCheckpoint = false;
+  const fallbackSummary = [
+    '## Goal',
+    'Continue the existing task.',
+    '',
+    '## Progress',
+    '- Preserved the completed work.',
+    '',
+    '## Next Steps',
+    '1. Continue from the recent context.',
+    '',
+    '## Critical Context',
+    '- The portable fallback remains available.',
+  ].join('\n');
   const oauthTokens: OAuthSubscriptionTokens = {
     access_token: codexAccessToken('compact-account'),
     refresh_token: 'compact-refresh-token',
@@ -716,21 +730,59 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
         secretMaterial: { connection: { secret: 'oauth-material' } },
       }),
       readPricing: async () => ({ revision: 0, overrides: [] }),
-      recordHistoryCompactCheckpoint: async () => undefined,
+      recordHistoryCompactCheckpoint: async (checkpoint) => {
+        recordedTextCheckpoint = 'summary' in checkpoint;
+      },
       recordModelCallAttempt: async ({ attempt }) => {
         attempts.push(attempt);
       },
       createFetchTransport: () => ({
         fetch: async (url, init) => {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           requests.push({
             url: String(url),
-            body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+            body,
           });
+          const providerInput = Array.isArray(body.input) ? body.input : [];
+          if (
+            !providerInput.some(
+              (item) =>
+                typeof item === 'object' &&
+                item !== null &&
+                'type' in item &&
+                item.type === 'compaction_trigger',
+            )
+          ) {
+            return Response.json({
+              id: 'resp-text-fallback',
+              object: 'response',
+              created_at: 1,
+              status: 'completed',
+              model: modelId,
+              output: [
+                {
+                  type: 'message',
+                  id: 'msg-text-fallback',
+                  status: 'completed',
+                  role: 'assistant',
+                  content: [
+                    {
+                      type: 'output_text',
+                      text: fallbackSummary,
+                      annotations: [],
+                      logprobs: [],
+                    },
+                  ],
+                },
+              ],
+              usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
+            });
+          }
           return Response.json(
             {
               error: {
                 message: 'request rejected without echoing this body',
-                code: 'invalid_request_error',
+                code: 'missing_required_parameter',
               },
             },
             {
@@ -774,23 +826,31 @@ test('Codex OAuth history compaction uses the provider-native route and preserve
       runtimeContext,
     });
 
-    assert.equal(requests.length, 1, JSON.stringify(result));
+    assert.equal(requests.length, 2, JSON.stringify(result));
     assert.match(requests[0]!.url, /\/codex\/responses$/);
-    const requestText = JSON.stringify(requests[0]!.body);
-    assert.match(requestText, /"type":"compaction_trigger"/);
-    assert.doesNotMatch(requestText, /context summarization assistant/i);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'provider_error' });
-    assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'failedOpen');
-    assert.equal(attempts.length, 1);
+    assert.match(requests[1]!.url, /\/codex\/responses$/);
+    const nativeRequestText = JSON.stringify(requests[0]!.body);
+    const fallbackRequestText = JSON.stringify(requests[1]!.body);
+    assert.match(nativeRequestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(nativeRequestText, /context summarization assistant/i);
+    assert.doesNotMatch(fallbackRequestText, /"type":"compaction_trigger"/);
+    assert.match(fallbackRequestText, /context summarization assistant/i);
+    assert.equal(result.outcome.kind, 'compacted');
+    assert.equal(recordedTextCheckpoint, true);
+    assert.equal(attempts.length, 2);
     assert.equal(attempts[0]?.callKind, 'history_compact');
     assert.equal(attempts[0]?.providerId, 'openai-codex');
     assert.equal(attempts[0]?.historyCompactRoute, 'provider_native');
     assert.equal(attempts[0]?.status, 'failed');
     assert.equal(attempts[0]?.errorClass, 'RequestRejected');
     assert.equal(attempts[0]?.httpStatus, 400);
-    assert.equal(attempts[0]?.providerCode, 'invalid_request_error');
+    assert.equal(attempts[0]?.providerCode, 'missing_required_parameter');
     assert.equal(attempts[0]?.providerRequestId, 'req-codex-compact');
     assert.equal(attempts[0]?.retryable, false);
+    assert.equal(attempts[1]?.logicalCallId, attempts[0]?.logicalCallId);
+    assert.equal(attempts[1]?.attempt, 1);
+    assert.equal(attempts[1]?.historyCompactRoute, 'text_summary');
+    assert.equal(attempts[1]?.status, 'completed');
   } finally {
     await backend.dispose();
   }

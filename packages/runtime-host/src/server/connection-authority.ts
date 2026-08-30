@@ -22,6 +22,7 @@ import {
   operationAllowsRemoteOwner,
   operationUsesHostPaths,
   type AccessCredentialPrincipalKind,
+  type ClientCapabilityOwnerIdentity,
   type ClientCapabilityClientFrame,
   type OperationKey,
   type RequestFrame,
@@ -32,6 +33,7 @@ export interface RuntimeHostConnectionAuthority {
   readonly principalId: string;
   readonly credentialId?: string;
   readonly clientInstanceId?: string;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   readonly operationGrants: 'all' | readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
@@ -63,6 +65,20 @@ export function createRuntimeHostConnectionAuthority(
   ) {
     throw new Error('Runtime Host bound Client identity is invalid');
   }
+  if (input.capabilityOwner) {
+    if (input.principalKind !== 'capability_provider') {
+      throw new Error('Only a capability provider may declare a Client Capability owner');
+    }
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.capabilityOwner.principalId)) {
+      throw new Error('Runtime Host Client Capability owner principal is invalid');
+    }
+    if (
+      input.capabilityOwner.clientInstanceId.length === 0 ||
+      input.capabilityOwner.clientInstanceId.length > 128
+    ) {
+      throw new Error('Runtime Host Client Capability owner identity is invalid');
+    }
+  }
   const operationGrants =
     input.operationGrants === 'all'
       ? 'all'
@@ -74,14 +90,25 @@ export function createRuntimeHostConnectionAuthority(
             return operation;
           }),
         );
-  return Object.freeze({ ...input, operationGrants });
+  const capabilityOwner = input.capabilityOwner
+    ? Object.freeze({ ...input.capabilityOwner })
+    : undefined;
+  return Object.freeze({
+    ...input,
+    operationGrants,
+    ...(capabilityOwner ? { capabilityOwner } : {}),
+  });
 }
 
 export function authorizeRuntimeHostOperation(
   authority: RuntimeHostConnectionAuthority,
   frame: RequestFrame,
 ): boolean {
-  if (authority.principalKind !== 'local_owner' && !operationAllowsRemoteOwner(frame.operation)) {
+  if (
+    (authority.principalKind === 'remote_owner' ||
+      authority.principalKind === 'capability_provider') &&
+    !operationAllowsRemoteOwner(frame.operation)
+  ) {
     return false;
   }
   if (authority.operationGrants !== 'all' && !authority.operationGrants.includes(frame.operation)) {

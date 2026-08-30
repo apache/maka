@@ -21,6 +21,11 @@ import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/for
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
+import type {
+  ConnectionEffectFailureClass,
+  ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
+  ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+} from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
@@ -73,16 +78,32 @@ export interface OnboardingVerifyInput {
   baseUrl?: string;
 }
 
+export type OnboardingVerifyRejectionReason = Extract<
+  RuntimeHostOnboardingVerifyResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingSaveRejectionReason = Extract<
+  RuntimeHostOnboardingSaveResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingRejectionReason =
+  | OnboardingVerifyRejectionReason
+  | OnboardingSaveRejectionReason;
+
+export type OnboardingFailureClass = ConnectionEffectFailureClass;
+
+export type OnboardingFailure =
+  | { kind: 'rejected'; reason: OnboardingRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
+
 export type OnboardingVerifyResult =
   | { kind: 'ok'; models: ModelInfo[] }
-  | {
-      kind: 'error';
-      text: string;
-      /** The wizard's provider snapshot is outdated (e.g. the targeted
-       *  connection is gone) — retyping the key cannot fix this, so the
-       *  runner shows the text without its retype-the-key framing. */
-      stale?: boolean;
-    };
+  | { kind: 'rejected'; reason: OnboardingVerifyRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
 
 export interface OnboardingSaveInput {
   target: ConnectionOnboardingTarget;
@@ -104,9 +125,11 @@ export type OnboardingSaveResult =
   | {
       kind: 'ok';
       connection: OnboardingSavedConnection;
-      refresh: { kind: 'ok'; modelChoices: ModelChoice[] } | { kind: 'failed'; warning: string };
+      refresh:
+        | { kind: 'ok'; modelChoices: ModelChoice[] }
+        | { kind: 'failed'; reason: 'catalog_unavailable' };
     }
-  | { kind: 'error'; text: string };
+  | OnboardingFailure;
 
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;

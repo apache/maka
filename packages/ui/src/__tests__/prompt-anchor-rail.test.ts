@@ -32,7 +32,7 @@ import {
 
 /**
  * The e2e suite cannot stage what these cover. Whether a jump survives depends
- * on which frame the virtual window lands on, and the e2e case went green
+ * on which frame the requested Host range lands, and the e2e case went green
  * against a renderer that did not survive it. Driving the frames here makes it
  * deterministic.
  */

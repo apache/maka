@@ -228,6 +228,7 @@ function helpText(cliCommand: string): string {
     '  --preset <name>               Grant the desktop-client or terminal-client operation set',
     '  --publish-client-capabilities Allow Client Capability publication',
     '  --allow-host-paths            Allow operations that submit Host paths',
+    '  --capability-owner-credential <id>  Bind a provider to one Client-bound owner credential',
     '',
     'Runtime Host capability provider options:',
     '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
@@ -631,6 +632,9 @@ export async function runMakaCli(
         operationGrants: command.operationGrants,
         canPublishClientCapabilities: command.canPublishClientCapabilities,
         canUseHostPaths: command.canUseHostPaths,
+        ...(command.capabilityOwnerCredentialId
+          ? { capabilityOwnerCredentialId: command.capabilityOwnerCredentialId }
+          : {}),
         ...(command.preset ? { preset: command.preset } : {}),
       });
     }

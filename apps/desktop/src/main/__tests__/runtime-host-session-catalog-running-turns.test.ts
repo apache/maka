@@ -21,7 +21,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
 import type { IpcHandler } from '../ipc-reconnect-policy.js';
-import { registerRuntimeHostSessionCatalogIpc } from '../runtime-host-session-catalog-ipc-main.js';
+import {
+  registerRuntimeHostSessionCatalogIpc,
+  registerRuntimeHostSharedSessionCatalogIpc,
+} from '../runtime-host-session-catalog-ipc-main.js';
+
+test('registers a read-only Session catalog for shared access', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostSharedSessionCatalogIpc(
+    { getSession: async () => ({ id: 'shared' }) as never },
+    {
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+    },
+  );
+
+  assert.deepEqual([...handlers.keys()], ['sessions:list']);
+  assert.deepEqual(await handlers.get('sessions:list')!({} as never), [{ id: 'shared' }]);
+  assert.deepEqual(
+    await handlers.get('sessions:list')!({} as never, { subagentParentSessionId: 'parent' }),
+    [],
+  );
+});
 
 test('projects observed running Turn identities into renderer Session lists', async () => {
   const handlers = new Map<string, IpcHandler>();

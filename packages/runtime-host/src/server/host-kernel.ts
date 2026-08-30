@@ -59,13 +59,20 @@ import {
 } from './operation-dispatcher.js';
 import {
   issueAccessCredential,
+  acknowledgeCollaborationTurnRequest,
+  createCollaborationTurnRequest,
+  decideCollaborationTurnRequest,
   finalizeAccessCredential,
+  prepareCollaborationInvitation,
+  queryCollaborationTurnRequests,
   prepareAccessCredential,
   prepareAccessCredentialRotation,
   replaceAccessCredential,
   revokeAccessCredential,
   revokeAccessPrincipal,
   revokeAccessCredentialRotation,
+  revokeCollaborationGrant,
+  revokeCollaborationPrincipal,
   type RuntimeHostAccessAuthority,
 } from './access-authority.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
@@ -116,6 +123,15 @@ export interface RuntimeHostCompositionContext {
   /** Irreversible fail-stop latch; normal residency still uses acquireResidency(). */
   retainUntilProcessExit(): void;
   requestDrain(): void;
+  sessionAccessAuthority?: Pick<
+    RuntimeHostAccessAuthority,
+    | 'activeSessionGrant'
+    | 'activeSessionGrantForPrincipal'
+    | 'approvedTurnAccessRequests'
+    | 'completeTurnAccessRequest'
+    | 'subscribeGrantRevocations'
+    | 'subscribeApprovedTurnAccessRequests'
+  >;
   waitForResidencies?(): Promise<void>;
   waitForResidenciesExcept?(excludedLabel: string): Promise<void>;
 }
@@ -210,6 +226,7 @@ export class RuntimeHostKernel {
   #resolveClosed!: () => void;
   #rejectClosed!: (error: unknown) => void;
   readonly #unsubscribeAccessRevocations: (() => void) | undefined;
+  readonly #unsubscribeSessionGrantRevocations: (() => void) | undefined;
 
   private constructor(options: RuntimeHostKernelOptions) {
     this.#lifecycle = normalizeLifecycle(options);
@@ -225,6 +242,16 @@ export class RuntimeHostKernel {
     this.#options = options;
     this.#unsubscribeAccessRevocations = options.accessAuthority?.subscribeRevocations(
       (credentialId) => this.#revokeCredentialConnections(credentialId),
+    );
+    this.#unsubscribeSessionGrantRevocations = options.accessAuthority?.subscribeGrantRevocations(
+      (grant) => {
+        if (grant.kind === 'session_observation') {
+          this.#composition?.hostChanges?.publishSessionCatalogAndCloseScope(
+            grant.sessionId,
+            grant.principalId,
+          );
+        }
+      },
     );
     this.#operationHandlers = this.#createOperationHandlers(
       createUnavailableDomainOperationHandlers(),
@@ -343,6 +370,9 @@ export class RuntimeHostKernel {
           acquireResidency: (label) => this.#acquireResidency(label),
           retainUntilProcessExit: () => this.#retainUntilProcessExit(),
           requestDrain: () => this.#requestDrain(),
+          ...(this.#options.accessAuthority
+            ? { sessionAccessAuthority: this.#options.accessAuthority }
+            : {}),
           waitForResidencies: () => this.#waitForResidencies(),
           waitForResidenciesExcept: (excludedLabel) =>
             this.#waitForResidenciesExcept(excludedLabel),
@@ -408,6 +438,11 @@ export class RuntimeHostKernel {
         resolveContinuity: () => this.#composition?.continuity,
         resolveClientCapabilities: () => this.#composition?.clientCapabilities,
         resolveHostChanges: () => this.#composition?.hostChanges,
+        resolveSharedSessionId: () =>
+          this.#options.accessAuthority?.activeSessionGrantForPrincipal(
+            authority.principalId,
+            'session_observation',
+          )?.sessionId,
         beginOperation: (request) => this.#beginOperation(request),
         onTeardown: releaseTransport,
       });
@@ -444,6 +479,16 @@ export class RuntimeHostKernel {
     }
     if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
       throw new Error('Runtime Host access credential belongs to another Client');
+    }
+    if (
+      authority.principalKind === 'remote_owner' &&
+      authority.clientInstanceId === undefined &&
+      this.#options.accessAuthority?.hasActiveBoundClientIdentity(
+        authority.principalId,
+        hello.clientInstanceId,
+      )
+    ) {
+      throw new Error('Runtime Host Client identity is bound to another access credential');
     }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
@@ -691,6 +736,56 @@ export class RuntimeHostKernel {
               context.clientInstanceId,
             ),
           ),
+        'collaboration.invitation.prepare': async (input) =>
+          this.#settleAccessCredentialMutation(
+            prepareCollaborationInvitation(this.#options.accessAuthority, this.rootId, input),
+          ),
+        'collaboration.access.query': async (input) =>
+          this.#options.accessAuthority
+            ? {
+                ok: true,
+                result: this.#options.accessAuthority.queryCollaborationAccess(input),
+              }
+            : {
+                ok: false,
+                error: {
+                  code: 'operation_unavailable',
+                  message: 'Runtime Host collaboration authority is unavailable',
+                },
+              },
+        'collaboration.grant.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationGrant(this.#options.accessAuthority, input),
+          ),
+        'collaboration.principal.revoke': async (input) =>
+          this.#settleAccessCredentialMutation(
+            revokeCollaborationPrincipal(this.#options.accessAuthority, input.principalId),
+          ),
+        'collaboration.turn-request.create': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            createCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
+          ),
+        'collaboration.turn-request.query': async (input, context) =>
+          queryCollaborationTurnRequests(
+            this.#options.accessAuthority,
+            {
+              principalId: context.principal,
+              principalKind: context.principalKind,
+            },
+            input,
+          ),
+        'collaboration.turn-request.acknowledge': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            acknowledgeCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
+        'collaboration.turn-request.decide': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            decideCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
+          ),
       },
       createPeerMeshOperationHandlers(this.#options.peerMesh, {
         requestDrain: () => this.#requestDrain(),
@@ -883,6 +978,7 @@ export class RuntimeHostKernel {
   async #closeResources(): Promise<void> {
     const errors: unknown[] = [];
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     // Stop new admissions before any asynchronous shutdown bookkeeping. The
     // shutdown deadline may expire while publishing the draining registration;
     // leaving the listener open in that case strands an unreachable, ref'ed
@@ -936,6 +1032,7 @@ export class RuntimeHostKernel {
   async #abortStartup(): Promise<void> {
     this.#state = 'draining';
     this.#unsubscribeAccessRevocations?.();
+    this.#unsubscribeSessionGrantRevocations?.();
     for (const transport of this.#handshakingTransports) transport.abort();
     for (const transport of this.#acceptedTransports) transport.abort();
     await this.#listeners?.closeAdmission().catch(() => undefined);

@@ -254,6 +254,7 @@ export type RuntimeHostCliCommand =
       operationGrants: string[];
       canPublishClientCapabilities: boolean;
       canUseHostPaths: boolean;
+      capabilityOwnerCredentialId?: string;
       preset?: 'desktop-client' | 'terminal-client';
     }
   | {
@@ -1994,6 +1995,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   let principalKind: 'remote_owner' | 'capability_provider' = 'remote_owner';
   let principalKindSpecified = false;
   let credentialId: string | undefined;
+  let capabilityOwnerCredentialId: string | undefined;
   let currentCredentialFingerprint: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
@@ -2022,6 +2024,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       argument === '--principal' ||
       argument === '--grant' ||
       argument === '--credential' ||
+      argument === '--capability-owner-credential' ||
       argument === '--current-fingerprint'
     ) {
       const parsed = optionValue(argv, index, argument);
@@ -2044,6 +2047,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       if (argument === '--principal') principalId = parsed;
       if (argument === '--grant') operationGrants.push(parsed);
       if (argument === '--credential') credentialId = parsed;
+      if (argument === '--capability-owner-credential') capabilityOwnerCredentialId = parsed;
       if (argument === '--current-fingerprint') currentCredentialFingerprint = parsed;
       index += 1;
       continue;
@@ -2062,6 +2066,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       canUseHostPaths ||
       preset ||
       credentialId ||
+      capabilityOwnerCredentialId ||
       currentCredentialFingerprint
     ) {
       return error('Credential mutation options are not valid for access list');
@@ -2086,7 +2091,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       canPublishClientCapabilities ||
       canUseHostPaths ||
       preset ||
-      credentialId
+      credentialId ||
+      capabilityOwnerCredentialId
     ) {
       return error('Credential issue options are not valid for access prepare');
     }
@@ -2113,6 +2119,9 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       return error('--preset cannot be combined with --kind, --grant, or authority flags');
     }
     if (preset) {
+      if (capabilityOwnerCredentialId) {
+        return error('--capability-owner-credential requires --kind capability-provider');
+      }
       return {
         kind: 'runtime-host-access-issue',
         ...(rootPath ? { rootPath } : {}),
@@ -2136,8 +2145,11 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
         return error('A capability provider may grant only Client Capability publication');
       }
       canPublishClientCapabilities = true;
-    } else if (operationGrants.length === 0) {
-      return error('At least one --grant is required');
+    } else {
+      if (capabilityOwnerCredentialId) {
+        return error('--capability-owner-credential requires --kind capability-provider');
+      }
+      if (operationGrants.length === 0) return error('At least one --grant is required');
     }
     return {
       kind: 'runtime-host-access-issue',
@@ -2148,7 +2160,11 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       operationGrants,
       canPublishClientCapabilities,
       canUseHostPaths,
+      ...(capabilityOwnerCredentialId ? { capabilityOwnerCredentialId } : {}),
     };
+  }
+  if (capabilityOwnerCredentialId) {
+    return error('--capability-owner-credential is only valid for access issue');
   }
   if (!credentialId) return error('--credential is required');
   if (framed && !currentCredentialFingerprint) {

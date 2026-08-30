@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { readlinkSync, realpathSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
+
 import type { PermissionProfile } from '@maka/core/permission-profile';
 
 import type {
@@ -362,11 +365,16 @@ function resolveRoots(profile: PermissionProfile, pathContext: SandboxPathContex
     deniedRoots,
     protectedWritableRoots:
       profile.fileSystem.protectedMetadata && writableRoots.length > 0
-        ? uniqueRoots([...protectedWritableRoots, ...pathContext.workspaceRoots])
+        ? uniqueRoots([
+            ...protectedWritableRoots,
+            ...pathContext.workspaceRoots.map(resolveRootPath),
+          ])
         : [],
     protectedMetadataNames: profile.fileSystem.protectedMetadata?.names ?? [],
-    runtimeReadableRoots: uniqueRoots(pathContext.runtimeReadableRoots ?? []),
-    executableRoots: uniqueRoots(pathContext.executableRoots ?? []),
+    runtimeReadableRoots: uniqueRoots(
+      (pathContext.runtimeReadableRoots ?? []).map(resolveRootPath),
+    ),
+    executableRoots: uniqueRoots((pathContext.executableRoots ?? []).map(resolveRootPath)),
   };
 }
 
@@ -375,21 +383,74 @@ function rootsForEntry(
   pathContext: SandboxPathContext,
 ): readonly ResolvedRoot[] {
   if (entry.kind === 'path') {
-    return [{ path: entry.path, match: entry.match ?? 'subtree' }];
+    return [{ path: resolveRootPath(entry.path), match: entry.match ?? 'subtree' }];
   }
 
   switch (entry.special) {
     case ':root':
-      return [{ path: '/', match: 'subtree' }];
+      return [{ path: resolveRootPath('/'), match: 'subtree' }];
     case ':workspace_roots':
-      return pathContext.workspaceRoots.map((path) => ({ path, match: 'subtree' as const }));
+      return pathContext.workspaceRoots.map((path) => ({
+        path: resolveRootPath(path),
+        match: 'subtree' as const,
+      }));
     case ':tmpdir':
-      return pathContext.tmpdir ? [{ path: pathContext.tmpdir, match: 'subtree' }] : [];
+      return pathContext.tmpdir
+        ? [{ path: resolveRootPath(pathContext.tmpdir), match: 'subtree' }]
+        : [];
     case ':slash_tmp':
-      return [{ path: pathContext.slashTmp ?? '/tmp', match: 'subtree' }];
+      return [{ path: resolveRootPath(pathContext.slashTmp ?? '/tmp'), match: 'subtree' }];
     case ':minimal':
-      return (pathContext.minimalRoots ?? []).map((path) => ({ path, match: 'subtree' as const }));
+      return (pathContext.minimalRoots ?? []).map((path) => ({
+        path: resolveRootPath(path),
+        match: 'subtree' as const,
+      }));
   }
+}
+
+const MAX_DANGLING_SYMLINK_HOPS = 40;
+
+/**
+ * Seatbelt evaluates kernel-resolved paths, so every root must be emitted in
+ * canonical form. A root may not exist yet (a deny for a file that has not
+ * been created), so canonicalize the deepest existing ancestor and re-append
+ * the missing tail, mirroring `realpathAllowMissing`; an allow and its deny
+ * then stay in the same path space. Any other resolution failure (EACCES,
+ * ELOOP, ...) propagates and fails policy construction: emitting a root in
+ * lexical path space could split an allow from its deny across aliases.
+ */
+function resolveRootPath(path: string): string {
+  let cursor = resolve(path);
+  const missing: string[] = [];
+  let hops = 0;
+  while (true) {
+    try {
+      return resolve(realpathSync(cursor), ...missing.reverse());
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      let link: string | null = null;
+      try {
+        link = readlinkSync(cursor);
+      } catch {
+        link = null;
+      }
+      if (link !== null) {
+        if (++hops > MAX_DANGLING_SYMLINK_HOPS)
+          throw new Error(`Root ${JSON.stringify(path)} traverses too many dangling symlinks.`);
+        cursor = resolve(dirname(cursor), link);
+        continue;
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      missing.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function addUniqueResolvedRoots(target: ResolvedRoot[], roots: readonly ResolvedRoot[]): void {
@@ -421,7 +482,15 @@ function buildReadableRootsPolicy(roots: ResolvedRoots): string {
       accessRootClause(seatbeltPathClause(root, `READABLE_ROOT_${index}`), denyRequirements),
     )
     .join('\n');
-  return `(allow file-read*\n${params})`;
+  const ancestorParams = roots.readableRoots
+    .map((_, index) =>
+      accessRootClause(`(path-ancestors (param "READABLE_ROOT_${index}"))`, [
+        '(vnode-type DIRECTORY)',
+        ...denyRequirements,
+      ]),
+    )
+    .join('\n');
+  return `(allow file-read*\n${params})\n\n(allow file-read-data\n${ancestorParams})`;
 }
 
 function buildWritableRootsPolicy(roots: ResolvedRoots): string {

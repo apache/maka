@@ -645,8 +645,8 @@ test('Windows recovery executes the complete Skill catalog suite', () => {
   assert.match(recovery, /skill-catalog-repository\.test\.js/u);
   assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
   assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 90/u);
-  assert.match(recovery, /# pass 90/u);
+  assert.match(recovery, /# tests 91/u);
+  assert.match(recovery, /# pass 91/u);
   assert.match(recovery, /# skipped 0/u);
 });
 

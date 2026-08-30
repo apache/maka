@@ -48,6 +48,36 @@ type CatalogState = {
 const EMPTY_CATALOG: CatalogState = { sessions: [], nextCursor: null };
 const EXTERNAL_SESSION_IMPORT_POLL_MS = 1_000;
 
+/**
+ * A loaded catalog is cached per (source, archived filter, search) so switching
+ * back to a source or filter already viewed shows its rows instantly instead of
+ * blanking to the "reading external conversations" spinner on every switch. The
+ * key is the same tuple `catalogSelectionRef` tracks, so a cache hit and a
+ * selection match always agree on what "this catalog" is.
+ */
+function catalogSelectionKey(adapterId: string, includeArchived: boolean, search: string): string {
+  return `${adapterId} ${includeArchived ? '1' : '0'} ${search}`;
+}
+
+// A few dozen selections is plenty to make back-and-forth switching instant
+// without letting a long search session grow the cache without bound. Re-insert
+// on write so the oldest untouched selection is the one evicted.
+const CATALOG_CACHE_LIMIT = 24;
+
+function writeCatalogCache(
+  cache: Map<string, CatalogState>,
+  key: string,
+  value: CatalogState,
+): void {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > CATALOG_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 type CatalogWindow = CatalogState & {
   targetSource: DesktopExternalSessionCatalogItem | undefined;
 };
@@ -114,7 +144,6 @@ type ImportAttempt = {
   importedCountBefore: number;
   latestImportedSessionIdBefore: string | undefined;
   loadedCatalogItemCountBefore: number;
-  catalogSelectionGeneration: number;
 };
 
 type ImportRecovery =
@@ -199,6 +228,16 @@ export function ImportTasksSettingsPage(props: {
   // source's rows under the new source's label.
   const requestGeneration = useRef(0);
   const recoveryGeneration = useRef(0);
+  // Last loaded catalog per selection key, so revisiting a source or filter is
+  // instant. Read/written only inside the async loaders; never rendered
+  // directly (the `catalog` state is what renders).
+  const catalogCacheRef = useRef(new Map<string, CatalogState>());
+  // Mirrors the committed `catalog` so a page append can extend the visible
+  // window without threading it through a stale render closure.
+  const catalogStateRef = useRef(catalog);
+  useEffect(() => {
+    catalogStateRef.current = catalog;
+  }, [catalog]);
   const catalogSelectionRef = useRef({ adapterId, includeArchived, search, generation: 0 });
   if (
     catalogSelectionRef.current.adapterId !== adapterId ||
@@ -231,6 +270,10 @@ export function ImportTasksSettingsPage(props: {
     setImportError(null);
     setAdapterIds([]);
     setAdapterId(null);
+    // A different host (or locale-driven remount) is a different catalog space;
+    // the cache keys carry neither, so drop everything rather than serve a
+    // previous host's rows.
+    catalogCacheRef.current.clear();
     setCatalog(EMPTY_CATALOG);
     try {
       const result = await window.maka.externalSessions.listSources(host);
@@ -252,8 +295,24 @@ export function ImportTasksSettingsPage(props: {
     async (sourceId: string, cursor?: string) => {
       const generation = ++requestGeneration.current;
       const append = cursor !== undefined;
-      if (append) setLoadingMore(true);
-      else {
+      const key = catalogSelectionKey(sourceId, includeArchived, search);
+      const cached = append ? undefined : catalogCacheRef.current.get(key);
+      if (append) {
+        setLoadingMore(true);
+      } else if (cached !== undefined) {
+        // Already loaded this selection once. Show it immediately and refresh in
+        // the background instead of blanking to the spinner on every switch.
+        setCatalog(cached);
+        // Clear any spinner/Load More lock left by a superseded request. A
+        // still-pending search or pagination load from the previous selection
+        // will never reach its own `finally` reset (its generation is now
+        // stale), so restoring cached rows without this would strand the
+        // full-page spinner or a disabled Load More over an otherwise complete
+        // view until this hit's background refresh happens to land.
+        setCatalogLoading(false);
+        setLoadingMore(false);
+        setImportRecovery(null);
+      } else {
         setCatalogLoading(true);
         setCatalog(EMPTY_CATALOG);
         setImportRecovery(null);
@@ -261,17 +320,52 @@ export function ImportTasksSettingsPage(props: {
       setCatalogError(null);
       setImportError(null);
       try {
-        const result = await window.maka.externalSessions.list({
-          adapterId: sourceId,
-          includeArchived,
-          ...(search ? { text: search } : {}),
-          ...(cursor === undefined ? {} : { cursor }),
-        }, host);
-        if (generation !== requestGeneration.current) return;
-        setCatalog((current) => ({
-          sessions: append ? [...current.sessions, ...result.sessions] : result.sessions,
-          nextCursor: result.nextCursor,
-        }));
+        if (cached !== undefined) {
+          // While a revisited selection still shows an import in flight, the 1s
+          // import poll owns refreshing it. Starting our own readCatalogWindow
+          // here would run a second read under the *same* request generation as
+          // that poll, and a pre-import page read started here can land after a
+          // newer poll result and snap "Imported once" back to "Importing…".
+          // Leave the poll as the single refresher and keep the cached rows up.
+          if (cached.sessions.some((session) => session.importState.isImporting)) {
+            return;
+          }
+          // Refresh a revisited selection by re-reading the *whole* loaded
+          // window, not just page one: the cache can be several pages deep from
+          // Load More, and a bare first-page read here would overwrite it and
+          // silently drop every page the user already paged in.
+          const refreshed = await readCatalogWindow({
+            adapterId: sourceId,
+            includeArchived,
+            text: search,
+            minimumItemCount: cached.sessions.length,
+            host,
+            isCurrent: () => mountedRef.current && generation === requestGeneration.current,
+          });
+          if (refreshed === undefined) return;
+          const next: CatalogState = {
+            sessions: refreshed.sessions,
+            nextCursor: refreshed.nextCursor,
+          };
+          writeCatalogCache(catalogCacheRef.current, key, next);
+          setCatalog(next);
+        } else {
+          const result = await window.maka.externalSessions.list({
+            adapterId: sourceId,
+            includeArchived,
+            ...(search ? { text: search } : {}),
+            ...(cursor === undefined ? {} : { cursor }),
+          }, host);
+          if (generation !== requestGeneration.current) return;
+          const next: CatalogState = {
+            sessions: append
+              ? [...catalogStateRef.current.sessions, ...result.sessions]
+              : result.sessions,
+            nextCursor: result.nextCursor,
+          };
+          writeCatalogCache(catalogCacheRef.current, key, next);
+          setCatalog(next);
+        }
       } catch (error) {
         if (generation !== requestGeneration.current) return;
         setCatalogError(localizedShellErrorMessage(error, copy.loadFailedFallback, locale));
@@ -282,12 +376,15 @@ export function ImportTasksSettingsPage(props: {
         }
       }
     },
-    [copy.loadFailedFallback, host, includeArchived, locale, search],
+    [copy.loadFailedFallback, host, includeArchived, locale, mountedRef, search],
   );
 
   const refreshLoadedCatalog = useCallback(
     async (sourceId: string, loadedItemCount: number) => {
-      const generation = ++requestGeneration.current;
+      // Observe, don't preempt: the poll captures the current generation rather
+      // than claiming a new one, so it defers to any in-flight authoritative
+      // load/recovery instead of retiring that load's own catalogLoading reset.
+      const generation = requestGeneration.current;
       try {
         const result = await readCatalogWindow({
           adapterId: sourceId,
@@ -297,7 +394,18 @@ export function ImportTasksSettingsPage(props: {
           host,
           isCurrent: () => mountedRef.current && generation === requestGeneration.current,
         });
-        if (result !== undefined) setCatalog(result);
+        if (result !== undefined) {
+          const refreshed: CatalogState = {
+            sessions: result.sessions,
+            nextCursor: result.nextCursor,
+          };
+          writeCatalogCache(
+            catalogCacheRef.current,
+            catalogSelectionKey(sourceId, includeArchived, search),
+            refreshed,
+          );
+          setCatalog(refreshed);
+        }
       } catch {
         // Catalog polling is best-effort. Keep the last authoritative page
         // visible and retry rather than replacing it with a transient error.
@@ -375,19 +483,40 @@ export function ImportTasksSettingsPage(props: {
           throw new Error('External Session source disappeared during import recovery');
         }
 
+        const recoveredState: CatalogState = {
+          sessions: result.sessions,
+          nextCursor: result.nextCursor,
+        };
+        // Always refresh the cache for the selection this attempt came from, even
+        // if the user has since switched source or filter. Recovery has confirmed
+        // the import landed; leaving the pre-import rows in the cache would greet
+        // the user with an "Import" button (not "Import again") when they return,
+        // inviting a duplicate import until a later background refresh corrects it.
+        writeCatalogCache(
+          catalogCacheRef.current,
+          catalogSelectionKey(attempt.adapterId, attempt.includeArchived, attempt.text),
+          recoveredState,
+        );
+
+        // Publish to screen whenever the user is currently viewing the same
+        // selection tuple this attempt came from. Match the tuple, not the
+        // generation captured at import time: navigating A→B→A lands back on the
+        // same selection with a *newer* generation, and a generation check would
+        // refuse to publish there — leaving a clickable "Import" on a row that
+        // already imported until a slow background refresh happened to catch up.
         const currentSelection = catalogSelectionRef.current;
         if (
           currentSelection.adapterId === attempt.adapterId &&
           currentSelection.includeArchived === attempt.includeArchived &&
-          currentSelection.generation === attempt.catalogSelectionGeneration
+          currentSelection.search === attempt.text
         ) {
           // Recovery is the newest authoritative read for this exact catalog
-          // selection. Retire an older poll/load-more response before publishing
-          // it so that response cannot put pre-import state back on screen.
+          // selection. Retire an older poll/load-more/revisit response before
+          // publishing it so that response cannot put pre-import state back up.
           requestGeneration.current += 1;
           setCatalogLoading(false);
           setLoadingMore(false);
-          setCatalog(result);
+          setCatalog(recoveredState);
         }
         setUncertainImports((current) =>
           current.filter(
@@ -441,7 +570,6 @@ export function ImportTasksSettingsPage(props: {
         importedCountBefore: session.importState.importedCount,
         latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
         loadedCatalogItemCountBefore: catalog.sessions.length,
-        catalogSelectionGeneration: catalogSelectionRef.current.generation,
       };
       setActiveImport(attempt);
       setImportError(null);

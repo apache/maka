@@ -780,6 +780,17 @@ export function userFacingText(message: Pick<UserMessage, 'text' | 'displayText'
   return message.displayText ?? message.text;
 }
 
+const USER_VISIBLE_SESSION_SYSTEM_NOTES = new Set([
+  'context_compacted',
+  'context_compaction_failed_open',
+  'step_limit',
+]);
+
+/** Closed policy for system notes that are part of the user-visible transcript. */
+export function isUserVisibleSessionSystemNote(kind: string): boolean {
+  return USER_VISIBLE_SESSION_SYSTEM_NOTES.has(kind);
+}
+
 export interface AssistantMessage {
   type: 'assistant';
   id: string;

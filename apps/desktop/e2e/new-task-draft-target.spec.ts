@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { COMPOSER_INPUT, NEW_TASK_PROJECT_NAME, expect, test } from './fixtures';
 
 /**
@@ -50,6 +50,15 @@ async function settle(page: Page): Promise<void> {
   );
 }
 
+// Picking an item hides the menu, and DropdownMenu then swallows a reopen
+// click for 50ms.
+async function openPicker(page: Page, picker: Locator): Promise<void> {
+  await expect(async () => {
+    await picker.click();
+    await expect(page.getByRole('menuitem').first()).toBeVisible({ timeout: 500 });
+  }).toPass({ timeout: 10_000 });
+}
+
 test('the new-task draft follows the Project chosen under the composer', async ({
   newTaskTargetWindow: page,
 }) => {
@@ -62,7 +71,9 @@ test('the new-task draft follows the Project chosen under the composer', async (
   await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
 
   await composer.click();
-  await page.keyboard.type(DRAFT);
+  // Two keystrokes in one frame — no human rate — make ChatComposerInput
+  // rewrite the editor and reset the caret.
+  await page.keyboard.type(DRAFT, { delay: 20 });
   await expect(composer).toHaveText(DRAFT);
 
   await picker.click();
@@ -74,7 +85,7 @@ test('the new-task draft follows the Project chosen under the composer', async (
   await settle(page);
   await expect(composer).toHaveText(DRAFT);
 
-  await picker.click();
+  await openPicker(page, picker);
   await page.getByRole('menuitem', { name: NEW_TASK_PROJECT_NAME, exact: true }).click();
   await expect(picker).toHaveAttribute('aria-label', new RegExp(NEW_TASK_PROJECT_NAME));
   await settle(page);

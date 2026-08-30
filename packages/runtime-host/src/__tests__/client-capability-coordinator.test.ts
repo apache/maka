@@ -301,6 +301,158 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('selects only the provider bound to the exact initiating Client identity', async () => {
+    const coordinator = createCoordinator();
+    const owner = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'owner-connection',
+        'owner-client',
+        'owner-principal',
+        'remote_owner',
+      ),
+      { send: async () => {} },
+    );
+    const unrelated = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'unrelated-provider',
+        'unrelated-provider-client',
+        'unrelated-provider-principal',
+        'capability_provider',
+        { principalId: 'other-principal', clientInstanceId: 'other-client' },
+      ),
+      { send: async () => {} },
+    );
+    await replaceTrustedProvider(
+      coordinator,
+      'unrelated-provider',
+      'unrelated-registration',
+      'inspect',
+    );
+
+    assert.deepEqual(await coordinator.bindSession('unrelated-only', 'owner-connection'), {
+      ok: true,
+    });
+    assert.equal(coordinator.snapshotForSession('unrelated-only'), undefined);
+
+    const associated = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'associated-provider',
+        'associated-provider-client',
+        'associated-provider-principal',
+        'capability_provider',
+        { principalId: 'owner-principal', clientInstanceId: 'owner-client' },
+      ),
+      { send: async () => {} },
+    );
+    await replaceTrustedProvider(
+      coordinator,
+      'associated-provider',
+      'associated-registration',
+      'inspect',
+    );
+    assert.throws(
+      () =>
+        coordinator.attachConnection(
+          clientCapabilityConnectionIdentity(
+            'changed-owner-provider',
+            'associated-provider-client',
+            'associated-provider-principal',
+            'capability_provider',
+            { principalId: 'other-principal', clientInstanceId: 'other-client' },
+          ),
+          { send: async () => {} },
+        ),
+      /provider owner changed/u,
+    );
+
+    assert.deepEqual(await coordinator.bindSession('associated', 'owner-connection'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('associated');
+    assert.deepEqual(snapshot?.registrationIds, ['associated-registration']);
+    snapshot?.release();
+
+    const otherClient = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'other-client-connection',
+        'different-client',
+        'owner-principal',
+        'remote_owner',
+      ),
+      { send: async () => {} },
+    );
+    assert.deepEqual(await coordinator.bindSession('different-client', 'other-client-connection'), {
+      ok: true,
+    });
+    assert.equal(coordinator.snapshotForSession('different-client'), undefined);
+
+    const duplicate = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'duplicate-provider',
+        'duplicate-provider-client',
+        'duplicate-provider-principal',
+        'capability_provider',
+        { principalId: 'owner-principal', clientInstanceId: 'owner-client' },
+      ),
+      { send: async () => {} },
+    );
+    await replaceTrustedProvider(
+      coordinator,
+      'duplicate-provider',
+      'duplicate-registration',
+      'inspect',
+    );
+    const ambiguous = await coordinator.bindSession('duplicate-owner', 'owner-connection');
+    assert.equal(ambiguous.ok, false);
+    if (!ambiguous.ok) assert.match(ambiguous.message, /bound to the initiating Client/u);
+
+    await Promise.all([
+      owner.close(),
+      unrelated.close(),
+      associated.close(),
+      otherClient.close(),
+      duplicate.close(),
+    ]);
+    await coordinator.close();
+  });
+
+  test('does not match a companion from a hello-only Client identity', async () => {
+    const coordinator = createCoordinator();
+    const provider = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'associated-provider',
+        'provider-client',
+        'provider-principal',
+        'capability_provider',
+        { principalId: 'owner-principal', clientInstanceId: 'owner-client' },
+      ),
+      { send: async () => {} },
+    );
+    await replaceTrustedProvider(
+      coordinator,
+      'associated-provider',
+      'associated-registration',
+      'inspect',
+    );
+    const unboundOwner = coordinator.attachConnection(
+      clientCapabilityConnectionIdentity(
+        'unbound-owner',
+        'owner-client',
+        'owner-principal',
+        'remote_owner',
+        undefined,
+        false,
+      ),
+      { send: async () => {} },
+    );
+
+    assert.deepEqual(await coordinator.bindSession('unbound-owner', 'unbound-owner'), {
+      ok: true,
+    });
+    assert.equal(coordinator.snapshotForSession('unbound-owner'), undefined);
+
+    await Promise.all([provider.close(), unboundOwner.close()]);
+    await coordinator.close();
+  });
+
   test('previews the initiating provider without persisting a Session binding', async () => {
     const coordinator = createCoordinator();
     const connection = coordinator.attachConnection(
@@ -1186,6 +1338,23 @@ async function replace(
     {
       ...connectionContext(connectionId),
     },
+  );
+  assert.equal(outcome.ok, true);
+}
+
+async function replaceTrustedProvider(
+  coordinator: HostClientCapabilityCoordinator,
+  connectionId: string,
+  registrationId: string,
+  toolName: string,
+): Promise<void> {
+  const input = replacementInput(registrationId, toolName);
+  const outcome = await coordinator.handlers['client.capability.replace'](
+    {
+      ...input,
+      offers: input.offers.map((offer) => ({ ...offer, hostPathAccess: 'none' as const })),
+    },
+    connectionContext(connectionId),
   );
   assert.equal(outcome.ok, true);
 }
