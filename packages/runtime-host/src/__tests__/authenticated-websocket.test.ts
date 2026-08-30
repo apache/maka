@@ -668,7 +668,7 @@ test('capability-provider credentials retain a Host-verified Client owner identi
       canUseHostPaths: false,
       bindClientInstance: true,
     });
-    await authority.finalize(owner.credentialId, 'terminal-client');
+    await authority.finalize(owner.credentialId, 'terminal-client', false);
     const unboundOwner = await authority.issue({
       principalKind: 'remote_owner',
       principalId: 'unbound-owner',
@@ -728,7 +728,7 @@ test('capability-provider credentials retain a Host-verified Client owner identi
     const replacementOwner = await authority.prepareRotation({
       replacementOfCredentialId: owner.credentialId,
     });
-    await authority.finalize(replacementOwner.credentialId, 'terminal-client');
+    await authority.finalize(replacementOwner.credentialId, 'terminal-client', false);
     const replacementProvider = await authority.issue({
       ...providerInput,
       principalId: 'rotated-terminal-mcp-provider',
@@ -916,7 +916,7 @@ test('writes the capability-owner schema only after the association commits', as
       canUseHostPaths: false,
       bindClientInstance: true,
     });
-    await authority.finalize(owner.credentialId, 'schema-client');
+    await authority.finalize(owner.credentialId, 'schema-client', false);
     const path = join(directory, 'runtime-host-access.json');
     assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3);
 
