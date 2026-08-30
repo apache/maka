@@ -33,6 +33,7 @@ export const DESKTOP_UPDATE_PROVIDER = Object.freeze({
 export const DESKTOP_NIGHTLY_UPDATE_PROVIDER = Object.freeze({
   provider: 'generic',
   url: 'https://nightlies.apache.org/maka/desktop/',
+  channel: 'latest',
   updaterCacheDirName: '@makadesktop-updater',
 });
 
