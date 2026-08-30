@@ -691,6 +691,51 @@ test('recovery folds later steering ahead of an earlier explicit follow-up', asy
   );
 });
 
+test('recovery folds promoted steering ahead of an earlier explicit follow-up', async () => {
+  const fixture = createFixture();
+  for (const admission of [
+    {
+      messageId: 'recovered-followup',
+      content: { text: 'future work' },
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+      submittedPlacement: 'next_turn' as const,
+      placement: 'next_turn' as const,
+      disposition: 'followup' as const,
+      admittedAt: 1,
+    },
+    {
+      messageId: 'recovered-promoted',
+      content: { text: 'promoted correction' },
+      turnId: 'earlier-turn',
+      runId: 'earlier-run',
+      submittedPlacement: 'next_turn' as const,
+      placement: 'current_turn' as const,
+      disposition: 'steering' as const,
+      admittedAt: 2,
+    },
+  ]) {
+    await fixture.admissions.commitMessageAdmission({
+      sessionId: ROOT.sessionId,
+      ...admission,
+      submittedContentDigest: messageContentDigest(admission.content),
+    });
+  }
+
+  fixture.setRootState({ kind: 'idle' });
+  await fixture.coordinator.recoverPendingAfterHostRestart([ROOT.sessionId]);
+
+  assert.deepEqual(
+    fixture.recoveredBatches.map((batch) => batch.sources.map((source) => source.messageId)),
+    [['recovered-promoted']],
+  );
+  assert.equal(fixture.recoveredBatches[0]?.rootIdentity, undefined);
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['recovered-followup'],
+  );
+});
+
 // The Host stopped after the Message admission committed and before the root
 // admission that carries the exact-Turn intent was written.
 async function recoverExactTurnAcrossHostStop(): Promise<ReturnType<typeof createFixture>> {

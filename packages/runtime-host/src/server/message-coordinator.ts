@@ -808,11 +808,7 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
           'Message recovery authority is unavailable',
         );
       }
-      const recoveryOrder = [
-        ...pending.filter((entry) => entry.disposition === 'steering'),
-        ...pending.filter((entry) => entry.disposition !== 'steering'),
-      ];
-      const recoveryBatch = nextSuccessorItems(recoveryOrder);
+      const recoveryBatch = nextRecoveredSuccessorItems(pending);
       const started = await this.#root.startRecoveredMessages(
         {
           sessionId,
@@ -2358,7 +2354,9 @@ function pendingMessageSource(admission: PendingMessageAdmission): RootTurnSourc
 function pendingSteeringRootIdentity(
   pending: readonly PendingMessageAdmission[],
 ): Pick<HostMessageRecoveryBatch, 'rootIdentity'> {
-  const steering = pending.filter((entry) => entry.disposition === 'steering');
+  const steering = pending.filter(
+    (entry) => entry.disposition === 'steering' && entry.submittedPlacement === 'current_turn',
+  );
   const first = steering[0];
   if (!first) return {};
   if (steering.some((entry) => entry.turnId !== first.turnId || entry.runId !== first.runId)) {
@@ -2559,6 +2557,16 @@ function nextSuccessorItems<
     steering.push(entry);
   }
   return steering;
+}
+
+function nextRecoveredSuccessorItems(
+  pending: readonly PendingMessageAdmission[],
+): PendingMessageAdmission[] {
+  const steeringIntent = pending.filter(
+    (entry) => entry.disposition === 'steering' || entry.submittedPlacement === 'current_turn',
+  );
+  if (steeringIntent.length > 0) return steeringIntent;
+  return pending.length > 0 ? [pending[0]!] : [];
 }
 
 function rootAdmissionPayloadFits(sources: readonly RootTurnSourceMessage[]): boolean {
