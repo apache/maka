@@ -462,6 +462,41 @@ describe('Runtime Host profiles', () => {
     assert.equal(await providers.get(profile, 'owner-a'), null);
   });
 
+  test('profile removal excludes a queued provider credential mutation', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const stored = createRuntimeHostProfileCredentialStore(credentialStore);
+    const removalStarted = deferred();
+    const allowRemoval = deferred();
+    const credentials: RuntimeHostProfileCredentialStore = {
+      ...stored,
+      delete: async (profile) => {
+        removalStarted.resolve();
+        await allowRemoval.promise;
+        await stored.delete(profile);
+      },
+    };
+    const removingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const mutatingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const providers = createRuntimeHostCapabilityProviderCredentialStore(credentialStore);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await removingCatalog.save(profile, 'terminal-token');
+
+    const removal = removingCatalog.remove(profile.id);
+    await removalStarted.promise;
+    let mutationRan = false;
+    const mutation = mutatingCatalog.mutateRemoteProfileIfCurrent(profile, async (current) => {
+      mutationRan = true;
+      await providers.set(current, 'owner-a', 'provider-token');
+    });
+    allowRemoval.resolve();
+
+    await removal;
+    assert.equal(await mutation, false);
+    assert.equal(mutationRan, false);
+    assert.equal(await providers.get(profile, 'owner-a'), null);
+  });
+
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {
     const original = directPeerProfile('peer-a', ['/ip4/192.0.2.10/udp/4001/quic-v1']);
     const moved = directPeerProfile('peer-a', ['/ip6/2001:db8::10/udp/4001/quic-v1']);
@@ -994,6 +1029,14 @@ function memoryCredentials(): RuntimeHostProfileCredentialStore {
       values.delete(key(profile));
     },
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function incompatibleHandshake(overrides: Partial<HostIncompatible> = {}): HostIncompatible {

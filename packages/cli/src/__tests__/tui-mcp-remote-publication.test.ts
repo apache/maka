@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   RuntimeHostProfileConnectionError,
+  sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
@@ -200,6 +201,37 @@ test('remote TUI publication retires when another process removes its profile', 
   });
 });
 
+test('remote TUI publication cannot restore a credential after profile removal', async () => {
+  const credentials = credentialHarness();
+  const profiles = profileHarness();
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'credential_required' });
+
+  const heldMutation = profiles.holdNextMutation();
+  const setCredential = target.setCredential?.('replacement-secret');
+  assert.ok(setCredential);
+  await heldMutation.started;
+  profiles.remove();
+  heldMutation.release();
+
+  await assert.rejects(setCredential, /profile is no longer current/u);
+  assert.equal(credentials.values.has('office\0terminal-client'), false);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'target_mismatch' });
+  await target.closePublication?.();
+});
+
 test('remote TUI publication revalidates an invalidation received during a profile read', async () => {
   const credentials = credentialHarness('provider-secret');
   const profiles = profileHarness();
@@ -373,7 +405,13 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
         readonly release: ReturnType<typeof deferred>;
       }
     | undefined;
-  const catalog: Pick<RuntimeHostProfileCatalog, 'read'> = {
+  let heldMutation:
+    | {
+        readonly started: ReturnType<typeof deferred>;
+        readonly release: ReturnType<typeof deferred>;
+      }
+    | undefined;
+  const catalog: Pick<RuntimeHostProfileCatalog, 'read' | 'mutateRemoteProfileIfCurrent'> = {
     read: async () => {
       const snapshot = profiles;
       const held = heldRead;
@@ -383,6 +421,18 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
         await held.release.promise;
       }
       return { schemaVersion: 3 as const, profiles: snapshot };
+    },
+    mutateRemoteProfileIfCurrent: async (expected, mutation) => {
+      const held = heldMutation;
+      heldMutation = undefined;
+      if (held) {
+        held.started.resolve();
+        await held.release.promise;
+      }
+      const current = profiles.find((profile) => profile.id === expected.id);
+      if (!current || !sameRemoteRuntimeHostProfileTarget(current, expected)) return false;
+      await mutation(current);
+      return true;
     },
   };
   const invalidate = () => {
@@ -403,6 +453,12 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
       const started = deferred();
       const release = deferred();
       heldRead = { started, release };
+      return { started: started.promise, release: release.resolve };
+    },
+    holdNextMutation: () => {
+      const started = deferred();
+      const release = deferred();
+      heldMutation = { started, release };
       return { started: started.promise, release: release.resolve };
     },
   };

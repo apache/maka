@@ -215,6 +215,11 @@ export interface RuntimeHostProfileCatalog {
     readonly rebound: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
+  /** Serialize one sidecar mutation with catalog updates while this exact target remains current. */
+  mutateRemoteProfileIfCurrent(
+    target: RemoteRuntimeHostProfile,
+    mutation: (profile: RemoteRuntimeHostProfile) => Promise<void>,
+  ): Promise<boolean>;
 }
 
 export interface RuntimeHostProfileCredentialStore {
@@ -943,6 +948,23 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         throw error;
       }
       return { rebound: true, document: next };
+    });
+  }
+
+  mutateRemoteProfileIfCurrent(
+    target: RemoteRuntimeHostProfile,
+    mutation: (profile: RemoteRuntimeHostProfile) => Promise<void>,
+  ): Promise<boolean> {
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target);
+    return this.#exclusive(async () => {
+      const current = await this.#readSnapshot();
+      const profile = current.profiles.find(
+        (candidate): candidate is RemoteRuntimeHostProfile =>
+          candidate.id === expectedProfile.id && candidate.kind === 'remote',
+      );
+      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+      await mutation(profile);
+      return true;
     });
   }
 

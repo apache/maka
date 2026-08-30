@@ -53,7 +53,7 @@ interface RemoteTuiMcpPublicationDeps {
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
-  readonly profiles: Pick<RuntimeHostProfileCatalog, 'read'>;
+  readonly profiles: Pick<RuntimeHostProfileCatalog, 'read' | 'mutateRemoteProfileIfCurrent'>;
   readonly subscribeProfileChanges: (listener: (error?: Error) => void) => () => void;
 }
 
@@ -166,11 +166,18 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     this.#cancelConnect();
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
-      await this.#deps.credentials.set(
+      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
         this.#input.profile,
-        this.#input.ownerClientInstanceId,
-        credential,
+        (profile) =>
+          this.#deps.credentials.set(profile, this.#input.ownerClientInstanceId, credential),
       );
+      if (!committed) {
+        await this.#retire('target_mismatch');
+        throw new RuntimeHostProfileConnectionError(
+          'target_mismatch',
+          'Remote MCP publication profile is no longer current',
+        );
+      }
       await this.#disconnect();
       await this.#connect(credential);
     });
@@ -181,7 +188,17 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     return this.#serialize(async () => {
       if (this.#closed) throw new Error('Remote MCP publication is closed');
       await this.#disconnect();
-      await this.#deps.credentials.delete(this.#input.profile, this.#input.ownerClientInstanceId);
+      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+        this.#input.profile,
+        (profile) => this.#deps.credentials.delete(profile, this.#input.ownerClientInstanceId),
+      );
+      if (!committed) {
+        await this.#retire('target_mismatch');
+        throw new RuntimeHostProfileConnectionError(
+          'target_mismatch',
+          'Remote MCP publication profile is no longer current',
+        );
+      }
       this.#setUnavailable('credential_required');
     });
   }
