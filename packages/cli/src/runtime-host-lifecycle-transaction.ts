@@ -66,6 +66,7 @@ export interface RuntimeHostLifecycleTransactionDeps {
     desired: RuntimeHostManagedDeploymentConfig | undefined,
   ) => Promise<void>;
   readonly verifyOperator: (config: RuntimeHostManagedDeploymentConfig) => Promise<void>;
+  readonly connectExisting?: typeof connectExistingRuntimeHost;
   /** Legacy migration keeps the validated old config until commit as its deterministic receipt. */
   readonly uninstallLegacy?: (
     transition: RuntimeHostManagedDeploymentTransition | RuntimeHostManagedDeploymentBlocked,
@@ -735,7 +736,7 @@ export async function verifyRuntimeHostLifecycleReady(
   while (Date.now() < deadline) {
     const status = await provider.supervisor.status();
     if (status.pid !== null && status.active) {
-      const connected = await connectExistingRuntimeHost({
+      const connected = await (deps.connectExisting ?? connectExistingRuntimeHost)({
         rootPath: canonical.root.path,
         protocol: {
           min: RUNTIME_HOST_PROTOCOL_VERSION,
