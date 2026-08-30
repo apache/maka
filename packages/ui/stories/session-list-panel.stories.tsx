@@ -17,9 +17,11 @@
  * under the License.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, waitFor, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
+import { Button } from '@astryxdesign/core/Button';
+import type { SessionSortMode, SessionViewMode } from '../src/session-rail-context.js';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
 import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
@@ -42,6 +44,86 @@ type Story = StoryObj<typeof meta>;
 type SessionListPanelProps = SessionRailStoryProps;
 
 const noop = () => undefined;
+
+// Production path: SessionNavigationProvider supplies the sort preference and
+// current Session summaries to the same SessionRailData/Chrome contexts.
+function PrioritySortingScenario({ width = 260 }: { width?: number }) {
+  const [sortMode, setSortMode] = useState<SessionSortMode>('updated_at');
+  const [viewMode, setViewMode] = useState<SessionViewMode>('conversation');
+  const [activeId, setActiveId] = useState('recent');
+  const [finished, setFinished] = useState(false);
+  const rows: SessionSummary[] = [
+    makeSession({ id: 'pinned', name: '置顶：项目说明', isFlagged: true, lastMessageAt: NOW - 120 * 60_000 }),
+    makeSession({ id: 'recent', name: '已聊完：调整按钮文案', lastMessageAt: NOW }),
+    makeSession({ id: 'recent-docs', name: '已聊完：整理 README', lastMessageAt: NOW - 2 * 60_000 }),
+    makeSession({ id: 'recent-style', name: '已聊完：修改页面配色', lastMessageAt: NOW - 5 * 60_000 }),
+    { ...makeSession({ id: 'running', name: finished ? '检查完成，结果未读' : '正在检查构建结果',
+      lastMessageAt: NOW - 30 * 60_000, hasUnread: finished }), runningTurnIds: finished ? [] : ['run-1'] },
+    makeSession({ id: 'unread', name: '报告已完成，尚未阅读', hasUnread: true, lastMessageAt: NOW - 20 * 60_000 }),
+    makeSession({ id: 'auth', name: '昨天：需要重新登录账号', status: 'blocked', blockedReason: 'auth', lastMessageAt: NOW - 24 * 60 * 60_000 }),
+    makeSession({ id: 'waiting', name: '前天：等待你确认修改范围', status: 'waiting_for_user', lastMessageAt: NOW - 48 * 60 * 60_000 }),
+  ];
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 32 }}>
+      <StoryFrame height={680} width={width}>
+        <SessionRail
+          {...panelProps({ sessions: rows, width })}
+          activeId={activeId}
+          onSelectSession={setActiveId}
+          sortMode={sortMode}
+          onSortModeChange={setSortMode}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          groups={viewMode === 'project' ? [
+            { id: 'project:one', label: '项目一', sessions: rows.slice(0, 5) },
+            { id: 'runtime-host:two', label: '远程 Host', sessions: rows.slice(5) },
+          ] : undefined}
+        />
+      </StoryFrame>
+      <aside aria-label="排序演示说明" style={{ maxWidth: 380, padding: 24, lineHeight: 1.7 }}>
+        <p style={{ fontSize: 12, opacity: 0.65 }}>演示数据 · 说明区域不属于正式侧栏</p>
+        <h2>同一批任务，两种排序</h2>
+        <p>点击“全部任务 / 按项目”右侧的排序图标，切换“最近更新 / 优先级”。悬停图标可查看当前排序。</p>
+        <p><strong>最近更新：</strong>刚聊完的三条普通任务在前面。前天就在等你确认的任务排在最后。</p>
+        <p><strong>优先级：</strong>那条待确认任务会升到置顶区下方的第一位，接着是需要登录、运行中、未读任务。</p>
+        <p>置顶任务不变；你当前选中的任务也不会被切换。</p>
+        <p aria-live="polite">当前排序：<strong>{sortMode === 'priority' ? '优先级' : '最近更新'}</strong></p>
+        <Button label={finished ? '恢复运行中状态' : '模拟运行完成'} onClick={() => setFinished((value) => !value)} />
+        <p style={{ fontSize: 12, opacity: 0.65 }}>可反复模拟运行状态变化；这里保留原消息时间，单独观察状态对排序的影响。刷新即可重置演示。</p>
+      </aside>
+    </div>
+  );
+}
+
+export const PrioritySorting: Story = {
+  render: () => <PrioritySortingScenario />,
+};
+
+export const PrioritySortingNarrow: Story = {
+  render: () => <PrioritySortingScenario width={180} />,
+};
+
+// Keep automated state transitions out of the manual demo's initial state.
+export const PrioritySortingInteraction: Story = {
+  render: () => <PrioritySortingScenario />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const ids = () => [...canvasElement.querySelectorAll('[data-maka-contract="session-row"]')]
+      .map((row) => row.getAttribute('data-session-id'));
+    await expect(ids()).toEqual(['pinned', 'recent', 'recent-docs', 'recent-style', 'unread', 'running', 'auth', 'waiting']);
+    await userEvent.click(canvas.getByRole('button', { name: /任务排序方式.*最近更新|Sort tasks by.*Last updated/ }));
+    await userEvent.click(within(canvasElement.ownerDocument.body).getByRole('menuitemradio', { name: /^(优先级|Priority)$/ }));
+    await waitFor(() => expect(ids()).toEqual(['pinned', 'waiting', 'auth', 'running', 'unread', 'recent', 'recent-docs', 'recent-style']));
+    const runningButton = canvasElement.querySelector<HTMLButtonElement>('[data-session-id="running"] button')!;
+    runningButton.focus();
+    // Keep focus on the row while the simulated live state changes elsewhere.
+    canvas.getByRole('button', { name: '模拟运行完成' }).click();
+    await waitFor(() => expect(canvas.getByText('检查完成，结果未读', { exact: true })).toBeVisible());
+    await expect(ids()).toEqual(['pinned', 'waiting', 'auth', 'unread', 'running', 'recent', 'recent-docs', 'recent-style']);
+    await expect(canvasElement.ownerDocument.activeElement).toBe(runningButton);
+    await expect(canvasElement.querySelector('[data-session-id="recent"] [aria-current="page"]')).not.toBeNull();
+  },
+};
 
 function makeSession(input: {
   id: string;

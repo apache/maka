@@ -152,6 +152,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: props.rail.sessions,
+      sortMode: controller.layout.sortMode,
       activeId: props.workHubActive ? undefined : props.rail.activeRowId,
       streamingSessionIds: props.streamingSessionIds,
       staleSessionIds: props.staleSessionIds,
@@ -165,6 +166,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     }),
     [
       controller.layout.viewMode,
+      controller.layout.sortMode,
       controller.selectors.groups,
       controller.selectors.sessionMeta,
       controller.selectors.worktreeSessionIds,
@@ -191,6 +193,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     maxWidth: SESSION_LIST_EXPANDED_MAX_WIDTH,
     viewMode: controller.layout.viewMode,
     onViewModeChange: sessionRailLayoutStore.setViewMode,
+    sortMode: controller.layout.sortMode,
+    onSortModeChange: sessionRailLayoutStore.setSortMode,
     selection: props.selection,
     scheduledTasks: props.scheduledTasks,
     moduleMemory: props.moduleMemory,

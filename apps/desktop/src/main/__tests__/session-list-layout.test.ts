@@ -138,3 +138,31 @@ describe('session rail width persistence', () => {
     assert.equal(memory.store.get(WIDTH_KEY), '400');
   });
 });
+
+describe('session sort preference', () => {
+  it('defaults safely and restores the selected order without changing grouping or width', () => {
+    const key = 'maka-chat-list-sort-mode-v1';
+    for (const value of ['', 'manual', 'PRIORITY']) {
+      const memory = installMemoryLocalStorage({ [key]: value });
+      try {
+        assert.equal(createSessionRailLayoutStore().getState().sortMode, 'updated_at');
+      } finally { memory.restore(); }
+    }
+    const memory = installMemoryLocalStorage({ [VIEW_MODE_KEY]: 'project', [WIDTH_KEY]: '320' });
+    try {
+      const store = createSessionRailLayoutStore();
+      const original = store.getState();
+      let notifications = 0;
+      const unsubscribe = store.subscribe(() => { notifications += 1; });
+      store.setSortMode('priority');
+      store.setSortMode('priority');
+      assert.equal(notifications, 1);
+      assert.deepEqual(store.getState(), { ...original, sortMode: 'priority' });
+      assert.equal(memory.store.get(key), 'priority');
+      assert.equal(createSessionRailLayoutStore().getState().sortMode, 'priority');
+      store.setSortMode('updated_at');
+      assert.equal(createSessionRailLayoutStore().getState().sortMode, 'updated_at');
+      unsubscribe();
+    } finally { memory.restore(); }
+  });
+});

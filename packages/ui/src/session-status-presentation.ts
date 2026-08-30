@@ -23,6 +23,11 @@ import type { StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import { getConversationCopy } from './conversation-copy.js';
 
+/** Only these blocked states have a current repair action outside the failed turn. */
+export function isActionableBlocked(reason: SessionBlockedReason | undefined): boolean {
+  return reason === 'NO_REAL_CONNECTION' || reason === 'auth' || reason === 'permission_required';
+}
+
 export interface SessionStatusPresentation {
   label: string;
   variant?: StatusDotVariant;

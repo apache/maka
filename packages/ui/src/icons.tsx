@@ -57,6 +57,7 @@ export {
   Archive,
   ArchiveRestore,
   ArrowDown,
+  ArrowDownWideNarrow,
   ArrowLeft,
   ArrowRight,
   ArrowUp,

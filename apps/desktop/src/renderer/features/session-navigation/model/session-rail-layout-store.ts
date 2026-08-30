@@ -18,15 +18,17 @@
  */
 
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
-import type { SessionViewMode } from '@maka/ui';
+import type { SessionSortMode, SessionViewMode } from '@maka/ui';
 import { safeLocalStorageSet } from '../../../browser-storage.js';
 import { createObservableState } from '../../../observable-state.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
+  readSessionListSortMode,
   readSessionListViewMode,
   readSessionListWidth,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
+  writeSessionListSortMode,
   writeSessionListViewMode,
 } from './session-list-layout.js';
 
@@ -36,6 +38,7 @@ export interface SessionRailLayoutState {
   readonly collapsed: boolean;
   readonly width: number;
   readonly viewMode: SessionViewMode;
+  readonly sortMode: SessionSortMode;
 }
 
 /**
@@ -57,6 +60,7 @@ export function createSessionRailLayoutStore() {
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
     viewMode: readSessionListViewMode(),
+    sortMode: readSessionListSortMode(),
   });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
@@ -95,6 +99,12 @@ export function createSessionRailLayoutStore() {
       if (current.viewMode === next) return;
       state.replaceState({ ...current, viewMode: next });
       writeSessionListViewMode(next);
+    },
+    setSortMode(next: SessionSortMode): void {
+      const current = state.getState();
+      if (current.sortMode === next) return;
+      state.replaceState({ ...current, sortMode: next });
+      writeSessionListSortMode(next);
     },
   };
 }

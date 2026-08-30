@@ -24,7 +24,7 @@ owns:
 
 - rail membership, linked-session highlighting, Project/Runtime Host grouping,
   worktree badges, branch banners, and revision navigation;
-- collapsed/expanded state, width, grouping mode, and their existing local
+- collapsed/expanded state, width, grouping/sort modes, and their local
   persistence keys;
 - explicit jumps into a Session, including search turn targets; and
 - flag, archive, restore, rename, delete, and archived-task purge lifecycles.
@@ -63,7 +63,7 @@ through `SessionNavigationPorts`, which the shell composes.
   revision navigation, and the rail's width. It holds no state.
 - `createSessionOpenCommand` composes an explicit Session jump out of the
   shell's own actions.
-- `sessionRailLayoutStore` owns collapse, width, and grouping mode, with the
+- `sessionRailLayoutStore` owns collapse, width, grouping, and sort mode, with the
   existing persistence keys.
 
 ## Lifecycle invariants
@@ -71,6 +71,11 @@ through `SessionNavigationPorts`, which the shell composes.
 - Archived, linked-subagent, and hidden companion Sessions follow the existing
   single-rail projection; a linked child highlights its visible root.
 - Local Sessions group by Project while remote Sessions group by Runtime Host.
+- Sorting is a UI preference (`updated_at` by default, or `priority`). Priority
+  promotes waiting-for-user, actionable blocked, live running, and unread rows
+  in that order, then uses recency and ID as ties. It only sorts visible roots
+  within existing groups; child attention is not rolled up to parent rows.
+- Sorting does not mark work read, change group membership, or alter execution.
 - Opening a Session first exits WorkHub, selects the Sessions destination, then
   activates the Session and replaces or clears the turn-scroll target.
 - At most one row mutation runs per Session. Mutations retain revision-family

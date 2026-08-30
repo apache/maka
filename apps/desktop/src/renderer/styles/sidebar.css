@@ -229,17 +229,33 @@
 }
 
 /*
- * Grouping switch (session-list-panel.tsx): the last row of the sticky top
+ * Grouping and sorting (session-list-panel.tsx): the last row of the sticky top
  * region, above the scrolling history it governs.
  *
  * Block padding only. The zone already insets its content to the same two
- * vertical lines the nav rows' boxes sit on, so the control spans exactly the
- * 新任务 row's width and the top region reads as one stack; an inline padding
- * here would inset it a second time. `layout="fill"` handles the rest — each
- * segment takes exactly half.
+ * vertical lines the nav rows' boxes sit on. Grouping fills the space beside
+ * the fixed-size sorting button, without adding a second row of chrome.
  */
-.maka-session-grouping-switch {
+.maka-session-list-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
   padding-block: var(--spacing-1) var(--spacing-2);
+}
+
+.maka-session-grouping-switch {
+  flex: 1;
+  min-width: 0;
+}
+
+.maka-session-list-controls .maka-session-grouping-switch [role='radio'] {
+  padding-inline: var(--spacing-1);
+}
+
+.maka-session-sorting-switch {
+  display: flex;
+  flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 /*

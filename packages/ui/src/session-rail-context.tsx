@@ -30,6 +30,7 @@ import type {
 import type { SidebarUpdateReminder } from './session-sidebar-nav.js';
 
 export type SessionViewMode = 'conversation' | 'project';
+export type SessionSortMode = 'updated_at' | 'priority';
 
 /**
  * What the rail's rows are made of.
@@ -44,6 +45,7 @@ export type SessionViewMode = 'conversation' | 'project';
  */
 export interface SessionRailData {
   sessions: readonly SessionSummary[];
+  sortMode?: SessionSortMode;
   activeId?: string;
   streamingSessionIds?: ReadonlySet<string>;
   staleSessionIds?: ReadonlySet<string>;
@@ -77,6 +79,8 @@ export interface SessionRailChrome {
   maxWidth: number;
   viewMode: SessionViewMode;
   onViewModeChange?(mode: SessionViewMode): void;
+  sortMode?: SessionSortMode;
+  onSortModeChange?(mode: SessionSortMode): void;
   selection: NavSelection;
   scheduledTasks?: readonly ScheduledTask[];
   moduleMemory?: NavModuleMemory;

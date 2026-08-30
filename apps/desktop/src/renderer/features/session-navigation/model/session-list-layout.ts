@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { SessionViewMode } from '@maka/ui';
+import type { SessionSortMode, SessionViewMode } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 
 export const SESSION_LIST_EXPANDED_DEFAULT_WIDTH = 260;
@@ -25,6 +25,15 @@ export const SESSION_LIST_EXPANDED_MIN_WIDTH = 180;
 export const SESSION_LIST_EXPANDED_MAX_WIDTH = 480;
 
 const SESSION_LIST_VIEW_MODE_KEY = 'maka-chat-list-view-mode-v1';
+const SESSION_LIST_SORT_MODE_KEY = 'maka-chat-list-sort-mode-v1';
+
+export function readSessionListSortMode(): SessionSortMode {
+  return safeLocalStorageGet(SESSION_LIST_SORT_MODE_KEY) === 'priority' ? 'priority' : 'updated_at';
+}
+
+export function writeSessionListSortMode(mode: SessionSortMode): void {
+  safeLocalStorageSet(SESSION_LIST_SORT_MODE_KEY, mode);
+}
 
 export function readSessionListViewMode(): SessionViewMode {
   const stored = safeLocalStorageGet(SESSION_LIST_VIEW_MODE_KEY);
