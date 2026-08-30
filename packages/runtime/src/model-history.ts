@@ -61,16 +61,11 @@ import {
   type RuntimeEventContent,
   type RuntimeEventRole,
 } from '@maka/core/runtime-event';
-import { withToolResultArchiveResourceRef } from './tool-result-archive.js';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
-import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
-import { markPersisted } from '@maka/core/persisted-value';
-import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
-import type { ToolResultContent } from '@maka/core/events';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
 import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
-import { projectBashToolResultForModel } from './bash-model-output.js';
-import { projectFileWriteToolResultForModel } from './file-tool-model-output.js';
+import { decodeEffectiveToolResultProjection } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 
 export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
 
@@ -178,6 +173,8 @@ export type RuntimeEventModelReplayItem =
       toolName: string;
       output: unknown;
       isError: boolean;
+      modelProjection?: DurableToolResultProjection;
+      modelProjectionSource?: 'durable' | 'compatibility';
       providerExecuted?: boolean;
       eventId: string;
       ts: number;
@@ -610,47 +607,21 @@ export function buildRuntimeEventModelReplayPlan(
           );
           continue;
         }
-        const usesProviderOutput =
-          event.content.providerExecuted && event.content.providerOutput !== undefined;
-        let invalidResultMessage: string | undefined;
-        let normalizedResult: unknown = usesProviderOutput
-          ? event.content.providerOutput
-          : withToolResultArchiveResourceRef(event.content.result);
-        if (!usesProviderOutput && isRetiredExploreAgentResult(normalizedResult)) {
-          try {
-            normalizedResult = decodePersistedToolResultContent(
-              markPersisted<ToolResultContent>(normalizedResult),
-            );
-          } catch {
-            invalidResultMessage = 'function_response contains an invalid retired tool result';
-          }
-        }
-        if (!invalidResultMessage) {
-          const shellResult = decodeCanonicalShellToolResultContent(normalizedResult);
-          if (shellResult.state === 'invalid') {
-            invalidResultMessage = 'function_response contains an invalid shell tool result';
-          } else if (shellResult.state === 'valid') {
-            normalizedResult = shellResult.content;
-          }
-        }
-        if (!invalidResultMessage && event.content.name === 'Bash') {
-          normalizedResult = projectBashToolResultForModel(normalizedResult);
-        } else if (!invalidResultMessage) {
-          normalizedResult = projectFileWriteToolResultForModel(
-            event.content.name,
-            normalizedResult,
-          );
-        }
-        if (invalidResultMessage) {
+        const effective = decodeEffectiveToolResultProjection(event.content, event.sessionId);
+        if (effective.kind === 'invalid_legacy') {
           const call = callsById.get(event.content.id);
           if (call) {
             const callIndex = items.indexOf(call.item);
             if (callIndex >= 0) items.splice(callIndex, 1);
             callsById.delete(event.content.id);
           }
-          diagnostics.push(diagnostic(event, 'unsupported_content', invalidResultMessage));
+          diagnostics.push(diagnostic(event, 'unsupported_content', effective.message));
           continue;
         }
+        const normalizedResult =
+          effective.kind === 'provider_native' || effective.kind === 'legacy_output'
+            ? effective.output
+            : effective.legacyOutput;
         const call = callsById.get(event.content.id);
         if (!call) {
           diagnostics.push(
@@ -683,6 +654,12 @@ export function buildRuntimeEventModelReplayPlan(
           toolCallId: event.content.id,
           toolName: event.content.name,
           output: normalizedResult,
+          ...(effective.kind === 'projection'
+            ? {
+                modelProjection: effective.projection,
+                modelProjectionSource: effective.source,
+              }
+            : {}),
           isError: event.content.isError === true,
           ...(event.content.providerExecuted !== undefined
             ? { providerExecuted: event.content.providerExecuted }
@@ -747,12 +724,6 @@ export function buildRuntimeEventModelReplayPlan(
       semanticKinds.includes('tool_call') ||
       semanticKinds.includes('tool_result'),
   };
-}
-
-function isRetiredExploreAgentResult(value: unknown): boolean {
-  return (
-    typeof value === 'object' && value !== null && 'kind' in value && value.kind === 'explore_agent'
-  );
 }
 
 /**

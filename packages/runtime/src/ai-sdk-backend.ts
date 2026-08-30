@@ -3863,14 +3863,22 @@ export class AiSdkBackend implements AgentBackend {
       result: ToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
+      const settledOutput = settledModelOutputs?.get(result.toolCallId);
       const output =
-        settledModelOutputs?.get(result.toolCallId) ??
-        (await this.materializeToolResultOutput(
-          budget,
-          result.output,
-          result.isError,
-          `runtime-event:${result.eventId}:tool-result`,
-        ));
+        result.modelProjection &&
+        (result.modelProjectionSource === 'durable' || settledOutput === undefined)
+          ? await this.materializeDurableToolResultProjection(
+              budget,
+              result.modelProjection,
+              `runtime-event:${result.eventId}:tool-result`,
+            )
+          : (settledOutput ??
+            (await this.materializeToolResultOutput(
+              budget,
+              result.output,
+              result.isError,
+              `runtime-event:${result.eventId}:tool-result`,
+            )));
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };

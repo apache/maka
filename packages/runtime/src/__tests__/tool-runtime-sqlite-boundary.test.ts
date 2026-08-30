@@ -485,6 +485,15 @@ describe('ToolRuntime with real SQLite boundary', () => {
         type: 'json',
         value: { ok: true, text: 'contents' },
       });
+      const nextTurnProjection = buildRuntimeEventModelReplayPlan(events).items.find(
+        (item) => item.kind === 'tool_result',
+      )?.modelProjection;
+      const coldRestartProjection = buildRuntimeEventModelReplayPlan(
+        JSON.parse(JSON.stringify(events)),
+      ).items.find((item) => item.kind === 'tool_result')?.modelProjection;
+      assert.deepEqual(nextTurnProjection, durableProjection);
+      assert.deepEqual(coldRestartProjection, durableProjection);
+
       const context = invocationContext();
       const memory = createSessionEventMapMemory();
       const durableEvents = published.filter(

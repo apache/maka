@@ -36,6 +36,8 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
+import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { durableProjectionToToolResultOutput } from '../durable-tool-result-projection.js';
 import { LOOP_GATE_IDENTICAL_THRESHOLD, type MakaTool, type ToolRuntime } from '../tool-runtime.js';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 
@@ -372,7 +374,7 @@ test('client-capability refusal carries actionable bypass metadata', async () =>
 test('arguments the schema rejects leave a matched call/response pair on the generic lane', async () => {
   const h = harness();
 
-  const { result } = await settle(h, swarmTool, {
+  const settlement = await settle(h, swarmTool, {
     items: [
       { item_id: 'a', task: 'one', subagent_id: 'reviewer' },
       { item_id: 'b', task: 'two', subagent_id: 'reviewer' },
@@ -383,7 +385,7 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
 
   // The refusal still reaches the model, unchanged.
   assert.match(
-    (result as { error?: string }).error ?? '',
+    (settlement.result as { error?: string }).error ?? '',
     /Tool "exclusive_batch" arguments failed validation/,
   );
 
@@ -409,6 +411,15 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
   assert.equal(operation?.callEvent?.content?.kind, 'function_call');
   assert.equal(operation?.responseEvent?.content?.kind, 'function_response');
   assert.equal(operation?.dispatchEvent, undefined);
+  const replayResult = buildRuntimeEventModelReplayPlan(ledger).items.find(
+    (item) => item.kind === 'tool_result',
+  );
+  assert.deepEqual(
+    settlement.modelOutput,
+    replayResult?.modelProjection
+      ? durableProjectionToToolResultOutput(replayResult.modelProjection)
+      : undefined,
+  );
 });
 
 test('a dispatched call still claims the T1 lane and settles through the commit sink', async () => {
