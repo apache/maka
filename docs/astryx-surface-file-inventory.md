@@ -5,7 +5,7 @@ Each row is one on-disk product surface file. Regenerated inventory must stay in
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 225 files — blocker 0, polish 1, aligned 224.
+**Totals:** 229 files — blocker 0, polish 1, aligned 228.
 
 ## Exclusions (explicit)
 
@@ -38,6 +38,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/chat-recovery-notice.tsx` | shell-chrome-or-panel | Banner, Button | aligned — uses Astryx (Banner, Button) | aligned |
 | `apps/desktop/src/renderer/command-palette.tsx` | dialog-overlay | EmptyState | aligned — uses Astryx (EmptyState) | aligned |
 | `apps/desktop/src/renderer/composer-mentions.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/composition/desktop-feature-services.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/custom-pet-companion.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/error-boundary.tsx` | other | Button, Card | aligned — uses Astryx (Button, Card) | aligned |
 | `apps/desktop/src/renderer/features/goals/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -45,6 +46,10 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/features/goals/ui/goal-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/module-hub/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
+| `apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
+| `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx` | dialog-overlay | Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, SegmentedControl, SegmentedControlItem, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent) | aligned |
+| `apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx` | other | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/services-context.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx` | shell-chrome-or-panel | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/features/task-entry/services-context.tsx` | other | none | aligned — no raw controls; no Astryx JSX usage | aligned |
@@ -108,7 +113,6 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, IconButton, Layout, LayoutContent, Selector, Spinner, Switch, Text, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, IconButton, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx` | settings-module | Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, SegmentedControl, SegmentedControlItem, Selector, Spinner, Text | aligned — uses Astryx (Banner, Button, Dialog, DialogHeader, Layout, LayoutContent, SegmentedControl, SegmentedControlItem) | aligned |
-| `apps/desktop/src/renderer/settings/runtime-host-peer-mesh-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent, SegmentedControl, SegmentedControlItem, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, HStack, Layout, LayoutContent) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx` | settings-module | Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem, Selector, Switch | aligned — uses Astryx (Badge, Banner, Button, HStack, List, ListItem, SegmentedControl, SegmentedControlItem) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx` | settings-module | Button | aligned — uses Astryx (Button) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
