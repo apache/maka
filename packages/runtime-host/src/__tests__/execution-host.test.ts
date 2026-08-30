@@ -266,13 +266,13 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
         taskPage.tasks.some((candidate) => candidate.id === 'system-daily-review'),
         false,
       );
-      await assert.rejects(
-        unresolvedDesktop.request('artifact.query', {
-          kind: 'list_start',
-          sessionId: `daily-review-archive-${archive.id}`,
-        }),
-        /Session was not found/u,
-      );
+      const artifacts = await unresolvedDesktop.request('artifact.query', {
+        kind: 'list_start',
+        sessionId: `daily-review-archive-${archive.id}`,
+      });
+      assert.equal(artifacts.kind, 'page');
+      if (artifacts.kind !== 'page') return;
+      assert.equal(artifacts.artifacts.length, 1);
     } finally {
       await unresolvedDesktop.close();
       await fixture.stopHost(unresolvedHost);
@@ -289,6 +289,16 @@ test('production Host migrates Daily Review into ScheduledTask Session and Artif
             .get(),
         ),
         true,
+      );
+      assert.equal(
+        Number(
+          (
+            pending
+              .prepare('SELECT count(*) AS count FROM workflow_daily_review_archives')
+              .get() as { count: number }
+          ).count,
+        ),
+        0,
       );
     } finally {
       pending.close();

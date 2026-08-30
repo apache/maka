@@ -18,8 +18,11 @@
  */
 
 import { createHash } from 'node:crypto';
+import { readFile, readdir, rm, rmdir } from 'node:fs/promises';
 import type { DatabaseSync } from 'node:sqlite';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import type { ScheduledTask } from '@maka/core/scheduled-task';
 import type { StoredMessage } from '@maka/core/session';
 import type { InteractiveArtifactStoreWriter } from './artifact-stores.js';
 import type { ExecutionSessionWriter } from './execution-stores.js';
@@ -43,6 +46,7 @@ const LEGACY_REQUIRED_TABLES = [
 ] as const;
 
 const LEGACY_TABLES = [...LEGACY_REQUIRED_TABLES, 'workflow_daily_review_authority_state'] as const;
+const LEGACY_FILE_ARCHIVE_ID = /^\d{4}-\d{2}-\d{2}-(?:1d|7d|30d|daily|deep)$/u;
 
 export interface LegacyDailyReviewConfig {
   readonly enabled: boolean;
@@ -82,6 +86,7 @@ export interface LegacyDailyReviewMigrationSnapshot {
 
 export interface LegacyDailyReviewMigrationWriter {
   read(): Promise<LegacyDailyReviewMigrationSnapshot | null>;
+  retireArchives(token: LegacyDailyReviewMigrationSnapshot['token']): Promise<boolean>;
   retire(token: LegacyDailyReviewMigrationSnapshot['token']): Promise<boolean>;
   close(): void;
 }
@@ -101,27 +106,64 @@ export async function migrateLegacyDailyReview(input: {
   const snapshot = await input.legacy.read();
   if (snapshot === null) return false;
   const now = input.now?.() ?? Date.now();
-  const target = await resolveExecutionTarget(snapshot.config.modelKey, input.runtimePolicy);
-  // Keep an enabled legacy configuration entirely authoritative until it can
-  // be replaced in one pass. Exposing replayable Sessions or Artifacts while
-  // the source must remain retryable would let ordinary user deletion collide
-  // with the next Host recovery.
-  if (snapshot.config.enabled && target === undefined) return false;
   for (const archive of snapshot.archives) {
     await migrateArchive(input, archive);
   }
+  let retirementToken = snapshot.token;
+  if (snapshot.archives.length > 0) {
+    if (!(await input.legacy.retireArchives(snapshot.token))) {
+      throw new Error('Legacy Daily Review state disappeared during migration');
+    }
+    const remainder = await input.legacy.read();
+    if (remainder === null) return true;
+    retirementToken = remainder.token;
+  }
   if (!snapshot.config.enabled) {
-    if (!(await input.legacy.retire(snapshot.token))) {
+    if (!(await input.legacy.retire(retirementToken))) {
       throw new Error('Legacy Daily Review state disappeared during migration');
     }
     return true;
   }
+  const existingTask = findExistingDailyReviewTask(await input.scheduledTasks.list());
+  if (existingTask && !isCompatibleDailyReviewReplacement(existingTask)) return false;
+  const task = existingTask ?? (await createSystemDailyReviewTask(input, snapshot, now));
   // The legacy scheduler accepted an enabled configuration before a model was
-  // configured. Do not turn that recoverable state into a permanently broken
-  // ScheduledTask: the inert legacy rows remain the one-shot migration source
-  // until a canonical Connection identity can be frozen on a later Host start.
-  if (target === undefined) return false;
-  const task = await input.scheduledTasks.ensureSystemTask(
+  // configured. Keep that inert configuration as the one-shot source until a
+  // canonical replacement can be installed.
+  if (task === undefined) return false;
+  if (task.status === 'active' && needsLegacyCatchUp(snapshot, now)) {
+    await input.scheduledTasks.makeDueNow(task.id, now);
+  }
+  if (!(await input.legacy.retire(retirementToken))) {
+    throw new Error('Legacy Daily Review state disappeared during migration');
+  }
+  return true;
+}
+
+function findExistingDailyReviewTask(tasks: readonly ScheduledTask[]): ScheduledTask | undefined {
+  return (
+    tasks.find((task) => task.id === DAILY_REVIEW_SYSTEM_TASK_ID) ??
+    tasks.find((task) => task.presetId === 'daily-review')
+  );
+}
+
+function isCompatibleDailyReviewReplacement(task: ScheduledTask): boolean {
+  if (task.id === DAILY_REVIEW_SYSTEM_TASK_ID && task.createdBy.kind !== 'system') return false;
+  return (
+    (task.status === 'active' || task.status === 'paused') &&
+    task.effect.kind === 'agent_run' &&
+    Boolean(task.effect.execution.llmConnectionId)
+  );
+}
+
+async function createSystemDailyReviewTask(
+  input: Parameters<typeof migrateLegacyDailyReview>[0],
+  snapshot: LegacyDailyReviewMigrationSnapshot,
+  now: number,
+): Promise<ScheduledTask | undefined> {
+  const target = await resolveExecutionTarget(snapshot.config.modelKey, input.runtimePolicy);
+  if (target === undefined) return undefined;
+  return input.scheduledTasks.ensureSystemTask(
     DAILY_REVIEW_SYSTEM_TASK_ID,
     {
       title: 'Daily Review',
@@ -150,13 +192,6 @@ export async function migrateLegacyDailyReview(input: {
     },
     now,
   );
-  if (needsLegacyCatchUp(snapshot, now)) {
-    await input.scheduledTasks.makeDueNow(task.id, now);
-  }
-  if (!(await input.legacy.retire(snapshot.token))) {
-    throw new Error('Legacy Daily Review state disappeared during migration');
-  }
-  return true;
 }
 
 export async function openLegacyDailyReviewMigrationForWrite(
@@ -164,38 +199,189 @@ export async function openLegacyDailyReviewMigrationForWrite(
 ): Promise<LegacyDailyReviewMigrationWriter> {
   await assertStorageRootLease(lease, 'interactive', 'write');
   let closed = false;
-  const run = <T>(mode: 'read' | 'write', operation: (database: DatabaseSync) => T): Promise<T> => {
+  const run = <T>(operation: (root: string) => Promise<T>): Promise<T> => {
     if (closed) return Promise.reject(new Error('Legacy Daily Review migration is closed'));
-    return runWithStorageRootLease(lease, 'interactive', 'write', async (root) => {
-      const database = acquireOperationalStateDatabase(root);
-      try {
-        return database.transaction(mode, () => operation(database.database));
-      } finally {
-        database.close();
-      }
-    });
+    return runWithStorageRootLease(lease, 'interactive', 'write', operation);
+  };
+  const read = async (root: string): Promise<LegacyDailyReviewMigrationSources | null> => {
+    const database = acquireOperationalStateDatabase(root);
+    try {
+      const databaseSnapshot = database.transaction('read', () =>
+        readDatabaseSnapshot(database.database),
+      );
+      const fileSnapshot = await readFileSnapshot(root);
+      if (databaseSnapshot === null && fileSnapshot === null) return null;
+      const archives = new Map<string, LegacyDailyReviewArchive>();
+      for (const archive of fileSnapshot?.snapshot.archives ?? [])
+        archives.set(archive.id, archive);
+      for (const archive of databaseSnapshot?.archives ?? []) archives.set(archive.id, archive);
+      const snapshot: LegacyDailyReviewMigrationSnapshot = {
+        token: sha256(
+          JSON.stringify({
+            database: databaseSnapshot?.token ?? null,
+            files: fileSnapshot?.snapshot.token ?? null,
+          }),
+        ),
+        config:
+          databaseSnapshot?.config ?? fileSnapshot?.snapshot.config ?? decodeConfig(undefined),
+        archives: [...archives.values()].sort((left, right) => left.id.localeCompare(right.id)),
+      };
+      return { snapshot, fileSnapshot };
+    } finally {
+      database.close();
+    }
   };
   return Object.freeze({
-    read: () => run('read', readSnapshot),
-    retire: (token: LegacyDailyReviewMigrationSnapshot['token']) =>
-      run('write', (database) => {
-        const current = readSnapshot(database);
+    read: () => run(async (root) => (await read(root))?.snapshot ?? null),
+    retireArchives: (token: LegacyDailyReviewMigrationSnapshot['token']) =>
+      run(async (root) => {
+        const current = await read(root);
         if (current === null) return false;
-        if (current.token !== token) {
+        if (current.snapshot.token !== token) {
           throw new Error('Legacy Daily Review state changed during migration');
         }
-        database.exec(`
-          DROP INDEX IF EXISTS workflow_daily_review_archives_order;
-          DROP TABLE IF EXISTS workflow_daily_review_archives;
-          DROP TABLE IF EXISTS workflow_daily_review_authority_state;
-          DROP TABLE IF EXISTS workflow_daily_review_state;
-        `);
+        const database = acquireOperationalStateDatabase(root);
+        try {
+          database.transaction('write', () => {
+            if (tableExists(database.database, 'workflow_daily_review_archives')) {
+              database.database.exec('DELETE FROM workflow_daily_review_archives;');
+            }
+          });
+        } finally {
+          database.close();
+        }
+        if (current.fileSnapshot) await retireFileArchives(root, current.fileSnapshot);
+        return true;
+      }),
+    retire: (token: LegacyDailyReviewMigrationSnapshot['token']) =>
+      run(async (root) => {
+        const current = await read(root);
+        if (current === null) return false;
+        if (current.snapshot.token !== token) {
+          throw new Error('Legacy Daily Review state changed during migration');
+        }
+        const database = acquireOperationalStateDatabase(root);
+        try {
+          database.transaction('write', () => {
+            database.database.exec(`
+              DROP INDEX IF EXISTS workflow_daily_review_archives_order;
+              DROP TABLE IF EXISTS workflow_daily_review_archives;
+              DROP TABLE IF EXISTS workflow_daily_review_authority_state;
+              DROP TABLE IF EXISTS workflow_daily_review_state;
+            `);
+          });
+        } finally {
+          database.close();
+        }
+        if (current.fileSnapshot) await retireFileSnapshot(root, current.fileSnapshot);
         return true;
       }),
     close: () => {
       closed = true;
     },
   });
+}
+
+interface LegacyDailyReviewMigrationSources {
+  readonly snapshot: LegacyDailyReviewMigrationSnapshot;
+  readonly fileSnapshot: LegacyDailyReviewFileSnapshot | null;
+}
+
+interface LegacyDailyReviewFileSnapshot {
+  readonly snapshot: LegacyDailyReviewMigrationSnapshot;
+  readonly hasConfig: boolean;
+  readonly archiveFileNames: readonly string[];
+}
+
+async function readFileSnapshot(root: string): Promise<LegacyDailyReviewFileSnapshot | null> {
+  const dailyReviewRoot = join(root, 'daily-reviews');
+  const configPath = join(dailyReviewRoot, 'config.json');
+  let configJson: string | undefined;
+  try {
+    configJson = await readFile(configPath, 'utf8');
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  const archiveRoot = join(dailyReviewRoot, 'archive');
+  let archiveFileNames: string[] = [];
+  try {
+    archiveFileNames = (await readdir(archiveRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => entry.name)
+      .filter((name) => LEGACY_FILE_ARCHIVE_ID.test(name.slice(0, -'.json'.length)))
+      .sort();
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+  if (configJson === undefined && archiveFileNames.length === 0) return null;
+  const archiveRecords = await Promise.all(
+    archiveFileNames.map(async (name) => ({
+      name,
+      raw: await readFile(join(archiveRoot, name), 'utf8'),
+    })),
+  );
+  return {
+    snapshot: {
+      token: sha256(JSON.stringify({ configJson: configJson ?? null, archives: archiveRecords })),
+      config: decodeConfig(configJson),
+      archives: archiveRecords.map(({ name, raw }) =>
+        decodeArchiveFile(name.slice(0, -'.json'.length), raw),
+      ),
+    },
+    hasConfig: configJson !== undefined,
+    archiveFileNames,
+  };
+}
+
+async function retireFileSnapshot(
+  root: string,
+  snapshot: LegacyDailyReviewFileSnapshot,
+): Promise<void> {
+  const dailyReviewRoot = join(root, 'daily-reviews');
+  const archiveRoot = join(dailyReviewRoot, 'archive');
+  if (snapshot.hasConfig) await rm(join(dailyReviewRoot, 'config.json'), { force: true });
+  await retireFileArchives(root, snapshot);
+  await rmdir(dailyReviewRoot).catch(ignoreMissingOrNonEmptyDirectory);
+}
+
+async function retireFileArchives(
+  root: string,
+  snapshot: LegacyDailyReviewFileSnapshot,
+): Promise<void> {
+  const archiveRoot = join(root, 'daily-reviews', 'archive');
+  await Promise.all(
+    snapshot.archiveFileNames.map((name) => rm(join(archiveRoot, name), { force: true })),
+  );
+  await rmdir(archiveRoot).catch(ignoreMissingOrNonEmptyDirectory);
+}
+
+function ignoreMissingOrNonEmptyDirectory(error: unknown): void {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTEMPTY')
+  ) {
+    return;
+  }
+  throw error;
+}
+
+function decodeArchiveFile(id: string, raw: string): LegacyDailyReviewArchive {
+  const input = JSON.parse(raw) as unknown;
+  if (!isRecord(input) || !isRecord(input.day)) {
+    throw new Error(`Legacy Daily Review archive ${id} is invalid`);
+  }
+  return decodeArchiveRow({
+    archiveId: id,
+    generatedAt: input.generatedAt,
+    dayFromMs: input.day.fromMs,
+    recordJson: raw,
+  });
+}
+
+function readDatabaseSnapshot(database: DatabaseSync): LegacyDailyReviewMigrationSnapshot | null {
+  return readSnapshot(database);
 }
 
 function readSnapshot(database: DatabaseSync): LegacyDailyReviewMigrationSnapshot | null {
@@ -561,4 +747,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
 }

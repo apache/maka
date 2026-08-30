@@ -318,8 +318,7 @@ class SqliteScheduledTaskStore implements ScheduledTaskStore {
       const existingByPreset =
         presetId === undefined ? undefined : state.tasks.find((task) => task.presetId === presetId);
       if (existingByPreset) {
-        result = existingByPreset;
-        return state;
+        throw storeError('operation_conflict', `${presetId} ScheduledTask already exists`);
       }
       const value = normalized.value;
       const task: ScheduledTask = {

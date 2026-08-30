@@ -749,7 +749,7 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-  test('system task migration adopts an existing preset task', async () => {
+  test('system task migration does not adopt a user-owned preset task', async () => {
     await withRoot(async (root) => {
       const now = Date.now();
       const { owner, open } = await scheduledTaskStoreRoot(root);
@@ -767,21 +767,23 @@ describe('SQLite workflow stores', () => {
           now,
         );
 
-        const ensured = await store.ensureSystemTask(
-          'system-daily-review',
-          {
-            presetId: 'daily-review',
-            title: 'Daily Review',
-            intentBody: 'Review the previous local day.',
-            schedule: { kind: 'interval', everySeconds: 86_400, startAt: now + 1_000 },
-            effect: { kind: 'notify', channel: 'local' },
-            createdBy: { kind: 'system' },
-          },
-          now,
+        await assert.rejects(
+          store.ensureSystemTask(
+            'system-daily-review',
+            {
+              presetId: 'daily-review',
+              title: 'Daily Review',
+              intentBody: 'Review the previous local day.',
+              schedule: { kind: 'interval', everySeconds: 86_400, startAt: now + 1_000 },
+              effect: { kind: 'notify', channel: 'local' },
+              createdBy: { kind: 'system' },
+            },
+            now,
+          ),
+          /already exists/u,
         );
 
-        assert.equal(ensured.id, existing.id);
-        assert.equal(ensured.createdBy.kind, 'user');
+        assert.equal((await store.list())[0]?.id, existing.id);
         assert.equal((await store.list()).length, 1);
       } finally {
         store.close();
