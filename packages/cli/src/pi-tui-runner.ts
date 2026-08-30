@@ -123,6 +123,7 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { createTaskMutationHydrationController } from './pi-task-mutation-hydration.js';
 import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
@@ -368,6 +369,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
   const tui = new TuiMainScreen(terminal);
   const state = createMakaPiTranscriptState();
+  const taskMutationHydration = createTaskMutationHydrationController({
+    state,
+    driver: input.driver,
+    onChanged: () => requestRender(),
+  });
   // A pending confirmation is meaningful only for the exact transcript whose
   // geometry produced it; reconnect/session replacement starts fresh.
   let expansionCollapseConfirm: { kind: ExpansionEntryKind; at: number } | undefined;
@@ -379,9 +385,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     messages: readonly StoredMessage[],
     options: { preserveClientLocalEntries?: boolean } = {},
   ): void => {
+    const sessionId = input.driver.getSessionId();
+    taskMutationHydration.replace(sessionId);
     expansionCollapseConfirm = undefined;
     rememberTranscriptModel(messages);
     replaceTranscriptWithStoredMessages(state, messages, options);
+    taskMutationHydration.schedule(sessionId);
   };
   let cwd = input.cwd;
   let model = input.model;
@@ -686,6 +695,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         shellRunElapsedTicker.sync();
         requestRender();
       }
+      taskMutationHydration.schedule(sessionId);
     }) ?? (() => {});
   const shellRunElapsedTicker = createShellRunElapsedTicker({
     state,
@@ -863,6 +873,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeStartedTurns();
     unsubscribeResolvedInteractions();
     unsubscribeTranscriptReplacements();
+    taskMutationHydration.dispose();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
     stopTurnElapsedTicker();

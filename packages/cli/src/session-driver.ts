@@ -31,6 +31,8 @@ import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
   GoalControlAction,
   GoalProjection,
+  TaskMutationCorrelation,
+  TaskMutationLookup,
   TurnMessageQueryResult,
   TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
@@ -199,6 +201,11 @@ export interface MakaSessionDriver {
       reason: MakaTranscriptReplacementReason,
     ) => void,
   ): () => void;
+  /** Reads immutable Task mutation presentations for exact durable tool calls. */
+  queryTaskMutations?(
+    sessionId: string,
+    correlations: readonly TaskMutationCorrelation[],
+  ): Promise<readonly TaskMutationLookup[]>;
   /**
    * Prepares a fresh Session: stops every live user-owned command first so
    * their cards and Ctrl+C affordance never outlive the identity swap.

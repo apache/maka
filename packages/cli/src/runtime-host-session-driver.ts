@@ -70,11 +70,16 @@ import {
   SessionCatalogProjection,
   SessionUpdateResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
+  TASK_MUTATION_QUERY_MAX_CORRELATIONS,
   WorkspaceTarget,
   type GoalControlAction,
   type GoalProjection,
   type SessionContinuitySnapshot,
   type TurnResumeParkReason,
+  type TaskMutationCorrelation,
+  type TaskMutationLookup,
+  type TaskMutationQueryResult,
+  type TaskMutationRevision,
 } from '@maka/runtime-host/protocol';
 import { RuntimeHostSessionChannel } from './runtime-host-session-channel.js';
 import type { RuntimeHostSessionChannelOpenResult } from './runtime-host-session-channel.js';
@@ -1023,6 +1028,99 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#transcriptListeners.delete(listener);
   }
 
+  async queryTaskMutations(
+    sessionId: string,
+    correlations: readonly TaskMutationCorrelation[],
+  ): Promise<readonly TaskMutationLookup[]> {
+    const unique = uniqueTaskMutationCorrelations(correlations);
+    const deadline = Date.now() + TASK_MUTATION_QUERY_DEADLINE_MS;
+    const lookups: TaskMutationLookup[] = [];
+    for (let offset = 0; offset < unique.length; offset += TASK_MUTATION_QUERY_MAX_CORRELATIONS) {
+      const batch = unique.slice(offset, offset + TASK_MUTATION_QUERY_MAX_CORRELATIONS);
+      lookups.push(...(await this.#queryTaskMutationBatch(sessionId, batch, deadline)));
+    }
+    return lookups;
+  }
+
+  async #queryTaskMutationBatch(
+    sessionId: string,
+    correlations: readonly TaskMutationCorrelation[],
+    deadline: number,
+  ): Promise<readonly TaskMutationLookup[]> {
+    for (let attempt = 0; attempt <= TASK_MUTATION_HISTORY_RESTARTS; attempt += 1) {
+      const lookups: TaskMutationLookup[] = [];
+      const cursors = new Set<string>();
+      let revision: TaskMutationRevision | undefined;
+      let result = await this.#requestTaskMutationPage(
+        { kind: 'start', sessionId, correlations },
+        deadline,
+      );
+      let pages = 0;
+      while (result.kind === 'page') {
+        if (result.sessionId !== sessionId) {
+          throw new Error('Task mutation query returned a different Session');
+        }
+        if (revision !== undefined && result.revision !== revision) {
+          throw new Error('Task mutation query changed revision during pagination');
+        }
+        revision ??= result.revision;
+        pages += 1;
+        if (pages > TASK_MUTATION_MAX_PAGES) {
+          throw new Error('Task mutation query exceeded its page budget');
+        }
+        lookups.push(...result.lookups);
+        if (!result.nextCursor) {
+          assertExactTaskMutationLookups(correlations, lookups);
+          return lookups;
+        }
+        if (cursors.has(result.nextCursor)) {
+          throw new Error('Task mutation query repeated a continuation cursor');
+        }
+        cursors.add(result.nextCursor);
+        result = await this.#requestTaskMutationPage(
+          {
+            kind: 'continue',
+            sessionId,
+            correlations,
+            revision,
+            cursor: result.nextCursor,
+          },
+          deadline,
+        );
+      }
+      if (attempt === TASK_MUTATION_HISTORY_RESTARTS) {
+        throw new Error('Task mutation history changed too often to read consistently');
+      }
+    }
+    throw new Error('Task mutation query exhausted its restart budget');
+  }
+
+  async #requestTaskMutationPage(
+    input: OperationInput<'task.mutation.query'>,
+    deadline: number,
+  ): Promise<TaskMutationQueryResult> {
+    let transientAttempts = 0;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Task mutation query timed out');
+      try {
+        return await this.#connection.request('task.mutation.query', input, remaining);
+      } catch (error) {
+        if (
+          error instanceof RuntimeHostOperationError &&
+          (error.code === 'host_not_ready' ||
+            error.code === 'host_draining' ||
+            error.code === 'internal_failure') &&
+          transientAttempts < TASK_MUTATION_TRANSIENT_RETRIES
+        ) {
+          transientAttempts += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
   listShellRunUpdates(sessionId: string): Promise<ShellRunUpdate[]> {
     return readRuntimeHostResources(this.#connection, sessionId);
   }
@@ -1643,6 +1741,45 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   ): Promise<OperationOutput<K>> {
     return this.#connection.request(operation, input);
   }
+}
+
+const TASK_MUTATION_QUERY_DEADLINE_MS = 15_000;
+const TASK_MUTATION_HISTORY_RESTARTS = 2;
+const TASK_MUTATION_TRANSIENT_RETRIES = 2;
+const TASK_MUTATION_MAX_PAGES = 256;
+
+function uniqueTaskMutationCorrelations(
+  correlations: readonly TaskMutationCorrelation[],
+): TaskMutationCorrelation[] {
+  const unique: TaskMutationCorrelation[] = [];
+  const seen = new Set<string>();
+  for (const correlation of correlations) {
+    const key = taskMutationCorrelationKey(correlation);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(correlation);
+  }
+  return unique;
+}
+
+function assertExactTaskMutationLookups(
+  correlations: readonly TaskMutationCorrelation[],
+  lookups: readonly TaskMutationLookup[],
+): void {
+  if (
+    lookups.length !== correlations.length ||
+    lookups.some(
+      (lookup, index) =>
+        taskMutationCorrelationKey(lookup.correlation) !==
+        taskMutationCorrelationKey(correlations[index]!),
+    )
+  ) {
+    throw new Error('Task mutation query returned an incomplete or reordered result');
+  }
+}
+
+function taskMutationCorrelationKey(correlation: TaskMutationCorrelation): string {
+  return JSON.stringify([correlation.turnId, correlation.toolCallId]);
 }
 
 function workspaceTargetForCreate(

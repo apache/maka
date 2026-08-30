@@ -44,6 +44,8 @@ import {
   type SessionContinuitySnapshot,
   type SessionUpdateResult,
   type SubscriptionFrame,
+  type TaskMutationCorrelation,
+  type TaskMutationQueryResult,
 } from '@maka/runtime-host/protocol';
 import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import {
@@ -57,6 +59,136 @@ import type {
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
 
 describe('Runtime Host Maka Session driver', () => {
+  test('collects Task mutation pages and stable correlation batches before returning', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = Array.from({ length: 129 }, (_, index) => ({
+      turnId: `turn-${index}`,
+      toolCallId: `call-${index}`,
+    }));
+    const firstBatch = correlations.slice(0, 128);
+    const secondBatch = correlations.slice(128);
+    connection.taskMutationOutcomes.push(
+      mutationPage(firstBatch.slice(0, 64), 'cursor-1'),
+      { kind: 'history_changed', expected: mutationRevision('a'), actual: mutationRevision('b') },
+      mutationPage(firstBatch, null),
+      mutationPage(secondBatch, null),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+    const lookups = await driver.queryTaskMutations!('session-1', [
+      ...correlations,
+      correlations[0]!,
+    ]);
+
+    assert.deepEqual(
+      lookups.map(({ correlation }) => correlation),
+      correlations,
+    );
+    const requests = connection.requests.filter(
+      ({ operation }) => operation === 'task.mutation.query',
+    );
+    assert.equal(requests.length, 4);
+    assert.equal(
+      (requests[0]!.input as { correlations: readonly unknown[] }).correlations.length,
+      128,
+    );
+    assert.equal((requests[1]!.input as { kind: string }).kind, 'continue');
+    assert.equal((requests[2]!.input as { kind: string }).kind, 'start');
+    assert.equal(
+      (requests[3]!.input as { correlations: readonly unknown[] }).correlations.length,
+      1,
+    );
+  });
+
+  test('rejects a repeated Task mutation cursor without returning a partial batch', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = [
+      { turnId: 'turn-1', toolCallId: 'call-1' },
+      { turnId: 'turn-2', toolCallId: 'call-2' },
+    ];
+    connection.taskMutationOutcomes.push(
+      mutationPage(correlations.slice(0, 1), 'cursor-1'),
+      mutationPage(correlations.slice(1), 'cursor-1'),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+    await assert.rejects(
+      driver.queryTaskMutations!('session-1', correlations),
+      /repeated a continuation cursor/,
+    );
+  });
+
+  test('rejects Task mutation pages from a different Session', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = [{ turnId: 'turn-1', toolCallId: 'call-1' }];
+    connection.taskMutationOutcomes.push(
+      mutationPage(correlations, null, { sessionId: 'session-2' }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+    await assert.rejects(
+      driver.queryTaskMutations!('session-1', correlations),
+      /different Session/,
+    );
+  });
+
+  test('rejects a Task mutation continuation from a different Session', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = [
+      { turnId: 'turn-1', toolCallId: 'call-1' },
+      { turnId: 'turn-2', toolCallId: 'call-2' },
+    ];
+    connection.taskMutationOutcomes.push(
+      mutationPage(correlations.slice(0, 1), 'cursor-1'),
+      mutationPage(correlations.slice(1), null, { sessionId: 'session-2' }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+    await assert.rejects(
+      driver.queryTaskMutations!('session-1', correlations),
+      /different Session/,
+    );
+  });
+
+  test('rejects Task mutation revision drift and keeps the frozen continuation revision', async () => {
+    const connection = new FakeConnection([]);
+    const correlations = [
+      { turnId: 'turn-1', toolCallId: 'call-1' },
+      { turnId: 'turn-2', toolCallId: 'call-2' },
+    ];
+    connection.taskMutationOutcomes.push(
+      mutationPage(correlations.slice(0, 1), 'cursor-1', { revision: mutationRevision('a') }),
+      mutationPage(correlations.slice(1), null, { revision: mutationRevision('b') }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/repo',
+      llmConnectionSlug: 'openai',
+      model: 'model',
+    });
+    await assert.rejects(driver.queryTaskMutations!('session-1', correlations), /changed revision/);
+    const continuation = connection.requests[1]!.input as {
+      revision: `sha256:${string}`;
+    };
+    assert.equal(continuation.revision, mutationRevision('a'));
+  });
+
   test('maps authoritative Catalog activity into Session summaries', () => {
     assert.equal(
       projectSessionCatalogSummary(sessionProjection({ activityAt: 42 })).activityAt,
@@ -2512,6 +2644,42 @@ describe('Runtime Host Maka Session driver', () => {
   });
 });
 
+function mutationPage(
+  correlations: readonly TaskMutationCorrelation[],
+  nextCursor: string | null,
+  options: {
+    readonly sessionId?: string;
+    readonly revision?: `sha256:${string}`;
+  } = {},
+): TaskMutationQueryResult {
+  return {
+    kind: 'page',
+    sessionId: options.sessionId ?? 'session-1',
+    revision: options.revision ?? mutationRevision('a'),
+    lookups: correlations.map((correlation, index) => ({
+      kind: 'found',
+      correlation,
+      presentation: {
+        operation: 'create',
+        correlation,
+        changes: [
+          {
+            taskId: `task-${index + 1}`,
+            key: `T${index + 1}`,
+            subject: `Task ${index + 1}`,
+            nextStatus: 'pending',
+          },
+        ],
+      },
+    })),
+    nextCursor,
+  };
+}
+
+function mutationRevision(character: string): `sha256:${string}` {
+  return `sha256:${character.repeat(64)}`;
+}
+
 class FakeConnection {
   readonly requests: Array<{ operation: string; input: unknown }> = [];
   readonly sessionQueries: Array<SessionCatalogProjection | Promise<SessionCatalogProjection>> = [];
@@ -2528,6 +2696,7 @@ class FakeConnection {
   /** Scripted goal.query results, shifted per call; defaults to null (no goal). */
   readonly goalQueryResults: Array<GoalProjection | null> = [];
   readonly messageSubmitOutcomes: Array<OperationOutput<'turn.message.submit'> | Error> = [];
+  readonly taskMutationOutcomes: Array<TaskMutationQueryResult | Error> = [];
   /**
    * Operations held open by a test. The request is recorded on entry and then
    * waits, so a test can hold one round trip and observe what the driver does
@@ -2635,6 +2804,12 @@ class FakeConnection {
         sessionId: (input as OperationInput<'goal.query'>).sessionId,
         goal: this.goalQueryResults.shift() ?? null,
       } as OperationOutput<K>;
+    }
+    if (operation === 'task.mutation.query') {
+      const outcome = this.taskMutationOutcomes.shift();
+      if (!outcome) throw new Error('Unexpected task.mutation.query request');
+      if (outcome instanceof Error) throw outcome;
+      return outcome as OperationOutput<K>;
     }
     if (operation === 'session.configuration.update') {
       const update = input as OperationInput<'session.configuration.update'>;

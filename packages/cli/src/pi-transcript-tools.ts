@@ -49,8 +49,64 @@ export function renderToolBlock(
   entry: MakaPiToolEntry,
   width: number,
   expanded: boolean,
+  surface: 'live' | 'document' = 'live',
 ): string[] {
+  const taskMutation = renderTaskMutationBlock(entry, width, surface);
+  if (taskMutation) return taskMutation;
   return expanded ? renderExpandedToolBlock(entry, width) : renderCompactToolBlock(entry, width);
+}
+
+const TASK_MUTATION_LIVE_INLINE_MAX_CHANGES = 20;
+
+function renderTaskMutationBlock(
+  entry: MakaPiToolEntry,
+  width: number,
+  surface: 'live' | 'document',
+): string[] | undefined {
+  const mutation = entry.taskMutation;
+  if (!mutation) return undefined;
+  const title = entry.title ?? (entry.toolName === 'task_create' ? 'Task Create' : 'Task Update');
+  if (mutation.kind === 'unresolved') {
+    if (!mutation.observedSettled || makaPiToolPresentationStatus(entry) === 'running') {
+      return undefined;
+    }
+    return [fitLine(`${toolDisc(entry)} ${title}  ${ansi.dim('Task details unavailable')}`, width)];
+  }
+
+  const { presentation } = mutation;
+  if (
+    presentation.operation === 'create' &&
+    surface === 'live' &&
+    presentation.changes.length > TASK_MUTATION_LIVE_INLINE_MAX_CHANGES
+  ) {
+    return [
+      fitLine(
+        `${toolDisc(entry)} ${title}  Added ${presentation.changes.length} tasks · /transcript to view full list`,
+        width,
+      ),
+    ];
+  }
+
+  const summary =
+    presentation.operation === 'create'
+      ? `Added ${presentation.changes.length} ${presentation.changes.length === 1 ? 'task' : 'tasks'}`
+      : 'Updated task';
+  const lines = [fitLine(`${toolDisc(entry)} ${title}  ${summary}`, width)];
+  for (const change of presentation.changes) {
+    const transition =
+      change.previousStatus === undefined
+        ? change.nextStatus
+        : `${change.previousStatus} → ${change.nextStatus}`;
+    const detail = change.reason ?? change.evidence;
+    lines.push(
+      ...renderIndented(
+        `${change.key}  ${transition}  ${change.subject}${detail ? ` — ${detail}` : ''}`,
+        width,
+        2,
+      ),
+    );
+  }
+  return lines;
 }
 
 /** Status disc for a tool row: green = done, accent = running, danger = error/aborted/failed, muted = detached/unavailable. */

@@ -81,10 +81,15 @@ export class MakaTranscriptComponent implements Component {
         {
           ...this.state,
           entries: this.state.entries.map(documentEntry),
-          renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+          renderGeometry: {
+            entryFirstLine: undefined,
+            entryLineCount: undefined,
+            viewportTop: 0,
+          },
         },
         this.metadata(),
         width,
+        { surface: 'document' },
       );
   }
 }

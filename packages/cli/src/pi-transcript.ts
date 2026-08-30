@@ -65,7 +65,7 @@ import { goalStatusLineText, isLiveGoalStatus } from './pi-goal.js';
 import { renderToolBlock } from './pi-transcript-tools.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
 import { renderTuiShortcutCopy } from './tui-shortcut-copy.js';
-import type { GoalProjection } from '@maka/runtime-host/protocol';
+import type { GoalProjection, TaskMutationPresentation } from '@maka/runtime-host/protocol';
 
 export interface MakaPiUsageSummary {
   /** Cumulative cost in USD across the session. */
@@ -139,6 +139,8 @@ export interface MakaPiRenderGeometry {
    * treat as "nothing safely reachable" while the viewport has scrolled.
    */
   entryFirstLine: Map<MakaPiTranscriptEntry, number> | undefined;
+  /** Rendered line count per entry from the same render as `entryFirstLine`. */
+  entryLineCount?: Map<MakaPiTranscriptEntry, number>;
   /**
    * pi-tui's live-viewport top in transcript-line coordinates (the transcript
    * is the first layout child, so transcript line i is composed line i). Held
@@ -156,6 +158,19 @@ export interface MakaPiToolOutputDelta {
   chunk: string;
   redacted: boolean;
 }
+
+export type MakaPiTaskMutationState =
+  | {
+      kind: 'found';
+      presentation: TaskMutationPresentation;
+      fingerprint: string;
+    }
+  | {
+      kind: 'unresolved';
+      reason: 'not_found' | 'incompatible';
+      observedSettled: boolean;
+      fingerprint: string;
+    };
 
 const LIVE_TOOL_BUFFER_MAX_CHARS = 64 * 1024;
 const LIVE_TOOL_BUFFER_MAX_CHUNKS = 512;
@@ -180,6 +195,10 @@ export type MakaPiTranscriptEntry =
       result?: ToolResultContent;
       /** In-memory revision for render-cache invalidation when a result is replaced. */
       resultVersion: number;
+      /** Host-owned immutable Task history projection, separate from ToolResult authority. */
+      taskMutation?: MakaPiTaskMutationState;
+      /** Independent render-cache revision for Task mutation hydration. */
+      taskMutationVersion?: number;
       progress: BoundedChunkBuffer<string>;
       outputDeltas: BoundedChunkBuffer<MakaPiToolOutputDelta>;
       durationMs?: number;
@@ -233,7 +252,7 @@ export function createMakaPiTranscriptState(): MakaPiTranscriptState {
     queuedInteractions: [],
     expandAllTools: false,
     expandAllThinking: false,
-    renderGeometry: { entryFirstLine: undefined, viewportTop: 0 },
+    renderGeometry: { entryFirstLine: undefined, entryLineCount: undefined, viewportTop: 0 },
     usage: { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 },
     steering: [],
     followup: [],
@@ -391,6 +410,7 @@ export function appendUserCommandToTranscript(
     input: { command: input.command },
     result: input.result,
     resultVersion: 1,
+    taskMutationVersion: 0,
     progress: createProgressBuffer(),
     outputDeltas: createOutputBuffer(),
     callStatus: toolResultActivityStatus(
@@ -459,6 +479,7 @@ export function replaceTranscriptWithStoredMessages(
   // when the replacement is a pure truncation or identical content, pi-tui
   // keeps its viewport and so does the estimate.
   state.renderGeometry.entryFirstLine = undefined;
+  state.renderGeometry.entryLineCount = undefined;
   state.usage = { costUsd: 0, cacheHitInput: 0, cacheMissInput: 0 };
   // Queues are per-active-run; a switched/reset session has none pending.
   state.steering = [];
@@ -829,6 +850,7 @@ export function applyMakaSessionEventToTranscript(
         // replaces it with the durable full args.
         input: projectToolActivityArgs(event.toolName, event.args ?? event.argsPreview),
         resultVersion: 0,
+        taskMutationVersion: 0,
         progress: createProgressBuffer(),
         outputDeltas: createOutputBuffer(),
         callStatus: 'running',
@@ -886,6 +908,7 @@ export function applyMakaSessionEventToTranscript(
           outputDeltas: createOutputBuffer(),
           ...(!event.contentOmitted ? { result: event.content } : {}),
           resultVersion: event.contentOmitted ? 0 : 1,
+          taskMutationVersion: 0,
           durationMs: event.durationMs,
           callStatus: toolResultActivityStatus(event.isError, event.content),
           expanded: state.expandAllTools,
@@ -1121,6 +1144,7 @@ function storedToolToTranscriptEntry(
 ): MakaPiToolEntry {
   const entry: MakaPiToolEntry = {
     kind: 'tool',
+    turnId: call.turnId,
     toolUseId: call.id,
     toolName: call.toolName,
     ...(call.displayName ? { title: call.displayName } : {}),
@@ -1129,6 +1153,7 @@ function storedToolToTranscriptEntry(
     outputDeltas: createOutputBuffer(),
     ...(result ? { result: result.content } : {}),
     resultVersion: result ? 1 : 0,
+    taskMutationVersion: 0,
     ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
     callStatus: result
       ? toolResultActivityStatus(result.isError, result.content)
@@ -1353,7 +1378,9 @@ export function renderMakaPiTranscript(
   state: MakaPiTranscriptState,
   metadata: MakaPiTranscriptMetadata,
   width: number,
+  options: { surface?: 'live' | 'document' } = {},
 ): string[] {
+  const surface = options.surface ?? 'live';
   const safeWidth = Math.max(1, width);
   const lines: string[] = [];
 
@@ -1365,12 +1392,14 @@ export function renderMakaPiTranscript(
   }
 
   const entryFirstLine = new Map<MakaPiTranscriptEntry, number>();
+  const entryLineCount = new Map<MakaPiTranscriptEntry, number>();
   const viewportTop = state.renderGeometry.viewportTop;
   let previousVisibleEntry: MakaPiTranscriptEntry | undefined;
   for (let i = 0; i < state.entries.length; i += 1) {
     const entry = state.entries[i]!;
     if (entry.kind === 'tool' && entry.suppressed) {
       entryFirstLine.set(entry, lines.length);
+      entryLineCount.set(entry, 0);
       continue;
     }
     // A blank gap separates human-facing boundaries (user/assistant/thinking/
@@ -1394,10 +1423,13 @@ export function renderMakaPiTranscript(
     const fullyOffScreen =
       lines.length < viewportTop &&
       (entryHeight === 0 || lines.length + entryHeight <= viewportTop);
-    lines.push(...renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen));
+    const renderedEntry = renderTranscriptEntryMemoized(entry, safeWidth, fullyOffScreen, surface);
+    entryLineCount.set(entry, renderedEntry.length);
+    lines.push(...renderedEntry);
     previousVisibleEntry = entry;
   }
   state.renderGeometry.entryFirstLine = entryFirstLine;
+  state.renderGeometry.entryLineCount = entryLineCount;
 
   if (state.pendingInteraction?.type === 'sandbox_boundary_request') {
     lines.push('');
@@ -1488,6 +1520,7 @@ function renderTranscriptEntryMemoized(
   entry: MakaPiTranscriptEntry,
   width: number,
   offScreen: boolean,
+  surface: 'live' | 'document',
 ): string[] {
   // Off-screen entries live in terminal scrollback, which is immutable: any
   // change to their rendered lines forces pi-tui's differential renderer into a
@@ -1500,15 +1533,19 @@ function renderTranscriptEntryMemoized(
     const cached = transcriptEntryRenderCache.get(entry);
     if (cached && cached.width === width) return cached.lines;
   }
-  const signature = transcriptEntrySignature(entry, width);
+  const signature = transcriptEntrySignature(entry, width, surface);
   const cached = transcriptEntryRenderCache.get(entry);
   if (cached && cached.signature === signature) return cached.lines;
-  const lines = renderTranscriptEntryBlock(entry, width);
+  const lines = renderTranscriptEntryBlock(entry, width, surface);
   transcriptEntryRenderCache.set(entry, { signature, lines, width });
   return lines;
 }
 
-function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number): string[] {
+function renderTranscriptEntryBlock(
+  entry: MakaPiTranscriptEntry,
+  width: number,
+  surface: 'live' | 'document',
+): string[] {
   // Keep the conversation stream inside a one-cell gutter. The editor owns
   // the full terminal width, so this makes the two surfaces align without
   // changing any of the individual block renderers' internal prefixes.
@@ -1526,7 +1563,7 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
       case 'thinking':
         return renderThinkingBlock(entry, contentWidth, entry.expanded);
       case 'tool':
-        return renderToolBlock(entry, contentWidth, entry.expanded);
+        return renderToolBlock(entry, contentWidth, entry.expanded, surface);
       case 'notice':
         return renderNotice(entry, contentWidth);
     }
@@ -1547,7 +1584,11 @@ function isBlankTranscriptLine(line: string): boolean {
   return line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim().length === 0;
 }
 
-function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): string {
+function transcriptEntrySignature(
+  entry: MakaPiTranscriptEntry,
+  width: number,
+  surface: 'live' | 'document',
+): string {
   switch (entry.kind) {
     // User text is immutable, so length is a safe change key.
     case 'user':
@@ -1575,6 +1616,7 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
       return [
         'tool',
         width,
+        surface,
         entry.expanded ? 1 : 0,
         makaPiToolPresentationStatus(entry),
         entry.durationMs ?? '',
@@ -1582,6 +1624,7 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
         entry.progress.version,
         entry.outputDeltas.version,
         entry.resultVersion,
+        entry.taskMutationVersion ?? 0,
       ].join('|');
   }
 }
