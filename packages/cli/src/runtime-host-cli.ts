@@ -1059,10 +1059,16 @@ function parseServicePeerMeshCommand(argv: string[]): RuntimeHostCliCommand {
   let meshId: string | null | undefined;
   let peerId: string | undefined;
   let displayName: string | null | undefined;
+  let clientDataRoot: string | undefined;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
     allowFramed: true,
     valueOptions: {
+      '--client-data-root': (value) => {
+        if (clientDataRoot !== undefined) return error('Duplicate --client-data-root');
+        if (!isSafeAbsolutePath(value)) return error('--client-data-root must be an absolute path');
+        clientDataRoot = value;
+      },
       '--mesh': (value) => {
         if (meshId !== undefined) return error('Duplicate --mesh');
         if (!value || value.length > 128) return error('--mesh requires a valid Mesh ID');
