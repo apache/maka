@@ -53,7 +53,7 @@ interface RemoteTuiMcpPublicationDeps {
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
-  readonly profiles: RuntimeHostProfileCatalog;
+  readonly profiles: Pick<RuntimeHostProfileCatalog, 'read'>;
   readonly subscribeProfileChanges: (listener: (error?: Error) => void) => () => void;
 }
 
@@ -96,6 +96,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   #connection: RuntimeHostReconnectingConnection | undefined;
   #disposeAvailability: (() => void) | undefined;
   #peerClient: RuntimeHostPeerClient | undefined;
+  #peerCloseTask = Promise.resolve();
   #operation = Promise.resolve();
   #connectAbort: AbortController | undefined;
   #generation = 0;
@@ -225,7 +226,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       const initial = await connect();
       if (this.#closed || generation !== this.#generation) {
         await initial.close().catch(() => undefined);
-        await peerClient?.close().catch(() => undefined);
+        await this.#closePeer(peerClient);
         return;
       }
       const connection = await this.#deps.createReconnectingConnection({
@@ -235,15 +236,14 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
           if (!this.#closed && generation === this.#generation) {
             this.#setUnavailable(classifyUnavailable(error));
             if (this.#peerClient === peerClient) {
-              this.#peerClient = undefined;
-              void peerClient?.close().catch(() => undefined);
+              void this.#closePeer(peerClient);
             }
           }
         },
       });
       if (this.#closed || generation !== this.#generation) {
         await connection.close().catch(() => undefined);
-        await peerClient?.close().catch(() => undefined);
+        await this.#closePeer(peerClient);
         return;
       }
       this.#connection = connection;
@@ -259,8 +259,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       if (!this.#closed && generation === this.#generation) {
         this.#setUnavailable(classifyUnavailable(error));
       }
-      await this.#peerClient?.close().catch(() => undefined);
-      this.#peerClient = undefined;
+      await this.#closePeer(this.#peerClient);
     } finally {
       if (this.#connectAbort === abort) this.#connectAbort = undefined;
     }
@@ -274,8 +273,8 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     const connection = this.#connection;
     this.#connection = undefined;
     await connection?.close().catch(() => undefined);
-    await this.#peerClient?.close().catch(() => undefined);
-    this.#peerClient = undefined;
+    await this.#closePeer(this.#peerClient);
+    await this.#peerCloseTask;
     if (!this.#closed) this.#setUnavailable('host_unavailable');
   }
 
@@ -333,6 +332,14 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 
   #cancelConnect(): void {
     this.#connectAbort?.abort(new Error('Remote MCP publication target changed'));
+  }
+
+  #closePeer(peerClient: RuntimeHostPeerClient | undefined): Promise<void> {
+    if (!peerClient) return this.#peerCloseTask;
+    if (this.#peerClient === peerClient) this.#peerClient = undefined;
+    const closing = this.#peerCloseTask.then(() => peerClient.close()).catch(() => undefined);
+    this.#peerCloseTask = closing;
+    return closing;
   }
 
   #setUnavailable(reason: TuiMcpPublicationUnavailableReason): void {

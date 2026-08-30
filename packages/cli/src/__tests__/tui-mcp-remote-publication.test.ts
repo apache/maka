@@ -24,6 +24,7 @@ import {
   type RemoteRuntimeHostProfile,
   type RuntimeHostCapabilityProviderCredentialStore,
   type RuntimeHostConnection,
+  type RuntimeHostPeerClient,
   type RuntimeHostProfileCatalog,
 } from '@maka/runtime-host/client';
 import { createRemoteTuiMcpPublicationTarget } from '../tui-mcp-remote-publication.js';
@@ -215,9 +216,7 @@ test('remote TUI publication closes its direct peer after a permanent reconnect 
       loadClientInstanceId: async () => 'provider-client',
       connectProfile: async () => initial.connection,
       createPeerClient: () =>
-        ({ close: async () => void (peerCloses += 1) }) as ReturnType<
-          typeof import('@maka/runtime-host/client').createRuntimeHostPeerClientFromEnvironment
-        >,
+        ({ close: async () => void (peerCloses += 1) }) as RuntimeHostPeerClient,
       createReconnectingConnection: async (input) => {
         fatal = input.onFatalError;
         return reconnectingConnection(initial.connection);
@@ -274,9 +273,9 @@ function profileDeps(profile: RemoteRuntimeHostProfile = PROFILE) {
 function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
   let profiles: RemoteRuntimeHostProfile[] = [initial];
   const listeners = new Set<(error?: Error) => void>();
-  const catalog = {
+  const catalog: Pick<RuntimeHostProfileCatalog, 'read'> = {
     read: async () => ({ schemaVersion: 3 as const, profiles }),
-  } as unknown as RuntimeHostProfileCatalog;
+  };
   return {
     catalog,
     subscribe: (listener: (error?: Error) => void) => {

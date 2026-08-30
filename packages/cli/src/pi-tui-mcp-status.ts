@@ -650,17 +650,14 @@ class MaskedTextInput implements OverlayTextInput {
   }
 
   render(width: number): string[] {
-    return this.#input.render(width).map(maskInputLine);
+    const value = this.#input.getValue();
+    this.#input.setValue('•'.repeat(value.length));
+    try {
+      return this.#input.render(width);
+    } finally {
+      this.#input.setValue(value);
+    }
   }
-}
-
-function maskInputLine(line: string): string {
-  const prompt = line.slice(0, 2);
-  const value = line.slice(2);
-  return `${prompt}${value.replaceAll(
-    /\x1b(?:\[[0-?]*[ -/]*[@-~]|_[^\x07]*\x07)|[^\s]/gu,
-    (token) => (token.startsWith('\x1b') ? token : '•'),
-  )}`;
 }
 
 function normalizeOneServer(serverId: string, source: string): McpServerConfig {
