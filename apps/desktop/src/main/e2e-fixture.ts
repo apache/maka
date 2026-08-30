@@ -34,6 +34,7 @@ import {
   LONG_SIDEBAR_PROJECT_ID,
   LONG_SIDEBAR_PROJECT_NAME,
   LONG_SIDEBAR_SESSION_PREFIX,
+  OVERSIZED_TURN_SESSION_ID,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_SESSION_ID,
   TURN_SESSION_ID,
@@ -42,6 +43,8 @@ import {
 import {
   partialHistoryMessages,
   partialHistorySession,
+  oversizedTurnMessages,
+  oversizedTurnSession,
   promptRailMessages,
   promptRailSession,
   turnMessages,
@@ -63,6 +66,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-narrative-browser',
   'chat-prompt-rail',
   'chat-partial-history',
+  'chat-oversized-turn',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -180,6 +184,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
     case 'chat-partial-history':
       return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
+    case 'chat-oversized-turn':
+      return { ...state, activeSessionId: OVERSIZED_TURN_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -236,6 +242,13 @@ export async function seedE2eFixture(input: {
       input.workspaceRoot,
       partialHistorySession(now),
       partialHistoryMessages(now),
+    );
+  }
+  if (scenario === 'chat-oversized-turn') {
+    await writeSession(
+      input.workspaceRoot,
+      oversizedTurnSession(now),
+      oversizedTurnMessages(now),
     );
   }
   if (scenario === 'sidebar-search-modal-open') {

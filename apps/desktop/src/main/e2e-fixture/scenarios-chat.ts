@@ -20,6 +20,7 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
+  OVERSIZED_TURN_SESSION_ID,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
@@ -187,6 +188,88 @@ export function partialHistoryMessages(now: number): StoredMessage[] {
       ts: ts + 1_000,
       text: `第 ${index} 阶段已经完成关键实现，并通过了对应验证。${rangePadding}`,
       modelId: 'glm-5.1',
+    });
+  }
+  return messages;
+}
+
+export function oversizedTurnSession(now: number): SessionHeader {
+  return header({
+    id: OVERSIZED_TURN_SESSION_ID,
+    name: '单轮超长渲染边界示例',
+    connection: 'zai-live',
+    model: 'glm-5.1',
+    now,
+    lastMessageAt: now - 60_000,
+  });
+}
+
+/**
+ * One synthetic Turn that exceeds the Desktop transcript byte budget by
+ * itself. Alternating answers and tool evidence create many stable visual
+ * blocks inside the same Turn, reproducing the shape that whole-Turn
+ * containment cannot bound without carrying any real conversation data.
+ */
+export function oversizedTurnMessages(now: number): StoredMessage[] {
+  const turnId = 'turn-oversized-fixture';
+  const messages: StoredMessage[] = [{
+    type: 'user',
+    id: 'msg-oversized-user',
+    turnId,
+    ts: now - 10 * 60_000,
+    text: '检查一组独立的合成步骤，并逐项给出简短结果。',
+  }];
+  const prose = [
+    '这一段只包含确定性的合成文本，用于测量长对话的滚动渲染。',
+    '',
+    '- 已检查输入边界',
+    '- 已记录合成结果',
+    '- 下一步继续验证',
+  ].join('\n');
+  const toolOutput = 'synthetic output line\n'.repeat(600);
+  for (let index = 1; index <= 48; index += 1) {
+    const ts = now - (49 - index) * 10_000;
+    messages.push({
+      type: 'assistant',
+      id: `msg-oversized-assistant-${index}`,
+      turnId,
+      ts,
+      text: `### 合成步骤 ${index}\n\n${prose.repeat(12)}`,
+      modelId: 'glm-5.1',
+    });
+    messages.push({
+      type: 'tool_call',
+      id: `tool-oversized-${index}`,
+      turnId,
+      ts: ts + 1_000,
+      toolName: 'Bash',
+      displayName: `合成检查 ${index}`,
+      intent: `读取第 ${index} 组固定测试数据`,
+      args: { cmd: `fixture-check --step ${index}`, cwd: '/workspace/maka' },
+    });
+    messages.push({
+      type: 'tool_result',
+      id: `tool-oversized-result-${index}`,
+      turnId,
+      ts: ts + 2_000,
+      toolUseId: `tool-oversized-${index}`,
+      isError: false,
+      durationMs: 100 + index,
+      content: {
+        kind: 'terminal',
+        cwd: '/workspace/maka',
+        cmd: `fixture-check --step ${index}`,
+        status: 'completed',
+        exitCode: 0,
+        output: {
+          mode: 'pipes',
+          stdout: toolOutput,
+          stderr: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          redacted: false,
+        },
+      },
     });
   }
   return messages;

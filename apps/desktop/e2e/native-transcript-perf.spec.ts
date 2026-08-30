@@ -323,6 +323,52 @@ test('warm native transcript scroll metrics', async ({ promptRailWindow: page })
   console.log(`TRANSCRIPT_PERF ${JSON.stringify(result)}`);
 });
 
+test('oversized single Turn upward scroll metrics', async ({
+  oversizedTurnWindow: page,
+}) => {
+  test.skip(!PERF_ENABLED, 'manual same-build CDP oversized-Turn harness');
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1_000, height: 700 });
+  await expect(page.locator('[data-turn-id="turn-oversized-fixture"]')).toHaveCount(1);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Performance.enable');
+  await prepareFrameRecorder(page);
+  await moveToTail(page);
+  const distance = await page.evaluate((selector) => {
+    const root = document.querySelector<HTMLElement>(selector);
+    if (!root) throw new Error('the chat scroll container is missing');
+    return root.scrollHeight - root.clientHeight;
+  }, SCROLLER);
+  const before = await performanceMetrics(cdp);
+  const frames = await scrollGesture(page, -distance, 480);
+  const after = await performanceMetrics(cdp);
+  const skippedSegments = await page.locator([
+    '.maka-assistant-answer-content > .maka-chat-message-bubble-assistant',
+    '.maka-assistant-answer-content > .maka-processing-sequence',
+    '.maka-processing-sequence > *',
+  ].join(',')).evaluateAll((elements) =>
+    (elements as HTMLElement[]).filter((element) =>
+      !element.checkVisibility({ contentVisibilityAuto: true })).length,
+  );
+  console.log(`OVERSIZED_TURN_PERF ${JSON.stringify({
+    distance,
+    taskMs: metricDelta(before, after, 'TaskDuration') * 1_000,
+    layoutMs: metricDelta(before, after, 'LayoutDuration') * 1_000,
+    recalcStyleMs: metricDelta(before, after, 'RecalcStyleDuration') * 1_000,
+    frameP95Ms: percentile(frames.intervals, 0.95),
+    frameP99Ms: percentile(frames.intervals, 0.99),
+    frameMaxMs: Math.max(...frames.intervals),
+    loafOver50Ms: frames.loafDurations.filter((duration) => duration > 50).length,
+    loafMaxMs: Math.max(0, ...frames.loafDurations),
+    loafSupported: frames.loafSupported,
+    skippedSegments,
+  })}`);
+  expect(
+    frames.loafSupported,
+    'Chromium does not support the long-animation-frame release metric',
+  ).toBe(true);
+});
+
 test('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
   promptRailWindow: page,
 }) => {

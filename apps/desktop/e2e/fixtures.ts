@@ -498,6 +498,7 @@ export const test = base.extend<{
   railRenderWindow: Page;
   promptRailWindow: Page;
   partialHistoryWindow: Page;
+  oversizedTurnWindow: Page;
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
@@ -611,6 +612,17 @@ export const test = base.extend<{
       seed: false,
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-partial-history',
+      locale: 'zh',
+      showWindow: true,
+    }, use);
+  },
+  // One Turn larger than the transcript byte budget. Shown because the test
+  // reads Chromium's actual content-visibility state while crossing it.
+  oversizedTurnWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id="turn-oversized-fixture"]',
+      e2eFixtureScenario: 'chat-oversized-turn',
       locale: 'zh',
       showWindow: true,
     }, use);
