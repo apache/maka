@@ -63,7 +63,7 @@ import {
   RuntimeHostProfileMoreMenu,
   type RuntimeHostPairingActionCopy,
 } from '../features/runtime-host-management';
-import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
+import { SessionCollaborationJoinDialog } from '../features/session-collaboration';
 import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
@@ -801,8 +801,8 @@ export function RuntimeHostProfilesSection(props: {
         />
       ) : null}
       {showJoinSharedSession ? (
-        <SessionCollaborationDialog
-          mode="join"
+        <SessionCollaborationJoinDialog
+          copy={collaborationCopy}
           onClose={() => setShowJoinSharedSession(false)}
           onImported={() => {
             void reload();

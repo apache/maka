@@ -2464,7 +2464,6 @@
           "window.maka.sessionCollaboration.decideTurnRequest": 1,
           "window.maka.sessionCollaboration.getAccess": 1,
           "window.maka.sessionCollaboration.getTurnRequests": 1,
-          "window.maka.sessionCollaboration.importInvitation": 1,
           "window.maka.sessionCollaboration.prepareInvitation": 1,
           "window.maka.sessionCollaboration.revokeGrant": 1,
           "window.maka.sessionCollaboration.revokePrincipal": 1
@@ -2476,9 +2475,9 @@
         },
         "hookCalls": {
           "useEffect": 1,
-          "useState": 8,
-          "useToast": 2,
-          "useUiLocale": 2
+          "useState": 6,
+          "useToast": 1,
+          "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3940,9 +3939,9 @@
         "dependencyPaths": {
           "../../preload/bridge-contract.js": 1,
           "../features/runtime-host-management": 1,
+          "../features/session-collaboration": 1,
           "../locales/session-collaboration-copy.js": 1,
           "../locales/settings-projects-copy.js": 1,
-          "../session-collaboration-dialog.js": 1,
           "./password-input.js": 1,
           "./runtime-host-connection-code-dialog.js": 1,
           "./runtime-host-management-dialog.js": 1,

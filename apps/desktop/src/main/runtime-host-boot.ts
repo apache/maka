@@ -174,6 +174,11 @@ import {
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
 import {
+  createDesktopGuestSessionMountService,
+  createGuestSessionMountStore,
+  registerDesktopGuestSessionMountIpc,
+} from './runtime-host-guest-session-mounts.js';
+import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
 import { runDesktopRuntimeHostWslSetup } from './runtime-host-wsl-controller.js';
@@ -502,6 +507,27 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
+  },
+});
+const guestSessionMountService = createDesktopGuestSessionMountService({
+  store: createGuestSessionMountStore(runtimeHostCredentialStore),
+  mount: async (target, signal) => {
+    if (target.profile.kind !== 'remote' || !target.credential) {
+      throw new Error('A shared Session requires a remote Guest target');
+    }
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.mountGuest(
+      { profile: target.profile, credential: target.credential },
+      signal,
+    );
+  },
+  finalizeAccess: async (mountId, signal) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.finalizeGuestAccess(mountId, signal);
+  },
+  unmount: async (mountId) => {
+    if (!runtimeHostManager) return;
+    await runtimeHostManager.unmountGuest(mountId);
   },
 });
 const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
@@ -967,7 +993,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
           console.error("[runtime-host] Browser target retirement failed:", error),
         );
       }
-      if (state.readiness === "unavailable") {
+      if (
+        state.readiness === 'unavailable' &&
+        state.target.profile.id === runtimeHostManager?.defaultProfileId()
+      ) {
         defaultRuntimeHostRecovery.offer({
           profileId: state.target.profile.id,
           profileName: state.target.profile.name,
@@ -1042,6 +1071,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+await guestSessionMountService.start().catch((error: unknown) => {
+  console.error('[runtime-host] shared Sessions could not be restored:', error);
+});
 await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
   console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
 });
@@ -1480,6 +1512,7 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  registerDesktopGuestSessionMountIpc(ipcMain, guestSessionMountService);
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,
@@ -1720,6 +1753,7 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
+    Promise.resolve().then(() => guestSessionMountService.close()),
     runtimeHostManager?.close(),
     runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
     runtimeHostOnboarding.close(),

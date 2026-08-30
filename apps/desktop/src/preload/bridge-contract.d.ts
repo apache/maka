@@ -326,8 +326,7 @@ export interface DesktopRuntimeHostProfileSnapshot {
 }
 
 export type DesktopSessionCollaborationImportResult =
-  | { readonly kind: 'connected' }
-  | { readonly kind: 'pairing_pending'; readonly profileId: string }
+  | { readonly kind: 'connected'; readonly mountId: string }
   | {
       readonly kind: 'error';
       readonly reason:
@@ -337,6 +336,11 @@ export type DesktopSessionCollaborationImportResult =
         | 'connection_failed';
       readonly message?: string;
     };
+
+export interface DesktopGuestSessionMountSummary {
+  readonly mountId: string;
+  readonly name: string;
+}
 
 export type DesktopSessionCollaborationPrepareResult =
   | {
@@ -701,6 +705,8 @@ export interface MakaBridge {
       readonly code: string;
       readonly allowInsecure?: boolean;
     }): Promise<DesktopSessionCollaborationImportResult>;
+    listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
+    removeMount(mountId: string): Promise<void>;
     requestTurn(
       sessionId: string,
       input: { readonly turnId: string; readonly text: string },

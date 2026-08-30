@@ -1252,6 +1252,12 @@ const makaBridge = {
     importInvitation({ code, allowInsecure = false }) {
       return ipcRenderer.invoke('session-collaboration:import', code, allowInsecure);
     },
+    listMounts() {
+      return ipcRenderer.invoke('session-collaboration:mount:list');
+    },
+    removeMount(mountId) {
+      return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
+    },
     async requestTurn(sessionId, input) {
       const session = await runtimeHostSessionRef(sessionId);
       return ipcRenderer.invoke(
