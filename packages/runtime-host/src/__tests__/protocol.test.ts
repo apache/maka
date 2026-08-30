@@ -249,7 +249,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for durable Task mutation queries', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 68);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 74);
     assert.equal(Object.hasOwn(HOST_OPERATION_SPECS, 'task.mutation.query'), true);
   });
 

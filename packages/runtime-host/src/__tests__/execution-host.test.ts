@@ -428,7 +428,7 @@ test('Task mutation cursor freezes appends and detects purged history incarnatio
   await withExecutionRoot(async (fixture) => {
     const runId = randomUUID();
     const turnId = randomUUID();
-    const createCorrelation = { turnId, toolCallId: randomUUID() };
+    const createCorrelation = { turnId, toolCallId: `create:nested:${randomUUID()}` };
     const updateCorrelations: TaskMutationCorrelation[] = [];
     await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
       const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
@@ -448,7 +448,7 @@ test('Task mutation cursor freezes appends and detects purged history incarnatio
             toolCallId: randomUUID(),
           }),
         );
-        const correlation = { turnId, toolCallId: randomUUID() };
+        const correlation = { turnId, toolCallId: `update-${index}:nested:${randomUUID()}` };
         updateCorrelations.push(correlation);
         await update.impl(
           update.parameters.parse({

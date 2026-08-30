@@ -30,7 +30,7 @@ import {
   type Task,
   type TaskStatus,
 } from '@maka/core/task-ledger';
-import { requireEntityId, requireExactRecord, requireRecord } from './codec.js';
+import { requireEntityId, requireExactRecord, requireId, requireRecord } from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 
@@ -229,7 +229,7 @@ function taskMutationCorrelation(value: unknown): TaskMutationCorrelation {
   ]);
   return {
     turnId: requireEntityId(correlation.turnId, 'turnId'),
-    toolCallId: requireEntityId(correlation.toolCallId, 'toolCallId'),
+    toolCallId: requireId(correlation.toolCallId, 'toolCallId'),
   };
 }
 

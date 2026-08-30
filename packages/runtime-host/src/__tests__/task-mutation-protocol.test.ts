@@ -66,6 +66,70 @@ describe('Task mutation protocol', () => {
     );
   });
 
+  test('round-trips opaque nested Code Mode tool-call identities', () => {
+    const nestedCreate = {
+      turnId: 'turn-create',
+      toolCallId: 'provider-call:nested:123e4567-e89b-12d3-a456-426614174000',
+    } as const;
+    const nestedUpdate = {
+      turnId: 'turn-update',
+      toolCallId: 'provider-call:nested:223e4567-e89b-12d3-a456-426614174000',
+    } as const;
+    assert.deepEqual(
+      decodeTaskMutationQueryInput({
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations: [nestedCreate, nestedUpdate],
+      }),
+      {
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations: [nestedCreate, nestedUpdate],
+      },
+    );
+    assert.deepEqual(
+      decodeTaskMutationQueryInput({
+        kind: 'continue',
+        sessionId: 'session-1',
+        correlations: [nestedCreate, nestedUpdate],
+        revision,
+        cursor: 'opaque',
+      }),
+      {
+        kind: 'continue',
+        sessionId: 'session-1',
+        correlations: [nestedCreate, nestedUpdate],
+        revision,
+        cursor: 'opaque',
+      },
+    );
+    const result = encodeTaskMutationQueryResult({
+      kind: 'page',
+      sessionId: 'session-1',
+      revision,
+      lookups: [found(nestedCreate, [change(1)]), { kind: 'not_found', correlation: nestedUpdate }],
+      nextCursor: null,
+    });
+    assert.deepEqual(decodeTaskMutationQueryResult(result), result);
+
+    for (const toolCallId of ['', 'x'.repeat(129)]) {
+      assertInvalid(() =>
+        decodeTaskMutationQueryInput({
+          kind: 'start',
+          sessionId: 'session-1',
+          correlations: [{ turnId: 'turn-1', toolCallId }],
+        }),
+      );
+    }
+    assertInvalid(() =>
+      decodeTaskMutationQueryInput({
+        kind: 'start',
+        sessionId: 'session-1',
+        correlations: [{ turnId: 'turn:still-strict', toolCallId: nestedCreate.toolCallId }],
+      }),
+    );
+  });
+
   test('round-trips found, unresolved, and history-changed results', () => {
     const result: TaskMutationQueryResult = {
       kind: 'page',
