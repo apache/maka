@@ -27,6 +27,7 @@ import {
   activateRuntimeHostManagedDeployment,
   connectRemoteRuntimeHost,
   ensureRuntimeHostPeerIdentity,
+  RuntimeHostOperationError,
 } from '@maka/runtime-host/client';
 import {
   RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
@@ -108,6 +109,7 @@ import {
   replaceRuntimeHostLifecycle,
   resolveRecoverableRuntimeHostManagedDeployment,
   RUNTIME_HOST_READY_TIMEOUT_MS,
+  RuntimeHostLifecycleTransactionError,
   type RuntimeHostLifecycleTransactionDeps,
 } from './runtime-host-lifecycle-transaction.js';
 import type {
@@ -497,6 +499,7 @@ async function runRuntimeHostSupervisedSetupLocked(
                   .then(() => undefined),
             }
           : {}),
+        allowInterruptActiveTasks: Boolean(current && packageChanged && options.updateExisting),
         deps: lifecycleDeps,
       });
       if (replacement.kind === 'active_tasks') {
@@ -880,6 +883,7 @@ async function runRuntimeHostOnDemandSetupLocked(
           activateDesired: async () => {
             await deps.activateDesired({ rootId: capability.rootId });
           },
+          allowInterruptActiveTasks: Boolean(current && packageChanged && options.updateExisting),
           deps: lifecycleDeps,
         });
         if (replacement.kind === 'active_tasks') {
@@ -1110,7 +1114,7 @@ async function pairAndVerifyRuntimeHostSetup(
         paired = await pairCredential(credentialInput);
         break;
       } catch (error) {
-        if (!(error instanceof RuntimeHostAccessUnavailableError) || Date.now() >= deadline) {
+        if (!isTransientPairingAvailabilityError(error) || Date.now() >= deadline) {
           throw error;
         }
         await new Promise<void>((resolveWait) =>
@@ -1174,6 +1178,14 @@ async function pairAndVerifyRuntimeHostSetup(
     }
     throw error;
   }
+}
+
+function isTransientPairingAvailabilityError(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostAccessUnavailableError ||
+    (error instanceof RuntimeHostOperationError &&
+      (error.code === 'host_not_ready' || error.code === 'host_draining'))
+  );
 }
 
 async function assertCompatibleExistingVersion(
@@ -1280,7 +1292,8 @@ function setupFailure(error: unknown): { code: string; message: string } {
     error instanceof RuntimeHostManagedDeploymentError ||
     error instanceof RuntimeHostDeploymentAuthorityError ||
     error instanceof RuntimeHostUpdateDiscoveryError ||
-    error instanceof RuntimeHostUpdatePackageError
+    error instanceof RuntimeHostUpdatePackageError ||
+    error instanceof RuntimeHostLifecycleTransactionError
   ) {
     code = error.code;
     message = error.message;
