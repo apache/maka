@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { LocalHostDeploymentAuthorityError } from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
@@ -27,6 +28,7 @@ import {
   type HostRegistration,
 } from '@maka/runtime-host/protocol';
 import {
+  RuntimeHostDurableSettlementError,
   runRuntimeHostInstalledUpdateActivator,
   settleTargetFromDurableAuthority,
 } from '../runtime-host-installed-update-activator.js';
@@ -227,14 +229,99 @@ test('durable committed ownership releases the launch barrier after an ambiguous
         };
       },
     },
-    async () => {
-      events.push('retry-read');
+    {
+      retryRead: async () => {
+        events.push('retry-read');
+      },
     },
   );
 
   assert.equal(settlement, 'committed');
   assert.equal(reads, 2);
   assert.deepEqual(events, ['retry-read', 'release']);
+});
+
+test('permanent invalid durable ownership fails closed without retrying', async () => {
+  let retries = 0;
+  await assert.rejects(
+    settleTargetFromDurableAuthority(
+      {
+        connection: {} as never,
+        expectedRootId: ROOT_ID,
+        ownerInstallationId: 'npm-global:slot',
+        targetVersion: '2.0.0',
+        targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+        ownsCandidate: true,
+        launchBarrier: {
+          connect: async () => assert.fail('settlement must not connect'),
+          pause: () => assert.fail('an unreadable record must not guess retirement'),
+          retireExcept: async () => assert.fail('an unreadable record must not guess retirement'),
+          resume: () => assert.fail('an unreadable record must not resume admission'),
+          release: () => assert.fail('an unreadable record must not release admission'),
+        },
+        retireTarget: async () => assert.fail('an unreadable record must not guess retirement'),
+        readRecord: async () => {
+          throw new LocalHostDeploymentAuthorityError(
+            'invalid_record',
+            'The owner record is malformed',
+          );
+        },
+      },
+      {
+        retryRead: async () => {
+          retries += 1;
+        },
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostDurableSettlementError && error.code === 'invalid_record',
+  );
+  assert.equal(retries, 0);
+});
+
+test('persistent durable authority I/O fails closed after its bounded deadline', async () => {
+  let now = 1_000;
+  let reads = 0;
+  const delays: number[] = [];
+  await assert.rejects(
+    settleTargetFromDurableAuthority(
+      {
+        connection: {} as never,
+        expectedRootId: ROOT_ID,
+        ownerInstallationId: 'npm-global:slot',
+        targetVersion: '2.0.0',
+        targetIntegrity: `sha512-${Buffer.alloc(64, 4).toString('base64')}`,
+        ownsCandidate: true,
+        launchBarrier: {
+          connect: async () => assert.fail('settlement must not connect'),
+          pause: () => assert.fail('an unreadable record must not guess retirement'),
+          retireExcept: async () => assert.fail('an unreadable record must not guess retirement'),
+          resume: () => assert.fail('an unreadable record must not resume admission'),
+          release: () => assert.fail('an unreadable record must not release admission'),
+        },
+        retireTarget: async () => assert.fail('an unreadable record must not guess retirement'),
+        readRecord: async () => {
+          reads += 1;
+          throw new LocalHostDeploymentAuthorityError(
+            'authority_io_failed',
+            'The owner record cannot be read',
+          );
+        },
+      },
+      {
+        now: () => now,
+        retryRead: async (delayMs) => {
+          delays.push(delayMs);
+          now += delayMs;
+        },
+        timeoutMs: 250,
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostDurableSettlementError && error.code === 'authority_unavailable',
+  );
+  assert.equal(reads, 4);
+  assert.deepEqual(delays, [100, 100, 50]);
 });
 
 test('a readable uncommitted handoff retires the guarded target', async () => {

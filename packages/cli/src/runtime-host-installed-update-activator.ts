@@ -26,13 +26,28 @@ import {
   type RuntimeHostCandidateLaunchBarrier,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
-import { readLocalHostDeploymentRecord } from '@maka/runtime-host/operator';
+import {
+  LocalHostDeploymentAuthorityError,
+  readLocalHostDeploymentRecord,
+} from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
 
 const DURABLE_SETTLEMENT_RETRY_MS = 100;
+const DURABLE_SETTLEMENT_TIMEOUT_MS = 10_000;
+
+export class RuntimeHostDurableSettlementError extends Error {
+  constructor(
+    readonly code: 'invalid_record' | 'authority_unavailable',
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'RuntimeHostDurableSettlementError';
+  }
+}
 
 export async function runRuntimeHostInstalledUpdateActivator(
   input: {
@@ -205,21 +220,50 @@ function isCoordinatorMessage(value: unknown): value is { readonly kind: 'settle
 /**
  * Makes the activator the only authority for target release versus retirement.
  * Read failures are ambiguous, so retain the launch barrier and inherited lease
- * until the durable record becomes readable instead of guessing from the
- * coordinator's observation.
+ * while retrying transient uncertainty. Permanent corruption and a bounded
+ * transient-read timeout fail closed: the activator exits without releasing the
+ * barrier, and the launch-owner guard retires the inaccessible candidate.
  */
 export async function settleTargetFromDurableAuthority(
   input: CoordinatorCommitWaitInput,
-  retryRead: () => Promise<void> = () =>
-    new Promise((resolve) => setTimeout(resolve, DURABLE_SETTLEMENT_RETRY_MS)),
+  options: {
+    readonly now?: () => number;
+    readonly retryRead?: (delayMs: number) => Promise<void>;
+    readonly timeoutMs?: number;
+  } = {},
 ): Promise<'committed' | 'retired'> {
+  const now = options.now ?? (() => performance.now());
+  const retryRead =
+    options.retryRead ??
+    ((delayMs: number) => new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+  const deadline = now() + (options.timeoutMs ?? DURABLE_SETTLEMENT_TIMEOUT_MS);
   let record: Awaited<ReturnType<typeof input.readRecord>>;
   for (;;) {
     try {
       record = await input.readRecord(input.expectedRootId);
       break;
-    } catch {
-      await retryRead();
+    } catch (error) {
+      if (
+        error instanceof LocalHostDeploymentAuthorityError &&
+        error.code !== 'authority_io_failed'
+      ) {
+        throw new RuntimeHostDurableSettlementError(
+          error.code === 'invalid_record' ? 'invalid_record' : 'authority_unavailable',
+          error.code === 'invalid_record'
+            ? 'The local Runtime Host update requires recovery because its durable owner record is invalid'
+            : 'The local Runtime Host update requires recovery because its durable owner record cannot be read safely',
+          { cause: error },
+        );
+      }
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) {
+        throw new RuntimeHostDurableSettlementError(
+          'authority_unavailable',
+          'The local Runtime Host update requires recovery because its durable owner record remained unavailable',
+          { cause: error },
+        );
+      }
+      await retryRead(Math.min(DURABLE_SETTLEMENT_RETRY_MS, remainingMs));
     }
   }
   if (isCommittedTarget(record, input)) {

@@ -37,6 +37,17 @@ export interface RuntimeHostTargetActivation {
   settle(): Promise<void>;
 }
 
+export class RuntimeHostTargetActivationError extends Error {
+  constructor(
+    readonly code: 'recovery_required',
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'RuntimeHostTargetActivationError';
+  }
+}
+
 /**
  * Launches the exact staged target through its own release and keeps the
  * existing owner-authority lease in the activator until durable commit.
@@ -97,8 +108,12 @@ export function launchRuntimeHostTargetActivator(
       }
       const exited = await closed;
       if (exited.signal || exited.code !== 0) {
-        if (exited.signal) throw new Error(`Maka target activator exited on ${exited.signal}`);
-        throw new Error('The exact Maka target activator did not confirm durable ownership');
+        throw new RuntimeHostTargetActivationError(
+          'recovery_required',
+          exited.signal
+            ? `The local Runtime Host update requires recovery because its target activator exited on ${exited.signal}`
+            : 'The local Runtime Host update requires recovery because its target activator could not confirm durable ownership',
+        );
       }
     };
     child.once('error', reject);
