@@ -313,23 +313,37 @@ async function readFileSnapshot(root: string): Promise<LegacyDailyReviewFileSnap
   } catch (error) {
     if (!isNotFound(error)) throw error;
   }
-  if (configJson === undefined && archiveFileNames.length === 0) return null;
   const archiveRecords = await Promise.all(
     archiveFileNames.map(async (name) => ({
       name,
       raw: await readFile(join(archiveRoot, name), 'utf8'),
     })),
   );
+  const readableArchives: Array<{
+    readonly name: string;
+    readonly raw: string;
+    readonly archive: LegacyDailyReviewArchive;
+  }> = [];
+  for (const record of archiveRecords) {
+    try {
+      readableArchives.push({
+        ...record,
+        archive: decodeArchiveFile(record.name.slice(0, -'.json'.length), record.raw),
+      });
+    } catch {
+      // Released file stores treated an invalid archive as missing. Keep the
+      // unreadable file in place while allowing healthy siblings to migrate.
+    }
+  }
+  if (configJson === undefined && readableArchives.length === 0) return null;
   return {
     snapshot: {
-      token: sha256(JSON.stringify({ configJson: configJson ?? null, archives: archiveRecords })),
+      token: sha256(JSON.stringify({ configJson: configJson ?? null, archives: readableArchives })),
       config: decodeConfig(configJson),
-      archives: archiveRecords.map(({ name, raw }) =>
-        decodeArchiveFile(name.slice(0, -'.json'.length), raw),
-      ),
+      archives: readableArchives.map(({ archive }) => archive),
     },
     hasConfig: configJson !== undefined,
-    archiveFileNames,
+    archiveFileNames: readableArchives.map(({ name }) => name),
   };
 }
 

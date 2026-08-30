@@ -77,6 +77,7 @@ test('reads the released file Daily Review config and archives', async () => {
       }),
     );
     await writeFile(join(archiveRoot, `${archive.id}.json`), JSON.stringify(archive));
+    await writeFile(join(archiveRoot, '2026-08-27-1d.json'), '{');
 
     const migration = await openLegacyDailyReviewMigrationForWrite(owner.lease);
     const snapshot = await migration.read();
