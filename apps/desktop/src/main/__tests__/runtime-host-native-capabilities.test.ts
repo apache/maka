@@ -240,6 +240,11 @@ test('publishes and invokes MCP JSON Schema tools through Desktop native capabil
     then: { required: ['value'] },
     additionalProperties: false,
   });
+  const canonical = decodeClientCapabilityReplaceInput({
+    registrationId: 'registration',
+    offers: provider.offers(),
+  });
+  assert.deepEqual(canonical.offers[0]?.tools[0]?.inputSchema, offer?.tools[0]?.inputSchema);
   assert.deepEqual(
     await call(
       provider,
