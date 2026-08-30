@@ -17,11 +17,13 @@
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import importlib
 import inspect
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -162,9 +164,16 @@ class RelayContractTest(unittest.TestCase):
             )
         )
 
-        self.assertNotIn(".stdout", command)
-        self.assertNotIn(".stderr", command)
         self.assertNotIn("/app", command)
+        self.assertIn("/tmp/maka-eval-token.stdout", command)
+        self.assertIn("/tmp/maka-eval-token.stderr", command)
+        self.assertIn("command -p mkfifo", command)
+        self.assertIn("command -p dd bs=1 count=65537", command)
+        self.assertIn("command -p cat", command)
+        self.assertIn("setsid_path=$(command -v setsid)", command)
+        self.assertIn("shell_path=$(command -v sh)", command)
+        self.assertIn('"$setsid_path" "$shell_path" -c', command)
+        self.assertIn("stdout_collector", command)
         self.assertIn("/logs/agent/.maka-eval-token.pid", command)
         self.assertIn("2>/dev/null", command)
 
@@ -283,6 +292,13 @@ class RelayContractTest(unittest.TestCase):
         environment = Environment(stage_upload=True)
         token = f"contract-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory() as directory:
+            fake_setsid = Path(directory) / "setsid"
+            fake_setsid.write_text(
+                "#!/bin/sh\n"
+                f"exec {shlex.quote(sys.executable)} -c "
+                "'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \"$@\"\n"
+            )
+            fake_setsid.chmod(0o755)
             command = asyncio.run(
                 relay._prepare_command(
                     environment,
@@ -306,10 +322,18 @@ class RelayContractTest(unittest.TestCase):
                     check=False,
                     capture_output=True,
                     text=True,
+                    env={**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"},
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 self.assertFalse(target.exists())
             finally:
+                collectors = Path(relay._capture_paths(token)[-1])
+                if collectors.exists():
+                    for value in collectors.read_text().split():
+                        with contextlib.suppress(OSError, ValueError):
+                            os.killpg(int(value), signal.SIGKILL)
+                for path in relay._capture_paths(token):
+                    Path(path).unlink(missing_ok=True)
                 target.unlink(missing_ok=True)
 
 

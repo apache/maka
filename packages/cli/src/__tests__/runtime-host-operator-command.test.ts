@@ -419,6 +419,7 @@ describe('Runtime Host operator commands', () => {
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
         'host.upgrade.prepare',
+        'hosted.execution.admit',
         'hosted.execution.cancel',
         'hosted.execution.start',
         'peer.mesh.close',

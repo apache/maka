@@ -352,6 +352,22 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.match(workflow, /run: npm run release:cli:smoke/u);
 });
 
+test('Eval changes run the pinned real Harbor lifecycle contract', () => {
+  const workflow = readWorkflow('ci.yml');
+  const install = workflow.indexOf('      - name: Install Harbor lifecycle test dependencies\n');
+  const run = workflow.indexOf('      - name: Run real Harbor lifecycle tests\n');
+
+  assert.ok(install >= 0);
+  assert.ok(run > install);
+  for (const start of [install, run]) {
+    const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
+    assert.match(step, /contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u);
+  }
+  assert.match(workflow.slice(install, run), /'harbor==0\.20\.0'/u);
+  assert.match(workflow.slice(run), /MAKA_EVAL_HARBOR_LIFECYCLE_TEST: '1'/u);
+  assert.match(workflow.slice(run), /packages\/eval\/harbor\/test_harbor_trial_lifecycle\.py/u);
+});
+
 test('release contracts run against built CLI outputs', () => {
   const workflow = readWorkflow('ci.yml');
   const buildIndex = workflow.indexOf('      - name: Build\n');

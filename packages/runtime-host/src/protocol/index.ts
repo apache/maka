@@ -95,7 +95,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 76 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 77 as const;
+// 77: Hosted execution requires a server-issued admission token on start and
+// binds it to one Host epoch and connection. Older peers cannot enforce
+// at-most-once execution or prove admission before preserve-detach cleanup.
 // 76: Peer Mesh endpoint and Mesh display names are signed, persisted facts
 // managed through Host operations rather than local-only Client labels.
 // 75: Peer Mesh routes identify whether a peer is a Client or Runtime Host so

@@ -29,6 +29,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from eval_framework import selected
@@ -91,6 +92,7 @@ class RelayAgent(BaseAgent):
         relay_port: int,
         relay_token: str,
         teardown_timeout_ms: int,
+        framework_timeout_ms: int | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -100,6 +102,23 @@ class RelayAgent(BaseAgent):
         if not isinstance(teardown_timeout_ms, int) or teardown_timeout_ms <= 0:
             raise RuntimeError("Maka Eval teardown timeout is invalid")
         self._teardown_timeout = teardown_timeout_ms / 1000
+        if framework_timeout_ms is None:
+            framework_timeout_ms = teardown_timeout_ms
+        if not isinstance(framework_timeout_ms, int) or framework_timeout_ms <= 0:
+            raise RuntimeError("Maka Eval framework timeout is invalid")
+        self.set_framework_timeout_ms(framework_timeout_ms)
+
+    def set_framework_timeout_ms(self, timeout_ms: int | None) -> None:
+        if timeout_ms is None:
+            self._framework_timeout = self._teardown_timeout
+            return
+        if (
+            isinstance(timeout_ms, bool)
+            or not isinstance(timeout_ms, int)
+            or timeout_ms <= 0
+        ):
+            raise RuntimeError("Maka Eval framework timeout is invalid")
+        self._framework_timeout = min(timeout_ms / 1000, self._teardown_timeout)
 
     @staticmethod
     def name() -> str:
@@ -116,6 +135,7 @@ class RelayAgent(BaseAgent):
         execution: asyncio.Task[Any] | None = None
         decision: asyncio.Task[dict[str, Any]] | None = None
         request: dict[str, Any] | None = None
+        cwd = ""
         execution_reported = False
         scope_path = f"/logs/agent/.maka-eval-{self._token}.pid"
         environment_path = f"/tmp/maka-eval-{self._token}.env"
@@ -153,6 +173,9 @@ class RelayAgent(BaseAgent):
                 decision.result()
                 raise RelayTransportClosed("Maka Eval relay received control before execution")
             result = execution.result()
+            result = await _load_captured_subject_outputs(
+                environment, cwd, result, request, self._token
+            )
             await _persist_subject_outputs(environment, result)
             stdout, diagnostic = _project_result(result, request)
             # A subject that exited on its own leaves the shared environment as
@@ -160,8 +183,9 @@ class RelayAgent(BaseAgent):
             # waiting on those processes here — `environment.exec` has already
             # returned — so tearing them down would not unblock anything; it
             # would only edit the thing about to be measured, and edit it for
-            # some subjects and not others. Cancellation still quiesces, because
-            # there the subject has not stopped and the trial is being abandoned.
+            # some subjects and not others. Host abort still quiesces, because
+            # that trial is abandoned. Framework timeout does not: the verifier
+            # still scores what the subject left.
             if not await _send(
                 writer,
                 {
@@ -181,60 +205,25 @@ class RelayAgent(BaseAgent):
                 "verify",
             )
         except asyncio.CancelledError:
+            # A cancelled task would otherwise fail every await in this
+            # handler. Uncancel so cleanup can run; a second cancel or any
+            # cleanup error destroys the environment before we re-raise.
+            current = asyncio.current_task()
+            if current is not None and hasattr(current, "uncancel"):
+                current.uncancel()
+            framework_timeout_handled = False
             if request is not None and execution is not None:
-                execution_terminal = execution.done() and not execution.cancelled()
-                terminal_projection = None
-                if execution_terminal:
-                    terminal_result = execution.result()
-                    terminal_projection = _project_result(terminal_result, request)
-                # A subject that already exited has nothing left to settle, and
-                # tearing its scope down here would remove what the verifier is
-                # about to score -- the same environment edit this relay stopped
-                # making on the ordinary path. Only a subject still running is
-                # brought to a stop.
-                if terminal_projection is not None:
-                    result = terminal_result
-                else:
-                    result = await _settle_or_destroy(
-                        environment, cwd, scope_path, execution, self._teardown_timeout
-                    )
-                if result is not None:
-                    await _persist_subject_outputs(environment, result)
-                if (
-                    result is not None
-                    and not execution_reported
-                    and (execution_terminal or not _host_teardown_requested)
-                ):
-                    stdout, diagnostic = terminal_projection or _project_result(result, request)
-                    with contextlib.suppress(Exception):
-                        await _send(
-                            writer,
-                            {
-                                "token": self._token,
-                                "kind": "executed",
-                                "termination": "exited" if execution_terminal else "framework_timeout",
-                                "exitCode": result.return_code if execution_terminal else 124,
-                                "stdout": stdout,
-                                "diagnostic": diagnostic,
-                            },
-                        )
-                elif not execution_reported and not _host_teardown_requested:
-                    with contextlib.suppress(Exception):
-                        await _send(
-                            writer,
-                            {
-                                "token": self._token,
-                                "kind": "executed",
-                                "termination": "framework_timeout",
-                                "exitCode": 124,
-                                "stdout": "",
-                                "diagnostic": (
-                                    _carrier_diagnostic("result-frame-missing", b"")
-                                    if request.get("captureStdout", True)
-                                    else {"category": "none"}
-                                ),
-                            },
-                        )
+                framework_timeout_handled = await self._cleanup_cancelled_execution(
+                    environment,
+                    cwd,
+                    scope_path,
+                    execution,
+                    request,
+                    writer,
+                    execution_reported,
+                )
+            if framework_timeout_handled and not _host_teardown_requested:
+                return
             raise
         except RelayTransportClosed:
             if request is not None and execution is not None:
@@ -243,6 +232,9 @@ class RelayAgent(BaseAgent):
                 )
                 if result is not None:
                     with contextlib.suppress(Exception):
+                        result = await _load_captured_subject_outputs(
+                            environment, cwd, result, request, self._token
+                        )
                         await _persist_subject_outputs(environment, result)
         except BaseException:
             if request is not None and execution is not None:
@@ -251,6 +243,9 @@ class RelayAgent(BaseAgent):
                 )
                 if result is not None:
                     with contextlib.suppress(Exception):
+                        result = await _load_captured_subject_outputs(
+                            environment, cwd, result, request, self._token
+                        )
                         await _persist_subject_outputs(environment, result)
             raise
         finally:
@@ -260,9 +255,16 @@ class RelayAgent(BaseAgent):
                     await decision
             if request is not None:
                 with contextlib.suppress(Exception):
+                    stdout_path, stderr_path, stdout_fifo, stderr_fifo, collectors_path = (
+                        _capture_paths(self._token)
+                    )
                     await asyncio.wait_for(
                         environment.exec(
-                            f"rm -f -- {shlex.quote(scope_path)} {shlex.quote(environment_path)}",
+                            "rm -f -- "
+                            f"{shlex.quote(scope_path)} {shlex.quote(environment_path)} "
+                            f"{shlex.quote(stdout_path)} {shlex.quote(stderr_path)} "
+                            f"{shlex.quote(stdout_fifo)} {shlex.quote(stderr_fifo)} "
+                            f"{shlex.quote(collectors_path)}",
                             cwd=cwd,
                             timeout_sec=1,
                         ),
@@ -271,6 +273,101 @@ class RelayAgent(BaseAgent):
             with contextlib.suppress(BrokenPipeError, ConnectionError, RuntimeError, TimeoutError):
                 writer.close()
                 await asyncio.wait_for(writer.wait_closed(), timeout=1)
+
+    async def _cleanup_cancelled_execution(
+        self,
+        environment: Any,
+        cwd: str,
+        scope_path: str,
+        execution: asyncio.Task[Any],
+        request: dict[str, Any],
+        writer: Any,
+        execution_reported: bool,
+    ) -> bool:
+        cleanup_timeout = (
+            self._teardown_timeout
+            if _host_teardown_requested
+            else self._framework_timeout
+        )
+        deadline = asyncio.get_running_loop().time() + cleanup_timeout
+        try:
+            return await self._finalize_cancelled_execution(
+                environment,
+                cwd,
+                scope_path,
+                execution,
+                request,
+                writer,
+                execution_reported,
+                cleanup_timeout,
+            )
+        except BaseException:
+            remaining = deadline - asyncio.get_running_loop().time()
+            with contextlib.suppress(Exception):
+                if remaining > 0:
+                    await asyncio.wait_for(
+                        _settle_or_destroy(
+                            environment, cwd, scope_path, execution, remaining
+                        ),
+                        timeout=remaining,
+                    )
+            raise
+
+    async def _finalize_cancelled_execution(
+        self,
+        environment: Any,
+        cwd: str,
+        scope_path: str,
+        execution: asyncio.Task[Any],
+        request: dict[str, Any],
+        writer: Any,
+        execution_reported: bool,
+        cleanup_timeout: float,
+    ) -> bool:
+        execution_terminal = execution.done() and not execution.cancelled()
+        # A subject that already exited has nothing left to settle, and
+        # tearing its scope down here would remove what the verifier is
+        # about to score -- the same environment edit this relay stopped
+        # making on the ordinary path. A still-running subject is
+        # stopped so the execution call can return. Host abort then
+        # quiesces the leftover group; framework timeout does not,
+        # because the verifier still runs.
+        if execution_terminal:
+            result = execution.result()
+        elif _host_teardown_requested:
+            result = await _settle_or_destroy(
+                environment, cwd, scope_path, execution, cleanup_timeout
+            )
+        else:
+            result = await _stop_subject_for_timeout(
+                environment, cwd, scope_path, execution, cleanup_timeout
+            )
+        if result is not None:
+            result = await _load_captured_subject_outputs(
+                environment, cwd, result, request, self._token
+            )
+            await _persist_subject_outputs(environment, result)
+        if (
+            result is not None
+            and not execution_reported
+            and (execution_terminal or not _host_teardown_requested)
+        ):
+            stdout, diagnostic = _project_result(result, request)
+            try:
+                execution_reported = await _send(
+                    writer,
+                    {
+                        "token": self._token,
+                        "kind": "executed",
+                        "termination": "exited" if execution_terminal else "framework_timeout",
+                        "exitCode": result.return_code if execution_terminal else 124,
+                        "stdout": stdout,
+                        "diagnostic": diagnostic,
+                    },
+                )
+            except Exception:
+                execution_reported = False
+        return execution_reported and not _host_teardown_requested
 
 
 async def _prepare_command(
@@ -321,16 +418,111 @@ async def _prepare_command(
         if secret_path is not None:
             secret_path.unlink(missing_ok=True)
     subject = shlex.join([request["command"], *request["args"]])
-    output_redirect = "" if capture_stdout else " >/dev/null"
+    stdout_path, stderr_path, stdout_fifo, stderr_fifo, collectors_path = _capture_paths(token)
     scope_error = shlex.quote(f"{SCOPE_ERROR_PREFIX} {result_token}\\n")
-    inner = (
+    prefix = (
         "umask 077; "
-        f"{{ echo $$ > {shlex.quote(scope_path)}; }} 2>/dev/null || "
-        f"{{ printf {scope_error}; exit 111; }}; "
+        f"setsid_path=$(command -v setsid) || {{ printf {scope_error}; exit 111; }}; "
+        f"shell_path=$(command -v sh) || {{ printf {scope_error}; exit 111; }}; "
         f". {shlex.quote(container_path)}; command -p rm -f {shlex.quote(container_path)}; "
-        f"exec {subject}{output_redirect}"
+        f"{{ printf '%s %s\\n' \"$$\" \"$$\" > {shlex.quote(scope_path)}; }} "
+        f"2>/dev/null || {{ printf {scope_error}; exit 111; }}; "
+    )
+    if capture_stdout:
+        # Keep the Docker exec streams detached from the subject tree while a
+        # bounded collector drains each inherited FIFO for as long as a task
+        # service keeps it open. `dd bs=1` writes incrementally, then `cat`
+        # continues draining through the same open descriptor after the cap.
+        # The collector exits naturally when every inherited writer closes; it
+        # must outlive the relay while a preserved service still writes, since
+        # killing its only reader would terminate that service with SIGPIPE.
+        def collector(fifo: str, output: str, descriptor: int) -> str:
+            return (
+                f"(exec {descriptor}< {shlex.quote(fifo)}; "
+                f"command -p dd bs=1 count={RESULT_CARRIER_LIMIT_BYTES + 1} "
+                f"<&{descriptor} > {shlex.quote(output)} 2>/dev/null; "
+                f"command -p cat <&{descriptor} >/dev/null) "
+                "</dev/null >/dev/null 2>&1"
+            )
+
+        stdout_collector = collector(stdout_fifo, stdout_path, 3)
+        stderr_collector = collector(stderr_fifo, stderr_path, 4)
+        inner = (
+            prefix
+            + "rm -f -- "
+            + " ".join(
+                shlex.quote(path)
+                for path in (
+                    stdout_path,
+                    stderr_path,
+                    stdout_fifo,
+                    stderr_fifo,
+                    collectors_path,
+                )
+            )
+            + "; "
+            + f"command -p mkfifo {shlex.quote(stdout_fifo)} {shlex.quote(stderr_fifo)} || "
+            + f"{{ printf {scope_error}; exit 111; }}; "
+            + f": > {shlex.quote(stdout_path)}; : > {shlex.quote(stderr_path)}; "
+            + f"\"$setsid_path\" \"$shell_path\" -c {shlex.quote(stdout_collector)} "
+            + "</dev/null >/dev/null 2>&1 & stdout_collector=$!; "
+            + f"\"$setsid_path\" \"$shell_path\" -c {shlex.quote(stderr_collector)} "
+            + "</dev/null >/dev/null 2>&1 & stderr_collector=$!; "
+            + f"printf '%s %s\\n' \"$stdout_collector\" \"$stderr_collector\" > "
+            + f"{shlex.quote(collectors_path)}; "
+            + f"{subject} > {shlex.quote(stdout_fifo)} 2> {shlex.quote(stderr_fifo)} & leader=$!; "
+        )
+    else:
+        inner = prefix + f"{subject} >/dev/null 2>&1 & leader=$!; "
+    inner += (
+        f"{{ printf '%s %s\\n' \"$$\" \"$leader\" > {shlex.quote(scope_path)}; }} "
+        f"2>/dev/null || {{ kill \"$leader\" 2>/dev/null || true; printf {scope_error}; exit 111; }}; "
+        "wait \"$leader\"; status=$?; exit \"$status\""
     )
     return f"setsid --wait sh -c {shlex.quote(inner)}"
+
+
+def _capture_paths(token: str) -> tuple[str, str, str, str, str]:
+    prefix = f"/tmp/maka-eval-{token}"
+    return (
+        f"{prefix}.stdout",
+        f"{prefix}.stderr",
+        f"{prefix}.stdout.fifo",
+        f"{prefix}.stderr.fifo",
+        f"{prefix}.collectors",
+    )
+
+
+async def _load_captured_subject_outputs(
+    environment: Any,
+    cwd: str,
+    result: Any,
+    request: dict[str, Any],
+    token: str,
+) -> Any:
+    if not request.get("captureStdout", True):
+        return result
+    stdout_path, stderr_path, _, _, _ = _capture_paths(token)
+    stdout_marker = f"MAKA-EVAL-CAPTURE-STDERR-V1 {token}"
+    captured = await environment.exec(
+        f"cat {shlex.quote(stdout_path)} 2>/dev/null; "
+        f"printf '\\n%s\\n' {shlex.quote(stdout_marker)}; "
+        f"cat {shlex.quote(stderr_path)} 2>/dev/null",
+        cwd=cwd,
+        timeout_sec=1,
+    )
+    raw = str(getattr(captured, "stdout", "") or "")
+    separator = f"\n{stdout_marker}\n"
+    if separator in raw:
+        stdout, _, stderr = raw.partition(separator)
+    else:
+        stdout = str(getattr(result, "stdout", "") or "")
+        stderr = str(getattr(result, "stderr", "") or "")
+    return SimpleNamespace(
+        return_code=result.return_code,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 async def _require_constrained_subject(environment: Any) -> None:
@@ -568,7 +760,7 @@ async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -
     else:
         result = None
         for signal, timeout in (("TERM", 20), ("KILL", 10)):
-            await _signal(environment, cwd, scope_path, signal)
+            await _signal_group(environment, cwd, scope_path, signal)
             try:
                 result = await asyncio.wait_for(asyncio.shield(execution), timeout=timeout)
                 break
@@ -582,6 +774,59 @@ async def _settle(environment: Any, cwd: str, scope_path: str, execution: Any) -
             raise RuntimeError("Maka Eval subject did not settle")
     await _quiesce_scope(environment, cwd, scope_path)
     return result
+
+
+async def _stop_subject_for_timeout(
+    environment: Any,
+    cwd: str,
+    scope_path: str,
+    execution: Any,
+    timeout: float,
+) -> Any:
+    # The verifier still scores this trial. Stop only the subject so
+    # `environment.exec` can return; do not hunt descendants or delete the
+    # environment. Those leftovers are what the task asked the subject to leave.
+    if execution.cancelled():
+        raise RuntimeError("Maka Eval subject execution was cancelled")
+    if execution.done():
+        return execution.result()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    destroy_reserve = min(20.0, timeout * 0.2)
+    stop_deadline = deadline - destroy_reserve
+    remaining = stop_deadline - loop.time()
+    if remaining > 0:
+        # Escalate inside one environment call. Docker-backed environments pay
+        # a material control-plane round trip for every exec; separate TERM and
+        # KILL calls can consume a short framework budget even when KILL works.
+        # This command still targets only the session leader, so task-owned
+        # background processes remain available to the verifier.
+        await _stop_leader(
+            environment,
+            cwd,
+            scope_path,
+            grace_sec=min(0.1, max(0.001, remaining * 0.1)),
+            timeout_sec=remaining,
+        )
+        remaining = stop_deadline - loop.time()
+        if remaining > 0:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(execution), timeout=remaining
+                )
+            except asyncio.CancelledError:
+                if execution.cancelled():
+                    raise RuntimeError("Maka Eval subject execution was cancelled") from None
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                pass
+    if execution.done() and not execution.cancelled():
+        return execution.result()
+    # A verifier cannot measure a stable environment while the subject may
+    # still be mutating it. Fail closed instead of publishing a scoreable
+    # framework_timeout frame without positive leader-exit evidence.
+    await _destroy_environment(environment, execution, deadline, loop)
+    raise RuntimeError("Maka Eval could not confirm subject exit after framework timeout")
 
 
 async def _settle_or_destroy(
@@ -600,24 +845,35 @@ async def _settle_or_destroy(
             timeout=max(0.001, deadline - loop.time() - stop_reserve),
         )
     except Exception:
-        try:
-            remaining = max(0.001, deadline - loop.time())
-            await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
-        except Exception:
-            pass
-        finally:
-            if not execution.done():
-                execution.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                remaining = max(0.001, deadline - loop.time())
-                await asyncio.wait_for(execution, timeout=remaining)
+        await _destroy_environment(environment, execution, deadline, loop)
         return None
 
 
-async def _signal(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
+async def _destroy_environment(
+    environment: Any,
+    execution: Any,
+    deadline: float,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    try:
+        remaining = max(0.001, deadline - loop.time())
+        await asyncio.wait_for(environment.stop(delete=True), timeout=remaining)
+    except Exception:
+        pass
+    finally:
+        if not execution.done():
+            execution.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            remaining = max(0.001, deadline - loop.time())
+            await asyncio.wait_for(execution, timeout=remaining)
+
+
+async def _signal_group(environment: Any, cwd: str, scope_path: str, signal: str) -> None:
     command = (
-        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 0; "
-        "case $pgid in ''|0|*[!0-9]*) exit 0;; esac; "
+        f"read -r pgid leader extra < {shlex.quote(scope_path)} 2>/dev/null || exit 0; "
+        "case \"$pgid\" in ''|0|*[!0-9]*) exit 0;; esac; "
+        "case \"$leader\" in '' ) leader=$pgid;; 0|*[!0-9]*) exit 0;; esac; "
+        "test -z \"$extra\" || exit 0; "
         f"kill -{signal} -- \"-$pgid\""
     )
     with contextlib.suppress(Exception):
@@ -628,11 +884,39 @@ async def _signal(environment: Any, cwd: str, scope_path: str, signal: str) -> N
         )
 
 
+async def _stop_leader(
+    environment: Any,
+    cwd: str,
+    scope_path: str,
+    grace_sec: float,
+    timeout_sec: float = 5,
+) -> bool:
+    command = (
+        f"read -r pgid leader extra < {shlex.quote(scope_path)} 2>/dev/null || exit 1; "
+        "case \"$pgid\" in ''|0|*[!0-9]*) exit 1;; esac; "
+        "case \"$leader\" in '' ) leader=$pgid;; 0|*[!0-9]*) exit 1;; esac; "
+        "test -z \"$extra\" || exit 1; "
+        "kill -TERM -- \"$leader\" 2>/dev/null || exit 1; "
+        f"sleep {grace_sec:.6f}; "
+        "kill -0 -- \"$leader\" 2>/dev/null || exit 0; "
+        "kill -KILL -- \"$leader\" 2>/dev/null"
+    )
+    try:
+        result = await environment.exec(
+            command,
+            cwd=cwd,
+            timeout_sec=max(0.001, timeout_sec),
+        )
+        return result.return_code == 0
+    except Exception:
+        return False
+
+
 async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:
     if not await _scope_active(environment, cwd, scope_path):
         return
     for signal, timeout in (("TERM", 10), ("KILL", 5)):
-        await _signal(environment, cwd, scope_path, signal)
+        await _signal_group(environment, cwd, scope_path, signal)
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             if not await _scope_active(environment, cwd, scope_path):
@@ -643,8 +927,10 @@ async def _quiesce_scope(environment: Any, cwd: str, scope_path: str) -> None:
 
 async def _scope_active(environment: Any, cwd: str, scope_path: str) -> bool:
     result = await environment.exec(
-        f"pgid=$(cat {shlex.quote(scope_path)} 2>/dev/null) || exit 4; "
-        "case $pgid in ''|0|*[!0-9]*) exit 4;; esac; "
+        f"read -r pgid leader extra < {shlex.quote(scope_path)} 2>/dev/null || exit 4; "
+        "case \"$pgid\" in ''|0|*[!0-9]*) exit 4;; esac; "
+        "case \"$leader\" in '' ) leader=$pgid;; 0|*[!0-9]*) exit 4;; esac; "
+        "test -z \"$extra\" || exit 4; "
         "kill -0 -- \"-$pgid\" 2>/dev/null; status=$?; "
         "if [ $status -eq 0 ]; then exit 0; fi; exit 3",
         cwd=cwd,

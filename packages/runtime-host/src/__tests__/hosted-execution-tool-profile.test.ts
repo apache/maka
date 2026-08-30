@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { z } from 'zod';
-import { decodeHostedExecutionStartInput } from '../protocol/index.js';
+import {
+  decodeHostedExecutionAdmittedStartInput,
+  decodeHostedExecutionStartInput,
+} from '../protocol/index.js';
 import {
   hostedExecutionRunProfile,
   projectHostedExecutionTools,
@@ -50,6 +53,32 @@ test('hosted execution tool profiles are durable Session creation inputs', () =>
         session: { ...decoded.session, toolProfile: 'unknown-profile' },
       }),
     /Invalid Session tool profile/u,
+  );
+});
+
+test('hosted execution start requires the server admission token', () => {
+  const execution = decodeHostedExecutionStartInput({
+    executionId: '00000000-0000-4000-8000-000000000001',
+    session: {
+      workspace: { kind: 'host_path', path: '/workspace' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'provider',
+        model: 'model',
+      },
+    },
+    content: { text: 'solve' },
+  });
+  const decoded = decodeHostedExecutionAdmittedStartInput({
+    execution,
+    admissionToken: '00000000-0000-4000-8000-000000000002',
+  });
+  assert.deepEqual(decoded.execution, execution);
+  assert.equal(decoded.admissionToken, '00000000-0000-4000-8000-000000000002');
+  assert.throws(
+    () => decodeHostedExecutionAdmittedStartInput({ execution, admissionToken: undefined }),
+    /admissionToken/u,
   );
 });
 

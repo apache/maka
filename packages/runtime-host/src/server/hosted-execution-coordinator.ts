@@ -17,31 +17,42 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { preservesHostedExecutionEnvironment } from '../protocol/index.js';
 import type {
+  HostedExecutionAdmittedStartInput,
   HostedExecutionProjection,
   HostedExecutionReferenceInput,
   HostedExecutionStartInput,
   OperationOutcome,
 } from '../protocol/index.js';
-import type { HostedExecutionOperationHandlerMap } from './operation-dispatcher.js';
+import type {
+  ConnectionContext,
+  HostedExecutionOperationHandlerMap,
+} from './operation-dispatcher.js';
+
+interface HostedExecutionRecord {
+  readonly input: HostedExecutionStartInput;
+  readonly authority: {
+    readonly hostEpoch: string;
+    readonly connectionId: string;
+  };
+  readonly abort: AbortController;
+  readonly admissionToken: string;
+  readonly task: Promise<HostedExecutionProjection>;
+}
 
 export class HostHostedExecutionCoordinator {
   readonly handlers: HostedExecutionOperationHandlerMap = {
-    'hosted.execution.start': (input) => this.#start(input),
+    'hosted.execution.admit': (input, context) => this.#admit(input, context),
+    'hosted.execution.start': (input, context) => this.#start(input, context),
     'hosted.execution.cancel': (input) => this.#cancel(input),
   };
 
-  readonly #executions = new Map<
-    string,
-    {
-      readonly input: HostedExecutionStartInput;
-      readonly abort: AbortController;
-      readonly task: Promise<HostedExecutionProjection>;
-    }
-  >();
+  readonly #executions = new Map<string, HostedExecutionRecord>();
   readonly #cancelled = new Set<string>();
+  #executionId: string | undefined;
   #accepting = true;
 
   constructor(
@@ -62,41 +73,117 @@ export class HostHostedExecutionCoordinator {
     await Promise.all([...this.#executions.values()].map(({ task }) => task));
   }
 
-  async #start(
+  async #admit(
     input: HostedExecutionStartInput,
-  ): Promise<OperationOutcome<'hosted.execution.start'>> {
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'hosted.execution.admit'>> {
+    if (this.#executionId !== undefined && this.#executionId !== input.executionId) {
+      return conflict();
+    }
     if (this.#cancelled.has(input.executionId)) {
-      this.requestDrain();
       return {
-        ok: true,
-        result: indeterminate(input.executionId, 'Hosted execution was cancelled before admission'),
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'Hosted execution was cancelled before admission',
+        },
       };
     }
     const existing = this.#executions.get(input.executionId);
     if (existing) {
-      if (!isDeepStrictEqual(existing.input, input)) return conflict();
-      return { ok: true, result: structuredClone(await existing.task) };
+      if (
+        !isDeepStrictEqual(existing.input, input) ||
+        !sameAuthority(existing.authority, context)
+      ) {
+        return conflict();
+      }
+      return {
+        ok: true,
+        result: { executionId: input.executionId, admissionToken: existing.admissionToken },
+      };
     }
     if (!this.#accepting) {
-      return { ok: false, error: { code: 'host_draining', message: 'Runtime Host is draining' } };
+      return {
+        ok: false,
+        error: { code: 'host_draining', message: 'Runtime Host is draining' },
+      };
     }
+
+    this.#executionId = input.executionId;
+    const execution = this.#createExecution(input, context);
+    return {
+      ok: true,
+      result: { executionId: input.executionId, admissionToken: execution.admissionToken },
+    };
+  }
+
+  async #start(
+    input: HostedExecutionAdmittedStartInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'hosted.execution.start'>> {
+    if (this.#executionId !== undefined && this.#executionId !== input.execution.executionId) {
+      return conflict();
+    }
+    if (this.#cancelled.has(input.execution.executionId)) {
+      this.requestDrain();
+      return {
+        ok: true,
+        result: indeterminate(
+          input.execution.executionId,
+          'Hosted execution was cancelled before admission',
+        ),
+      };
+    }
+    const existing = this.#executions.get(input.execution.executionId);
+    if (!existing) {
+      return {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'Hosted execution was not admitted',
+        },
+      };
+    }
+    if (
+      existing.admissionToken !== input.admissionToken ||
+      !isDeepStrictEqual(existing.input, input.execution) ||
+      !sameAuthority(existing.authority, context)
+    ) {
+      return conflict();
+    }
+    return { ok: true, result: structuredClone(await existing.task) };
+  }
+
+  #createExecution(
+    input: HostedExecutionStartInput,
+    context: ConnectionContext,
+  ): HostedExecutionRecord {
     const abort = new AbortController();
+    const admissionToken = randomUUID();
     const task = this.run(input, abort.signal)
       .catch(() => indeterminate(input.executionId, 'Runtime Host could not settle execution'))
       .then((result) => {
         if (!preservesHostedExecutionEnvironment(result)) this.requestDrain();
         return result;
-      })
-      .finally(() => {
-        this.#executions.delete(input.executionId);
       });
-    this.#executions.set(input.executionId, { input: structuredClone(input), abort, task });
-    return { ok: true, result: structuredClone(await task) };
+    const execution = {
+      input: structuredClone(input),
+      authority: { hostEpoch: context.hostEpoch, connectionId: context.connectionId },
+      abort,
+      admissionToken,
+      task,
+    };
+    this.#executions.set(input.executionId, execution);
+    return execution;
   }
 
   async #cancel(
     input: HostedExecutionReferenceInput,
   ): Promise<OperationOutcome<'hosted.execution.cancel'>> {
+    if (this.#executionId !== undefined && this.#executionId !== input.executionId) {
+      return conflict();
+    }
+    this.#executionId = input.executionId;
     this.#cancelled.add(input.executionId);
     const execution = this.#executions.get(input.executionId);
     if (!execution) {
@@ -107,15 +194,28 @@ export class HostHostedExecutionCoordinator {
       };
     }
     execution.abort.abort();
-    return { ok: true, result: structuredClone(await execution.task) };
+    const result = await execution.task;
+    if (preservesHostedExecutionEnvironment(result)) this.requestDrain();
+    return { ok: true, result: structuredClone(result) };
   }
 }
 
-function conflict(): OperationOutcome<'hosted.execution.start'> {
+function sameAuthority(
+  authority: HostedExecutionRecord['authority'],
+  context: ConnectionContext,
+): boolean {
+  return (
+    authority.hostEpoch === context.hostEpoch && authority.connectionId === context.connectionId
+  );
+}
+
+function conflict<
+  K extends 'hosted.execution.admit' | 'hosted.execution.start' | 'hosted.execution.cancel',
+>(): OperationOutcome<K> {
   return {
     ok: false,
     error: { code: 'operation_conflict', message: 'Hosted execution identity is already in use' },
-  };
+  } as OperationOutcome<K>;
 }
 
 function indeterminate(executionId: string, failureReason: string): HostedExecutionProjection {

@@ -24,11 +24,12 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import signal
 import sys
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 FRAMEWORK_VERSION_MISMATCH_EXIT_CODE = 78
 
@@ -145,6 +146,7 @@ async def run_trial(framework: str, expected_version: str, config_file: Path) ->
                     publish_ready_task(namespace, target)
         else:
             trial = await trial_type.create(config)
+        bind_framework_timeout_budget(framework, trial)
         await trial.run()
     finally:
         config_file.unlink(missing_ok=True)
@@ -160,6 +162,87 @@ def apply_subject_egress_policy(task: object) -> None:
     agent = task.config.agent
     agent.network_mode = "allowlist"
     agent.allowed_hosts = [allowed_host]
+
+
+def resolved_framework_timeout_ms(config: object, default_timeout: float | None) -> int | None:
+    base_timeout = config.agent.override_timeout_sec or default_timeout
+    if base_timeout is None:
+        return None
+    maximum = config.agent.max_timeout_sec or float("inf")
+    multiplier = (
+        config.agent_timeout_multiplier
+        if config.agent_timeout_multiplier is not None
+        else config.timeout_multiplier
+    )
+    timeout_ms = math.floor(min(base_timeout, maximum) * multiplier * 1000)
+    if timeout_ms <= 0:
+        raise RuntimeError("framework agent timeout is shorter than one millisecond")
+    return timeout_ms
+
+
+def bind_framework_timeout_budget(framework: str, trial: object) -> None:
+    """Set the RelayAgent cleanup budget from each framework's effective phase timeout."""
+
+    if framework == "harbor":
+        original = getattr(trial, "_run_agent_phase", None)
+        agent = getattr(trial, "agent", None)
+        if not callable(original) or not hasattr(agent, "set_framework_timeout_ms"):
+            raise RuntimeError("Harbor timeout integration is unavailable")
+
+        async def run_agent_phase(*args: Any, **kwargs: Any) -> Any:
+            timeout_sec = kwargs.get("timeout_sec")
+            agent.set_framework_timeout_ms(
+                None if timeout_sec is None else math.floor(timeout_sec * 1000)
+            )
+            return await original(*args, **kwargs)
+
+        trial._run_agent_phase = run_agent_phase
+        return
+
+    if framework == "pier":
+        agent = getattr(trial, "_agent", None)
+        execution = getattr(trial, "_execution", None)
+        run_agent = getattr(trial, "_execute_agent", None)
+        run_step_agent = getattr(trial, "_execute_step_agent", None)
+        resolve_step_timeout = getattr(trial, "_resolve_step_timeout", None)
+        if (
+            not hasattr(agent, "set_framework_timeout_ms")
+            or execution is None
+            or not callable(run_agent)
+            or not callable(run_step_agent)
+            or not callable(resolve_step_timeout)
+        ):
+            raise RuntimeError("Pier timeout integration is unavailable")
+
+        async def execute_agent() -> Any:
+            timeout_sec = execution.agent_timeout_sec
+            agent.set_framework_timeout_ms(
+                None if timeout_sec is None else math.floor(timeout_sec * 1000)
+            )
+            return await run_agent()
+
+        async def execute_step_agent(step: object, result: object) -> Any:
+            default_timeout = (
+                step.agent.timeout_sec
+                if step.agent.timeout_sec is not None
+                else trial._task.config.agent.timeout_sec
+            )
+            timeout_sec = resolve_step_timeout(
+                override=trial.config.agent.override_timeout_sec,
+                default=default_timeout,
+                max_val=trial.config.agent.max_timeout_sec,
+                specific_multiplier=trial.config.agent_timeout_multiplier,
+            )
+            agent.set_framework_timeout_ms(
+                None if timeout_sec is None else math.floor(timeout_sec * 1000)
+            )
+            return await run_step_agent(step, result)
+
+        trial._execute_agent = execute_agent
+        trial._execute_step_agent = execute_step_agent
+        return
+
+    raise RuntimeError("framework must be harbor or pier")
 
 
 async def create_harbor_trial(trial_type: type, config: object) -> object:

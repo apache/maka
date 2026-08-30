@@ -32,6 +32,79 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RunTrialPolicyTest(unittest.TestCase):
+    def test_resolves_each_framework_cleanup_budget_independently(self) -> None:
+        config = SimpleNamespace(
+            timeout_multiplier=2,
+            agent_timeout_multiplier=None,
+            agent=SimpleNamespace(
+                override_timeout_sec=None,
+                max_timeout_sec=4,
+                kwargs={"relay_token": "token"},
+            ),
+        )
+        self.assertEqual(MODULE.resolved_framework_timeout_ms(config, 3), 6000)
+        self.assertEqual(MODULE.resolved_framework_timeout_ms(config, 1.5), 3000)
+        self.assertEqual(config.agent.kwargs["relay_token"], "token")
+
+    def test_harbor_multi_step_binds_the_current_step_timeout(self) -> None:
+        budgets: list[int | None] = []
+        calls: list[float | None] = []
+        agent = SimpleNamespace(set_framework_timeout_ms=budgets.append)
+
+        async def run_phase(*_args, **kwargs):
+            calls.append(kwargs["timeout_sec"])
+
+        trial = SimpleNamespace(agent=agent, _run_agent_phase=run_phase)
+        MODULE.bind_framework_timeout_budget("harbor", trial)
+
+        asyncio.run(trial._run_agent_phase(timeout_sec=1.0))
+        asyncio.run(trial._run_agent_phase(timeout_sec=60.0))
+
+        self.assertEqual(budgets, [1000, 60000])
+        self.assertEqual(calls, [1.0, 60.0])
+
+    def test_pier_single_and_multi_step_bind_the_effective_timeout(self) -> None:
+        budgets: list[int | None] = []
+        calls: list[str] = []
+        agent = SimpleNamespace(set_framework_timeout_ms=budgets.append)
+        config = SimpleNamespace(
+            timeout_multiplier=1,
+            agent_timeout_multiplier=None,
+            agent=SimpleNamespace(override_timeout_sec=None, max_timeout_sec=None),
+        )
+
+        async def execute_agent():
+            calls.append("single")
+
+        async def execute_step_agent(step, _result):
+            calls.append(step.name)
+
+        def resolve_step_timeout(*, override, default, max_val, specific_multiplier):
+            del override, max_val, specific_multiplier
+            return default
+
+        trial = SimpleNamespace(
+            _agent=agent,
+            _execution=SimpleNamespace(agent_timeout_sec=7.0),
+            _execute_agent=execute_agent,
+            _execute_step_agent=execute_step_agent,
+            _resolve_step_timeout=resolve_step_timeout,
+            _task=SimpleNamespace(config=SimpleNamespace(agent=SimpleNamespace(timeout_sec=30.0))),
+            config=config,
+        )
+        MODULE.bind_framework_timeout_budget("pier", trial)
+
+        asyncio.run(trial._execute_agent())
+        asyncio.run(
+            trial._execute_step_agent(
+                SimpleNamespace(name="step-a", agent=SimpleNamespace(timeout_sec=2.5)),
+                SimpleNamespace(),
+            )
+        )
+
+        self.assertEqual(budgets, [7000, 2500])
+        self.assertEqual(calls, ["single", "step-a"])
+
     def test_forces_only_the_subject_phase_through_the_cell_proxy(self) -> None:
         agent = SimpleNamespace(network_mode=None, allowed_hosts=None)
         task = SimpleNamespace(config=SimpleNamespace(agent=agent))

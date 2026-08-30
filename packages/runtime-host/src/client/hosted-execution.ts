@@ -25,7 +25,7 @@ import {
   type HostedExecutionStartInput,
 } from '../protocol/index.js';
 import { connectOwnedRuntimeHost } from './connect-or-spawn.js';
-import type { RuntimeHostConnection } from './connection.js';
+import { type RuntimeHostConnection } from './connection.js';
 import { configureHostedExecutionTarget } from './hosted-execution-target.js';
 
 export interface RunHostedExecutionInput {
@@ -33,6 +33,7 @@ export interface RunHostedExecutionInput {
   readonly execution: HostedExecutionClientStartInput;
   readonly baseUrl?: string;
   readonly signal?: AbortSignal;
+  readonly abortPolicy?: 'cancel' | 'preserve_environment';
   readonly hostSettlementTimeoutMs?: number;
 }
 
@@ -88,6 +89,7 @@ export async function runHostedExecutionWithDependencies(
     { kind: 'connected' }
   > = initial;
   let projection: HostedExecutionProjection;
+  let detached = false;
   try {
     input.signal?.throwIfAborted();
     const target = input.execution.session.modelTarget;
@@ -133,14 +135,18 @@ export async function runHostedExecutionWithDependencies(
         connected = reconnected;
       }
     }
-    projection = await executeHostedExecution(
+    const execution = await executeHostedExecution(
       connected.connection,
+      connected.host,
       {
         ...input.execution,
         session: { ...input.execution.session, modelTarget: exactTarget },
       },
       input.signal,
+      input.abortPolicy ?? 'cancel',
     );
+    projection = execution.projection;
+    detached = execution.detached;
   } catch {
     projection = input.signal?.aborted
       ? indeterminate(input.execution.executionId, 'Hosted execution was cancelled')
@@ -152,6 +158,7 @@ export async function runHostedExecutionWithDependencies(
     await connected.connection.close().catch(() => undefined);
   }
 
+  if (detached) return projection;
   if (preservesHostedExecutionEnvironment(projection)) {
     connected.host.releaseToEnvironment();
     return projection;
@@ -163,21 +170,72 @@ export async function runHostedExecutionWithDependencies(
 }
 
 async function executeHostedExecution(
-  connection: Pick<RuntimeHostConnection, 'request'>,
+  connection: Pick<RuntimeHostConnection, 'request' | 'close'>,
+  host: { releaseToEnvironment(): void },
   execution: HostedExecutionStartInput,
   signal: AbortSignal | undefined,
-): Promise<HostedExecutionProjection> {
-  const cancel = () => {
+  abortPolicy: NonNullable<RunHostedExecutionInput['abortPolicy']>,
+): Promise<{ readonly projection: HostedExecutionProjection; readonly detached: boolean }> {
+  let closeForAbort: Promise<void> | undefined;
+  const onAbort = () => {
+    if (abortPolicy === 'preserve_environment') {
+      closeForAbort = connection.close().catch(() => undefined);
+      return;
+    }
     void connection
       .request('hosted.execution.cancel', { executionId: execution.executionId })
       .catch(() => undefined);
   };
-  signal?.addEventListener('abort', cancel, { once: true });
-  if (signal?.aborted) cancel();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) {
+    signal.removeEventListener('abort', onAbort);
+    return {
+      projection: indeterminate(execution.executionId, 'Hosted execution was cancelled'),
+      detached: false,
+    };
+  }
+  let admissionToken: string | undefined;
   try {
-    return await connection.request('hosted.execution.start', execution);
+    const admission = await connection.request('hosted.execution.admit', execution);
+    admissionToken = admission.admissionToken;
+    const projection = await connection.request('hosted.execution.start', {
+      execution,
+      admissionToken,
+    });
+    if (signal?.aborted && abortPolicy === 'preserve_environment' && admissionToken) {
+      host.releaseToEnvironment();
+      return {
+        projection: preservesHostedExecutionEnvironment(projection)
+          ? projection
+          : indeterminate(
+              execution.executionId,
+              'Hosted execution continues for environment verification',
+            ),
+        detached: true,
+      };
+    }
+    return { projection, detached: false };
+  } catch (error) {
+    if (signal?.aborted && abortPolicy === 'preserve_environment') {
+      if (admissionToken) {
+        host.releaseToEnvironment();
+        return {
+          projection: indeterminate(
+            execution.executionId,
+            'Hosted execution continues for environment verification',
+          ),
+          detached: true,
+        };
+      }
+      return {
+        projection: indeterminate(execution.executionId, 'Hosted execution was cancelled'),
+        detached: false,
+      };
+    }
+    throw error;
   } finally {
-    signal?.removeEventListener('abort', cancel);
+    signal?.removeEventListener('abort', onAbort);
+    await closeForAbort;
   }
 }
 

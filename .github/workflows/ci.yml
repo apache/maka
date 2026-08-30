@@ -247,6 +247,19 @@ jobs:
             packages/eval/harbor
           npm --workspace @maka/eval run test:egress-proxy:live
 
+      - name: Install Harbor lifecycle test dependencies
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
+        run: |
+          python3 -m venv "$RUNNER_TEMP/maka-harbor-lifecycle"
+          "$RUNNER_TEMP/maka-harbor-lifecycle/bin/python" -m pip install --disable-pip-version-check 'harbor==0.20.0'
+
+      - name: Run real Harbor lifecycle tests
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
+        env:
+          MAKA_EVAL_HARBOR_LIFECYCLE_TEST: '1'
+        run: |
+          "$RUNNER_TEMP/maka-harbor-lifecycle/bin/python" packages/eval/harbor/test_harbor_trial_lifecycle.py
+
       - name: Run Runtime Host tests
         if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist

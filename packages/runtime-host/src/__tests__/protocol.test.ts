@@ -134,6 +134,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for hosted.execution.admit', () => {
+    // Epoch 25 has start and cancel only. Mixed-version peers must fail
+    // during handshake instead of sending an unknown admit command.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 25);
+  });
+
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
     assert.throws(
       () =>

@@ -1328,25 +1328,29 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
     );
     await composition.recover();
     const executionId = '00000000-0000-4000-8000-000000000777';
-    const outcome = await composition.handlers['hosted.execution.start'](
-      {
-        executionId,
-        session: {
-          workspace: { kind: 'host_path', path: root },
-          modelTarget: {
-            kind: 'explicit',
-            connectionId: connection.connectionId,
-            connectionSlug: 'profile-deepseek',
-            model: 'deepseek-v4-flash',
-          },
-          permissionMode: 'bypass',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          toolProfile: 'headless-coding-v1',
+    const executionInput = {
+      executionId,
+      session: {
+        workspace: { kind: 'host_path' as const, path: root },
+        modelTarget: {
+          kind: 'explicit' as const,
+          connectionId: connection.connectionId,
+          connectionSlug: 'profile-deepseek',
+          model: 'deepseek-v4-flash',
         },
-        content: { text: 'Complete the benchmark task.' },
-        maxSteps: 100_000,
+        permissionMode: 'bypass' as const,
+        collaborationMode: 'agent' as const,
+        orchestrationMode: 'default' as const,
+        toolProfile: 'headless-coding-v1' as const,
       },
+      content: { text: 'Complete the benchmark task.' },
+      maxSteps: 100_000,
+    };
+    const admitted = await composition.handlers['hosted.execution.admit'](executionInput, context);
+    assert.equal(admitted.ok, true);
+    if (!admitted.ok) return;
+    const outcome = await composition.handlers['hosted.execution.start'](
+      { execution: executionInput, admissionToken: admitted.result.admissionToken },
       context,
     );
     assert.equal(outcome.ok, true);

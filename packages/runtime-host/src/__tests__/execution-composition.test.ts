@@ -342,16 +342,23 @@ test('hosted execution settles while its tracked environment resource remains ve
     try {
       await composition.recover();
       const executionId = '00000000-0000-4000-8000-000000000111';
-      const execution = composition.handlers['hosted.execution.start'](
-        {
-          executionId,
-          session: {
-            workspace: { kind: 'host_path', path: root },
-            modelTarget: { kind: 'default' },
-            name: 'Hosted environment test',
-          },
-          content: { text: 'leave the environment ready for verification' },
+      const executionInput = {
+        executionId,
+        session: {
+          workspace: { kind: 'host_path' as const, path: root },
+          modelTarget: { kind: 'default' as const },
+          name: 'Hosted environment test',
         },
+        content: { text: 'leave the environment ready for verification' },
+      };
+      const admitted = await composition.handlers['hosted.execution.admit'](
+        executionInput,
+        operationContext,
+      );
+      assert.equal(admitted.ok, true);
+      if (!admitted.ok) return;
+      const execution = composition.handlers['hosted.execution.start'](
+        { execution: executionInput, admissionToken: admitted.result.admissionToken },
         operationContext,
       );
       let settled = false;
