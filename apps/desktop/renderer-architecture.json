@@ -3557,21 +3557,17 @@
         }
       },
       "src/renderer/settings/provider-connection-detail.tsx": {
-        "bridgePaths": {
-          "window.maka.githubCopilotSubscription.connectExistingLogin": 1
-        },
+        "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useActionGuard": 1,
           "useConnectionDetail": 1,
           "useEffect": 2,
-          "useMountedRef": 3,
+          "useMountedRef": 2,
           "useOAuthLoginFlow": 1,
-          "useRuntimeHostSettingsErrorReporter": 3,
-          "useRuntimeHostSettingsTarget": 1,
+          "useRuntimeHostSettingsErrorReporter": 2,
           "useState": 8,
           "useToast": 2,
-          "useUiLocale": 4
+          "useUiLocale": 3
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3589,7 +3585,6 @@
           "./runtime-host-settings-target.js": 1,
           "./settings-expandable-row": 1,
           "./settings-section": 1,
-          "./use-action-guard": 1,
           "./use-connection-detail": 1,
           "./use-oauth-login-flow": 1,
           "@astryxdesign/core": 1,
@@ -3671,10 +3666,9 @@
       },
       "src/renderer/settings/provider-oauth-section.tsx": {
         "bridgePaths": {
+          "window.maka.githubCopilotSubscription": 1,
           "window.maka.githubCopilotSubscription.connectExistingLogin": 1,
-          "window.maka.githubCopilotSubscription.getAccountState": 2,
-          "window.maka.githubCopilotSubscription.logout": 1,
-          "window.maka.githubCopilotSubscription.refreshTokens": 1,
+          "window.maka.githubCopilotSubscription.getAccountState": 1,
           "window.maka.openAiCodex": 1,
           "window.maka.openAiCodex.getAccountState": 1,
           "window.maka.xaiOAuth": 1,
@@ -3683,12 +3677,13 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 1,
-          "useMountedRef": 1,
+          "useMountedRef": 2,
           "useOAuthLoginFlow": 2,
           "useRef": 1,
+          "useRuntimeHostSettingsErrorReporter": 1,
           "useRuntimeHostSettingsGenerationKey": 1,
           "useRuntimeHostSettingsTarget": 3,
-          "useState": 2,
+          "useState": 3,
           "useUiLocale": 3
         },
         "lifecycleMethods": {},
@@ -3986,7 +3981,7 @@
           "window.maka.connections.update": 1
         },
         "environmentCapabilities": {
-          "window": 2
+          "window": 3
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -4480,6 +4475,7 @@
       },
       "src/renderer/settings/use-connection-detail.ts": {
         "bridgePaths": {
+          "window.maka.githubCopilotSubscription": 1,
           "window.maka.openAiCodex": 1,
           "window.maka.xaiOAuth": 1
         },
@@ -4574,7 +4570,7 @@
           "useMountedRef": 1,
           "useRef": 2,
           "useRuntimeHostSettingsErrorReporter": 1,
-          "useState": 5,
+          "useState": 6,
           "useToast": 1,
           "useUiLocale": 1
         },
@@ -4582,8 +4578,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../locales/settings-provider-copy": 1,
-          "./oauth-login-flow-guard": 1,
+          "../locales/settings-provider-copy.js": 1,
+          "./oauth-login-flow-guard.js": 1,
           "./runtime-host-settings-target.js": 1,
           "@maka/core/redaction": 1,
           "@maka/core/ui-locale": 1,
