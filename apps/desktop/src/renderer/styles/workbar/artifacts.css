@@ -394,6 +394,43 @@
   color: var(--info-text);
 }
 
+.maka-workspace-file-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  padding: var(--space-3);
+}
+
+.maka-workspace-file-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.maka-workspace-file-preview-header strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--maka-text-heading-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-workspace-file-preview-error {
+  display: grid;
+  gap: var(--space-1-5);
+  padding: var(--space-2-5) var(--space-3);
+  border: var(--border-width-hairline) solid oklch(from var(--destructive) l c h / 0.22);
+  border-radius: var(--radius-surface);
+  background: oklch(from var(--destructive) l c h / 0.08);
+  color: var(--destructive-text);
+  font: var(--maka-text-body);
+}
+
 /* Narrow windows place the single workbar below the conversation. */
 @media (max-width: 990px) {
   .maka-detail-with-artifacts {

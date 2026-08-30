@@ -147,6 +147,14 @@ export interface DesktopConversationCopy {
     delete: string;
     archived: string;
   };
+  workspaceFile: {
+    back: string;
+    openLocally: string;
+    reveal: string;
+    previewFailed: string;
+    actionFailed: string;
+    failures: Record<string, string>;
+  };
   reviewPanel: {
     ariaLabel: string;
     empty: string;
@@ -510,6 +518,22 @@ const COPY = {
       delete: '删除',
       archived: '已归档',
     },
+    workspaceFile: {
+      back: '返回生成文件',
+      openLocally: '用系统应用打开',
+      reveal: '在访达中显示',
+      previewFailed: '无法预览这个文件',
+      actionFailed: '无法打开这个文件',
+      failures: {
+        invalid: '这个链接不是当前工作区里的文件。',
+        missing: '文件不存在或已被移走。',
+        'not-a-file': '只能预览工作区里的 Markdown 文件。',
+        'not-allowed': '这个路径超出了当前任务的工作区。',
+        'too-large': '文件太大，无法在 Maka 里预览。',
+        'open-failed': '系统没能打开这个文件。',
+        default: '请稍后重试。',
+      },
+    },
     reviewPanel: {
       ariaLabel: 'Git 变更',
       empty: '当前 Git 工作区没有变化',
@@ -738,6 +762,22 @@ const COPY = {
       unarchive: 'Restore',
       delete: 'Delete',
       archived: 'Archived',
+    },
+    workspaceFile: {
+      back: 'Back to generated files',
+      openLocally: 'Open locally',
+      reveal: 'Show in folder',
+      previewFailed: 'This file could not be previewed',
+      actionFailed: 'This file could not be opened',
+      failures: {
+        invalid: 'This link is not a file in the current workspace.',
+        missing: 'The file is missing or has been moved.',
+        'not-a-file': 'Only workspace Markdown files can be previewed here.',
+        'not-allowed': 'This path is outside the current task workspace.',
+        'too-large': 'The file is too large to preview in Maka.',
+        'open-failed': 'The system could not open this file.',
+        default: 'Try again later.',
+      },
     },
     reviewPanel: {
       ariaLabel: 'Git changes',

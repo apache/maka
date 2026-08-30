@@ -77,6 +77,7 @@ function createBridgeRecorder(): {
       inspector: domain('inspector'),
       attachments: domain('attachments'),
       transcripts: domain('transcripts'),
+      workspace: domain('workspace'),
     } as unknown as MakaBridge,
   };
 }
@@ -144,6 +145,10 @@ describe('createDesktopWorkbarServices', () => {
     services.artifacts.subscribeChanges(eventHandler)();
     await services.artifacts.openPath('s', 'a');
     await services.artifacts.saveAs('s', 'a');
+
+    await services.workspace.readText('s', 'docs/guide.md');
+    await services.workspace.openFile('s', 'docs/guide.md');
+    await services.workspace.revealFile('s', 'docs/guide.md');
 
     await services.inspector.trace('s', 'cursor-1');
     await services.inspector.summary('s');
@@ -214,6 +219,9 @@ describe('createDesktopWorkbarServices', () => {
         'artifacts.subscribeChanges',
         'app.openArtifactPath',
         'app.saveArtifactAs',
+        'workspace.readText',
+        'workspace.openFile',
+        'workspace.revealFile',
         'inspector.trace',
         'inspector.summary',
         'inspector.context',

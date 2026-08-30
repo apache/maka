@@ -501,6 +501,7 @@ export const test = base.extend<{
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
+  workspaceMarkdownWindow: Page;
 }>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
@@ -638,6 +639,15 @@ export const test = base.extend<{
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
       locale: 'zh',
+      showWindow: true,
+    }, use);
+  },
+  workspaceMarkdownWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-workspace-file="docs/guide with spaces.md"]',
+      e2eFixtureScenario: 'chat-workspace-markdown',
+      locale: 'en',
       showWindow: true,
     }, use);
   },

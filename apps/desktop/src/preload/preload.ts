@@ -3299,6 +3299,15 @@ const makaBridge = {
           })
         : invokeActiveRuntimeHost('workspace:searchFiles', { query, ...options });
     },
+    readText(sessionId: string, relativePath: string) {
+      return invokeSessionRuntimeHost('workspace:readText', sessionId, relativePath);
+    },
+    openFile(sessionId: string, relativePath: string) {
+      return invokeSessionRuntimeHost('workspace:openFile', sessionId, relativePath);
+    },
+    revealFile(sessionId: string, relativePath: string) {
+      return invokeSessionRuntimeHost('workspace:revealFile', sessionId, relativePath);
+    },
   },
   e2eFixture: {
     async getState(): Promise<E2eFixtureState | null> {

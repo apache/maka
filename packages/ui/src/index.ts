@@ -47,6 +47,7 @@ export * from './locale-helpers.js';
 export * from './locale-context.js';
 export { MakaUriContext } from './markdown.js';
 export * from './maka-uri.js';
+export * from './workspace-file-href.js';
 export * from './materialize.js';
 export * from './live-turn-projection.js';
 export * from './transcript-projection.js';

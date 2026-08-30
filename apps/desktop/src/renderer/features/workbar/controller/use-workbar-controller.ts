@@ -28,7 +28,7 @@ import {
 } from 'react';
 import type { QuoteRef } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
-import { Composer, useUiLocale } from '@maka/ui';
+import { Composer, isMarkdownWorkspaceFile, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
@@ -74,6 +74,7 @@ export interface WorkbarControllerCommands {
     options?: OpenToolOptions,
   ): void;
   openSideChatWithQuote(quote: QuoteRef): void;
+  openWorkspaceFile(sessionId: string | undefined, relativePath: string): void;
   toggleRight(): void;
 }
 
@@ -169,6 +170,10 @@ export function useWorkbarController(
     ReadonlySet<string>
   >(() => new Set());
   const [, setLiveBrowserSessionIds] = useState<readonly string[]>([]);
+  const [workspaceFilePreview, setWorkspaceFilePreview] = useState<{
+    sessionId: string;
+    relativePath: string;
+  } | null>(null);
 
   const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
@@ -370,6 +375,17 @@ export function useWorkbarController(
       terminal,
       terminalCopy.startFailed,
     ],
+  );
+
+  const openWorkspaceFile = useCallback<
+    WorkbarControllerCommands['openWorkspaceFile']
+  >(
+    (sessionId, relativePath) => {
+      if (!sessionId || !isMarkdownWorkspaceFile(relativePath)) return;
+      setWorkspaceFilePreview({ sessionId, relativePath });
+      openTool('files', 'right');
+    },
+    [openTool],
   );
 
   const openSideChatWithQuote = useCallback(
@@ -641,8 +657,8 @@ export function useWorkbarController(
   );
 
   const commands = useMemo<WorkbarControllerCommands>(
-    () => ({ openTool, openSideChatWithQuote, toggleRight }),
-    [openSideChatWithQuote, openTool, toggleRight],
+    () => ({ openTool, openSideChatWithQuote, openWorkspaceFile, toggleRight }),
+    [openSideChatWithQuote, openTool, openWorkspaceFile, toggleRight],
   );
 
   const activeSideChatTabIds = useMemo(
@@ -680,6 +696,8 @@ export function useWorkbarController(
       rightWidth: layout.workbarWidth,
       bottomHeight: layout.bottomPanelHeight,
       panelsState: hostPanelsState,
+      workspaceFilePreview,
+      onCloseWorkspaceFilePreview: () => setWorkspaceFilePreview(null),
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,

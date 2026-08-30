@@ -18,6 +18,7 @@
  */
 
 import { SETTINGS_SECTIONS, type SettingsSection } from '@maka/core/settings';
+import type { WorkspaceFileDest } from './workspace-file-href.js';
 
 const ALLOWED_SETTINGS_SECTIONS = new Set<SettingsSection>(SETTINGS_SECTIONS);
 const RAW_HREF_MAX_LENGTH = 4096;
@@ -26,7 +27,8 @@ const COMPOSE_TEXT_MAX_LENGTH = 4096;
 /** Closed internal navigation surface; it never executes actions. */
 export type MakaUriDest =
   | { kind: 'settings'; section: SettingsSection }
-  | { kind: 'compose'; text: string };
+  | { kind: 'compose'; text: string }
+  | WorkspaceFileDest;
 
 /**
  * Parse an exact lowercase internal URI. Unsupported namespaces and malformed

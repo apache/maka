@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { stat } from 'node:fs/promises';
+import { open, realpath, stat } from 'node:fs/promises';
 import type { GitReviewSource } from '@maka/core/git-review';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import { readGitReview } from './git-review-main.js';
@@ -25,6 +25,13 @@ import {
   handleReconnectableRead,
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
+import {
+  isAllowedWorkspaceMarkdownPath,
+  isPathInsideWorkspace,
+  resolveWorkspaceFile,
+} from './workspace-file-guard.js';
+
+const WORKSPACE_TEXT_LIMIT_BYTES = 256 * 1024;
 
 type WorkspaceClient = Pick<DesktopRuntimeHostClient, 'getSession'>;
 
@@ -33,6 +40,8 @@ export function registerRuntimeHostWorkspaceIpc(
     readonly ipcMain: ReconnectableReadIpcMain;
     readonly client: WorkspaceClient;
     readonly allowLocalWorkspace?: boolean;
+    readonly openPath?: (path: string) => Promise<string>;
+    readonly showItemInFolder?: (path: string) => void;
   },
 ): void {
   handleReconnectableRead(input.ipcMain, 'git-review:read', async (_event, raw: unknown) => {
@@ -44,6 +53,122 @@ export function registerRuntimeHostWorkspaceIpc(
     if (!cwd) return { ok: false as const, reason: 'workspace_unavailable' as const };
     return readGitReview(cwd, request.source, undefined, request.baseBranch);
   });
+  handleReconnectableRead(
+    input.ipcMain,
+    'workspace:readText',
+    async (_event, sessionId: unknown, relativePath: unknown) => {
+      if (input.allowLocalWorkspace === false) {
+        return { ok: false as const, reason: 'not-allowed' as const };
+      }
+      if (typeof sessionId !== 'string' || sessionId.length === 0) {
+        return { ok: false as const, reason: 'invalid' as const };
+      }
+      if (typeof relativePath !== 'string') {
+        return { ok: false as const, reason: 'invalid' as const };
+      }
+      const cwd = await sessionWorkspace(input.client, sessionId);
+      if (!cwd) return { ok: false as const, reason: 'missing' as const };
+      return readBoundedWorkspaceText({ workspaceRoot: cwd, relativePath });
+    },
+  );
+
+  input.ipcMain.handle('workspace:openFile', async (_event, sessionId: unknown, relativePath: unknown) => {
+    const resolved = await resolveSessionWorkspaceFile(input, sessionId, relativePath);
+    if (!resolved.ok) return resolved;
+    const error = await input.openPath?.(resolved.path);
+    if (error) return { ok: false as const, reason: 'open-failed' as const };
+    return { ok: true as const, opened: resolved.relativePath };
+  });
+
+  input.ipcMain.handle('workspace:revealFile', async (_event, sessionId: unknown, relativePath: unknown) => {
+    const resolved = await resolveSessionWorkspaceFile(input, sessionId, relativePath);
+    if (!resolved.ok) return resolved;
+    input.showItemInFolder?.(resolved.path);
+    return { ok: true as const, opened: resolved.relativePath };
+  });
+}
+
+async function resolveSessionWorkspaceFile(
+  input: {
+    readonly client: WorkspaceClient;
+    readonly allowLocalWorkspace?: boolean;
+  },
+  sessionId: unknown,
+  relativePath: unknown,
+): Promise<
+  | { ok: true; path: string; root: string; relativePath: string }
+  | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' }
+> {
+  if (input.allowLocalWorkspace === false) return { ok: false, reason: 'not-allowed' };
+  if (typeof sessionId !== 'string' || sessionId.length === 0) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (typeof relativePath !== 'string') return { ok: false, reason: 'invalid' };
+  const cwd = await sessionWorkspace(input.client, sessionId);
+  if (!cwd) return { ok: false, reason: 'missing' };
+  return resolveWorkspaceFile({ workspaceRoot: cwd, relativePath });
+}
+
+export async function readBoundedWorkspaceText(
+  input: { readonly workspaceRoot: string; readonly relativePath: string },
+  beforeOpen: (path: string) => void | Promise<void> = () => undefined,
+): Promise<
+  | { ok: true; relativePath: string; text: string }
+  | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' }
+  | { ok: false; reason: 'too-large'; sizeBytes: number }
+> {
+  const resolved = await resolveWorkspaceFile(input);
+  if (!resolved.ok) return resolved;
+  await beforeOpen(resolved.path);
+
+  const handle = await open(resolved.path, 'r').catch(() => null);
+  if (!handle) return { ok: false, reason: 'missing' };
+  try {
+    const fileStat = await handle.stat({ bigint: true });
+    if (!fileStat.isFile()) return { ok: false, reason: 'not-a-file' };
+
+    const currentTarget = await realpath(resolved.path).catch(() => null);
+    if (!currentTarget) return { ok: false, reason: 'missing' };
+    if (!isPathInsideWorkspace(resolved.root, currentTarget)) {
+      return { ok: false, reason: 'not-allowed' };
+    }
+    if (!isAllowedWorkspaceMarkdownPath(currentTarget)) {
+      return { ok: false, reason: 'not-a-file' };
+    }
+    const currentStat = await stat(currentTarget, { bigint: true }).catch(() => null);
+    if (
+      !currentStat
+      || currentStat.dev !== fileStat.dev
+      || currentStat.ino !== fileStat.ino
+    ) {
+      return { ok: false, reason: 'not-allowed' };
+    }
+    if (fileStat.size > BigInt(WORKSPACE_TEXT_LIMIT_BYTES)) {
+      return { ok: false, reason: 'too-large', sizeBytes: Number(fileStat.size) };
+    }
+
+    const bytes = Buffer.allocUnsafe(WORKSPACE_TEXT_LIMIT_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(bytes, offset, bytes.byteLength - offset, null);
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset > WORKSPACE_TEXT_LIMIT_BYTES) {
+      return {
+        ok: false,
+        reason: 'too-large',
+        sizeBytes: Math.max(Number(fileStat.size), offset),
+      };
+    }
+    return {
+      ok: true,
+      relativePath: resolved.relativePath,
+      text: bytes.subarray(0, offset).toString('utf8'),
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
 async function sessionWorkspace(client: WorkspaceClient, sessionId: string): Promise<string | null> {

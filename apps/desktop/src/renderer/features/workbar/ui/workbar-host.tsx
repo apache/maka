@@ -88,6 +88,11 @@ export interface WorkbarHostModel {
   rightWidth: number;
   bottomHeight: number;
   panelsState: SessionWorkbarPanelsState;
+  workspaceFilePreview: {
+    sessionId: string;
+    relativePath: string;
+  } | null;
+  onCloseWorkspaceFilePreview(): void;
   onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
   onCloseTab: (placement: SessionWorkbarPlacement, tab: SessionWorkbarTab) => void;
   onCloseTabs: (
@@ -186,6 +191,8 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               hidden={props.hidden}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}
+              workspaceFilePreview={props.workspaceFilePreview}
+              onCloseWorkspaceFilePreview={props.onCloseWorkspaceFilePreview}
               rightCollapsed={props.rightCollapsed}
               bottomOpen={props.bottomOpen}
               onActivateTab={props.onActivateTab}

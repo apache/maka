@@ -42,6 +42,10 @@ import {
   isSafeExternalScheme,
   parseMakaUri,
 } from './maka-uri.js';
+import {
+  linkifyBareWorkspaceMarkdownReferences,
+  parseWorkspaceFileHref,
+} from './workspace-file-href.js';
 import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
@@ -141,7 +145,15 @@ export function MarkdownBody(props: {
     (source: string) => prepareMarkdownMath(source, mathCache.current),
     [],
   );
-  const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
+  const safeText = neutralizeUnsafeMarkdownImages(
+    linkifyBareWorkspaceMarkdownReferences(props.text),
+  );
+  const settledText = props.settledText === undefined
+    ? undefined
+    : neutralizeUnsafeMarkdownImages(
+        linkifyBareWorkspaceMarkdownReferences(props.settledText),
+      );
+  const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
   const density = props.density ?? 'default';
   const components = props.streaming
     ? density === 'compact'
@@ -184,7 +196,7 @@ export function MarkdownBody(props: {
         components={components}
         inlinePlugins={MARKDOWN_MATH_PLUGINS}
         isStreaming={props.streaming}
-        settledText={props.settledText}
+        settledText={settledText}
         transformSource={transformMathSource}
       >
         {budgetedText}
@@ -278,6 +290,82 @@ function MarkdownImage(props: { src: string; alt: string }) {
   return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
 }
 
+/**
+ * Astryx delegates inline images to `components.image`, but its standalone
+ * image branch renders a native image directly. Neutralizing unsafe direct
+ * image syntax before parsing keeps both branches behind Maka's URL policy.
+ */
+function neutralizeUnsafeMarkdownImages(source: string): string {
+  let fence: string | null = null;
+  return source
+    .split('\n')
+    .map((line) => {
+      if (fence) {
+        if (line.startsWith(fence)) fence = null;
+        return line;
+      }
+
+      const fenceMatch = line.match(/^(`{3,}|~{3,})(\w*)/);
+      if (fenceMatch?.[1]) {
+        fence = fenceMatch[1];
+        return line;
+      }
+
+      return neutralizeUnsafeImagesInLine(line);
+    })
+    .join('\n');
+}
+
+function neutralizeUnsafeImagesInLine(line: string): string {
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < line.length) {
+    if (line[cursor] === '`') {
+      let tickCount = 1;
+      while (line[cursor + tickCount] === '`') tickCount += 1;
+      const delimiter = '`'.repeat(tickCount);
+      const close = line.indexOf(delimiter, cursor + tickCount);
+      if (close !== -1) {
+        const end = close + tickCount;
+        output += line.slice(cursor, end);
+        cursor = end;
+        continue;
+      }
+    }
+
+    if (line[cursor] === '!' && line[cursor + 1] === '[') {
+      const altClose = line.indexOf(']', cursor + 2);
+      if (altClose !== -1 && line[altClose + 1] === '(') {
+        const srcStart = altClose + 2;
+        const srcClose = findMarkdownClosingParen(line, srcStart);
+        if (srcClose !== -1) {
+          const src = line.slice(srcStart, srcClose);
+          output += (parseAttachmentResourceRef(src) || isSafeMarkdownImageUrl(src))
+            ? line.slice(cursor, srcClose + 1)
+            : `!\\[${line.slice(cursor + 2, srcClose + 1)}`;
+          cursor = srcClose + 1;
+          continue;
+        }
+      }
+    }
+
+    output += line[cursor];
+    cursor += 1;
+  }
+
+  return output;
+}
+
+function findMarkdownClosingParen(text: string, start: number): number {
+  let depth = 1;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === '(') depth += 1;
+    if (text[index] === ')' && --depth === 0) return index;
+  }
+  return -1;
+}
+
 function isSafeMarkdownImageUrl(url: string): boolean {
   try {
     const protocol = new URL(url).protocol;
@@ -318,6 +406,21 @@ function MarkdownLink(props: { href: string; children: ReactNode }) {
       >
         {children}
       </span>
+    );
+  }
+
+  const workspaceFile = parseWorkspaceFileHref(href);
+  if (workspaceFile && dispatch) {
+    return (
+      <AstryxLink
+        type="inherit"
+        hasUnderline
+        data-maka-uri-kind={workspaceFile.kind}
+        data-workspace-file={workspaceFile.relativePath}
+        onClick={() => dispatch(workspaceFile)}
+      >
+        {children}
+      </AstryxLink>
     );
   }
 

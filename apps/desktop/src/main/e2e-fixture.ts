@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
@@ -46,6 +46,7 @@ import {
   promptRailSession,
   turnMessages,
   turnSession,
+  workspaceMarkdownMessages,
 } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
@@ -63,6 +64,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'turn-narrative-browser',
   'chat-prompt-rail',
   'chat-partial-history',
+  'chat-workspace-markdown',
   'settings-data',
   'settings-bots-onboarding',
   'settings-general',
@@ -180,6 +182,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: PROMPT_RAIL_SESSION_ID, workbarCollapsed: true };
     case 'chat-partial-history':
       return { ...state, activeSessionId: PARTIAL_HISTORY_SESSION_ID, workbarCollapsed: true };
+    case 'chat-workspace-markdown':
+      return { ...state, activeSessionId: TURN_SESSION_ID, workbarCollapsed: true };
     case 'settings-data':
       return { ...state, activeSessionId: TURN_SESSION_ID, openSettingsSection: 'data' };
     case 'settings-bots-onboarding':
@@ -226,7 +230,21 @@ export async function seedE2eFixture(input: {
   const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
-  await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
+  await writeSession(
+    input.workspaceRoot,
+    turnSession(now),
+    scenario === 'chat-workspace-markdown'
+      ? workspaceMarkdownMessages(now)
+      : turnMessages(now),
+  );
+
+  if (scenario === 'chat-workspace-markdown') {
+    const docsRoot = join(input.workspaceRoot, 'docs');
+    await mkdir(docsRoot, { recursive: true });
+    await writeFile(join(docsRoot, 'guide with spaces.md'), '# Workspace guide\n\nOpened from an explicit Markdown link.\n', 'utf8');
+    await writeFile(join(docsRoot, 'notes.md'), '# Workspace notes\n\nOpened from a bare path.\n', 'utf8');
+    await writeFile(join(docsRoot, 'chip.md'), '# Workspace chip\n\nOpened from a sent file reference.\n', 'utf8');
+  }
 
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));

@@ -1664,6 +1664,31 @@ export interface MakaBridge {
       | { ok: true; files: Array<{ relativePath: string }> }
       | { ok: false; reason: 'no_project' | 'search_failed' }
     >;
+    readText(
+      sessionId: string,
+      relativePath: string,
+    ): Promise<
+      | { ok: true; relativePath: string; text: string }
+      | {
+          ok: false;
+          reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' | 'too-large';
+          sizeBytes?: number;
+        }
+    >;
+    openFile(
+      sessionId: string,
+      relativePath: string,
+    ): Promise<
+      | { ok: true; opened: string }
+      | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' | 'open-failed' }
+    >;
+    revealFile(
+      sessionId: string,
+      relativePath: string,
+    ): Promise<
+      | { ok: true; opened: string }
+      | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' }
+    >;
   };
   e2eFixture: {
     getState(): Promise<E2eFixtureState | null>;

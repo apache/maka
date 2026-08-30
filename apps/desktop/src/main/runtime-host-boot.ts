@@ -1335,6 +1335,8 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     allowLocalWorkspace: !usesHostWorkspace,
+    openPath: (path) => shell.openPath(path),
+    showItemInFolder: (path) => shell.showItemInFolder(path),
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {

@@ -236,6 +236,32 @@ describe('useWorkbarController', () => {
     );
   });
 
+  it('opens only Markdown workspace references in the Files tool', async () => {
+    const { root } = installReactRenderer();
+    await act(async () =>
+      renderController(root, createFakeWorkbarServices(), input(session('a'))),
+    );
+
+    await act(async () =>
+      controller().commands.openWorkspaceFile('a', 'docs/guide.md'),
+    );
+    assert.deepEqual(controller().host.workspaceFilePreview, {
+      sessionId: 'a',
+      relativePath: 'docs/guide.md',
+    });
+    assert.equal(
+      controller().host.panelsState.right.tabs.some((tab) => tab.kind === 'files'),
+      true,
+    );
+
+    await act(async () => controller().host.onCloseWorkspaceFilePreview());
+    assert.equal(controller().host.workspaceFilePreview, null);
+    await act(async () =>
+      controller().commands.openWorkspaceFile('a', 'docs/guide.md.txt'),
+    );
+    assert.equal(controller().host.workspaceFilePreview, null);
+  });
+
   it('stops a Terminal whose start resolves after the owner Session changes', async () => {
     const { root } = installReactRenderer();
     const start = deferred<ShellRunUpdate>();

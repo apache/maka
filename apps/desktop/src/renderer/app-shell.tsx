@@ -2530,25 +2530,22 @@ function AppShellContent({
    *     auto-submit the prompt; the user still presses Enter. That
    *     keeps an injected `maka://compose?text=ransfer my keys...`
    *     from sending without a human in the loop.
+   *   - `kind: 'workspace_file'` → ask the Workbar controller to open
+   *     the validated Markdown target for the active Session.
    *
-   * No other cases exist today by design — the parser only emits
-   * these two discriminants. If a new variant is added in `MakaUriDest`,
+   * No other cases exist today by design. If a new variant is added in `MakaUriDest`,
    * TypeScript's exhaustiveness check below trips and a new branch
    * must be wired here with corresponding fixture and journey coverage.
    */
   function dispatchMakaUri(dest: MakaUriDest) {
     switch (dest.kind) {
       case 'settings':
-        openSettingsSection(dest.section);
-        return;
+        return openSettingsSection(dest.section);
       case 'compose':
         composerRef.current?.setText(dest.text);
-        composerRef.current?.focus();
-        return;
-      default: {
-        const _exhaustive: never = dest;
-        return _exhaustive;
-      }
+        return composerRef.current?.focus();
+      default:
+        return workbar.commands.openWorkspaceFile(activeId, dest.relativePath);
     }
   }
 

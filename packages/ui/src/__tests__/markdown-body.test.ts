@@ -332,6 +332,49 @@ it('preserves allowlisted Maka navigation links through sanitization', () => {
   assert.doesNotMatch(markup, /Blocked URL/);
 });
 
+it('turns workspace-relative Markdown files into internal links', () => {
+  const markup = renderToStaticMarkup(
+    createElement(
+      LocaleProvider,
+      {
+        locale: 'en',
+        children: createElement(
+          MakaUriContext.Provider,
+          { value: () => {} },
+          createElement(MarkdownBody, {
+            text: '[Guide](docs/guide.md)',
+          }),
+        ),
+      },
+    ),
+  );
+
+  assert.match(markup, /data-maka-uri-kind="workspace_file"/);
+  assert.match(markup, /data-workspace-file="docs\/guide.md"/);
+  assert.doesNotMatch(markup, /data-reason="unsafe-scheme"/);
+});
+
+it('turns bare Markdown paths into internal links without activating executable paths', () => {
+  const markup = renderToStaticMarkup(
+    createElement(
+      LocaleProvider,
+      {
+        locale: 'en',
+        children: createElement(
+          MakaUriContext.Provider,
+          { value: () => {} },
+          createElement(MarkdownBody, {
+            text: 'Read docs/guide.md. Do not open tools/setup.command.',
+          }),
+        ),
+      },
+    ),
+  );
+
+  assert.match(markup, /data-workspace-file="docs\/guide.md"/);
+  assert.doesNotMatch(markup, /data-workspace-file="tools\/setup.command"/);
+});
+
 it('keeps non-allowlisted external schemes inert', () => {
   for (const href of [
     'file:///Users/example/.ssh/id_rsa',

@@ -45,8 +45,10 @@ import {
   TaskLedgerPanel,
   deriveTaskLedgerPanelModel,
   IconButton,
+  MarkdownBody,
   Composer,
   useUiLocale,
+  useToast,
   type ChatModelChoice,
 } from '@maka/ui';
 import {
@@ -96,6 +98,7 @@ import type {
   QuoteCompanionPanelState,
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
+import { useWorkbarServices } from '../services-context.js';
 
 const ArtifactPane = lazy(() =>
   import('../tools/artifacts/artifact-pane').then((module) => ({ default: module.ArtifactPane })),
@@ -672,6 +675,109 @@ function WorkbarLauncher(props: {
   );
 }
 
+function WorkspaceMarkdownPreview(props: {
+  sessionId: string;
+  relativePath: string;
+  copy: {
+    back: string;
+    openLocally: string;
+    reveal: string;
+    previewFailed: string;
+    actionFailed: string;
+    failures: Record<string, string>;
+  };
+  onClose(): void;
+}) {
+  const { copy } = props;
+  const toast = useToast();
+  const { workspace } = useWorkbarServices();
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'ready'; text: string }
+    | { kind: 'error'; reason: string }
+  >({ kind: 'loading' });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ kind: 'loading' });
+    void workspace
+      .readText(props.sessionId, props.relativePath)
+      .then((result) => {
+        if (cancelled) return;
+        setState(
+          result.ok
+            ? { kind: 'ready', text: result.text }
+            : { kind: 'error', reason: result.reason },
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setState({ kind: 'error', reason: 'default' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.relativePath, props.sessionId, workspace]);
+
+  async function runAction(action: 'open' | 'reveal') {
+    try {
+      const result =
+        action === 'open'
+          ? await workspace.openFile(props.sessionId, props.relativePath)
+          : await workspace.revealFile(props.sessionId, props.relativePath);
+      if (!result.ok) {
+        toast.error(
+          copy.actionFailed,
+          copy.failures[result.reason] ?? copy.failures.default,
+        );
+      }
+    } catch {
+      toast.error(copy.actionFailed, copy.failures.default);
+    }
+  }
+
+  return (
+    <div
+      className="maka-workspace-file-preview"
+      data-workspace-file={props.relativePath}
+      aria-busy={state.kind === 'loading'}
+    >
+      <div className="maka-workspace-file-preview-header">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          label={copy.back}
+          onClick={props.onClose}
+        />
+        <strong>{props.relativePath}</strong>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          label={copy.openLocally}
+          onClick={() => void runAction('open')}
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          label={copy.reveal}
+          onClick={() => void runAction('reveal')}
+        />
+      </div>
+      {state.kind === 'error' ? (
+        <div className="maka-workspace-file-preview-error" role="alert">
+          <strong>{copy.previewFailed}</strong>
+          <span>{copy.failures[state.reason] ?? copy.failures.default}</span>
+        </div>
+      ) : null}
+      {state.kind === 'ready' ? (
+        <MarkdownBody text={state.text} density="default" />
+      ) : null}
+    </div>
+  );
+}
+
 export function WorkbarSurface(props: {
   sessionId: string;
   projectId?: string | null;
@@ -679,6 +785,11 @@ export function WorkbarSurface(props: {
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   panelsState: SessionWorkbarPanelsState;
+  workspaceFilePreview?: {
+    sessionId: string;
+    relativePath: string;
+  } | null;
+  onCloseWorkspaceFilePreview?(): void;
   rightCollapsed: boolean;
   bottomOpen: boolean;
   onActivateTab: (placement: SessionWorkbarPlacement, tabId: string) => void;
@@ -718,7 +829,12 @@ export function WorkbarSurface(props: {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
+  const conversationCopy = getDesktopConversationCopy(useUiLocale());
+  const copy = conversationCopy.workbar;
+  const workspacePreviewTarget =
+    props.workspaceFilePreview?.sessionId === props.sessionId
+      ? props.workspaceFilePreview
+      : null;
   const sessionTasks = useSessionTasks(props.sessionId);
   const taskCount = deriveTaskLedgerPanelModel(sessionTasks.tasks).activeCount;
   const [artifactCount, setArtifactCount] = useState(0);
@@ -847,11 +963,20 @@ export function WorkbarSurface(props: {
         } else if (tab.kind === 'files') {
           content = (
             <Suspense fallback={<WorkbarPanelLoading label={copy.files} />}>
-              <ArtifactPane
-                sessionId={props.sessionId}
-                onCountChange={setArtifactCount}
-                onDismiss={() => props.onDismissPanel(placement)}
-              />
+              {workspacePreviewTarget ? (
+                <WorkspaceMarkdownPreview
+                  sessionId={workspacePreviewTarget.sessionId}
+                  relativePath={workspacePreviewTarget.relativePath}
+                  copy={conversationCopy.workspaceFile}
+                  onClose={() => props.onCloseWorkspaceFilePreview?.()}
+                />
+              ) : (
+                <ArtifactPane
+                  sessionId={props.sessionId}
+                  onCountChange={setArtifactCount}
+                  onDismiss={() => props.onDismissPanel(placement)}
+                />
+              )}
             </Suspense>
           );
         } else if (tab.kind === 'inspector') {

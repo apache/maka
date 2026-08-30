@@ -152,6 +152,34 @@ export interface WorkbarArtifactsService {
   saveAs(sessionId: string, artifactId: string): Promise<ArtifactSaveResult>;
 }
 
+export interface WorkbarWorkspaceFileService {
+  readText(
+    sessionId: string,
+    relativePath: string,
+  ): Promise<
+    | { ok: true; relativePath: string; text: string }
+    | {
+        ok: false;
+        reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' | 'too-large';
+        sizeBytes?: number;
+      }
+  >;
+  openFile(
+    sessionId: string,
+    relativePath: string,
+  ): Promise<
+    | { ok: true; opened: string }
+    | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' | 'open-failed' }
+  >;
+  revealFile(
+    sessionId: string,
+    relativePath: string,
+  ): Promise<
+    | { ok: true; opened: string }
+    | { ok: false; reason: 'invalid' | 'missing' | 'not-a-file' | 'not-allowed' }
+  >;
+}
+
 export interface WorkbarSessionTracePage {
   readonly trace: SessionTrace;
   readonly nextCursor: string | null;
@@ -275,6 +303,7 @@ export interface WorkbarServices {
   readonly tasks: WorkbarTasksService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
+  readonly workspace: WorkbarWorkspaceFileService;
   readonly inspector: WorkbarInspectorService;
   readonly attachments: WorkbarAttachmentsService;
   readonly sideChat: SideChatSessionPort;

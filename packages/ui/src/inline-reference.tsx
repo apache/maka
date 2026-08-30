@@ -19,8 +19,10 @@
 
 import type { InlineReference } from '@maka/core/events';
 import { ChatTokenizedText, type ChatComposerToken } from '@astryxdesign/core';
-import type { ReactNode } from 'react';
+import { useContext, type ReactNode } from 'react';
 import { ICON_SIZE, Sparkles } from './icons.js';
+import { MakaUriContext } from './markdown.js';
+import { parseWorkspaceFileHref } from './workspace-file-href.js';
 
 type InlineReferenceVisual = Pick<InlineReference, 'kind' | 'value' | 'label'>;
 
@@ -107,15 +109,54 @@ export function InlineReferenceText(props: {
     }
     if (reference.start > cursor) parts.push(props.text.slice(cursor, reference.start));
     parts.push(
-      <ChatTokenizedText
-        key={`${reference.start}:${reference.value}`}
-        tokens={[inlineReferenceToken(reference)]}
-      >
-        {reference.value}
-      </ChatTokenizedText>,
+      reference.kind === 'workspace_file' ? (
+        <WorkspaceFileInlineReference
+          key={`${reference.start}:${reference.value}`}
+          reference={reference}
+        />
+      ) : (
+        <ChatTokenizedText
+          key={`${reference.start}:${reference.value}`}
+          tokens={[inlineReferenceToken(reference)]}
+        >
+          {reference.value}
+        </ChatTokenizedText>
+      ),
     );
     cursor = reference.start + reference.value.length;
   }
   if (cursor < props.text.length) parts.push(props.text.slice(cursor));
   return <span>{parts}</span>;
+}
+
+/** Keep ordinary messages outside the navigation context subscription. */
+function WorkspaceFileInlineReference(props: { reference: InlineReference }) {
+  const dispatch = useContext(MakaUriContext);
+  const workspaceFile = props.reference.value.startsWith('@')
+    ? parseWorkspaceFileHref(props.reference.value.slice(1))
+    : null;
+  const tokenizedText = (
+    <ChatTokenizedText tokens={[inlineReferenceToken(props.reference)]}>
+      {props.reference.value}
+    </ChatTokenizedText>
+  );
+  if (!workspaceFile || !dispatch) return tokenizedText;
+  const openWorkspaceFile = () => dispatch(workspaceFile);
+  return (
+    <ChatTokenizedText
+      tokens={[inlineReferenceToken(props.reference)]}
+      role="button"
+      tabIndex={0}
+      data-maka-uri-kind={workspaceFile.kind}
+      data-workspace-file={workspaceFile.relativePath}
+      onClick={openWorkspaceFile}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        openWorkspaceFile();
+      }}
+    >
+      {props.reference.value}
+    </ChatTokenizedText>
+  );
 }

@@ -110,6 +110,42 @@ export function turnMessages(now: number): StoredMessage[] {
   ];
 }
 
+export function workspaceMarkdownMessages(now: number): StoredMessage[] {
+  const turnId = 'turn-workspace-markdown';
+  const userText = 'Review @docs/chip.md before the other documents.';
+  return [
+    {
+      type: 'user',
+      id: 'msg-workspace-markdown-user',
+      turnId,
+      ts: now - 2_000,
+      text: userText,
+      inlineReferences: [
+        {
+          kind: 'workspace_file',
+          value: '@docs/chip.md',
+          label: 'chip.md',
+          start: userText.indexOf('@docs/chip.md'),
+        },
+      ],
+    },
+    {
+      type: 'assistant',
+      id: 'msg-workspace-markdown-assistant',
+      turnId,
+      ts: now - 1_000,
+      text: [
+        'Open [the workspace guide](docs/guide%20with%20spaces.md).',
+        '',
+        'Then read the bare path docs/notes.md.',
+        '',
+        'Keep this executable inert: [setup](tools/setup.command).',
+      ].join('\n'),
+      modelId: 'glm-5.1',
+    },
+  ];
+}
+
 export function promptRailSession(now: number): SessionHeader {
   return header({
     id: PROMPT_RAIL_SESSION_ID,

@@ -104,4 +104,6 @@ export function Markdown(props: {
  * lazy body reads it via `useContext(MakaUriContext)` imported back
  * from here.
  */
-export const MakaUriContext = createContext<((dest: import('./maka-uri.js').MakaUriDest) => void) | undefined>(undefined);
+export const MakaUriContext = createContext<
+  ((dest: import('./maka-uri.js').MakaUriDest) => void) | undefined
+>(undefined);
