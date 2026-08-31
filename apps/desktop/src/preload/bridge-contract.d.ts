@@ -1316,17 +1316,17 @@ export interface MakaBridge {
   };
   connections: {
     getSnapshot(sessionId?: string, host?: DesktopRuntimeHostRef): Promise<DesktopConnectionSnapshot>;
-    setDefault(slug: string | null, host?: DesktopRuntimeHostRef): Promise<void>;
+    setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
-    create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
-    update(slug: string, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
-    delete(slug: string, host?: DesktopRuntimeHostRef): Promise<void>;
-    test(slug: string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
-    fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
-    hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean>;
-    getRequestHeaders(slug: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
+    create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection>;
+    update(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
+    delete(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void>;
+    test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
+    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
+    hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
+    getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
-      slug: string,
+      connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity,
       headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
       host?: DesktopRuntimeHostRef,
     ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;

@@ -66,7 +66,7 @@ export interface CatalogFilter {
 
 export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all' };
 
-interface CreatedOAuthConnectionIdentity {
+export interface CreatedOAuthConnectionIdentity {
   connectionId: string;
   slug: string;
   providerType: 'openai-codex' | 'xai-oauth';
@@ -171,7 +171,12 @@ export function ProviderCatalogPage(props: {
               data-status="ready"
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
-              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
+              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
+                card.id === 'github-copilot' ? card.isLoggedIn ? 'manage' : 'import' : 'add',
+                card.name,
+                card.status,
+                card.description,
+              )}>{card.name}</span>}
               description={card.description}
               endContent={(
                 <HStack gap={2} vAlign="center">
@@ -215,9 +220,8 @@ export function ProviderCatalogPage(props: {
 }
 
 /**
- * Level 3: one provider being set up — its credential form, or its account
- * login. Named `setup` rather than `create` because the account body also
- * signs out and re-authorizes; it is not a one-way create.
+ * Level 3: one provider being set up — its credential form, or a new account
+ * enrollment. Existing-account actions live on that Connection's detail page.
  */
 export function ProviderSetupPage(props: {
   bridge: ConnectionsBridge;

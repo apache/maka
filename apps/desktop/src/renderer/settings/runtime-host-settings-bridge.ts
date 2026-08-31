@@ -37,17 +37,17 @@ export function runtimeHostConnectionsBridge(
 ): RuntimeHostSettingsConnectionsBridge {
   return {
     getSnapshot: () => window.maka.connections.getSnapshot(undefined, host),
-    setDefault: (slug) => window.maka.connections.setDefault(slug, host),
+    setDefault: (connection) => window.maka.connections.setDefault(connection, host),
     setDefaultModel: (input) => window.maka.connections.setDefaultModel(input, host),
     create: (input) => window.maka.connections.create(input, host),
-    update: (slug, patch) => window.maka.connections.update(slug, patch, host),
-    delete: (slug) => window.maka.connections.delete(slug, host),
-    test: (slug, options) => window.maka.connections.test(slug, options, host),
-    fetchModels: (slug) => window.maka.connections.fetchModels(slug, host),
-    hasSecret: (slug) => window.maka.connections.hasSecret(slug, host),
-    getRequestHeaders: (slug) => window.maka.connections.getRequestHeaders(slug, host),
-    setRequestHeaders: (slug, headers) =>
-      window.maka.connections.setRequestHeaders(slug, headers, host),
+    update: (connection, patch) => window.maka.connections.update(connection, patch, host),
+    delete: (connection) => window.maka.connections.delete(connection, host),
+    test: (connection, options) => window.maka.connections.test(connection, options, host),
+    fetchModels: (connection) => window.maka.connections.fetchModels(connection, host),
+    hasSecret: (connection) => window.maka.connections.hasSecret(connection, host),
+    getRequestHeaders: (connection) => window.maka.connections.getRequestHeaders(connection, host),
+    setRequestHeaders: (connection, headers) =>
+      window.maka.connections.setRequestHeaders(connection, headers, host),
     subscribeEvents: (handler) =>
       window.maka.connections.subscribeEvents(handler, host),
   };

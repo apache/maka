@@ -148,8 +148,8 @@ const connectionsBridge: ConnectionsBridge = {
   async create(next) {
     return makeConnection({ slug: next.slug, name: next.name, providerType: next.providerType });
   },
-  async update(slug, patch) {
-    const current = connections.find((c) => c.slug === slug)!;
+  async update(identity, patch) {
+    const current = connections.find((c) => c.connectionId === identity.connectionId && c.slug === identity.slug)!;
     return {
       ...current,
       ...patch,
@@ -172,9 +172,9 @@ const connectionsBridge: ConnectionsBridge = {
   async test() {
     return { ok: true, latencyMs: 210, modelTested: 'glm-4.7' };
   },
-  async fetchModels(slug) {
+  async fetchModels(identity) {
     return {
-      models: slug.includes('openai') ? [{ id: 'gpt-5' }] : [{ id: 'glm-4.7' }],
+      models: identity.slug.includes('openai') ? [{ id: 'gpt-5' }] : [{ id: 'glm-4.7' }],
       source: 'fetched',
       fetchedAt: NOW,
     };
@@ -185,7 +185,7 @@ const connectionsBridge: ConnectionsBridge = {
   async getRequestHeaders() {
     return { names: [] };
   },
-  async setRequestHeaders(_slug, headers) {
+  async setRequestHeaders(_identity, headers) {
     return { names: headers.map(({ name }) => name) };
   },
   subscribeEvents() {

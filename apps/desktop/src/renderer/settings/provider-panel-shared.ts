@@ -21,6 +21,7 @@ import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets 
 import {
   type ConnectionTestResult,
   type CreateConnectionInput,
+  type IdentifiedLlmConnection,
   type LlmConnection,
   type ModelDiscoveryResult,
   type RequestHeaderUpdate,
@@ -32,20 +33,23 @@ import {
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
 import { cleanErrorMessage } from '../model-connection-errors.js';
-import type { DesktopConnectionSnapshot } from '../../shared/desktop-connection-snapshot.js';
+import type {
+  DesktopConnectionIdentity,
+  DesktopConnectionSnapshot,
+} from '../../shared/desktop-connection-snapshot.js';
 
 export interface ConnectionsBridge {
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
-  setDefault(slug: string | null): Promise<void>;
-  create(input: CreateConnectionInput): Promise<LlmConnection>;
-  update(slug: string, patch: UpdateConnectionInput): Promise<LlmConnection>;
-  delete(slug: string): Promise<void>;
-  test(slug: string, opts?: { model?: string }): Promise<ConnectionTestResult>;
-  fetchModels(slug: string): Promise<ModelDiscoveryResult>;
-  hasSecret(slug: string): Promise<boolean>;
-  getRequestHeaders(slug: string): Promise<SavedRequestHeaders>;
+  setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
+  create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;
+  update(connection: DesktopConnectionIdentity, patch: UpdateConnectionInput): Promise<LlmConnection>;
+  delete(connection: DesktopConnectionIdentity): Promise<void>;
+  test(connection: DesktopConnectionIdentity, opts?: { model?: string }): Promise<ConnectionTestResult>;
+  fetchModels(connection: DesktopConnectionIdentity): Promise<ModelDiscoveryResult>;
+  hasSecret(connection: DesktopConnectionIdentity): Promise<boolean>;
+  getRequestHeaders(connection: DesktopConnectionIdentity): Promise<SavedRequestHeaders>;
   setRequestHeaders(
-    slug: string,
+    connection: DesktopConnectionIdentity,
     headers: readonly RequestHeaderUpdate[],
   ): Promise<SavedRequestHeaders>;
   subscribeEvents?(handler: () => void): () => void;

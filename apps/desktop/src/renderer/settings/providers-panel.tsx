@@ -34,7 +34,7 @@ import {
 } from '@astryxdesign/core';
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
@@ -45,6 +45,7 @@ import {
   ProviderCatalogPage,
   ProviderSetupPage,
   type CatalogFilter,
+  type CreatedOAuthConnectionIdentity,
   type SetupTarget,
 } from './provider-catalog-page';
 import { isRetiredProvider } from '@maka/core/provider-registry';
@@ -80,6 +81,7 @@ type PanelRoute =
   | { kind: 'list' }
   | { kind: 'catalog' }
   | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
+  | { kind: 'adopting-oauth'; identity: CreatedOAuthConnectionIdentity }
   | { kind: 'detail'; connectionId: string };
 
 function backTarget(route: PanelRoute): PanelRoute {
@@ -106,7 +108,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   onInitialCreateProviderConsumed?: () => void;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const [connections, setConnections] = useState<LlmConnection[]>([]);
+  const [connections, setConnections] = useState<IdentifiedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
   // Browsing state, not navigation state: it outlives the catalog so that
@@ -171,12 +173,29 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
+    if (route.kind === 'adopting-oauth') {
+      const created = connections.find(
+        (connection) => connection.connectionId === route.identity.connectionId,
+      );
+      if (!created) return;
+      if (
+        created.slug !== route.identity.slug ||
+        created.providerType !== route.identity.providerType
+      ) {
+        setRoute({ kind: 'list' });
+        reportHostError(copy.loadFailed, copy.connectionIdentityChanged);
+        return;
+      }
+      returnFocusRef.current = { level: 'list', connectionId: created.connectionId };
+      setRoute({ kind: 'detail', connectionId: created.connectionId });
+      return;
+    }
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
     const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
     if (!connection?.connectionId) return;
     initialConnectionDetailOpenedRef.current = true;
     setRoute({ kind: 'detail', connectionId: connection.connectionId });
-  }, [loading, initialConnectionSlug, connections]);
+  }, [loading, initialConnectionSlug, connections, route, copy.connectionIdentityChanged, copy.loadFailed, reportHostError]);
 
   const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
@@ -204,11 +223,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'list' });
   }
 
-  function openDetail(connection: LlmConnection) {
-    if (!connection.connectionId) {
-      reportHostError(copy.loadFailed, copy.connectionRemoved);
-      return;
-    }
+  function openDetail(connection: IdentifiedLlmConnection) {
     returnFocusRef.current = { level: 'list', connectionId: connection.connectionId };
     setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }
@@ -221,11 +236,16 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const selected = route.kind === 'detail'
     ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
+  const pendingOAuthIdentity = route.kind === 'adopting-oauth' ? route.identity : null;
 
   // A detail route whose connection vanished (deleted in another window) is an
   // unsatisfiable route, not a state to correct: the list is what it renders
   // as. Deriving that beats scheduling a setState from inside render.
-  const level: PanelRoute['kind'] = route.kind === 'detail' && !selected ? 'list' : route.kind;
+  const level: Exclude<PanelRoute['kind'], 'adopting-oauth'> = route.kind === 'adopting-oauth'
+    ? 'list'
+    : route.kind === 'detail' && !selected
+      ? 'list'
+      : route.kind;
 
   useSettingsRouteFocus({
     level,
@@ -324,7 +344,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   tooltip={copy.setDefaultTitle}
                   clickAction={async () => {
                     try {
-                      await bridge.setDefault(selected.slug);
+                      await bridge.setDefault({ connectionId: selected.connectionId, slug: selected.slug });
                       await reload();
                     } catch (error) {
                       // The state is unchanged on failure, so the Badge stays
@@ -391,18 +411,9 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             labelledBy={setupTitleId}
             onCancel={goBack}
             onAccountCreated={async (identity) => {
-              const snapshot = await reload();
-              if (!snapshot || !providersPanelMountedRef.current) return;
               if (!identity) return;
-              const created = snapshot.connections.find(
-                (connection) => connection.connectionId === identity.connectionId,
-              );
-              if (!created || created.slug !== identity.slug || created.providerType !== identity.providerType) {
-                reportHostError(copy.loadFailed, copy.connectionRemoved);
-                return;
-              }
-              returnFocusRef.current = null;
-              setRoute({ kind: 'detail', connectionId: created.connectionId });
+              setRoute({ kind: 'adopting-oauth', identity });
+              await reload();
             }}
             onCreated={async (slug, modelDiscoveryError) => {
               const snapshot = await reload();
@@ -447,10 +458,26 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               variant="primary"
               label={copy.addConnection}
               onClick={openCatalog}
+              isDisabled={pendingOAuthIdentity !== null}
               data-maka-contract="add-connection"
             />
           </HStack>
-          {loadError ? (
+          {pendingOAuthIdentity && loadError ? (
+            <Banner
+              status="warning"
+              role="status"
+              title={copy.connectedLoadFailed}
+              description={loadError}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : pendingOAuthIdentity ? (
+            <Banner
+              status="info"
+              role="status"
+              title={copy.connectedLoading}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : loadError ? (
             <Banner
               status="error"
               title={copy.loadFailed}
@@ -462,7 +489,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingOAuthIdentity !== null} />}
             />
           ) : (
             <List hasDividers>
@@ -507,7 +534,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     </VStack>
   );
 
-  function chipAriaLabel(connection: LlmConnection, isDefault: boolean): string {
+  function chipAriaLabel(connection: IdentifiedLlmConnection, isDefault: boolean): string {
     const provider = providerDisplay(connection.providerType, locale).name;
     const status = connectionChipStatus(connection, locale);
     return copy.chipAria(
@@ -520,7 +547,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 }
 
 /** Provider · default model — the row's second line, and the detail's subtitle. */
-function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): string {
+function connectionSubtitle(connection: IdentifiedLlmConnection, locale: 'zh' | 'en'): string {
   const providerName = providerDisplay(connection.providerType, locale).name;
   const parts = [providerName];
   if (connection.defaultModel) parts.push(connection.defaultModel);
@@ -528,8 +555,8 @@ function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): str
 }
 
 function connectionDisplayName(
-  connection: LlmConnection,
-  connections: readonly LlmConnection[],
+  connection: IdentifiedLlmConnection,
+  connections: readonly IdentifiedLlmConnection[],
 ): string {
   const ambiguous = connections.some(
     (candidate) =>

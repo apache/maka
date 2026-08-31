@@ -49,7 +49,7 @@ export interface OAuthCard {
   id: OAuthCardId;
   providerType: ProviderType;
   name: string;
-  /** Account email once signed in, the static pitch otherwise. */
+  /** Enrollment summary, or the singleton Copilot account summary. */
   description: string;
   /** A meaningful account state; routine availability stays in the description. */
   status?: string;
@@ -88,12 +88,9 @@ export function useOAuthCards(props: {
   const cards = modelOAuthCards(copy);
   const mountedRef = useMountedRef();
   const refreshTicketRef = useRef(0);
-  // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up): before this
-  // lift the cards stayed at their static catalog copy even after the user
-  // finished the OAuth flow — there was no parent re-fetch. Each service now
-  // carries a runtimeState + email so its row can show the account email inline,
-  // re-fetched whenever a login step closes (success OR
-  // cancel — the user may have signed out from inside it).
+  // Copilot remains a singleton local import, so its catalog row retains live
+  // account state. Codex and xAI are pure enrollment intents and derive only
+  // their Connection counts from the catalog.
   const [cardStates, setCardStates] = useState(emptyOAuthCardStates);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
@@ -156,7 +153,6 @@ export function useOAuthCards(props: {
   }, [generationKey]);
 
   const visibleCards: OAuthCard[] = cards
-    .filter(matchesQuery)
     .map((card) => {
       const snapshot = cardStates[card.id];
       const connectionCount = props.connections.filter(
@@ -181,7 +177,8 @@ export function useOAuthCards(props: {
         ...(isLoggedIn ? { status: copy.signedIn } : {}),
         isLoggedIn,
       };
-    });
+    })
+    .filter(matchesQuery);
 
   return { cards: visibleCards, refreshError };
 }
@@ -261,9 +258,11 @@ function SubscriptionLoginPanel(props: {
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
       <Text type="body">{display.detail}</Text>
-      {!isXai && flow.stateHint && (
-        <Text type="supporting" color="secondary">
-          {copy.deviceCode} {flow.stateHint}
+      {flow.authRequestId && (
+        <Text type="supporting" color="secondary" role="status" aria-live="polite">
+          {!isXai && flow.stateHint
+            ? <>{copy.deviceCode} {flow.stateHint}</>
+            : copy.waitingAuthorization}
         </Text>
       )}
       {flow.errorMessage && (
@@ -274,7 +273,9 @@ function SubscriptionLoginPanel(props: {
           variant="primary"
           onClick={() => void flow.startLogin()}
           isDisabled={flow.actionBusy}
-          label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.loginAndAdd}
+          label={flow.pendingAction === 'login'
+            ? flow.authRequestId ? copy.waitingAuthorization : copy.openingBrowser
+            : copy.loginAndAdd}
         />
       </HStack>
     </VStack>

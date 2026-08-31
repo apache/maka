@@ -171,7 +171,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
   );
   const expectedConnection = {
     connectionId: catalog.connections[0]?.connectionId,
-    slug: 'codex-subscription',
+    slug: 'openai-codex',
     providerType: provider,
   };
   assert.deepEqual(authorization, {
@@ -291,7 +291,13 @@ test('malformed OAuth Connection IDs fail closed before catalog or credential ac
     isProviderEnabled: () => true,
   });
 
-  for (const malformed of [null, 7, {}]) {
+  for (const malformed of [
+    null,
+    7,
+    {},
+    { kind: 'create', connectionId: '00000000-0000-4000-8000-000000000001' },
+    { kind: 'existing', connectionId: '00000000-0000-4000-8000-000000000001', extra: true },
+  ]) {
     assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', malformed), {
       ok: false,
       reason: 'unknown',
@@ -435,7 +441,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     stateHint: 'FIRST',
     connection: {
       connectionId,
-      slug: 'codex-subscription',
+      slug: 'openai-codex',
       providerType: provider,
     },
   });
@@ -464,7 +470,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       ok: true,
       connection: {
         connectionId,
-        slug: 'codex-subscription',
+        slug: 'openai-codex',
         providerType: provider,
       },
     },
@@ -518,7 +524,7 @@ test('completion rejects a terminal projection that changes Connection identity'
   assertNoUnexpectedClientCalls();
 });
 
-test('keeps a committed OAuth login successful when model discovery fails', async () => {
+test('keeps a committed OAuth login successful when model discovery fails without replacing the existing default', async () => {
   const provider = 'openai-codex' as const;
   const modelId = PROVIDER_DEFAULTS[provider].fallbackModels[0];
   assert.ok(modelId);
@@ -539,7 +545,7 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   };
   let catalog: ConnectionCatalogSnapshot = {
     revision: 1,
-    defaultTarget: null,
+    defaultTarget: { connectionId: existing.connectionId, modelId },
     connections: [existing],
   };
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
@@ -581,11 +587,6 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     fetchConnectionModels: async (connectionId: string) => {
       fetchedConnectionIds.push(connectionId);
       throw new Error('provider temporarily unavailable');
-    },
-    setDefaultConnectionTarget: async (expectedCatalogRevision, target) => {
-      assert.equal(expectedCatalogRevision, catalog.revision);
-      catalog = { ...catalog, revision: catalog.revision + 1, defaultTarget: target };
-      return { kind: 'committed' as const, catalogRevision: catalog.revision };
     },
     queryCredential: async (locator) =>
       locator.scope === 'connection' && locator.connectionId === created.connectionId
@@ -629,7 +630,7 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   );
   assert.equal(changed, 1);
   assert.deepEqual(fetchedConnectionIds, [created.connectionId]);
-  assert.deepEqual(catalog.defaultTarget, { connectionId: created.connectionId, modelId });
+  assert.deepEqual(catalog.defaultTarget, { connectionId: existing.connectionId, modelId });
   assert.deepEqual(await invoke(
     handlers,
     'openai-codex:get-account-state',
@@ -703,7 +704,7 @@ function oauthProjection(
     attemptId,
     connection: {
       connectionId,
-      slug: 'codex-subscription',
+      slug: 'openai-codex',
       providerType: 'openai-codex' as const,
     },
     phase,

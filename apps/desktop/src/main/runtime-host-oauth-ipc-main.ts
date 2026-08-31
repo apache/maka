@@ -376,10 +376,16 @@ type OAuthLoginSelection =
   | { readonly kind: 'invalid' };
 
 function decodeOAuthLoginSelection(value: unknown): OAuthLoginSelection {
-  if (!value || typeof value !== 'object') return { kind: 'invalid' };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'invalid' };
   const candidate = value as { readonly kind?: unknown; readonly connectionId?: unknown };
-  if (candidate.kind === 'create') return { kind: 'create' };
+  const keys = Object.keys(value).sort();
+  if (candidate.kind === 'create') {
+    return keys.length === 1 && keys[0] === 'kind' ? { kind: 'create' } : { kind: 'invalid' };
+  }
   if (candidate.kind !== 'existing' || typeof candidate.connectionId !== 'string') {
+    return { kind: 'invalid' };
+  }
+  if (keys.length !== 2 || keys[0] !== 'connectionId' || keys[1] !== 'kind') {
     return { kind: 'invalid' };
   }
   try {
