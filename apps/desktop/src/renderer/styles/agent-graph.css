@@ -22,7 +22,9 @@
   max-height: min(300px, 36vh);
   margin: var(--space-2) auto;
   padding: var(--space-3);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
   /* In-flow reading plate: raised fill + line only (DESIGN.md One Means). */
@@ -44,12 +46,15 @@
 }
 
 .maka-agent-graph-heading {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
+  flex: 0 0 auto;
   justify-content: space-between;
-  background: var(--surface-raised);
-  box-shadow: 0 var(--border-width-hairline) 0 var(--border-soft);
+  padding-bottom: var(--space-2);
+  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.maka-agent-graph-content {
+  min-height: 0;
+  overflow: auto;
 }
 
 .maka-agent-graph-heading-copy {

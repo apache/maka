@@ -19,7 +19,7 @@
 
 import { expect, test } from './fixtures';
 
-test('Agent Graph keeps its heading fixed while the content scrolls', async ({ window: page }) => {
+test('Agent Graph keeps its heading visible without covering scrolled content', async ({ window: page }) => {
   const geometry = await page.evaluate(() => {
     const panel = document.createElement('section');
     panel.className = 'maka-agent-graph-panel';
@@ -48,16 +48,16 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
 
     const panelStyle = getComputedStyle(panel);
     const panelOverflow = panelStyle.overflow;
+    const contentStyle = getComputedStyle(content);
     const headingStyle = getComputedStyle(heading);
-    const stickyLayerToken = getComputedStyle(document.documentElement)
-      .getPropertyValue('--z-sticky')
-      .trim();
     const panelMaxHeight = panelStyle.maxHeight;
     const panelRectBefore = panel.getBoundingClientRect();
     const headingRectBefore = heading.getBoundingClientRect();
-    panel.scrollTop = panel.scrollHeight;
+    const contentRectBefore = content.getBoundingClientRect();
+    content.scrollTop = content.scrollHeight;
     const panelRectAfter = panel.getBoundingClientRect();
     const headingRectAfter = heading.getBoundingClientRect();
+    const contentRectAfter = content.getBoundingClientRect();
     const beforeOffset = headingRectBefore.top - panelRectBefore.top;
     const afterOffset = headingRectAfter.top - panelRectAfter.top;
     panel.dataset.collapsed = 'true';
@@ -65,28 +65,34 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
 
     return {
       panelOverflow,
+      contentOverflow: contentStyle.overflow,
       panelMaxHeight,
       headingPosition: headingStyle.position,
-      headingZIndex: headingStyle.zIndex,
-      stickyLayerToken,
-      headingBackground: headingStyle.backgroundColor,
-      headingBoxShadow: headingStyle.boxShadow,
+      panelScrollTop: panel.scrollTop,
+      contentScrollTop: content.scrollTop,
       panelScrollHeight: panel.scrollHeight,
       panelClientHeight: panel.clientHeight,
+      contentScrollHeight: content.scrollHeight,
+      contentClientHeight: content.clientHeight,
       headingOffsetBefore: beforeOffset,
       headingOffsetAfter: afterOffset,
+      contentTopBefore: contentRectBefore.top,
+      contentTopAfter: contentRectAfter.top,
+      headingBottom: headingRectAfter.bottom,
       collapsedOverflow: collapsedStyle.overflow,
       collapsedMaxHeight: collapsedStyle.maxHeight,
     };
   });
-  expect(geometry.panelOverflow).toBe('auto');
-  expect(geometry.headingPosition).toBe('sticky');
-  expect(geometry.stickyLayerToken).not.toBe('');
-  expect(geometry.headingZIndex).toBe(geometry.stickyLayerToken);
-  expect(geometry.headingBackground).not.toBe('rgba(0, 0, 0, 0)');
-  expect(geometry.headingBoxShadow).not.toBe('none');
-  expect(geometry.panelScrollHeight).toBeGreaterThan(geometry.panelClientHeight);
+  expect(geometry.panelOverflow).toBe('hidden');
+  expect(geometry.contentOverflow).toBe('auto');
+  expect(geometry.headingPosition).toBe('static');
+  expect(geometry.panelScrollTop).toBe(0);
+  expect(geometry.contentScrollTop).toBeGreaterThan(0);
+  expect(geometry.contentScrollHeight).toBeGreaterThan(geometry.contentClientHeight);
+  expect(geometry.panelScrollHeight).toBe(geometry.panelClientHeight);
   expect(Math.abs(geometry.headingOffsetAfter - geometry.headingOffsetBefore)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.contentTopAfter - geometry.contentTopBefore)).toBeLessThanOrEqual(1);
+  expect(geometry.contentTopAfter).toBeGreaterThanOrEqual(geometry.headingBottom);
   expect(geometry.collapsedOverflow).toBe('visible');
   expect(geometry.collapsedMaxHeight).toBe('none');
 });
