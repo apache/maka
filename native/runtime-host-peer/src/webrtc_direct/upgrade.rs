@@ -17,13 +17,21 @@
  * under the License.
  */
 
-use std::{io, sync::Arc, time::Duration};
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use futures::{
     AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, SinkExt as _, StreamExt as _,
     channel::mpsc,
 };
 use libp2p::PeerId;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use webrtc::{
     data_channel::DataChannel,
@@ -43,6 +51,7 @@ use super::{
 const EVENT_CAPACITY: usize = 64;
 const MAX_CANDIDATES: usize = 64;
 const DATA_CHANNEL_SEND_BUFFER_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_INBOUND_SUBSTREAMS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpgradeRole {
@@ -176,6 +185,7 @@ where
         init_sender,
         mut init_opened,
         mut failures,
+        init_claimed,
         ..
     } = channels;
     let mut remote_description_set = false;
@@ -189,6 +199,7 @@ where
 
     match role {
         UpgradeRole::Offerer => {
+            init_claimed.store(true, Ordering::Release);
             let init = peer_connection
                 .create_data_channel("init", None)
                 .await
@@ -353,6 +364,8 @@ struct EventChannels {
     init_opened: mpsc::Receiver<Result<(), io::Error>>,
     failure_sender: mpsc::Sender<String>,
     failures: mpsc::Receiver<String>,
+    init_claimed: Arc<AtomicBool>,
+    inbound_substreams: Arc<Semaphore>,
 }
 
 impl EventChannels {
@@ -373,6 +386,8 @@ impl EventChannels {
             init_opened,
             failure_sender,
             failures,
+            init_claimed: Arc::new(AtomicBool::new(false)),
+            inbound_substreams: Arc::new(Semaphore::new(MAX_INBOUND_SUBSTREAMS)),
         }
     }
 
@@ -383,6 +398,8 @@ impl EventChannels {
             incoming: self.incoming_sender.clone(),
             init_opened: self.init_sender.clone(),
             failures: self.failure_sender.clone(),
+            init_claimed: Arc::clone(&self.init_claimed),
+            inbound_substreams: Arc::clone(&self.inbound_substreams),
         })
     }
 }
@@ -394,6 +411,8 @@ struct EventHandler {
     incoming: mpsc::Sender<Result<ReadySubstream, io::Error>>,
     init_opened: mpsc::Sender<Result<(), io::Error>>,
     failures: mpsc::Sender<String>,
+    init_claimed: Arc<AtomicBool>,
+    inbound_substreams: Arc<Semaphore>,
 }
 
 #[async_trait::async_trait]
@@ -421,12 +440,33 @@ impl PeerConnectionEventHandler for EventHandler {
         data_channel_diagnostic("received", data_channel.id(), Some("incoming"));
         match data_channel.label().await {
             Ok(label) if label == "init" => {
-                keep_init_channel(data_channel, self.init_opened.clone());
+                if self
+                    .init_claimed
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    keep_init_channel(data_channel, self.init_opened.clone());
+                } else {
+                    data_channel_diagnostic("rejected", data_channel.id(), Some("duplicate-init"));
+                    let _ = data_channel.close().await;
+                }
             }
             Ok(_) => {
+                let permit = match Arc::clone(&self.inbound_substreams).try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        data_channel_diagnostic(
+                            "rejected",
+                            data_channel.id(),
+                            Some("inbound-limit"),
+                        );
+                        let _ = data_channel.close().await;
+                        return;
+                    }
+                };
                 let mut incoming = self.incoming.clone();
                 tokio::spawn(async move {
-                    let stream = ready_substream(data_channel, "incoming").await;
+                    let stream = ready_substream(data_channel, "incoming", Some(permit)).await;
                     let _ = incoming.send(stream).await;
                 });
             }

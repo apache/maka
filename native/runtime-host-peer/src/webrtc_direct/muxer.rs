@@ -27,7 +27,7 @@ use std::{
 
 use bytes::BytesMut;
 use futures::{
-    AsyncRead, AsyncWrite, FutureExt, Sink, Stream, StreamExt as _,
+    AsyncRead, AsyncWrite, FutureExt, Sink, SinkExt as _, Stream, StreamExt as _,
     channel::{mpsc, oneshot},
     future::BoxFuture,
     ready,
@@ -35,6 +35,7 @@ use futures::{
 };
 use libp2p::core::muxing::{StreamMuxer, StreamMuxerEvent};
 use libp2p_webrtc_utils::{DropListener, Stream as Libp2pWebRtcStream};
+use tokio::sync::OwnedSemaphorePermit;
 use webrtc::{
     data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState},
     peer_connection::{PeerConnection, RTCPeerConnectionState},
@@ -111,7 +112,7 @@ impl StreamMuxer for WebRtcConnection {
                     .await
                     .map_err(webrtc_io_error)?;
                 data_channel_diagnostic("created", channel.id(), Some("outbound"));
-                ready_substream(channel, "outbound").await
+                ready_substream(channel, "outbound", None).await
             }
             .boxed()
         });
@@ -172,6 +173,7 @@ impl StreamMuxer for WebRtcConnection {
 
 pub struct WebRtcSubstream {
     inner: Libp2pWebRtcStream<MessageIo>,
+    _inbound_permit: Option<OwnedSemaphorePermit>,
 }
 
 impl AsyncRead for WebRtcSubstream {
@@ -205,6 +207,7 @@ impl AsyncWrite for WebRtcSubstream {
 pub(crate) async fn ready_substream(
     data_channel: Arc<dyn DataChannel>,
     origin: &'static str,
+    inbound_permit: Option<OwnedSemaphorePermit>,
 ) -> Result<ReadySubstream, io::Error> {
     let (outgoing, outgoing_receiver) = mpsc::channel(DATA_CHANNEL_QUEUE_CAPACITY);
     let (incoming_sender, incoming) = mpsc::channel(DATA_CHANNEL_QUEUE_CAPACITY);
@@ -221,7 +224,13 @@ pub(crate) async fn ready_substream(
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::ConnectionAborted, "data channel stopped"))??;
     let (stream, listener) = Libp2pWebRtcStream::new(io);
-    Ok((WebRtcSubstream { inner: stream }, listener))
+    Ok((
+        WebRtcSubstream {
+            inner: stream,
+            _inbound_permit: inbound_permit,
+        },
+        listener,
+    ))
 }
 
 pub(crate) fn keep_init_channel(
@@ -254,19 +263,40 @@ async fn drive_data_channel(
     ready: oneshot::Sender<Result<(), io::Error>>,
     origin: &'static str,
 ) {
-    let mut ready = Some(ready);
     data_channel_diagnostic("waiting", data_channel.id(), Some(origin));
     if let Err(error) = wait_for_data_channel_open(&data_channel).await {
         data_channel_diagnostic("open-failed", data_channel.id(), Some(origin));
-        signal_channel_failure(&mut ready, &mut incoming, error);
+        let _ = ready.send(Err(error));
         return;
     }
     data_channel_diagnostic("opened", data_channel.id(), Some(origin));
-    if let Some(ready) = ready.take() {
-        let _ = ready.send(Ok(()));
-    }
+    let _ = ready.send(Ok(()));
 
+    let mut pending_incoming = None;
     loop {
+        if pending_incoming.is_some() {
+            tokio::select! {
+                ready = futures::future::poll_fn(|context| {
+                    Pin::new(&mut incoming).poll_ready(context)
+                }) => {
+                    if ready.is_err() {
+                        let _ = data_channel.close().await;
+                        return;
+                    }
+                    let message = pending_incoming.take().expect("pending message exists");
+                    if Pin::new(&mut incoming).start_send(Ok(message)).is_err() {
+                        let _ = data_channel.close().await;
+                        return;
+                    }
+                }
+                message = outgoing.next() => {
+                    if !send_outgoing_message(&data_channel, message).await {
+                        return;
+                    }
+                }
+            }
+            continue;
+        }
         tokio::select! {
             event = data_channel.poll() => {
                 match event {
@@ -276,10 +306,7 @@ async fn drive_data_channel(
                             data_channel.id(),
                             Some(&message.data.len().to_string()),
                         );
-                        if incoming.try_send(Ok(message.data)).is_err() {
-                            let _ = data_channel.close().await;
-                            return;
-                        }
+                        pending_incoming = Some(message.data);
                     }
                     Some(DataChannelEvent::OnClose) => {
                         data_channel_diagnostic("closed", data_channel.id(), Some(origin));
@@ -287,32 +314,51 @@ async fn drive_data_channel(
                     }
                     Some(DataChannelEvent::OnError) => {
                         data_channel_diagnostic("error", data_channel.id(), Some(origin));
+                        send_channel_reset(&mut incoming, "WebRTC data channel failed").await;
                         return;
                     }
                     None => {
                         data_channel_diagnostic("stopped", data_channel.id(), Some(origin));
+                        send_channel_reset(&mut incoming, "WebRTC data channel stopped").await;
                         return;
                     }
                     _ => {}
                 }
             }
             message = outgoing.next() => {
-                let Some(message) = message else {
-                    drain_data_channel(&data_channel).await;
-                    let _ = data_channel.close().await;
-                    return;
-                };
-                let message_bytes = message.len().to_string();
-                if message.len() > MAX_DATA_CHANNEL_MESSAGE_BYTES
-                    || data_channel.send(message).await.is_err()
-                {
-                    let _ = data_channel.close().await;
+                if !send_outgoing_message(&data_channel, message).await {
                     return;
                 }
-                data_channel_diagnostic("sent", data_channel.id(), Some(&message_bytes));
             }
         }
     }
+}
+
+async fn send_outgoing_message(
+    data_channel: &Arc<dyn DataChannel>,
+    message: Option<BytesMut>,
+) -> bool {
+    let Some(message) = message else {
+        drain_data_channel(data_channel).await;
+        let _ = data_channel.close().await;
+        return false;
+    };
+    let message_bytes = message.len().to_string();
+    if message.len() > MAX_DATA_CHANNEL_MESSAGE_BYTES || data_channel.send(message).await.is_err() {
+        let _ = data_channel.close().await;
+        return false;
+    }
+    data_channel_diagnostic("sent", data_channel.id(), Some(&message_bytes));
+    true
+}
+
+async fn send_channel_reset(
+    incoming: &mut mpsc::Sender<Result<BytesMut, io::Error>>,
+    message: &'static str,
+) {
+    let _ = incoming
+        .send(Err(io::Error::new(io::ErrorKind::ConnectionReset, message)))
+        .await;
 }
 
 async fn drain_data_channel(data_channel: &Arc<dyn DataChannel>) {
@@ -356,18 +402,6 @@ async fn wait_for_data_channel_open(data_channel: &Arc<dyn DataChannel>) -> Resu
         io::ErrorKind::ConnectionAborted,
         "data channel stopped before opening",
     ))
-}
-
-fn signal_channel_failure(
-    ready: &mut Option<oneshot::Sender<Result<(), io::Error>>>,
-    incoming: &mut mpsc::Sender<Result<BytesMut, io::Error>>,
-    error: io::Error,
-) {
-    if let Some(ready) = ready.take() {
-        let _ = ready.send(Err(error));
-    } else {
-        let _ = incoming.try_send(Err(error));
-    }
 }
 
 #[derive(Clone)]

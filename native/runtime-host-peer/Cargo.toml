@@ -64,3 +64,8 @@ napi-build = "2.4"
 [profile.release]
 # build.mjs strips the copied addon once; Cargo stripping every intermediate artifact is redundant.
 strip = "none"
+# The CLI ships all four platform addons in one immutable tarball. Optimize the
+# network helper for deployed size while preserving unwind semantics at the N-API boundary.
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
