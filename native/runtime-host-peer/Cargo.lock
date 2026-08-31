@@ -1753,6 +1753,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2941,6 +2942,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

@@ -46,6 +46,7 @@ libp2p = { version = "0.56", features = [
 napi = { version = "3.12", features = ["napi8", "tokio_rt"] }
 napi-derive = "3.5"
 tokio = { version = "1.53", features = ["fs", "io-util", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [build-dependencies]
 napi-build = "2.4"

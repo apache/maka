@@ -39,6 +39,7 @@ use libp2p::{
     tcp, yamux,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 mod address;
 mod application_stream;
@@ -199,6 +200,7 @@ struct Behaviour {
 }
 
 struct PendingConnect {
+    attempt_id: ConnectAttemptId,
     peer_id: PeerId,
     result: oneshot::Sender<Result<PeerStream, PeerError>>,
     stream_kind: StreamKind,
@@ -212,7 +214,11 @@ struct PendingConnect {
     transit_after: Instant,
     next_route_attempt: Instant,
     retry_coordination: bool,
+    cancellation: CancellationToken,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ConnectAttemptId(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
@@ -262,9 +268,33 @@ impl relay::RateLimiter for AllowedPeerLimiter {
 
 #[derive(Default)]
 struct DirectConnectState {
+    next_attempt_id: u64,
     pending: HashMap<u32, PendingConnect>,
     active: HashMap<ConnectionId, usize>,
     retiring_connections: HashSet<ConnectionId>,
+}
+
+impl DirectConnectState {
+    fn allocate_attempt_id(&mut self) -> ConnectAttemptId {
+        let attempt_id = ConnectAttemptId(self.next_attempt_id);
+        self.next_attempt_id += 1;
+        attempt_id
+    }
+
+    fn take_pending_attempt(
+        &mut self,
+        request_id: u32,
+        attempt_id: ConnectAttemptId,
+    ) -> Option<PendingConnect> {
+        if self
+            .pending
+            .get(&request_id)
+            .is_none_or(|pending| pending.attempt_id != attempt_id)
+        {
+            return None;
+        }
+        self.pending.remove(&request_id)
+    }
 }
 
 struct CoordinationRelay {
@@ -368,6 +398,7 @@ impl CoordinationRelay {
 
 struct OpenedStream {
     request_id: u32,
+    attempt_id: ConnectAttemptId,
     result: Result<application_stream::OpenedStream, String>,
 }
 
@@ -656,7 +687,9 @@ async fn run_endpoint_async(
                     };
                     let retry_coordination = stream_kind == StreamKind::Application
                         && stream_control.has_relayed_connection(options.peer_id);
+                    let attempt_id = direct.allocate_attempt_id();
                     direct.pending.insert(request_id, PendingConnect {
+                        attempt_id,
                         peer_id: options.peer_id,
                         result,
                         stream_kind,
@@ -670,6 +703,7 @@ async fn run_endpoint_async(
                         transit_after,
                         next_route_attempt: Instant::now(),
                         retry_coordination,
+                        cancellation: CancellationToken::new(),
                     });
                     retry_connect_routes(
                         &mut swarm,
@@ -847,7 +881,9 @@ async fn run_endpoint_async(
             }
             Some(opened) = opened_rx.recv() => {
                 let request_id = opened.request_id;
-                if let Some(mut waiter) = direct.pending.remove(&opened.request_id) {
+                if let Some(mut waiter) =
+                    direct.take_pending_attempt(opened.request_id, opened.attempt_id)
+                {
                     match opened.result {
                         Ok(opened) => {
                             if waiter.stream_kind == StreamKind::Application
@@ -880,6 +916,7 @@ async fn run_endpoint_async(
                                 );
                                 continue;
                             }
+                            waiter.cancellation.cancel();
                             let result = match waiter.stream_kind {
                             StreamKind::Application => {
                                 let connection_id = opened.connection_id;
@@ -1293,17 +1330,27 @@ fn maybe_open_peer_stream(
         return;
     }
     let stream_kind = waiter.stream_kind;
+    let attempt_id = waiter.attempt_id;
+    let cancellation = waiter.cancellation.clone();
     let retiring_connections = retiring_connections.clone();
     waiter.opening = Some(tokio::spawn(async move {
         let control = match stream_kind {
             StreamKind::Application => &mut application_control,
             StreamKind::MeshControl => &mut mesh_control,
         };
-        let result = control
-            .open_stream(peer_id, &retiring_connections, &eligible_relay_peers)
-            .await
-            .map_err(|error| error.to_string());
-        let _ = opened_tx.send(OpenedStream { request_id, result }).await;
+        let result = tokio::select! {
+            _ = cancellation.cancelled() => return,
+            result = control.open_stream(peer_id, &retiring_connections, &eligible_relay_peers) => {
+                result.map_err(|error| error.to_string())
+            }
+        };
+        let _ = opened_tx
+            .send(OpenedStream {
+                request_id,
+                attempt_id,
+                result,
+            })
+            .await;
     }));
 }
 
@@ -1781,12 +1828,10 @@ fn fail_pending_connect(
     swarm: &mut Swarm<Behaviour>,
     direct: &mut DirectConnectState,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
-    mut waiter: PendingConnect,
+    waiter: PendingConnect,
     error: PeerError,
 ) {
-    if let Some(opening) = waiter.opening.take() {
-        opening.abort();
-    }
+    waiter.cancellation.cancel();
     retire_direct_dials(swarm, &mut direct.retiring_connections, waiter.dials, None);
     release_coordination_relays(
         swarm,
@@ -2945,6 +2990,35 @@ mod tests {
             panic!("cancelled connect unexpectedly succeeded");
         };
         assert_eq!(error.code, "peer_connect_cancelled");
+
+        let source_stream = connect_test_stream(
+            &source,
+            target.peer_id,
+            target
+                .listen_addresses
+                .first()
+                .expect("target retry route")
+                .clone(),
+            4,
+            StreamKind::Application,
+        )
+        .await;
+        let mut target_stream =
+            tokio::time::timeout(Duration::from_secs(5), target.incoming.recv())
+                .await
+                .expect("retry inbound timeout")
+                .expect("retry inbound stream");
+        write_test_stream(&source_stream, b"cancelled-request-id-reused").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), target_stream.incoming.recv())
+                .await
+                .expect("retry read timeout")
+                .expect("retry stream ended")
+                .expect("retry read failed"),
+            b"cancelled-request-id-reused",
+        );
+        close_test_stream(source_stream).await;
+        close_test_stream(target_stream).await;
 
         stop_test_endpoint(source).await;
         stop_test_endpoint(target).await;
