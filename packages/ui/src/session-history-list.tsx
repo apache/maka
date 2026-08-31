@@ -49,6 +49,7 @@ import {
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Button } from '@astryxdesign/core/Button';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
@@ -309,21 +310,22 @@ function CollapsibleSessionSection(props: { title: string; children: ReactNode }
       aria-labelledby={titleId}
     >
       <div className="maka-session-group-header">
-        <button
+        <Button
           id={titleId}
-          type="button"
+          label={props.title}
+          variant="ghost"
+          size="sm"
+          width="100%"
           className="maka-session-group-toggle"
           aria-expanded={!isCollapsed}
           aria-controls={contentId}
           onClick={() => setIsCollapsed((collapsed) => !collapsed)}
-        >
-          <span>{props.title}</span>
-          <ChevronDown
+          endContent={<ChevronDown
             size={ICON_SIZE.meta}
             className="maka-session-group-chevron"
             aria-hidden="true"
-          />
-        </button>
+          />}
+        />
       </div>
       <div
         id={contentId}

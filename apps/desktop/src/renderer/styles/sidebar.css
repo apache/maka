@@ -98,7 +98,10 @@
   min-width: 0;
   padding: var(--space-1) 0;
   border: 0;
-  background: transparent;
+  /* Astryx Button supplies the control semantics and focus ring; section
+   * headings intentionally keep one quiet surface across pointer states. */
+  background-color: transparent;
+  background-image: none !important;
   color: var(--color-text-disabled);
   font: inherit;
   font-size: var(--text-supporting-size);
@@ -106,13 +109,7 @@
   line-height: var(--text-supporting-leading);
   text-align: start;
   cursor: pointer;
-}
-
-.maka-session-group-toggle > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  transform: none !important;
 }
 
 .maka-session-group-chevron {
