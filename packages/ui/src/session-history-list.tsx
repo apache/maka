@@ -51,7 +51,6 @@ import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import { SideNavItem } from '@astryxdesign/core/SideNav';
-import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
@@ -161,7 +160,6 @@ function SessionListGroups(props: {
    * that renders the menu is the only one that can name it without racing.
    */
   const renameOpenerRef = useRef<HTMLElement | null>(null);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
@@ -263,21 +261,16 @@ function SessionListGroups(props: {
             {pinned.map((session) => renderSessionRow(session))}
           </CollapsibleSessionSection>
         ) : null}
-        {activeGroups.map(renderProjectGroup)}
-        {archivedGroups.length > 0 && (
-          <SideNavItem
-            label={copy.archivedProjects}
-            collapsible={{
-              isCollapsed: !archivedExpanded,
-              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
-            }}
-          >
-            {/* Always mount children: Astryx derives collapsible chrome from
-                !!children. Nulling on collapse removes the chevron and makes
-                the controlled isCollapsed prop a no-op. */}
+        {activeGroups.length > 0 ? (
+          <CollapsibleSessionSection title={copy.projects}>
+            {activeGroups.map(renderProjectGroup)}
+          </CollapsibleSessionSection>
+        ) : null}
+        {archivedGroups.length > 0 ? (
+          <CollapsibleSessionSection title={copy.archivedProjects}>
             {archivedGroups.map(renderProjectGroup)}
-          </SideNavItem>
-        )}
+          </CollapsibleSessionSection>
+        ) : null}
       </>
     );
   }
@@ -354,7 +347,7 @@ function ProjectNavRow(props: {
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
-  // Collapsible only when there is a real session subtree. An empty VStack is
+  // Collapsible only when there is a real session subtree. An empty wrapper is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
@@ -389,9 +382,7 @@ function ProjectNavRow(props: {
       >
         {/* sidebar.css zeroes the nest inset so session buttons match the
             project header's inline length. */}
-        {hasSessions ? (
-          <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
-        ) : undefined}
+        {hasSessions ? props.sessions.map((session) => props.renderSession(session)) : undefined}
       </SideNavItem>
     </div>
   );

@@ -279,9 +279,13 @@ test('project grouping renders pinned tasks under a Pinned heading', () => {
   );
 
   const { document } = parseHTML(markup);
+  const sectionTitles = [
+    ...document.querySelectorAll<HTMLButtonElement>('.maka-session-group-toggle'),
+  ].map((toggle) => toggle.textContent);
   const pinnedSection = document.querySelector('.maka-session-group');
   const projectRow = document.querySelector('.maka-project-row');
 
+  assert.deepEqual(sectionTitles, ['Pinned', 'Projects']);
   assert.ok(pinnedSection);
   assert.equal(pinnedSection.querySelector(':scope > :first-child')?.textContent, 'Pinned');
   assert.ok(pinnedSection.querySelector('[data-session-id="session-pinned"]'));
@@ -289,6 +293,42 @@ test('project grouping renders pinned tasks under a Pinned heading', () => {
   assert.equal(projectRow.querySelector('[data-session-id="session-pinned"]'), null);
   assert.ok(projectRow.querySelector('[data-session-id="session-recent"]'));
   assert.equal(projectRow.querySelector('.maka-project-item-end')?.textContent, '1');
+});
+
+test('project grouping renders archived projects under the shared section heading', () => {
+  const archivedProject = { ...project, id: 'project-archived', archivedAt: 1 };
+  const archivedSession = { ...session, id: 'session-archived', projectId: archivedProject.id };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session, archivedSession]}
+        groups={[
+          { id: project.id, label: project.name, project, sessions: [session] },
+          {
+            id: archivedProject.id,
+            label: 'Archived Maka',
+            project: archivedProject,
+            sessions: [archivedSession],
+          },
+        ]}
+        groupVariant="project"
+        projectActions={projectActions}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const sectionTitles = [
+    ...document.querySelectorAll<HTMLButtonElement>('.maka-session-group-toggle'),
+  ].map((toggle) => toggle.textContent);
+  const archivedSection = [
+    ...document.querySelectorAll<HTMLElement>('.maka-session-group'),
+  ].find((section) => section.querySelector('.maka-session-group-toggle')?.textContent === 'Archived projects');
+
+  assert.deepEqual(sectionTitles, ['Projects', 'Archived projects']);
+  assert.ok(archivedSection);
+  assert.ok(archivedSection.querySelector('[data-project-id="project-archived"]'));
 });
 
 test('section headings toggle their rows and expose disclosure state', async () => {

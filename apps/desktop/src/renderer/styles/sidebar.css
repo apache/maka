@@ -85,6 +85,7 @@
 }
 
 .maka-session-group-header {
+  margin-top: var(--space-2);
   padding-inline: var(--space-2);
 }
 
@@ -98,28 +99,13 @@
   padding: var(--space-1) 0;
   border: 0;
   background: transparent;
-  color: var(--color-text-secondary);
+  color: var(--color-text-disabled);
   font: inherit;
-  font-size: var(--text-label-size);
+  font-size: var(--text-supporting-size);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--text-label-leading);
+  line-height: var(--text-supporting-leading);
   text-align: start;
   cursor: pointer;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .maka-session-group-toggle:hover {
-    color: var(--color-text-primary);
-  }
-}
-
-.maka-session-group-toggle:active {
-  opacity: 0.72;
-}
-
-.maka-session-group-toggle:focus-visible {
-  outline: var(--focus-ring-width) solid var(--focus-ring);
-  outline-offset: var(--focus-ring-offset);
 }
 
 .maka-session-group-toggle > span:first-child {
@@ -302,6 +288,10 @@
   position: relative;
   min-width: 0;
   -webkit-app-region: no-drag;
+}
+
+.maka-session-row + .maka-session-row {
+  margin-block-start: var(--space-0-5);
 }
 
 .maka-project-row + .maka-project-row {
@@ -502,22 +492,19 @@
   width: var(--h-control-sm, 24px);
 }
 
-/* The sibling menu is visually part of the project header, but Astryx's
- * hover/pressed paint lives on the navigation button itself. Restore that
- * feedback only while the direct project action is targeted; a plain wrapper
- * :hover selector would also light the header over nested session rows. */
-@media (hover: hover) {
+/* The action menu is a sibling of the navigation button, so its own hover does
+ * not naturally reach the row surface. Treat the menu as part of that row's
+ * hover area in both grouping modes while keeping pressed feedback local to the
+ * small button—the menu, not the navigation row, is the click target. */
+@media (hover: hover) and (pointer: fine) {
   .maka-project-row:has(> div > .maka-session-row-action:hover)
+    > div
+    > .astryx-side-nav-item,
+  .maka-session-row:has(> .maka-session-row-action:hover)
     > div
     > .astryx-side-nav-item {
     background-color: var(--color-overlay-hover);
   }
-}
-
-.maka-project-row:has(> div > .maka-session-row-action button:active)
-  > div
-  > .astryx-side-nav-item {
-  background-color: var(--color-overlay-pressed);
 }
 
 /* ⌘N hint on the 新任务 row — quiet text, no chip chrome. */
