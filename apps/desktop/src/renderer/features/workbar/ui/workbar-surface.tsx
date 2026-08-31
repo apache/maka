@@ -718,8 +718,12 @@ export function WorkbarSurface(props: {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const sessionTodo = useSessionTodo(props.sessionId);
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workbar;
+  const sessionTodo = useSessionTodo(props.sessionId, {
+    locale,
+    loadFailed: copy.todoLoadFailed,
+  });
   const taskCount = sessionTodoActiveCount(sessionTodo.items);
   const [artifactCount, setArtifactCount] = useState(0);
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];

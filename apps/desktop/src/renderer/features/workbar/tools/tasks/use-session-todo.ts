@@ -20,8 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
 import type { SessionTodoItem } from '@maka/core/session-todo';
-import { useUiLocale } from '@maka/ui';
-import { getShellRemainingCopy } from '../../../../locales/shell-remaining-copy.js';
+import type { UiLocale } from '@maka/ui';
 import { useWorkbarServices } from '../../services-context.js';
 
 interface SessionTodoView {
@@ -33,10 +32,11 @@ interface SessionTodoView {
 
 const EMPTY: SessionTodoView = { items: [], loading: false };
 
-export function useSessionTodo(sessionId: string | undefined): SessionTodoView & { retry: () => void } {
+export function useSessionTodo(
+  sessionId: string | undefined,
+  copy: { locale: UiLocale; loadFailed: string },
+): SessionTodoView & { retry: () => void } {
   const { todo } = useWorkbarServices();
-  const locale = useUiLocale();
-  const copy = getShellRemainingCopy(locale).tasks;
   const generation = useRef(0);
   const [snapshot, setSnapshot] = useState<SessionTodoView>(EMPTY);
 
@@ -59,13 +59,13 @@ export function useSessionTodo(sessionId: string | undefined): SessionTodoView &
           items: current.sessionId === targetSessionId ? current.items : [],
           loading: false,
           error:
-            locale === 'zh'
+            copy.locale === 'zh'
               ? generalizedErrorMessageChinese(error, copy.loadFailed)
               : generalizedErrorMessage(error, copy.loadFailed),
         }));
       },
     );
-  }, [copy.loadFailed, locale, todo]);
+  }, [copy.loadFailed, copy.locale, todo]);
 
   useEffect(() => {
     generation.current += 1;
