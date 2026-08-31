@@ -53,6 +53,7 @@ export type TuiMcpPublicationState =
   | 'host_unavailable'
   | 'credential_required'
   | 'credential_rejected'
+  | 'provider_conflict'
   | 'target_mismatch'
   | 'publishing'
   | 'published'
@@ -179,6 +180,7 @@ export type TuiMcpPublicationUnavailableReason =
   | 'host_unavailable'
   | 'credential_required'
   | 'credential_rejected'
+  | 'provider_conflict'
   | 'target_mismatch';
 
 export type TuiMcpPublicationAvailability =
@@ -289,7 +291,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
         this.#availability = availability;
         if (availability.kind === 'unavailable') {
           this.#published = undefined;
-          this.#updateSnapshot({ publication: availability.reason ?? 'host_unavailable' });
+          this.#updateSnapshot({
+            publication: availability.reason ?? 'host_unavailable',
+            ...(availability.reason === 'provider_conflict'
+              ? { canManagePublicationCredential: false }
+              : {}),
+          });
         } else {
           this.#updateSnapshot({ publication: 'waiting' });
           if (this.#snapshot.initialization === 'ready') this.#requestPublication();
@@ -571,6 +578,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
     if (
       this.#snapshot.publication === 'error' ||
       this.#snapshot.publication === 'credential_rejected' ||
+      this.#snapshot.publication === 'provider_conflict' ||
       this.#snapshot.publication === 'target_mismatch'
     ) {
       return 'publication_failed';

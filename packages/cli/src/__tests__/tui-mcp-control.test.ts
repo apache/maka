@@ -134,6 +134,10 @@ test('TUI MCP serializes remote provider credential changes through its publicat
   });
   assert.equal(removed, 1);
   assert.equal(controller.snapshot().publication, 'credential_required');
+  availability = { kind: 'unavailable', reason: 'provider_conflict' };
+  listener?.(availability);
+  assert.equal(controller.snapshot().publication, 'provider_conflict');
+  assert.equal(controller.snapshot().canManagePublicationCredential, false);
   await controller.close();
   assert.equal(closed, 1);
 });

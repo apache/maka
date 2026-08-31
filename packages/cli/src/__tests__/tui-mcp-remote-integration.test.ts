@@ -68,6 +68,7 @@ test('remote TUI publication keeps its owner association across reconnect and re
   let otherTerminal: RuntimeHostConnection | undefined;
   let otherProvider: RuntimeHostConnection | undefined;
   let controller: TuiMcpController | undefined;
+  let competingController: TuiMcpController | undefined;
   try {
     const capability = await resolveStorageRoot({ path: hostRoot, kind: 'interactive' });
     local = await connectLocal(hostRoot, 'local-owner');
@@ -152,6 +153,30 @@ test('remote TUI publication keeps its owner association across reconnect and re
     controller = createTuiMcpController({ workspaceRoot: clientRoot, connection: publication });
     await waitFor(() => controller?.snapshot().publication === 'published');
     assert.equal(host.connectionCount, 5);
+
+    const competingWorkspace = join(base, 'competing-workspace');
+    await createMcpConfigStore(competingWorkspace).upsert('other-fixture', {
+      command: process.execPath,
+      args: [fixturePath],
+      enabled: false,
+      protocol: 'legacy',
+    });
+    const competingPublication = createRemoteTuiMcpPublicationTarget({
+      clientDataRoot: clientRoot,
+      profile,
+      profileIncarnationId: profileTarget.profileIncarnationId,
+      ownerClientInstanceId: 'terminal-a',
+    });
+    competingController = createTuiMcpController({
+      workspaceRoot: competingWorkspace,
+      connection: competingPublication,
+    });
+    await waitFor(() => competingController?.snapshot().publication === 'provider_conflict');
+    assert.equal(competingController.snapshot().canManagePublicationCredential, false);
+    assert.equal(controller.snapshot().publication, 'published');
+    assert.equal(host.connectionCount, 5);
+    await competingController.close();
+    competingController = undefined;
 
     const sessionId = 'remote-tui-mcp-session';
     const turnId = 'remote-tui-mcp-turn';
@@ -258,6 +283,7 @@ test('remote TUI publication keeps its owner association across reconnect and re
     assert.equal(events.filter((event) => event.event === 'start').length, 1);
     assert.equal(events.filter((event) => event.event === 'exit').length, 1);
   } finally {
+    await competingController?.close().catch(() => undefined);
     await controller?.close().catch(() => undefined);
     await otherProvider?.close().catch(() => undefined);
     await otherTerminal?.close().catch(() => undefined);

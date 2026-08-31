@@ -41,6 +41,10 @@ import {
   type RuntimeHostReconnectingConnection,
 } from '@maka/runtime-host/client';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
+import {
+  tryAcquireFileLifetimeOwner,
+  type FileLifetimeOwner,
+} from '@maka/storage/file-lifetime-owner';
 import type {
   TuiMcpPublicationAvailability,
   TuiMcpPublicationTarget,
@@ -53,6 +57,7 @@ interface RemoteTuiMcpPublicationDeps {
   readonly connectProfile: typeof connectRuntimeHostProfile;
   readonly createPeerClient: typeof createRuntimeHostPeerClientFromEnvironment;
   readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
+  readonly acquirePublicationLease: typeof tryAcquireFileLifetimeOwner;
   readonly profiles: Pick<
     RuntimeHostProfileCatalog,
     'readRemoteProfileIfCurrent' | 'mutateRemoteProfileIfCurrent'
@@ -77,6 +82,7 @@ export function createRemoteTuiMcpPublicationTarget(
     connectProfile: connectRuntimeHostProfile,
     createPeerClient: createRuntimeHostPeerClientFromEnvironment,
     createReconnectingConnection: createRuntimeHostReconnectingConnection,
+    acquirePublicationLease: tryAcquireFileLifetimeOwner,
     profiles: createClientRuntimeHostProfileCatalog(input.clientDataRoot),
     subscribeProfileChanges: (listener) =>
       subscribeClientRuntimeHostProfileCatalogChanges(input.clientDataRoot, listener),
@@ -99,6 +105,7 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     reason: 'host_unavailable',
   };
   #connection: RuntimeHostReconnectingConnection | undefined;
+  #publicationLease: FileLifetimeOwner | undefined;
   #disposeAvailability: (() => void) | undefined;
   #peerClient: RuntimeHostPeerClient | undefined;
   #peerCloseTask = Promise.resolve();
@@ -131,6 +138,22 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       this.#scheduleProfileValidation(error instanceof Error ? error : new Error(String(error)));
     }
     void this.#serialize(async () => {
+      let lease: FileLifetimeOwner | undefined;
+      try {
+        lease = await deps.acquirePublicationLease(providerLeasePath(input));
+      } catch {
+        await this.#retire('host_unavailable');
+        return;
+      }
+      if (!lease) {
+        await this.#retire('provider_conflict');
+        return;
+      }
+      if (this.#closed) {
+        await lease.close();
+        return;
+      }
+      this.#publicationLease = lease;
       const profileCurrent = await this.#profileStillCurrent().catch(() => undefined);
       if (profileCurrent !== true) {
         await this.#retire(profileCurrent === false ? 'target_mismatch' : 'host_unavailable');
@@ -419,7 +442,13 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
       : Promise.resolve();
     this.#closeTask = operations.then(async () => {
       await this.#disconnect();
-      this.#listeners.clear();
+      const lease = this.#publicationLease;
+      this.#publicationLease = undefined;
+      try {
+        await lease?.close();
+      } finally {
+        this.#listeners.clear();
+      }
     });
     return this.#closeTask;
   }
@@ -463,7 +492,34 @@ function providerIdentityPath(input: {
   readonly profileIncarnationId: string;
   readonly ownerClientInstanceId: string;
 }): string {
-  const identity = createHash('sha256')
+  return join(
+    input.clientDataRoot,
+    'runtime-host-client',
+    'capability-provider-identities',
+    `${providerIdentity(input)}.json`,
+  );
+}
+
+function providerLeasePath(input: {
+  readonly clientDataRoot: string;
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly profileIncarnationId: string;
+  readonly ownerClientInstanceId: string;
+}): string {
+  return join(
+    input.clientDataRoot,
+    'runtime-host-client',
+    'capability-provider-leases',
+    `${providerIdentity(input)}.lease`,
+  );
+}
+
+function providerIdentity(input: {
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly profileIncarnationId: string;
+  readonly ownerClientInstanceId: string;
+}): string {
+  return createHash('sha256')
     .update('tui-mcp-capability-provider')
     .update('\0')
     .update(runtimeHostProfileTargetFingerprint(input.profile))
@@ -473,12 +529,6 @@ function providerIdentityPath(input: {
     .update(input.ownerClientInstanceId)
     .digest('hex')
     .slice(0, 24);
-  return join(
-    input.clientDataRoot,
-    'runtime-host-client',
-    'capability-provider-identities',
-    `${identity}.json`,
-  );
 }
 
 function classifyUnavailable(error: unknown): TuiMcpPublicationUnavailableReason {

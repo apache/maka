@@ -110,6 +110,24 @@ describe('MCP management overlay', () => {
     assert.doesNotMatch(overlay.render(160).map(stripAnsi).join('\n'), /maka_rh_secret-marker/u);
   });
 
+  test('renders a competing remote provider as a visible conflict', () => {
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: surface({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'provider_conflict',
+        toolCount: 0,
+        servers: [],
+      }),
+      viewportRows: () => 6,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    assert.match(overlay.render(100).map(stripAnsi).join('\n'), /provider active in another TUI/u);
+  });
+
   test('localizes manager states without changing their source values', () => {
     const overlay = new McpManagementOverlay({
       locale: 'zh',

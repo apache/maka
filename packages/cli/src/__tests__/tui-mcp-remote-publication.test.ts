@@ -29,7 +29,7 @@ import {
   type RuntimeHostProfileCatalog,
   type RuntimeHostRemoteProfileIncarnation,
 } from '@maka/runtime-host/client';
-import { createRemoteTuiMcpPublicationTarget } from '../tui-mcp-remote-publication.js';
+import { createRemoteTuiMcpPublicationTarget as createProductionRemoteTuiMcpPublicationTarget } from '../tui-mcp-remote-publication.js';
 import { waitFor } from './tui-terminal-mock.js';
 
 const PROFILE: RemoteRuntimeHostProfile = {
@@ -114,6 +114,107 @@ test('remote TUI publication activates, rotates, and removes one profile-bound c
   assert.equal(connections[1]?.unregisters, 0);
   assert.equal(connections[1]?.closes, 1);
   assert.equal(credentials.values.has('office\0incarnation-a\0terminal-client'), false);
+  await target.closePublication?.();
+});
+
+test('remote TUI publication fails closed while the same provider lifetime is active', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const leases = publicationLeaseHarness();
+  const firstConnection = connectionHarness('connection-1');
+  const secondConnection = connectionHarness('connection-2');
+  let secondAttempts = 0;
+  const input = {
+    clientDataRoot: '/client-data',
+    profile: PROFILE,
+    profileIncarnationId: PROFILE_INCARNATION_ID,
+    ownerClientInstanceId: 'terminal-client',
+  } as const;
+  const first = createRemoteTuiMcpPublicationTarget(input, {
+    credentials: credentials.store,
+    loadClientInstanceId: async () => 'shared-provider-client',
+    connectProfile: async () => firstConnection.connection,
+    acquirePublicationLease: leases.acquire,
+    profiles: profiles.catalog,
+    subscribeProfileChanges: profiles.subscribe,
+  });
+  const firstLatest = await availability(first);
+  await waitFor(() => firstLatest().kind === 'connected', 'first provider companion to connect');
+
+  const second = createRemoteTuiMcpPublicationTarget(input, {
+    credentials: credentials.store,
+    loadClientInstanceId: async () => 'shared-provider-client',
+    connectProfile: async () => {
+      secondAttempts += 1;
+      return secondConnection.connection;
+    },
+    acquirePublicationLease: leases.acquire,
+    profiles: profiles.catalog,
+    subscribeProfileChanges: profiles.subscribe,
+  });
+  const secondLatest = await availability(second);
+  await waitFor(() => {
+    const current = secondLatest();
+    return current.kind === 'unavailable' && current.reason === 'provider_conflict';
+  }, 'competing provider companion to fail closed');
+  assert.equal(secondAttempts, 0);
+  assert.equal(leases.active.size, 1);
+
+  await first.replaceClientCapabilities({ offers: () => [] });
+  assert.equal(firstConnection.replacements, 1);
+  await first.closePublication?.();
+  assert.equal(leases.active.size, 0);
+
+  const successor = createRemoteTuiMcpPublicationTarget(input, {
+    credentials: credentials.store,
+    loadClientInstanceId: async () => 'shared-provider-client',
+    connectProfile: async () => secondConnection.connection,
+    acquirePublicationLease: leases.acquire,
+    profiles: profiles.catalog,
+    subscribeProfileChanges: profiles.subscribe,
+  });
+  const successorLatest = await availability(successor);
+  await waitFor(
+    () => successorLatest().kind === 'connected',
+    'successor provider companion to connect',
+  );
+  await successor.closePublication?.();
+  await second.closePublication?.();
+});
+
+test('remote TUI publication cannot bypass a failed lifetime lease', async () => {
+  const credentials = credentialHarness();
+  let attempts = 0;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      ...profileDeps(),
+      credentials: credentials.store,
+      acquirePublicationLease: async () => {
+        throw new Error('lease storage unavailable');
+      },
+      connectProfile: async () => {
+        attempts += 1;
+        return connectionHarness('unexpected').connection;
+      },
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => {
+    const current = latest();
+    return current.kind === 'unavailable' && current.reason === 'host_unavailable';
+  }, 'lease failure to retire provider companion');
+
+  const setCredential = target.setCredential?.('provider-secret');
+  assert.ok(setCredential);
+  await assert.rejects(setCredential, /closed/u);
+  assert.equal(attempts, 0);
+  assert.equal(credentials.values.size, 0);
   await target.closePublication?.();
 });
 
@@ -576,6 +677,35 @@ async function availability(target: ReturnType<typeof createRemoteTuiMcpPublicat
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   return () => current;
+}
+
+function createRemoteTuiMcpPublicationTarget(
+  input: Parameters<typeof createProductionRemoteTuiMcpPublicationTarget>[0],
+  overrides: NonNullable<Parameters<typeof createProductionRemoteTuiMcpPublicationTarget>[1]> = {},
+) {
+  return createProductionRemoteTuiMcpPublicationTarget(input, {
+    acquirePublicationLease: async () => ({ close: async () => undefined }),
+    ...overrides,
+  });
+}
+
+function publicationLeaseHarness() {
+  const active = new Set<string>();
+  return {
+    active,
+    acquire: async (path: string) => {
+      if (active.has(path)) return undefined;
+      active.add(path);
+      let closed = false;
+      return {
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          active.delete(path);
+        },
+      };
+    },
+  };
 }
 
 function credentialHarness(initial?: string) {
