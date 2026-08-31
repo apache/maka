@@ -27,6 +27,18 @@ Keep this directory small. Prefer product code that uses the dependency's
 published API; only patch for bugs that block shipping and cannot be worked
 around at the call site.
 
+## `@tufjs/models@5.0.0` and `@sigstore/core@4.0.1`
+
+The published ECDSA verification paths rely on Node choosing a digest when
+`crypto.verify` receives `undefined`. Electron 43's crypto runtime rejects that
+call with `ERR_OSSL_EVP_NO_DEFAULT_DIGEST`, so packaged Desktop cannot load the
+Sigstore TUF root or verify Rekor and DSSE signatures for an update. The patches
+select SHA-256 for RSA/ECDSA and preserve digest-free EdDSA verification at the
+two shared crypto seams.
+
+Delete each patch when the corresponding package ships explicit SHA-256
+verification and the Electron regression tests pass without it.
+
 ## `node-pty@1.2.0-beta.15`
 
 On Unix, `CustomWriteStream` submits raw file-descriptor writes through libuv.
