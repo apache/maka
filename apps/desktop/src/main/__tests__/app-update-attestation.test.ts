@@ -108,7 +108,7 @@ test('download verification accepts only a trusted exact artifact subject', asyn
   );
 });
 
-test('nightly verification fetches provenance from the versioned Nightlies path', async (t) => {
+test('nightly verification fetches provenance from the versioned GitHub Release asset', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-nightly-attestation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = join(directory, 'cached-update.zip');
@@ -151,7 +151,7 @@ test('nightly verification fetches provenance from the versioned Nightlies path'
 
   assert.equal(
     fetchedUrl,
-    `https://nightlies.apache.org/maka/desktop/versions/${version}/Maka-${version}-attestation.sigstore.json`,
+    `https://github.com/apache/maka/releases/download/v${version}/Maka-${version}-attestation.sigstore.json`,
   );
 });
 

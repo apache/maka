@@ -984,6 +984,88 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   }
 });
 
+test('queued Message preparation preserves partial and blocked Skill outcomes', async () => {
+  let blocked = false;
+  const readySkillInvocation = {
+    loaded: [{ id: 'writer', name: 'Writer' }],
+    failed: [{ request: 'typo', reason: 'not_found' as const }],
+    receipts: [
+      {
+        invocation: 'explicit' as const,
+        request: 'writer',
+        success: true as const,
+        ref: 'project:maka:writer',
+        id: 'writer',
+        name: 'Writer',
+        scope: 'project' as const,
+        source: 'maka' as const,
+        truncated: false,
+      },
+      {
+        invocation: 'explicit' as const,
+        request: 'typo',
+        success: false as const,
+        reason: 'not_found' as const,
+      },
+    ],
+  };
+  const blockedSkillInvocation = {
+    loaded: [],
+    failed: [{ request: 'missing', reason: 'not_found' as const }],
+    receipts: [],
+  };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async () =>
+      blocked
+        ? { disposition: 'blocked', skillInvocation: blockedSkillInvocation }
+        : {
+            disposition: 'ready',
+            sendText: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+            skillInvocation: readySkillInvocation,
+          },
+  });
+  try {
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:writer /skill:typo Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'ready',
+        content: {
+          text: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+          displayText: '/skill:writer /skill:typo Draft this.',
+          inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        },
+        skillInvocation: readySkillInvocation,
+      },
+    );
+
+    blocked = true;
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:missing Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'rejected',
+        error: 'Explicit Skill invocation could not be resolved',
+        skillInvocation: blockedSkillInvocation,
+      },
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('turn.start durably replays an all-failed invocation without creating a Turn', async () => {
   let preparationCount = 0;
   const skillInvocation = {

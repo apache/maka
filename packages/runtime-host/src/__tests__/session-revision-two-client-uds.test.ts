@@ -363,7 +363,7 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(artifactPage.kind, 'page');
     if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
-    assert.equal(artifactPage.artifacts.length, 2);
+    assert.equal(artifactPage.artifacts.length, 3);
     assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
     const taskPage = await tui.request('task.ledger.query', {
       kind: 'list_start',
@@ -881,6 +881,17 @@ async function seedSource(
       source: 'user_upload',
       now: 1,
     });
+    const projectionArtifact = await artifacts.create({
+      id: 'source-projection-artifact',
+      sessionId: source.id,
+      turnId: 'turn-1',
+      name: 'projection.png',
+      kind: 'file',
+      content: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      mimeType: 'image/png',
+      source: 'tool_result',
+      now: 2,
+    });
     await artifacts.create({
       id: 'legacy-child-artifact',
       sessionId: source.id,
@@ -980,6 +991,53 @@ async function seedSource(
         role: 'model',
         author: 'agent',
         content: { kind: 'text', text: 'first response' },
+      }),
+      runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
+        id: 'projection-call',
+        ts: 2.1,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'projection-tool-call',
+          name: 'Read',
+          args: { path: 'projection.png' },
+        },
+      }),
+      runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
+        id: 'projection-result',
+        ts: 2.2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'projection-tool-call',
+          name: 'Read',
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: {
+              kind: 'session_file',
+              sessionId: source.id,
+              relativePath: projectionArtifact.id,
+            },
+          },
+          modelProjection: {
+            version: 1,
+            kind: 'content',
+            parts: [
+              {
+                kind: 'artifact',
+                mediaType: 'image/png',
+                ref: {
+                  kind: 'session_file',
+                  sessionId: source.id,
+                  relativePath: projectionArtifact.id,
+                },
+              },
+            ],
+          },
+        },
       }),
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'terminal-1',
@@ -1552,7 +1610,7 @@ async function verifyDurableBranch(
       });
     };
     const messages = await execution.sessionStore.readMessagesSnapshot(branchSessionId);
-    assert.equal(messages.length, 3);
+    assert.equal(messages.length, 5);
     const user = messages.find((message) => message.type === 'user');
     assert.ok(user?.attachments?.[0]);
     const ref = user?.attachments?.[0]?.ref;
@@ -1562,7 +1620,8 @@ async function verifyDurableBranch(
     // The user-upload attachment ref carries the source artifact id; the copy
     // must rewrite it to a fresh target artifact id, never leave the source id.
     assert.notEqual(ref.relativePath, 'source-artifact');
-    assert.equal((await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 })).total, 2);
+    const branchArtifacts = await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 });
+    assert.equal(branchArtifacts.total, 3);
     assert.deepEqual(await artifacts.readTextInSession(branchSessionId, ref.relativePath), {
       ok: true,
       text: 'retained bytes',
@@ -1579,6 +1638,33 @@ async function verifyDurableBranch(
     assert.ok(copiedChild);
     assert.ok(copiedParent);
     assert.equal(copiedChild.parentRunId, copiedParent.runId);
+    const copiedProjectionResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(branchSessionId, copiedParent.runId)
+    ).find((event) => event.content?.kind === 'function_response');
+    assert.equal(copiedProjectionResult?.content?.kind, 'function_response');
+    if (copiedProjectionResult?.content?.kind !== 'function_response') {
+      assert.fail('Copied branch must retain the durable Tool Result projection');
+    }
+    const copiedProjection = copiedProjectionResult.content.modelProjection;
+    assert.equal(copiedProjection?.kind, 'content');
+    if (copiedProjection?.kind !== 'content') {
+      assert.fail('Copied Tool Result must retain artifact projection content');
+    }
+    const copiedProjectionPart = copiedProjection.parts[0];
+    assert.equal(copiedProjectionPart?.kind, 'artifact');
+    if (copiedProjectionPart?.kind !== 'artifact') {
+      assert.fail('Copied Tool Result must retain its projected artifact');
+    }
+    assert.equal(copiedProjectionPart.ref.kind, 'session_file');
+    if (copiedProjectionPart.ref.kind !== 'session_file') {
+      assert.fail('Copied Tool Result artifact must remain Session-backed');
+    }
+    assert.equal(copiedProjectionPart.ref.sessionId, branchSessionId);
+    const copiedProjectionArtifact = branchArtifacts.records.find(
+      (record) => record.name === 'projection.png',
+    );
+    assert.ok(copiedProjectionArtifact);
+    assert.equal(copiedProjectionPart.ref.relativePath, copiedProjectionArtifact.id);
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
     assert.deepEqual(await tasks.list('revision-target'), []);
     assert.deepEqual(await execution.agentRunStore.listSessionRuns('revision-target'), []);

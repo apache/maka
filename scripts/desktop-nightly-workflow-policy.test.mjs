@@ -107,80 +107,50 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
-test('the first Desktop Nightly creates its destination with rsync 3.1-compatible flags', async () => {
+test('Desktop Nightly packages the GitHub dev feeds and grants write only to its publisher', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
-  const steps = workflow.jobs.publish.steps;
-  const transport = steps.find(
-    (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
+  assert.deepEqual(workflow.permissions, { actions: 'read', contents: 'read' });
+  assert.equal(workflow.jobs.publish.permissions.contents, 'write');
+  assert.equal(workflow.jobs.desktop.permissions, undefined);
+  const stage = workflow.jobs.desktop.steps.find(
+    (step) => step.name === 'Stage the exact Nightly artifacts',
   );
-  const bootstrap = steps.find((step) => step.name === 'Ensure the Nightly destination exists');
-  const feedGuardPosition = steps.findIndex(
-    (step) => step.name === 'Require the Desktop Nightly feed to advance',
-  );
-
-  assert.ok(bootstrap);
-  assert.match(transport.run, /NIGHTLIES_RSYNC_BASE=/u);
-  assert.match(bootstrap.run, /mkdir -p \.nightly-empty\/maka\/desktop/u);
-  assert.match(bootstrap.run, /^rsync -rlptDz --protect-args /mu);
-  assert.doesNotMatch(bootstrap.run, /--mkpath/u);
-  assert.match(bootstrap.run, /\.nightly-empty\/maka\/ "\$NIGHTLIES_RSYNC_BASE\/maka\/"/u);
-  assert.doesNotMatch(bootstrap.run, /\.nightly-publish/u);
-  assert.ok(steps.indexOf(bootstrap) < feedGuardPosition);
+  assert.match(stage.run, /apps\/desktop\/release\/dev-mac\.yml/u);
+  assert.match(stage.run, /apps\/desktop\/release\/dev\.yml/u);
+  assert.doesNotMatch(stage.run, /latest-mac\.yml|latest\.yml/u);
 });
 
-test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
+test('the publisher verifies exact GitHub identity and assets before publishing last', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
-  const publish = workflow.jobs.publish;
-  assert.equal(workflow.jobs.desktop.environment, 'nightly');
-  assert.equal(publish.environment, 'nightly');
-  assert.equal(
-    publish.steps.filter((step) => step.uses?.startsWith('burnett01/rsync-deployments@')).length,
-    0,
-  );
-  const transport = publish.steps.find(
-    (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
-  );
-  assert.equal(transport.env.NIGHTLIES_RSYNC_KEY, '${{ secrets.NIGHTLIES_RSYNC_KEY }}');
-  assert.deepEqual(Object.keys(transport.env).toSorted(), [
-    'NIGHTLIES_RSYNC_HOST',
-    'NIGHTLIES_RSYNC_KEY',
-    'NIGHTLIES_RSYNC_PATH',
-    'NIGHTLIES_RSYNC_PORT',
-    'NIGHTLIES_RSYNC_USER',
-  ]);
-  assert.match(transport.run, /StrictHostKeyChecking=no/u);
-  assert.match(transport.run, /UserKnownHostsFile=\/dev\/null/u);
-  assert.doesNotMatch(transport.run, /ssh-keyscan|KNOWN_HOSTS/u);
-  const steps = publish.steps;
+  const steps = workflow.jobs.publish.steps;
   const positions = [
-    'Attest the exact Nightly payloads',
+    'Attest every GitHub Nightly asset subject',
     'Verify the issued Nightly provenance',
-    'Require the Desktop Nightly feed to advance',
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
+    'Add the one offline provenance bundle',
+    'Ensure the exact versioned Nightly tag',
+    'Prepare and verify the draft GitHub Prerelease',
+    'Publish the complete GitHub Prerelease',
   ].map((name) => steps.findIndex((step) => step.name === name));
+  assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual(
     positions,
     positions.toSorted((left, right) => left - right),
   );
-  assert.ok(positions.every((position) => position >= 0));
+  assert.match(steps[positions[0]].with['subject-path'], /\.nightly-stage\/release\/\*/u);
+  assert.match(steps[positions[3]].run, /product-release-tag\.mjs ensure/u);
+  assert.match(steps[positions[4]].run, /desktop-nightly-release\.mjs prepare/u);
+  assert.match(steps[positions[5]].run, /desktop-nightly-release\.mjs publish/u);
   assert.equal(
     steps[positions[1]].env.CERTIFICATE_IDENTITY,
     'https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main',
   );
-  for (const name of [
-    'Ensure the Nightly destination exists',
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
-  ]) {
-    const step = steps.find((candidate) => candidate.name === name);
-    assert.doesNotMatch(step.run, /--delete/u);
-  }
-  for (const name of [
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
-  ]) {
-    const step = steps.find((candidate) => candidate.name === name);
-    assert.match(step.run, /^rsync -rlptDvz --protect-args /u);
-  }
+});
+
+test('Desktop Nightly has no Apache Nightlies transport or compatibility state', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  assert.equal(workflow.jobs.publish.environment, 'nightly');
+  assert.doesNotMatch(
+    JSON.stringify(workflow),
+    /nightlies\.apache\.org|NIGHTLIES_RSYNC|resolve-cutover|github-cutover|\brsync\b|\bssh\b/u,
+  );
 });

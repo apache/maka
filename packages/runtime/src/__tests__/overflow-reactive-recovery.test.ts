@@ -574,7 +574,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ref: {
                 kind: 'session_file' as const,
                 sessionId: 'session-1',
-                relativePath: 'live.png',
+                relativePath: 'live_image',
               },
             };
           }

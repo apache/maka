@@ -48,6 +48,7 @@ import type {
 export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import { type TokenUsageFields } from './usage-record-schema.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
+import type { DurableToolResultProjection } from './durable-tool-result-projection.js';
 
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
 export const TOOL_OUTPUT_DELTA_MAX_CHARS = 8192;
@@ -733,6 +734,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** Provider-neutral model-visible output computed before durable publication. */
+  modelProjection?: DurableToolResultProjection;
   /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
   contentOmitted?: true;
   isError: boolean;

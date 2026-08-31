@@ -195,6 +195,8 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
+import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
 import { SandboxCommandError } from './sandbox/errors.js';
@@ -802,6 +804,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Caller wires this to the session ArtifactStore; runtime never imports storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
+  /** Host-owned exact ref plan for inline images, persisted only after projection validation. */
+  prepareDurableProjectionArtifact?: ToolRuntimeInput['prepareDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
    * image parts; false/unknown stay as text refs with a fallback note.
@@ -858,6 +862,37 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
     type: 'json',
     value: { status: 'failed', ...(message ? { output: message } : {}) },
   };
+}
+
+function durableApplyPatchReplayFactText(
+  input: unknown,
+  projection: DurableToolResultProjection,
+  isError: boolean,
+): string | null {
+  if (projection.kind === 'json') {
+    const fact = applyPatchReplayFactText(input, projection, isError);
+    if (fact) return fact;
+  }
+  const output = durableProjectionToToolResultOutput(projection);
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value;
+    case 'json':
+    case 'error-json':
+      return JSON.stringify(output.value);
+    case 'content': {
+      const text = output.value
+        .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n');
+      return text || null;
+    }
+    case 'execution-denied':
+      return output.reason
+        ? `ApplyPatch execution denied: ${output.reason}`
+        : 'ApplyPatch execution denied.';
+  }
 }
 
 /**
@@ -1107,7 +1142,7 @@ export class AiSdkBackend implements AgentBackend {
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
       materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
+        this.materializeRuntimeReplayPlan(plan, imageBudget, checkpoint),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
     });
     if (
@@ -1324,8 +1359,7 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
+      prepareDurableProjectionArtifact: input.prepareDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
@@ -1856,7 +1890,6 @@ export class AiSdkBackend implements AgentBackend {
                   content: currentUserContent,
                 } as ModelMessage,
               ];
-        const settledModelOutputs = new Map<string, ToolResultOutput>();
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1908,7 +1941,6 @@ export class AiSdkBackend implements AgentBackend {
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
             replayPlan,
             scope.imageBudget,
-            settledModelOutputs,
             projectionCheckpoint,
           );
           return projectionCheckpoint
@@ -2680,13 +2712,6 @@ export class AiSdkBackend implements AgentBackend {
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
-            for (let index = 0; index < returnedToolCalls.length; index += 1) {
-              const toolCall = returnedToolCalls[index];
-              const settlement = settlements[index];
-              if (toolCall && settlement) {
-                settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
-              }
-            }
 
             const continuationWillRun =
               (maxSteps === undefined || runtimeSteps < maxSteps) &&
@@ -3109,7 +3134,7 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
-          const settlement = await scope.toolRuntime.settleToolCallRaw({
+          const settlement = await scope.toolRuntime.settleToolCall({
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
@@ -3620,7 +3645,6 @@ export class AiSdkBackend implements AgentBackend {
         messages: await this.materializeRuntimeReplayPlan(
           plan,
           scope.imageBudget,
-          undefined,
           projectedHistoryCompactCheckpoint,
         ),
         gate: 'runtime_replay_text_only',
@@ -3644,7 +3668,6 @@ export class AiSdkBackend implements AgentBackend {
             ? await this.materializeRuntimeReplayPlan(
                 degradedPlan,
                 scope.imageBudget,
-                undefined,
                 projectedHistoryCompactCheckpoint,
               )
             : await materializeReplayFallback(),
@@ -3663,7 +3686,6 @@ export class AiSdkBackend implements AgentBackend {
       messages: await this.materializeRuntimeReplayPlan(
         plan,
         scope.imageBudget,
-        undefined,
         projectedHistoryCompactCheckpoint,
       ),
       gate: 'runtime_replay_provider_native',
@@ -3735,7 +3757,6 @@ export class AiSdkBackend implements AgentBackend {
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
     budget: ProviderImageBudget,
-    settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
@@ -3859,14 +3880,18 @@ export class AiSdkBackend implements AgentBackend {
       result: ToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
-      const output =
-        settledModelOutputs?.get(result.toolCallId) ??
-        (await this.materializeToolResultOutput(
-          budget,
-          result.output,
-          result.isError,
-          `runtime-event:${result.eventId}:tool-result`,
-        ));
+      const output = result.modelProjection
+        ? await this.materializeDurableToolResultProjection(
+            budget,
+            result.modelProjection,
+            `runtime-event:${result.eventId}:tool-result`,
+          )
+        : await this.materializeToolResultOutput(
+            budget,
+            result.output,
+            result.isError,
+            `runtime-event:${result.eventId}:tool-result`,
+          );
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
@@ -4058,11 +4083,13 @@ export class AiSdkBackend implements AgentBackend {
             break;
           }
           downgradedApplyPatchCalls.delete(item.toolCallId);
-          const replayFact = applyPatchReplayFactText(
-            downgradedCall.input,
-            item.output,
-            item.isError,
-          );
+          const replayFact = item.modelProjection
+            ? durableApplyPatchReplayFactText(
+                downgradedCall.input,
+                item.modelProjection,
+                item.isError,
+              )
+            : applyPatchReplayFactText(downgradedCall.input, item.output, item.isError);
           if (!replayFact) break;
           if (downgradedCall.stepId) {
             const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
@@ -4416,6 +4443,62 @@ export class AiSdkBackend implements AgentBackend {
         },
       ],
     };
+  }
+
+  private async materializeDurableToolResultProjection(
+    budget: ProviderImageBudget,
+    projection: DurableToolResultProjection,
+    decisionKey: string,
+  ): Promise<ToolResultOutput> {
+    if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
+    const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
+    for (const [index, part] of projection.parts.entries()) {
+      if (part.kind === 'text') {
+        value.push({ type: 'text', text: part.text });
+        continue;
+      }
+      if (this.input.supportsVision !== true) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but the selected model does not support image input.',
+        });
+        continue;
+      }
+      if (!this.input.readAttachmentBytes) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but its stored bytes are unavailable.',
+        });
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(part.ref);
+      } catch {
+        value.push({
+          type: 'text',
+          text: 'Image could not be loaded from artifact storage: read_failed.',
+        });
+        continue;
+      }
+      if (!read.ok) {
+        value.push({
+          type: 'text',
+          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
+        });
+        continue;
+      }
+      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
+        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
+        continue;
+      }
+      value.push({
+        type: 'file',
+        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+        mediaType: part.mediaType,
+      });
+    }
+    return { type: 'content', value };
   }
 
   private async buildCurrentUserContent(

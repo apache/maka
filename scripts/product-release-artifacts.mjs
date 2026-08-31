@@ -106,7 +106,7 @@ function digestFile(path, algorithm = 'sha256') {
   });
 }
 
-async function artifactRecords(directory, names) {
+export async function productReleaseArtifactRecords(directory, names) {
   return Promise.all(
     [...names].sort(compareProductReleaseNames).map(async (name) => {
       const path = join(directory, name);
@@ -259,7 +259,7 @@ export async function createProductReleasePublicationRecord({
     sourceCommit: identity.sourceCommit,
     tag: identity.tag,
     version: identity.version,
-    assets: await artifactRecords(artifactDirectory, allArtifactNames(identity)),
+    assets: await productReleaseArtifactRecords(artifactDirectory, allArtifactNames(identity)),
   });
 }
 
@@ -271,7 +271,7 @@ export async function verifyProductReleasePublicationRecord({
   assertProductReleasePublicationRecord(record, expected);
   const names = record.assets.map(({ name }) => name);
   await verifyProductReleaseArtifactDirectory(artifactDirectory, names);
-  const actual = await artifactRecords(artifactDirectory, names);
+  const actual = await productReleaseArtifactRecords(artifactDirectory, names);
   if (JSON.stringify(actual) !== JSON.stringify(record.assets)) {
     throw new Error('Product release artifacts do not match the immutable publication record');
   }

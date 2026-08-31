@@ -192,6 +192,7 @@ function assignmentRequest(
       submittedPlacement: 'current_turn' as const,
       placement: 'current_turn' as const,
       disposition: 'steering' as const,
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
       admittedAt: 10,
     },
   };

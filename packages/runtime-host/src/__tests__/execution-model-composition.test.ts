@@ -573,6 +573,178 @@ test('backend creation admits an enabled model a snapshot never listed', async (
   await backend.dispose();
 });
 
+test('Host reopens one projected image from its ArtifactStore authority', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-projection-image-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const runtimePath = join(base, 'runtime.sqlite');
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const sessionId = 'backend-creation-session';
+  const runId = 'projection-image-run';
+  const turnId = 'projection-image-turn';
+  const head: RuntimeEvent = {
+    id: 'projection-image-head',
+    invocationId: runId,
+    runId,
+    sessionId,
+    turnId,
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'Return the projected image.' },
+  };
+  let owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const provider = await startProvider();
+  provider.configureProjectionImageFlow('ProjectedImage');
+  const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
+    assert.ok(body);
+    assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
+    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: { type: 'data', data: pngBytes.toString('base64') },
+      },
+    ]);
+  };
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  let runtime = createSqliteRuntimeStore(runtimePath);
+  try {
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    await runtime.appendRuntimeEvent(sessionId, runId, head);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        tools: [
+          {
+            name: 'ProjectedImage',
+            description: 'Return one inline image.',
+            parameters: z.object({}),
+            recoveryMode: 'replay_safe',
+            impl: async () => ({ private: 'raw execution fact' }),
+            toModelOutput: () => ({
+              type: 'content',
+              value: [
+                {
+                  type: 'file',
+                  data: { type: 'data', data: pngBytes.toString('base64') },
+                  mediaType: 'image/png',
+                },
+              ],
+            }),
+          },
+        ],
+        artifacts,
+        loadTurnRuntimeEvents: () => runtime.readImmutableRuntimeEvents(sessionId, runId),
+        runtimeCommitSink: runtime,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: runId,
+      runId,
+      turnId,
+      headAnchorRuntimeEvent: head,
+      text: 'Return the projected image.',
+      context: [],
+      runtimeContext: [head],
+    })) {
+      // Drain the complete live tool step.
+    }
+    const liveRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(liveRequests.length, 2);
+    assertProjectedImage(liveRequests[1]?.body);
+
+    const nextRunId = 'projection-image-next-run';
+    const nextText = 'Continue in the same process.';
+    const nextHead: RuntimeEvent = {
+      id: 'projection-image-next-head',
+      invocationId: nextRunId,
+      runId: nextRunId,
+      sessionId,
+      turnId: 'projection-image-next-turn',
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: nextText },
+    };
+    await runtime.appendRuntimeEvent(sessionId, nextRunId, nextHead);
+    const nextTurnContext = [...(await runtime.readRuntimeEvents(sessionId, runId)), nextHead];
+    for await (const _event of backend.send({
+      invocationId: nextRunId,
+      runId: nextRunId,
+      turnId: nextHead.turnId,
+      headAnchorRuntimeEvent: nextHead,
+      text: nextText,
+      context: [],
+      runtimeContext: nextTurnContext,
+    })) {
+      // Drain the next Turn built from the same committed projection.
+    }
+    const nextTurnRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(nextTurnRequests.length, 3);
+    assertProjectedImage(nextTurnRequests[2]?.body);
+
+    await backend.dispose();
+    backend = undefined;
+    artifacts.close();
+    artifacts = undefined;
+    runtime.close();
+    await owner.close();
+
+    owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    runtime = createSqliteRuntimeStore(runtimePath);
+    const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        artifacts,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'projection-image-replay-invocation',
+      runId: 'projection-image-replay-run',
+      turnId: 'projection-image-replay-turn',
+      text: 'Continue after restart.',
+      context: [],
+      runtimeContext: recoveredEvents,
+    })) {
+      // Drain the replay request built from the reopened authorities.
+    }
+    const streamRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(streamRequests.length, 4);
+    assertProjectedImage(streamRequests[3]?.body);
+  } finally {
+    await backend?.dispose();
+    artifacts?.close();
+    runtime.close();
+    await owner?.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
   const provider = await startProvider();
   let commits = 0;
@@ -3558,6 +3730,7 @@ function backendCreationFixture(input: {
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  artifacts?: HostAiSdkBackendInput['artifacts'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -3631,7 +3804,7 @@ function backendCreationFixture(input: {
     runtimePolicy,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     createRunComposer,
-    artifacts: {},
+    artifacts: input.artifacts ?? {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({
@@ -3667,6 +3840,7 @@ function readyExecutionConnection(
   customization: {
     readonly requestHeaders?: Readonly<Record<string, string>>;
     readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+    readonly vision?: boolean;
   } = {},
 ) {
   return {
@@ -3682,7 +3856,11 @@ function readyExecutionConnection(
       models: [
         {
           id: MODEL_ID,
-          capabilities: { chat: true, functionCalling: true },
+          capabilities: {
+            chat: true,
+            functionCalling: true,
+            ...(customization.vision !== undefined ? { vision: customization.vision } : {}),
+          },
           contextWindow: 8_192,
           maxOutputTokens: 1_024,
         },
@@ -3959,6 +4137,7 @@ type ProviderFlow =
       readonly groupId: string;
       readonly toolName: string;
     }
+  | { readonly kind: 'projection_image'; readonly toolName: string }
   | { readonly kind: 'child_agent' }
   | {
       readonly kind: 'implementation_child_agent';
@@ -3972,6 +4151,7 @@ async function startProvider(): Promise<{
   readonly requests: ProviderRequest[];
   configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
+  configureProjectionImageFlow(toolName: string): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
@@ -4000,6 +4180,10 @@ async function startProvider(): Promise<{
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'client_capability', ...input };
+    },
+    configureProjectionImageFlow: (toolName) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = { kind: 'projection_image', toolName };
     },
     configureChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -4077,6 +4261,15 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'projection_image' && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes(flow.toolName));
+    respondProviderToolCall(response, streamRequestIndex, flow.toolName, {});
+    return;
+  }
+  if (flow.kind === 'projection_image') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'managed_bash' && streamRequestIndex === 1) {
     assert.ok(toolNames(body).includes('Bash'));
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {

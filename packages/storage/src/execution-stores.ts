@@ -81,7 +81,10 @@ const executionStoresReaderKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
-export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
+export {
+  normalizeRootTurnAdmissionPayload,
+  rootTurnAdmissionRecordFits,
+} from './agent-run-store.js';
 export {
   isSessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,

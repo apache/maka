@@ -31,12 +31,44 @@ export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoun
   createExternalExecutionBoundary();
 
 type TestAiSdkBackendInput = Omit<AiSdkBackendInput, 'readExecutionBoundary'> &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>>;
+  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>> & {
+    testProjectionArtifacts?: boolean;
+  };
 
 export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBackend {
+  const { testProjectionArtifacts, ...backendInput } = input;
+  const artifacts = new Map<string, Uint8Array>();
+  let nextArtifactId = 0;
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
-    ...input,
+    ...backendInput,
+    ...(testProjectionArtifacts
+      ? {
+          prepareDurableProjectionArtifact: ({ bytes }: { bytes: Uint8Array }) => {
+            const relativePath = `artifact-${++nextArtifactId}`;
+            const accepted = bytes.slice();
+            return {
+              ref: {
+                kind: 'session_file' as const,
+                sessionId: input.sessionId,
+                relativePath,
+              },
+              persist: async () => {
+                artifacts.set(relativePath, accepted);
+              },
+            };
+          },
+          readAttachmentBytes:
+            input.readAttachmentBytes ??
+            (async (ref) => {
+              const bytes =
+                ref.kind === 'session_file' ? artifacts.get(ref.relativePath) : undefined;
+              return bytes
+                ? { ok: true as const, bytes: bytes.slice() }
+                : { ok: false as const, reason: 'not_found' as const };
+            }),
+        }
+      : {}),
   });
 }
 
