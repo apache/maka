@@ -102,10 +102,10 @@ describe('file tools follow the execution boundary', () => {
       expect(written).toMatchObject({ kind: 'file_diff', paths: [target] });
       expect((written as { diff: string }).diff).toContain('--- /dev/null');
       expect((written as { diff: string }).diff).toContain('+hello');
-      expect(await readFile(target, 'utf8')).toBe('hello');
+      assert.strictEqual(await readFile(target, 'utf8'), 'hello');
 
       const read = await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS);
-      expect(read).toEqual({ content: 'hello' });
+      assert.deepStrictEqual(read, { content: 'hello' });
 
       const edited = await runTool(
         toolNamed(tools, 'Edit'),
@@ -116,7 +116,7 @@ describe('file tools follow the execution boundary', () => {
       expect(edited).toMatchObject({ kind: 'file_diff', paths: [target] });
       expect((edited as { diff: string }).diff).toContain('-hello');
       expect((edited as { diff: string }).diff).toContain('+bye');
-      expect(await readFile(target, 'utf8')).toBe('bye');
+      assert.strictEqual(await readFile(target, 'utf8'), 'bye');
 
       await writeFile(join(outside, 'data.json'), '{"b":1,"a":2}', 'utf8');
       const formatted = await runTool(
@@ -133,7 +133,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { files: string[] };
-      expect(globbed.files).toEqual(['note.md']);
+      assert.deepStrictEqual(globbed.files, ['note.md']);
     } finally {
       await cleanup();
     }
@@ -170,7 +170,7 @@ describe('file tools follow the execution boundary', () => {
         );
       }
       // The write never landed under any of them.
-      expect(await readFile(target, 'utf8')).toBe('hello');
+      assert.strictEqual(await readFile(target, 'utf8'), 'hello');
     } finally {
       await cleanup();
     }
@@ -188,9 +188,12 @@ describe('file tools follow the execution boundary', () => {
         /Read path must stay inside session cwd/,
       );
       // Under bypass the same link resolves, because nothing is being escaped.
-      expect(await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS)).toEqual({
-        content: 'secret',
-      });
+      assert.deepStrictEqual(
+        await runTool(toolNamed(tools, 'Read'), { path: 'link.txt' }, cwd, BYPASS),
+        {
+          content: 'secret',
+        },
+      );
     } finally {
       await cleanup();
     }
@@ -213,7 +216,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { files: string[] };
-      expect(globbed.files).toHaveLength(1);
+      assert.strictEqual(globbed.files.length, 1);
     } finally {
       await cleanup();
     }
@@ -240,7 +243,7 @@ describe('file tools follow the execution boundary', () => {
         MANAGED,
       );
       expect(result).toMatchObject({ kind: 'file_write', path: target, bytes: 1 });
-      expect(calls).toHaveLength(1);
+      assert.strictEqual(calls.length, 1);
       // The worker decided; nothing was written by the host backend.
       await assert.rejects(readFile(target, 'utf8'));
     } finally {
@@ -349,10 +352,10 @@ describe('file tools follow the execution boundary', () => {
       );
       await Promise.all([first, second]);
 
-      expect(overlapped).toBe(false);
+      assert.strictEqual(overlapped, false);
       // The second edit saw the first one's output, so they ran in sequence
       // against one file rather than racing two reads of the same start state.
-      expect(await readFile(target, 'utf8')).toBe('c');
+      assert.strictEqual(await readFile(target, 'utf8'), 'c');
     } finally {
       await cleanup();
     }
@@ -369,7 +372,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         path: join('..', 'outside', 'note.md'),
       });
-      expect(absolute.key).toBe(relative.key);
+      assert.strictEqual(absolute.key, relative.key);
     } finally {
       await cleanup();
     }
@@ -387,7 +390,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       )) as { matches: string[] };
-      expect(found.matches).toHaveLength(1);
+      assert.strictEqual(found.matches.length, 1);
       expect(found.matches[0]).toContain('needle here');
     } finally {
       await cleanup();
@@ -410,8 +413,8 @@ describe('file tools follow the execution boundary', () => {
 
       await runTool(toolNamed(tools, 'Write'), { path: target, content: 'host' }, cwd, BYPASS);
 
-      expect(calls).toHaveLength(0);
-      expect(await readFile(target, 'utf8')).toBe('host');
+      assert.strictEqual(calls.length, 0);
+      assert.strictEqual(await readFile(target, 'utf8'), 'host');
     } finally {
       await cleanup();
     }
@@ -438,8 +441,8 @@ describe('file tools follow the execution boundary', () => {
       const result = await runTool(toolNamed(tools, 'Read'), { path: 'image.png' }, cwd, MANAGED);
 
       expect(result).toMatchObject({ kind: 'image', mimeType: 'image/png' });
-      expect(snapshots).toHaveLength(1);
-      expect(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex')).toBe('89504e47');
+      assert.strictEqual(snapshots.length, 1);
+      assert.strictEqual(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex'), '89504e47');
     } finally {
       await cleanup();
     }

@@ -60,12 +60,14 @@ describe('LocalWorkspaceExecutor exec', () => {
       stdout: 'from-cwd',
       stderr: 'err-data',
     });
-    expect(
+    assert.strictEqual(
       events.some((event) => event.stream === 'stdout' && event.chunk.includes('from-cwd')),
-    ).toBe(true);
-    expect(
+      true,
+    );
+    assert.strictEqual(
       events.some((event) => event.stream === 'stderr' && event.chunk.includes('err-data')),
-    ).toBe(true);
+      true,
+    );
   });
 
   test('reports non-zero exit without throwing so tools can preserve their own error contract', async () => {
@@ -83,8 +85,8 @@ describe('LocalWorkspaceExecutor exec', () => {
       stdout: 'out-data',
       stderr: 'err-data',
     });
-    expect(result.timedOut).toBe(false);
-    expect(result.aborted).toBe(false);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.aborted, false);
   });
 
   test('runs argv commands without routing through the host shell', async () => {
@@ -120,9 +122,9 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 200,
     });
 
-    expect(result.exitCode).toBe(124);
-    expect(result.timedOut).toBe(true);
-    expect(result.stdout).toBe('before-timeout');
+    assert.strictEqual(result.exitCode, 124);
+    assert.strictEqual(result.timedOut, true);
+    assert.strictEqual(result.stdout, 'before-timeout');
   });
 
   test('reports abort with captured output', async () => {
@@ -139,10 +141,10 @@ describe('LocalWorkspaceExecutor exec', () => {
     setTimeout(() => controller.abort(), 100);
     const result = await resultPromise;
 
-    expect(result.exitCode).toBe(130);
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(false);
-    expect(result.stdout).toBe('before-abort');
+    assert.strictEqual(result.exitCode, 130);
+    assert.strictEqual(result.aborted, true);
+    assert.strictEqual(result.timedOut, false);
+    assert.strictEqual(result.stdout, 'before-abort');
   });
 });
 
@@ -157,8 +159,8 @@ describe('LocalWorkspaceExecutor file operations', () => {
       await writeFile(file, bytes);
       const result = await executor.readFile({ cwd, path: file });
       if (!('bytes' in result)) throw new Error('expected image result');
-      expect(result.mimeType).toBe(mimeType);
-      expect([...result.bytes]).toEqual([...bytes]);
+      assert.strictEqual(result.mimeType, mimeType);
+      assert.deepStrictEqual([...result.bytes], [...bytes]);
     }
   });
 
@@ -171,7 +173,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const result = await executor.readFile({ cwd, path: file, offset: 1, limit: 1 });
 
     if (!('bytes' in result)) throw new Error('expected image result');
-    expect([...result.bytes]).toEqual([...ONE_PIXEL_PNG]);
+    assert.deepStrictEqual([...result.bytes], [...ONE_PIXEL_PNG]);
   });
 
   test('rejects extension-only and over-limit image files', async () => {
@@ -207,7 +209,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
       bytes: 5,
     });
     expect(readResult).toMatchObject({ content: 'hello' });
-    expect(await readFile(file, 'utf8')).toBe('hello');
+    assert.strictEqual(await readFile(file, 'utf8'), 'hello');
   });
 
   test('applies read offset and limit at the executor boundary', async () => {
@@ -231,7 +233,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const result = await executor.globFiles({ cwd, pattern: 'src/*.*', limit: 2 });
 
-    expect(result.files).toEqual(['src/a.ts', 'src/b.ts']);
+    assert.deepStrictEqual(result.files, ['src/a.ts', 'src/b.ts']);
   });
 
   test('greps file contents with rg-compatible no-match behavior', async () => {
@@ -265,11 +267,11 @@ describe('LocalWorkspaceExecutor file operations', () => {
       timeoutMs: 5_000,
     });
 
-    expect(hit.matches).toEqual([
+    assert.deepStrictEqual(hit.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
     expect(miss).toMatchObject({ matches: [] });
-    expect(optionLikePattern.matches).toEqual([
+    assert.deepStrictEqual(optionLikePattern.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
   });

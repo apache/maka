@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -28,7 +29,6 @@ import {
   recordToolArtifactsSafely,
 } from '../tool-artifacts.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
-import { expect } from '../test-helpers.js';
 
 describe('deriveToolArtifactCandidates', () => {
   test('Write derives a file-backed candidate from structured result path', () => {
@@ -39,7 +39,7 @@ describe('deriveToolArtifactCandidates', () => {
       result: { ok: true, path: '/workspace/maka/docs/report.html', bytes: 15 },
     });
 
-    expect(candidate).toEqual({
+    assert.deepStrictEqual(candidate, {
       kind: 'html',
       name: 'report.html',
       mimeType: 'text/html',
@@ -57,15 +57,17 @@ describe('deriveToolArtifactCandidates', () => {
       result: { ok: true, path: '/workspace/maka/src/main.ts', replacements: 1 },
     });
 
-    expect(candidate?.kind).toBe('diff');
-    expect(candidate?.name).toBe('main.ts.diff');
-    expect(candidate?.mimeType).toBe('text/x-diff');
-    expect(
+    assert.strictEqual(candidate?.kind, 'diff');
+    assert.strictEqual(candidate?.name, 'main.ts.diff');
+    assert.strictEqual(candidate?.mimeType, 'text/x-diff');
+    assert.strictEqual(
       typeof candidate?.content === 'string' && candidate.content.includes('-const a = 1;'),
-    ).toBe(true);
-    expect(
+      true,
+    );
+    assert.strictEqual(
       typeof candidate?.content === 'string' && candidate.content.includes('+const a = 2;'),
-    ).toBe(true);
+      true,
+    );
   });
 
   test('Bash derives only explicit stdout redirects and does not scan stdout/stderr text', () => {
@@ -76,24 +78,25 @@ describe('deriveToolArtifactCandidates', () => {
       result: { stdout: 'wrote /tmp/guessed.html', stderr: 'see report.pdf' },
     });
 
-    expect(candidate?.sourcePath).toBe('/workspace/maka/reports/build.log');
-    expect(candidate?.kind).toBe('file');
+    assert.strictEqual(candidate?.sourcePath, '/workspace/maka/reports/build.log');
+    assert.strictEqual(candidate?.kind, 'file');
 
-    expect(
+    assert.deepStrictEqual(
       deriveToolArtifactCandidates({
         toolName: 'Bash',
         cwd: '/workspace/maka',
         args: { command: 'echo "wrote reports/build.log"' },
         result: { stdout: 'reports/build.log' },
       }),
-    ).toEqual([]);
+      [],
+    );
   });
 
   test('extractStdoutRedirectPath ignores stderr and fd redirects', () => {
-    expect(extractStdoutRedirectPath('echo ok > out.txt')).toBe('out.txt');
-    expect(extractStdoutRedirectPath('echo ok >> ./out.txt')).toBe('./out.txt');
-    expect(extractStdoutRedirectPath('echo ok 2> err.log')).toBe(null);
-    expect(extractStdoutRedirectPath('echo ok >&2')).toBe(null);
+    assert.strictEqual(extractStdoutRedirectPath('echo ok > out.txt'), 'out.txt');
+    assert.strictEqual(extractStdoutRedirectPath('echo ok >> ./out.txt'), './out.txt');
+    assert.strictEqual(extractStdoutRedirectPath('echo ok 2> err.log'), null);
+    assert.strictEqual(extractStdoutRedirectPath('echo ok >&2'), null);
   });
 });
 
@@ -116,9 +119,9 @@ describe('recordToolArtifactsSafely', () => {
       (message) => warnings.push(message),
     );
 
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]?.includes('Artifact recorder skipped:')).toBe(true);
-    expect(warnings[0]?.includes('sk-secret-token-should-not-leak')).toBe(false);
+    assert.strictEqual(warnings.length, 1);
+    assert.strictEqual(warnings[0]?.includes('Artifact recorder skipped:'), true);
+    assert.strictEqual(warnings[0]?.includes('sk-secret-token-should-not-leak'), false);
   });
 });
 
@@ -150,11 +153,12 @@ describe('ToolRuntime artifact recorder scheduling', () => {
       delay(20).then(() => 'timeout' as const),
     ]);
 
-    expect(outcome).toBe('done');
-    expect(calls.length).toBe(1);
-    expect(
+    assert.strictEqual(outcome, 'done');
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(
       events.some((event) => event.type === 'tool_result' && event.toolUseId === 'tool-1'),
-    ).toBe(true);
+      true,
+    );
   });
 });
 
