@@ -102,6 +102,12 @@ jobs:
       - name: Verify ASF npm preflight policy
         run: npm run check:asf-npm
 
+      - name: Check npm install script allowlist
+        run: npm run check:allow-scripts
+
+      - name: Test npm install script allowlist
+        run: node --test --test-concurrency=1 scripts/check-allow-scripts.test.mjs
+
       # The source-header gate has to see every file that lands, not only the
       # files an affected surface selects, so it runs unconditionally beside
       # the other install-free checks.

@@ -48,6 +48,7 @@
     "clean": "node scripts/clean-build.mjs",
     "rebuild": "npm run clean && npm run build",
     "check:stale": "node scripts/check-stale-dist.mjs",
+    "check:allow-scripts": "node scripts/check-allow-scripts.mjs",
     "generate:third-party-notices": "node scripts/generate-third-party-notices.mjs",
     "check:third-party-notices": "node scripts/generate-third-party-notices.mjs --check",
     "generate:cli-third-party-notices": "node scripts/generate-third-party-notices.mjs --target cli",
@@ -113,8 +114,8 @@
     "yaml": "2.9.0"
   },
   "allowScripts": {
-    "esbuild@0.27.7": true,
-    "@jackwener/opencli@1.8.4": true,
+    "esbuild@0.28.2": true,
+    "@jackwener/opencli@1.8.6": true,
     "node-pty@1.2.0-beta.15": true
   },
   "overrides": {
