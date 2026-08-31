@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -743,18 +744,6 @@ function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentR
     updatedAt: 1,
   };
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value?: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value?: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve as (value?: T | PromiseLike<T>) => void;
-  });
-  return { promise, resolve };
-}
-
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (await predicate()) return;

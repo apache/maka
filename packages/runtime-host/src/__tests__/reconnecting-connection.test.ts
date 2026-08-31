@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -686,15 +687,6 @@ function interrupted(
 ): RuntimeHostRequestInterruptedError {
   return new RuntimeHostRequestInterruptedError(operation, mode, dispatch, 'connection_lost');
 }
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function deferredValue<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((settle) => {

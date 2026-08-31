@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -1378,12 +1379,6 @@ function testConnection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
-}
-
 function taskLedgerStub(task: Task | undefined, calls: string[]): TaskLedgerStore {
   return {
     list: async () => (task ? [task] : []),

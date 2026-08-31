@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
@@ -2834,21 +2835,6 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
     };
   }
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: Error): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((settle, rejectPromise) => {
-    resolve = settle;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;

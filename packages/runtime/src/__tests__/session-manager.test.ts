@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
@@ -15799,12 +15800,6 @@ async function seedRunningTurn(
     },
   ]);
 }
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
-}
-
 function nextNow(start: number): () => number {
   let ts = start;
   return () => ++ts;

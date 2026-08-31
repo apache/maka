@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ClientCapabilityChannel } from '../client/client-capability-channel.js';
@@ -134,15 +135,6 @@ function providerWithOffers(count: number): ClientCapabilityProvider {
       })),
   };
 }
-
-function deferred(): { readonly promise: Promise<void>; resolve(): void } {
-  let resolvePromise!: () => void;
-  const promise = new Promise<void>((resolve) => {
-    resolvePromise = resolve;
-  });
-  return { promise, resolve: resolvePromise };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;

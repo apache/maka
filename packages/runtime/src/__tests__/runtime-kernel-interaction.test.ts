@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -695,18 +696,6 @@ function containsFailure(failure: unknown, expected: unknown): boolean {
     failure.errors.some((nested) => containsFailure(nested, expected))
   );
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (predicate()) return;

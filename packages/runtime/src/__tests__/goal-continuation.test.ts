@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GoalManager, type GoalManagerDeps } from '../goal-state.js';
@@ -39,17 +40,6 @@ import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
 
 const SESSION = 'sess-1';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledCall<T>() {
   const result = deferred<T>();
   let markStarted!: () => void;

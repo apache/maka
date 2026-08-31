@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -444,12 +445,6 @@ test('a dispatched call still claims the T1 lane and settles through the commit 
   assert.ok(operation?.dispatchEvent, 'the T1 dispatch fact is missing');
   assert.ok(operation?.responseEvent, 'the T1 outcome fact is missing');
 });
-
-function nextId(): () => string {
-  let sequence = 0;
-  return () => `id-${++sequence}`;
-}
-
 function header(): SessionHeader {
   return {
     id: SESSION_ID,

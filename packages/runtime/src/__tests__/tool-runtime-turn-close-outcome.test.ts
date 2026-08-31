@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -169,12 +170,6 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;

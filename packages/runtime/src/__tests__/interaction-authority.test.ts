@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
@@ -612,18 +613,6 @@ function header(): SessionHeader {
     schemaVersion: 1,
   };
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 async function immediate(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }

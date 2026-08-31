@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -137,15 +138,6 @@ function createTestTurnActivity(
 ): MakaPiTuiTurnActivitySurface {
   return { activities };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
   return {
     schemaVersion: 1,

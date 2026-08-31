@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, nextId } from '@maka/core/test-only/async-primitives';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as timerDelay } from 'node:timers/promises';
@@ -2660,12 +2661,6 @@ function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
     ...overrides,
   };
 }
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
-}
-
 function nextNow(start: number): () => number {
   let ts = start;
   return () => ++ts;
@@ -2701,15 +2696,6 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
     // consume
   }
 }
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T | PromiseLike<T>): void } {
-  let resolve: (value: T | PromiseLike<T>) => void = () => {};
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 function key(sessionId: string, runId: string): string {
   return `${sessionId}:${runId}`;
 }

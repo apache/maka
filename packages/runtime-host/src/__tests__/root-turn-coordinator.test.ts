@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -98,7 +99,7 @@ import { SessionContinuityCoordinator } from '../server/session-continuity-coord
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import { HostTurnControlCoordinator } from '../server/turn-control-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { PROCESS_TIMEOUT_MS, withTimeout } from './fixtures/execution-host-suite.js';
+import { PROCESS_TIMEOUT_MS } from './fixtures/execution-host-suite.js';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
@@ -5210,17 +5211,6 @@ function operationContext(
     acquireResidency,
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 class ObservableSessionAdmissionGate extends SessionAdmissionGate {
   #nextQueuedRun: ReturnType<typeof deferred<void>> | undefined;
 

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import childProcess, {
   type ExecFileException,
@@ -3151,15 +3152,4 @@ function delayPosixProcessDiscovery(context: TestContext): {
     started: processTableStarted.promise,
     release: () => releaseProcessTable.resolve(),
   };
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 }

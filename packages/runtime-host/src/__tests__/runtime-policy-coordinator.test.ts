@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
@@ -1136,15 +1137,4 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`${label} did not occur`);
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
 }
