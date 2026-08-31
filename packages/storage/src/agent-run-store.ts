@@ -2093,14 +2093,22 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     return Object.freeze({ kind: 'context_compact' });
   }
   if (value.kind === 'scheduled_task') {
+    const keys = ['kind', 'scheduledTaskId', 'executionFingerprint'];
     if (
-      !hasExactKeys(value, ['kind', 'scheduledTaskId']) ||
+      !Object.keys(value).every((key) => keys.includes(key)) ||
       typeof value.scheduledTaskId !== 'string' ||
-      !isSafeId(value.scheduledTaskId)
+      !isSafeId(value.scheduledTaskId) ||
+      (value.executionFingerprint !== undefined && !isSha256Digest(value.executionFingerprint))
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId });
+    return Object.freeze({
+      kind: 'scheduled_task',
+      scheduledTaskId: value.scheduledTaskId,
+      ...(value.executionFingerprint !== undefined
+        ? { executionFingerprint: value.executionFingerprint }
+        : {}),
+    });
   }
   if (value.kind === 'automation' || value.kind === 'legacy_automation') {
     if (

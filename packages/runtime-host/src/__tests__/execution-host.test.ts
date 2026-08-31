@@ -35,6 +35,7 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -66,6 +67,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -162,6 +164,10 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
+    const seededConnection = await fixture.seedConnectionEffect(
+      'http://127.0.0.1:1',
+      'test-secret',
+    );
     const host = await fixture.startHost();
     const desktop = await connectClient(fixture.root);
     try {
@@ -175,8 +181,9 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
             kind: 'agent_run',
             execution: {
               cwd: fixture.root,
-              llmConnectionSlug: 'fake',
-              model: 'fake-model',
+              llmConnectionId: seededConnection.connectionId,
+              llmConnectionSlug: seededConnection.slug,
+              model: seededConnection.enabledModelIds[0]!,
               permissionMode: 'ask',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
@@ -186,6 +193,21 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
       });
       assert.equal(created.kind, 'task');
       if (created.kind !== 'task') return;
+
+      // Simulate a record written by a pre-#3927 build. Legacy rows remain
+      // readable, but must fail closed before a Session or AgentRun is bound.
+      const database = new DatabaseSync(join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE workflow_scheduled_tasks
+             SET record_json = json_remove(record_json, '$.effect.execution.llmConnectionId')
+             WHERE task_id = ?`,
+          )
+          .run(created.task.id);
+      } finally {
+        database.close();
+      }
 
       const fired = await desktop.request('scheduled-task.mutate', {
         kind: 'trigger_now',
@@ -203,6 +225,105 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
       assert.equal(fired.task.runs[0]?.runId, undefined);
     } finally {
       await desktop.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
+test('two UDS Clients never rebind an Agent ScheduledTask after Connection slug reuse', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const original = await fixture.seedConnectionEffect('http://127.0.0.1:1', 'test-secret');
+    const model = original.enabledModelIds[0]!;
+    const host = await fixture.startHost();
+    const creator = await connectClient(fixture.root);
+    const trigger = await connectClient(fixture.root);
+    try {
+      const created = await creator.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'Connection slug reuse proof',
+          intentBody: 'The deleted account must never be replaced silently.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionId: original.connectionId,
+              llmConnectionSlug: original.slug,
+              model,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      const catalog = await trigger.request('connection.catalog.query', { kind: 'start' });
+      assert.equal(catalog.kind, 'page');
+      if (catalog.kind !== 'page') return;
+      const header = catalog.items.find(
+        (item) => item.kind === 'connection' && item.connectionId === original.connectionId,
+      );
+      assert.equal(header?.kind, 'connection');
+      if (header?.kind !== 'connection') return;
+
+      const removed = await trigger.request('connection.catalog.remove', {
+        expected: { connectionId: original.connectionId, revision: header.revision },
+      });
+      assert.equal(removed.kind, 'committed');
+      if (removed.kind !== 'committed') return;
+      const replacement = await trigger.request('connection.catalog.create', {
+        expectedCatalogRevision: removed.catalogRevision,
+        connection: {
+          slug: original.slug,
+          name: 'Replacement account',
+          providerType: original.providerType,
+          ...(original.baseUrl === undefined ? {} : { baseUrl: original.baseUrl }),
+          enabled: true,
+          enabledModelIds: [model],
+        },
+      });
+      assert.equal(replacement.kind, 'committed');
+      if (replacement.kind !== 'committed') return;
+      assert.notEqual(replacement.connection.connectionId, original.connectionId);
+
+      const fired = await trigger.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.lastError, 'ScheduledTask model connection identity changed');
+      const failedRun = fired.task.runs[0];
+      assert.ok(failedRun?.sessionId);
+      assert.ok(failedRun?.runId);
+      const databaseAfterFire = new DatabaseSync(
+        join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM session_metadata WHERE session_id = ?')
+            .get(failedRun.sessionId),
+          undefined,
+        );
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM core_agent_runs WHERE run_id = ?')
+            .get(failedRun.runId),
+          undefined,
+        );
+      } finally {
+        databaseAfterFire.close();
+      }
+    } finally {
+      await Promise.allSettled([creator.close(), trigger.close()]);
       await fixture.stopHost(host);
     }
   });
