@@ -20,7 +20,9 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
@@ -34,6 +36,7 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
@@ -3774,6 +3777,93 @@ describe('AiSdkBackend model history', () => {
     assert.ok(
       result.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
     );
+  });
+
+  test('replays the durable projection after reopening its RuntimeEvent store', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-durable-projection-restart-'));
+    const databasePath = join(root, 'runtime.sqlite');
+    const source = createSqliteRuntimeStore(databasePath);
+    try {
+      await source.importConversationCopyRuntimeEvents('session-1', [
+        {
+          runId: 'run-prev',
+          events: [
+            runtimeEvent({
+              id: 'restart-call',
+              turnId: 'turn-prev',
+              role: 'model',
+              author: 'agent',
+              content: {
+                kind: 'function_call',
+                id: 'restart-tool-call',
+                name: 'PrivateTool',
+                args: {},
+              },
+            }),
+            runtimeEvent({
+              id: 'restart-result',
+              turnId: 'turn-prev',
+              role: 'tool',
+              author: 'tool',
+              content: {
+                kind: 'function_response',
+                id: 'restart-tool-call',
+                name: 'PrivateTool',
+                result: { secretExecutionFact: 'raw-secret-must-not-replay' },
+                modelProjection: {
+                  version: 1,
+                  kind: 'text',
+                  text: 'durable-safe-fact',
+                },
+              },
+            }),
+            runtimeEvent({
+              id: 'restart-terminal',
+              turnId: 'turn-prev',
+              role: 'system',
+              author: 'system',
+              status: 'completed',
+            }),
+          ],
+        },
+      ]);
+    } finally {
+      source.close();
+    }
+
+    const reopened = createSqliteRuntimeStore(databasePath);
+    try {
+      const recoveredEvents = await reopened.readRuntimeEvents('session-1', 'run-prev');
+      const model = completionModel();
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => model,
+        tools: [],
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+
+      await drain(
+        backend.send({
+          turnId: 'turn-current',
+          text: 'continue after restart',
+          context: [],
+          runtimeContext: recoveredEvents,
+        }),
+      );
+
+      const wire = JSON.stringify(compactPrompt(model));
+      assert.match(wire, /durable-safe-fact/u);
+      assert.doesNotMatch(wire, /raw-secret-must-not-replay/u);
+    } finally {
+      reopened.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test('sends a live image tool result to the next provider step', async () => {

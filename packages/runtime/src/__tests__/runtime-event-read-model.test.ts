@@ -651,51 +651,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     expect(replay.diagnostics).toEqual([]);
   });
 
-  test('reduces live, next-turn, and cold-restart Tool Results from one durable projection', () => {
-    const events = [
-      ev({
-        id: 'evt-projected-call',
-        role: 'model',
-        author: 'agent',
-        content: {
-          kind: 'function_call',
-          id: 'projected-1',
-          name: 'PrivateTool',
-          args: {},
-        },
-      }),
-      ev({
-        id: 'evt-projected-result',
-        role: 'tool',
-        author: 'tool',
-        content: {
-          kind: 'function_response',
-          id: 'projected-1',
-          name: 'PrivateTool',
-          result: { secretExecutionFact: 'must not reach the model' },
-          modelProjection: {
-            version: 1,
-            kind: 'text',
-            text: 'stable model fact',
-          },
-        },
-      }),
-    ];
-
-    const results = [
-      buildRuntimeEventModelReplayPlan(events),
-      buildRuntimeEventModelReplayPlan([...events]),
-      buildRuntimeEventModelReplayPlan(JSON.parse(JSON.stringify(events)) as RuntimeEvent[]),
-    ].map((plan) => plan.items.find((item) => item.kind === 'tool_result'));
-    const projections = results.map((result) => result?.modelProjection);
-
-    expect(projections).toEqual([
-      { version: 1, kind: 'text', text: 'stable model fact' },
-      { version: 1, kind: 'text', text: 'stable model fact' },
-      { version: 1, kind: 'text', text: 'stable model fact' },
-    ]);
-  });
-
   test('folds retired permission modes while projecting persisted tool results', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

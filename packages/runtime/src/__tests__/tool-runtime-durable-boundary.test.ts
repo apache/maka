@@ -238,7 +238,7 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
-  it('commits one deterministic projection fallback without repeating a completed tool', async () => {
+  it('commits one deterministic fallback when projection fails', async () => {
     let implementationCalls = 0;
     const outcomes: ToolOutcomeCommit[] = [];
     const harness = makeHarness({
