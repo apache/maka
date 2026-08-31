@@ -75,7 +75,6 @@ function archiveTransition(
   event: RuntimeEvent,
   options: {
     artifactId?: string;
-    highWaterSeq?: number;
     previousTransitionId?: string;
     sourceProjection?: ReturnType<typeof baseToolResultProjection>;
   } = {},
@@ -103,15 +102,7 @@ function archiveTransition(
     },
     sourceProjection,
     replacement: archivedToolResultProjection(placeholder),
-    archive: {
-      artifactId,
-      bodySha256: sha256(serialized),
-      originalBytes: serialized.length,
-      originalEstimatedTokens: serialized.length,
-    },
-    reason: 'stale_tool_result_archived',
     ...(options.previousTransitionId ? { previousTransitionId: options.previousTransitionId } : {}),
-    highWaterSeq: options.highWaterSeq ?? 10,
     now: 100,
   });
 }
@@ -136,48 +127,43 @@ describe('effective model projection reduction', () => {
     assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
   });
 
-  test('reduces identically on the next Turn and after a cold restart', () => {
-    const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET });
-    const transition = archiveTransition(event);
-
-    // Next Turn: the same ledger read, more events after it.
-    const nextTurn = reduceEffectiveModelProjections(
-      [event, toolResultEvent('rt-2', 'turn-2', { body: 'later' })],
-      [transition],
-    );
-    // Cold restart: the ledger is all the process has.
-    const restart = reduceEffectiveModelProjections([event], [transition]);
-
-    assert.deepEqual(nextTurn.events[0], restart.events[0]);
-    assert.equal(serializedEffective(nextTurn.events).includes(SECRET), false);
-  });
-
   test('refuses a stale concurrent writer instead of restoring its source', () => {
     const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET });
-    const first = archiveTransition(event, { artifactId: 'artifact-a', highWaterSeq: 10 });
+    const first = archiveTransition(event, { artifactId: 'artifact-a' });
     // A second Turn that never saw `first` decides against the same source.
-    const stale = archiveTransition(event, { artifactId: 'artifact-b', highWaterSeq: 20 });
+    const stale = archiveTransition(event, { artifactId: 'artifact-b' });
+    // Neither wrote later than the other in any sense a reader can trust, so the
+    // winner is the smaller content-derived id — the same one on every reader.
+    const [winner, loser] =
+      first.transitionId < stale.transitionId ? [first, stale] : [stale, first];
 
-    const reduced = reduceEffectiveModelProjections([event], [first, stale]);
-
-    assert.deepEqual(
-      reduced.applied.map((transition) => transition.transitionId),
-      [first.transitionId],
-    );
-    assert.deepEqual(
-      reduced.rejected.map((transition) => transition.transitionId),
-      [stale.transitionId],
-    );
-    assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
-    assert.deepEqual([...reduced.reachableArchiveArtifactIds], ['artifact-a']);
+    for (const arrival of [
+      [first, stale],
+      [stale, first],
+    ]) {
+      const reduced = reduceEffectiveModelProjections([event], arrival);
+      assert.deepEqual(
+        reduced.applied.map((transition) => transition.transitionId),
+        [winner.transitionId],
+      );
+      assert.deepEqual(
+        reduced.rejected.map((transition) => transition.transitionId),
+        [loser.transitionId],
+      );
+      assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
+      // The refused writer's archive is named by nothing the model can see.
+      assert.deepEqual(
+        [...collectReachableArchiveArtifactIds(reduced.events)],
+        [winner === first ? 'artifact-a' : 'artifact-b'],
+      );
+    }
   });
 
   test('orders concurrent Turns deterministically regardless of ledger arrival order', () => {
     const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET });
-    const first = archiveTransition(event, { artifactId: 'artifact-a', highWaterSeq: 10 });
+    const first = archiveTransition(event, { artifactId: 'artifact-a' });
     const second = archiveTransition(event, {
       artifactId: 'artifact-b',
-      highWaterSeq: 20,
       previousTransitionId: first.transitionId,
       sourceProjection: first.replacement,
     });
@@ -190,7 +176,7 @@ describe('effective model projection reduction', () => {
       inOrder.applied.map((transition) => transition.transitionId),
       [first.transitionId, second.transitionId],
     );
-    assert.deepEqual([...inOrder.reachableArchiveArtifactIds].sort(), ['artifact-a', 'artifact-b']);
+    assert.deepEqual([...collectReachableArchiveArtifactIds(inOrder.events)], ['artifact-b']);
   });
 
   test('leaves provider-native opaque results alone', () => {
@@ -211,7 +197,7 @@ describe('effective model projection reduction', () => {
     assert.deepEqual(reduced.events[0], event);
     assert.equal(reduced.applied.length, 0);
     assert.equal(reduced.rejected.length, 1);
-    assert.equal(reduced.reachableArchiveArtifactIds.size, 0);
+    assert.equal(collectReachableArchiveArtifactIds(reduced.events).size, 0);
   });
 
   test('rolling compaction cannot re-measure or re-archive replaced content', () => {
@@ -314,7 +300,7 @@ describe('durable transition writer', () => {
 
     assert.equal(outcome, undefined);
     const reduced = reduceEffectiveModelProjections([event], []);
-    assert.equal(collectReachableArchiveArtifactIds(reduced).has('artifact-orphan'), false);
+    assert.equal(collectReachableArchiveArtifactIds(reduced.events).has('artifact-orphan'), false);
     assert.ok(serializedEffective(reduced.events).includes(SECRET));
   });
 });
@@ -347,9 +333,12 @@ describe('transition ledger reads', () => {
     const loaded = await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-1');
 
     assert.deepEqual(
-      loaded.map((entry) => entry.transitionId),
+      loaded.transitions.map((entry) => entry.transitionId),
       [transition.transitionId],
     );
+    // A record of the right type this build cannot decode is reported, not
+    // silently treated as "no transition here".
+    assert.equal(loaded.undecodable, 1);
   });
 
   test('legacy retry: an event with no durable projection still folds through one codec', () => {

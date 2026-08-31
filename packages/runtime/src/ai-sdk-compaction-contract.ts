@@ -21,6 +21,7 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
@@ -83,7 +84,7 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
-export type ModelProjectionTransitionLoader = () => Promise<ModelProjectionTransition[]>;
+export type ModelProjectionTransitionLoader = () => Promise<LoadedModelProjectionTransitions>;
 export type ModelProjectionTransitionLedgerRecorder = (
   transition: ModelProjectionTransition,
   turnId: string,

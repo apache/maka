@@ -109,12 +109,6 @@ export interface ActiveToolResultPruneInput {
   resolveProjection: ActiveToolResultProjectionResolver;
   /** Archive + transition writer. */
   transitions: ToolResultArchiveTransitionServices;
-  /**
-   * Records what this run has already committed for a target, so a later step
-   * chains onto it instead of racing it. Purely a read-through cache of the
-   * durable ledger: a restart rebuilds the same answer by reduction.
-   */
-  committed?: Map<string, { projection: DurableToolResultProjection; transitionId: string }>;
 }
 
 export interface ActiveToolResultPruneResult {
@@ -293,9 +287,7 @@ async function rewriteToolResultPart(input: {
   // content the model stops seeing.
   const address = await Promise.resolve(input.input.resolveProjection(part.toolCallId));
   if (!address || address.toolName !== part.toolName) return { changed: false };
-  const committed = input.input.committed?.get(part.toolCallId);
-
-  const sourceProjection = committed?.projection ?? address.projection;
+  const sourceProjection = address.projection;
   const serializedResult = serializedToolResultProjection(sourceProjection);
   const originalEstimatedTokens = estimateTokens(serializedResult.length, input.charsPerToken);
   if (
@@ -316,17 +308,11 @@ async function rewriteToolResultPart(input: {
     originalBytes: utf8ByteLength(serializedResult),
     originalEstimatedTokens,
     reason: 'active_current_turn_tool_result_pruned_before_next_step',
-    ...((committed?.transitionId ?? address.previousTransitionId)
-      ? { previousTransitionId: committed?.transitionId ?? address.previousTransitionId }
-      : {}),
+    ...(address.previousTransitionId ? { previousTransitionId: address.previousTransitionId } : {}),
     ...(input.supersession ? { supersession: input.supersession } : {}),
     result: payload.value,
   });
   if (!outcome) return { changed: false, archiveFailure: true };
-  input.input.committed?.set(part.toolCallId, {
-    projection: outcome.transition.replacement,
-    transitionId: outcome.transition.transitionId,
-  });
 
   const placeholderText =
     payload.field === 'output' &&

@@ -96,14 +96,12 @@ describe('active current-turn tool-result pruning', () => {
       bodySha256: string;
       toolCallId: string;
     }> = [];
-    const archivedPlaceholders = new Map();
     const rewritten = await rewriteActiveToolResultsInMessages({
       messages: [largeToolMessage('Read', 'tool-1', largeBody)],
       policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
       stepNumber: 1,
       turnId: 'turn-1',
       charsPerToken: 1,
-      archivedPlaceholders,
       archiveToolResult: (candidate) => {
         archiveRequests.push({
           serializedResult: candidate.serializedResult,
@@ -126,83 +124,37 @@ describe('active current-turn tool-result pruning', () => {
     assert.equal(secondPrompt.includes(largeBody), false);
   });
 
-  test('archive failure keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => {
+  // Every way the archive can fail to yield one usable artifact id is the same
+  // fact to this code: nothing durable was written, so nothing may be replaced.
+  for (const [name, archiveToolResult] of [
+    [
+      'throws',
+      () => {
         throw new Error('archive unavailable');
       },
+    ],
+    ['writes nothing', () => undefined],
+    ['returns an empty artifact id', () => ({ artifactId: '' })],
+    ['returns a blank artifact id', () => ({ artifactId: '   ' })],
+  ] as const) {
+    test(`keeps the original tool result when the archive ${name}`, async () => {
+      const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
+      const rewritten = await rewriteActiveToolResultsInMessages({
+        messages,
+        policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        stepNumber: 1,
+        turnId: 'turn-1',
+        charsPerToken: 1,
+        archiveToolResult,
+      });
+
+      assert.equal(rewritten.rewritten, 0);
+      assert.equal(rewritten.archiveFailures, 1);
+      assert.deepEqual(rewritten.messages, messages);
+      assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
+      assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
     });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
-  });
-
-  test('archiveRequired false still keeps original when no archive artifact is written', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: {
-        enabled: true,
-        maxCurrentResultEstimatedTokens: 1,
-        archiveRequired: false,
-      } as never,
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => undefined,
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
-  });
-
-  test('empty archive artifact id keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => ({ artifactId: '' }),
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
-  });
-
-  test('blank archive artifact id keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => ({ artifactId: '   ' }),
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
-  });
+  }
 
   test('empty-artifact placeholders are not treated as idempotent', async () => {
     const placeholder = invalidActivePlaceholder();
@@ -772,7 +724,7 @@ describe('active current-turn tool-result pruning', () => {
  * measure exactly what they used to) and an archive + transition recorder.
  */
 async function rewriteActiveToolResultsInMessages(
-  input: Omit<ActiveToolResultPruneInput, 'resolveProjection' | 'transitions' | 'committed'> & {
+  input: Omit<ActiveToolResultPruneInput, 'resolveProjection' | 'transitions'> & {
     archiveToolResult?: (candidate: {
       sessionId: string;
       runtimeEventId: string;
@@ -783,11 +735,9 @@ async function rewriteActiveToolResultsInMessages(
       bodySha256: string;
     }) => { artifactId: string } | void | Promise<{ artifactId: string } | void>;
     recordTransition?: (transition: ModelProjectionTransition) => Promise<void>;
-    archivedPlaceholders?: unknown;
-    committed?: ActiveToolResultPruneInput['committed'];
   },
 ): Promise<ActiveToolResultPruneResult> {
-  const { archiveToolResult, recordTransition, archivedPlaceholders: _legacy, ...rest } = input;
+  const { archiveToolResult, recordTransition, ...rest } = input;
   let clock = 1000;
   return rewriteActiveToolResultsInMessagesNarrow({
     ...rest,
@@ -801,7 +751,6 @@ async function rewriteActiveToolResultsInMessages(
       recordTransition: recordTransition ?? (() => Promise.resolve()),
       now: () => (clock += 1),
     },
-    ...(input.committed ? { committed: input.committed } : {}),
   });
 }
 

@@ -2608,7 +2608,7 @@ function sourceProjectionTransition(input: {
   event: RuntimeEvent;
   sourceProjection: DurableToolResultProjection;
   artifactId: string;
-  highWaterSeq: number;
+  createdAt: number;
   previousTransitionId?: string;
 }): ModelProjectionTransition {
   const serialized = serializedToolResultProjection(input.sourceProjection);
@@ -2632,16 +2632,8 @@ function sourceProjectionTransition(input: {
     },
     sourceProjection: input.sourceProjection,
     replacement: archivedToolResultProjection(placeholder),
-    archive: {
-      artifactId: input.artifactId,
-      bodySha256: sha256(serialized),
-      originalBytes: serialized.length,
-      originalEstimatedTokens: serialized.length,
-    },
-    reason: 'stale_tool_result_archived',
     ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
-    highWaterSeq: input.highWaterSeq,
-    now: 100 + input.highWaterSeq,
+    now: input.createdAt,
   });
 }
 
@@ -2696,13 +2688,13 @@ test('conversation copy rebuilds projection transitions against the copied event
       event: resultEvent,
       sourceProjection: baseToolResultProjection(resultEvent)!,
       artifactId: 'artifact-source-1',
-      highWaterSeq: 1,
+      createdAt: 101,
     });
     const second = sourceProjectionTransition({
       event: resultEvent,
       sourceProjection: first.replacement,
       artifactId: 'artifact-source-2',
-      highWaterSeq: 2,
+      createdAt: 102,
       previousTransitionId: first.transitionId,
     });
     for (const transition of [first, second]) {
@@ -2716,8 +2708,6 @@ test('conversation copy rebuilds projection transitions against the copied event
         data: {
           runtimeEventId: transition.target.runtimeEventId,
           part: transition.target.part,
-          highWaterName: transition.highWaterName,
-          highWaterSeq: transition.highWaterSeq,
           transition,
         },
       });
@@ -2767,28 +2757,31 @@ test('conversation copy rebuilds projection transitions against the copied event
       runStore,
       'session-target',
     );
-    assert.equal(copiedTransitions.length, 2);
-    const [copiedFirst, copiedSecond] = copiedTransitions.sort(
-      (a, b) => a.highWaterSeq - b.highWaterSeq,
+    assert.equal(copiedTransitions.transitions.length, 2);
+    const copiedFirst = copiedTransitions.transitions.find(
+      (transition) => transition.previousTransitionId === undefined,
     );
-    assert.ok(copiedFirst && copiedSecond);
-    for (const transition of copiedTransitions) {
+    assert.ok(copiedFirst);
+    const copiedSecond = copiedTransitions.transitions.find(
+      (transition) => transition.previousTransitionId === copiedFirst.transitionId,
+    );
+    assert.ok(copiedSecond);
+    for (const transition of copiedTransitions.transitions) {
       assert.equal(transition.sessionId, 'session-target');
       assert.equal(transition.target.runtimeEventId, targetResult.id);
     }
-    assert.equal(copiedFirst.archive?.artifactId, 'artifact-target-1');
-    assert.equal(copiedSecond.archive?.artifactId, 'artifact-target-2');
     // Lineage is preserved through the remapped ids, never through the source's.
-    assert.equal(copiedFirst.previousTransitionId, undefined);
-    assert.equal(copiedSecond.previousTransitionId, copiedFirst.transitionId);
     assert.notEqual(copiedFirst.transitionId, first.transitionId);
-    assert.doesNotMatch(JSON.stringify(copiedTransitions), /artifact-source|event-result/);
+    assert.doesNotMatch(
+      JSON.stringify(copiedTransitions.transitions),
+      /artifact-source|event-result/,
+    );
 
     // The copied ledger still carries the raw body — it is append-only — but the
     // copied transitions still reduce it away, which is the only property that
     // makes a copy of an archived Session safe.
     assert.match(JSON.stringify(targetEvents), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
-    const reduced = reduceEffectiveModelProjections(targetEvents, copiedTransitions);
+    const reduced = reduceEffectiveModelProjections(targetEvents, copiedTransitions.transitions);
     assert.equal(reduced.applied.length, 2);
     assert.equal(reduced.rejected.length, 0);
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
@@ -2797,10 +2790,179 @@ test('conversation copy rebuilds projection transitions against the copied event
     assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
     assert.equal(effective.content.result.artifactId, 'artifact-target-2');
     assert.equal(effective.content.result.runtimeEventId, targetResult.id);
-    assert.deepEqual([...collectReachableArchiveArtifactIds(reduced)].sort(), [
-      'artifact-target-1',
-      'artifact-target-2',
-    ]);
+    // Only the surviving placeholder's archive is reachable; the one it
+    // superseded is not, and cleanup may reclaim it.
+    assert.deepEqual(
+      [...collectReachableArchiveArtifactIds(reduced.events)],
+      ['artifact-target-2'],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy carries a transition recorded by a later, uncopied run', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-transition-run-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    for (const [runId, turnId] of [
+      ['run-first', 'turn-1'],
+      ['run-second', 'turn-2'],
+    ]) {
+      await runStore.createRun(
+        agentRunHeader({
+          runId,
+          invocationId: `invocation-${runId}`,
+          turnId,
+          cwd: root,
+        }),
+      );
+    }
+    const resultEvent = runtimeEvent({
+      id: 'event-result',
+      runId: 'run-first',
+      invocationId: 'invocation-run-first',
+      ts: 2,
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'tool-1',
+        name: 'Read',
+        result: { kind: 'text', text: TRANSITION_SECRET_BODY },
+      },
+    });
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first turn' },
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 1.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: { path: 'notes.txt' } },
+      }),
+      resultEvent,
+      runtimeEvent({
+        id: 'event-terminal',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 3,
+        status: 'completed',
+      }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-first', event);
+    }
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user-2',
+        runId: 'run-second',
+        invocationId: 'invocation-run-second',
+        turnId: 'turn-2',
+        ts: 4,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'second turn' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal-2',
+        runId: 'run-second',
+        invocationId: 'invocation-run-second',
+        turnId: 'turn-2',
+        ts: 5,
+        status: 'completed',
+      }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-second', event);
+    }
+    // The stale prune runs during Turn 2 and archives a Turn 1 result, so the
+    // record lives in a run that a copy of Turn 1 alone never visits.
+    const transition = sourceProjectionTransition({
+      event: resultEvent,
+      sourceProjection: baseToolResultProjection(resultEvent)!,
+      artifactId: 'artifact-source-1',
+      createdAt: 401,
+    });
+    await runStore.appendEvent('session-source', 'run-second', {
+      type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+      id: transition.transitionId,
+      runId: 'run-second',
+      sessionId: 'session-source',
+      turnId: 'turn-2',
+      ts: transition.createdAt,
+      data: {
+        runtimeEventId: transition.target.runtimeEventId,
+        part: transition.target.part,
+        transition,
+      },
+    });
+    for (const [runId, turnId, id] of [
+      ['run-first', 'turn-1', 'completed-first'],
+      ['run-second', 'turn-2', 'completed-second'],
+    ]) {
+      await runStore.appendEvent('session-source', runId, {
+        type: 'run_completed',
+        id,
+        runId,
+        sessionId: 'session-source',
+        turnId,
+        ts: 6,
+      });
+    }
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    const firstTurnMessages = source.messages.filter(
+      (message) => 'turnId' in message && message.turnId === 'turn-1',
+    );
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
+      copiedMessages: firstTurnMessages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map([['artifact-source-1', 'artifact-target-1']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const targetRuns = await runStore.listSessionRuns('session-target');
+    assert.equal(targetRuns.length, 1);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRuns[0]!.runId,
+    );
+    const copied = await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-target');
+    assert.equal(copied.transitions.length, 1);
+    assert.equal(
+      copied.transitions[0]?.target.runtimeEventId,
+      targetEvents.find((event) => event.content?.kind === 'function_response')?.id,
+    );
+    // Dropping the record while keeping its target would restore the archived
+    // body in the copy — the one thing the protocol exists to prevent.
+    const reduced = reduceEffectiveModelProjections(targetEvents, copied.transitions);
+    assert.equal(reduced.applied.length, 1);
+    assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
+    assert.deepEqual(
+      [...collectReachableArchiveArtifactIds(reduced.events)],
+      ['artifact-target-1'],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

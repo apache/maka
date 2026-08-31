@@ -89,6 +89,7 @@ import { estimateTokens } from './context-budget-helpers.js';
 import {
   baseToolResultProjection,
   reduceEffectiveModelProjections,
+  type LoadedModelProjectionTransitions,
 } from './model-projection-transition-ledger.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
@@ -228,16 +229,23 @@ export class AiSdkCompaction {
   }
 
   /**
-   * Every transition this session has committed, folded by the reducer.
+   * Every transition this session has committed.
    *
    * Read from the durable ledger rather than remembered: a Turn that pruned and
-   * a Turn that replays it may be different processes.
+   * a Turn that replays it may be different processes. A read that fails or that
+   * this build cannot fully decode is reported, never smoothed into "there are
+   * no transitions" — a caller that cannot see the whole chain may still show
+   * what it folded, but it may not append a successor onto a state it only
+   * partly knows.
    */
-  public async loadModelProjectionTransitions(): Promise<ModelProjectionTransition[]> {
+  private async loadModelProjectionTransitions(): Promise<
+    LoadedModelProjectionTransitions & { readable: boolean }
+  > {
     try {
-      return (await this.input.loadModelProjectionTransitions?.()) ?? [];
+      const loaded = await this.input.loadModelProjectionTransitions?.();
+      return { transitions: [], undecodable: 0, ...loaded, readable: true };
     } catch {
-      return [];
+      return { transitions: [], undecodable: 0, readable: false };
     }
   }
 
@@ -521,6 +529,20 @@ export class AiSdkCompaction {
   }
 
   /**
+   * Fold the durable transition ledger onto any slice of model-visible history.
+   *
+   * The current Turn's own events go through here on every provider step, for
+   * the same reason prior Turns do: what the model sees is the folded ledger,
+   * not the raw one. A ledger this build cannot read in full leaves the slice
+   * untouched — the content is then merely unpruned, never wrongly replaced.
+   */
+  public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
+    const loaded = await this.loadModelProjectionTransitions();
+    if (loaded.transitions.length === 0) return [...events];
+    return reduceEffectiveModelProjections(events, loaded.transitions).events;
+  }
+
+  /**
    * Fold the durable transition ledger onto this session's prior history, and
    * commit any new stale-result transition the prune policy calls for.
    *
@@ -537,13 +559,22 @@ export class AiSdkCompaction {
     diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
   }> {
     const policy = this.input.contextBudget;
-    let transitions = await this.loadModelProjectionTransitions();
-    let effective = reduceEffectiveModelProjections(runtimeContext, transitions);
+    const loaded = await this.loadModelProjectionTransitions();
+    let transitions = loaded.transitions;
+    let effective = reduceEffectiveModelProjections(
+      runtimeContext,
+      transitions,
+      loaded.undecodable,
+    );
     if (!policy) return { policy, events: effective.events };
     let nextPolicy = policy;
     let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
 
-    const services = this.toolResultArchiveTransitionServices(turnId);
+    // A chain this reader cannot see in full is a chain it must not extend: a
+    // successor built on a partly known state would name the wrong predecessor
+    // and be permanently inert, losing the content it archived.
+    const chainKnown = loaded.readable && effective.undecodable === 0;
+    const services = chainKnown ? this.toolResultArchiveTransitionServices(turnId) : undefined;
     if (policy.staleToolResultPrune?.enabled === true && services) {
       // The decision is taken over EFFECTIVE history, so a result an earlier
       // Turn already replaced is never re-measured — or re-archived — at the
@@ -583,7 +614,11 @@ export class AiSdkCompaction {
       }
       if (committed.length > 0) {
         transitions = [...transitions, ...committed];
-        effective = reduceEffectiveModelProjections(runtimeContext, transitions);
+        effective = reduceEffectiveModelProjections(
+          runtimeContext,
+          transitions,
+          loaded.undecodable,
+        );
       }
       if (committed.length > 0 || archiveFailures > 0) {
         diagnosticPatch = {
@@ -643,42 +678,51 @@ export class AiSdkCompaction {
     // this run prune content that the NEXT request would have shown again.
     if (!services || !this.input.loadTurnRuntimeEvents) return undefined;
 
-    // Read-through cache of what this run has already committed for a target,
-    // so step N+1 chains onto step N's transition instead of racing it. Derived
-    // state only: a restart rebuilds the same answer from the ledger.
-    const committed = new Map<
-      string,
-      { projection: DurableToolResultProjection; transitionId: string }
-    >();
-    let turnEvents: RuntimeEvent[] | undefined;
+    // The current Turn reads the same folded history as every other consumer.
+    // Nothing here remembers what this run already archived: the ledger says it,
+    // and a step that measures the raw body again would archive it again.
+    let effective: { events: RuntimeEvent[]; lastApplied: Map<string, string> } | undefined;
+    const loadEffectiveTurnEvents = async (): Promise<typeof effective> => {
+      if (effective) return effective;
+      const loaded = await this.loadModelProjectionTransitions();
+      if (!loaded.readable || loaded.undecodable > 0) return undefined;
+      let turnEvents: RuntimeEvent[];
+      try {
+        turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);
+      } catch {
+        return undefined;
+      }
+      const reduction = reduceEffectiveModelProjections(turnEvents, loaded.transitions);
+      const lastApplied = new Map<string, string>();
+      for (const transition of reduction.applied) {
+        lastApplied.set(transition.target.runtimeEventId, transition.transitionId);
+      }
+      effective = { events: reduction.events, lastApplied };
+      return effective;
+    };
+
     const resolveProjection = async (
       toolCallId: string,
     ): Promise<ActiveToolResultProjectionSource | undefined> => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (!turnEvents || attempt === 1) {
-          try {
-            turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);
-          } catch {
-            return undefined;
-          }
-        }
-        const event = turnEvents.find(
-          (candidate) =>
-            candidate.partial !== true &&
-            candidate.content?.kind === 'function_response' &&
-            candidate.content.id === toolCallId,
-        );
-        if (!event || event.content?.kind !== 'function_response') continue;
-        const projection = baseToolResultProjection(event);
-        if (!projection) return undefined;
-        return {
-          runtimeEventId: event.id,
-          turnId: event.turnId,
-          toolName: event.content.name,
-          projection,
-        };
-      }
-      return undefined;
+      const current = await loadEffectiveTurnEvents();
+      if (!current) return undefined;
+      const event = current.events.find(
+        (candidate) =>
+          candidate.partial !== true &&
+          candidate.content?.kind === 'function_response' &&
+          candidate.content.id === toolCallId,
+      );
+      if (!event || event.content?.kind !== 'function_response') return undefined;
+      const projection = baseToolResultProjection(event);
+      if (!projection) return undefined;
+      const previousTransitionId = current.lastApplied.get(event.id);
+      return {
+        runtimeEventId: event.id,
+        turnId: event.turnId,
+        toolName: event.content.name,
+        projection,
+        ...(previousTransitionId ? { previousTransitionId } : {}),
+      };
     };
 
     return async (options) => {
@@ -687,6 +731,9 @@ export class AiSdkCompaction {
         includeNewestStep,
       );
       if (eligibleToolCallIds.size === 0) return undefined;
+      // Each provider step rebuilds its messages from the durable Turn ledger,
+      // so each step must re-fold it too.
+      effective = undefined;
       const rewritten = await rewriteActiveToolResultsInMessages({
         messages: options.messages,
         policy,
@@ -704,7 +751,6 @@ export class AiSdkCompaction {
         ),
         resolveProjection,
         transitions: services,
-        committed,
       });
       if (hasActiveToolResultPruneDiagnosticPatch(rewritten.diagnosticPatch)) {
         onDiagnosticPatch?.(rewritten.diagnosticPatch);

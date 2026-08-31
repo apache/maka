@@ -57,10 +57,7 @@ import {
   utf8ByteLength,
 } from './context-budget-helpers.js';
 import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
-import {
-  baseToolResultProjection,
-  type EffectiveModelProjectionReduction,
-} from './model-projection-transition-ledger.js';
+import { baseToolResultProjection } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildArchivedToolResultPlaceholder,
@@ -205,21 +202,13 @@ export async function archiveToolResultAsTransition(
         toolName: request.toolName,
       },
       sourceProjection: request.sourceProjection,
+      // The placeholder inside the replacement is the whole archive record:
+      // artifact id, body digest and original size. The transition does not
+      // repeat them — one fact, one place.
       replacement: archivedToolResultProjection(placeholder),
-      archive: {
-        artifactId,
-        bodySha256,
-        originalBytes: request.originalBytes,
-        originalEstimatedTokens: request.originalEstimatedTokens,
-      },
-      reason:
-        request.reason === 'stale_tool_result_pruned_before_compact'
-          ? 'stale_tool_result_archived'
-          : 'active_tool_result_archived',
       ...(request.previousTransitionId
         ? { previousTransitionId: request.previousTransitionId }
         : {}),
-      highWaterSeq: services.now(),
       now: services.now(),
     });
     await services.recordTransition(transition);
@@ -291,16 +280,15 @@ export function collectStaleToolResultArchiveCandidates(
 /**
  * Archive artifacts the effective history still needs.
  *
- * Derived from the reduction, never from a parallel bookkeeping table: an
- * artifact is reachable exactly when an applied transition or a surviving
- * placeholder names it. Cleanup may reclaim the rest; a cleanup failure only
- * delays reclamation and cannot break replay.
+ * Derived from the folded events, never from a parallel bookkeeping table: an
+ * artifact is reachable exactly when a placeholder the model can still see names
+ * it. An archive whose transition was refused is therefore unreachable by
+ * construction. Cleanup may reclaim the rest; a cleanup failure only delays
+ * reclamation and cannot break replay.
  */
-export function collectReachableArchiveArtifactIds(
-  reduction: EffectiveModelProjectionReduction,
-): Set<string> {
-  const reachable = new Set(reduction.reachableArchiveArtifactIds);
-  for (const event of reduction.events) {
+export function collectReachableArchiveArtifactIds(events: readonly RuntimeEvent[]): Set<string> {
+  const reachable = new Set<string>();
+  for (const event of events) {
     const content = event.content;
     if (content?.kind !== 'function_response') continue;
     if (isArchivedToolResultPlaceholder(content.result)) {

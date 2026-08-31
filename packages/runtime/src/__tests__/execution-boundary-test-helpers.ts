@@ -47,7 +47,7 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const transitions: ModelProjectionTransition[] = [];
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
-    loadModelProjectionTransitions: async () => [...transitions],
+    loadModelProjectionTransitions: async () => ({ transitions: [...transitions], undecodable: 0 }),
     recordModelProjectionTransition: async (transition) => {
       transitions.push(transition);
     },

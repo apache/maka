@@ -164,6 +164,7 @@ import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
 import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
@@ -692,7 +693,7 @@ export interface BackendFactoryContext {
    * The reducer folds these onto the RuntimeEvent ledger, so a lossy rewrite
    * survives the Turn that made it.
    */
-  loadModelProjectionTransitions?: () => Promise<ModelProjectionTransition[]>;
+  loadModelProjectionTransitions?: () => Promise<LoadedModelProjectionTransitions>;
   /** Durable append for one transition; persistence precedes any model-visible loss. */
   recordModelProjectionTransition?: (
     transition: ModelProjectionTransition,

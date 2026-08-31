@@ -27,20 +27,19 @@
  * restart can restore the replaced form.
  *
  * This module owns the one typed record that expresses such a change. It is
- * deliberately NOT a generalization of `HistoryCompactCheckpoint`: that
- * checkpoint replaces one validated CONTIGUOUS prefix, and keeps that meaning.
- * A transition is SPARSE — it names one projection part of one RuntimeEvent —
- * and the two have different coverage, concurrency, copy and recovery algebra.
+ * sparse — it names one projection part of one RuntimeEvent — and so is not a
+ * generalization of the contiguous-prefix `HistoryCompactCheckpoint` (#4283).
  *
  * Everything a deterministic reduction needs is on the record:
  *
  * - `target` — which RuntimeEvent projection part is replaced;
  * - `sourceProjectionDigest` — the exact projection it is allowed to replace,
  *   so a stale concurrent writer cannot apply against content it never saw;
- * - `replacement` / `archive` — what the model sees instead, and where the
- *   replaced body still lives when it is recoverable at all;
- * - `previousTransitionId` + `highWaterSeq` — predecessor and cursor identity,
- *   so ledger readers in any order converge on the same effective history.
+ * - `replacement` — what the model sees instead, including where the replaced
+ *   body still lives when it is recoverable at all;
+ * - `previousTransitionId` — the predecessor for this target, which is also the
+ *   reduction's ordering authority: readers follow the chain rather than a
+ *   cursor, so ledger order and wall-clock skew cannot change the result.
  */
 
 import * as nodeCrypto from 'node:crypto';
@@ -57,18 +56,6 @@ export const MODEL_PROJECTION_TRANSITION_VERSION = 1 as const;
 /** The append-only operational ledger record that carries one transition. */
 export const MODEL_PROJECTION_TRANSITION_EVENT_TYPE = 'model_projection_transition_recorded';
 
-/** Reduction cursor name, mirroring the checkpoint protocol's high-water pair. */
-export const MODEL_PROJECTION_TRANSITION_HIGH_WATER_NAME = 'model-projection-transition-high-water';
-
-export const MODEL_PROJECTION_TRANSITION_REASONS = [
-  /** Current-turn result archived before the next provider step. */
-  'active_tool_result_archived',
-  /** Prior-turn result archived before whole-turn compaction. */
-  'stale_tool_result_archived',
-] as const;
-
-export type ModelProjectionTransitionReason = (typeof MODEL_PROJECTION_TRANSITION_REASONS)[number];
-
 /**
  * The addressed projection part. `tool_result` is the whole durable Tool Result
  * projection of one `function_response` RuntimeEvent — the only part kind that
@@ -81,22 +68,6 @@ export interface ModelProjectionTransitionTarget {
   toolName: string;
 }
 
-/**
- * Session-owned archive of the replaced body.
- *
- * Optional: a transition that removes content irrecoverably (an image a
- * provider refused to accept) is still a valid transition. Present here, it is
- * both the model's way back to the content and the reachability root that keeps
- * the artifact from being reclaimed.
- */
-export interface ModelProjectionTransitionArchive {
-  artifactId: string;
-  /** Lowercase hex sha256 of the archived serialized body. */
-  bodySha256: string;
-  originalBytes: number;
-  originalEstimatedTokens: number;
-}
-
 export interface ModelProjectionTransition {
   kind: 'maka.model_projection_transition';
   version: typeof MODEL_PROJECTION_TRANSITION_VERSION;
@@ -107,12 +78,13 @@ export interface ModelProjectionTransition {
   /** Digest of the projection this record is allowed to replace. */
   sourceProjectionDigest: `sha256:${string}`;
   replacement: DurableToolResultProjection;
-  archive?: ModelProjectionTransitionArchive;
-  reason: ModelProjectionTransitionReason;
-  /** The transition this one supersedes for the same target, if any. */
+  /**
+   * The transition this one supersedes for the same target, if any.
+   *
+   * Absent means "applies to the base projection". Together with
+   * `sourceProjectionDigest` this is the only ordering a reducer needs.
+   */
   previousTransitionId?: string;
-  highWaterName: string;
-  highWaterSeq: number;
 }
 
 const TRANSITION_SHAPE = defineObjectShape<ModelProjectionTransition>()(
@@ -125,24 +97,14 @@ const TRANSITION_SHAPE = defineObjectShape<ModelProjectionTransition>()(
     'target',
     'sourceProjectionDigest',
     'replacement',
-    'reason',
-    'highWaterName',
-    'highWaterSeq',
   ],
-  ['archive', 'previousTransitionId'],
+  ['previousTransitionId'],
 );
 
 const TARGET_SHAPE = defineObjectShape<ModelProjectionTransitionTarget>()(
   ['runtimeEventId', 'part', 'toolCallId', 'toolName'],
   [],
 );
-
-const ARCHIVE_SHAPE = defineObjectShape<ModelProjectionTransitionArchive>()(
-  ['artifactId', 'bodySha256', 'originalBytes', 'originalEstimatedTokens'],
-  [],
-);
-
-const REASONS: ReadonlySet<string> = new Set(MODEL_PROJECTION_TRANSITION_REASONS);
 
 /**
  * The identity of one durable projection, over strict key-sorted JSON.
@@ -165,20 +127,17 @@ export interface BuildModelProjectionTransitionInput {
   target: ModelProjectionTransitionTarget;
   sourceProjection: DurableToolResultProjection;
   replacement: DurableToolResultProjection;
-  archive?: ModelProjectionTransitionArchive;
-  reason: ModelProjectionTransitionReason;
   previousTransitionId?: string;
-  highWaterSeq: number;
   now: number;
 }
 
 /**
  * Build one transition with a content-derived id.
  *
- * The id is a digest of everything the record asserts, so two writers that
- * independently decide the same replacement for the same source produce the
- * same record: a duplicate concurrent append is idempotent rather than a second
- * competing successor.
+ * The id digests everything the record asserts and nothing about when or where
+ * it was written, so two writers that independently decide the same replacement
+ * for the same source produce the same record: a duplicate concurrent append is
+ * idempotent rather than a second competing successor.
  */
 export function buildModelProjectionTransition(
   input: BuildModelProjectionTransitionInput,
@@ -193,11 +152,7 @@ export function buildModelProjectionTransition(
     target: input.target,
     sourceProjectionDigest,
     replacement,
-    ...(input.archive ? { archive: input.archive } : {}),
-    reason: input.reason,
     ...(input.previousTransitionId ? { previousTransitionId: input.previousTransitionId } : {}),
-    highWaterName: MODEL_PROJECTION_TRANSITION_HIGH_WATER_NAME,
-    highWaterSeq: input.highWaterSeq,
   };
   const transitionId = `mptransition-${nodeCrypto
     .createHash('sha256')
@@ -238,13 +193,8 @@ export function isModelProjectionTransition(
     value.sessionId !== sessionId ||
     !isFiniteNumber(value.createdAt) ||
     !isSha256Digest(value.sourceProjectionDigest) ||
-    typeof value.reason !== 'string' ||
-    !REASONS.has(value.reason) ||
-    !nonEmptyString(value.highWaterName) ||
-    !isFiniteNumber(value.highWaterSeq) ||
     (value.previousTransitionId !== undefined && !nonEmptyString(value.previousTransitionId)) ||
-    !isTransitionTarget(value.target) ||
-    (value.archive !== undefined && !isTransitionArchive(value.archive))
+    !isTransitionTarget(value.target)
   ) {
     return false;
   }
@@ -264,20 +214,6 @@ function isTransitionTarget(value: unknown): value is ModelProjectionTransitionT
     value.part === 'tool_result' &&
     nonEmptyString(value.toolCallId) &&
     nonEmptyString(value.toolName)
-  );
-}
-
-function isTransitionArchive(value: unknown): value is ModelProjectionTransitionArchive {
-  return (
-    isRecord(value) &&
-    hasExactShape(value, ARCHIVE_SHAPE) &&
-    nonEmptyString(value.artifactId) &&
-    typeof value.bodySha256 === 'string' &&
-    /^[a-f0-9]{64}$/.test(value.bodySha256) &&
-    isFiniteNumber(value.originalBytes) &&
-    value.originalBytes > 0 &&
-    isFiniteNumber(value.originalEstimatedTokens) &&
-    value.originalEstimatedTokens > 0
   );
 }
 

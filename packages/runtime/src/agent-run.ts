@@ -546,8 +546,6 @@ export class AgentRun {
           data: {
             runtimeEventId: transition.target.runtimeEventId,
             part: transition.target.part,
-            highWaterName: transition.highWaterName,
-            highWaterSeq: transition.highWaterSeq,
             transition,
           },
         });

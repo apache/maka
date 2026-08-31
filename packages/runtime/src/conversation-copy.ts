@@ -66,7 +66,10 @@ import {
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
-import { baseToolResultProjection } from './model-projection-transition-ledger.js';
+import {
+  baseToolResultProjection,
+  decodeLedgerTransition,
+} from './model-projection-transition-ledger.js';
 import { archivedToolResultProjection } from './tool-result-archive-transition.js';
 
 export interface ConversationCopySlice {
@@ -285,6 +288,12 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
+  await attachOutOfRunProjectionTransitions(
+    input.sourceSessionId,
+    sourceRuns,
+    runs,
+    input.runStore,
+  );
   const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
@@ -293,6 +302,49 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   };
   assertConversationRuntimeLedgerCopySupported(plan);
   return plan;
+}
+
+/**
+ * Carry in transitions written by runs outside the copied slice.
+ *
+ * A transition is recorded by the run that decided it, which for a prior-Turn
+ * archive is a LATER run than the one holding its target. Copying by run alone
+ * would therefore keep the target and drop the record that replaced it, and the
+ * archived body would reappear in the copy — the one outcome this protocol
+ * exists to prevent. Each such record is attached to the run that owns its
+ * target; ledger append time orders a chain, because a successor can only be
+ * written after the predecessor it names.
+ */
+async function attachOutOfRunProjectionTransitions(
+  sessionId: string,
+  sourceRuns: readonly AgentRunHeader[],
+  runs: readonly {
+    readonly run: AgentRunHeader;
+    readonly runtimeEvents: readonly RuntimeEvent[];
+    readonly operationalEvents: AgentRunEvent[];
+  }[],
+  runStore: Pick<AgentRunStore, 'readEvents'>,
+): Promise<void> {
+  const owningRun = new Map<string, { run: AgentRunHeader; operationalEvents: AgentRunEvent[] }>();
+  for (const { run, runtimeEvents, operationalEvents } of runs) {
+    for (const event of runtimeEvents) owningRun.set(event.id, { run, operationalEvents });
+  }
+  const copiedRunIds = new Set(runs.map(({ run }) => run.runId));
+  const carried: AgentRunEvent[] = [];
+  for (const run of sourceRuns) {
+    if (copiedRunIds.has(run.runId)) continue;
+    for (const event of await runStore.readEvents(sessionId, run.runId)) {
+      const transition = decodeLedgerTransition(event, sessionId);
+      if (transition && owningRun.has(transition.target.runtimeEventId)) carried.push(event);
+    }
+  }
+  for (const event of carried.sort((left, right) => left.ts - right.ts)) {
+    const transition = decodeLedgerTransition(event, sessionId)!;
+    const owner = owningRun.get(transition.target.runtimeEventId)!;
+    // The record moves to the run that owns its target, so the copy keeps one
+    // rule for every operational event: an event belongs to the run it is in.
+    owner.operationalEvents.push({ ...event, runId: owner.run.runId, turnId: owner.run.turnId });
+  }
 }
 
 function assertConversationRuntimeLedgerCopySupported(
@@ -833,9 +885,10 @@ function cloneAgentRunEvent(
       transitionIds,
       transitionState,
     );
-    // A transition whose target left the copied slice has nothing to replace,
-    // and dropping it is safe in exactly one direction: the target is absent
-    // too, so no replaced content can reappear.
+    // Every transition whose target is in the copied slice was gathered into
+    // this run's ledger, wherever it was recorded. So a transition that finds no
+    // cloned target has genuinely lost its target as well, and dropping it
+    // cannot bring replaced content back.
     if (!cloned) return null;
     data = { ...event.data, transition: cloned, runtimeEventId: cloned.target.runtimeEventId };
   }
@@ -894,12 +947,9 @@ function cloneModelProjectionTransition(
     },
     sourceProjection,
     replacement: archivedToolResultProjection(rewritten),
-    ...(source.archive ? { archive: { ...source.archive, artifactId: rewritten.artifactId } } : {}),
-    reason: source.reason,
     ...(source.previousTransitionId && transitionIds.has(source.previousTransitionId)
       ? { previousTransitionId: transitionIds.get(source.previousTransitionId)! }
       : {}),
-    highWaterSeq: source.highWaterSeq,
     now: source.createdAt,
   });
   transitionIds.set(source.transitionId, transition.transitionId);

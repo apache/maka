@@ -34,8 +34,10 @@
  *    not applied later, not applied on another machine, not applied after a
  *    restart. This is what stops replaced content from coming back.
  * 2. Predecessor chaining. Within one target, a transition applies only when
- *    the transition it names as predecessor is the one currently in effect, so
- *    ledger order, arrival order and run order cannot disagree about the result.
+ *    the transition it names as predecessor is the one currently in effect. The
+ *    chain is also the fold's ordering authority: successors are followed, never
+ *    sorted, so ledger order, arrival order, run order and clock skew cannot
+ *    disagree about the result.
  */
 
 import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
@@ -64,11 +66,12 @@ export interface EffectiveModelProjectionReduction {
    */
   rejected: ModelProjectionTransition[];
   /**
-   * Archive artifacts the effective history still needs, derived from the fold
-   * rather than from a second bookkeeping path. A cleanup pass may reclaim what
-   * is not here; it may never reclaim what is.
+   * Records in the ledger this build could not decode.
+   *
+   * A reader that cannot interpret the whole chain may still show what it did
+   * fold, but it must not commit a successor onto a state it only partly knows.
    */
-  reachableArchiveArtifactIds: Set<string>;
+  undecodable: number;
 }
 
 /**
@@ -81,18 +84,28 @@ export interface EffectiveModelProjectionReduction {
 export async function loadModelProjectionTransitionsFromRunLedger(
   runStore: Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>,
   sessionId: string,
-): Promise<ModelProjectionTransition[]> {
+): Promise<LoadedModelProjectionTransitions> {
   const byId = new Map<string, ModelProjectionTransition>();
+  let undecodable = 0;
   for (const run of await runStore.listSessionRuns(sessionId)) {
     for (const event of await runStore.readEvents(sessionId, run.runId)) {
+      if (event.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
       const transition = decodeLedgerTransition(event, sessionId);
-      // A content-derived id makes a duplicated concurrent append idempotent.
-      if (transition && !byId.has(transition.transitionId)) {
-        byId.set(transition.transitionId, transition);
+      if (!transition) {
+        undecodable += 1;
+        continue;
       }
+      // A content-derived id makes a duplicated concurrent append idempotent.
+      if (!byId.has(transition.transitionId)) byId.set(transition.transitionId, transition);
     }
   }
-  return [...byId.values()];
+  return { transitions: [...byId.values()], undecodable };
+}
+
+export interface LoadedModelProjectionTransitions {
+  transitions: ModelProjectionTransition[];
+  /** Ledger records of the right type that this build could not decode. */
+  undecodable: number;
 }
 
 export function decodeLedgerTransition(
@@ -127,12 +140,12 @@ export function baseToolResultProjection(
 export function reduceEffectiveModelProjections(
   events: readonly RuntimeEvent[],
   transitions: readonly ModelProjectionTransition[],
+  undecodable = 0,
 ): EffectiveModelProjectionReduction {
   const applied: ModelProjectionTransition[] = [];
   const rejected: ModelProjectionTransition[] = [];
-  const reachableArchiveArtifactIds = new Set<string>();
   if (transitions.length === 0) {
-    return { events: [...events], applied, rejected, reachableArchiveArtifactIds };
+    return { events: [...events], applied, rejected, undecodable };
   }
 
   const byTarget = new Map<string, ModelProjectionTransition[]>();
@@ -158,23 +171,21 @@ export function reduceEffectiveModelProjections(
     let currentDigest = durableToolResultProjectionDigest(current);
     let previousTransitionId: string | undefined;
     let changed = false;
-    for (const transition of sortForReduction(group)) {
-      if (
-        transition.sourceProjectionDigest !== currentDigest ||
-        transition.previousTransitionId !== previousTransitionId ||
-        transition.target.toolCallId !== content.id ||
-        transition.target.toolName !== content.name
-      ) {
-        rejected.push(transition);
-        continue;
-      }
-      current = transition.replacement;
+    const remaining = new Set(group);
+    // Follow the chain instead of sorting it. Only the successor of what is
+    // currently in effect can apply, so the fold needs no cursor and no
+    // tie-break on anything the writer's clock or run decided.
+    for (;;) {
+      const next = nextInChain(remaining, previousTransitionId, currentDigest, content);
+      if (!next) break;
+      remaining.delete(next);
+      current = next.replacement;
       currentDigest = durableToolResultProjectionDigest(current);
-      previousTransitionId = transition.transitionId;
+      previousTransitionId = next.transitionId;
       changed = true;
-      applied.push(transition);
-      if (transition.archive) reachableArchiveArtifactIds.add(transition.archive.artifactId);
+      applied.push(next);
     }
+    for (const transition of remaining) rejected.push(transition);
     if (!changed) return event;
     return {
       ...event,
@@ -188,34 +199,36 @@ export function reduceEffectiveModelProjections(
     } satisfies RuntimeEvent;
   });
 
-  // An archive whose transition never took effect is unreachable by
-  // construction: nothing in the effective history names it.
-  for (const transition of rejected) {
-    if (transition.archive) reachableArchiveArtifactIds.delete(transition.archive.artifactId);
-  }
-  for (const transition of applied) {
-    if (transition.archive) reachableArchiveArtifactIds.add(transition.archive.artifactId);
-  }
-
-  return { events: nextEvents, applied, rejected, reachableArchiveArtifactIds };
+  return { events: nextEvents, applied, rejected, undecodable };
 }
 
 /**
- * Total order within one target. Cursor first, then the content-derived id, so
- * two runs that appended concurrently reduce identically on every reader.
+ * The one transition that may apply next to this target.
+ *
+ * Two writers can name the same predecessor — a concurrent append that lost the
+ * race, or a retry of the same decision. Both are refused unless they also match
+ * the digest currently in effect, and among equals the smallest content-derived
+ * id wins, so every reader picks the same successor without consulting a clock.
  */
-function sortForReduction(
-  group: readonly ModelProjectionTransition[],
-): ModelProjectionTransition[] {
-  return [...group].sort((left, right) =>
-    left.highWaterSeq !== right.highWaterSeq
-      ? left.highWaterSeq - right.highWaterSeq
-      : left.transitionId < right.transitionId
-        ? -1
-        : left.transitionId > right.transitionId
-          ? 1
-          : 0,
-  );
+function nextInChain(
+  remaining: ReadonlySet<ModelProjectionTransition>,
+  previousTransitionId: string | undefined,
+  currentDigest: string,
+  content: { id: string; name: string },
+): ModelProjectionTransition | undefined {
+  let best: ModelProjectionTransition | undefined;
+  for (const transition of remaining) {
+    if (
+      transition.previousTransitionId !== previousTransitionId ||
+      transition.sourceProjectionDigest !== currentDigest ||
+      transition.target.toolCallId !== content.id ||
+      transition.target.toolName !== content.name
+    ) {
+      continue;
+    }
+    if (!best || transition.transitionId < best.transitionId) best = transition;
+  }
+  return best;
 }
 
 function legacyResultForProjection(projection: DurableToolResultProjection): unknown {

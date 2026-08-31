@@ -26,8 +26,6 @@ import {
   decodeModelProjectionTransition,
   durableToolResultProjectionDigest,
   isModelProjectionTransition,
-  MODEL_PROJECTION_TRANSITION_HIGH_WATER_NAME,
-  type ModelProjectionTransition,
 } from '../model-projection-transition.js';
 
 const SOURCE: DurableToolResultProjection = {
@@ -53,14 +51,6 @@ function build(overrides: Partial<Parameters<typeof buildModelProjectionTransiti
     },
     sourceProjection: SOURCE,
     replacement: REPLACEMENT,
-    archive: {
-      artifactId: 'artifact-1',
-      bodySha256: 'a'.repeat(64),
-      originalBytes: 4096,
-      originalEstimatedTokens: 1024,
-    },
-    reason: 'stale_tool_result_archived',
-    highWaterSeq: 7,
     now: 1_700_000_000,
     ...overrides,
   });
@@ -82,13 +72,13 @@ describe('model projection transition schema', () => {
   test('binds the record to the projection it may replace', () => {
     const transition = build();
     assert.equal(transition.sourceProjectionDigest, durableToolResultProjectionDigest(SOURCE));
-    assert.equal(transition.highWaterName, MODEL_PROJECTION_TRANSITION_HIGH_WATER_NAME);
     assert.equal(transition.createdAt, 1_700_000_000);
   });
 
   test('derives one id from content, so a duplicated concurrent append is idempotent', () => {
     assert.equal(build().transitionId, build().transitionId);
-    assert.notEqual(build().transitionId, build({ highWaterSeq: 8 }).transitionId);
+    // The clock is not part of the decision, so it must not be part of the id.
+    assert.equal(build().transitionId, build({ now: 1_800_000_000 }).transitionId);
     assert.notEqual(
       build().transitionId,
       build({ previousTransitionId: 'mptransition-earlier' }).transitionId,
@@ -102,35 +92,14 @@ describe('model projection transition schema', () => {
     assert.throws(() => decodeModelProjectionTransition(transition, 'session-2'));
   });
 
-  test('rejects an unknown field, an unknown reason, and an unrepresentable replacement', () => {
+  test('rejects an unknown field and an unrepresentable replacement', () => {
     const transition = build();
     assert.throws(() =>
       decodeModelProjectionTransition({ ...transition, extra: true }, 'session-1'),
     );
     assert.throws(() =>
-      decodeModelProjectionTransition({ ...transition, reason: 'invented' }, 'session-1'),
-    );
-    assert.throws(() =>
       decodeModelProjectionTransition(
         { ...transition, replacement: { version: 1, kind: 'text' } },
-        'session-1',
-      ),
-    );
-  });
-
-  test('keeps the archive optional but well formed when present', () => {
-    const withoutArchive = build({ archive: undefined });
-    assert.equal(withoutArchive.archive, undefined);
-    const transition: ModelProjectionTransition = build();
-    assert.throws(() =>
-      decodeModelProjectionTransition(
-        { ...transition, archive: { ...transition.archive!, bodySha256: 'not-a-digest' } },
-        'session-1',
-      ),
-    );
-    assert.throws(() =>
-      decodeModelProjectionTransition(
-        { ...transition, archive: { ...transition.archive!, originalBytes: 0 } },
         'session-1',
       ),
     );

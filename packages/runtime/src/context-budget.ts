@@ -47,11 +47,7 @@ export type {
   HistoryCompactionPolicy,
   HistoryCompactionReplayResult,
 } from './history-compaction.js';
-import type {
-  StaleToolResultPrunePolicy,
-  StaleToolResultArchiveCandidate,
-} from './tool-result-archive.js';
-import { collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow } from './tool-result-archive-transition.js';
+import type { StaleToolResultPrunePolicy } from './tool-result-archive.js';
 import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
@@ -365,17 +361,6 @@ function mergeCompactionDecisionDiagnostics(
 // Public compat wrappers: preserve the pre-split `(events, policy, options)`
 // signature for @maka/runtime consumers. Internal callers (this module and
 // ai-sdk-backend) import the narrow leaf API directly from the leaf modules.
-export function collectStaleToolResultArchiveCandidates(
-  events: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-): StaleToolResultArchiveCandidate[] {
-  return collectStaleToolResultArchiveCandidatesNarrow(
-    events,
-    policy?.staleToolResultPrune,
-    policy?.charsPerToken ?? 4,
-  );
-}
-
 export function applyRuntimeEventHistoryCompact(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,

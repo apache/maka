@@ -4495,7 +4495,10 @@ describe('AiSdkBackend model history', () => {
           return { artifactId: `artifact-${event.runtimeEventId}` };
         },
       }),
-      loadModelProjectionTransitions: async () => [...transitions],
+      loadModelProjectionTransitions: async () => ({
+        transitions: [...transitions],
+        undecodable: 0,
+      }),
       recordModelProjectionTransition: async (transition) => {
         transitions.push(transition);
       },
@@ -8253,6 +8256,7 @@ describe('AiSdkBackend usage telemetry', () => {
     const messages: unknown[] = [];
     const events: SessionEvent[] = [];
     const largeBody = 'SECRET_PAYLOAD_SHOULD_BE_ARCHIVED'.repeat(200);
+    const archivedToolCallIds: string[] = [];
     let streamCalls = 0;
     const prompts: unknown[] = [];
     const model = new MockLanguageModelV4({
@@ -8296,17 +8300,35 @@ describe('AiSdkBackend usage telemetry', () => {
                     },
                   },
                 ]
-              : [
-                  { type: 'stream-start', warnings: [] },
-                  {
-                    type: 'finish',
-                    finishReason: { unified: 'stop', raw: 'stop' },
-                    usage: {
-                      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
-                      outputTokens: { total: 1, text: 1, reasoning: 0 },
+              : streamCalls === 3
+                ? [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'tool-call',
+                      toolCallId: 'tool-3',
+                      toolName: 'Bash',
+                      input: JSON.stringify({ cmd: 'again' }),
                     },
-                  },
-                ];
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                      usage: {
+                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                      },
+                    },
+                  ]
+                : [
+                    { type: 'stream-start', warnings: [] },
+                    {
+                      type: 'finish',
+                      finishReason: { unified: 'stop', raw: 'stop' },
+                      usage: {
+                        inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                        outputTokens: { total: 1, text: 1, reasoning: 0 },
+                      },
+                    },
+                  ];
         return {
           stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
         };
@@ -8340,7 +8362,10 @@ describe('AiSdkBackend usage telemetry', () => {
         activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
       },
       toolResultArchive: testToolResultArchive({
-        archiveToolResult: async () => ({ artifactId: 'artifact-tool-1' }),
+        archiveToolResult: async (candidate) => {
+          archivedToolCallIds.push(candidate.toolCallId);
+          return { artifactId: `artifact-${candidate.toolCallId}` };
+        },
       }),
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
@@ -8360,7 +8385,7 @@ describe('AiSdkBackend usage telemetry', () => {
           contextBudget?: Record<string, unknown>;
         })
       | undefined;
-    assert.equal(streamCalls, 3);
+    assert.equal(streamCalls, 4);
     const secondPrompt = JSON.stringify(prompts[1]);
     assert.match(secondPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.doesNotMatch(secondPrompt, /maka\.active_archived_tool_result/);
@@ -8368,8 +8393,17 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.doesNotMatch(thirdPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
     assert.match(thirdPrompt, /artifact-tool-1/);
     assert.match(thirdPrompt, /NEWEST_RESULT_STAYS_VISIBLE/);
+    // Every later step rebuilds its prompt from the durable Turn ledger. The
+    // archive is durable, so the rebuild must fold it: a step that measured the
+    // raw body again would both resurrect it and archive it a second time.
+    const fourthPrompt = JSON.stringify(prompts[3]);
+    assert.doesNotMatch(fourthPrompt, /SECRET_PAYLOAD_SHOULD_BE_ARCHIVED/);
+    assert.match(fourthPrompt, /artifact-tool-1/);
+    // Each result is archived once, no matter how many later steps rebuild the
+    // Turn: the ledger, not a per-run memory, is what says it already happened.
+    assert.deepEqual(archivedToolCallIds, ['tool-1', 'tool-2']);
     for (const contextBudget of [usageMessage?.contextBudget, usageEvent?.contextBudget]) {
-      assert.equal(contextBudget?.activePrunedToolResults, 1);
+      assert.equal(contextBudget?.activePrunedToolResults, 2);
       assert.equal(contextBudget?.activeArchiveFailures, undefined);
       assert.ok(((contextBudget?.activeEstimatedTokensSaved as number | undefined) ?? 0) > 0);
     }
