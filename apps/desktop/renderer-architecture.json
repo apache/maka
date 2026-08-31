@@ -4836,7 +4836,7 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 2,
-          "useRef": 3,
+          "useRef": 2,
           "useState": 2,
           "useUiLocale": 1
         },

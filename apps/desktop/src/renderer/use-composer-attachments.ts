@@ -179,10 +179,6 @@ export function useComposerAttachments(options: {
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
   const lifecycleRef = useRef(new ComposerAttachmentLifecycle());
-  // The live staging key, for the one import that resolves long after it was
-  // started: the native file dialog. See pickAttachments.
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
   function updateAttachments(
     update: (current: PendingByKey<PendingAttachment>) => PendingByKey<PendingAttachment>,
   ): void {
@@ -199,9 +195,12 @@ export function useComposerAttachments(options: {
     draftKey: options.draftKey,
     imageNotice: options.imageNotice,
     copy,
+    directoryOwner: options,
   });
+  liveOptionsRef.current.directoryOwner = options;
   useEffect(() => {
     liveOptionsRef.current = {
+      ...liveOptionsRef.current,
       draftKey: options.draftKey,
       imageNotice: options.imageNotice,
       copy,
@@ -315,13 +314,13 @@ export function useComposerAttachments(options: {
   }
 
   async function pickDirectory(): Promise<void> {
-    const owner = optionsRef.current;
+    const owner = liveOptionsRef.current.directoryOwner;
     if (!owner.directoryHostId || !owner.service.pickDirectory) return;
     const ownerKey = `${owner.draftKey}:${owner.directoryHostId}`;
     try {
       const result = await owner.service.pickDirectory();
       if (!result.ok) return;
-      const current = optionsRef.current;
+      const current = liveOptionsRef.current.directoryOwner;
       if (
         current.draftKey !== owner.draftKey
         || current.directoryHostId !== owner.directoryHostId
