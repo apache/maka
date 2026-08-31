@@ -1845,21 +1845,34 @@ describe('non-serving Runtime Host kernel', () => {
   test('an authority-supervised Candidate exits if its launch owner is killed', async () => {
     await withHostPaths(async (paths) => {
       const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const launchOwnerClientInstanceId = 'authority-launch-owner';
       const launcher = paths.resources.trackChild(
         fork(
           new URL('./fixtures/owned-authority-launcher.js', import.meta.url),
-          [paths.root, capability.rootId, join(paths.base, 'authority-lease-probe')],
+          [
+            paths.root,
+            capability.rootId,
+            join(paths.base, 'authority-lease-probe'),
+            launchOwnerClientInstanceId,
+          ],
           { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
         ),
       );
       const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
-      let connected = await retryConnect(paths, CURRENT_PROTOCOL);
-      if (connected.kind !== 'connected') {
-        connected = await retryConnect(paths, CURRENT_PROTOCOL);
-      }
+      const connected = await retryConnect(paths, CURRENT_PROTOCOL, {
+        clientInstanceId: launchOwnerClientInstanceId,
+      });
       assert.equal(connected.kind, 'connected');
       if (connected.kind !== 'connected') return;
       assert.equal(connected.registration.pid, launchedPid);
+
+      const ordinary = await connectRuntimeHost({
+        ...paths,
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        clientInstanceId: 'ordinary-client-during-finalization',
+      });
+      assert.equal(ordinary.kind, 'draining');
 
       launcher.kill('SIGKILL');
       await waitForExit(launcher);
@@ -1868,6 +1881,58 @@ describe('non-serving Runtime Host kernel', () => {
         5_000,
         'authority-supervised Candidate survived its launch owner',
       );
+      await waitForProcessExit(launchedPid);
+      paths.resources.forgetPid(launchedPid);
+    });
+  });
+
+  test('a committed authority-supervised Candidate admits ordinary Clients after release', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const launchOwnerClientInstanceId = 'committed-authority-launch-owner';
+      const launcher = paths.resources.trackChild(
+        fork(
+          new URL('./fixtures/owned-authority-launcher.js', import.meta.url),
+          [
+            paths.root,
+            capability.rootId,
+            join(paths.base, 'committed-authority-lease-probe'),
+            launchOwnerClientInstanceId,
+          ],
+          { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+        ),
+      );
+      const launchedPid = paths.resources.trackPid(await waitForLaunch(launcher));
+      const owner = await retryConnect(paths, CURRENT_PROTOCOL, {
+        clientInstanceId: launchOwnerClientInstanceId,
+      });
+      assert.equal(owner.kind, 'connected');
+      if (owner.kind !== 'connected') return;
+
+      const beforeCommit = await connectRuntimeHost({
+        ...paths,
+        rootPath: paths.root,
+        protocol: CURRENT_PROTOCOL,
+        clientInstanceId: 'ordinary-client-before-commit',
+      });
+      assert.equal(beforeCommit.kind, 'draining');
+
+      launcher.send('release');
+      const ordinary = await retryConnect(paths, CURRENT_PROTOCOL, {
+        clientInstanceId: 'ordinary-client-after-commit',
+      });
+      assert.equal(ordinary.kind, 'connected');
+      if (ordinary.kind === 'connected') {
+        assert.equal(
+          (await ordinary.connection.request('host.diagnostics.query', {})).pid,
+          launchedPid,
+        );
+        await ordinary.connection.close();
+      }
+      await owner.connection.close();
+      launcher.kill('SIGKILL');
+      await waitForExit(launcher);
+      terminateProcess(launchedPid);
       await waitForProcessExit(launchedPid);
       paths.resources.forgetPid(launchedPid);
     });
@@ -3283,7 +3348,11 @@ function isConnectedClientMessage(
 async function retryConnect(
   paths: HostPaths,
   protocol: { min: number; max: number },
-  options?: { livenessIntervalMs?: number; onLivenessProbe?: () => void },
+  options?: {
+    livenessIntervalMs?: number;
+    onLivenessProbe?: () => void;
+    clientInstanceId?: string;
+  },
 ) {
   const deadline = Date.now() + 5_000;
   let result = await connectRuntimeHost({

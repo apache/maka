@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 10 |
+| portable-candidate | 11 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **68**
+Total Windows-excluded declarations: **69**
 
 ## Inventory
 
@@ -78,6 +78,7 @@ Total Windows-excluded declarations: **68**
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
 | platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
+| portable-candidate | `packages/storage/src/__tests__/quiescent-session-snapshot.test.ts` requires a private staging parent on POSIX | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects a lock path that aliases another filesystem object | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
