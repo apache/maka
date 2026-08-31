@@ -184,7 +184,10 @@ import {
 import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
-import { runDesktopRuntimeHostWslSetup } from './runtime-host-wsl-controller.js';
+import {
+  runDesktopRuntimeHostWslManagement,
+  runDesktopRuntimeHostWslSetup,
+} from './runtime-host-wsl-controller.js';
 import {
   createRuntimeHostSetupPackageResolver,
   desktopRuntimeHostDevelopmentPeerTarget,
@@ -569,6 +572,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  runWslManagement: runDesktopRuntimeHostWslManagement,
   runPeerManagement: runtimeHostSshTerminal.runPeerManagement,
   directPeerClientAvailable: runtimeHostDirectPeerAvailable,
   runUpdate: runtimeHostSshTerminal.runUpdate,

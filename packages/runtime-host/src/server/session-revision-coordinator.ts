@@ -35,6 +35,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   type ConversationRuntimeLedgerCopyPlan,
@@ -387,6 +388,12 @@ export class HostSessionRevisionCoordinator {
       runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       archivedResults: archivePreflight.serializedResults,
     });
+    const referencedSessionFileIds = collectConversationCopySessionFileRefs({
+      sourceSessionId: input.sourceSessionId,
+      messages: slice.messages,
+      runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+      archivedResults: archivePreflight.serializedResults,
+    });
     const missingGraphChildSessionIds = agentGraphRevisionAdmissionSessionIds({
       sourceSessionId: input.sourceSessionId,
       sessionHeaders,
@@ -493,6 +500,9 @@ export class HostSessionRevisionCoordinator {
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         turnIds: copyTurnIds,
+        ...(referencedSessionFileIds.size > 0
+          ? { includeArtifactIds: [...referencedSessionFileIds] }
+          : {}),
         ...(kind === 'side_conversation' && archivedSnapshotResults.size > 0
           ? { excludeArtifactIds: [...archivedSnapshotResults.keys()] }
           : {}),

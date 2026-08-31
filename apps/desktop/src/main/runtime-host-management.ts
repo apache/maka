@@ -39,7 +39,12 @@ import type {
   DesktopRuntimeHostUpdateReconciliationResponse,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
-import { sameDesktopRuntimeHostManagedServiceBinding } from './runtime-host-managed-services.js';
+import {
+  isDesktopRuntimeHostManagedSshServiceBinding,
+  sameDesktopRuntimeHostManagedServiceBinding,
+  type DesktopRuntimeHostManagedServiceBinding,
+  type DesktopRuntimeHostManagedSshServiceBinding,
+} from './runtime-host-managed-services.js';
 import { requireProjectDirectoryRoots } from '../shared/runtime-host-project-directory-policy.js';
 import type {
   DesktopRuntimeHostSshCleanupInput,
@@ -61,6 +66,7 @@ import type {
   DesktopRuntimeHostManagementProvider,
   DesktopRuntimeHostManagementTerminalFrame,
 } from './runtime-host-management-provider.js';
+import type { DesktopRuntimeHostWslManagementInput } from './runtime-host-wsl-controller.js';
 
 const MANAGEMENT_ACTIONS = new Set<DesktopRuntimeHostManagementAction>([
   'status',
@@ -93,6 +99,9 @@ export function createDesktopRuntimeHostManagement(input: {
   >;
   readonly runServiceManagement: (
     input: DesktopRuntimeHostSshManagementInput,
+  ) => Promise<Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>>;
+  readonly runWslManagement: (
+    input: DesktopRuntimeHostWslManagementInput,
   ) => Promise<Exclude<RuntimeHostServiceManagementFrame, { kind: 'progress' }>>;
   readonly runAccessManagement: (
     input: DesktopRuntimeHostSshAccessInput,
@@ -175,10 +184,7 @@ export function createDesktopRuntimeHostManagement(input: {
     allowInterruptActiveTasks = false,
   ): Promise<DesktopRuntimeHostManagementResponse> => {
     const managed = await resolveManagedService(profileId);
-    const { profile, deployment, control } = managed;
-    if (profile.transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile is not bound to a managed service');
-    }
+    const { deployment } = managed;
     if (managed.state !== 'active' && managementAction !== 'uninstall') {
       throw new Error('Finish uninstalling this Runtime Host service before managing it');
     }
@@ -192,22 +198,37 @@ export function createDesktopRuntimeHostManagement(input: {
         'Re-onboard this Runtime Host before changing it; its legacy binding has no deployment generation',
       );
     }
+    const expectedTarget = {
+      serviceId: deployment.id,
+      rootPath: deployment.rootPath,
+      rootId: managed.profile.rootId,
+      ...(deployment.deploymentId ? { deploymentId: deployment.deploymentId } : {}),
+    };
+    if (!isDesktopRuntimeHostManagedSshServiceBinding(managed)) {
+      if (managementAction !== 'status') {
+        throw new Error('This WSL Runtime Host management action is not available');
+      }
+      const response = await input.runWslManagement({
+        distribution: managed.profile.provider.distribution,
+        operatorPath: managed.profile.operatorPath,
+        action: managementAction,
+        expectedTarget,
+      });
+      return projectManagementFrame(response, false);
+    }
     const managementInput: DesktopRuntimeHostSshManagementInput = {
-      destination: profile.transport.destination,
-      ...(profile.transport.sshPort === undefined ? {} : { sshPort: profile.transport.sshPort }),
-      operatorPath: control.operatorPath,
+      destination: managed.profile.transport.destination,
+      ...(managed.profile.transport.sshPort === undefined
+        ? {}
+        : { sshPort: managed.profile.transport.sshPort }),
+      operatorPath: managed.control.operatorPath,
       action: managementAction,
-      expectedTarget: {
-        serviceId: deployment.id,
-        rootPath: deployment.rootPath,
-        rootId: profile.rootId,
-        ...(deployment.deploymentId ? { deploymentId: deployment.deploymentId } : {}),
-      },
+      expectedTarget,
       ...(managementAction === 'install'
         ? {
             rootPath: deployment.rootPath,
-            websocketPort: profile.transport.remotePort,
-            websocketPath: profile.transport.websocketPath,
+            websocketPort: managed.profile.transport.remotePort,
+            websocketPath: managed.profile.transport.websocketPath,
           }
         : {}),
       ...((managementAction === 'uninstall' || managementAction === 'restart') &&
@@ -229,7 +250,7 @@ export function createDesktopRuntimeHostManagement(input: {
       );
     }
 
-    let pending = managed;
+    let pending: DesktopRuntimeHostManagedSshServiceBinding = managed;
     if (pending.state !== 'cleanup_pending') {
       pending = await input.profiles.markManagedServiceUninstalling(pending);
       const response = await input.runServiceManagement({
@@ -324,9 +345,6 @@ export function createDesktopRuntimeHostManagement(input: {
     if (managed.state !== 'active') {
       throw new Error('Finish uninstalling this Runtime Host service before managing access');
     }
-    if (managed.profile.transport.kind !== 'ssh') {
-      throw new Error('This Runtime Host profile does not have an SSH management channel');
-    }
     return {
       managed,
       canRotate: managed.enabled,
@@ -343,12 +361,9 @@ export function createDesktopRuntimeHostManagement(input: {
     };
   };
 
-  const managedMutationTarget = async (profileIdValue: unknown) => {
-    const profileId = requireProfileId(profileIdValue);
-    input.profiles.assertPairingComplete(profileId);
+  const activeManagedTarget = async (profileId: string) => {
     const managed = await resolveManagedService(profileId);
-    const transport = managed.profile.transport;
-    if (managed.state !== 'active' || transport.kind !== 'ssh') {
+    if (managed.state !== 'active') {
       throw new Error('This Runtime Host profile is not available for managed service changes');
     }
     if (!managed.deployment.deploymentId) {
@@ -359,13 +374,26 @@ export function createDesktopRuntimeHostManagement(input: {
     return {
       profileId,
       managed,
-      transport,
       expectedTarget: {
         serviceId: managed.deployment.id,
         rootPath: managed.deployment.rootPath,
         rootId: managed.profile.rootId,
         deploymentId: managed.deployment.deploymentId,
       },
+    };
+  };
+
+  const managedMutationTarget = async (profileIdValue: unknown) => {
+    const profileId = requireProfileId(profileIdValue);
+    input.profiles.assertPairingComplete(profileId);
+    const target = await activeManagedTarget(profileId);
+    if (!isDesktopRuntimeHostManagedSshServiceBinding(target.managed)) {
+      throw new Error('This Runtime Host profile is not available for managed service changes');
+    }
+    return {
+      ...target,
+      managed: target.managed,
+      transport: target.managed.profile.transport,
     };
   };
 
@@ -643,18 +671,31 @@ export function createDesktopRuntimeHostManagement(input: {
         );
       reconnect = () => provider.awaitUpdatedConnection(previousHostEpoch, true);
     } else {
-      const { managed, transport, expectedTarget } = await managedMutationTarget(profileId);
+      const { managed, expectedTarget } = await activeManagedTarget(profileId);
       const previousHostEpoch = input.currentHostEpoch(profileId);
-      execute = () => input.runServiceManagement({
-        destination: transport.destination,
-        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-        operatorPath: managed.control.operatorPath,
-        action: 'configure',
-        expectedTarget,
-        projectDirectoryRoots: roots,
-        expectedConfigFingerprint: expectedConfigFingerprintValue,
-        ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
-      });
+      if (!isDesktopRuntimeHostManagedSshServiceBinding(managed)) {
+        execute = () => input.runWslManagement({
+          distribution: managed.profile.provider.distribution,
+          operatorPath: managed.profile.operatorPath,
+          action: 'configure',
+          expectedTarget,
+          projectDirectoryRoots: roots,
+          expectedConfigFingerprint: expectedConfigFingerprintValue,
+          ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
+        });
+      } else {
+        const transport = managed.profile.transport;
+        execute = () => input.runServiceManagement({
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+          operatorPath: managed.control.operatorPath,
+          action: 'configure',
+          expectedTarget,
+          projectDirectoryRoots: roots,
+          expectedConfigFingerprint: expectedConfigFingerprintValue,
+          ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
+        });
+      }
       reconnect = reconnectManagedTarget(profileId, managed, previousHostEpoch);
     }
     const response = requireManagementFrame(await execute(), 'configure');
