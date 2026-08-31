@@ -84,17 +84,8 @@ test('reports the first removed earlier segment', () => {
 test('uses the preceding physical retry as its durable baseline', async () => {
   const previous = attempt({ attemptId: 'attempt-0', attempt: 0 });
   const current = attempt({ attemptId: 'attempt-1', attempt: 1 });
-
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore([run('run-1', 'turn-1', PROVIDER_STATE)], [previous]),
-      })
-    ).status,
+    await statusOf(current, [run('run-1', 'turn-1', PROVIDER_STATE)], [previous]),
     'preserved',
   );
 });
@@ -104,19 +95,12 @@ test('does not compare across provider execution identities', async () => {
   const current = attempt({ attemptId: 'current', runId: 'run-2', turnId: 'turn-2' });
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(
-          [run('run-1', 'turn-1', OTHER_PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
-          [previous],
-          { runId: 'run-2', previousRootTurnId: 'turn-1' },
-        ),
-      })
-    ).status,
+    await statusOf(
+      current,
+      [run('run-1', 'turn-1', OTHER_PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+      [previous],
+      { runId: 'run-2', previousRootTurnId: 'turn-1' },
+    ),
     'unavailable',
   );
 });
@@ -132,19 +116,12 @@ test('does not compare attempts whose connection identity is missing', async () 
   previous.connectionSlug = undefined;
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(
-          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
-          [previous],
-          { runId: 'run-2', previousRootTurnId: 'turn-1' },
-        ),
-      })
-    ).status,
+    await statusOf(
+      current,
+      [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+      [previous],
+      { runId: 'run-2', previousRootTurnId: 'turn-1' },
+    ),
     'unavailable',
   );
 });
@@ -154,19 +131,12 @@ test('does not use an attempt whose durable turn disagrees with its run', async 
   const current = attempt({ attemptId: 'current', runId: 'run-2', turnId: 'turn-2' });
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(
-          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
-          [previous],
-          { runId: 'run-2', previousRootTurnId: 'turn-1' },
-        ),
-      })
-    ).status,
+    await statusOf(
+      current,
+      [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+      [previous],
+      { runId: 'run-2', previousRootTurnId: 'turn-1' },
+    ),
     'unavailable',
   );
 });
@@ -180,22 +150,15 @@ test('does not choose between overlapping durable predecessor runs', async () =>
   ];
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(
-          headers,
-          [
-            attempt({ attemptId: 'previous-1', runId: 'run-1', turnId: 'turn-1' }),
-            attempt({ attemptId: 'previous-2', runId: 'run-2', turnId: 'turn-1' }),
-          ],
-          { runId: 'run-3', previousRootTurnId: 'turn-1' },
-        ),
-      })
-    ).status,
+    await statusOf(
+      current,
+      headers,
+      [
+        attempt({ attemptId: 'previous-1', runId: 'run-1', turnId: 'turn-1' }),
+        attempt({ attemptId: 'previous-2', runId: 'run-2', turnId: 'turn-1' }),
+      ],
+      { runId: 'run-3', previousRootTurnId: 'turn-1' },
+    ),
     'unavailable',
   );
 });
@@ -205,26 +168,19 @@ test('uses the unique continuation tip for the previous root turn', async () => 
   const current = attempt({ attemptId: 'current', runId: 'run-3', turnId: 'turn-2' });
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(
-          [
-            run('run-1', 'turn-1', PROVIDER_STATE),
-            run('run-2', 'turn-1', PROVIDER_STATE, {
-              parentRunId: 'run-1',
-              continuationSource: continuationSource('run-1'),
-            }),
-            run('run-3', 'turn-2', PROVIDER_STATE),
-          ],
-          [previous],
-          { runId: 'run-3', previousRootTurnId: 'turn-1' },
-        ),
-      })
-    ).status,
+    await statusOf(
+      current,
+      [
+        run('run-1', 'turn-1', PROVIDER_STATE),
+        run('run-2', 'turn-1', PROVIDER_STATE, {
+          parentRunId: 'run-1',
+          continuationSource: continuationSource('run-1'),
+        }),
+        run('run-3', 'turn-2', PROVIDER_STATE),
+      ],
+      [previous],
+      { runId: 'run-3', previousRootTurnId: 'turn-1' },
+    ),
     'preserved',
   );
 });
@@ -239,31 +195,15 @@ test('compares later local turns without inheriting a copied session baseline', 
   ];
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current: previous,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(runs, [], { runId: 'run-1', previousRootTurnId: null }),
-      })
-    ).status,
+    await statusOf(previous, runs, [], { runId: 'run-1', previousRootTurnId: null }),
     'unavailable',
   );
 
   assert.equal(
-    (
-      await deriveAttemptSemanticPrefixContinuity({
-        current,
-        currentProviderStateIdentity: PROVIDER_STATE,
-        currentSessionInline: true,
-        lineage: {},
-        store: prefixStore(runs, [previous], {
-          runId: 'run-2',
-          previousRootTurnId: 'turn-1',
-        }),
-      })
-    ).status,
+    await statusOf(current, runs, [previous], {
+      runId: 'run-2',
+      previousRootTurnId: 'turn-1',
+    }),
     'preserved',
   );
 });
@@ -271,19 +211,37 @@ test('compares later local turns without inheriting a copied session baseline', 
 test('does not compare a child run against its parent session run', async () => {
   const previous = attempt({ attemptId: 'parent-attempt', runId: 'run-parent' });
   const current = attempt({ attemptId: 'child-attempt', runId: 'run-child' });
-  const input = {
-    current,
-    currentProviderStateIdentity: PROVIDER_STATE,
-    currentSessionInline: false,
-    lineage: { parentRunId: 'run-parent' },
-    store: prefixStore(
+  assert.equal(
+    await statusOf(
+      current,
       [run('run-parent', 'turn-1', PROVIDER_STATE), run('run-child', 'turn-1', PROVIDER_STATE)],
       [previous],
+      undefined,
+      false,
+      { parentRunId: 'run-parent' },
     ),
-  };
-
-  assert.equal((await deriveAttemptSemanticPrefixContinuity(input)).status, 'unavailable');
+    'unavailable',
+  );
 });
+
+async function statusOf(
+  current: ModelCallAttempt,
+  runs: AgentRunHeader[],
+  attempts: ModelCallAttempt[],
+  admission?: { runId: string; previousRootTurnId: string | null },
+  currentSessionInline = true,
+  lineage: { parentRunId?: string } = {},
+) {
+  return (
+    await deriveAttemptSemanticPrefixContinuity({
+      current,
+      currentProviderStateIdentity: PROVIDER_STATE,
+      currentSessionInline,
+      lineage,
+      store: prefixStore(runs, attempts, admission),
+    })
+  ).status;
+}
 
 function observation(segments: PreparedRequestObservationSegment[]): PreparedRequestObservation {
   return {
