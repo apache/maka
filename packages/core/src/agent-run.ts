@@ -794,12 +794,14 @@ export interface AgentRunStore {
     sessionId: string,
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
+  /** Opaque revision of the canonical event ledger used to guard a derived repair. */
+  readEventLedgerRevision?(sessionId: string): Promise<string>;
   /** Rewrites derived state after the canonical event ledger repairs an absent or damaged projection. */
   repairEventProjection?(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
 }
 

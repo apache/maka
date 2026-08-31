@@ -155,10 +155,6 @@ import type { MakaTool } from './tool-runtime.js';
 import type { TurnShellPlan } from './shell-detect.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureLedgerRecord,
-} from './provider-request-telemetry.js';
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
@@ -669,14 +665,9 @@ export interface BackendFactoryContext {
   /** Turn-scoped shell plan captured with a bound child tool ceiling. */
   turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
-  /** Durable AgentRun metadata row written after the private capture artifact. */
-  recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
-  /** Best-effort AgentRun row for one physical provider call. */
-  recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void;
   /**
-   * Durable AgentRun row carrying the canonical accounting record for one
-   * physical provider call. Distinct from the diagnostic row above: this one is
-   * the metering source of truth (#1679).
+   * Durable AgentRun row carrying the canonical record for one physical
+   * provider call, including metering and its prepared-request observation.
    */
   recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */

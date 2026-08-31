@@ -107,7 +107,7 @@ import type {
   PricingConfig,
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
-import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
+import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -220,17 +220,12 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import {
-  computeRequestShapeDiagnostic,
-  toolSchemaCharsForDiagnostics,
-  type RequestShapeDiagnostic,
-} from './request-shape.js';
+import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
   type ModelCallAccountingInput,
-  type ProviderRequestAttemptRecord,
-  type ProviderRequestCaptureRecord,
+  type PreparedRequestArtifactInput,
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
@@ -259,7 +254,6 @@ import {
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
-  buildPromptSegmentEstimates,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
   mergeContextBudgetDiagnosticPatches,
@@ -760,19 +754,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
-  /**
-   * Durable prepared-request capture boundary. When configured, rejection
-   * prevents the corresponding provider request from being dispatched.
-   */
-  recordProviderRequestCapture?: (
-    capture: ProviderRequestCaptureRecord,
+  /** Optional private artifact sink for the secret-free prepared request. */
+  persistPreparedRequestArtifact?: (
+    input: PreparedRequestArtifactInput,
   ) => Promise<{ artifactId: string }>;
-  /** Best-effort durable row for one physical provider request attempt. */
-  recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
-  /**
-   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
-   * stays a diagnostic trace: this one carries the accounting record.
-   */
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
@@ -1090,12 +1075,6 @@ export class AiSdkBackend implements AgentBackend {
    * read back as absent.
    */
   private readonly activeTurns = new Set<TurnScope>();
-  /**
-   * Request-shape baseline for change attribution. Session-scoped on purpose:
-   * it compares each provider request against whatever this backend sent last,
-   * across turns.
-   */
-  private priorRequestShape: RequestShapeDiagnostic | undefined;
   private readonly compaction: AiSdkCompaction;
   /** Session-scoped running total, deliberately accumulated across turns. */
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
@@ -1108,8 +1087,8 @@ export class AiSdkBackend implements AgentBackend {
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
     // One resolved options value for every reader: the main call, the
-    // auxiliary memory-extraction call, and the request-shape diagnostics all
-    // describe the same request, so they must not disagree on what was sent.
+    // auxiliary memory-extraction call, and the provider request all use the
+    // same options value, so they cannot disagree on what was sent.
     this.resolvedProviderOptions =
       input.providerOptions ??
       buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
@@ -1391,7 +1370,7 @@ export class AiSdkBackend implements AgentBackend {
   // --------------------------------------------------------------------------
 
   async compactHistory(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult> {
-    return this.compaction.compactHistory(input, this.priorRequestShape?.requestShapeHash);
+    return this.compaction.compactHistory(input);
   }
 
   // --------------------------------------------------------------------------
@@ -1587,8 +1566,7 @@ export class AiSdkBackend implements AgentBackend {
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
-    let requestShapeForTelemetry: RequestShapeDiagnostic | undefined;
-    let promptSegmentsForTelemetry: PromptSegmentEstimate[] = [];
+    let toolAvailabilityForTelemetry: ReturnType<ToolAvailabilityPlan['diagnostics']> = undefined;
     let contextBudgetForTelemetry: ContextBudgetDiagnostic | undefined;
     let contextCompactedNoteWritten = false;
     let contextCompactionFailedOpenNoteWritten = false;
@@ -1943,81 +1921,19 @@ export class AiSdkBackend implements AgentBackend {
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
-        // Diagnostics describe the provider-visible (active) tool subset. A group
-        // loaded *this* turn expands that subset on later provider requests,
-        // so the durable cost record is refined against the final active set once
-        // the stream is consumed (see below). Both computations classify against
-        // the same pre-turn baseline. The availability runtime builds the tool
-        // diagnostic from the same per-step active set + schema-char measurement.
+        // Tool Availability describes the provider-visible (active) subset. A
+        // group loaded this turn expands that subset on later requests, so the
+        // terminal trace is refined against the final active set below.
         contextBudgetForTelemetry = priorReplay.contextBudget;
-        const priorShapeBaseline = this.priorRequestShape;
-        const computeTurnDiagnostics = (active: readonly string[]) => {
+        const computeToolAvailability = (active: readonly string[]) => {
           const toolSchemaChars = toolSchemaCharsForDiagnostics(providerTools, active);
-          const toolAvailabilityDiagnostic = plan.diagnostics(active, toolSchemaChars);
-          return {
-            promptSegments: buildPromptSegmentEstimates({
-              systemPrompt,
-              toolSchemaChars,
-              toolCount: active.length,
-              priorMessages: priorReplay.messages,
-              priorRuntimeEventCount: priorReplay.runtimeEventCount,
-              currentUserContent: input.continuation
-                ? ''
-                : formatTextWithInlineRefs(input.text, {
-                    ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-                    ...(input.directoryReferences !== undefined
-                      ? { directoryReferences: input.directoryReferences }
-                      : {}),
-                    ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
-                  }),
-            }),
-            requestShape: computeRequestShapeDiagnostic(
-              {
-                connection: this.input.connection,
-                modelId: this.input.modelId,
-                systemPrompt,
-                providerOptions: this.resolvedProviderOptions,
-                providerTools,
-                activeTools: active,
-                priorMessages: priorReplay.messages,
-                ...(toolAvailabilityDiagnostic !== undefined
-                  ? { toolAvailability: toolAvailabilityDiagnostic }
-                  : {}),
-              },
-              priorShapeBaseline,
-            ),
-          };
+          return plan.diagnostics(active, toolSchemaChars);
         };
-        // Publish a diagnostics snapshot to every telemetry sink at once so the
-        // cost record and prefix baseline describe the same active tool set. A
-        // same-turn deferred load re-publishes the final snapshot below.
-        let turnDiagnostics = computeTurnDiagnostics(activeTools);
-        const publishTurnDiagnostics = (diag: typeof turnDiagnostics): void => {
-          turnDiagnostics = diag;
-          promptSegmentsForTelemetry = diag.promptSegments;
-          requestShapeForTelemetry = diag.requestShape;
-          this.priorRequestShape = diag.requestShape;
-        };
-        // Step-0 (turn-start) view: literally what the first request carries, so
-        // the stream-start trace reports it as the prefix actually sent.
-        publishTurnDiagnostics(turnDiagnostics);
+        toolAvailabilityForTelemetry = computeToolAvailability(activeTools);
         trace.modelStreamStarted(activeTools, {
-          systemPromptHash: turnDiagnostics.requestShape.componentHashes.systemPromptHash,
-          prefixHash: turnDiagnostics.requestShape.prefixHash,
-          prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-          requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-          requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-          ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-            ? {
-                toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason,
-              }
+          ...(toolAvailabilityForTelemetry !== undefined
+            ? { toolAvailability: toolAvailabilityForTelemetry }
             : {}),
-          ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-            ? {
-                toolAvailability: turnDiagnostics.requestShape.toolAvailability,
-              }
-            : {}),
-          promptSegments: turnDiagnostics.promptSegments,
           ...(priorReplay.contextBudget ? { contextBudget: priorReplay.contextBudget } : {}),
         });
 
@@ -2783,15 +2699,15 @@ export class AiSdkBackend implements AgentBackend {
           break agentLoop;
         }
 
-        // Refine the durable cost record + prefix baseline against the final
-        // active set. Deferred loading may add tools, while boundary convergence
-        // may remove them; comparing membership avoids missing a same-size swap.
+        // Refine Tool Availability against the final active set. Deferred
+        // loading may add tools, while boundary convergence may remove them;
+        // comparing membership avoids missing a same-size swap.
         const finalActiveTools = currentRepairToolNames();
         if (
           finalActiveTools.length !== activeTools.length ||
           finalActiveTools.some((name, index) => name !== activeTools[index])
         ) {
-          publishTurnDiagnostics(computeTurnDiagnostics(finalActiveTools));
+          toolAvailabilityForTelemetry = computeToolAvailability(finalActiveTools);
         }
 
         // Final usage event. Each adapter result covers one provider request.
@@ -2803,7 +2719,6 @@ export class AiSdkBackend implements AgentBackend {
           const attemptTotalUsage = providerOutcome.usage;
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
-            const systemPromptHash = turnDiagnostics.requestShape.componentHashes.systemPromptHash;
             tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
             const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
               contextBudgetForTelemetry,
@@ -2846,12 +2761,6 @@ export class AiSdkBackend implements AgentBackend {
                 ? { cacheCreation: tokenUsage.cacheWriteInputTokens }
                 : {}),
               ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              promptSegments: turnDiagnostics.promptSegments,
               ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
               ...(contextRemainingForUsage !== undefined
                 ? { contextRemaining: contextRemainingForUsage }
@@ -3031,27 +2940,8 @@ export class AiSdkBackend implements AgentBackend {
           ...(contextBudgetForTelemetry !== undefined
             ? { contextBudget: contextBudgetForTelemetry }
             : {}),
-          ...(promptSegmentsForTelemetry.length > 0
-            ? { promptSegments: promptSegmentsForTelemetry }
-            : {}),
-          ...(requestShapeForTelemetry !== undefined
-            ? {
-                systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
-                prefixHash: requestShapeForTelemetry.prefixHash,
-                prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
-                requestShapeHash: requestShapeForTelemetry.requestShapeHash,
-                requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
-                ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                  ? {
-                      toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason,
-                    }
-                  : {}),
-                ...(requestShapeForTelemetry.toolAvailability !== undefined
-                  ? {
-                      toolAvailability: requestShapeForTelemetry.toolAvailability,
-                    }
-                  : {}),
-              }
+          ...(toolAvailabilityForTelemetry !== undefined
+            ? { toolAvailability: toolAvailabilityForTelemetry }
             : {}),
         });
         queue.close();
@@ -3318,14 +3208,14 @@ export class AiSdkBackend implements AgentBackend {
   /**
    * One tracker for one physical provider call kind (#1679).
    *
-   * Auxiliary calls get the same capture, attempt, and accounting plumbing the
+   * Auxiliary calls get the same observation, attempt, and accounting plumbing the
    * main send uses, built here because the sinks and the current run live on
    * this backend. Callers receive a ready tracker rather than the ingredients:
    * a half-wired tracker is what produces records nothing can attribute.
    *
-   * Absent only when there is nothing to feed: no capture sink *and* no
-   * canonical sink. Metering deliberately does not depend on capture — capture
-   * is a diagnostic, and a deployment that turns it off must still be billed.
+   * Absent only when there is nothing to feed: no artifact sink, canonical
+   * sink, or dispatch gate. Metering deliberately does not depend on artifact
+   * persistence: the observation is created in memory for every tracked call.
    */
   private createProviderRequestTracker(input: {
     turnId: string;
@@ -3339,7 +3229,7 @@ export class AiSdkBackend implements AgentBackend {
      */
     runId: string | undefined;
   }): ProviderRequestTracker | undefined {
-    const persistCapture = this.input.recordProviderRequestCapture;
+    const persistArtifact = this.input.persistPreparedRequestArtifact;
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
@@ -3356,15 +3246,14 @@ export class AiSdkBackend implements AgentBackend {
               runId,
             })
         : undefined;
-    if (!persistCapture && !accounting && !beforeDispatch) return undefined;
+    if (!persistArtifact && !accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
       contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
       now: this.now,
       newId: this.newId,
-      ...(persistCapture ? { persistCapture } : {}),
-      recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(persistArtifact ? { persistArtifact } : {}),
       ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });
@@ -3513,7 +3402,6 @@ export class AiSdkBackend implements AgentBackend {
           runId: scope.runId,
           runtimeContext: priorRuntimeContext,
         },
-        this.priorRequestShape?.requestShapeHash,
         automaticMemorySource
           ? {
               runId: automaticMemorySource.runId,

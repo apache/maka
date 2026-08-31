@@ -59,6 +59,85 @@ function attempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallAttempt {
 }
 
 describe('ModelCallAttempt codec', () => {
+  test('accepts one bounded prepared-request observation on the canonical attempt', () => {
+    const decoded = decodeModelCallAttempt({
+      ...attempt(),
+      requestObservation: {
+        schemaVersion: 1,
+        digest: `sha256:${'a'.repeat(64)}`,
+        bytes: 42,
+        segments: [
+          {
+            kind: 'message',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'b'.repeat(64)}`,
+            bytes: 21,
+            role: 'user',
+          },
+        ],
+      },
+    });
+
+    assert.equal(decoded.requestObservation?.segments[0]?.comparison, 'exact');
+  });
+
+  test('rejects a prepared-request observation whose semantic segments are out of order', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        requestObservation: {
+          schemaVersion: 1,
+          digest: `sha256:${'a'.repeat(64)}`,
+          bytes: 42,
+          segments: [
+            {
+              kind: 'message',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'b'.repeat(64)}`,
+              bytes: 21,
+            },
+            {
+              kind: 'system_prompt',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'c'.repeat(64)}`,
+              bytes: 21,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  test('rejects a bounded remainder that claims exact comparison', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        requestObservation: {
+          schemaVersion: 1,
+          digest: `sha256:${'a'.repeat(64)}`,
+          bytes: 21,
+          segments: [
+            {
+              kind: 'tool_schema',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'b'.repeat(64)}`,
+              bytes: 21,
+              representedSegments: 1,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
   test('accepts bounded provider failure diagnostics on history compaction calls', () => {
     const decoded = decodeModelCallAttempt(
       attempt({

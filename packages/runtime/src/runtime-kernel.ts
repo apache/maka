@@ -2223,8 +2223,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }): Pick<
     BackendFactoryContext,
     | 'recordRunTrace'
-    | 'recordProviderRequestCapture'
-    | 'recordProviderRequestAttempt'
     | 'recordModelCallAttempt'
     | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
@@ -2243,15 +2241,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
       },
       ...(this.deps.runStore
         ? {
-            recordProviderRequestCapture: (capture) => {
-              const run = runFor(capture.turnId);
-              if (!run)
-                return Promise.reject(new Error('No active AgentRun for provider request capture'));
-              return run.recordProviderRequestCapture(capture);
-            },
-            recordProviderRequestAttempt: (attempt) => {
-              runFor(attempt.turnId)?.recordProviderRequestAttempt(attempt);
-            },
             // Resolved by runId rather than turnId: the canonical record names
             // the run it belongs to, so it needs no turn-to-run indirection.
             recordModelCallAttempt: (commit) => {

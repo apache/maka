@@ -261,6 +261,53 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Sigstore dependency patch
+
+Source: https://www.npmjs.com/package/@sigstore/core/v/4.0.1
+Repository: https://github.com/sigstore/sigstore-js/tree/main/packages/core
+Version: 4.0.1
+Dependency patch: patches/@sigstore+core+4.0.1.patch
+Copyright 2023 The Sigstore Authors
+License: Apache-2.0
+
+Maka redistributes a source patch that selects the signature digest in
+@sigstore/core. The patch modifies Apache-2.0 source and is covered by the
+Apache License, Version 2.0 reproduced above.
+
+TUF metadata models dependency patch
+
+Source: https://www.npmjs.com/package/@tufjs/models/v/5.0.0
+Repository: https://github.com/theupdateframework/tuf-js/tree/main/packages/models
+Version: 5.0.0
+Dependency patch: patches/@tufjs+models+5.0.0.patch
+Copyright (c) 2022 GitHub and the TUF Contributors
+License: MIT
+
+Maka redistributes a source patch that selects the signature digest in
+@tufjs/models. The following MIT License applies to that material:
+
+MIT License
+
+Copyright (c) 2022 GitHub and the TUF Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
 node-pty dependency patch
 
 Source: https://www.npmjs.com/package/node-pty/v/1.2.0-beta.15

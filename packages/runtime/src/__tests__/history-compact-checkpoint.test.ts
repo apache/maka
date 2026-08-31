@@ -637,12 +637,14 @@ describe('history compact checkpoint', () => {
     const replacedEventIds: Array<string | undefined> = [];
     const store = {
       readEventProjection: async () => poisonedProjection,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         _event: AgentRunEvent | null,
-        options?: { replaceEventId?: string },
+        options: { ifLedgerRevision: string; replaceEventId?: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
       listSessionRuns: async () => [run('run-canonical', 10)],
@@ -777,11 +779,14 @@ describe('history compact checkpoint', () => {
     const repaired: Array<AgentRunEvent | null> = [];
     const store = {
       readEventProjection: async () => undefined,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         repairedEvent: AgentRunEvent | null,
+        options: { ifLedgerRevision: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         repaired.push(repairedEvent);
       },
       listSessionRuns: async () => [run('run-recovered', 10)],
@@ -792,6 +797,30 @@ describe('history compact checkpoint', () => {
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(repaired, [event]);
+  });
+
+  test('recovers without repairing when the store lacks a ledger revision capability', async () => {
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'recovered checkpoint',
+      summaryFormat: 'legacy_freeform',
+    });
+    const event = checkpointEvent('recovered-event', 'run-recovered', checkpoint, 20);
+    let repaired = false;
+    const store = {
+      readEventProjection: async () => undefined,
+      repairEventProjection: async () => {
+        repaired = true;
+      },
+      listSessionRuns: async () => [run('run-recovered', 10)],
+      readEvents: async () => [event],
+    };
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
+    assert.equal(repaired, false);
   });
 
   test('identifies a parseable but invalid projection when repairing from the canonical ledger', async () => {
@@ -810,12 +839,14 @@ describe('history compact checkpoint', () => {
     const replacedEventIds: Array<string | undefined> = [];
     const store = {
       readEventProjection: async () => invalidProjection,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         _event: AgentRunEvent | null,
-        options?: { replaceEventId?: string },
+        options: { ifLedgerRevision: string; replaceEventId?: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
       listSessionRuns: async () => [run('run-canonical', 10)],

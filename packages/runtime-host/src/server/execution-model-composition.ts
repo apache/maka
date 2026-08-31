@@ -36,7 +36,6 @@ import {
 } from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
-import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -269,32 +268,22 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       throw new Error('Canonical model-call accounting authority is unavailable');
     }
   };
-  let artifactDrainRequested = false;
-  const providerRequestCapture = input.context.recordProviderRequestCapture
-    ? createProviderRequestCaptureRecorder({
-        persistArtifact: async (capture) => {
-          try {
-            const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
-              sessionId: input.context.sessionId,
-              turnId: capture.turnId,
-              captureId: capture.captureId,
-              step: capture.step,
-              serializedRequest: capture.serializedRequest,
-              now: Date.now(),
-            });
-            return { artifactId: artifact.id };
-          } catch (error) {
-            if (!artifactDrainRequested) {
-              artifactDrainRequested = true;
-              input.requestDrain();
-            }
-            throw error;
-          }
-        },
-        recordLedger: input.context.recordProviderRequestCapture,
-      })
-    : undefined;
-  const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
+  const persistPreparedRequestArtifact = async (capture: {
+    turnId: string;
+    captureId: string;
+    step: number;
+    serializedRequest: string;
+  }): Promise<{ artifactId: string }> => {
+    const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
+      sessionId: input.context.sessionId,
+      turnId: capture.turnId,
+      captureId: capture.captureId,
+      step: capture.step,
+      serializedRequest: capture.serializedRequest,
+      now: Date.now(),
+    });
+    return { artifactId: artifact.id };
+  };
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
@@ -448,18 +437,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
+        persistPreparedRequestArtifact,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
-        ...(providerRequestCapture
-          ? {
-              recordProviderRequestCapture: providerRequestCapture,
-              ...(input.context.recordProviderRequestAttempt
-                ? {
-                    recordProviderRequestAttempt,
-                  }
-                : {}),
-            }
-          : {}),
         newId: randomUUID,
         now: Date.now,
       },

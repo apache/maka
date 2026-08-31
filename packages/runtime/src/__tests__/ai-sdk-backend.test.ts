@@ -58,11 +58,7 @@ import {
 import type { DurableSessionEventSink, MakaTool, ToolRuntime } from '../tool-runtime.js';
 import { TOOL_SEARCH_NAME } from '../tool-availability.js';
 import { buildNativeWebSearchTool } from '../native-web-search-tool.js';
-import {
-  canonicalizeToolSet,
-  computeRequestShapeDiagnostic,
-  findFirstChangedCacheableSegment,
-} from '../request-shape.js';
+import { canonicalizeToolSet } from '../request-shape.js';
 import {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -83,10 +79,7 @@ import {
 } from '../sandbox-boundary-declaration.js';
 import { FilesystemWorkerClientError } from '../filesystem-worker/client.js';
 import { RunTrace } from '../run-trace.js';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureRecord,
-} from '../provider-request-telemetry.js';
+import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
@@ -5565,14 +5558,7 @@ describe('AiSdkBackend model history', () => {
     type FingerprintCase = {
       name: string;
       expectedCalls: number;
-      prepare?: (input: AiSdkBackendInput, backend: AiSdkBackend) => void;
-      change?: (input: AiSdkBackendInput, backend: AiSdkBackend) => void;
-    };
-    const setRequestShapeHash = (backend: AiSdkBackend, requestShapeHash: string): void => {
-      const internals = backend as unknown as {
-        priorRequestShape: { requestShapeHash: string } | undefined;
-      };
-      internals.priorRequestShape = { requestShapeHash };
+      change?: (input: AiSdkBackendInput) => void;
     };
     const cases = [
       {
@@ -5604,10 +5590,11 @@ describe('AiSdkBackend model history', () => {
         },
       },
       {
-        name: 'request shape change retries',
+        name: 'compaction route change retries',
         expectedCalls: 2,
-        prepare: (_input, backend) => setRequestShapeHash(backend, 'request-shape-before'),
-        change: (_input, backend) => setRequestShapeHash(backend, 'request-shape-after'),
+        change: (input) => {
+          input.historyCompactRoute = 'text_summary';
+        },
       },
     ] satisfies readonly FingerprintCase[];
 
@@ -5657,14 +5644,12 @@ describe('AiSdkBackend model history', () => {
             text: 'recent',
           }),
         ];
-        fingerprintCase.prepare?.(backendInput, backend);
-
         const first = await backend.compactHistory({
           turnId: 'turn-config-compact-1',
           runId: 'run-1',
           runtimeContext: history,
         });
-        fingerprintCase.change?.(backendInput, backend);
+        fingerprintCase.change?.(backendInput);
         const repeated = await backend.compactHistory({
           turnId: 'turn-config-compact-2',
           runId: 'run-2',
@@ -8301,7 +8286,7 @@ describe('AiSdkBackend usage telemetry', () => {
       },
     } as never);
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(usageCheckpoints.length, 1);
     assert.equal(usageCheckpoints[0]?.costUsd, undefined);
@@ -8742,6 +8727,7 @@ describe('AiSdkBackend usage telemetry', () => {
           prefixChangeReason?: string;
           requestShapeHash?: string;
           requestShapeChangeReason?: string;
+          promptSegments?: unknown[];
         }
       | undefined;
     const usageEvent = events.find((event) => event.type === 'token_usage') as
@@ -8763,13 +8749,7 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageMessage?.reasoning, 2);
     assert.equal(usageMessage?.total, 17);
     assert.equal(usageMessage?.rawFinishReason, 'stop');
-    assert.equal(usageMessage?.systemPromptHash, usageEvent?.systemPromptHash);
-    assert.ok(usageMessage?.systemPromptHash);
     assert.equal(usageMessage?.costUsd, expectedCostUsd);
-    assert.equal(usageMessage?.prefixChangeReason, 'first_turn');
-    assert.equal(usageMessage?.requestShapeChangeReason, 'first_turn');
-    assert.ok(usageMessage?.prefixHash);
-    assert.ok(usageMessage?.requestShapeHash);
     assert.equal(usageEvent?.input, 10);
     assert.equal(usageEvent?.output, 7);
     assert.equal(usageEvent?.cacheHitInput, 3);
@@ -8781,156 +8761,24 @@ describe('AiSdkBackend usage telemetry', () => {
     assert.equal(usageEvent?.reasoning, 2);
     assert.equal(usageEvent?.total, 17);
     assert.equal(usageEvent?.rawFinishReason, 'stop');
-    assert.equal(usageEvent?.systemPromptHash, usageMessage?.systemPromptHash);
     assert.equal(usageEvent?.costUsd, expectedCostUsd);
-    assert.equal(usageEvent?.prefixChangeReason, 'first_turn');
-    assert.equal(usageEvent?.requestShapeChangeReason, 'first_turn');
-    assert.ok(usageEvent?.prefixHash);
-    assert.ok(usageEvent?.requestShapeHash);
-    assert.equal(startTrace?.data?.prefixChangeReason, 'first_turn');
-    assert.equal(startTrace?.data?.requestShapeChangeReason, 'first_turn');
-    assert.ok(startTrace?.data?.prefixHash);
-    assert.ok(startTrace?.data?.requestShapeHash);
-    assert.equal(startTrace?.data?.systemPromptHash, usageMessage?.systemPromptHash);
+    for (const currentWriter of [
+      usageMessage as Record<string, unknown>,
+      usageEvent as unknown as Record<string, unknown>,
+      startTrace?.data,
+    ]) {
+      assert.equal(currentWriter?.systemPromptHash, undefined);
+      assert.equal(currentWriter?.prefixHash, undefined);
+      assert.equal(currentWriter?.prefixChangeReason, undefined);
+      assert.equal(currentWriter?.requestShapeHash, undefined);
+      assert.equal(currentWriter?.requestShapeChangeReason, undefined);
+      assert.equal(currentWriter?.promptSegments, undefined);
+    }
     assert.equal(pricingLookupCalls, 1);
   });
 });
 
-describe('AiSdkBackend request-shape diagnostics', () => {
-  test('classifies targeted request-shape changes', () => {
-    const tools = canonicalizeToolSet(
-      [testTool('Read', z.object({ path: z.string() }))],
-      testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() })),
-    );
-    const baseInput = {
-      connection: connection(),
-      modelId: 'mock-model-id',
-      systemPrompt: 'durable system',
-      providerOptions: { temperature: 0 },
-      providerTools: tools.providerTools,
-      activeTools: tools.activeTools,
-      priorMessages: [{ role: 'user' as const, content: 'hello' }],
-    };
-    const base = computeRequestShapeDiagnostic(baseInput, undefined);
-
-    assert.equal(
-      computeRequestShapeDiagnostic(
-        {
-          ...baseInput,
-          systemPrompt: 'changed system',
-        },
-        base,
-      ).prefixChangeReason,
-      'system_prompt_changed',
-    );
-    assert.equal(
-      computeRequestShapeDiagnostic(
-        {
-          ...baseInput,
-          providerTools: canonicalizeToolSet(
-            [testTool('Read', z.object({ path: z.string(), offset: z.number().optional() }))],
-            testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() })),
-          ).providerTools,
-        },
-        base,
-      ).prefixChangeReason,
-      'tool_schema_changed',
-    );
-    assert.equal(
-      computeRequestShapeDiagnostic(
-        {
-          ...baseInput,
-          providerOptions: { temperature: 1 },
-        },
-        base,
-      ).prefixChangeReason,
-      'provider_options_changed',
-    );
-    assert.equal(
-      computeRequestShapeDiagnostic(
-        {
-          ...baseInput,
-          modelId: 'other-model',
-        },
-        base,
-      ).prefixChangeReason,
-      'model_or_provider_changed',
-    );
-    const historyChanged = computeRequestShapeDiagnostic(
-      {
-        ...baseInput,
-        priorMessages: [{ role: 'assistant' as const, content: 'hello' }],
-      },
-      base,
-    );
-    assert.equal(historyChanged.prefixChangeReason, 'stable');
-    assert.equal(historyChanged.prefixHash, base.prefixHash);
-    assert.equal(historyChanged.requestShapeChangeReason, 'history_projection_changed');
-    assert.notEqual(historyChanged.requestShapeHash, base.requestShapeHash);
-  });
-
-  test('tool-result output hydration changes request shape without changing durable prefix', () => {
-    const tools = canonicalizeToolSet(
-      [testTool('Read', z.object({ path: z.string() }))],
-      testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() })),
-    );
-    const toolCallMessage: ModelMessage = {
-      role: 'assistant',
-      content: [
-        {
-          type: 'tool-call',
-          toolCallId: 'tool-1',
-          toolName: 'Read',
-          input: { path: 'archive.txt' },
-        },
-      ],
-    };
-    const placeholderToolResult: ModelMessage = {
-      role: 'tool',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'tool-1',
-          toolName: 'Read',
-          output: { type: 'text', value: '[archived placeholder]' },
-        },
-      ],
-    };
-    const hydratedToolResult: ModelMessage = {
-      role: 'tool',
-      content: [
-        {
-          type: 'tool-result',
-          toolCallId: 'tool-1',
-          toolName: 'Read',
-          output: { type: 'text', value: 'hydrated archive payload '.repeat(20) },
-        },
-      ],
-    };
-    const baseInput = {
-      connection: connection(),
-      modelId: 'mock-model-id',
-      systemPrompt: 'durable system',
-      providerOptions: { temperature: 0 },
-      providerTools: tools.providerTools,
-      activeTools: tools.activeTools,
-      priorMessages: [toolCallMessage, placeholderToolResult],
-    };
-    const placeholder = computeRequestShapeDiagnostic(baseInput, undefined);
-    const hydrated = computeRequestShapeDiagnostic(
-      {
-        ...baseInput,
-        priorMessages: [toolCallMessage, hydratedToolResult],
-      },
-      placeholder,
-    );
-
-    assert.equal(hydrated.prefixChangeReason, 'stable');
-    assert.equal(hydrated.prefixHash, placeholder.prefixHash);
-    assert.equal(hydrated.requestShapeChangeReason, 'history_projection_changed');
-    assert.notEqual(hydrated.requestShapeHash, placeholder.requestShapeHash);
-  });
-
+describe('AiSdkBackend tool availability diagnostics', () => {
   test('tool canonicalization is independent of registration order and places invalid last', () => {
     const invalid = testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() }));
     const first = canonicalizeToolSet(
@@ -8957,87 +8805,6 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       second.providerTools.map((tool) => tool.name),
       ['Read', 'Write', INVALID_TOOL_NAME],
     );
-    assert.equal(
-      computeRequestShapeDiagnostic(
-        {
-          connection: connection(),
-          modelId: 'mock-model-id',
-          providerTools: first.providerTools,
-          activeTools: first.activeTools,
-          priorMessages: [],
-        },
-        undefined,
-      ).componentHashes.toolSchemaHash,
-      computeRequestShapeDiagnostic(
-        {
-          connection: connection(),
-          modelId: 'mock-model-id',
-          providerTools: second.providerTools,
-          activeTools: second.activeTools,
-          priorMessages: [],
-        },
-        undefined,
-      ).componentHashes.toolSchemaHash,
-    );
-  });
-
-  test('classifies strict enabled-group expansion as tool_source_enabled', () => {
-    const invalid = testTool(INVALID_TOOL_NAME, z.object({ tool: z.string().optional() }));
-    const initialTools = canonicalizeToolSet(
-      [
-        testTool('Read', z.object({ path: z.string() })),
-        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
-      ],
-      invalid,
-    );
-    const expandedTools = canonicalizeToolSet(
-      [
-        testTool('Read', z.object({ path: z.string() })),
-        testTool('WebFetch', z.object({ url: z.string() })),
-        testTool(TOOL_SEARCH_NAME, z.object({ query: z.string() })),
-      ],
-      invalid,
-    );
-    const groupCatalog = { web: ['WebFetch'] };
-    const first = computeRequestShapeDiagnostic(
-      {
-        connection: connection(),
-        modelId: 'mock-model-id',
-        providerTools: initialTools.providerTools,
-        activeTools: initialTools.activeTools,
-        priorMessages: [],
-        toolAvailability: {
-          mode: 'search',
-          enabledSourceIds: [],
-          availableSourceIds: ['web'],
-          connectorToolName: TOOL_SEARCH_NAME,
-          visibleToolNamesBySource: groupCatalog,
-        },
-      },
-      undefined,
-    );
-    const second = computeRequestShapeDiagnostic(
-      {
-        connection: connection(),
-        modelId: 'mock-model-id',
-        providerTools: expandedTools.providerTools,
-        activeTools: expandedTools.activeTools,
-        priorMessages: [],
-        toolAvailability: {
-          mode: 'search',
-          enabledSourceIds: ['web'],
-          availableSourceIds: [],
-          connectorToolName: TOOL_SEARCH_NAME,
-          visibleToolNamesBySource: groupCatalog,
-        },
-      },
-      first,
-    );
-
-    assert.equal(second.prefixChangeReason, 'tool_schema_changed');
-    assert.equal(second.requestShapeChangeReason, 'tool_schema_changed');
-    assert.equal(second.toolSchemaChangeReason, 'tool_source_enabled');
-    assert.notEqual(second.prefixHash, first.prefixHash);
   });
 
   test('backend full mode keeps the complete tool surface and omits the connector', async () => {
@@ -9066,14 +8833,11 @@ describe('AiSdkBackend request-shape diagnostics', () => {
 
     assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
     assert.equal(modelToolNames(model).includes(TOOL_SEARCH_NAME), false);
-    // toolCount tracks the model-visible (active) tools — the two real tools.
-    // The invalid fallback lives in providerTools but is never advertised, so
-    // it is not counted (toolCount is the wire-visible subset).
     const usageEvent = events.find(
       (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
         event.type === 'token_usage',
     );
-    assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 2);
+    assert.equal(usageEvent?.promptSegments, undefined);
   });
 
   test('preserves the tool-call provider prefix across user turns', async () => {
@@ -9210,7 +8974,7 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
     );
   });
 
-  test('usage events include prompt segments and context budget diagnostics', async () => {
+  test('usage events keep context budget diagnostics without live prompt estimates', async () => {
     const model = completionModel();
     const events: SessionEvent[] = [];
     const backend = createTestAiSdkBackend({
@@ -9285,30 +9049,15 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
     assert.ok(usage);
     assert.equal(usage.contextBudget?.policyName, 'test-budget');
     assert.equal(usage.contextBudget?.droppedTurns, 0);
-    assert.equal(
-      usage.promptSegments?.some((segment) => segment.kind === 'prior_history'),
-      true,
-    );
-    assert.equal(
-      usage.promptSegments?.some((segment) => segment.kind === 'tool_schema'),
-      true,
-    );
-    assert.equal(
-      usage.promptSegments?.some((segment) => segment.kind === 'current_user'),
-      true,
-    );
-    assert.equal(
-      usage.promptSegments?.some((segment) => segment.kind === 'turn_tail'),
-      false,
-    );
+    assert.equal(usage.promptSegments, undefined);
   });
 });
 
 describe('AiSdkBackend RunTrace', () => {
   for (const protocol of ['openai-compatible', 'anthropic-compatible'] as const) {
     test(`records ${protocol} multi-step requests and reconciles complete attempt usage`, async () => {
-      const captures: ProviderRequestCaptureRecord[] = [];
-      const attempts: ProviderRequestAttemptRecord[] = [];
+      const captures: PreparedRequestArtifactInput[] = [];
+      const attempts: ModelCallAttempt[] = [];
       const durable = durableTurnHarness('turn-1', 'hi');
       let calls = 0;
       const usageFor = (step: number) => {
@@ -9407,32 +9156,31 @@ describe('AiSdkBackend RunTrace', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        recordProviderRequestCapture: async (capture) => {
+        persistPreparedRequestArtifact: async (capture) => {
           captures.push(capture);
           return { artifactId: `artifact-${captures.length}` };
         },
-        recordProviderRequestAttempt: (attempt) => {
+        recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
       });
 
-      const events = await drainDurably(backend.send(durable.input()), durable);
+      const events = await drainDurably(backend.send(durable.input({ runId: 'run-1' })), durable);
 
       assert.equal(captures.length, 2);
       assert.deepEqual(
         attempts.map(({ step, attempt, status }) => ({ step, attempt, status })),
         [
-          { step: 0, attempt: 1, status: 'completed' },
-          { step: 1, attempt: 1, status: 'completed' },
+          { step: 0, attempt: 0, status: 'completed' },
+          { step: 1, attempt: 0, status: 'completed' },
         ],
       );
-      assert.equal(findFirstChangedCacheableSegment(captures[1]!, captures[0]!)?.kind, 'message');
       const aggregate = events.find(
         (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
           event.type === 'token_usage',
       );
       assert.ok(aggregate);
-      const sum = (field: keyof ProviderRequestAttemptRecord) =>
+      const sum = (field: keyof ModelCallAttempt) =>
         attempts.reduce(
           (total, attempt) => total + ((attempt[field] as number | undefined) ?? 0),
           0,
@@ -9445,12 +9193,16 @@ describe('AiSdkBackend RunTrace', () => {
     });
   }
 
-  test('captures the prepared request before the provider call and records its physical attempt', async () => {
-    const captures: ProviderRequestCaptureRecord[] = [];
-    const attempts: ProviderRequestAttemptRecord[] = [];
+  test('observes the prepared request at dispatch and records its canonical attempt', async () => {
+    const captures: PreparedRequestArtifactInput[] = [];
+    const attempts: ModelCallAttempt[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
-        assert.equal(captures.length, 1, 'capture must be durable before provider dispatch');
+        assert.equal(
+          captures.length,
+          1,
+          'artifact persistence must start before provider dispatch',
+        );
         return {
           stream: simulateReadableStream({
             chunks: [
@@ -9489,28 +9241,32 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordProviderRequestCapture: async (capture) => {
+      persistPreparedRequestArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: `artifact-${captures.length}` };
       },
-      recordProviderRequestAttempt: async (attempt) => {
+      recordModelCallAttempt: async ({ attempt }) => {
         attempts.push(attempt);
       },
     });
 
     const events: SessionEvent[] = [];
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+    for await (const event of backend.send({
+      turnId: 'turn-1',
+      runId: 'run-1',
+      text: 'hi',
+      context: [],
+    })) {
       events.push(event);
     }
 
     assert.equal(captures.length, 1);
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.step, 0);
-    assert.equal(attempts[0]?.attempt, 1);
+    assert.equal(attempts[0]?.attempt, 0);
     assert.equal(attempts[0]?.status, 'completed');
     assert.equal(attempts[0]?.contextWindow, 200_000);
-    assert.equal(attempts[0]?.captureId, captures[0]?.captureId);
-    assert.equal(attempts[0]?.cacheMissInputSource, 'derived');
+    assert.equal(attempts[0]?.cacheMissInputTokens, 4);
     assert.equal(
       events.find((event) => event.type === 'token_usage')?.providerRequestTraceId,
       captures[0]?.traceId,
@@ -9619,7 +9375,7 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(stored?.type === 'token_usage' && 'contextRemaining' in stored, false);
   });
 
-  test('does not call the provider when prepared-request persistence fails', async () => {
+  test('continues the canonical call when private request persistence fails', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -9632,10 +9388,9 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordProviderRequestCapture: async () => {
+      persistPreparedRequestArtifact: async () => {
         throw new Error('capture unavailable');
       },
-      recordProviderRequestAttempt: () => {},
     });
 
     const events: SessionEvent[] = [];
@@ -9643,14 +9398,14 @@ describe('AiSdkBackend RunTrace', () => {
       events.push(event);
     }
 
-    assert.equal(model.doStreamCalls.length, 0);
+    assert.equal(model.doStreamCalls.length, 1);
     assert.equal(events.at(-1)?.type, 'complete');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
   });
 
   test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
-    const captures: ProviderRequestCaptureRecord[] = [];
-    const attempts: ProviderRequestAttemptRecord[] = [];
+    const captures: PreparedRequestArtifactInput[] = [];
+    const attempts: ModelCallAttempt[] = [];
     let calls = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
@@ -9694,25 +9449,25 @@ describe('AiSdkBackend RunTrace', () => {
       tools: [],
       newId: idGenerator(),
       now: monotonicClock(),
-      recordProviderRequestCapture: async (capture) => {
+      persistPreparedRequestArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: 'artifact-1' };
       },
-      recordProviderRequestAttempt: (attempt) => {
+      recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
       providerRetrySleep: async () => {},
     });
 
-    await drain(backend.send({ turnId: 'turn-1', text: 'hi', context: [] }));
+    await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(calls, 2);
     assert.equal(captures.length, 1);
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),
       [
-        { attempt: 1, status: 'failed' },
-        { attempt: 2, status: 'completed' },
+        { attempt: 0, status: 'failed' },
+        { attempt: 1, status: 'completed' },
       ],
     );
   });
@@ -15836,12 +15591,6 @@ function sortedModelToolNames(toolNames: readonly string[]): string[] {
     if (b === INVALID_TOOL_NAME) return -1;
     return a.localeCompare(b);
   });
-}
-
-function toolSchemaPromptSegment(
-  carrier: { promptSegments?: readonly { kind: string; toolCount?: number }[] } | undefined,
-): { toolCount?: number } | undefined {
-  return carrier?.promptSegments?.find((segment) => segment.kind === 'tool_schema');
 }
 
 function sha256(text: string): string {

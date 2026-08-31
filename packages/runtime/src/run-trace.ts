@@ -22,9 +22,6 @@ import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
 import type {
   CacheMissInputSource,
   ContextBudgetDiagnostic,
-  PrefixChangeReason,
-  PromptSegmentEstimate,
-  ToolSchemaChangeReason,
   ToolAvailabilityDiagnostic,
 } from '@maka/core/usage-stats/types';
 
@@ -159,21 +156,14 @@ export class RunTrace {
 
   modelStreamStarted(
     activeTools: readonly string[],
-    prefix?: {
-      systemPromptHash?: string;
-      prefixHash: string;
-      prefixChangeReason: PrefixChangeReason;
-      requestShapeHash?: string;
-      requestShapeChangeReason?: PrefixChangeReason;
-      toolSchemaChangeReason?: ToolSchemaChangeReason;
+    diagnostics?: {
       toolAvailability?: ToolAvailabilityDiagnostic;
-      promptSegments?: PromptSegmentEstimate[];
       contextBudget?: ContextBudgetDiagnostic;
     },
   ): void {
     this.emit('model', 'model_stream_started', 'Model stream started', {
       activeTools: [...activeTools],
-      ...(prefix !== undefined ? prefix : {}),
+      ...(diagnostics !== undefined ? diagnostics : {}),
     });
   }
 
@@ -218,13 +208,6 @@ export class RunTrace {
     outputTokens?: number;
     totalTokens?: number;
     contextBudget?: unknown;
-    promptSegments?: readonly unknown[];
-    systemPromptHash?: string;
-    prefixHash?: string;
-    prefixChangeReason?: PrefixChangeReason;
-    requestShapeHash?: string;
-    requestShapeChangeReason?: PrefixChangeReason;
-    toolSchemaChangeReason?: ToolSchemaChangeReason;
     toolAvailability?: ToolAvailabilityDiagnostic;
   }): void {
     this.emit('model', 'send_diagnostics_recorded', 'Send diagnostics recorded', {
@@ -235,28 +218,6 @@ export class RunTrace {
       ...(diagnostics.totalTokens !== undefined ? { totalTokens: diagnostics.totalTokens } : {}),
       ...(diagnostics.contextBudget !== undefined
         ? { contextBudget: diagnostics.contextBudget }
-        : {}),
-      ...(diagnostics.promptSegments !== undefined && diagnostics.promptSegments.length > 0
-        ? { promptSegments: diagnostics.promptSegments }
-        : {}),
-      // The FINAL request shape, not step 0's: a same-turn tool load changes it
-      // mid-send, and `model_stream_started` reports only what the first
-      // request carried.
-      ...(diagnostics.systemPromptHash !== undefined
-        ? { systemPromptHash: diagnostics.systemPromptHash }
-        : {}),
-      ...(diagnostics.prefixHash !== undefined ? { prefixHash: diagnostics.prefixHash } : {}),
-      ...(diagnostics.prefixChangeReason !== undefined
-        ? { prefixChangeReason: diagnostics.prefixChangeReason }
-        : {}),
-      ...(diagnostics.requestShapeHash !== undefined
-        ? { requestShapeHash: diagnostics.requestShapeHash }
-        : {}),
-      ...(diagnostics.requestShapeChangeReason !== undefined
-        ? { requestShapeChangeReason: diagnostics.requestShapeChangeReason }
-        : {}),
-      ...(diagnostics.toolSchemaChangeReason !== undefined
-        ? { toolSchemaChangeReason: diagnostics.toolSchemaChangeReason }
         : {}),
       ...(diagnostics.toolAvailability !== undefined
         ? { toolAvailability: diagnostics.toolAvailability }
