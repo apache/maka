@@ -28,6 +28,7 @@ import {
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
@@ -76,6 +77,7 @@ export interface WorkbarControllerCommands {
   ): void;
   openSideChatWithQuote(quote: QuoteRef): void;
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
+  respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
 }
 
@@ -655,8 +657,20 @@ export function useWorkbarController(
   );
 
   const commands = useMemo<WorkbarControllerCommands>(
-    () => ({ openTool, openSideChatWithQuote, respondToClientCapability, toggleRight }),
-    [openSideChatWithQuote, openTool, respondToClientCapability, toggleRight],
+    () => ({
+      openTool,
+      openSideChatWithQuote,
+      respondToClientCapability,
+      respondToUserForm: sideChat.respondToUserForm,
+      toggleRight,
+    }),
+    [
+      openSideChatWithQuote,
+      openTool,
+      respondToClientCapability,
+      sideChat.respondToUserForm,
+      toggleRight,
+    ],
   );
 
   const activeSideChatTabIds = useMemo(

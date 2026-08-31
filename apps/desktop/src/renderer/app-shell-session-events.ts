@@ -365,9 +365,7 @@ export function createAppShellSessionEventHandlers(options: {
         });
         break;
       case 'message_admission':
-        if (event.outcome === 'retracted') {
-          removeTransientMessage?.(sessionId, event.messageId);
-        }
+        if (event.outcome === 'retracted') removeTransientMessage?.(sessionId, event.messageId);
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
@@ -448,9 +446,8 @@ export function createAppShellSessionEventHandlers(options: {
       case 'complete': {
         onInteractionChanged?.(sessionId);
         setInteractionBySession((current) => clearInteractions(current, sessionId));
-        if (event.contextCompactionOutcome) {
+        if (event.contextCompactionOutcome)
           onContextCompactionOutcome?.(sessionId, event.turnId, event.contextCompactionOutcome);
-        }
         if (event.stopReason === 'end_turn' || event.stopReason === 'max_tokens') {
           const body = [...(before?.steps ?? [])].reverse().find((step) => step.text?.text)?.text?.text;
           notifyRunEnded?.({ kind: 'completed', sessionId, body });

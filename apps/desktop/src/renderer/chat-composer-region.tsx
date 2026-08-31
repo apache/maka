@@ -109,7 +109,6 @@ interface ChatComposerRegionProps
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
   respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
-  activeForm: ComponentProps<typeof FormInteractionPrompt>['request'] | undefined;
   respondToUserForm: ComponentProps<typeof FormInteractionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
@@ -189,7 +188,6 @@ export function ChatComposerRegion({
   respondToSandboxBoundary,
   respondToClientCapability,
   respondToUserQuestion,
-  activeForm,
   respondToUserForm,
   stop,
   boundaryUnreadableNotice,
@@ -204,6 +202,7 @@ export function ChatComposerRegion({
   const activeClientCapability =
     activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
+  const activeForm = activeInteraction?.type === 'form_request' ? activeInteraction : undefined;
   const activeModelChoice = composerRest.activeModel
     ? composerRest.modelChoices?.find(
         (choice) =>

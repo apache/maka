@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { it } from 'node:test';
-import { applyCompanionInteractionEvent } from '../../renderer/features/workbar/tools/side-chat/quote-companion-core.js';
+import { applyCompanionInteractionEvent } from '../../renderer/features/workbar/testing.js';
 
 it('keeps companion forms pending until the Host acknowledgement arrives', () => {
   let queues = applyCompanionInteractionEvent({}, 'fork-1', {
