@@ -20,22 +20,22 @@
 export {
   ConnectionSettingsServicesProvider,
   ConnectionSettingsServicesConsumer,
-} from './services-context';
+} from './services-context.js';
 export type {
   ApiKeyOnboardingBridge,
   ConnectionSettingsServices,
   ConnectionsBridge,
   DesktopConnectionOnboardingIdentity,
   RuntimeHostSettingsConnectionsBridge,
-} from './ports';
+} from './ports.js';
 export {
   categoryLabel,
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,
-} from './provider-panel-shared';
-export { getProviderSettingsCopy } from './settings-provider-copy';
-export type { ProviderSettingsCopy } from './settings-provider-copy';
+} from './provider-panel-shared.js';
+export { getProviderSettingsCopy } from './settings-provider-copy.js';
+export type { ProviderSettingsCopy } from './settings-provider-copy.js';
 export type {
   CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from './provider-panel-shared.js';
