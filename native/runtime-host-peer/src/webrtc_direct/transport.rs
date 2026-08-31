@@ -75,13 +75,16 @@ impl WebRtcTransportControl {
     ) -> Result<(), io::Error> {
         let mut incoming = self.incoming.clone();
         incoming.try_send((peer, connection)).map_err(|error| {
+            let full = error.is_full();
+            let (_, connection) = error.into_inner();
+            connection.close_in_background();
             io::Error::new(
-                if error.is_full() {
+                if full {
                     io::ErrorKind::WouldBlock
                 } else {
                     io::ErrorKind::BrokenPipe
                 },
-                if error.is_full() {
+                if full {
                     "WebRTC transport input is full"
                 } else {
                     "WebRTC transport stopped"

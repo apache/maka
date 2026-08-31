@@ -80,6 +80,15 @@ impl WebRtcConnection {
         }
         stream
     }
+
+    pub(crate) fn close_in_background(self) {
+        let peer_connection = Arc::clone(&self.peer_connection);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = peer_connection.close().await;
+            });
+        }
+    }
 }
 
 impl StreamMuxer for WebRtcConnection {

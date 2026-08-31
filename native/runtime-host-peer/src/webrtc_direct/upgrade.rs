@@ -103,6 +103,31 @@ pub enum UpgradeError {
     Cancelled,
 }
 
+struct PeerConnectionGuard(Option<Arc<dyn PeerConnection>>);
+
+impl PeerConnectionGuard {
+    fn new(peer_connection: Arc<dyn PeerConnection>) -> Self {
+        Self(Some(peer_connection))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for PeerConnectionGuard {
+    fn drop(&mut self) {
+        let Some(peer_connection) = self.0.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _ = peer_connection.close().await;
+            });
+        }
+    }
+}
+
 pub async fn upgrade_connection<S>(
     signaling: S,
     authenticated_peer: PeerId,
@@ -122,6 +147,7 @@ where
 
     let channels = EventChannels::new();
     let peer_connection = build_peer_connection(&options, channels.handler()).await?;
+    let mut peer_connection_guard = PeerConnectionGuard::new(Arc::clone(&peer_connection));
     let negotiation = negotiate(signaling, role, Arc::clone(&peer_connection), channels);
     tokio::pin!(negotiation);
     let deadline = tokio::time::sleep(options.deadline);
@@ -135,9 +161,13 @@ where
     };
 
     match result {
-        Ok(connection) => Ok((authenticated_peer, connection)),
+        Ok(connection) => {
+            peer_connection_guard.disarm();
+            Ok((authenticated_peer, connection))
+        }
         Err(error) => {
             let _ = peer_connection.close().await;
+            peer_connection_guard.disarm();
             Err(error)
         }
     }
