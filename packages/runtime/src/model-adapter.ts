@@ -929,7 +929,6 @@ interface SdkStreamResult {
 const NETWORK_ERROR_FINISH_REASON = 'network-error';
 const RAW_FINISH_REASON_ALIASES = new Map<string, ModelFinishReason>([
   ['network_error', NETWORK_ERROR_FINISH_REASON],
-  ['sensitive', 'content-filter'],
 ]);
 
 function chunkFinishReason(chunk: AiSdkStreamChunk): string | undefined {

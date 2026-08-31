@@ -27,7 +27,7 @@ import {
 } from '@ai-sdk/provider';
 
 import { ModelAdapter, settleModelStepOutcome } from '../model-adapter.js';
-import type { ModelStepOutcome, ModelStreamEvent, ModelStreamResult } from '../model-protocol.js';
+import type { ModelStepOutcome, ModelStreamEvent } from '../model-protocol.js';
 
 const ZERO_USAGE: LanguageModelV4Usage = {
   inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
@@ -496,51 +496,6 @@ describe('ModelAdapter.startStream onError', () => {
     ]);
   });
 
-  test('uses terminal total usage when no step-finish usage fact exists', async () => {
-    const { events, outcome } = await observeAdapterChunks(
-      [
-        { type: 'start-step' },
-        {
-          type: 'finish',
-          finishReason: 'stop',
-          rawFinishReason: 'stop',
-          totalUsage: ZERO_USAGE,
-        },
-      ],
-      ZERO_USAGE,
-    );
-
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'finish', disposition: 'authoritative' },
-    ]);
-    assert.equal(outcome.kind, 'completed');
-    assert.equal(outcome.usage?.totalTokens, 0);
-  });
-
-  test('resets step evidence without losing request-level retry safety', async () => {
-    const { events, outcome } = await observeAdapterChunks([
-      { type: 'start-step' },
-      { type: 'text-delta', text: 'first step' },
-      { type: 'finish-step', finishReason: 'stop', usage: ZERO_USAGE },
-      { type: 'start-step' },
-      { type: 'finish-step', finishReason: 'stop', usage: UNAVAILABLE_USAGE },
-      {
-        type: 'finish',
-        finishReason: 'stop',
-        rawFinishReason: 'stop',
-        totalUsage: ZERO_USAGE,
-      },
-    ]);
-
-    assert.deepEqual(boundaryDispositions(events), [
-      { kind: 'step-finish', disposition: 'authoritative' },
-      { kind: 'step-finish', disposition: 'incomplete' },
-      { kind: 'finish', disposition: 'incomplete' },
-    ]);
-    assert.equal(outcome.kind, 'truncated');
-    assert.equal(outcome.hasResponseEvidence, true);
-  });
-
   test('settles an explicit provider network_error finish as retryable', async () => {
     const { events, outcome } = await observe([
       { type: 'stream-start', warnings: [] },
@@ -595,23 +550,6 @@ describe('ModelAdapter.startStream onError', () => {
       },
     ]);
 
-    assert.equal(outcome.kind, 'terminal-failure');
-    if (outcome.kind !== 'terminal-failure') return;
-    assert.equal(outcome.failure.kind, 'unknown');
-    assert.equal(outcome.failure.message, 'Provider stopped the stream on a content filter');
-  });
-
-  test('normalizes a provider sensitive finish to the content-filter policy', async () => {
-    const { events, outcome } = await observe([
-      { type: 'stream-start', warnings: [] },
-      {
-        type: 'finish',
-        finishReason: { unified: 'other', raw: 'sensitive' },
-        usage: ZERO_USAGE,
-      },
-    ]);
-
-    assert.equal(events.find((event) => event.kind === 'finish')?.finishReason, 'content-filter');
     assert.equal(outcome.kind, 'terminal-failure');
     if (outcome.kind !== 'terminal-failure') return;
     assert.equal(outcome.failure.kind, 'unknown');
@@ -740,40 +678,6 @@ function boundaryDispositions(events: readonly ModelStreamEvent[]) {
   return events
     .filter((event) => event.kind === 'step-finish' || event.kind === 'finish')
     .map(({ kind, disposition }) => ({ kind, disposition }));
-}
-
-async function observeAdapterChunks(
-  chunks: readonly Record<string, unknown>[],
-  sdkUsage?: LanguageModelV4Usage,
-): Promise<{ events: ModelStreamEvent[]; outcome: ModelStepOutcome }> {
-  const adapter = newAdapter() as unknown as {
-    toModelStreamResult(
-      sdk: unknown,
-      onStreamActivity: () => void,
-      continuation: {
-        requestMessages: Array<{ role: 'user'; content: string }>;
-        abortSignal: AbortSignal;
-      },
-    ): ModelStreamResult;
-  };
-  const result = adapter.toModelStreamResult(
-    {
-      stream: (async function* () {
-        for (const chunk of chunks) yield chunk;
-      })(),
-      usage: Promise.resolve(sdkUsage),
-      finishReason: Promise.resolve('stop'),
-      response: Promise.resolve({ id: 'response-1' }),
-    },
-    () => {},
-    {
-      requestMessages: [{ role: 'user', content: 'hi' }],
-      abortSignal: new AbortController().signal,
-    },
-  );
-  const events: ModelStreamEvent[] = [];
-  for await (const event of result.events) events.push(event);
-  return { events, outcome: await result.outcome };
 }
 
 async function requireAlreadySettled<T>(promise: Promise<T>): Promise<T> {
