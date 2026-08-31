@@ -60,6 +60,44 @@ test('serves the sealed snapshot without reading a single run', async () => {
   }
 });
 
+test('does not trust a pre-observation projection over its canonical attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    const oldProjection = latestContext('attempt-1', 10);
+    oldProjection.snapshot.schemaVersion = 1;
+    oldProjection.snapshot.composition = {
+      segments: [{ kind: 'messages', bytes: 999 }],
+      tools: [],
+    };
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200),
+      { durable: true, latestContext: oldProjection },
+    );
+
+    const reader = createSqliteAgentRunStore(root);
+    const warm = await readLatestContextDiagnostics(reader, 'session-1');
+    const cold = await readLatestContextDiagnostics(
+      {
+        listSessionRuns: (sessionId) => reader.listSessionRuns(sessionId),
+        readEvents: (sessionId, runId) => reader.readEvents(sessionId, runId),
+      },
+      'session-1',
+    );
+
+    assert.equal(warm.status, 'available');
+    assert.equal(cold.status, 'available');
+    if (warm.status !== 'available' || cold.status !== 'available') return;
+    assert.equal(warm.composition, undefined);
+    assert.equal(cold.composition, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a failed call does not replace the last good snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
@@ -581,6 +619,53 @@ test('a damaged projection is repaired, not preserved forever', async () => {
   }
 });
 
+test('an old readable-order projection is upgraded after one cold rebuild', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200),
+      { durable: true, latestContext: latestContext('attempt-1', 10) },
+    );
+    await writer.repairEventProjection(
+      'session-1',
+      'latest_context',
+      {
+        type: 'latest_context',
+        id: 'latest-context-attempt-1',
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-run-1',
+        ts: 10,
+        data: {
+          ...latestContext('attempt-1', 10).snapshot,
+          schemaVersion: 1,
+          composition: { segments: [{ kind: 'tool_definitions', bytes: 999 }] },
+        },
+      },
+      { replaceEventId: 'latest-context-attempt-1' },
+    );
+
+    let scanned = 0;
+    const counted = countingStore(createSqliteAgentRunStore(root), () => {
+      scanned += 1;
+    });
+    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(first.status, 'available');
+    assert.ok(scanned > 0, 'the old schema requires one canonical rebuild');
+
+    scanned = 0;
+    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(second.status, 'available');
+    assert.equal(scanned, 0, 'the rebuilt current schema replaces the old row');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function countingStore(
   reader: ReturnType<typeof createSqliteAgentRunStore>,
   onScan: () => void,
@@ -606,7 +691,7 @@ function latestContext(attemptId: string, completedAt: number, modelId = 'model'
     attemptId,
     orderedAt: completedAt,
     snapshot: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       attemptId,
       providerId: 'anthropic',
       modelId,
@@ -689,9 +774,8 @@ function attemptEvent(
 }
 
 /**
- * The DURABLE metering record. It is the anchor now: identity and every
- * provider-reported number come from here, and the best-effort capture only
- * gets to describe the request this one names (#2323).
+ * The durable canonical record. Identity, provider-reported numbers, and the
+ * prepared-request observation all describe this one dispatched attempt.
  */
 function meteringEvent(
   runId: string,

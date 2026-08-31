@@ -88,15 +88,13 @@ export type ContextDiagnostics =
       inputTokens?: number;
       contextWindow?: number;
       /**
-       * What the latest request was made of, or absent when the durable
-       * metering record has no capture to match.
+       * What the latest request was made of, or absent when its canonical
+       * attempt has no prepared-request observation.
        *
-       * Absence is a state a reader must be able to see. Metering is durable
-       * because lost spend is unreconstructable; the capture carrying the
-       * segments is appended best-effort. Reporting the composition of an
-       * *older* request under a current heading would be the quiet lie this
-       * separation exists to prevent — so a mismatch reports nothing rather
-       * than the wrong request (#2323).
+       * Absence is a state a reader must be able to see. Reporting the
+       * composition of an *older* request under a current heading would be the
+       * quiet lie this separation exists to prevent, so readers never join an
+       * independent capture stream (#2323).
        */
       composition?: ContextDiagnosticsComposition;
       compaction?: ContextDiagnosticsCompaction;
@@ -123,17 +121,15 @@ type ContextRunStore = Pick<
  * One sealed row answers this. The `latest_context` projection is written by
  * the same storage transaction that commits a completed MAIN call's canonical
  * attempt, freezing that request's identity, its provider-reported numbers,
- * the folded composition of its own capture, and the compaction boundary its
+ * the folded composition of its own observation, and the compaction boundary its
  * prompt was built under — all at one moment, so no two fields here can
  * describe different requests. It is a projection, not an event: nothing
  * appends a record under that name.
  *
- * That sealing is the whole design. The facts come from appends with different
- * guarantees (durable metering, best-effort capture) and different owners (the
- * compaction boundary belongs to recovery), so reading "the newest of each
- * kind" and joining them produces a snapshot whose parts drift apart: a failed
- * call replaces the newest metering record, an unmatched capture hides a
- * matching one, and the boundary moves on its own.
+ * That sealing is the whole design. The request facts live on one canonical
+ * attempt; the compaction boundary remains recovery-owned. Reading "the newest
+ * of each kind" and joining independent histories would recreate the retired
+ * second authority and let the snapshot's parts drift apart.
  *
  * Warm reads are O(1) — one projection row. The ledger scan below is the cold
  * path, for a session written before this record existed.
@@ -143,6 +139,7 @@ export async function readLatestContextDiagnostics(
   sessionId: string,
 ): Promise<ContextDiagnostics> {
   try {
+    let replaceProjectionId: string | undefined;
     if (runStore.readEventProjection) {
       // Three states, three answers. `undefined` is an uninitialized
       // projection — nothing has been decided about this session, so the
@@ -158,8 +155,9 @@ export async function readLatestContextDiagnostics(
       if (projected === null) return { status: 'unavailable', reason: 'no_completed_request' };
       const snapshot = readLatestContextSnapshot(projected ?? undefined);
       if (snapshot) return availableFrom(snapshot);
+      if (projected) replaceProjectionId = projected.id;
     }
-    return await rebuildContextFromLedger(runStore, sessionId);
+    return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId);
   } catch {
     return { status: 'unavailable', reason: 'trace_unavailable' };
   }
@@ -168,8 +166,9 @@ export async function readLatestContextDiagnostics(
 /**
  * The cold path, and the compatibility path.
  *
- * A ledger written before sealed snapshots existed still has the two records
- * they were sealed from, so the reader assembles one — but only here, only
+ * A ledger written before sealed snapshots existed can still be reconstructed
+ * from its canonical attempts (or, for legacy sessions only, provider events),
+ * so the reader assembles one — but only here, only
  * once, and only when no sealed record is present at all. Nothing is repaired
  * into another owner's projection: the compaction boundary is read from the
  * events of this session's own runs, never from recovery's derived row.
@@ -177,6 +176,7 @@ export async function readLatestContextDiagnostics(
 async function rebuildContextFromLedger(
   runStore: ContextRunStore,
   sessionId: string,
+  replaceProjectionId?: string,
 ): Promise<ContextDiagnostics> {
   const runs = (await runStore.listSessionRuns(sessionId)).filter(isSessionInlineRun);
   let anchor: MeteringAnchor | undefined;
@@ -220,7 +220,7 @@ async function rebuildContextFromLedger(
   // authority for data written since canonical metering shipped.
   const resolved = anchor ?? (sawCanonicalRecord ? undefined : legacy);
   if (!resolved) {
-    await repairLatestContext(runStore, sessionId, null);
+    await repairLatestContext(runStore, sessionId, null, replaceProjectionId);
     return { status: 'unavailable', reason: 'no_completed_request' };
   }
   const boundary = latestCheckpointBefore(checkpoints, resolved);
@@ -241,7 +241,7 @@ async function rebuildContextFromLedger(
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
   // and a later cold read can retry the derived write.
-  await repairLatestContext(runStore, sessionId, snapshot);
+  await repairLatestContext(runStore, sessionId, snapshot, replaceProjectionId);
   return availableFrom(snapshot);
 }
 
@@ -256,6 +256,7 @@ async function repairLatestContext(
   runStore: ContextRunStore,
   sessionId: string,
   snapshot: LatestContextSnapshot | null,
+  replaceProjectionId?: string,
 ): Promise<void> {
   const repair = runStore.repairEventProjection;
   if (!repair) return;
@@ -275,6 +276,7 @@ async function repairLatestContext(
             data: snapshot as unknown as Record<string, unknown>,
           } as AgentRunEvent)
         : null,
+      replaceProjectionId ? { replaceEventId: replaceProjectionId } : undefined,
     )
     .catch(() => {});
 }
