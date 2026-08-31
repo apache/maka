@@ -25,7 +25,6 @@
 
 <p align="center">
   <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/Desktop-Nightly-4C8DFF?style=flat" alt="Desktop Nightly" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
@@ -44,13 +43,22 @@
   machine, through one Runtime Host.
 </p>
 
+<p align="center">
+  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/Download-Desktop%20Nightly-4C8DFF?style=for-the-badge" alt="Download Desktop Nightly" /></a>
+</p>
+
+<p align="center">
+  Daily builds from <code>main</code> for developers and testers.<br/>
+  Not an ASF release. Not intended for production use.
+</p>
+
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
 
 > [!IMPORTANT]
-> Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
+> Maka is under active development. Desktop Nightly is an early developer build; data formats, CLI commands, and experimental capabilities may still change.
 
 ## Why Maka
 

@@ -25,7 +25,6 @@
 
 <p align="center">
   <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/Desktop-Nightly-4C8DFF?style=flat" alt="Desktop Nightly" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
@@ -42,13 +41,22 @@
   Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
 </p>
 
+<p align="center">
+  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-Desktop%20Nightly-4C8DFF?style=for-the-badge" alt="下载 Desktop Nightly" /></a>
+</p>
+
+<p align="center">
+  每天从 <code>main</code> 构建，面向开发者和测试者。<br/>
+  不是 ASF release，不适合生产使用。
+</p>
+
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
 
 > [!IMPORTANT]
-> Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
+> Maka 仍在活跃开发中。Desktop Nightly 是面向开发者的早期构筑，数据格式、CLI 和实验能力仍可能变化。
 
 ## 为什么是 Maka
 
