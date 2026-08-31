@@ -592,19 +592,22 @@ test('cancels a recovered join while its authority is reconnecting', async () =>
     peer: authorityPeer,
   });
   const memberRoot = join(root, 'member');
+  let now = Date.now();
   let member = await openPeerMeshNode({
     dataRoot: memberRoot,
     peer: memberPeer,
+    now: () => now,
   });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
-    const invitation = await authority.invite(mesh.roster.roster.meshId);
+    const invitation = await authority.invite(mesh.roster.roster.meshId, { ttlMs: 1_000 });
     authorityPeer.failNextResponse();
     await assert.rejects(member.join(invitation));
     await member.close();
 
-    member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+    now += 2_000;
+    member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer, now: () => now });
     const connection = memberPeer.stallNextConnection();
     const abort = new AbortController();
     const retry = member.join(invitation, abort.signal);

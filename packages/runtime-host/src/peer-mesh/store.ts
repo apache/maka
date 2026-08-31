@@ -421,14 +421,6 @@ async function readState(
       Object.hasOwn(record, 'meshes') &&
       Object.hasOwn(record, 'routes') &&
       Object.hasOwn(record, 'transitMeshId');
-    const versionFive =
-      record.version === 5 &&
-      Object.keys(record).length === 6 &&
-      Object.hasOwn(record, 'localPeerId') &&
-      Object.hasOwn(record, 'displayName') &&
-      Object.hasOwn(record, 'meshes') &&
-      Object.hasOwn(record, 'routes') &&
-      Object.hasOwn(record, 'transitMeshId');
     const versionSix =
       record.version === 6 &&
       Object.keys(record).length === 7 &&
@@ -438,14 +430,7 @@ async function readState(
       Object.hasOwn(record, 'pendingJoins') &&
       Object.hasOwn(record, 'routes') &&
       Object.hasOwn(record, 'transitMeshId');
-    if (
-      !versionOne &&
-      !versionTwo &&
-      !versionThree &&
-      !versionFour &&
-      !versionFive &&
-      !versionSix
-    ) {
+    if (!versionOne && !versionTwo && !versionThree && !versionFour && !versionSix) {
       throw new Error('Unsupported Peer Mesh state document');
     }
     if (boundedString(record.localPeerId, 'localPeerId', 256) !== expectedLocalPeerId) {
@@ -453,15 +438,14 @@ async function readState(
     }
     return decodePeerMeshStoredState(
       {
-        displayName: versionFour || versionFive || versionSix ? record.displayName : null,
+        displayName: versionFour || versionSix ? record.displayName : null,
         meshes: record.meshes,
         pendingJoins: versionSix ? record.pendingJoins : [],
         routes: versionOne ? [] : record.routes,
-        transitMeshId:
-          versionThree || versionFour || versionFive || versionSix ? record.transitMeshId : null,
+        transitMeshId: versionThree || versionFour || versionSix ? record.transitMeshId : null,
       },
       expectedLocalPeerId,
-      !versionFive && !versionSix,
+      !versionSix,
     );
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) {

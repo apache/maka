@@ -460,14 +460,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   join(invitationValue: PeerMeshInvitationV1, signal?: AbortSignal): Promise<PeerMeshStatus> {
     return this.#admitMesh(async () => {
       const invitation = validatePeerMeshInvitation(invitationValue);
-      if (invitation.expiresAt <= this.#now()) {
-        throw new Error('Peer Mesh invitation has expired');
-      }
       const current = this.#store.read();
       const existing = findMesh(current.meshes, invitation.meshId);
       const pending = current.pendingJoins.find(
         ({ invitation: candidate }) => candidate.meshId === invitation.meshId,
       );
+      if (!pending && invitation.expiresAt <= this.#now()) {
+        throw new Error('Peer Mesh invitation has expired');
+      }
       const localPeerId = this.#peer.identity().peerId;
       if (existing?.role === 'authority') {
         throw new Error('This peer already belongs to that Peer Mesh');

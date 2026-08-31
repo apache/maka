@@ -626,6 +626,7 @@ const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement
   localMesh: () => runtimeHostPeerMesh,
   localHost: localRuntimeHostRemoteAccess,
   runLocal: localRuntimeHostOperator.runPeerMesh,
+  liveHost: (profileId) => runtimeHostManager?.current(profileId)?.candidate?.client,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });

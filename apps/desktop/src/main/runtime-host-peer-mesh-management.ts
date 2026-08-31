@@ -18,9 +18,11 @@
  */
 
 import type { IpcMain } from 'electron';
+import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
 import type { PeerMeshNode } from '@maka/runtime-host/peer-mesh';
 import {
   decodePeerMeshInvitation,
+  type PeerMeshInvitationV1,
   type PeerMeshInvitationResult,
   type PeerMeshQueryResult,
 } from '@maka/runtime-host/protocol';
@@ -34,6 +36,7 @@ import type {
   createDesktopRuntimeHostSshTerminal,
 } from './runtime-host-ssh-terminal.js';
 import type { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
+import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type {
   DesktopRuntimeHostLocalManagementTarget,
   DesktopLocalRuntimeHostRemoteAccess,
@@ -48,7 +51,7 @@ interface ManagedPeerMeshCommand {
   readonly action: PeerMeshAction;
   readonly meshId?: string | null;
   readonly peerId?: string;
-  readonly invitation?: string;
+  readonly invitation?: PeerMeshInvitationV1;
   readonly displayName?: string | null;
   readonly signal?: AbortSignal;
 }
@@ -60,6 +63,9 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   readonly localMesh?: () => PeerMeshNode | undefined;
   readonly localHost: Pick<DesktopLocalRuntimeHostRemoteAccess, 'getSnapshot' | 'inspectManaged'>;
   readonly runLocal: LocalOperator['runPeerMesh'];
+  readonly liveHost: (
+    profileId: string,
+  ) => Pick<DesktopRuntimeHostClient, 'request'> | undefined;
   readonly profiles: Pick<DesktopRuntimeHostProfileService, 'resolveManagedService'>;
   readonly runRemote: SshTerminal['runPeerMeshManagement'];
 }): { close(): void } {
@@ -93,6 +99,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
           input.localMesh?.(),
           input.localHost,
           input.runLocal,
+          input.liveHost(LOCAL_RUNTIME_HOST_PROFILE.id),
           signal,
         );
       }
@@ -107,27 +114,56 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       );
     }
     if (target.kind === 'local_host') {
+      const live = input.liveHost(LOCAL_RUNTIME_HOST_PROFILE.id);
+      if (live) {
+        return executeManagedTarget(
+          input.localMesh?.(),
+          (command) => runLivePeerMeshCommand(live, command),
+          action,
+          meshId,
+          peerId,
+          invitation,
+          displayName,
+          signal,
+        );
+      }
       return input.localHost.inspectManaged(async (managed) => {
         const run: RunManagedPeerMeshCommand = async (command) => {
+          const { invitation, ...rest } = command;
           const response = await input.runLocal({
             operatorPath: managed.operatorPath,
             target: managedTarget(managed),
-            ...command,
+            ...rest,
+            ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
             signal: command.signal,
           });
           if (response.kind === 'error') throw new Error(response.error.message);
           return response.result;
         };
-        if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run, signal);
-        return run({
+        return executeManagedTarget(
+          input.localMesh?.(),
+          run,
           action,
-          ...(meshId !== undefined ? { meshId } : {}),
-          ...(peerId ? { peerId } : {}),
-          ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
-          ...(displayName !== undefined ? { displayName } : {}),
+          meshId,
+          peerId,
+          invitation,
+          displayName,
           signal,
-        });
+        );
       });
+    }
+    const live = input.liveHost(target.profileId);
+    if (live) {
+      return executeManagedTarget(
+        input.localMesh?.(),
+        (command) => runLivePeerMeshCommand(live, command),
+        action,
+        meshId,
+        peerId,
+        invitation,
+        displayName,
+        signal,
+      );
     }
     const managed = await input.profiles.resolveManagedService(target.profileId);
     if (
@@ -140,6 +176,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     }
     const transport = managed.profile.transport;
     const run: RunManagedPeerMeshCommand = async (command) => {
+      const { invitation, ...rest } = command;
       const response = await input.runRemote({
         destination: transport.destination,
         ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
@@ -150,7 +187,8 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
           rootId: managed.profile.rootId,
           deploymentId: managed.deployment.deploymentId,
         },
-        ...command,
+        ...rest,
+        ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
         signal: command.signal,
       });
       if (response.kind === 'error') throw new Error(response.error.message);
@@ -159,15 +197,16 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       }
       return response.result;
     };
-    if (action === 'reconcile') return reconcileManagedTarget(input.localMesh?.(), run, signal);
-    return run({
+    return executeManagedTarget(
+      input.localMesh?.(),
+      run,
       action,
-      ...(meshId !== undefined ? { meshId } : {}),
-      ...(peerId ? { peerId } : {}),
-      ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
-      ...(displayName !== undefined ? { displayName } : {}),
+      meshId,
+      peerId,
+      invitation,
+      displayName,
       signal,
-    });
+    );
   };
 
   const channel = 'runtime-host-peer-mesh:execute';
@@ -214,28 +253,106 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   };
 }
 
+async function executeManagedTarget(
+  desktopMesh: PeerMeshNode | undefined,
+  run: RunManagedPeerMeshCommand,
+  action: PeerMeshAction,
+  meshId: string | null | undefined,
+  peerId: string | undefined,
+  invitation: PeerMeshInvitationV1 | undefined,
+  displayName: string | null | undefined,
+  signal?: AbortSignal,
+): Promise<PeerMeshResult> {
+  if (action === 'reconcile') return reconcileManagedTarget(desktopMesh, run, signal);
+  return run({
+    action,
+    ...(meshId !== undefined ? { meshId } : {}),
+    ...(peerId ? { peerId } : {}),
+    ...(invitation ? { invitation } : {}),
+    ...(displayName !== undefined ? { displayName } : {}),
+    signal,
+  });
+}
+
+function runLivePeerMeshCommand(
+  client: Pick<DesktopRuntimeHostClient, 'request'>,
+  command: ManagedPeerMeshCommand,
+): Promise<PeerMeshResult> {
+  switch (command.action) {
+    case 'status':
+      return client.request('peer.mesh.query', {});
+    case 'create':
+      return client.request('peer.mesh.create', {});
+    case 'invite':
+      return client.request('peer.mesh.invite', {
+        meshId: requiredValue(command.meshId, 'Mesh ID'),
+      });
+    case 'join':
+      return client.request('peer.mesh.join', {
+        invitation: requiredValue(command.invitation, 'Peer Mesh invitation'),
+      });
+    case 'remove':
+      return client.request('peer.mesh.remove', {
+        meshId: requiredValue(command.meshId, 'Mesh ID'),
+        peerId: requiredValue(command.peerId, 'Peer ID'),
+      });
+    case 'leave':
+      return client.request('peer.mesh.leave', {
+        meshId: requiredValue(command.meshId, 'Mesh ID'),
+      });
+    case 'close':
+      return client.request('peer.mesh.close', {
+        meshId: requiredValue(command.meshId, 'Mesh ID'),
+      });
+    case 'reconcile':
+      return client.request('peer.mesh.reconcile', {});
+    case 'transit':
+      return client.request('peer.mesh.transit.set', { meshId: command.meshId ?? null });
+    case 'rename':
+      return client.request('peer.mesh.display-name.set', {
+        displayName: requiredDisplayName(command.displayName),
+      });
+    case 'rename-mesh':
+      return client.request('peer.mesh.rename', {
+        meshId: requiredValue(command.meshId, 'Mesh ID'),
+        displayName: requiredDisplayName(command.displayName),
+      });
+  }
+}
+
 async function reconcileDesktopTarget(
   desktopMesh: PeerMeshNode | undefined,
   localHost: Pick<DesktopLocalRuntimeHostRemoteAccess, 'getSnapshot' | 'inspectManaged'>,
   runLocal: LocalOperator['runPeerMesh'],
+  liveHost: Pick<DesktopRuntimeHostClient, 'request'> | undefined,
   signal?: AbortSignal,
 ): Promise<PeerMeshQueryResult> {
   if (!desktopMesh) throw new Error('This Desktop build does not include Direct peer support');
   const failures: unknown[] = [];
   const localSnapshot = await localHost.getSnapshot();
   if (localSnapshot.state === 'on') {
-    await localHost.inspectManaged(async (managed) => {
-      const run: RunManagedPeerMeshCommand = async (command) => {
-        const response = await runLocal({
-          operatorPath: managed.operatorPath,
-          target: managedTarget(managed),
-          ...command,
+    const reconciliation = liveHost
+      ? reconcileManagedTarget(
+          desktopMesh,
+          (command) => runLivePeerMeshCommand(liveHost, command),
+          signal,
+        )
+      : localHost.inspectManaged(async (managed) => {
+          const run: RunManagedPeerMeshCommand = async (command) => {
+            const { invitation, ...rest } = command;
+            const response = await runLocal({
+              operatorPath: managed.operatorPath,
+              target: managedTarget(managed),
+              ...rest,
+              ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
+              signal: command.signal,
+            });
+            if (response.kind === 'error') throw new Error(response.error.message);
+            return response.result;
+          };
+          return reconcileManagedTarget(desktopMesh, run, signal);
         });
-        if (response.kind === 'error') throw new Error(response.error.message);
-        return response.result;
-      };
-      await reconcileManagedTarget(desktopMesh, run, signal);
-    }).catch((error) => failures.push(error));
+    await reconciliation.catch((error) => failures.push(error));
   }
   await desktopMesh.reconcile(signal).catch((error) => failures.push(error));
   if (failures.length > 0) {
@@ -266,7 +383,7 @@ async function reconcileManagedTarget(
       authorityRouteNeedsRecovery(managedMembership)
     ) {
       const invitation = await desktopMesh.invite(desktopMembership.meshId);
-      await run({ action: 'join', invitation: JSON.stringify(invitation), signal });
+      await run({ action: 'join', invitation, signal });
       recovered = true;
       continue;
     }
