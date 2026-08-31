@@ -560,7 +560,9 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       const type = normalized.type as AgentRunEventType;
       const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
       const projection = projectsCheckpoint
-        ? readSqliteAgentRunProjection(this.#lease.database, sessionId, type)
+        ? readSqliteAgentRunProjection(this.#lease.database, sessionId, type, {
+            malformed: 'missing',
+          })
         : undefined;
       insertAgentRunEvent(this.#lease.database, normalized);
       if (projectsCheckpoint) {
@@ -601,6 +603,7 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       this.#lease.database,
       sessionId,
       LATEST_CONTEXT_PROJECTION_TYPE,
+      { malformed: 'missing' },
     );
     // Compared against the stored row's own completion, which the snapshot
     // carries — not against an ordering field the row does not have, which is
@@ -682,7 +685,9 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type, {
+        malformed: 'missing',
+      });
       if (
         current?.id !== options.replaceEventId &&
         shouldPreserveProjectionDuringRepair(current, event, type)
@@ -1071,6 +1076,7 @@ function readSqliteAgentRunProjection(
   // A projection key, not necessarily an event type: `latest_context` names a
   // derived row nothing ever appends under (#2323).
   type: string,
+  options: { malformed?: 'throw' | 'missing' } = {},
 ): AgentRunEvent | null | undefined {
   const row = db
     .prepare(`
@@ -1082,10 +1088,18 @@ function readSqliteAgentRunProjection(
   if (!row) return undefined;
   if (row.event_json === null) return null;
   if (typeof row.event_json !== 'string') {
+    if (options.malformed === 'missing') return undefined;
     throw new Error(`Invalid AgentRun event projection for ${type}`);
   }
-  const event = JSON.parse(row.event_json);
+  let event: unknown;
+  try {
+    event = JSON.parse(row.event_json);
+  } catch (error) {
+    if (options.malformed === 'missing') return undefined;
+    throw error;
+  }
   if (!isProjectedAgentRunEvent(event, sessionId, type)) {
+    if (options.malformed === 'missing') return undefined;
     throw new Error(`Invalid AgentRun event projection for ${type}`);
   }
   return event;

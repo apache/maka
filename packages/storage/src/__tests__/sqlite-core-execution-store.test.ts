@@ -140,6 +140,98 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('treats a malformed latest-context projection as disposable during canonical append', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent(
+        'session-1',
+        'run-1',
+        {
+          ...runEvent(),
+          id: 'model-call-1',
+          type: 'model_call_attempt_recorded',
+          data: { ...modelCallAttempt({ attemptId: 'attempt-1', completedAt: 2 }) },
+        },
+        {
+          latestContext: {
+            attemptId: 'attempt-1',
+            orderedAt: 2,
+            snapshot: {
+              schemaVersion: 2,
+              attemptId: 'attempt-1',
+              providerId: 'openai',
+              modelId: 'gpt-5',
+              completedAt: 2,
+            },
+          },
+        },
+      );
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare(`
+            UPDATE core_agent_run_projections
+            SET event_json = '{malformed'
+            WHERE session_id = 'session-1' AND event_type = 'latest_context'
+          `)
+          .run();
+      } finally {
+        database.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        await reopened.appendEvent(
+          'session-1',
+          'run-1',
+          {
+            ...runEvent(),
+            id: 'model-call-2',
+            type: 'model_call_attempt_recorded',
+            ts: 3,
+            data: {
+              ...modelCallAttempt({
+                logicalCallId: 'call-2',
+                attemptId: 'attempt-2',
+                traceId: 'trace-2',
+                completedAt: 3,
+                latencyMs: 2,
+              }),
+            },
+          },
+          {
+            latestContext: {
+              attemptId: 'attempt-2',
+              orderedAt: 3,
+              snapshot: {
+                schemaVersion: 2,
+                attemptId: 'attempt-2',
+                providerId: 'openai',
+                modelId: 'gpt-5',
+                completedAt: 3,
+              },
+            },
+          },
+        );
+
+        assert.ok(
+          (await reopened.readEvents('session-1', 'run-1')).some(
+            (event) => event.id === 'model-call-2',
+          ),
+        );
+        assert.equal(
+          (await reopened.readEventProjection('session-1', 'latest_context'))?.data?.attemptId,
+          'attempt-2',
+        );
+      } finally {
+        reopened.close?.();
+      }
+    });
+  });
+
   test('backfills the model-call high-water when upgrading existing AgentRun rows', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
