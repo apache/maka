@@ -48,7 +48,14 @@ export type SemanticPrefixSegmentRef = Pick<
   'kind' | 'index' | 'role' | 'label'
 >;
 
-type PrefixStore = Pick<AgentRunStore, 'listSessionRuns' | 'readEvents' | 'readRootTurnAdmission'>;
+type PrefixStore = Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+
+interface RootAdmissionReader {
+  readRootTurnAdmission?(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ runId: string; previousRootTurnId?: string | null } | undefined>;
+}
 
 export async function deriveAttemptSemanticPrefixContinuity(input: {
   current: ModelCallAttempt;
@@ -197,7 +204,10 @@ async function predecessorAttempt(input: {
     return undefined;
   }
 
-  const admission = await store.readRootTurnAdmission?.(current.sessionId, current.turnId);
+  const admission = await (store as PrefixStore & RootAdmissionReader).readRootTurnAdmission?.(
+    current.sessionId,
+    current.turnId,
+  );
   if (
     !admission ||
     admission.runId !== current.runId ||
