@@ -178,6 +178,10 @@ jobs:
           npm run check:tui-copy
           node --test scripts/check-tui-copy.test.mjs
 
+      - name: Test staged Biome hook
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/biome-staged-check.test.mjs
+
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
       # dependency is installed, matching the source-candidate workflow.
