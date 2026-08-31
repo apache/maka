@@ -23,69 +23,9 @@ import type {
   MakaBridge,
 } from '../../preload/bridge-contract.js';
 import type {
-  ApiKeyOnboardingBridge,
-  ConnectionsBridge,
-} from './provider-panel-shared.js';
-import type {
   OAuthAccountFlowBridge,
   OAuthAuthorizationFlowBridge,
 } from './use-oauth-login-flow.js';
-
-export type RuntimeHostSettingsConnectionsBridge = ConnectionsBridge & {
-  setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
-};
-
-export function runtimeHostConnectionsBridge(
-  host: DesktopRuntimeHostRef,
-): RuntimeHostSettingsConnectionsBridge {
-  return {
-    getSnapshot: () => window.maka.connections.getSnapshot(undefined, host),
-    setDefault: (connection) => window.maka.connections.setDefault(connection, host),
-    setDefaultModel: (input) => window.maka.connections.setDefaultModel(input, host),
-    create: (input) => window.maka.connections.create(input, host),
-    update: (connection, patch) => window.maka.connections.update(connection, patch, host),
-    delete: (connection) => window.maka.connections.delete(connection, host),
-    test: (connection, options) => window.maka.connections.test(connection, options, host),
-    fetchModels: (connection) => window.maka.connections.fetchModels(connection, host),
-    hasSecret: (connection) => window.maka.connections.hasSecret(connection, host),
-    getRequestHeaders: (connection) => window.maka.connections.getRequestHeaders(connection, host),
-    setRequestHeaders: (connection, headers) =>
-      window.maka.connections.setRequestHeaders(connection, headers, host),
-    subscribeEvents: (handler) =>
-      window.maka.connections.subscribeEvents(handler, host),
-  };
-}
-
-export function runtimeHostApiKeyOnboardingBridge(
-  host: DesktopRuntimeHostRef,
-): ApiKeyOnboardingBridge {
-  const targetKey = `${host.profileId}\u0000${host.hostId}`;
-  return {
-    saveUncertainty: {
-      isUncertain: () => uncertainApiKeyOnboardingTargets.has(targetKey),
-      markDispatched: () => {
-        const attemptId = nextApiKeyOnboardingAttemptId++;
-        uncertainApiKeyOnboardingTargets.set(targetKey, attemptId);
-        return attemptId;
-      },
-      settle: (attemptId) => {
-        if (uncertainApiKeyOnboardingTargets.get(targetKey) === attemptId) {
-          uncertainApiKeyOnboardingTargets.delete(targetKey);
-        }
-      },
-      restart: () => uncertainApiKeyOnboardingTargets.delete(targetKey),
-    },
-    verify: (input) => window.maka.connections.verifyOnboarding(input, host),
-    save: (input) => window.maka.connections.saveOnboarding(input, host),
-  };
-}
-
-// A Host replacement remounts the settings projection while a dispatched save
-// may still settle. Keep the safety gate target-scoped instead of form-scoped;
-// durable reconciliation across a Desktop process restart belongs to the
-// follow-up Host journal protocol.
-const uncertainApiKeyOnboardingTargets = new Map<string, number>();
-let nextApiKeyOnboardingAttemptId = 1;
 
 type RuntimeHostOAuthBridge = MakaBridge['openAiCodex'] | MakaBridge['xaiOAuth'];
 

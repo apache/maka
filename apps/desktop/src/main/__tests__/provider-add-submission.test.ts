@@ -29,7 +29,7 @@ import {
   type AddProviderDraft,
   type AddProviderField,
 } from '../../renderer/settings/provider-add-submission.js';
-import { runtimeHostApiKeyOnboardingBridge } from '../../renderer/settings/runtime-host-settings-bridge.js';
+import { createDesktopConnectionSettingsServices } from '../../renderer/platform/desktop/create-connection-settings-services.js';
 import {
   PROVIDER_REGISTRY,
   providerSupportsModelDiscovery,
@@ -277,21 +277,74 @@ test('a remounted setup becomes uncertain only after save dispatch', () => {
 });
 
 test('a late old save cannot clear the uncertainty lease for a newer attempt', () => {
-  const firstView = runtimeHostApiKeyOnboardingBridge({
+  const services = createDesktopConnectionSettingsServices(() => ({
+    // This test exercises only the in-process attempt lease. Transport calls
+    // remain behind the adapter and are intentionally unavailable here.
+    connections: {},
+  } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
+  const firstView = services.forHost({
     profileId: 'local',
     hostId: 'same-host',
-  });
+  }).apiKeyOnboarding;
   const oldAttempt = firstView.saveUncertainty.markDispatched();
   firstView.saveUncertainty.restart();
 
-  const replacementView = runtimeHostApiKeyOnboardingBridge({
+  const replacementView = services.forHost({
     profileId: 'local',
     hostId: 'same-host',
-  });
+  }).apiKeyOnboarding;
   const newAttempt = replacementView.saveUncertainty.markDispatched();
   firstView.saveUncertainty.settle(oldAttempt);
   assert.equal(replacementView.saveUncertainty.isUncertain(), true);
 
   replacementView.saveUncertainty.settle(newAttempt);
   assert.equal(firstView.saveUncertainty.isUncertain(), false);
+});
+
+test('save uncertainty is isolated between Runtime Host targets', () => {
+  const services = createDesktopConnectionSettingsServices(() => ({
+    connections: {},
+  } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
+  const firstHost = services.forHost({ profileId: 'local', hostId: 'host-a' }).apiKeyOnboarding;
+  const secondHost = services.forHost({ profileId: 'local', hostId: 'host-b' }).apiKeyOnboarding;
+
+  firstHost.saveUncertainty.markDispatched();
+
+  assert.equal(firstHost.saveUncertainty.isUncertain(), true);
+  assert.equal(secondHost.saveUncertainty.isUncertain(), false);
+});
+
+test('onboarding transport forwards the selected Runtime Host target', async () => {
+  const calls: unknown[] = [];
+  const services = createDesktopConnectionSettingsServices(() => ({
+    connections: {
+      verifyOnboarding: async (_input: unknown, host: unknown) => {
+        calls.push(['verify', host]);
+        return { kind: 'rejected', reason: 'provider_unsupported' } as const;
+      },
+      saveOnboarding: async (_input: unknown, host: unknown) => {
+        calls.push(['save', host]);
+        return { kind: 'rejected', reason: 'provider_unsupported' } as const;
+      },
+    },
+  } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
+  const host = { profileId: 'remote', hostId: 'host-remote' };
+  const onboarding = services.forHost(host).apiKeyOnboarding;
+
+  await onboarding.verify({
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+  });
+  await onboarding.save({
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+    enabledModelIds: ['gpt-5'],
+  });
+
+  assert.deepEqual(calls, [
+    ['verify', host],
+    ['save', host],
+  ]);
 });

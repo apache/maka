@@ -40,11 +40,11 @@ import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
 import {
+  getProviderSettingsCopy,
   type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
   type DesktopConnectionOnboardingIdentity,
-} from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+} from '../features/connection-settings';
 
 type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 

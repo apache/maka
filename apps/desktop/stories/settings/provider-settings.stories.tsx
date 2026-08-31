@@ -35,7 +35,7 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
-import type { ApiKeyOnboardingBridge } from '../../src/renderer/settings/provider-panel-shared';
+import type { ApiKeyOnboardingBridge } from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 

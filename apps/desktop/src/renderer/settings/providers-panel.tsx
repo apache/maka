@@ -56,18 +56,18 @@ import { SettingsRouteHeader } from './settings-route-header';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
   type DesktopConnectionOnboardingIdentity,
-} from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+} from '../features/connection-settings';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
 } from './runtime-host-settings-target.js';
 
-export type { ConnectionsBridge } from './provider-panel-shared';
+export type { ConnectionsBridge } from '../features/connection-settings';
 
 /**
  * Where the panel is. Four levels, one container, one back affordance:

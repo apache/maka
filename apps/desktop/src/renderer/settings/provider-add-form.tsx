@@ -40,12 +40,12 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
   type DesktopConnectionOnboardingIdentity,
-} from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+} from '../features/connection-settings';
 import {
   newRequestHeaders,
   parseRequestBodyOverlay,
