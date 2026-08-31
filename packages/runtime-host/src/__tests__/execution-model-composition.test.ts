@@ -1810,11 +1810,27 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
     assert.equal(attempts.length, capturedRequestCount);
     assert.ok(attempts.every((attempt) => attempt.requestObservation));
+    const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
+      { sessionId: session.id },
+      connectionContext,
+    );
+    assert.equal(contextDiagnostics.ok, true);
+    if (contextDiagnostics.ok) {
+      assert.equal(contextDiagnostics.result.status, 'available');
+      if (contextDiagnostics.result.status === 'available') {
+        assert.ok(
+          contextDiagnostics.result.composition?.segments.some(
+            (segment) => segment.kind === 'messages',
+          ),
+        );
+      }
+    }
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
-    const captureArtifacts = artifactPage.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
+    const captureArtifacts = await waitForCaptureArtifacts(
+      artifacts,
+      session.id,
+      capturedRequestCount,
     );
     assert.equal(captureArtifacts.length, capturedRequestCount);
     let summaryCaptureFound = false;
@@ -3646,6 +3662,22 @@ async function waitForCanonicalAttempts(
       unreadableRecords: page.unreadableRecords,
     })}`,
   );
+}
+
+async function waitForCaptureArtifacts(
+  artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>,
+  sessionId: string,
+  expectedRequests: number,
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const page = await artifacts.listPage(sessionId, { offset: 0, limit: 100 });
+    const captures = page.records.filter(
+      (artifact) => artifact.source === 'provider_request_capture',
+    );
+    if (captures.length >= expectedRequests) return captures;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Hosted request artifacts did not reach ${expectedRequests}`);
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(

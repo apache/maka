@@ -113,8 +113,8 @@ describe('foldPromptComposition', () => {
   });
 });
 
-describe('a real capture survives the whole chain into one fold', () => {
-  test('capture -> JSON -> decode -> fold keeps the same breakdown', () => {
+describe('a real observation survives the whole chain into one fold', () => {
+  test('prepare -> canonical segments -> fold keeps the same breakdown', () => {
     // Every other test here writes its own segments, so a field renamed on one
     // side and not the other would pass all of them; and the decode side reads
     // `label` and `bytes` off an untyped record, so a hand-written fixture

@@ -184,6 +184,91 @@ test('a real send seals its observation into SQLite and reconstructs it after re
   }
 });
 
+test('an artifact captured before abort does not create a canonical sent attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-aborted-request-chain-'));
+  try {
+    const sessionStore = createSessionStore(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const backends = new BackendRegistry();
+    let ids = 0;
+    const newId = () => `abort-chain-${++ids}`;
+    let providerCalls = 0;
+    let artifactWrites = 0;
+
+    backends.register('ai-sdk', (ctx) => {
+      let backend!: ReturnType<typeof createTestAiSdkBackend>;
+      backend = createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: async () => {},
+        connection: {
+          slug: 'mock-main',
+          providerType: 'anthropic',
+          defaultModel: 'mock-model-id',
+          models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+        },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () =>
+          new MockLanguageModelV4({
+            doStream: async () => {
+              providerCalls += 1;
+              return { stream: simulateReadableStream({ chunks: [] }) };
+            },
+          }),
+        tools: [],
+        persistPreparedRequestArtifact: async () => {
+          artifactWrites += 1;
+          void backend.stop('user_stop');
+          return { artifactId: 'abandoned-artifact' };
+        },
+        ...(ctx.recordModelCallAttempt
+          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+          : {}),
+        newId,
+        now: () => 1_000 + ids,
+      });
+      return backend;
+    });
+
+    const manager = new SessionManager({
+      store: sessionStore,
+      runStore,
+      runtimeEventStore,
+      backends,
+      newId,
+      now: () => 1_000 + ids,
+    });
+    const session = await manager.createSession({
+      cwd: root,
+      llmConnectionSlug: 'mock-main',
+      permissionMode: 'bypass',
+    });
+    for await (const _event of manager.sendMessage(session.id, {
+      turnId: 'turn-aborted-before-dispatch',
+      text: 'abort after preparing the request',
+    })) {
+      // Drain the aborted turn through the real AgentRun store.
+    }
+
+    const runs = await runStore.listSessionRuns(session.id);
+    const events = (
+      await Promise.all(runs.map((run) => runStore.readEvents(session.id, run.runId)))
+    ).flat();
+    assert.equal(artifactWrites, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(events.filter((event) => event.type === 'model_call_attempt_recorded').length, 0);
+    assert.deepEqual(await readLatestContextDiagnostics(runStore, session.id), {
+      status: 'unavailable',
+      reason: 'no_completed_request',
+    });
+    await manager.stopSession(session.id, { source: 'stop_button' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function answeringModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
     doStream: async () => ({

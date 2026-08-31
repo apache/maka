@@ -443,8 +443,9 @@ describe('provider request tracker', () => {
     );
   });
 
-  test('redacts native compaction state from provider request captures', async () => {
-    const captures: Array<{ serializedRequest: string }> = [];
+  test('derives the artifact and canonical opaque observation from one redacted request', async () => {
+    const captures: telemetry.PreparedRequestArtifactInput[] = [];
+    const attempts: ModelCallAttempt[] = [];
     const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'compaction-trace',
       turnId: 'turn-compaction',
@@ -454,6 +455,7 @@ describe('provider request tracker', () => {
         captures.push(capture);
         return { artifactId: 'compaction-artifact' };
       },
+      accounting: canonicalAccounting(attempts),
     });
     const params = {
       image: new URL('https://example.com/provider-image.png'),
@@ -501,7 +503,11 @@ describe('provider request tracker', () => {
     });
 
     assert.equal(captures.length, 1);
+    assert.equal(attempts.length, 1);
+    assert.deepEqual(attempts[0]?.requestObservation, captures[0]?.observation);
+    assert.equal(attempts[0]?.requestObservation?.segments[0]?.comparison, 'opaque');
     assert.doesNotMatch(captures[0]!.serializedRequest, /cmp_secret|OPAQUE_ENCRYPTED_STATE/);
+    assert.doesNotMatch(JSON.stringify(attempts[0]), /cmp_secret|OPAQUE_ENCRYPTED_STATE/);
     assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), {
       image: 'https://example.com/provider-image.png',
       prompt: [
@@ -646,16 +652,12 @@ describe('provider request tracker', () => {
         return { finishReason: 'stop' };
       },
     });
-    const outcome = await Promise.race([
-      tracked.then(() => 'completed' as const),
-      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 25)),
-    ]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(providerCalls, 1, 'provider dispatch does not wait for artifact persistence');
+    assert.equal(recorded.length, 1, 'canonical accounting does not wait for the artifact either');
     releaseArtifact({ artifactId: 'artifact-late' });
     await tracked;
 
-    assert.equal(outcome, 'completed');
-    assert.equal(providerCalls, 1);
-    assert.equal(recorded.length, 1);
     assert.equal(recorded[0]?.captureArtifactId, undefined);
     assert.ok(recorded[0]?.requestObservation);
   });
