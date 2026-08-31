@@ -157,6 +157,22 @@ test('passes the Runtime request-prefix verdict through without recomputing it',
   assert.equal(overview.requestPrefix, requestPrefix);
 });
 
+test('does not create an empty overview for a request without a predecessor', () => {
+  const overview = deriveInspectorOverviewModel({
+    status: 'available',
+    providerId: 'anthropic',
+    modelId: 'claude',
+    completedAt: 10,
+    requestPrefix: {
+      status: 'no_predecessor',
+      previousSegmentCount: 0,
+      preservedSegmentCount: 0,
+    },
+  });
+
+  assert.equal(overview.requestPrefix, undefined);
+});
+
 test('derives per-turn cost only from priced model-call step totals', () => {
   const cases: readonly {
     name: string;

@@ -120,6 +120,10 @@ function createTraceHarness(
       sessionId: string,
       readIndex: number,
     ) => Promise<Result<WorkbarSessionUsageSummary>>;
+    context?: (
+      sessionId: string,
+      readIndex: number,
+    ) => ReturnType<WorkbarServices['inspector']['context']>;
   } = {},
 ): TraceHarness {
   const handlers = new Set<(event: SessionEvent) => void>();
@@ -168,6 +172,7 @@ function createTraceHarness(
       // TRACE is re-read, and an enrichment read must not move them.
       context: async (sessionId: string) => {
         harness.contextReads.push(sessionId);
+        if (options.context) return options.context(sessionId, harness.contextReads.length);
         return {
           ok: true as const,
           data: {
@@ -310,6 +315,48 @@ describe('useSessionTrace', () => {
     await flushRefresh();
 
     assert.equal(harness.reads.length, 2, 'a closing burst is one re-read, not three');
+  });
+
+  it('does not keep an earlier request-prefix verdict while its refresh fails', async () => {
+    const { root } = installReactRenderer();
+    const harness = createTraceHarness({
+      context: async (_sessionId, readIndex) => {
+        if (readIndex > 1) throw new Error('context unavailable');
+        return {
+          ok: true,
+          data: {
+            status: 'available',
+            providerId: 'anthropic',
+            modelId: 'model',
+            completedAt: 1,
+            requestPrefix: {
+              status: 'preserved',
+              previousSegmentCount: 1,
+              preservedSegmentCount: 1,
+            },
+          },
+        };
+      },
+    });
+    let snapshot: ReturnType<typeof useSessionTrace> | undefined;
+    await act(async () => {
+      root.render(
+        createElement(Probe, {
+          services: harness.services,
+          sessionId: 'session-1',
+          active: true,
+          onHookSnapshot: (value) => {
+            snapshot = value;
+          },
+        }),
+      );
+    });
+    assert.equal(snapshot?.context?.status, 'available');
+
+    await act(async () => harness.emit(event('complete')));
+    await flushRefresh();
+
+    assert.equal(snapshot?.context, undefined);
   });
 
   it('refreshes Session usage only from the Usage authority signal', async () => {

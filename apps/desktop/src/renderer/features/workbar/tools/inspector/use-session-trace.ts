@@ -255,8 +255,11 @@ export function useSessionTrace(
     }, [inspector]);
 
   const readContext = useCallback((targetSessionId: string) => {
-      const contextRevision = ++contextRevisionRef.current;
-      // Enrichment, and read as such: the context snapshot has its own owner
+    const contextRevision = ++contextRevisionRef.current;
+    setState((current) =>
+      current.sessionId === targetSessionId ? { ...current, context: undefined } : current,
+    );
+    // Enrichment, and read as such: the context snapshot has its own owner
       // and its own failure modes, so it lands when it lands and its absence
       // costs the composition block, never the trace.
       void inspector.context(targetSessionId).then(
@@ -269,9 +272,8 @@ export function useSessionTrace(
           );
         },
         () => {
-          // A refresh that could not reach the snapshot leaves the last one
-          // standing: it is still the newest answer anyone has, and blanking it
-          // would report "no composition" for a read that simply failed.
+          // The old snapshot was cleared when this read began. Keeping it would
+          // present the previous request's verdict as the current request's.
         },
       );
     }, [inspector]);

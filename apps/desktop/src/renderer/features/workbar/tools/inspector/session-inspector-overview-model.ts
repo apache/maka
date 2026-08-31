@@ -188,7 +188,9 @@ export function deriveInspectorOverviewModel(
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
-    ...(diagnostics?.status === 'available' && diagnostics.requestPrefix
+    ...(diagnostics?.status === 'available' &&
+    diagnostics.requestPrefix &&
+    diagnostics.requestPrefix.status !== 'no_predecessor'
       ? { requestPrefix: diagnostics.requestPrefix }
       : {}),
   };
