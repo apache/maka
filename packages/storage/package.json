@@ -17,6 +17,7 @@
     "./deep-research-store": "./dist/deep-research-store.js",
     "./encrypted-file-managed-secret-store": "./dist/encrypted-file-managed-secret-store.js",
     "./execution-stores": "./dist/execution-stores.js",
+    "./execution-stores-workspace-authority-internal": "./dist/execution-stores-workspace-authority-internal.js",
     "./external-sessions": "./dist/external-sessions.js",
     "./file-lifetime-owner": "./dist/file-lifetime-owner.js",
     "./file-update-lock": "./dist/file-update-lock.js",

@@ -93,6 +93,7 @@ import {
 import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
 import type { SubagentExecutionRef } from './subagent-execution.js';
+import { transformManagedMutation } from './managed-mutation-transform.js';
 import {
   SandboxCommandError,
   sandboxErrorMetadata,
@@ -405,6 +406,13 @@ interface RuntimeManagedMutationOperationValue<T> {
     readonly isError: boolean;
     readonly durationMs: number;
   };
+  readonly mutationResult?: RuntimeManagedMutationResultProof;
+}
+
+export interface RuntimeManagedMutationResultProof {
+  readonly path: string;
+  readonly content: string;
+  readonly changed: boolean;
 }
 
 /**
@@ -416,6 +424,14 @@ export interface RuntimeManagedMutationOperationProof {
   readonly content: ToolResultContent;
   readonly isError: boolean;
   readonly durationMs: number;
+  readonly mutationResult?: RuntimeManagedMutationResultProof;
+  /** Exact immutable provider outcome issued by Runtime for atomic owner commit. */
+  readonly durableOutcome: RuntimeEvent;
+  /** Exact no-effect terminal fact, present only when Runtime can prove it. */
+  readonly terminalOutcome?: Readonly<{
+    kind: 'no_workspace_change' | 'operation_failed_no_effect';
+    durableOutcome: RuntimeEvent;
+  }>;
 }
 
 export type RuntimeManagedMutationSettlement =
@@ -425,14 +441,14 @@ export type RuntimeManagedMutationSettlement =
     }
   | {
       readonly kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
-      /** Exact value returned to the provider and canonicalized for durable replay. */
-      readonly providerResult: unknown;
       readonly durableOutcome: RuntimeEvent;
     }
   | { readonly kind: 'unsettled'; readonly error: unknown };
 
 export interface RuntimeManagedMutationAdmission {
   readonly durableDispatch: Readonly<RuntimeEventManagedWorkspaceMutationV2>;
+  /** Immutable accepted-tree input. It grants no permission to rewrite tool arguments. */
+  readonly immutableBase?: Readonly<{ content: string | null }>;
   execute(
     operation: () => Promise<RuntimeManagedMutationOperationProof>,
   ): Promise<RuntimeManagedMutationSettlement>;
@@ -443,6 +459,12 @@ export interface RuntimeManagedMutationAdmission {
 interface DurableToolAttempt {
   operationId: string;
   responseEventId: string;
+  prepareOutcome(
+    result: unknown,
+    isError: boolean,
+    durationMs?: number,
+    terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect',
+  ): RuntimeEvent;
   commitOutcome(
     result: unknown,
     isError: boolean,
@@ -453,6 +475,7 @@ interface DurableToolAttempt {
     result: ToolResultContent,
     isError: boolean,
     durationMs: number,
+    terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect',
   ): { id: string; operationId: string; ts: number };
 }
 
@@ -1362,7 +1385,6 @@ export class ToolRuntime {
       if (
         (tool.name !== 'Write' && tool.name !== 'Edit') ||
         tool.recoveryMode !== 'reconcile' ||
-        !tool.managedMutationTransform ||
         !dispatchOperationId ||
         !this.input.runtimeCommitSink ||
         !this.input.admitManagedMutation
@@ -1379,6 +1401,17 @@ export class ToolRuntime {
           persistedArgs: structuredClone(persistedArgs),
           abortSignal: ctx.abortSignal,
         });
+        const immutableBaseContent = managedMutationAdmission.immutableBase?.content;
+        if (
+          managedMutationAdmission.immutableBase &&
+          immutableBaseContent !== null &&
+          typeof immutableBaseContent !== 'string'
+        ) {
+          throw new Error('Managed workspace mutation immutable base is invalid');
+        }
+        if (!managedMutationAdmission.immutableBase && !tool.managedMutationTransform) {
+          throw new Error('Managed workspace mutation has no immutable transform input');
+        }
       } catch (error) {
         const reason = `Managed workspace mutation admission failed: ${formatSyntheticToolErrorText(error)}`;
         await refuseBeforeDispatch(reason);
@@ -1530,12 +1563,36 @@ export class ToolRuntime {
                 queue,
               ),
           });
-        const invokeManagedTransform = () =>
-          tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (
           immutableSnapshot = false,
         ): Promise<RuntimeManagedMutationOperationValue<unknown>> => {
-          const rawResult = await (immutableSnapshot ? invokeManagedTransform() : invokeTool());
+          let mutationResult: RuntimeManagedMutationResultProof | undefined;
+          let rawResult: unknown;
+          if (immutableSnapshot && managedMutationAdmission?.immutableBase) {
+            try {
+              if (tool.name !== 'Write' && tool.name !== 'Edit') {
+                throw new Error('Managed mutation transform is unavailable for this tool');
+              }
+              const transformed = transformManagedMutation({
+                toolName: tool.name,
+                canonicalPath: managedMutationAdmission.durableDispatch.expectedPath,
+                baseContent: managedMutationAdmission.immutableBase.content,
+                args: structuredClone(executionArgs),
+              });
+              rawResult = transformed.providerResult;
+              mutationResult = Object.freeze({
+                path: managedMutationAdmission.durableDispatch.expectedPath,
+                content: transformed.content,
+                changed: transformed.changed,
+              });
+            } catch (error) {
+              rawResult = this.errorReturn(formatSyntheticToolErrorText(error));
+            }
+          } else {
+            rawResult = await (immutableSnapshot
+              ? tool.managedMutationTransform!(structuredClone(executionArgs) as never)
+              : invokeTool());
+          }
           const result = immutableSnapshot
             ? snapshotManagedToolResult(rawResult, ctx.maxResultBytes)
             : rawResult;
@@ -1557,6 +1614,7 @@ export class ToolRuntime {
           const value = {
             result,
             outcome: immutableSnapshot ? Object.freeze(outcome) : outcome,
+            ...(mutationResult ? { mutationResult } : {}),
           };
           return immutableSnapshot ? Object.freeze(value) : value;
         };
@@ -1565,6 +1623,7 @@ export class ToolRuntime {
               kind: 'managed';
               value: RuntimeManagedMutationOperationValue<unknown>;
               durableOutcome: RuntimeEvent;
+              terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect';
             }
           | { kind: 'generic'; value: RuntimeManagedMutationOperationValue<unknown> };
         if (managedMutationAdmission) {
@@ -1587,12 +1646,36 @@ export class ToolRuntime {
               try {
                 const value = await prepareOperationValue(true);
                 runtimeOwnedValue = value;
+                if (!durableAttempt) {
+                  throw new Error('Managed mutation operation has no durable T1 attempt');
+                }
+                const terminalKind = value.outcome.isError
+                  ? ('operation_failed_no_effect' as const)
+                  : value.mutationResult && !value.mutationResult.changed
+                    ? ('no_workspace_change' as const)
+                    : undefined;
+                const durableOutcome = durableAttempt.prepareOutcome(
+                  value.outcome.content,
+                  value.outcome.isError,
+                  value.outcome.durationMs,
+                  terminalKind,
+                );
                 return {
                   // The canonical content is already recursively immutable, so
                   // the owner can read it without receiving a mutable alias.
                   content: value.outcome.content,
                   isError: value.outcome.isError,
                   durationMs: value.outcome.durationMs,
+                  ...(value.mutationResult ? { mutationResult: value.mutationResult } : {}),
+                  durableOutcome,
+                  ...(terminalKind
+                    ? {
+                        terminalOutcome: Object.freeze({
+                          kind: terminalKind,
+                          durableOutcome,
+                        }),
+                      }
+                    : {}),
                 };
               } finally {
                 if (operationLifecycle.state === 'running') {
@@ -1638,7 +1721,7 @@ export class ToolRuntime {
             // discarded; every other failure remains unsettled for recovery.
             throw new RuntimeManagedMutationUnsettledError(ownerError);
           }
-          const normalized = normalizeManagedMutationSettlement(settlement, ctx.maxResultBytes);
+          const normalized = normalizeManagedMutationSettlement(settlement);
           if (normalized.kind === 'workspace_successor_committed') {
             if (!runtimeOwnedValue) {
               throw new RuntimeManagedMutationUnsettledError(
@@ -1653,10 +1736,19 @@ export class ToolRuntime {
               durableOutcome: normalized.durableOutcome,
             };
           } else {
+            if (!runtimeOwnedValue) {
+              throw new RuntimeManagedMutationUnsettledError(
+                new Error('Managed mutation owner committed a terminal state without execution'),
+              );
+            }
             settledExecution = {
               kind: 'managed',
-              value: normalized.value,
+              value: runtimeOwnedValue,
               durableOutcome: normalized.durableOutcome,
+              terminalKind:
+                normalized.kind === 'no_workspace_change_committed'
+                  ? 'no_workspace_change'
+                  : 'operation_failed_no_effect',
             };
           }
         } else {
@@ -1682,6 +1774,7 @@ export class ToolRuntime {
             content,
             outcome.isError,
             durationMs,
+            settledExecution.terminalKind,
           );
         } else {
           durableOutcome = await durableAttempt?.commitOutcome(
@@ -2111,6 +2204,7 @@ export class ToolRuntime {
       isError: boolean,
       durationMs: number | undefined,
       ts: number,
+      terminalKind?: 'no_workspace_change' | 'operation_failed_no_effect',
     ): RuntimeEvent => ({
       id: `${operationId}_response`,
       invocationId,
@@ -2140,12 +2234,50 @@ export class ToolRuntime {
           ? { parentOperationId: input.startEvent.parentOperationId }
           : {}),
       },
-      ...(durationMs !== undefined ? { actions: { stateDelta: { durationMs } } } : {}),
+      ...(durationMs !== undefined || terminalKind
+        ? {
+            actions: {
+              ...(durationMs !== undefined ? { stateDelta: { durationMs } } : {}),
+              ...(terminalKind
+                ? {
+                    managedMutationTerminal: {
+                      protocol: 'managed_mutation_terminal_v1' as const,
+                      operationId,
+                      dispatchEventId: `${operationId}_dispatch`,
+                      workspaceInstanceId: input.managedMutation!.workspaceInstanceId,
+                      terminalKind,
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
     });
     let committedOutcome: { id: string; operationId: string; ts: number } | undefined;
     return {
       operationId,
       responseEventId: `${operationId}_response`,
+      prepareOutcome: (result, isError, durationMs, terminalKind) => {
+        if (terminalKind && !input.managedMutation) {
+          throw new Error('Managed mutation terminal outcome has no durable mutation identity');
+        }
+        const responseEvent = buildResponseEvent(
+          result,
+          isError,
+          durationMs,
+          this.input.now(),
+          terminalKind,
+        );
+        decodeRuntimeEvent(responseEvent);
+        if (responseEvent.content) Object.freeze(responseEvent.content);
+        if (responseEvent.refs) Object.freeze(responseEvent.refs);
+        if (responseEvent.actions?.stateDelta) Object.freeze(responseEvent.actions.stateDelta);
+        if (responseEvent.actions?.managedMutationTerminal) {
+          Object.freeze(responseEvent.actions.managedMutationTerminal);
+        }
+        if (responseEvent.actions) Object.freeze(responseEvent.actions);
+        return Object.freeze(responseEvent);
+      },
       commitOutcome: async (result, isError, durationMs) => {
         if (committedOutcome) return committedOutcome;
         const responseEvent = buildResponseEvent(result, isError, durationMs, this.input.now());
@@ -2169,9 +2301,9 @@ export class ToolRuntime {
         );
         return committedOutcome;
       },
-      adoptCommittedOutcome: (event, result, isError, durationMs) => {
+      adoptCommittedOutcome: (event, result, isError, durationMs, terminalKind) => {
         if (committedOutcome) return committedOutcome;
-        const expected = buildResponseEvent(result, isError, durationMs, event.ts);
+        const expected = buildResponseEvent(result, isError, durationMs, event.ts, terminalKind);
         if (!Number.isFinite(event.ts) || !isDeepStrictEqual(event, expected)) {
           throw new RuntimeCommitBoundaryError(
             'T2',
@@ -3194,17 +3326,13 @@ function uncertainOutcomeSignalFromError(error: unknown): ToolUncertainOutcomeSi
   };
 }
 
-function normalizeManagedMutationSettlement(
-  settlement: unknown,
-  maxResultBytes: number | undefined,
-):
+function normalizeManagedMutationSettlement(settlement: unknown):
   | {
       kind: 'workspace_successor_committed';
       durableOutcome: RuntimeEvent;
     }
   | {
       kind: 'no_workspace_change_committed' | 'operation_failed_no_effect_committed';
-      value: RuntimeManagedMutationOperationValue<unknown>;
       durableOutcome: RuntimeEvent;
     } {
   if (!settlement || typeof settlement !== 'object' || Array.isArray(settlement)) {
@@ -3241,10 +3369,6 @@ function normalizeManagedMutationSettlement(
     };
   }
 
-  if (!Object.hasOwn(record, 'providerResult')) {
-    throw new Error('Managed no-effect settlement has no provider result');
-  }
-  const providerResult = snapshotManagedToolResult(record.providerResult, maxResultBytes);
   const response = durableOutcome.content;
   const expectedError = kind === 'operation_failed_no_effect_committed';
   if (
@@ -3253,21 +3377,8 @@ function normalizeManagedMutationSettlement(
   ) {
     throw new Error('Managed no-effect settlement has the wrong durable outcome state');
   }
-  const content = Object.freeze(coerceResultContent(providerResult));
-  const outcome = Object.freeze({
-    content,
-    isError: expectedError,
-    durationMs:
-      typeof durableOutcome.actions?.stateDelta?.durationMs === 'number'
-        ? durableOutcome.actions.stateDelta.durationMs
-        : 0,
-  });
   return {
     kind,
-    value: Object.freeze({
-      result: providerResult,
-      outcome,
-    }),
     durableOutcome,
   };
 }
