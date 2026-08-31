@@ -288,6 +288,12 @@ function InspectorOverview(props: {
               value={formatPercent(overview.cacheHitRate)}
             />
           )}
+          {overview.providerCacheUsage && (
+            <InspectorOverviewStat
+              label={copy.overview.providerCache}
+              value={`${formatCompactNumber(overview.providerCacheUsage.readTokens)} / ${formatCompactNumber(overview.providerCacheUsage.writeTokens)}`}
+            />
+          )}
           <Text type="supporting" color="secondary">
             {copy.costEstimateHelp}
           </Text>

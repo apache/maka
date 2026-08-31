@@ -262,6 +262,7 @@ export interface DesktopConversationCopy {
       };
       /** The three figures a reader opens this tab for, as headline stats. */
       cacheHit: string;
+      providerCache: string;
       requestPrefix: {
         preserved: (preserved: number, previous: number) => string;
         diverged: (segment: string, index: number) => string;
@@ -605,6 +606,7 @@ const COPY = {
           free: '剩余',
         },
         cacheHit: '缓存命中率',
+        providerCache: 'Provider 缓存读取 / 写入',
         requestPrefix: {
           preserved: (preserved, previous) => `请求前缀 ${preserved}/${previous} 保持`,
           diverged: (segment, index) => `请求前缀在${segment} ${index}处分叉`,
@@ -851,6 +853,7 @@ const COPY = {
           free: 'Remaining',
         },
         cacheHit: 'Cache hit rate',
+        providerCache: 'Provider cache read / write',
         requestPrefix: {
           preserved: (preserved, previous) =>
             `Request prefix ${preserved}/${previous} preserved`,

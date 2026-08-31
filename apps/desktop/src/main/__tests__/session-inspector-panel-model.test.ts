@@ -139,6 +139,42 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
   assert.equal(overview.cacheHitRate, undefined);
 });
 
+test('keeps provider cache read and write usage separate from prefix continuity', () => {
+  const overview = deriveInspectorOverviewModel(undefined, {
+    range: { from: 0, to: 1 },
+    totalRequests: 1,
+    totalCostUsd: 0,
+    totalTokens: {
+      input: 10,
+      output: 0,
+      cacheMiss: 3,
+      cacheRead: 7,
+      cacheWrite: 4,
+      reasoning: 0,
+      total: 10,
+    },
+    cacheHitRequests: 1,
+    cacheCreateRequests: 1,
+    errorRequests: 0,
+    provenance: {
+      coverage: {
+        attempts: 1,
+        pricedAttempts: 1,
+        unpricedAttempts: 0,
+        usageReportedAttempts: 1,
+        usagePartialAttempts: 0,
+        usageMissingAttempts: 0,
+      },
+      legacyRecords: 0,
+      unreadableRecords: 0,
+      pendingRepairs: 0,
+    },
+  });
+
+  assert.deepEqual(overview.providerCacheUsage, { readTokens: 7, writeTokens: 4 });
+  assert.equal(overview.requestPrefix, undefined);
+});
+
 test('passes the Runtime request-prefix verdict through without recomputing it', () => {
   const requestPrefix = {
     status: 'diverged' as const,

@@ -140,6 +140,8 @@ export interface InspectorOverviewModel {
    * the run ledger; three statements of the same tokens is two too many.
    */
   cacheHitRate?: number;
+  /** Provider-reported cache usage; independent of semantic continuity. */
+  providerCacheUsage?: { readTokens: number; writeTokens: number };
   /** Runtime-owned semantic prefix verdict; Desktop only presents it. */
   requestPrefix?: Extract<ContextDiagnosticsResult, { status: 'available' }>['requestPrefix'];
 }
@@ -184,15 +186,34 @@ export function deriveInspectorOverviewModel(
   const composition = compositionState(diagnostics);
   const context = contextBudget(diagnostics);
   const cacheHitRate = usageCacheHitRate(usage);
+  const providerCacheUsage = usageProviderCache(usage);
   return {
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
+    ...(providerCacheUsage ? { providerCacheUsage } : {}),
     ...(diagnostics?.status === 'available' &&
     diagnostics.requestPrefix &&
     diagnostics.requestPrefix.status !== 'no_predecessor'
       ? { requestPrefix: diagnostics.requestPrefix }
       : {}),
+  };
+}
+
+function usageProviderCache(
+  usage: SessionUsageSummary | undefined,
+): InspectorOverviewModel['providerCacheUsage'] {
+  if (
+    !usage ||
+    usage.provenance?.coverage.usagePartialAttempts ||
+    usage.provenance?.coverage.usageMissingAttempts ||
+    (usage.totalTokens.cacheRead === 0 && usage.totalTokens.cacheWrite === 0)
+  ) {
+    return undefined;
+  }
+  return {
+    readTokens: usage.totalTokens.cacheRead,
+    writeTokens: usage.totalTokens.cacheWrite,
   };
 }
 
