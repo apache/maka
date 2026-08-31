@@ -216,10 +216,10 @@ packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
 packages/ui/src/session-sidebar-nav.tsx
+packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx
 packages/ui/src/skills-panel.tsx
 packages/ui/src/styles.css
-packages/ui/src/task-ledger-panel.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx

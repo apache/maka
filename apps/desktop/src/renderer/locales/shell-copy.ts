@@ -268,6 +268,12 @@ type ShellCopy = {
     deletedTitle(name: string): string;
     /** The task was restored elsewhere, so the delete was called off. */
     deleteRestoredTitle(name: string): string;
+    /** Appended to the delete confirm when the task has linked subagent subtasks. */
+    deleteSubtaskNote(): string;
+    /** Appended to the delete confirm when the subtask preview could not be read. */
+    deleteSubtaskNoteUncertain(): string;
+    /** Toast description after deleting a task that had linked subagent subtasks. */
+    deletedSubtaskNote(count: number): string;
   };
   skillActions: {
     refreshSkillsFailedTitle: string;
@@ -893,6 +899,9 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: '取消',
       deletedTitle: (name: string) => `已删除 ${name}`,
       deleteRestoredTitle: (name: string) => `${name} 已被恢复，未删除`,
+      deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
+      deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
+      deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
     },
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
@@ -1419,6 +1428,11 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: 'Cancel',
       deletedTitle: (name: string) => `Deleted ${name}`,
       deleteRestoredTitle: (name: string) => `${name} was restored, so it was kept`,
+      deleteSubtaskNote: () => 'Its ordinary subtasks will be kept and moved to Archived.',
+      deleteSubtaskNoteUncertain: () =>
+        'Its ordinary subtasks, if any, will be kept and moved to Archived.',
+      deletedSubtaskNote: (count: number) =>
+        count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',

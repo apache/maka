@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
@@ -219,6 +219,37 @@ test('Desktop packaging does not distribute the retired bundled Git runtime', ()
     resources.some(({ to }) => to.startsWith('licenses/dugite')),
     false,
   );
+});
+
+test('packaged third-party license sources are resolved, not assumed hoisted', () => {
+  // electron and @fontsource-variable/geist* are declared by apps/desktop, so
+  // `../../node_modules/<pkg>` only resolves when the installer hoists them to
+  // the workspace root. electron-builder logs a warning and still exits 0 on a
+  // missing `extraResources` source, so a non-hoisting layout would silently
+  // drop these notices. The config resolves each package instead; assert the
+  // sources are absolute paths that end at the intended in-package file.
+  const expectedSuffixes = new Map([
+    ['licenses/electron/LICENSE', join('electron', 'dist', 'LICENSE')],
+    [
+      'licenses/electron/LICENSES.chromium.html',
+      join('electron', 'dist', 'LICENSES.chromium.html'),
+    ],
+    ['licenses/renderer/GEIST_LICENSE.txt', join('@fontsource-variable', 'geist', 'LICENSE')],
+    [
+      'licenses/renderer/GEIST_MONO_LICENSE.txt',
+      join('@fontsource-variable', 'geist-mono', 'LICENSE'),
+    ],
+  ]);
+  const byTarget = new Map(desktopBuilderConfig.extraResources.map(({ from, to }) => [to, from]));
+  for (const [to, suffix] of expectedSuffixes) {
+    const from = byTarget.get(to);
+    assert.ok(from, `missing extraResources entry for ${to}`);
+    assert.ok(
+      isAbsolute(from),
+      `${to} source must be a resolved absolute path, not a '../../node_modules' hoisting assumption`,
+    );
+    assert.ok(from.endsWith(suffix), `${to} source must resolve to ${suffix}, got ${from}`);
+  }
 });
 
 test('macOS DMG ships correctly sized background assets', async () => {

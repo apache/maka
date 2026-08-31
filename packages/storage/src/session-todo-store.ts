@@ -52,7 +52,14 @@ export interface SessionTodoStore {
   readOrBootstrap(sessionId: string): Promise<SessionTodoSnapshot>;
   /** Replace the complete document without consulting legacy Task state. */
   replaceAll(sessionId: string, items: unknown): Promise<SessionTodoSnapshot>;
-  purge(sessionId: string): Promise<void>;
+  /** Initialize one conversation-copy target without overwriting conflicting state. */
+  initializeCopy(input: {
+    sourceSessionId: string;
+    targetSessionId: string;
+    copyCurrent: boolean;
+  }): Promise<SessionTodoSnapshot>;
+  /** Purge current state and the legacy events that could bootstrap it. */
+  purgeSessionState(sessionId: string): Promise<void>;
 }
 
 export interface SqliteSessionTodoStore extends SessionTodoStore {
@@ -83,7 +90,7 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
   async readOrBootstrap(sessionId: string): Promise<SessionTodoSnapshot> {
     assertSafeSessionId(sessionId);
     let snapshot: SessionTodoSnapshot | undefined;
-    await chainWrite(this.writeQueues, sessionId, async () => {
+    await this.#write(async () => {
       snapshot = this.#lease.transaction('write', () => {
         const existing = readStoredDocument(this.#lease.database, sessionId);
         if (existing) return snapshotFromDocument(existing);
@@ -104,7 +111,7 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
       schemaVersion: SESSION_TODO_DOCUMENT_SCHEMA_VERSION,
       items: normalized.value.items,
     };
-    await chainWrite(this.writeQueues, sessionId, async () => {
+    await this.#write(async () => {
       this.#lease.transaction('write', () =>
         upsertDocument(this.#lease.database, sessionId, document),
       );
@@ -112,16 +119,70 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
     return snapshotFromDocument(document);
   }
 
-  async purge(sessionId: string): Promise<void> {
+  async initializeCopy(input: {
+    sourceSessionId: string;
+    targetSessionId: string;
+    copyCurrent: boolean;
+  }): Promise<SessionTodoSnapshot> {
+    assertSafeSessionId(input.sourceSessionId);
+    assertSafeSessionId(input.targetSessionId);
+    if (input.sourceSessionId === input.targetSessionId) {
+      throw new Error('SessionTodo copy source and target must differ');
+    }
+    let snapshot: SessionTodoSnapshot | undefined;
+    await this.#write(async () => {
+      snapshot = this.#lease.transaction('write', () => {
+        const source = input.copyCurrent
+          ? (readStoredDocument(this.#lease.database, input.sourceSessionId) ??
+            bootstrapAndInsert(this.#lease.database, input.sourceSessionId))
+          : emptyDocument();
+        const existing = readStoredDocument(this.#lease.database, input.targetSessionId);
+        if (existing) {
+          if (!sameDocument(existing, source)) {
+            throw new Error('SessionTodo copy target already has different state');
+          }
+          return snapshotFromDocument(existing);
+        }
+        insertDocument(this.#lease.database, input.targetSessionId, source);
+        return snapshotFromDocument(source);
+      });
+    });
+    return snapshot!;
+  }
+
+  async purgeSessionState(sessionId: string): Promise<void> {
     assertSafeSessionId(sessionId);
-    await chainWrite(this.writeQueues, sessionId, async () => {
+    await this.#write(async () => {
       this.#lease.transaction('write', () => {
         this.#lease.database
           .prepare('DELETE FROM workflow_session_todo_documents WHERE session_id = ?')
           .run(sessionId);
+        this.#lease.database
+          .prepare('DELETE FROM workflow_task_ledger_events WHERE session_id = ?')
+          .run(sessionId);
       });
     });
   }
+
+  #write(operation: () => Promise<void>): Promise<void> {
+    // Todo documents are small and infrequently mutated. One queue makes
+    // cross-Session initialization linearizable without lock ordering.
+    return chainWrite(this.writeQueues, 'session-todo', operation);
+  }
+}
+
+function bootstrapAndInsert(database: DatabaseSync, sessionId: string): StoredSessionTodoDocument {
+  const document = bootstrapLegacyTasks(database, sessionId);
+  insertDocument(database, sessionId, document);
+  return document;
+}
+
+function emptyDocument(): StoredSessionTodoDocument {
+  return { schemaVersion: SESSION_TODO_DOCUMENT_SCHEMA_VERSION, items: [] };
+}
+
+function sameDocument(left: StoredSessionTodoDocument, right: StoredSessionTodoDocument): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function readStoredDocument(

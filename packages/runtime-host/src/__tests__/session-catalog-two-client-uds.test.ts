@@ -27,6 +27,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -37,7 +38,7 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   connectRuntimeHost,
   readRuntimeHostConnectionCatalog,
@@ -511,6 +512,10 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       );
       assert.equal(archived.isArchived, true);
       assert.equal(archived.status, beforeArchive.status);
+      assert.deepEqual(
+        (await desktop.request('session.todo.query', { sessionId: created.id })).items,
+        [{ content: 'Retain archived task', status: 'in_progress' }],
+      );
       assert.equal((await querySession(tui, created.id)).isArchived, true);
       const archivedContinuity = await nextProjection(retirementIterator);
       assert.equal(archivedContinuity.snapshot.session.isArchived, true);
@@ -525,6 +530,9 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
       );
       assert.equal(restored.isArchived, false);
       assert.equal(restored.status, beforeArchive.status);
+      assert.deepEqual((await tui.request('session.todo.query', { sessionId: created.id })).items, [
+        { content: 'Retain archived task', status: 'in_progress' },
+      ]);
       const restoredContinuity = await nextProjection(retirementIterator);
       assert.equal(restoredContinuity.snapshot.session.isArchived, false);
       assert.equal(restoredContinuity.snapshot.session.status, beforeArchive.status);
@@ -579,15 +587,10 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         assert.fail('Retirement Artifact must be readable before Session removal');
       }
       assert.equal(artifactBeforeRemoval.artifact?.id, 'retirement-artifact');
-      const tasksBeforeRemoval = await tui.request('task.ledger.query', {
-        kind: 'list_start',
+      const todoBeforeRemoval = await tui.request('session.todo.query', {
         sessionId: retirementSessionId,
       });
-      assert.equal(tasksBeforeRemoval.kind, 'page');
-      if (tasksBeforeRemoval.kind !== 'page') {
-        assert.fail('Retirement Task Ledger must be readable before Session removal');
-      }
-      assert.equal(tasksBeforeRemoval.tasks.length, 1);
+      assert.equal(todoBeforeRemoval.items.length, 1);
 
       assert.deepEqual(
         await desktop.request('session.remove', {
@@ -606,10 +609,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
           operationError('not_found'),
         );
         await assert.rejects(
-          connection.request('task.ledger.query', {
-            kind: 'list_start',
-            sessionId: retirementSessionId,
-          }),
+          connection.request('session.todo.query', { sessionId: retirementSessionId }),
           operationError('not_found'),
         );
       }
@@ -622,10 +622,7 @@ test('two Clients share stable Session creation, CAS configuration, and catalog 
         operationError('not_found'),
       );
       await assert.rejects(
-        tui.request('task.ledger.query', {
-          kind: 'list_start',
-          sessionId: recoverySessionId,
-        }),
+        tui.request('session.todo.query', { sessionId: recoverySessionId }),
         operationError('not_found'),
       );
     } finally {
@@ -889,7 +886,7 @@ async function seedAuthority(
       permissionMode: 'ask',
     });
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
     await Promise.all([
       artifacts.create({
@@ -914,8 +911,13 @@ async function seedAuthority(
         source: 'fixture',
         now: 2,
       }),
-      tasks.create(retirement.id, [{ subject: 'Remove retirement task' }]),
-      tasks.create(recovery.id, [{ subject: 'Recover retirement task cleanup' }]),
+      todos.replaceAll(retirement.id, [{ content: 'Remove retirement task', status: 'pending' }]),
+      todos.replaceAll('stable-session', [
+        { content: 'Retain archived task', status: 'in_progress' },
+      ]),
+      todos.replaceAll(recovery.id, [
+        { content: 'Recover retirement task cleanup', status: 'pending' },
+      ]),
     ]);
     const retirementSnapshot = await execution.sessionStore.readHeaderRecordSnapshot(retirement.id);
     await execution.sessionStore.remove(recovery.id);
@@ -994,12 +996,31 @@ async function assertRetirementCleanup(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     await artifacts.recover();
     assert.deepEqual(await execution.sessionStore.listPendingSessionRetirementCleanupIds(), []);
     for (const sessionId of sessionIds) {
       assert.equal((await artifacts.listPage(sessionId, { offset: 0, limit: 1 })).total, 0);
-      assert.deepEqual(await tasks.list(sessionId, { includeTerminal: true }), []);
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          database
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
+            )
+            .get(sessionId)!.count,
+          0,
+        );
+        assert.equal(
+          database
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_task_ledger_events WHERE session_id = ?',
+            )
+            .get(sessionId)!.count,
+          0,
+        );
+      } finally {
+        database.close();
+      }
     }
   } finally {
     await owner.close();

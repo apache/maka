@@ -30,7 +30,6 @@ import {
   GoalContinuationCoordinator,
   type GoalSessionCloseOperation,
   type GoalObservedTurnStart,
-  type GoalTaskGateTrace,
   type GoalTurnAdmission,
   type GoalTurnOutcome,
 } from '@maka/runtime/goal-continuation';
@@ -85,7 +84,6 @@ export interface HostGoalCoordinatorOptions {
     checkpoint: GoalCheckpoint,
     controlLease: GoalControlLease,
   ) => GoalTurnAdmission;
-  readonly listActionableTaskKeys: (sessionId: string) => Promise<string[]>;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly onProjectionChanged: (sessionId: string) => void;
   readonly requestDrain: () => void;
@@ -164,10 +162,6 @@ export class HostGoalCoordinator {
       },
       getTokenCount: (sessionId) => tokenCache.get(sessionId) ?? 0,
       admitTurn: options.admitTurn,
-      taskGate: {
-        listActionableTaskKeys: options.listActionableTaskKeys,
-        recordDecision: (trace) => this.#recordTaskGateDecision(trace, now),
-      },
       durability: {
         flush: (sessionId) => this.#flushGoalState(sessionId),
         recordCurrentExecution: (current) => this.#recordCurrentExecution(current),
@@ -598,28 +592,6 @@ export class HostGoalCoordinator {
     }
     retained?.release();
     this.#residencies.delete(goal.sessionId);
-  }
-
-  async #recordTaskGateDecision(trace: GoalTaskGateTrace, now: () => number): Promise<void> {
-    const admission = await this.#stores.agentRunStore.readRootTurnAdmission(
-      trace.sessionId,
-      trace.turnId,
-    );
-    if (!admission) return;
-    await this.#stores.agentRunStore.appendEvent(trace.sessionId, admission.runId, {
-      type: 'task_gate_decided',
-      id: this.#newId(),
-      runId: admission.runId,
-      sessionId: trace.sessionId,
-      turnId: trace.turnId,
-      ts: now(),
-      message: `Task gate: ${trace.decision}`,
-      data: {
-        goalId: trace.goalId,
-        decision: trace.decision,
-        taskKeys: trace.taskKeys,
-      },
-    });
   }
 }
 

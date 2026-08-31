@@ -835,10 +835,16 @@ function bridge(options: {
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
-    tasks: {
-      list: async () => {
+    todo: {
+      read: async () => {
         if (options.tasksFail) throw new Error('读取任务失败');
-        return options.tasks ?? tasks;
+        return (options.tasks ?? tasks).map((task) => ({
+          content: task.subject,
+          status:
+            task.status === 'in_progress' || task.status === 'completed'
+              ? task.status
+              : 'pending' as const,
+        }));
       },
       subscribeChanges: unsubscribe,
     },

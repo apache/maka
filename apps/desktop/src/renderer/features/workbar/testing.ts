@@ -73,8 +73,8 @@ export function createFakeWorkbarServices(
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
-    tasks: {
-      list: async () => [],
+    todo: {
+      read: async () => [],
       subscribeChanges: noopSubscription,
     },
     browser: {

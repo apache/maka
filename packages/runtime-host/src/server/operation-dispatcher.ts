@@ -125,17 +125,18 @@ export type SessionRevisionOperationKey = Extract<
 >;
 export type SessionRetirementOperationKey = Extract<
   OperationKey,
-  'session.lifecycle.set' | 'session.remove'
+  'session.lifecycle.set' | 'session.remove' | 'session.remove.preview'
 >;
 export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
+export type SessionTodoOperationKey = Extract<OperationKey, 'session.todo.query'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
   | SessionContinuityOperationKey
   | SessionRevisionOperationKey
   | SessionRetirementOperationKey
   | SessionEffectOperationKey
+  | SessionTodoOperationKey
 >;
-export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
@@ -193,7 +194,7 @@ export type SessionRetirementOperationHandlerMap = Pick<
   SessionRetirementOperationKey
 >;
 export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
-export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
+export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTodoOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;

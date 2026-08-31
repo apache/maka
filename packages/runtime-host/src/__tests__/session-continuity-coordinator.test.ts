@@ -713,8 +713,8 @@ test('coalesces typed domain invalidations without publishing continuity project
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
   await waitFor(() => sink.frames.length === 3);
@@ -726,7 +726,7 @@ test('coalesces typed domain invalidations without publishing continuity project
         : frame.kind,
     ),
     [
-      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
+      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'todo' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
       { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
     ],

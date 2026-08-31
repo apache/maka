@@ -41,7 +41,7 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import { requireStartedTurn } from './fixtures/execution-host-suite.js';
 import {
@@ -330,6 +330,14 @@ async function verifyConcurrentRevisionAuthority(
       intent: 'side_conversation',
     });
     assert.equal(archivedSideConversation.kind, 'committed');
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: ARCHIVED_SIDE_CONVERSATION_TARGET_ID,
+        })
+      ).items,
+      [],
+    );
     for (const sessionId of ['metadata-linked-copy-target', 'archived-owned-copy-target']) {
       assert.deepEqual(
         await tui.request('session.catalog.query', {
@@ -366,16 +374,25 @@ async function verifyConcurrentRevisionAuthority(
     if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
     assert.equal(artifactPage.artifacts.length, 3);
     assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
-    const taskPage = await tui.request('task.ledger.query', {
-      kind: 'list_start',
-      sessionId: branch.id,
+    const todo = await tui.request('session.todo.query', { sessionId: branch.id });
+    assert.deepEqual(todo.items, []);
+
+    const latestBranch = await desktop.request('session.branch.create', {
+      ...branchInput,
+      targetSessionId: 'latest-branch-target',
+      sourceTurnId: 'turn-2',
     });
-    assert.equal(taskPage.kind, 'page');
-    if (taskPage.kind !== 'page') assert.fail('Branch Task Ledger query must return a page');
-    assert.deepEqual(taskPage.tasks.map((task) => task.subject).sort(), [
-      'Legacy child task',
-      'Retained task',
-    ]);
+    assert.equal(latestBranch.kind, 'committed');
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: 'latest-branch-target',
+        })
+      ).items
+        .map((item) => item.content)
+        .sort(),
+      ['Legacy child task', 'Retained task'],
+    );
 
     const renamed = await desktop.request('session.metadata.update', {
       sessionId: sourceSessionId,
@@ -750,7 +767,7 @@ async function seedSource(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
     const source = await execution.sessionStore.create({
       cwd: root,
@@ -1533,27 +1550,10 @@ async function seedSource(
     for (const event of archivedOwnedRuntimeEvents) {
       await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
-    await tasks.create(source.id, [{ subject: 'Retained task' }], {
-      turnId: 'turn-1',
-      source: 'tool',
-      actor: 'main_agent',
-    });
-    await tasks.create(source.id, [{ subject: 'Legacy child task' }], {
-      turnId: 'legacy-child-turn',
-      runId: 'legacy-child-run',
-      source: 'tool',
-      actor: 'child_agent',
-    });
-    await tasks.update(
-      source.id,
-      (await tasks.list(source.id))[0]!.id,
-      { status: 'in_progress' },
-      {
-        turnId: 'turn-2',
-        source: 'tool',
-        actor: 'main_agent',
-      },
-    );
+    await todos.replaceAll(source.id, [
+      { content: 'Retained task', status: 'in_progress' },
+      { content: 'Legacy child task', status: 'pending' },
+    ]);
     return {
       sourceSessionId: source.id,
       busySessionId: busy.id,
@@ -1589,7 +1589,7 @@ async function verifyDurableBranch(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
     // Every copy kind that retains the upload turn must carry a rewritten,
     // readable copy of the user-uploaded attachment (regression guard for the
@@ -1627,11 +1627,13 @@ async function verifyDurableBranch(
       ok: true,
       text: 'retained bytes',
     });
-    assert.deepEqual((await tasks.list(branchSessionId)).map((task) => task.subject).sort(), [
-      'Legacy child task',
-      'Retained task',
-    ]);
-    assert.ok((await tasks.list(branchSessionId)).every((task) => task.status === 'pending'));
+    assert.deepEqual(await todos.readOrBootstrap(branchSessionId), { items: [] });
+    assert.deepEqual(
+      (await todos.readOrBootstrap('latest-branch-target')).items
+        .map((item) => item.content)
+        .sort(),
+      ['Legacy child task', 'Retained task'],
+    );
     const copiedRuns = await execution.agentRunStore.listSessionRuns(branchSessionId);
     assert.equal(copiedRuns.length, 2);
     const copiedChild = copiedRuns.find((run) => run.turnId === 'legacy-child-turn');
@@ -1667,7 +1669,7 @@ async function verifyDurableBranch(
     assert.ok(copiedProjectionArtifact);
     assert.equal(copiedProjectionPart.ref.relativePath, copiedProjectionArtifact.id);
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
-    assert.deepEqual(await tasks.list('revision-target'), []);
+    assert.deepEqual(await todos.readOrBootstrap('revision-target'), { items: [] });
     assert.deepEqual(await execution.agentRunStore.listSessionRuns('revision-target'), []);
     await assert.rejects(
       () => execution.sessionStore.readHeaderSnapshot('revision-target'),

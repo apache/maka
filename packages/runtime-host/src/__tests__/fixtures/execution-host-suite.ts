@@ -52,7 +52,6 @@ import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -77,7 +76,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   connectRuntimeHost,
@@ -93,19 +91,15 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ClientFrame,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 import { removePosixEndpointDirectories } from './endpoint-hygiene.js';

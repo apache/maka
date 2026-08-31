@@ -1341,6 +1341,7 @@ function useArchivedTasksStoryBridge(seed: readonly SessionSummary[]): ArchivedT
       drop(sessionIds);
       return {
         removed: sessionIds.length,
+        archivedSubtasks: 0,
         remaining: [],
         restored: [],
         verified: true,

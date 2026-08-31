@@ -313,7 +313,6 @@
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/use-composer-attachments",
     "src/renderer/features/workbar/tools/side-chat/use-quote-companion.ts -> src/renderer/locales/conversation-copy",
     "src/renderer/features/workbar/tools/side-chat/use-quote-companion.ts -> src/renderer/settled-message-merge",
-    "src/renderer/features/workbar/tools/tasks/use-session-tasks.ts -> src/renderer/locales/shell-remaining-copy",
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/locales/conversation-copy",
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/theme",
     "src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx -> src/renderer/locales/conversation-copy",
@@ -5352,7 +5351,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./workhub-controller.js": 1
+          "./application/contracts/workhub-request-intent.js": 1
         }
       },
       "src/renderer/workhub-send-lease.ts": {

@@ -44,7 +44,7 @@ import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
-import type { TaskLedgerStore } from '@maka/core/task-ledger';
+import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -75,7 +75,7 @@ import {
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   openInteractiveUsageStoresForWrite,
   type InteractiveUsageStoresWriter,
@@ -1806,8 +1806,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       model: MODEL_ID,
       permissionMode: 'ask',
     });
-    const taskLedger = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    await taskLedger.create(session.id, [{ subject: 'HOSTED_TASK_LEDGER_SENTINEL' }]);
+    const sessionTodo = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    await sessionTodo.replaceAll(session.id, [
+      { content: 'HOSTED_SESSION_TODO_SENTINEL', status: 'pending' },
+    ]);
 
     composition = await createExecutionRuntimeHostComposition(
       {
@@ -1907,7 +1909,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_SKILL_DESCRIPTION_SENTINEL/);
     assert.doesNotMatch(requestText, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.match(requestText, /HOSTED_WORKSPACE_SENTINEL/);
-    assert.doesNotMatch(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
+    assert.doesNotMatch(requestText, /HOSTED_SESSION_TODO_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
@@ -3282,7 +3284,7 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
     runtimePolicy: policy,
     skills,
     memory,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const firstContext = {
     sessionId: 'session',
@@ -3368,7 +3370,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const context = {
     sessionId: 'session',
@@ -3419,7 +3421,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   assert.deepEqual(
     (await nextComposition.resolveSystemPrompt({ ...context, turnId: 'turn-3' })).sourceRevisions,
@@ -3469,7 +3471,7 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
         body: '',
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     clientCapabilities: {
       snapshotForSession: () => undefined,
     } as unknown as HostClientCapabilityCoordinator,
@@ -3536,7 +3538,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     },
   };
   const capturedChildTools = createHostChildAgentToolComposition({
-    taskLedger: {} as TaskLedgerStore,
     builtinTools: { shell: capturedChildShell },
     hostTools: [],
     worktreePatchWriteBackAvailable: true,
@@ -3572,7 +3573,6 @@ test('child execution Bash carries the configured shell guidance and spawn plan'
     },
   };
   const composition = createHostChildAgentToolComposition({
-    taskLedger: {} as TaskLedgerStore,
     builtinTools: {
       shell,
       shellRuns: {
@@ -3648,7 +3648,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     boundTools: [boundTool],
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool,
@@ -3685,7 +3685,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
         throw new Error('Profiled prompt must not read product Memory');
       },
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     builtinTools: {},
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
@@ -3962,7 +3962,7 @@ function backendCreationFixture(input: {
           body: '',
         }),
       } as unknown as HostMemoryCoordinator,
-      taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+      sessionTodo: {} as SessionTodoToolStore,
       clientCapabilities: {
         snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
       } as unknown as HostClientCapabilityCoordinator,
