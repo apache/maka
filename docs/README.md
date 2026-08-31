@@ -72,6 +72,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - [Product design](../DESIGN.md)
 - [Frontend CSS governance](./frontend-css-governance.md) ([中文](./frontend-css-governance.zh-CN.md))
+- [Linux support baseline](./linux-support.md)
 - [Windows support baseline](./windows-support.md)
 
 ### Release operations
