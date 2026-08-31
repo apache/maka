@@ -69,6 +69,7 @@ export function SessionCollaborationJoinDialog(props: {
   const [mounts, setMounts] = useState<readonly SessionCollaborationMountSummary[]>([]);
   const [removingMountId, setRemovingMountId] = useState<string>();
   const activeOperationId = useRef<string | undefined>(undefined);
+  const closeAfterSettlement = useRef(false);
   const open = useRef(true);
   const [joinState, setJoinState] = useState<
     | { readonly kind: 'idle' }
@@ -98,6 +99,7 @@ export function SessionCollaborationJoinDialog(props: {
   async function join(allowInsecure = false): Promise<void> {
     const operationId = services.createOperationId();
     activeOperationId.current = operationId;
+    closeAfterSettlement.current = false;
     setJoinState({ kind: 'working', phase: 'validating_invitation' });
     try {
       const result = await services.importInvitation({
@@ -111,6 +113,10 @@ export function SessionCollaborationJoinDialog(props: {
       });
       if (!open.current || activeOperationId.current !== operationId) return;
       if (result.kind === 'error' && result.reason === 'insecure_confirmation_required') {
+        if (closeAfterSettlement.current) {
+          finishClose();
+          return;
+        }
         const confirmed = await toast.confirm({
           title: props.copy.insecureTitle,
           description: props.copy.insecureBody,
@@ -124,15 +130,23 @@ export function SessionCollaborationJoinDialog(props: {
         return;
       }
       if (result.kind === 'error') {
+        if (closeAfterSettlement.current) {
+          finishClose();
+          return;
+        }
         const message = importError(props.copy, result.reason, result.message);
         setJoinState({ kind: 'failed', message });
         toast.error(props.copy.joinTitle, message);
         return;
       }
       props.onImported();
-      props.onClose();
+      finishClose();
     } catch (error) {
       if (!open.current || activeOperationId.current !== operationId) return;
+      if (closeAfterSettlement.current) {
+        finishClose();
+        return;
+      }
       const message = errorMessage(error);
       setJoinState({ kind: 'failed', message });
       toast.error(props.copy.joinTitle, message);
@@ -158,7 +172,8 @@ export function SessionCollaborationJoinDialog(props: {
     try {
       const result = await services.cancelImport(operationId);
       if (!open.current || activeOperationId.current !== operationId) return;
-      if (result === 'settling') {
+      if (result === 'settling' || result === 'idle') {
+        closeAfterSettlement.current = true;
         setJoinState({ kind: 'working', phase: 'finalizing_access' });
         return;
       }
