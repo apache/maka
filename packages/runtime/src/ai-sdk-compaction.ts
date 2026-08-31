@@ -270,6 +270,7 @@ export class AiSdkCompaction {
       sessionId: this.sessionId,
       archiveToolResult: (candidate) => archive(candidate),
       recordTransition: (transition) => record(transition, turnId),
+      loadTransitions: () => this.loadModelProjectionTransitions(),
       now: this.now,
     };
   }

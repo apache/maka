@@ -32,8 +32,8 @@
  *
  * 1. Archive the replaced body. A failure here leaves the projection untouched.
  * 2. Append the transition. A failure here leaves an artifact nothing points
- *    at — unreachable by the reducer, so reclaimable — and again leaves the
- *    projection untouched.
+ *    at — unreachable by the reducer, so safe to reclaim once something does —
+ *    and again leaves the projection untouched.
  * 3. Only then may a caller show the replacement.
  *
  * There is no state in which the model has lost content the ledger cannot
@@ -57,7 +57,7 @@ import {
   utf8ByteLength,
 } from './context-budget-helpers.js';
 import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
-import { baseToolResultProjection } from './model-projection-transition-ledger.js';
+import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildArchivedToolResultPlaceholder,
@@ -118,6 +118,15 @@ export interface ToolResultArchiveTransitionServices {
     reason: ArchivedToolResultReason;
   }) => Promise<{ artifactId: string } | void> | { artifactId: string } | void;
   recordTransition: ModelProjectionTransitionRecorder;
+  /**
+   * Re-read the durable ledger after an append.
+   *
+   * A successful append does not make this transition the fold's answer: a
+   * concurrent Turn can append a rival successor to the same source, and the
+   * fold accepts exactly one of them. Without this seam the caller would show a
+   * replacement that the next read replaces with the other writer's.
+   */
+  loadTransitions?: () => Promise<{ transitions: ModelProjectionTransition[] }>;
   now: () => number;
 }
 
@@ -212,16 +221,38 @@ export async function archiveToolResultAsTransition(
       now: services.now(),
     });
     await services.recordTransition(transition);
+    const winner = await winningTransition(services, transition);
+    if (winner && winner.transitionId !== transition.transitionId) {
+      // The rival won. Show what the ledger says, not what this writer wrote;
+      // its own record stays durable and inert, and the body it archived is
+      // unreachable exactly as a refused transition's archive should be.
+      const replaced = winner.replacement.kind === 'json' ? winner.replacement.value : undefined;
+      if (!isArchivedToolResultPlaceholder(replaced)) return undefined;
+      return { placeholder: replaced, transition: winner };
+    }
   } catch {
     // The archive artifact is now unreferenced: nothing in the effective
-    // history names it, which is exactly what reducer-derived reachability
-    // reports. It is also content-addressed, so a later retry of the same
-    // decision reuses this artifact rather than publishing a second one —
-    // reclamation may be delayed, but it cannot grow without bound and cannot
-    // break replay.
+    // history names it, which is what reducer-derived reachability reports. It
+    // is content-addressed, so a retry of the same decision reuses it rather
+    // than publishing a second one. No cleanup pass consumes that reachability
+    // yet, so such an artifact is retained until one does — it cannot break
+    // replay, but it is not reclaimed either (#4283).
     return undefined;
   }
   return { placeholder, transition };
+}
+
+/** The transition the durable fold accepts for this target, after an append. */
+async function winningTransition(
+  services: ToolResultArchiveTransitionServices,
+  appended: ModelProjectionTransition,
+): Promise<ModelProjectionTransition | undefined> {
+  if (!services.loadTransitions) return appended;
+  const { transitions } = await services.loadTransitions();
+  return nextInChain(transitions, appended.previousTransitionId, appended.sourceProjectionDigest, {
+    id: appended.target.toolCallId,
+    name: appended.target.toolName,
+  });
 }
 
 /**
@@ -283,8 +314,11 @@ export function collectStaleToolResultArchiveCandidates(
  * Derived from the folded events, never from a parallel bookkeeping table: an
  * artifact is reachable exactly when a placeholder the model can still see names
  * it. An archive whose transition was refused is therefore unreachable by
- * construction. Cleanup may reclaim the rest; a cleanup failure only delays
- * reclamation and cannot break replay.
+ * construction.
+ *
+ * This is the reachability authority a reclaiming pass must ask; no such pass
+ * exists yet, so nothing here is reclaimed today (#4283). Adding one is what
+ * makes an unreferenced archive temporary rather than retained.
  */
 export function collectReachableArchiveArtifactIds(events: readonly RuntimeEvent[]): Set<string> {
   const reachable = new Set<string>();

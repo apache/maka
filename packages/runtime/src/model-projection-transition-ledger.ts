@@ -251,8 +251,8 @@ export function reduceEffectiveModelProjections(
  * the digest currently in effect, and among equals the smallest content-derived
  * id wins, so every reader picks the same successor without consulting a clock.
  */
-function nextInChain(
-  remaining: ReadonlySet<ModelProjectionTransition>,
+export function nextInChain(
+  remaining: Iterable<ModelProjectionTransition>,
   previousTransitionId: string | undefined,
   currentDigest: string,
   content: { id: string; name: string },
