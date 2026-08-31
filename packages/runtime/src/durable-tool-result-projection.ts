@@ -36,7 +36,6 @@ import {
 } from '@maka/core/artifacts';
 import { isCanonicalStorageRef } from '@maka/core/events';
 import type { ToolResultContent } from '@maka/core/events';
-import { redactSecrets } from '@maka/core/redaction';
 import type { RuntimeEventFunctionResponseContent } from '@maka/core/runtime-event';
 import { decodeCanonicalShellToolResultContent } from '@maka/core/shell-run-result';
 import { markPersisted } from '@maka/core/persisted-value';
@@ -277,7 +276,7 @@ function encodeOutput(output: ToolResultOutput, sessionId: string): DurableToolR
       return {
         version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
         kind: 'text',
-        text: redactSecrets(output.value),
+        text: output.value,
         ...(output.type === 'error-text' ? { isError: true as const } : {}),
       };
     case 'json':
@@ -292,7 +291,7 @@ function encodeOutput(output: ToolResultOutput, sessionId: string): DurableToolR
       return {
         version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
         kind: 'execution_denied',
-        ...(output.reason !== undefined ? { reason: redactSecrets(output.reason) } : {}),
+        ...(output.reason !== undefined ? { reason: output.reason } : {}),
       };
     case 'content': {
       return prepareContentProjection(output, sessionId).projection;
@@ -315,7 +314,7 @@ function prepareContentProjection(
   const artifacts: DurableProjectionArtifactPlan[] = [];
   for (const part of output.value) {
     if (part.type === 'text') {
-      parts.push({ kind: 'text', text: redactSecrets(part.text) });
+      parts.push({ kind: 'text', text: part.text });
       continue;
     }
     if (part.type !== 'file') continue;
@@ -421,8 +420,7 @@ function isLegacyPathImageResult(result: unknown, sessionId: string): boolean {
 
 function sanitizeJson(value: unknown): DurableProjectionJson {
   const state = { nodes: 0 };
-  const strictJson = sanitizeJsonValue(value, state, 0);
-  return JSON.parse(redactSecrets(JSON.stringify(strictJson))) as DurableProjectionJson;
+  return sanitizeJsonValue(value, state, 0);
 }
 
 function sanitizeJsonValue(

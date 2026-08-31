@@ -30,7 +30,7 @@ import {
 } from '../durable-tool-result-projection.js';
 
 describe('durable Tool Result projection codec', () => {
-  it('redacts text and JSON leaves before they become durable model content', () => {
+  it('preserves arbitrary text and JSON content faithfully', () => {
     assert.deepEqual(
       encodeDurableToolResultOutput(
         { type: 'text', value: 'Authorization: Bearer sk-live-secret-token-value' },
@@ -39,7 +39,7 @@ describe('durable Tool Result projection codec', () => {
       {
         version: 1,
         kind: 'text',
-        text: 'Authorization: Bearer [redacted]',
+        text: 'Authorization: Bearer sk-live-secret-token-value',
       },
     );
     assert.deepEqual(
@@ -53,7 +53,7 @@ describe('durable Tool Result projection codec', () => {
       {
         version: 1,
         kind: 'json',
-        value: { password: '[redacted]', keep: 'visible' },
+        value: { password: 'correct-horse-battery-staple', keep: 'visible' },
       },
     );
   });
