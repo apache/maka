@@ -129,6 +129,7 @@ const coveredExtensions = new Map([
 
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
+  ['.dockerignore', 'hash'],
   ['Dockerfile', 'hash'],
   // A POSIX shell script that the Eval egress sidecar invokes by name.
   ['network-policy', 'hash'],
@@ -221,6 +222,7 @@ export const exclusionRules = [
       'docs/astryx-surface-file-inventory.md',
       'docs/astryx-surface-file-inventory.paths',
       'docs/windows-test-inventory.md',
+      'experiments/runtime-host-webrtc/Cargo.lock',
       'native/gitoxide-helper/Cargo.lock',
       'native/runtime-host-peer/Cargo.lock',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',

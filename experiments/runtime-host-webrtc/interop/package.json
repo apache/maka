@@ -1,0 +1,22 @@
+{
+  "name": "maka-runtime-host-webrtc-interop",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "answer": "node ./answer-rust-peer.mjs",
+    "dial": "node ./dial-rust-peer.mjs"
+  },
+  "dependencies": {
+    "@chainsafe/libp2p-yamux": "8.0.1",
+    "@libp2p/circuit-relay-v2": "4.2.13",
+    "@libp2p/identify": "4.1.14",
+    "@libp2p/noise": "1.0.1",
+    "@libp2p/tcp": "11.0.28",
+    "@libp2p/webrtc": "6.0.31",
+    "@multiformats/multiaddr": "13.0.3",
+    "libp2p": "3.3.10"
+  }
+}
