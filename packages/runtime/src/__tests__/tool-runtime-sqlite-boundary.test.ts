@@ -27,7 +27,7 @@ import { describe, it } from 'node:test';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { type SessionEvent } from '@maka/core/events';
-import { type SessionHeader } from '@maka/core/session';
+import { type SessionHeader, type StoredMessage } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
 import {
   createSqliteRuntimeStore,
@@ -531,12 +531,15 @@ describe('ToolRuntime with real SQLite boundary', () => {
     try {
       let implementationCalls = 0;
       let artifactWrites = 0;
+      const appendedMessages: StoredMessage[] = [];
       const runtime = createTestToolRuntime({
         sessionId: 'session-1',
         header: header(),
         connection: connection(),
         modelId: 'model-1',
-        appendMessage: async () => {},
+        appendMessage: async (message) => {
+          appendedMessages.push(message);
+        },
         newId: nextId(),
         now: nextNow(),
         getPermissionPauseTarget: () => null,
@@ -601,6 +604,8 @@ describe('ToolRuntime with real SQLite boundary', () => {
       assert.equal(implementationCalls, 1);
       assert.equal(artifactWrites, 1);
       assert.equal(published.filter((event) => event.type === 'tool_result').length, 0);
+      assert.equal(published.filter((event) => event.type === 'tool_start').length, 1);
+      assert.equal(appendedMessages.filter((message) => message.type === 'tool_call').length, 1);
       const events = await store.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
         events.map((event) => event.content?.kind),

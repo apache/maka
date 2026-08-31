@@ -70,7 +70,7 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
-  it('does not invoke a tool when another local dispatcher already owns its operation', async () => {
+  it('publishes no call side effects when another dispatcher owns the operation', async () => {
     let implementationCalls = 0;
     const harness = makeHarness({
       commitToolPrepared: async () => ({ created: false, runtimeEventSeq: 1 }),
@@ -90,14 +90,8 @@ describe('ToolRuntime durable boundary', () => {
     );
 
     assert.equal(implementationCalls, 0);
-    assert.deepEqual(
-      harness.events.map((event) => event.type),
-      ['tool_start'],
-    );
-    assert.deepEqual(
-      harness.messages.map((message) => message.type),
-      ['tool_call'],
-    );
+    assert.deepEqual(harness.events, []);
+    assert.deepEqual(harness.messages, []);
   });
 
   it('refuses durable tool execution when the turn carries no run id', async () => {

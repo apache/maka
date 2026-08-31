@@ -1153,42 +1153,22 @@ export class ToolRuntime {
       ...(tool.displayName ? { displayName: tool.displayName } : {}),
       ...(stepId !== undefined ? { stepId } : {}),
     };
-    let pushedCallEvent: ToolStartEvent | undefined;
-    const pushCallEvent = (lane: 'dispatch' | 'preflight'): ToolStartEvent => {
-      // Idempotent by construction: one call, one call event, whichever lane
-      // asks for it first. A second ask cannot mint a second id.
-      if (pushedCallEvent) return pushedCallEvent;
+    let callEvent: ToolStartEvent | undefined;
+    const buildCallEvent = (lane: 'dispatch' | 'preflight'): ToolStartEvent => {
+      if (callEvent) return callEvent;
       const operationId = lane === 'dispatch' ? dispatchOperationId : undefined;
-      const event: ToolStartEvent = {
+      callEvent = {
         ...callEventFacts,
         id: operationId ? `${operationId}_call` : this.input.newId(),
         ...(operationId ? { operationId } : {}),
       };
-      queue.push(event);
-      pushedCallEvent = event;
-      return event;
+      return callEvent;
     };
-    /**
-     * One pre-dispatch refusal: the call fact on the generic lane, then the
-     * refusal the model reads, on the same lane. Every refusal below routes
-     * through here so the pair can never be split across lanes again.
-     */
-    const refuseBeforeDispatch = async (
-      text: string,
-      sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
-    ): Promise<void> => {
-      pushCallEvent('preflight');
-      await this.writeSyntheticToolResult(
-        toolUseId,
-        turnId,
-        tool.name,
-        text,
-        queue,
-        undefined,
-        sandboxFailure,
-        undefined,
-        activityIdentity,
-      );
+    let callEventPublished = false;
+    const publishCallEvent = (event: ToolStartEvent): void => {
+      if (callEventPublished) return;
+      queue.push(event);
+      callEventPublished = true;
     };
     const callMsg: ToolCallMessage = {
       type: 'tool_call',
@@ -1207,12 +1187,43 @@ export class ToolRuntime {
       // timeline and post-restart backfill can pair this call with its step.
       ...(stepId !== undefined ? { stepId } : {}),
     };
-    await this.input.appendMessage(callMsg);
-    trace?.emit('tool', 'tool_started', 'Tool execution started', {
-      toolUseId,
-      toolName: tool.name,
-      ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
-    });
+    let callMessageAppended = false;
+    const appendCallMessage = async (): Promise<void> => {
+      if (callMessageAppended) return;
+      await this.input.appendMessage(callMsg);
+      callMessageAppended = true;
+    };
+    const emitToolStartedTrace = (): void => {
+      trace?.emit('tool', 'tool_started', 'Tool execution started', {
+        toolUseId,
+        toolName: tool.name,
+        ...(tool.categoryHint !== undefined ? { categoryHint: tool.categoryHint } : {}),
+      });
+    };
+    /**
+     * One pre-dispatch refusal: the call fact on the generic lane, then the
+     * refusal the model reads, on the same lane. Every refusal below routes
+     * through here so the pair can never be split across lanes again.
+     */
+    const refuseBeforeDispatch = async (
+      text: string,
+      sandboxFailure?: Extract<ToolResultContent, { kind: 'text' }>['sandboxFailure'],
+    ): Promise<void> => {
+      await appendCallMessage();
+      publishCallEvent(buildCallEvent('preflight'));
+      emitToolStartedTrace();
+      await this.writeSyntheticToolResult(
+        toolUseId,
+        turnId,
+        tool.name,
+        text,
+        queue,
+        undefined,
+        sandboxFailure,
+        undefined,
+        activityIdentity,
+      );
+    };
     if (admissionFailure) {
       const boundaryKind = boundaryAuthorityAttempt ? ('invalid' as const) : undefined;
       if (boundaryKind) {
@@ -1448,7 +1459,7 @@ export class ToolRuntime {
     try {
       durableAttempt = await this.prepareDurableToolAttempt({
         tool,
-        startEvent: pushCallEvent('dispatch'),
+        startEvent: buildCallEvent('dispatch'),
         persistedArgs,
         modelFacingArgs,
         abortSignal: ctx.abortSignal,
@@ -1463,6 +1474,9 @@ export class ToolRuntime {
       await disposeManagedMutationAdmission(managedMutationAdmission);
       throw error;
     }
+    await appendCallMessage();
+    publishCallEvent(buildCallEvent('dispatch'));
+    emitToolStartedTrace();
     if (durableAttempt) {
       this.durableToolAttempts.set(durableAttemptKey(turnId, toolUseId), durableAttempt);
     }
@@ -1511,7 +1525,7 @@ export class ToolRuntime {
             toolCallId: toolUseId,
             // The id the call event actually carries, not the candidate: by here
             // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
-            ...(pushedCallEvent?.operationId ? { operationId: pushedCallEvent.operationId } : {}),
+            ...(callEvent?.operationId ? { operationId: callEvent.operationId } : {}),
             abortSignal: ctx.abortSignal,
             emitOutput: output.emit,
             emitProgress: (current, total) => {
