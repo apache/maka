@@ -155,6 +155,7 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
     const successor = await readLatestContextDiagnostics(runStore, session.id);
     assert.equal(successor.status, 'available');
     if (successor.status !== 'available') return;
+    assert.ok(successor.requestPrefix);
     assert.equal(successor.requestPrefix.status, 'preserved');
     assert.equal(
       successor.requestPrefix.preservedSegmentCount,
