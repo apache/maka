@@ -677,6 +677,67 @@ test('repairs malformed projection bytes from the canonical ledger', async () =>
   }
 });
 
+test('does not persist a cold answer after canonical authority advances', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    await store.createRun(runHeader('run-1', 1));
+    await store.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model-1', 40, 200),
+      { durable: true, latestContext: latestContext('attempt-1', 10, 'model-1') },
+    );
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      database
+        .prepare(`
+          UPDATE core_agent_run_projections
+          SET event_json = '{malformed'
+          WHERE session_id = 'session-1' AND event_type = 'latest_context'
+        `)
+        .run();
+    } finally {
+      database.close();
+    }
+
+    let advanced = false;
+    const racing: Parameters<typeof readLatestContextDiagnostics>[0] = {
+      listSessionRuns: (sessionId) => store.listSessionRuns(sessionId),
+      readEvents: async (sessionId, runId) => {
+        const events = await store.readEvents(sessionId, runId);
+        if (!advanced) {
+          advanced = true;
+          await store.appendEvent(
+            'session-1',
+            'run-1',
+            meteringEvent('run-1', 'attempt-2', 20, 'model-2', 40, 200),
+            { durable: true, latestContext: latestContext('attempt-2', 20, 'model-2') },
+          );
+        }
+        return events;
+      },
+      readEventProjection: (sessionId, type) => store.readEventProjection(sessionId, type),
+      readEventLedgerRevision: (sessionId) => store.readEventLedgerRevision(sessionId),
+      repairEventProjection: (sessionId, type, event, options) =>
+        store.repairEventProjection(sessionId, type, event, options),
+    };
+
+    const cold = await readLatestContextDiagnostics(racing, 'session-1');
+    assert.equal(cold.status, 'available');
+    if (cold.status !== 'available') return;
+    assert.equal(cold.modelId, 'model-1', 'the in-flight read remains a valid earlier snapshot');
+
+    const next = await readLatestContextDiagnostics(store, 'session-1');
+    assert.equal(next.status, 'available');
+    if (next.status !== 'available') return;
+    assert.equal(next.modelId, 'model-2', 'the stale scan never becomes the warm projection');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('rebuilds a nested-malformed v2 projection from the canonical ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
@@ -795,6 +856,7 @@ function countingStore(
       return reader.readEvents(sessionId, runId);
     },
     readEventProjection: (sessionId, type) => reader.readEventProjection(sessionId, type),
+    readEventLedgerRevision: (sessionId) => reader.readEventLedgerRevision(sessionId),
     repairEventProjection: (sessionId, type, event, options) =>
       reader.repairEventProjection(sessionId, type, event, options),
   };

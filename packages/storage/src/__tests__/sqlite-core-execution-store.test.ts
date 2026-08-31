@@ -252,6 +252,68 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('does not repair a malformed projection from a stale ledger revision', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      await store.repairEventProjection('session-1', 'history_compact_checkpoint_recorded', {
+        ...runEvent(),
+        id: 'checkpoint-a',
+        type: 'history_compact_checkpoint_recorded',
+      });
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare(`
+            UPDATE core_agent_run_projections
+            SET event_json = '{malformed'
+            WHERE session_id = 'session-1'
+              AND event_type = 'history_compact_checkpoint_recorded'
+          `)
+          .run();
+      } finally {
+        database.close();
+      }
+
+      const staleRevision = await store.readEventLedgerRevision('session-1');
+      await store.appendEvent('session-1', 'run-1', {
+        ...runEvent(),
+        id: 'event-2',
+        ts: 2,
+      });
+      await store.repairEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+        {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        },
+        { ifLedgerRevision: staleRevision },
+      );
+
+      const inspected = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          inspected
+            .prepare(`
+              SELECT event_json AS eventJson
+              FROM core_agent_run_projections
+              WHERE session_id = 'session-1'
+                AND event_type = 'history_compact_checkpoint_recorded'
+            `)
+            .get()?.eventJson,
+          '{malformed',
+        );
+      } finally {
+        inspected.close();
+        store.close?.();
+      }
+    });
+  });
+
   test('backfills the model-call high-water when upgrading existing AgentRun rows', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);

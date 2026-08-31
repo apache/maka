@@ -236,11 +236,12 @@ export interface DurableAgentRunStore
     sessionId: string,
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
+  readEventLedgerRevision(sessionId: string): Promise<string>;
   repairEventProjection(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string },
+    options?: { replaceEventId?: string; ifLedgerRevision?: string },
   ): Promise<void>;
   ready?(): Promise<void>;
   close?(): void;
@@ -677,17 +678,29 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
   }
 
+  async readEventLedgerRevision(sessionId: string): Promise<string> {
+    assertSafeId(sessionId, 'Invalid session id');
+    return readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId);
+  }
+
   async repairEventProjection(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options: { replaceEventId?: string } = {},
+    options: { replaceEventId?: string; ifLedgerRevision?: string } = {},
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
     if (event !== null && !isProjectedAgentRunEvent(event, sessionId, type)) {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
+      if (
+        options.ifLedgerRevision !== undefined &&
+        readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId) !==
+          options.ifLedgerRevision
+      ) {
+        return;
+      }
       const inspected = inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type);
       const current = projectionValue(inspected);
       if (
@@ -872,6 +885,39 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   close(): void {
     this.#lease.close();
   }
+}
+
+function readSqliteAgentRunLedgerRevision(db: DatabaseSync, sessionId: string): string {
+  const rows = db
+    .prepare(`
+      SELECT run.run_id, COUNT(event.sequence) AS event_count,
+             COALESCE(MAX(event.sequence), -1) AS high_water
+      FROM core_agent_runs AS run
+      LEFT JOIN core_agent_run_events AS event
+        ON event.session_id = run.session_id AND event.run_id = run.run_id
+      WHERE run.session_id = ?
+      GROUP BY run.run_id
+      ORDER BY run.run_id
+    `)
+    .all(sessionId) as Array<{
+    run_id?: unknown;
+    event_count?: unknown;
+    high_water?: unknown;
+  }>;
+  return JSON.stringify(
+    rows.map((row) => {
+      if (
+        typeof row.run_id !== 'string' ||
+        typeof row.event_count !== 'number' ||
+        !Number.isSafeInteger(row.event_count) ||
+        typeof row.high_water !== 'number' ||
+        !Number.isSafeInteger(row.high_water)
+      ) {
+        throw new Error('Invalid SQLite AgentRun ledger revision');
+      }
+      return [row.run_id, row.event_count, row.high_water];
+    }),
+  );
 }
 
 function normalizeCurrentAgentRunHeader(

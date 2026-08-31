@@ -112,7 +112,11 @@ export interface ContextDiagnosticsComposition {
 
 type ContextRunStore = Pick<
   AgentRunStore,
-  'listSessionRuns' | 'readEvents' | 'readEventProjection' | 'repairEventProjection'
+  | 'listSessionRuns'
+  | 'readEvents'
+  | 'readEventProjection'
+  | 'readEventLedgerRevision'
+  | 'repairEventProjection'
 >;
 
 /**
@@ -157,7 +161,8 @@ export async function readLatestContextDiagnostics(
       if (snapshot) return availableFrom(snapshot);
       if (projected) replaceProjectionId = projected.id;
     }
-    return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId);
+    const ledgerRevision = await runStore.readEventLedgerRevision?.(sessionId);
+    return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId, ledgerRevision);
   } catch {
     return { status: 'unavailable', reason: 'trace_unavailable' };
   }
@@ -177,6 +182,7 @@ async function rebuildContextFromLedger(
   runStore: ContextRunStore,
   sessionId: string,
   replaceProjectionId?: string,
+  ledgerRevision?: string,
 ): Promise<ContextDiagnostics> {
   const runs = (await runStore.listSessionRuns(sessionId)).filter(isSessionInlineRun);
   let anchor: MeteringAnchor | undefined;
@@ -220,7 +226,7 @@ async function rebuildContextFromLedger(
   // authority for data written since canonical metering shipped.
   const resolved = anchor ?? (sawCanonicalRecord ? undefined : legacy);
   if (!resolved) {
-    await repairLatestContext(runStore, sessionId, null, replaceProjectionId);
+    await repairLatestContext(runStore, sessionId, null, replaceProjectionId, ledgerRevision);
     return { status: 'unavailable', reason: 'no_completed_request' };
   }
   const boundary = latestCheckpointBefore(checkpoints, resolved);
@@ -241,7 +247,7 @@ async function rebuildContextFromLedger(
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
   // and a later cold read can retry the derived write.
-  await repairLatestContext(runStore, sessionId, snapshot, replaceProjectionId);
+  await repairLatestContext(runStore, sessionId, snapshot, replaceProjectionId, ledgerRevision);
   return availableFrom(snapshot);
 }
 
@@ -257,6 +263,7 @@ async function repairLatestContext(
   sessionId: string,
   snapshot: LatestContextSnapshot | null,
   replaceProjectionId?: string,
+  ledgerRevision?: string,
 ): Promise<void> {
   const repair = runStore.repairEventProjection;
   if (!repair) return;
@@ -276,7 +283,12 @@ async function repairLatestContext(
             data: snapshot as unknown as Record<string, unknown>,
           } as AgentRunEvent)
         : null,
-      replaceProjectionId ? { replaceEventId: replaceProjectionId } : undefined,
+      replaceProjectionId || ledgerRevision
+        ? {
+            ...(replaceProjectionId ? { replaceEventId: replaceProjectionId } : {}),
+            ...(ledgerRevision ? { ifLedgerRevision: ledgerRevision } : {}),
+          }
+        : undefined,
     )
     .catch(() => {});
 }
