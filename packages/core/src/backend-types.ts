@@ -35,9 +35,10 @@ import type {
   QuoteRef,
   SessionEvent,
   SandboxBoundaryRequestEvent,
+  FormRequestEvent,
   UserQuestionRequestEvent,
 } from './events.js';
-import type { InteractionClosureReason } from './interaction.js';
+import type { InteractionClosureReason, InteractionFormResult } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
@@ -132,6 +133,11 @@ export interface HostedUserQuestionSettlement {
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
 }
 
+export interface HostedFormSettlement {
+  applyAnswer(answer: InteractionFormResult): Promise<void>;
+  applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
+}
+
 export interface HostedSandboxBoundarySettlement {
   applyDecision(settlement: SandboxBoundarySettlement): Promise<void>;
   applyClosure(reason: Exclude<InteractionClosureReason, 'timed_out'>): Promise<void>;
@@ -149,6 +155,10 @@ export interface HostedInteractionBridge {
   admitUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
     settlement: HostedUserQuestionSettlement;
+  }): Promise<void>;
+  admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
   }): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;

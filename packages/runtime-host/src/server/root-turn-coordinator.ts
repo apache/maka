@@ -3128,7 +3128,7 @@ function isRuntimeSessionForwardedEvent(
 }
 
 function isInteractionAnswerAck(event: SessionEvent): boolean {
-  return event.type === 'user_question_answer_ack';
+  return event.type === 'user_question_answer_ack' || event.type === 'form_answer_ack';
 }
 
 function completedStart(outcome: RootMessageStartOutcome): TurnStartDisposition {

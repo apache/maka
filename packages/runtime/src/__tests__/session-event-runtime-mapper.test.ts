@@ -323,6 +323,46 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     assert.equal(mapped.refs?.toolCallId, 'tool-1');
   });
 
+  test('form_request maps to one system-authored runtime action', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'form_request',
+        requestId: 'form-1',
+        toolUseId: 'tool-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'system');
+    assert.deepEqual(mapped.actions?.formRequest, {
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    });
+  });
+
+  test('form_answer_ack maps without duplicating the canonical result', () => {
+    const mapped = mapSessionEventToRuntimeEvent(
+      ev({
+        type: 'form_answer_ack',
+        requestId: 'form-1',
+        toolUseId: 'tool-1',
+      }),
+      ctx,
+    );
+
+    assert.equal(mapped.role, 'system');
+    assert.equal(mapped.author, 'user');
+    assert.deepEqual(mapped.actions?.formAnswerAccepted, { requestId: 'form-1' });
+    assert.equal(mapped.refs?.toolCallId, 'tool-1');
+  });
+
   test('tool_result without a prior tool_start still maps (name falls back to empty)', () => {
     const a = mapSessionEventToRuntimeEvent(
       ev({
@@ -526,6 +566,29 @@ const PROJECTION_SAMPLES: ProjectionSamples = {
       turnId: 'turn-1',
       ts: 1,
       requestId: 'q-1',
+      toolUseId: 'tool-1',
+    },
+  },
+  form_request: {
+    subject: {
+      type: 'form_request',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'tool-1',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    },
+  },
+  form_answer_ack: {
+    subject: {
+      type: 'form_answer_ack',
+      id: 'e',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'form-1',
       toolUseId: 'tool-1',
     },
   },

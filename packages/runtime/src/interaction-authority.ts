@@ -20,6 +20,8 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
+  FormAnswerAckEvent,
+  FormRequestEvent,
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionAnswerAckEvent,
@@ -28,11 +30,13 @@ import type {
 import type {
   InteractionCanonicalPermissionOutcome,
   InteractionClosureReason,
+  InteractionFormResult,
   InteractionPermissionRequest,
 } from '@maka/core/interaction';
 import type { SandboxBoundarySettlement } from '@maka/core/sandbox-boundary';
 import type {
   HostedInteractionBridge,
+  HostedFormSettlement,
   HostedSandboxBoundarySettlement,
   HostedUserQuestionAnswer,
   HostedUserQuestionSettlement,
@@ -65,6 +69,10 @@ export type RuntimeUserQuestionOutcome =
   | { kind: 'question_answer'; answer: RuntimeUserQuestionAnswer }
   | { kind: 'closure'; reason: RuntimeUserQuestionClosureReason };
 
+export type RuntimeFormOutcome =
+  | { kind: 'form_answer'; answer: InteractionFormResult }
+  | { kind: 'closure'; reason: RuntimeUserQuestionClosureReason };
+
 export type RuntimeSandboxBoundaryOutcome =
   | { kind: 'sandbox_boundary_decision'; settlement: SandboxBoundarySettlement }
   | { kind: 'closure'; reason: RuntimeUserQuestionClosureReason };
@@ -79,6 +87,12 @@ export interface RuntimeUserQuestionContinuation
   waitForPublication(): Promise<void>;
 }
 
+export interface RuntimeFormContinuation
+  extends RuntimeInteractionContinuationIdentity,
+    HostedFormSettlement {
+  waitForPublication(): Promise<void>;
+}
+
 export interface RuntimeSandboxBoundaryContinuation
   extends RuntimeInteractionContinuationIdentity,
     HostedSandboxBoundarySettlement {
@@ -89,6 +103,10 @@ export interface RuntimeInteractionContinuationAuthority {
   acceptUserQuestionRequest(input: {
     request: UserQuestionRequestEvent;
     continuation: RuntimeUserQuestionContinuation;
+  }): Promise<void>;
+  acceptFormRequest(input: {
+    request: FormRequestEvent;
+    continuation: RuntimeFormContinuation;
   }): Promise<void>;
   acceptSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
@@ -181,11 +199,18 @@ export class RuntimeInteractionFailStopError extends Error {
 
 type LocalClosureFinalizer = () => void;
 
-type HostedInteractionRequestEvent = UserQuestionRequestEvent | SandboxBoundaryRequestEvent;
+type HostedInteractionRequestEvent =
+  | UserQuestionRequestEvent
+  | FormRequestEvent
+  | SandboxBoundaryRequestEvent;
 type HostedInteractionSettlementAckEvent =
   | UserQuestionAnswerAckEvent
+  | FormAnswerAckEvent
   | SandboxBoundaryDecisionAckEvent;
-type RuntimeHostedInteractionOutcome = RuntimeUserQuestionOutcome | RuntimeSandboxBoundaryOutcome;
+type RuntimeHostedInteractionOutcome =
+  | RuntimeUserQuestionOutcome
+  | RuntimeFormOutcome
+  | RuntimeSandboxBoundaryOutcome;
 
 interface TrackedContinuationBase {
   readonly requestId: string;
@@ -204,12 +229,20 @@ interface TrackedQuestionContinuation extends TrackedContinuationBase {
   readonly continuation: RuntimeUserQuestionContinuation;
 }
 
+interface TrackedFormContinuation extends TrackedContinuationBase {
+  readonly request: FormRequestEvent;
+  readonly continuation: RuntimeFormContinuation;
+}
+
 interface TrackedSandboxBoundaryContinuation extends TrackedContinuationBase {
   readonly request: SandboxBoundaryRequestEvent;
   readonly continuation: RuntimeSandboxBoundaryContinuation;
 }
 
-type TrackedContinuation = TrackedQuestionContinuation | TrackedSandboxBoundaryContinuation;
+type TrackedContinuation =
+  | TrackedQuestionContinuation
+  | TrackedFormContinuation
+  | TrackedSandboxBoundaryContinuation;
 
 /** Exact-Run bridge between RuntimeKernel and backend Interaction producers. */
 export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
@@ -291,6 +324,40 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
       tracked.completePublicationBarrier();
       throw new RuntimeInteractionInvariantError(
         `Question ${tracked.requestId} completed admission after Interaction publication sealed`,
+      );
+    }
+  }
+
+  async admitFormRequest(input: {
+    request: FormRequestEvent;
+    settlement: HostedFormSettlement;
+  }): Promise<void> {
+    const tracked = this.trackForm(input.request, input.settlement);
+    try {
+      await this.owner.acceptFormRequest({
+        request: input.request,
+        continuation: tracked.continuation,
+      });
+    } catch (error) {
+      tracked.completePublicationBarrier();
+      if (!tracked.settlementStarted) this.continuations.delete(tracked.requestId);
+      throw error;
+    }
+    if (tracked.settlementStarted) {
+      try {
+        await tracked.settlementPromise;
+        throw new RuntimeInteractionInvariantError(
+          `Form ${tracked.requestId} settled during pending-only admission`,
+        );
+      } finally {
+        tracked.completePublicationBarrier();
+      }
+    }
+    tracked.admissionState = 'pending';
+    if (this.publicationsSealed) {
+      tracked.completePublicationBarrier();
+      throw new RuntimeInteractionInvariantError(
+        `Form ${tracked.requestId} completed admission after Interaction publication sealed`,
       );
     }
   }
@@ -490,6 +557,47 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
     return tracked;
   }
 
+  private trackForm(
+    request: FormRequestEvent,
+    local: HostedFormSettlement,
+  ): TrackedFormContinuation {
+    this.assertNewContinuation(request);
+    let tracked!: TrackedFormContinuation;
+    const publication = createInteractionPublicationBarrier();
+    const continuation: RuntimeFormContinuation = Object.freeze({
+      requestId: request.requestId,
+      turnId: this.turnId,
+      runId: this.runId,
+      waitForPublication: () => publication.publicationBarrier,
+      applyAnswer: (answer: InteractionFormResult) =>
+        this.settleTracked(
+          tracked,
+          () => local.applyAnswer(answer),
+          { kind: 'form_answer', answer },
+          'form answer',
+        ),
+      applyClosure: (reason: RuntimeUserQuestionClosureReason) =>
+        this.settleTracked(
+          tracked,
+          () => local.applyClosure(reason),
+          { kind: 'closure', reason },
+          'form closure',
+        ),
+    });
+    tracked = {
+      requestId: request.requestId,
+      request,
+      continuation,
+      ...publication,
+      admissionState: undefined,
+      published: false,
+      settlementStarted: false,
+      settled: false,
+    };
+    this.continuations.set(request.requestId, tracked);
+    return tracked;
+  }
+
   private trackSandboxBoundary(
     request: SandboxBoundaryRequestEvent,
     local: HostedSandboxBoundarySettlement,
@@ -603,6 +711,7 @@ function settlementMatchesAck(
   const outcome = tracked.outcome;
   if (!outcome) return false;
   if (event.type === 'user_question_answer_ack') return outcome.kind === 'question_answer';
+  if (event.type === 'form_answer_ack') return outcome.kind === 'form_answer';
   if (outcome.kind !== 'sandbox_boundary_decision') return false;
   const { request, boundary } = outcome.settlement;
   return (

@@ -39,7 +39,12 @@ import {
   type MessageContent,
   type PermissionClosureReason,
 } from './events.js';
-import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from './interaction.js';
+import {
+  INTERACTION_ID_MAX_BYTES,
+  INTERACTION_TOOL_NAME_MAX_BYTES,
+  decodeInteractionRequest,
+  type InteractionFormInput,
+} from './interaction.js';
 import type { PermissionRequestPayload, PermissionResponse } from './permission.js';
 import { decodeTurnOrigin, type TurnOrigin } from './turn-origin.js';
 import type { UserQuestionRequest } from './user-question.js';
@@ -347,6 +352,13 @@ interface RuntimeEventAnswerAcceptedIdentity {
 export interface RuntimeEventUserQuestionAnswerAccepted
   extends RuntimeEventAnswerAcceptedIdentity {}
 
+export interface RuntimeEventFormRequest extends InteractionFormInput {
+  requestId: string;
+  toolUseId: string;
+}
+
+export interface RuntimeEventFormAnswerAccepted extends RuntimeEventAnswerAcceptedIdentity {}
+
 export interface RuntimeEventPermissionAnswerAccepted extends RuntimeEventAnswerAcceptedIdentity {}
 
 export interface RuntimeEventPermissionClosureAccepted {
@@ -376,6 +388,10 @@ export interface RuntimeEventActions {
   userQuestionRequest?: UserQuestionRequest;
   /** Audit fact only; the canonical answer remains in InteractionStore. */
   userQuestionAnswerAccepted?: RuntimeEventUserQuestionAnswerAccepted;
+  /** A provider-neutral structured form raised by a tool call. */
+  formRequest?: RuntimeEventFormRequest;
+  /** Audit fact only; the canonical form result remains in InteractionStore. */
+  formAnswerAccepted?: RuntimeEventFormAnswerAccepted;
   /** Hand off the invocation to another agent (multi-agent transfer). */
   transferToAgent?: string;
   /** Marks the event that closes the invocation. */
@@ -574,6 +590,8 @@ const RUNTIME_ACTIONS_SHAPE = defineObjectShape<RuntimeEventActions>()(
     'permissionClosureAccepted',
     'userQuestionRequest',
     'userQuestionAnswerAccepted',
+    'formRequest',
+    'formAnswerAccepted',
     'transferToAgent',
     'endInvocation',
     'tokenUsage',
@@ -861,6 +879,9 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.userQuestionRequest === undefined || isUserQuestionRequest(value.userQuestionRequest)) &&
     (value.userQuestionAnswerAccepted === undefined ||
       isRuntimeEventAnswerAcceptedIdentity(value.userQuestionAnswerAccepted)) &&
+    (value.formRequest === undefined || isRuntimeEventFormRequest(value.formRequest)) &&
+    (value.formAnswerAccepted === undefined ||
+      isRuntimeEventAnswerAcceptedIdentity(value.formAnswerAccepted)) &&
     isOptionalString(value.transferToAgent) &&
     (value.endInvocation === undefined || typeof value.endInvocation === 'boolean') &&
     (value.tokenUsage === undefined || isRuntimeTokenUsage(value.tokenUsage)) &&
@@ -874,6 +895,24 @@ function isRuntimeEventActions(value: unknown): value is RuntimeEventActions {
     (value.managedMutationTerminal === undefined ||
       isRuntimeManagedMutationTerminal(value.managedMutationTerminal))
   );
+}
+
+function isRuntimeEventFormRequest(value: unknown): value is RuntimeEventFormRequest {
+  if (!isRecord(value)) return false;
+  const { requestId, ...request } = value;
+  if (
+    typeof requestId !== 'string' ||
+    requestId.length === 0 ||
+    UTF8.encode(requestId).byteLength > INTERACTION_ID_MAX_BYTES
+  ) {
+    return false;
+  }
+  try {
+    decodeInteractionRequest({ kind: 'form', ...request });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isRuntimeManagedMutationTerminal(

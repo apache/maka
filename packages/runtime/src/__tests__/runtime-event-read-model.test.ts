@@ -1894,6 +1894,20 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
     action: { requestId: 'coverage-question' },
     event: { author: 'user', refs: { toolCallId: 'coverage-question-tool' } },
   },
+  formRequest: {
+    action: {
+      requestId: 'coverage-form',
+      toolUseId: 'coverage-form-tool',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    },
+    event: { refs: { toolCallId: 'coverage-form-tool' } },
+  },
+  formAnswerAccepted: {
+    action: { requestId: 'coverage-form' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-form-tool' } },
+  },
   transferToAgent: { action: 'agent-b' },
   // The terminal fact is one of the actions that does own a row.
   endInvocation: { action: true },

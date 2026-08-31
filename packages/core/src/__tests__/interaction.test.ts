@@ -35,6 +35,7 @@ import {
   isInteractionCanonicalOutcomeValidForRequest,
   projectInteractionClientCapabilityRequest,
   projectInteractionPermissionRequest,
+  projectInteractionFormRequest,
   projectInteractionQuestionRequest,
   projectInteractionSandboxBoundaryRequest,
 } from '../interaction.js';
@@ -1057,6 +1058,246 @@ describe('Interaction decoding and validity', () => {
         rememberForTurn: false,
         rationale: 'not on the user answer wire',
       }),
+    );
+  });
+
+  test('decodes the complete bounded primitive form contract', () => {
+    const request = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Choose deployment settings',
+      requester: { name: 'deploy', source: 'Example MCP server' },
+      fields: [
+        {
+          kind: 'string',
+          name: 'owner',
+          label: 'Owner email',
+          required: true,
+          format: 'email',
+          minLength: 3,
+          maxLength: 100,
+        },
+        {
+          kind: 'number',
+          name: 'ratio',
+          label: 'Traffic ratio',
+          required: false,
+          minimum: 0,
+          maximum: 1,
+          default: 0.5,
+        },
+        {
+          kind: 'integer',
+          name: 'replicas',
+          label: 'Replicas',
+          required: true,
+          minimum: 1,
+          maximum: 10,
+        },
+        {
+          kind: 'boolean',
+          name: 'confirm',
+          label: 'Confirm deployment',
+          required: true,
+          default: false,
+        },
+        {
+          kind: 'single_select',
+          name: 'environment',
+          label: 'Environment',
+          required: true,
+          options: [
+            { value: 'staging', label: 'Staging' },
+            { value: 'production', label: 'Production' },
+          ],
+          default: 'staging',
+        },
+        {
+          kind: 'multi_select',
+          name: 'regions',
+          label: 'Regions',
+          required: false,
+          options: [
+            { value: 'us', label: 'US' },
+            { value: 'eu', label: 'EU' },
+          ],
+          minItems: 1,
+          maxItems: 2,
+          default: ['us'],
+        },
+      ],
+    });
+
+    const accepted = decodeInteractionAnswer({
+      kind: 'form',
+      action: 'accept',
+      values: {
+        owner: 'owner@example.test',
+        ratio: 0.25,
+        replicas: 3,
+        confirm: true,
+        environment: 'production',
+        regions: ['us', 'eu'],
+      },
+    });
+    assert.equal(isInteractionAnswerValidForRequest(request, accepted), true);
+    assert.equal(
+      isInteractionAnswerValidForRequest(
+        request,
+        decodeInteractionAnswer({ kind: 'form', action: 'decline' }),
+      ),
+      true,
+    );
+    assert.equal(
+      isInteractionAnswerValidForRequest(
+        request,
+        decodeInteractionAnswer({ kind: 'form', action: 'cancel' }),
+      ),
+      true,
+    );
+  });
+
+  test('rejects malformed form schemas and invalid accepted values', () => {
+    const request = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [
+        {
+          kind: 'integer',
+          name: 'replicas',
+          label: 'Replicas',
+          required: true,
+          minimum: 1,
+          maximum: 10,
+        },
+        {
+          kind: 'multi_select',
+          name: 'regions',
+          label: 'Regions',
+          required: false,
+          options: [
+            { value: 'us', label: 'US' },
+            { value: 'eu', label: 'EU' },
+          ],
+          minItems: 1,
+        },
+      ],
+    });
+
+    for (const values of [
+      {},
+      { replicas: 1.5 },
+      { replicas: 11 },
+      { replicas: 2, unknown: true },
+      { replicas: 2, regions: [] },
+      { replicas: 2, regions: ['elsewhere'] },
+    ]) {
+      const answer = decodeInteractionAnswer({ kind: 'form', action: 'accept', values });
+      assert.equal(isInteractionAnswerValidForRequest(request, answer), false);
+    }
+
+    assert.throws(() =>
+      decodeInteractionAnswer({
+        kind: 'form',
+        action: 'accept',
+        values: { replicas: 2, regions: ['us', 'us'] },
+      }),
+    );
+
+    assert.throws(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [
+          { kind: 'boolean', name: 'same', label: 'First', required: false },
+          { kind: 'boolean', name: 'same', label: 'Second', required: false },
+        ],
+      }),
+    );
+    assert.throws(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [
+          {
+            kind: 'single_select',
+            name: 'environment',
+            label: 'Environment',
+            required: true,
+            options: [{ value: 'staging', label: 'Staging' }],
+            default: 'production',
+          },
+        ],
+      }),
+    );
+  });
+
+  test('rejects forms that cannot produce a bounded accepted answer', () => {
+    assert.throws(
+      () =>
+        projectInteractionFormRequest({
+          toolUseId: 'tool-form',
+          message: 'Enter required values',
+          requester: { name: 'deploy' },
+          fields: Array.from({ length: 5 }, (_, index) => ({
+            kind: 'string' as const,
+            name: `value-${index}`,
+            label: `Value ${index}`,
+            required: true,
+            minLength: 2_048,
+            maxLength: 2_048,
+          })),
+        }),
+      /Interaction form answer exceeds serialized byte limit/,
+    );
+
+    assert.doesNotThrow(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Enter a timestamp',
+        requester: { name: 'deploy' },
+        fields: [
+          {
+            kind: 'string',
+            name: 'when',
+            label: 'When',
+            required: true,
+            format: 'date-time',
+            minLength: 22,
+            maxLength: 22,
+          },
+        ],
+      }),
+    );
+  });
+
+  test('compares canonical accepted form values structurally', () => {
+    const first = decodeInteractionCanonicalOutcome({
+      kind: 'form_answer',
+      action: 'accept',
+      values: { regions: ['us', 'eu'], replicas: 2 },
+      committedAt: 1,
+    });
+    const retry = decodeInteractionCanonicalOutcome({
+      kind: 'form_answer',
+      action: 'accept',
+      values: { replicas: 2, regions: ['us', 'eu'] },
+      committedAt: 2,
+    });
+    assert.equal(interactionCanonicalOutcomesEquivalent(first, retry), true);
+    assert.equal(
+      interactionCanonicalOutcomesEquivalent(
+        first,
+        decodeInteractionCanonicalOutcome({
+          kind: 'form_answer',
+          action: 'accept',
+          values: { replicas: 2, regions: ['eu', 'us'] },
+          committedAt: 3,
+        }),
+      ),
+      false,
     );
   });
 });
