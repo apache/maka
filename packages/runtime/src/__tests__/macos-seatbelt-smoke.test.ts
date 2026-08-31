@@ -36,6 +36,7 @@ import {
   MACOS_SEATBELT_EXECUTABLE,
   MacosSeatbeltBackend,
   macosBashExecutableRoots,
+  resolveMacosDeveloperToolchainRoot,
 } from '../sandbox/macos-seatbelt.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 
@@ -228,6 +229,38 @@ describe('macOS Seatbelt smoke', { skip: !canRunSeatbelt }, () => {
 
     assert.equal(child.status, 0, child.stderr);
     assert.match(child.stdout, /^git version /);
+  });
+
+  it('admits an alternate selected Xcode application root', async () => {
+    const workspaceRoot = await makeWorkspace();
+    const alternateRoot = await realpath(
+      await mkdtemp(join(tmpdir(), 'maka-seatbelt-xcode-beta-')),
+    );
+    cleanup.push(workspaceRoot, alternateRoot);
+    const contents = join(alternateRoot, 'Xcode-beta.app', 'Contents');
+    const developer = join(contents, 'Developer');
+    const marker = join(contents, 'SharedFrameworks', 'marker.txt');
+    await mkdir(developer, { recursive: true });
+    await mkdir(join(contents, 'SharedFrameworks'), { recursive: true });
+    await writeFile(marker, 'alternate developer root\n');
+    const developerRoot = resolveMacosDeveloperToolchainRoot(undefined, () => developer);
+    assert.ok(developerRoot);
+    const executableRoots = macosBashExecutableRoots({
+      execPath: process.execPath,
+      path: '/usr/bin:/bin',
+      developerRoot,
+    });
+
+    const child = runSeatbeltCommand(
+      workspaceRoot,
+      `/bin/cat ${JSON.stringify(marker)}`,
+      createWorkspaceWritePermissionProfile(),
+      false,
+      executableRoots,
+    );
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, 'alternate developer root\n');
   });
 
   it('denies writes outside the workspace root', async () => {

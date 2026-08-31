@@ -37,6 +37,7 @@ import {
   createSeatbeltExecArgs,
   escapeSeatbeltRegex,
   macosBashExecutableRoots,
+  resolveMacosDeveloperToolchainRoot,
 } from '../sandbox/macos-seatbelt.js';
 import type { SandboxTransformRequest } from '../sandbox/types.js';
 
@@ -143,6 +144,7 @@ describe('macosBashExecutableRoots', () => {
       macosBashExecutableRoots({
         execPath: '/Applications/Maka.app/Contents/MacOS/Maka',
         path: '/Users/test/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+        developerRoot: '/Applications/Xcode-beta.app/Contents',
       }),
       [
         '/Applications/Maka.app/Contents/MacOS',
@@ -160,8 +162,7 @@ describe('macosBashExecutableRoots', () => {
         '/usr/local/lib',
         '/usr/local/libexec',
         '/usr/local/share',
-        '/Applications/Xcode.app/Contents',
-        '/Library/Developer/CommandLineTools',
+        '/Applications/Xcode-beta.app/Contents',
       ],
     );
   });
@@ -176,6 +177,43 @@ describe('macosBashExecutableRoots', () => {
     assert.equal(roots.includes('/custom/toolchain/bin'), false);
     assert.equal(roots.includes('/opt/homebrew/etc'), false);
     assert.equal(roots.includes('/usr/local/etc'), false);
+  });
+
+  it('keeps Homebrew Cellar Node on the fixed package-manager subroots', () => {
+    const roots = macosBashExecutableRoots({
+      execPath: '/opt/homebrew/Cellar/node/24.0.0/bin/node',
+      path: '/opt/homebrew/bin:/usr/bin:/bin',
+      developerRoot: '/Applications/Xcode.app/Contents',
+    });
+
+    assert.equal(roots.includes('/opt/homebrew'), false);
+    assert.equal(roots.includes('/opt/homebrew/Cellar'), true);
+    assert.equal(roots.includes('/opt/homebrew/opt'), true);
+    assert.equal(roots.includes('/opt/homebrew/lib'), true);
+  });
+
+  it('resolves the configured or selected developer directory to the Xcode toolchain root', () => {
+    const root = mkdtempSync(join(realpathSync('/tmp'), 'maka-xcode-root-'));
+    try {
+      const contents = join(root, 'Xcode-beta.app', 'Contents');
+      const developer = join(contents, 'Developer');
+      const alias = join(root, 'selected-xcode');
+      mkdirSync(developer, { recursive: true });
+      symlinkSync(developer, alias);
+
+      assert.equal(
+        resolveMacosDeveloperToolchainRoot(alias, () => {
+          throw new Error('DEVELOPER_DIR must take precedence');
+        }),
+        realpathSync(contents),
+      );
+      assert.equal(
+        resolveMacosDeveloperToolchainRoot(undefined, () => developer),
+        realpathSync(contents),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

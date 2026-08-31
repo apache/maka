@@ -79,7 +79,10 @@ import { profileRequiresSandbox, type SandboxManager } from './sandbox/sandbox-m
 import { SandboxCommandError } from './sandbox/errors.js';
 import { isLikelySandboxDenial } from './sandbox/detect.js';
 import { linuxExecutableRoots } from './sandbox/linux-sandbox.js';
-import { macosBashExecutableRoots } from './sandbox/macos-seatbelt.js';
+import {
+  macosBashExecutableRoots,
+  resolveMacosDeveloperToolchainRoot,
+} from './sandbox/macos-seatbelt.js';
 import { pinExistingLinuxProfilePath } from './sandbox/linux-profile-path.js';
 import type { SandboxPlatform, SandboxType } from './sandbox/types.js';
 import type { ChildFdInput } from './child-fd-input.js';
@@ -845,6 +848,7 @@ function sandboxCommand(
                 executableRoots: macosBashExecutableRoots({
                   execPath: process.execPath,
                   path: env.PATH,
+                  developerRoot: resolveMacosDeveloperToolchainRoot(env.DEVELOPER_DIR),
                 }),
               }
             : {}),

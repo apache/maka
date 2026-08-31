@@ -18,6 +18,7 @@
  */
 
 import { readlinkSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import {
   basename,
   delimiter,
@@ -55,10 +56,12 @@ const MACOS_APPLE_DEVELOPER_ROOTS = [
   '/Applications/Xcode.app/Contents',
   '/Library/Developer/CommandLineTools',
 ] as const;
+const XCODE_SELECT_TIMEOUT_MS = 1_000;
 
 export function macosBashExecutableRoots(input: {
   execPath: string;
   path?: string;
+  developerRoot?: string;
 }): readonly string[] {
   const roots = [runtimeExecutableRoot(input.execPath)];
   const pathEntries = (input.path ?? '')
@@ -77,11 +80,41 @@ export function macosBashExecutableRoots(input: {
     }
   }
 
-  roots.push(...MACOS_APPLE_DEVELOPER_ROOTS);
+  roots.push(...(input.developerRoot ? [input.developerRoot] : MACOS_APPLE_DEVELOPER_ROOTS));
   const uniqueRoots = [...new Set(roots)];
   return uniqueRoots.filter(
     (root) => !uniqueRoots.some((candidate) => candidate !== root && isPathWithin(root, candidate)),
   );
+}
+
+export function resolveMacosDeveloperToolchainRoot(
+  developerDir: string | undefined,
+  selectedDeveloperDirectory: () => string | undefined = readSelectedDeveloperDirectory,
+): string | undefined {
+  const configured = absoluteNonEmptyPath(developerDir);
+  const selected = configured ?? absoluteNonEmptyPath(selectedDeveloperDirectory());
+  if (!selected) return undefined;
+
+  const normalized = normalize(selected);
+  let canonicalSelected = normalized;
+  try {
+    canonicalSelected = realpathSync(normalized);
+  } catch {
+    // The command itself will report an invalid selected toolchain. Keep the
+    // lexical path so Seatbelt does not silently fall back to a different root.
+  }
+  const toolchainRoot =
+    basename(canonicalSelected) === 'Developer' &&
+    basename(dirname(canonicalSelected)) === 'Contents'
+      ? dirname(canonicalSelected)
+      : canonicalSelected.endsWith('.app')
+        ? join(canonicalSelected, 'Contents')
+        : canonicalSelected;
+  try {
+    return realpathSync(toolchainRoot);
+  } catch {
+    return toolchainRoot;
+  }
 }
 
 export const MACOS_SEATBELT_BASE_POLICY = `(version 1)
@@ -621,6 +654,20 @@ function runtimeExecutableRoot(execPath: string): string {
 function isPathWithin(path: string, root: string): boolean {
   const delta = relative(root, normalize(path));
   return delta === '' || (delta !== '..' && !delta.startsWith(`..${sep}`));
+}
+
+function absoluteNonEmptyPath(path: string | undefined): string | undefined {
+  const trimmed = path?.trim();
+  return trimmed && isAbsolute(trimmed) ? trimmed : undefined;
+}
+
+function readSelectedDeveloperDirectory(): string | undefined {
+  const result = spawnSync('/usr/bin/xcode-select', ['-p'], {
+    encoding: 'utf8',
+    timeout: XCODE_SELECT_TIMEOUT_MS,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  return result.status === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 function buildNetworkPolicy(profile: PermissionProfile): string {

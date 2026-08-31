@@ -45,7 +45,11 @@ import { expect } from '../test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
-import { MacosSeatbeltBackend } from '../sandbox/macos-seatbelt.js';
+import {
+  MacosSeatbeltBackend,
+  macosBashExecutableRoots,
+  resolveMacosDeveloperToolchainRoot,
+} from '../sandbox/macos-seatbelt.js';
 import { WindowsBrokerSandboxBackend } from '../sandbox/windows-sandbox.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import type { ShellRunLauncher } from '../shell-tools.js';
@@ -1465,11 +1469,13 @@ describe('builtin Bash streaming output', () => {
           (argument) => /^-DEXECUTABLE_ROOT_\d+=/u.test(argument) && argument.endsWith(`=${root}`),
         );
       assert.ok(hasExecutableRoot(executableRoot));
-      if (process.execPath.startsWith('/opt/homebrew/')) {
-        assert.ok(hasExecutableRoot('/opt/homebrew'));
-      }
-      if (process.execPath.startsWith('/usr/local/')) {
-        assert.ok(hasExecutableRoot('/usr/local'));
+      const expectedRoots = macosBashExecutableRoots({
+        execPath: process.execPath,
+        path: process.env.PATH,
+        developerRoot: resolveMacosDeveloperToolchainRoot(process.env.DEVELOPER_DIR),
+      });
+      for (const expectedRoot of expectedRoots) {
+        assert.ok(hasExecutableRoot(expectedRoot), `missing executable root ${expectedRoot}`);
       }
       assert.equal(input?.env?.GIT_CONFIG_GLOBAL, process.env.GIT_CONFIG_GLOBAL ?? '/dev/null');
       assert.equal(input?.env?.GIT_CONFIG_SYSTEM, process.env.GIT_CONFIG_SYSTEM ?? '/dev/null');
