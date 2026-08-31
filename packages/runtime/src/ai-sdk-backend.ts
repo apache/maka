@@ -863,6 +863,37 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
   };
 }
 
+function durableApplyPatchReplayFactText(
+  input: unknown,
+  projection: DurableToolResultProjection,
+  isError: boolean,
+): string | null {
+  if (projection.kind === 'json') {
+    const fact = applyPatchReplayFactText(input, projection, isError);
+    if (fact) return fact;
+  }
+  const output = durableProjectionToToolResultOutput(projection);
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value;
+    case 'json':
+    case 'error-json':
+      return JSON.stringify(output.value);
+    case 'content': {
+      const text = output.value
+        .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n');
+      return text || null;
+    }
+    case 'execution-denied':
+      return output.reason
+        ? `ApplyPatch execution denied: ${output.reason}`
+        : 'ApplyPatch execution denied.';
+  }
+}
+
 /**
  * One Code Mode cell runs at a time on a backend, with one allowed to wait.
  * Widening either needs evidence that concurrent cells are wanted; none exists
@@ -1110,7 +1141,7 @@ export class AiSdkBackend implements AgentBackend {
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
       materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
+        this.materializeRuntimeReplayPlan(plan, imageBudget, checkpoint),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
     });
     if (
@@ -1327,12 +1358,6 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      materializeDurableToolResultProjection: ({ toolCallId, projection }) =>
-        this.materializeDurableToolResultProjection(
-          identity.scope().imageBudget,
-          projection,
-          toolCallId,
-        ),
       persistDurableProjectionArtifact: input.persistDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
@@ -1863,7 +1888,6 @@ export class AiSdkBackend implements AgentBackend {
                   content: currentUserContent,
                 } as ModelMessage,
               ];
-        const settledModelOutputs = new Map<string, ToolResultOutput>();
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1915,7 +1939,6 @@ export class AiSdkBackend implements AgentBackend {
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
             replayPlan,
             scope.imageBudget,
-            settledModelOutputs,
             projectionCheckpoint,
           );
           return projectionCheckpoint
@@ -2684,13 +2707,6 @@ export class AiSdkBackend implements AgentBackend {
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
-            for (let index = 0; index < returnedToolCalls.length; index += 1) {
-              const toolCall = returnedToolCalls[index];
-              const settlement = settlements[index];
-              if (toolCall && settlement) {
-                settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
-              }
-            }
 
             const continuationWillRun =
               (maxSteps === undefined || runtimeSteps < maxSteps) &&
@@ -3113,7 +3129,7 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
-          const settlement = await scope.toolRuntime.settleToolCallRaw({
+          const settlement = await scope.toolRuntime.settleToolCall({
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
@@ -3624,7 +3640,6 @@ export class AiSdkBackend implements AgentBackend {
         messages: await this.materializeRuntimeReplayPlan(
           plan,
           scope.imageBudget,
-          undefined,
           projectedHistoryCompactCheckpoint,
         ),
         gate: 'runtime_replay_text_only',
@@ -3648,7 +3663,6 @@ export class AiSdkBackend implements AgentBackend {
             ? await this.materializeRuntimeReplayPlan(
                 degradedPlan,
                 scope.imageBudget,
-                undefined,
                 projectedHistoryCompactCheckpoint,
               )
             : await materializeReplayFallback(),
@@ -3667,7 +3681,6 @@ export class AiSdkBackend implements AgentBackend {
       messages: await this.materializeRuntimeReplayPlan(
         plan,
         scope.imageBudget,
-        undefined,
         projectedHistoryCompactCheckpoint,
       ),
       gate: 'runtime_replay_provider_native',
@@ -3739,7 +3752,6 @@ export class AiSdkBackend implements AgentBackend {
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
     budget: ProviderImageBudget,
-    settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
@@ -3863,22 +3875,18 @@ export class AiSdkBackend implements AgentBackend {
       result: ToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
-      const settledOutput = settledModelOutputs?.get(result.toolCallId);
-      const output =
-        result.modelProjection &&
-        (result.modelProjectionSource === 'durable' || settledOutput === undefined)
-          ? await this.materializeDurableToolResultProjection(
-              budget,
-              result.modelProjection,
-              `runtime-event:${result.eventId}:tool-result`,
-            )
-          : (settledOutput ??
-            (await this.materializeToolResultOutput(
-              budget,
-              result.output,
-              result.isError,
-              `runtime-event:${result.eventId}:tool-result`,
-            )));
+      const output = result.modelProjection
+        ? await this.materializeDurableToolResultProjection(
+            budget,
+            result.modelProjection,
+            `runtime-event:${result.eventId}:tool-result`,
+          )
+        : await this.materializeToolResultOutput(
+            budget,
+            result.output,
+            result.isError,
+            `runtime-event:${result.eventId}:tool-result`,
+          );
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
@@ -4070,11 +4078,13 @@ export class AiSdkBackend implements AgentBackend {
             break;
           }
           downgradedApplyPatchCalls.delete(item.toolCallId);
-          const replayFact = applyPatchReplayFactText(
-            downgradedCall.input,
-            item.output,
-            item.isError,
-          );
+          const replayFact = item.modelProjection
+            ? durableApplyPatchReplayFactText(
+                downgradedCall.input,
+                item.modelProjection,
+                item.isError,
+              )
+            : applyPatchReplayFactText(downgradedCall.input, item.output, item.isError);
           if (!replayFact) break;
           if (downgradedCall.stepId) {
             const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];

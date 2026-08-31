@@ -694,11 +694,6 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { version: 1, kind: 'text', text: 'stable model fact' },
       { version: 1, kind: 'text', text: 'stable model fact' },
     ]);
-    expect(results.map((result) => result?.modelProjectionSource)).toEqual([
-      'durable',
-      'durable',
-      'durable',
-    ]);
   });
 
   test('folds retired permission modes while projecting persisted tool results', () => {

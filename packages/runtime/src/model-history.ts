@@ -174,7 +174,6 @@ export type RuntimeEventModelReplayItem =
       output: unknown;
       isError: boolean;
       modelProjection?: DurableToolResultProjection;
-      modelProjectionSource?: 'durable' | 'compatibility';
       providerExecuted?: boolean;
       eventId: string;
       ts: number;
@@ -657,7 +656,6 @@ export function buildRuntimeEventModelReplayPlan(
           ...(effective.kind === 'projection'
             ? {
                 modelProjection: effective.projection,
-                modelProjectionSource: effective.source,
               }
             : {}),
           isError: event.content.isError === true,

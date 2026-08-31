@@ -125,10 +125,6 @@ export function encodeDefaultDurableToolResultOutput(
   );
 }
 
-export function durableProjectionHasArtifacts(projection: DurableToolResultProjection): boolean {
-  return projection.kind === 'content' && projection.parts.some((part) => part.kind === 'artifact');
-}
-
 export function durableProjectionToToolResultOutput(
   projection: DurableToolResultProjection,
 ): ToolResultOutput {
@@ -168,7 +164,6 @@ export function durableProjectionToToolResultOutput(
 export type EffectiveToolResultProjection =
   | {
       kind: 'projection';
-      source: 'durable' | 'compatibility';
       projection: DurableToolResultProjection;
       legacyOutput: unknown;
     }
@@ -188,14 +183,12 @@ export function decodeEffectiveToolResultProjection(
     try {
       return {
         kind: 'projection',
-        source: 'durable',
         projection: decodeDurableToolResultProjection(content.modelProjection),
         legacyOutput: content.result,
       };
     } catch {
       return {
         kind: 'projection',
-        source: 'durable',
         projection: DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
         legacyOutput: content.result,
       };
@@ -234,7 +227,6 @@ export function decodeEffectiveToolResultProjection(
   }
   return {
     kind: 'projection',
-    source: 'compatibility',
     projection,
     legacyOutput: output,
   };

@@ -84,8 +84,6 @@ import type { RunTraceLike } from './run-trace.js';
 import { AwaitRegistry } from './await-registry.js';
 import type { ToolResultOutput } from './model-protocol.js';
 import {
-  durableProjectionToToolResultOutput,
-  durableProjectionHasArtifacts,
   compatibilityToolResultProjection,
   encodeDefaultDurableToolResultOutput,
   encodeDurableToolResultOutput,
@@ -150,13 +148,7 @@ export interface DurableSessionEventSink {
 
 export interface ToolSettlement {
   result: unknown;
-  modelOutput: ToolResultOutput;
-}
-
-export interface RawToolSettlement {
-  result: unknown;
   providerError?: string;
-  modelProjection: DurableToolResultProjection;
 }
 
 export interface MakaTool<P = any, R = unknown> {
@@ -362,10 +354,6 @@ export interface ToolRuntimeInput {
   runId?: string;
   orchestrationMode?: OrchestrationMode;
   invocationId?: string;
-  materializeDurableToolResultProjection?: (options: {
-    toolCallId: string;
-    projection: DurableToolResultProjection;
-  }) => ToolResultOutput | PromiseLike<ToolResultOutput>;
   persistDurableProjectionArtifact?: (input: {
     turnId: string;
     toolCallId: string;
@@ -732,25 +720,6 @@ export class ToolRuntime {
    * provider-facing error output; durable runtime commit failures still reject.
    */
   async settleToolCall(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
-    const settlement = await this.settleToolCallRaw(call);
-    const modelOutput =
-      durableProjectionHasArtifacts(settlement.modelProjection) &&
-      this.input.materializeDurableToolResultProjection
-        ? await this.input.materializeDurableToolResultProjection({
-            toolCallId: call.toolCallId,
-            projection: settlement.modelProjection,
-          })
-        : durableProjectionToToolResultOutput(settlement.modelProjection);
-    return { result: settlement.result, modelOutput };
-  }
-
-  /**
-   * Settle a tool without producing provider-visible output. Runtime-owned
-   * nested calls use this path because their result is consumed by Code Mode,
-   * not sent as a provider tool-result part; materializing it could spend
-   * turn-scoped provider resources such as the image budget.
-   */
-  async settleToolCallRaw(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
     const settlement = this.performToolSettlement(call);
     // Tracked so endTurn can wait out unwinds already in flight (#2253):
     // their T2 outcomes must land before the stop path settles the run's
@@ -763,8 +732,7 @@ export class ToolRuntime {
     return settlement;
   }
 
-  private async performToolSettlement(call: ResolvedMakaToolCall): Promise<RawToolSettlement> {
-    let modelProjection: DurableToolResultProjection | undefined;
+  private async performToolSettlement(call: ResolvedMakaToolCall): Promise<ToolSettlement> {
     const result = await this.executeTool(
       call.tool,
       call.turnId,
@@ -780,22 +748,9 @@ export class ToolRuntime {
         ...(call.providerOptions !== undefined ? { providerOptions: call.providerOptions } : {}),
       },
       call.stepId,
-      (projection) => {
-        modelProjection = projection;
-      },
     );
     const providerError = providerToolErrorMessage(result);
-    if (modelProjection === undefined) {
-      const projected = this.projectToolResult(
-        call.tool,
-        call.turnId,
-        call.toolCallId,
-        call.input,
-        result,
-      );
-      modelProjection = isPromiseLike(projected) ? await projected : projected;
-    }
-    return { result, modelProjection, ...(providerError ? { providerError } : {}) };
+    return { result, ...(providerError ? { providerError } : {}) };
   }
 
   private projectToolResult(
@@ -1051,7 +1006,6 @@ export class ToolRuntime {
       maxResultBytes?: number;
     },
     stepId?: string,
-    captureProjection?: (projection: DurableToolResultProjection) => void,
   ): Promise<unknown> {
     const rawExecutionArgs = snapshotToolArgs(args);
     const sandboxBoundaryDecisionGeneration = this.sandboxBoundaryDecisionGeneration;
@@ -1758,7 +1712,6 @@ export class ToolRuntime {
         const { result, outcome } = settledExecution.value;
         output.flush();
         const { content, durationMs, modelProjection } = outcome;
-        captureProjection?.(modelProjection);
         // Keep the full provider-facing terminal classification. `isError` is
         // sufficient for the durable response envelope, but it intentionally
         // collapses `aborted` into an error bit and therefore cannot drive live
@@ -1952,7 +1905,6 @@ export class ToolRuntime {
           terminalResult,
         );
         const modelProjection = isPromiseLike(projected) ? await projected : projected;
-        captureProjection?.(modelProjection);
         const durableOutcome = await durableAttempt?.commitOutcome(
           terminalFailure.content,
           true,
@@ -2033,7 +1985,6 @@ export class ToolRuntime {
         activityIdentity,
         durableAttempt,
       );
-      captureProjection?.(modelProjection);
       this.input.recordToolInvocation?.({
         sessionId: this.input.sessionId,
         turnId,

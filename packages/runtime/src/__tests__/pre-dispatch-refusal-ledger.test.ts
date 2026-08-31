@@ -36,8 +36,6 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { RuntimeCommitSink } from '../runtime-commit-sink.js';
-import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
-import { durableProjectionToToolResultOutput } from '../durable-tool-result-projection.js';
 import { LOOP_GATE_IDENTICAL_THRESHOLD, type MakaTool, type ToolRuntime } from '../tool-runtime.js';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 
@@ -411,15 +409,6 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
   assert.equal(operation?.callEvent?.content?.kind, 'function_call');
   assert.equal(operation?.responseEvent?.content?.kind, 'function_response');
   assert.equal(operation?.dispatchEvent, undefined);
-  const replayResult = buildRuntimeEventModelReplayPlan(ledger).items.find(
-    (item) => item.kind === 'tool_result',
-  );
-  assert.deepEqual(
-    settlement.modelOutput,
-    replayResult?.modelProjection
-      ? durableProjectionToToolResultOutput(replayResult.modelProjection)
-      : undefined,
-  );
 });
 
 test('a dispatched call still claims the T1 lane and settles through the commit sink', async () => {

@@ -357,7 +357,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
         impl: async () => ({ ok: true }),
       };
 
-      const settlement = await runtime.settleToolCall({
+      await runtime.settleToolCall({
         tool: exclusive,
         turnId: 'turn-1',
         stepId: 'step-1',
@@ -438,7 +438,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
 
       const published: SessionEvent[] = [];
 
-      const settlement = await runtime.settleToolCall({
+      await runtime.settleToolCall({
         tool,
         turnId: 'turn-1',
         toolCallId: 'provider-call-1',
@@ -479,10 +479,6 @@ describe('ToolRuntime with real SQLite boundary', () => {
       assert.deepEqual(durableProjection, {
         version: 1,
         kind: 'json',
-        value: { ok: true, text: 'contents' },
-      });
-      assert.deepEqual(settlement.modelOutput, {
-        type: 'json',
         value: { ok: true, text: 'contents' },
       });
       const nextTurnProjection = buildRuntimeEventModelReplayPlan(events).items.find(

@@ -25,6 +25,7 @@ import {
   createGenesisExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import { type LlmConnection } from '@maka/core/llm-connections';
+import type { SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
 import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js';
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
@@ -78,8 +79,9 @@ describe('ToolRuntime settlement', () => {
     assert.deepEqual(allowed.result, { ok: true });
   });
 
-  it('keeps the durable Bash command while omitting it from the live model output', async () => {
+  it('keeps the durable Bash command while omitting it from the durable projection', async () => {
     const runtime = makeRuntime();
+    const events: SessionEvent[] = [];
     const bash = buildForegroundBashTool({
       description: 'shell',
       execute: async () => ({
@@ -98,14 +100,17 @@ describe('ToolRuntime settlement', () => {
       input: { command: 'printf durable-command' },
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
     });
 
     assert.equal((settlement.result as { cmd?: unknown }).cmd, 'printf durable-command');
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'json',
+    assert.deepEqual(settledProjection(events), {
+      version: 1,
+      kind: 'json',
       value: {
         kind: 'terminal',
         cwd: '/workspace/repo',
@@ -194,6 +199,7 @@ describe('ToolRuntime settlement', () => {
 
     for (const [index, terminal] of terminalResults.entries()) {
       const runtime = makeRuntime();
+      const events: SessionEvent[] = [];
       const bash = buildManagedBashTool({
         runForegroundBash: async () => terminal,
         runBackgroundBash: async () => {
@@ -208,20 +214,27 @@ describe('ToolRuntime settlement', () => {
         input: { command: terminal.cmd, boundary_intent: 'current' },
         abortSignal: new AbortController().signal,
         eventSink: {
-          push: () => {},
-          pushAndWaitUntilConsumed: async () => {},
+          push: (event) => events.push(event),
+          pushAndWaitUntilConsumed: async (event) => {
+            events.push(event);
+          },
         },
       });
       const { cmd: _cmd, ...projected } = terminal;
 
       assert.deepEqual(settlement.result, terminal);
-      assert.deepEqual(settlement.modelOutput, { type: 'json', value: projected });
+      assert.deepEqual(settledProjection(events), {
+        version: 1,
+        kind: 'json',
+        value: projected,
+      });
       assert.equal(terminalResults[index]?.cmd, terminal.cmd);
     }
   });
 
   it('preserves live provider error mapping', async () => {
     const runtime = makeRuntime();
+    const events: SessionEvent[] = [];
     const result = {
       error: 'internal detail',
       text: 'tool text',
@@ -242,19 +255,27 @@ describe('ToolRuntime settlement', () => {
       input: {},
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
     });
 
     assert.deepEqual(settlement, {
       result,
-      modelOutput: { type: 'error-text', value: 'Error: safe model detail' },
+      providerError: 'safe model detail',
+    });
+    assert.deepEqual(settledProjection(events), {
+      version: 1,
+      kind: 'text',
+      text: 'Error: safe model detail',
+      isError: true,
     });
   });
 
   it('records apply_patch failures without changing their provider output shape', async () => {
-    const events: Array<{ type: string; isError?: boolean }> = [];
+    const events: SessionEvent[] = [];
     const runtime = makeRuntime();
     const settlement = await runtime.settleToolCall({
       tool: {
@@ -279,8 +300,10 @@ describe('ToolRuntime settlement', () => {
       events.some((event) => event.type === 'tool_result' && event.isError === true),
       true,
     );
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'json',
+    assert.deepEqual(settlement.providerError, 'dispatch failed');
+    assert.deepEqual(settledProjection(events), {
+      version: 1,
+      kind: 'json',
       value: { status: 'failed', output: 'dispatch failed' },
     });
   });
@@ -288,8 +311,8 @@ describe('ToolRuntime settlement', () => {
   it('falls back from provider text to the raw error message', async () => {
     const runtime = makeRuntime();
     for (const [result, expected] of [
-      [{ error: 'internal detail', text: 'tool text' }, 'Error: tool text'],
-      [{ error: 'internal detail' }, 'Error: internal detail'],
+      [{ error: 'internal detail', text: 'tool text' }, 'tool text'],
+      [{ error: 'internal detail' }, 'internal detail'],
     ] as const) {
       const settlement = await runtime.settleToolCall({
         tool: tool(() => result),
@@ -304,13 +327,13 @@ describe('ToolRuntime settlement', () => {
         },
       });
 
-      assert.deepEqual(settlement.modelOutput, { type: 'error-text', value: expected });
+      assert.equal(settlement.providerError, expected);
     }
   });
 
   it('keeps structured durable failures on the live success arm', async () => {
     const runtime = makeRuntime();
-    const events: Array<{ type: string; isError?: boolean }> = [];
+    const events: SessionEvent[] = [];
     const result = {
       kind: 'subagent',
       agentName: 'Reviewer',
@@ -340,53 +363,18 @@ describe('ToolRuntime settlement', () => {
       events.some((event) => event.type === 'tool_result' && event.isError === true),
       true,
     );
-    assert.deepEqual(settlement.modelOutput, { type: 'json', value: result });
-  });
-
-  it('materializes a durable artifact projection for the current continuation', async () => {
-    const result = {
-      kind: 'image',
-      mimeType: 'image/png',
-      ref: { kind: 'session_context' as const, sessionId: 'session-1', refId: 'artifact-1' },
-    };
-    const runtime = makeRuntime({
-      materializeDurableToolResultProjection: async ({ toolCallId, projection }) => {
-        assert.equal(toolCallId, 'call-1');
-        assert.deepEqual(projection, {
-          version: 1,
-          kind: 'content',
-          parts: [
-            {
-              kind: 'artifact',
-              mediaType: 'image/png',
-              ref: result.ref,
-            },
-          ],
-        });
-        return { type: 'text', value: 'materialized image' };
-      },
+    assert.deepEqual(settledProjection(events), {
+      version: 1,
+      kind: 'json',
+      value: result,
     });
-
-    const settlement = await runtime.settleToolCall({
-      tool: tool(() => result),
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolCallId: 'call-1',
-      input: {},
-      abortSignal: new AbortController().signal,
-      eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
-      },
-    });
-
-    assert.deepEqual(settlement.modelOutput, { type: 'text', value: 'materialized image' });
   });
 
   it('rejects direct-only nested tools before permission argument projection or implementation', async () => {
     let permissionProjectionCalls = 0;
     let implementationCalls = 0;
     const runtime = makeRuntime();
+    const events: SessionEvent[] = [];
 
     const settlement = await runtime.settleToolCall({
       tool: {
@@ -405,8 +393,10 @@ describe('ToolRuntime settlement', () => {
       input: {},
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
       origin: 'code_mode',
       parentToolCallId: 'exec-1',
@@ -414,9 +404,12 @@ describe('ToolRuntime settlement', () => {
 
     assert.equal(permissionProjectionCalls, 0);
     assert.equal(implementationCalls, 0);
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'error-text',
-      value: 'Error: Tool Read is direct-only and cannot run inside exec.',
+    assert.equal(settlement.providerError, 'Tool Read is direct-only and cannot run inside exec.');
+    assert.deepEqual(settledProjection(events), {
+      version: 1,
+      kind: 'text',
+      text: 'Error: Tool Read is direct-only and cannot run inside exec.',
+      isError: true,
     });
   });
 
@@ -541,13 +534,7 @@ describe('ToolRuntime settlement', () => {
 
 function makeRuntime(
   overrides: Partial<
-    Pick<
-      ToolRuntimeInput,
-      | 'materializeDurableToolResultProjection'
-      | 'readExecutionBoundary'
-      | 'spawnChildSession'
-      | 'runId'
-    >
+    Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'spawnChildSession' | 'runId'>
   > = {},
 ): ToolRuntime {
   return createTestToolRuntime({
@@ -561,6 +548,10 @@ function makeRuntime(
     getPermissionPauseTarget: () => null,
     ...overrides,
   });
+}
+
+function settledProjection(events: readonly SessionEvent[]) {
+  return events.find((event) => event.type === 'tool_result')?.modelProjection;
 }
 
 function tool(impl: MakaTool['impl']): MakaTool {

@@ -341,6 +341,78 @@ describe('AiSdkBackend ApplyPatch routing', () => {
     await assertApplyPatchHistoryDowngraded(targetConnection, targetConnection.defaultModel!);
   });
 
+  test('preserves a durable projection failure when apply_patch history is downgraded', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [nativeApplyPatchTool()],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'continue',
+        context: [],
+        runtimeContext: [
+          runtimeEvent({
+            id: 'rt-call',
+            turnId: 'turn-previous',
+            role: 'model',
+            author: 'agent',
+            content: {
+              kind: 'function_call',
+              id: 'call-1',
+              name: 'apply_patch',
+              args: [
+                '*** Begin Patch',
+                '*** Update File: file.txt',
+                '@@',
+                '-before',
+                '+after',
+                '*** End Patch',
+              ].join('\n'),
+            },
+          }),
+          runtimeEvent({
+            id: 'rt-result',
+            turnId: 'turn-previous',
+            role: 'tool',
+            author: 'tool',
+            content: {
+              kind: 'function_response',
+              id: 'call-1',
+              name: 'apply_patch',
+              result: { status: 'completed', output: 'Applied 1 file operation.' },
+              modelProjection: {
+                version: 1,
+                kind: 'failure',
+                reason: 'projection_failed',
+                message:
+                  'The tool completed, but its model-visible result could not be projected safely.',
+              },
+            },
+          }),
+        ],
+      }),
+    );
+
+    const replayText = (compactPrompt(model) as Array<{ content: any[] }>)
+      .flatMap((message) => message.content)
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    assert.match(replayText, /could not be projected safely/);
+    assert.doesNotMatch(replayText, /ApplyPatch completed/);
+  });
+
   test('preserves a multi-file ApplyPatch fact when structured replay cannot represent it', async () => {
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -3710,6 +3782,7 @@ describe('AiSdkBackend model history', () => {
       'base64',
     );
     let calls = 0;
+    let artifactReads = 0;
     const anchor = runtimeTextEvent({
       id: 'runtime-user',
       turnId: 'turn-1',
@@ -3785,7 +3858,11 @@ describe('AiSdkBackend model history', () => {
         },
       ],
       supportsVision: true,
-      readAttachmentBytes: async () => ({ ok: true, bytes: pngBytes }),
+      maxProviderImageRequestBytes: pngBytes.byteLength,
+      readAttachmentBytes: async () => {
+        artifactReads += 1;
+        return { ok: true, bytes: pngBytes };
+      },
       loadTurnRuntimeEvents: async () => ledger,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -3806,6 +3883,7 @@ describe('AiSdkBackend model history', () => {
     assert.ok(
       result.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
     );
+    assert.equal(artifactReads, 1);
   });
 
   test('reloads durable multi-tool settlement before terminal continuation', async () => {
