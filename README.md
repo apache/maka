@@ -40,13 +40,9 @@
   machine, through one Runtime Host.
 </p>
 
-<h3 align="center">
-  <a href="https://nightlies.apache.org/maka/desktop/">Download Desktop Nightly →</a>
-</h3>
-
 <p align="center">
-  Daily builds from <code>main</code> for developers and testers.<br/>
-  Not an ASF release or intended for production use.
+  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/Download%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="Download Desktop Nightly" /></a><br/>
+  Daily builds from <code>main</code> for developers and testers. Not an ASF release, not intended for production use.
 </p>
 
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)

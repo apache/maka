@@ -38,13 +38,9 @@
   Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
 </p>
 
-<h3 align="center">
-  <a href="https://nightlies.apache.org/maka/desktop/">下载 Desktop Nightly →</a>
-</h3>
-
 <p align="center">
-  每天从 <code>main</code> 构建，面向开发者和测试者。<br/>
-  不是 ASF release，也不适合生产使用。
+  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
+  每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
 </p>
 
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
