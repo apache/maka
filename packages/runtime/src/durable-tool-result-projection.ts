@@ -65,7 +65,7 @@ export function encodeDurableToolResultOutput(
   }
 }
 
-export type DurableProjectionArtifactPersister = (input: {
+type DurableProjectionArtifactPersister = (input: {
   bytes: Uint8Array;
   mediaType: string;
 }) => Promise<DurableProjectionArtifactRef>;
@@ -177,7 +177,7 @@ export function rewriteDurableToolResultProjectionArtifactRefs(
   };
 }
 
-export type EffectiveToolResultProjection =
+type EffectiveToolResultProjection =
   | {
       kind: 'projection';
       projection: DurableToolResultProjection;
