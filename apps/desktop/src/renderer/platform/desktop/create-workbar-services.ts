@@ -33,6 +33,7 @@ export type DesktopWorkbarBridge = Pick<
   | 'shellRuns'
   | 'todo'
   | 'transcripts'
+  | 'workspaceFiles'
 >;
 
 export interface DesktopWorkbarServiceDependencies {
@@ -93,6 +94,14 @@ export function createDesktopWorkbarServices(
         bridge.app.openArtifactPath(sessionId, artifactId),
       saveAs: (sessionId, artifactId) =>
         bridge.app.saveArtifactAs(sessionId, artifactId),
+    },
+    workspaceFiles: {
+      readText: (sessionId, reference) =>
+        bridge.workspaceFiles.readText(sessionId, reference),
+      openLocally: (sessionId, reference) =>
+        bridge.workspaceFiles.openLocally(sessionId, reference),
+      revealInFolder: (sessionId, reference) =>
+        bridge.workspaceFiles.revealInFolder(sessionId, reference),
     },
     inspector: {
       trace: (sessionId, cursor) => bridge.inspector.trace(sessionId, cursor),

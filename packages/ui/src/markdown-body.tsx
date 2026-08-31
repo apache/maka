@@ -40,6 +40,7 @@ import { useTranslator } from '@astryxdesign/core/i18n';
 import {
   isMakaUriCandidate,
   isSafeExternalScheme,
+  parseFileReference,
   parseMakaUri,
 } from './maka-uri.js';
 import { MakaUriContext } from './markdown.js';
@@ -333,6 +334,28 @@ function MarkdownLink(props: { href: string; children: ReactNode }) {
       </AstryxLink>
     );
   }
+
+  // Workspace Markdown references become actionable only when a dispatcher is
+  // installed (the Desktop renderer installs one; other surfaces sharing this
+  // package do not, and keep today's inert rendering). The raw reference is
+  // handed to the dispatcher unresolved — boundary checks live on the trusted
+  // side, never here.
+  if (dispatch) {
+    const reference = parseFileReference(href);
+    if (reference !== null) {
+      return (
+        <AstryxLink
+          type="inherit"
+          hasUnderline
+          data-maka-uri-kind="file-ref"
+          onClick={() => dispatch({ kind: 'file-ref', reference })}
+        >
+          {children}
+        </AstryxLink>
+      );
+    }
+  }
+
   return (
     <span
       data-reason="unsafe-scheme"

@@ -159,6 +159,10 @@ import type {
   ArtifactSaveResult,
   ArtifactTextReadResult,
 } from '@maka/core/artifacts';
+import type {
+  WorkspaceFileOpenResult,
+  WorkspaceFileTextReadResult,
+} from './workspace-files-contract.js';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
 import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
@@ -3401,6 +3405,17 @@ const makaBridge = {
           sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
         }),
       );
+    },
+  },
+  workspaceFiles: {
+    readText(sessionId: string, reference: string): Promise<WorkspaceFileTextReadResult> {
+      return invokeSessionRuntimeHost('workspace-files:readText', sessionId, reference);
+    },
+    openLocally(sessionId: string, reference: string): Promise<WorkspaceFileOpenResult> {
+      return invokeSessionRuntimeHost('workspace-files:openLocally', sessionId, reference);
+    },
+    revealInFolder(sessionId: string, reference: string): Promise<WorkspaceFileOpenResult> {
+      return invokeSessionRuntimeHost('workspace-files:revealInFolder', sessionId, reference);
     },
   },
   skills: {

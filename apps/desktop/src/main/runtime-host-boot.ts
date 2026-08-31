@@ -215,6 +215,7 @@ import {
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
 import { registerRuntimeHostWorkspaceIpc } from "./runtime-host-workspace-ipc-main.js";
+import { registerWorkspaceFileRefsIpc } from "./workspace-file-refs-ipc-main.js";
 import { resolveShellEnv } from "./shell-env.js";
 import {
   registerSettingsBotsIpc,
@@ -1379,6 +1380,13 @@ function registerHostClientIpc(
     ipcMain: scopedIpc,
     client,
     allowLocalWorkspace: !usesHostWorkspace,
+  });
+  registerWorkspaceFileRefsIpc({
+    ipcMain: scopedIpc,
+    client,
+    allowLocalWorkspace: target.kind === "local",
+    openPath: (path) => shell.openPath(path),
+    showItemInFolder: (path) => shell.showItemInFolder(path),
   });
   const resolveProjectRootForContext = (sessionId: unknown): Promise<string> =>
     resolveProjectContextRoot(sessionId, {

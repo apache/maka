@@ -76,6 +76,11 @@ import {
 } from '@maka/ui';
 import { EmptyState as AstryxEmptyState } from '@astryxdesign/core';
 import { ArtifactPreview } from './artifact-preview';
+import { WorkspaceFilePreview } from './workspace-file-preview';
+import {
+  subscribeWorkspaceFilePreviewRequests,
+  type WorkspaceFilePreviewRequest,
+} from './workspace-file-preview-request';
 import { nextArtifactListAction } from './artifact-list-keyboard';
 import { filterUserVisibleArtifacts } from './artifact-visibility';
 import { openPathFailureCopy } from '../../../../open-path';
@@ -109,6 +114,9 @@ export function ArtifactPane(props: {
   const [pendingArtifactListRetry, setPendingArtifactListRetry] = useState(false);
   const [artifactActionBusy, setArtifactActionBusy] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  // #2664: full-panel preview for a workspace file referenced from transcript
+  // Markdown. Routed through this pane so the SAME viewer surface renders it.
+  const [workspaceRequest, setWorkspaceRequest] = useState<WorkspaceFilePreviewRequest | null>(null);
   const artifactListRequestSeqRef = useRef(0);
   const artifactPaneMountedRef = useMountedRef();
   const artifactPaneSessionIdRef = useRef<string | undefined>(sessionId);
@@ -131,7 +139,18 @@ export function ArtifactPane(props: {
   useEffect(() => {
     setView({ kind: 'list' });
     setSelectedId(null);
+    setWorkspaceRequest(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    return subscribeWorkspaceFilePreviewRequests((request) => {
+      // Only the pane bound to the requesting session answers; requests are
+      // one-shot, so a stale pane never surfaces an older reference later.
+      if (request.sessionId === artifactPaneSessionIdRef.current) {
+        setWorkspaceRequest(request);
+      }
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     const requestSeq = ++artifactListRequestSeqRef.current;
@@ -441,7 +460,9 @@ export function ArtifactPane(props: {
     if (!(target instanceof Node) || !event.currentTarget.contains(target)) return;
     event.preventDefault();
     event.stopPropagation();
-    if (view.kind === 'preview') {
+    if (workspaceRequest) {
+      setWorkspaceRequest(null);
+    } else if (view.kind === 'preview') {
       returnToList();
     } else {
       dismissPaneToComposer();
@@ -469,7 +490,12 @@ export function ArtifactPane(props: {
           )}
         />
       )}
-      {view.kind === 'list' ? (
+      {workspaceRequest ? (
+        <WorkspaceFilePreview
+          request={workspaceRequest}
+          onBack={() => setWorkspaceRequest(null)}
+        />
+      ) : view.kind === 'list' ? (
         activeRecords.length > 0 ? (
           <ul
             ref={listRef}

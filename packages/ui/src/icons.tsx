@@ -87,6 +87,7 @@ export {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   FileCode,
   FileEdit,
   FileImage,
