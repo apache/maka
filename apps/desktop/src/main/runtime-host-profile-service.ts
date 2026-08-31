@@ -400,7 +400,12 @@ export function createDesktopRuntimeHostProfileService(input: {
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
           ...(state?.readiness === "ready"
-            ? { hostId: state.candidate.client.hostId }
+            ? {
+                hostId: state.candidate.client.hostId,
+                ...(state.candidate.client.peerPath
+                  ? { peerPath: state.candidate.client.peerPath }
+                  : {}),
+              }
             : state && "hostId" in state && state.hostId
               ? { hostId: state.hostId }
               : {}),

@@ -641,12 +641,13 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
-test('requests relay-discovery status only on the peer-management frame', async () => {
+test('requests adaptive-connectivity status only on the peer-management frame', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runPeerManagement({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    webRtcStunStatus: true,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/srv/maka',
@@ -656,7 +657,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
   });
   await waitFor(() => harness.pty.hasDataListener());
   const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
-  assert.match(command, /peer.*status.*--framed.*--relay-discovery-status/u);
+  assert.match(
+    command,
+    /peer.*status.*--framed.*--relay-discovery-status.*--webrtc-stun-status/u,
+  );
 
   harness.pty.emitData(
     encodeRuntimeHostPeerManagementFrame({
@@ -670,6 +674,7 @@ test('requests relay-discovery status only on the peer-management frame', async 
         routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
         coordinationRelays: [],
         automaticRelayDiscovery: true,
+        webRtcStunPolicy: { kind: 'default' },
       },
     }),
   );
@@ -677,6 +682,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
 
   const result = await management;
   assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
+  assert.deepEqual(
+    result.kind === 'result' ? result.status.webRtcStunPolicy : undefined,
+    { kind: 'default' },
+  );
   await harness.terminal.close();
 });
 

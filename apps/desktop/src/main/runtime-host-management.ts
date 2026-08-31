@@ -21,6 +21,8 @@ import type { IpcMain } from 'electron';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
+  decodeRuntimeHostWebRtcStunPolicy,
   isProductReleaseVersion,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostManagedUpdatePolicy,
@@ -425,6 +427,7 @@ export function createDesktopRuntimeHostManagement(input: {
       routeHints: status.routeHints,
       coordinationRelays: status.coordinationRelays,
       automaticRelayDiscovery: status.automaticRelayDiscovery ?? false,
+      ...(status.webRtcStunPolicy ? { webRtcStunPolicy: status.webRtcStunPolicy } : {}),
       profilePresent: profile.exists,
       profileEnabled: profile.enabled,
       clientAvailable: input.directPeerClientAvailable,
@@ -434,7 +437,7 @@ export function createDesktopRuntimeHostManagement(input: {
 
   const peerManagementTarget = async (profileIdValue: unknown) => {
     const target = await managedMutationTarget(profileIdValue);
-    const capability = await input.runServiceManagement({
+    const adaptiveCapability = await input.runServiceManagement({
       destination: target.transport.destination,
       ...(target.transport.sshPort === undefined
         ? {}
@@ -442,17 +445,37 @@ export function createDesktopRuntimeHostManagement(input: {
       operatorPath: target.managed.control.operatorPath,
       action: 'status',
       expectedTarget: target.expectedTarget,
-      capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+      capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
     });
-    if (capability.kind === 'error') throw new Error(capability.error.message);
-    if (capability.action !== 'status') {
+    if (adaptiveCapability.kind === 'error') throw new Error(adaptiveCapability.error.message);
+    if (adaptiveCapability.action !== 'status') {
+      throw new Error('Runtime Host returned an unrelated capability result');
+    }
+    const webRtcStunAvailable = adaptiveCapability.operatorCapabilities?.includes(
+      RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
+    ) === true;
+    const legacyCapability = webRtcStunAvailable
+      ? adaptiveCapability
+      : await input.runServiceManagement({
+          destination: target.transport.destination,
+          ...(target.transport.sshPort === undefined
+            ? {}
+            : { sshPort: target.transport.sshPort }),
+          operatorPath: target.managed.control.operatorPath,
+          action: 'status',
+          expectedTarget: target.expectedTarget,
+          capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+        });
+    if (legacyCapability.kind === 'error') throw new Error(legacyCapability.error.message);
+    if (legacyCapability.action !== 'status') {
       throw new Error('Runtime Host returned an unrelated capability result');
     }
     return {
       ...target,
-      available: capability.operatorCapabilities?.includes(
+      available: webRtcStunAvailable || legacyCapability.operatorCapabilities?.includes(
         RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
       ) === true,
+      webRtcStunAvailable,
     };
   };
 
@@ -475,7 +498,7 @@ export function createDesktopRuntimeHostManagement(input: {
   const getDirectPeer = async (
     profileIdValue: unknown,
   ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
-    const { profileId, managed, transport, expectedTarget, available } =
+    const { profileId, managed, transport, expectedTarget, available, webRtcStunAvailable } =
       await peerManagementTarget(profileIdValue);
     if (!available) return unavailablePeerSnapshot(profileId);
     const response = await input.runPeerManagement({
@@ -483,6 +506,7 @@ export function createDesktopRuntimeHostManagement(input: {
       ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
       operatorPath: managed.control.operatorPath,
       action: 'status',
+      ...(webRtcStunAvailable ? { webRtcStunStatus: true } : {}),
       expectedTarget,
     });
     if (response.kind !== 'result') {
@@ -500,6 +524,7 @@ export function createDesktopRuntimeHostManagement(input: {
     enabledValue: unknown,
     coordinationRelaysValue: unknown,
     automaticRelayDiscoveryValue: unknown,
+    webRtcStunPolicyValue: unknown,
   ): Promise<DesktopRuntimeHostDirectPeerSnapshot> => {
     if (typeof enabledValue !== 'boolean') {
       throw new Error('Runtime Host direct-peer state is invalid');
@@ -508,10 +533,23 @@ export function createDesktopRuntimeHostManagement(input: {
     if (typeof automaticRelayDiscoveryValue !== 'boolean') {
       throw new Error('Runtime Host relay discovery state is invalid');
     }
-    const { profileId, managed, transport, expectedTarget, available } =
+    const webRtcStunPolicy = webRtcStunPolicyValue === undefined
+      ? undefined
+      : decodeRuntimeHostWebRtcStunPolicy(webRtcStunPolicyValue);
+    const {
+      profileId,
+      managed,
+      transport,
+      expectedTarget,
+      available,
+      webRtcStunAvailable,
+    } =
       await peerManagementTarget(profileIdValue);
     if (!available) {
       throw new Error('Update this Runtime Host before managing Direct peer access');
+    }
+    if (webRtcStunPolicy && !webRtcStunAvailable) {
+      throw new Error('Update this Runtime Host before changing its STUN policy');
     }
     const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(profileId);
     if (peerProfile.enabled) {
@@ -524,6 +562,8 @@ export function createDesktopRuntimeHostManagement(input: {
       action: enabledValue ? 'enable' : 'disable',
       ...(enabledValue ? { coordinationRelays } : {}),
       ...(enabledValue ? { automaticRelayDiscovery: automaticRelayDiscoveryValue } : {}),
+      ...(enabledValue && webRtcStunPolicy ? { webRtcStunPolicy } : {}),
+      ...(webRtcStunAvailable ? { webRtcStunStatus: true } : {}),
       expectedTarget,
     });
     if (response.kind !== 'result') {
@@ -1004,11 +1044,13 @@ export function createDesktopRuntimeHostManagement(input: {
       enabled: unknown,
       coordinationRelays: unknown,
       automaticRelayDiscovery: unknown,
+      webRtcStunPolicy: unknown,
     ) => configureDirectPeer(
       profileId,
       enabled,
       coordinationRelays,
       automaticRelayDiscovery,
+      webRtcStunPolicy,
     ),
   );
 

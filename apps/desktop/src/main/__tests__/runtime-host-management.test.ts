@@ -22,6 +22,7 @@ import { test } from 'node:test';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
@@ -68,6 +69,8 @@ test('cancels a live Runtime Host Mesh status query', async () => {
       resolveManagedService: async () => assert.fail('status must use the live Host'),
     },
     runRemote: async () => assert.fail('status must use the live Host'),
+    readConnectivityPolicy: async () => ({ kind: 'default' }),
+    writeConnectivityPolicy: async () => ({ kind: 'default' }),
   });
   const execute = handlers.get('runtime-host-peer-mesh:execute');
   const cancel = handlers.get('runtime-host-peer-mesh:cancel');
@@ -115,6 +118,8 @@ test('projects an unknown live Mesh mutation outcome across IPC', async () => {
       resolveManagedService: async () => assert.fail('mutation must use the live Host'),
     },
     runRemote: async () => assert.fail('mutation must use the live Host'),
+    readConnectivityPolicy: async () => ({ kind: 'default' }),
+    writeConnectivityPolicy: async () => ({ kind: 'default' }),
   });
   const execute = handlers.get('runtime-host-peer-mesh:execute');
   assert.ok(execute);
@@ -1173,16 +1178,20 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
       assert.equal(input.action, 'status');
       assert.equal(
         input.capabilityRequest,
-        RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+        RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
       );
       return {
         ...serviceResult('status'),
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY],
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY],
       };
     },
     runAccessManagement: async () => assert.fail('access management is not expected'),
     runPeerManagement: async (input) => {
       actions.push(input.action);
+      assert.equal(input.webRtcStunStatus, true);
+      if (input.action === 'enable') {
+        assert.deepEqual(input.webRtcStunPolicy, { kind: 'disabled' });
+      }
       const status = input.action === 'disable'
           ? {
               state: 'not_configured' as const,
@@ -1197,6 +1206,7 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
               rootId: profile.rootId,
               routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
               coordinationRelays: [],
+              webRtcStunPolicy: { kind: 'disabled' as const },
             };
       return input.action === 'status'
         ? { kind: 'result', action: input.action, status }
@@ -1207,8 +1217,12 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
 
   const configure = handlers.get('runtime-host-management:configure-direct-peer');
   assert.ok(configure);
-  const enabled = await configure({}, profile.id, true, [], true);
+  const enabled = await configure({}, profile.id, true, [], true, { kind: 'disabled' });
   assert.equal((enabled as { profilePresent: boolean }).profilePresent, true);
+  assert.deepEqual(
+    (enabled as { webRtcStunPolicy: unknown }).webRtcStunPolicy,
+    { kind: 'disabled' },
+  );
   const disabled = await configure({}, profile.id, false, [], true);
   assert.equal((disabled as { profilePresent: boolean }).profilePresent, false);
   assert.deepEqual(actions, ['enable', 'disable']);

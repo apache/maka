@@ -207,6 +207,11 @@
   margin-bottom: var(--space-2);
 }
 
+.settingsRuntimeHostDirectPeerStun {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .settingsRuntimeHostManagementLogs {
   overflow-wrap: anywhere;
   color: var(--foreground-secondary);
@@ -293,6 +298,33 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+.settingsPeerMeshConnectivity {
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshConnectivity summary {
+  display: flex;
+  align-items: center;
+  width: fit-content;
+  gap: var(--space-1);
+  cursor: pointer;
+  font: var(--maka-text-supporting);
+}
+
+.settingsPeerMeshConnectivityHelp {
+  display: inline-flex;
+  color: var(--foreground-secondary);
+}
+
+.settingsPeerMeshConnectivityBody {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
 }
 
 .settingsPeerMeshIdentity,

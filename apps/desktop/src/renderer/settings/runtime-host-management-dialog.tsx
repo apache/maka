@@ -37,6 +37,7 @@ import {
 } from '@maka/ui';
 import { HelpCircle, ICON_SIZE } from '@maka/ui/icons';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
+import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostDirectPeerSnapshot,
@@ -115,6 +116,9 @@ export function RuntimeHostManagementDialog(props: {
   const [directPeerError, setDirectPeerError] = useState<string>();
   const [coordinationRelays, setCoordinationRelays] = useState('');
   const [automaticRelayDiscovery, setAutomaticRelayDiscovery] = useState(true);
+  const [webRtcStunPolicyKind, setWebRtcStunPolicyKind] =
+    useState<RuntimeHostWebRtcStunPolicy['kind']>('default');
+  const [webRtcStunUrls, setWebRtcStunUrls] = useState('');
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -138,6 +142,8 @@ export function RuntimeHostManagementDialog(props: {
     setDirectPeer(undefined);
     setDirectPeerError(undefined);
     setCoordinationRelays('');
+    setWebRtcStunPolicyKind('default');
+    setWebRtcStunUrls('');
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -249,6 +255,14 @@ export function RuntimeHostManagementDialog(props: {
     setDirectPeer(snapshot);
     setCoordinationRelays(snapshot.coordinationRelays.join(', '));
     setAutomaticRelayDiscovery(snapshot.automaticRelayDiscovery);
+    if (snapshot.webRtcStunPolicy) {
+      setWebRtcStunPolicyKind(snapshot.webRtcStunPolicy.kind);
+      setWebRtcStunUrls(
+        snapshot.webRtcStunPolicy.kind === 'custom'
+          ? snapshot.webRtcStunPolicy.urls.join(', ')
+          : '',
+      );
+    }
     setDirectPeerError(undefined);
   }
 
@@ -280,6 +294,17 @@ export function RuntimeHostManagementDialog(props: {
           enabled,
           relays,
           automaticRelayDiscovery,
+          directPeer?.webRtcStunPolicy
+            ? webRtcStunPolicyKind === 'custom'
+              ? {
+                  kind: 'custom',
+                  urls: webRtcStunUrls
+                    .split(',')
+                    .map((url) => url.trim())
+                    .filter(Boolean),
+                }
+              : { kind: webRtcStunPolicyKind }
+            : undefined,
         ),
       );
     } catch (failure) {
@@ -817,6 +842,59 @@ export function RuntimeHostManagementDialog(props: {
                               onChange={setCoordinationRelays}
                             />
                           </details>
+                          {directPeer.webRtcStunPolicy ? (
+                            <details className="settingsRuntimeHostDirectPeerAdvanced">
+                              <summary>{copy.directPeerAdvancedNatTraversal}</summary>
+                              <div className="settingsRuntimeHostDirectPeerStun">
+                                <Selector
+                                  label={copy.directPeerStunPolicy}
+                                  value={webRtcStunPolicyKind}
+                                  options={[
+                                    {
+                                      value: 'default',
+                                      label: copy.directPeerStunPolicyOptions.default,
+                                    },
+                                    {
+                                      value: 'disabled',
+                                      label: copy.directPeerStunPolicyOptions.disabled,
+                                    },
+                                    {
+                                      value: 'custom',
+                                      label: copy.directPeerStunPolicyOptions.custom,
+                                    },
+                                  ]}
+                                  isDisabled={
+                                    loading ||
+                                    directPeer.profileEnabled ||
+                                    directPeer.state === 'enabled'
+                                  }
+                                  onChange={(value) => setWebRtcStunPolicyKind(
+                                    value as RuntimeHostWebRtcStunPolicy['kind'],
+                                  )}
+                                />
+                                {webRtcStunPolicyKind === 'custom' ? (
+                                  <TextInput
+                                    label={copy.directPeerStunUrls}
+                                    value={webRtcStunUrls}
+                                    placeholder="stun:stun.example.com:3478"
+                                    isDisabled={
+                                      loading ||
+                                      directPeer.profileEnabled ||
+                                      directPeer.state === 'enabled'
+                                    }
+                                    onChange={setWebRtcStunUrls}
+                                  />
+                                ) : null}
+                                <Text type="supporting" color="secondary">
+                                  {webRtcStunPolicyKind === 'default'
+                                    ? copy.directPeerStunDefaultHelp
+                                    : webRtcStunPolicyKind === 'disabled'
+                                      ? copy.directPeerStunDisabledHelp
+                                      : copy.directPeerStunCustomHelp}
+                                </Text>
+                              </div>
+                            </details>
+                          ) : null}
                           <div className="settingsRuntimeHostUpdatePolicyActions">
                             {target && props.onManagePeerMesh ? (
                               <Button

@@ -192,7 +192,11 @@ import {
   createRuntimeHostSetupPackageResolver,
   desktopRuntimeHostDevelopmentPeerTarget,
 } from "./runtime-host-setup-package.js";
-import { configureDesktopRuntimeHostPeerClient } from './runtime-host-peer-client.js';
+import {
+  configureDesktopRuntimeHostPeerClient,
+  readDesktopRuntimeHostWebRtcStunPolicy,
+  writeDesktopRuntimeHostWebRtcStunPolicy,
+} from './runtime-host-peer-client.js';
 import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
 import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
@@ -268,6 +272,7 @@ if (runtimeHostPeerConfiguration) {
     console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
     runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment(process.env, {
       automaticRelayDiscovery: runtimeHostPeerConfiguration.automaticRelayDiscovery,
+      webRtcStunUrls: runtimeHostPeerConfiguration.webRtcStunUrls,
     });
   }
 }
@@ -634,6 +639,9 @@ const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement
   liveHost: (profileId) => runtimeHostManager?.current(profileId)?.candidate?.client,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
+  readConnectivityPolicy: () => readDesktopRuntimeHostWebRtcStunPolicy(userDataDir),
+  writeConnectivityPolicy: (policy) =>
+    writeDesktopRuntimeHostWebRtcStunPolicy(userDataDir, policy),
 });
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>

@@ -1531,6 +1531,7 @@ const makaBridge = {
       enabled: boolean,
       coordinationRelays: readonly string[],
       automaticRelayDiscovery: boolean,
+      webRtcStunPolicy?: import('@maka/runtime-host/operator').RuntimeHostWebRtcStunPolicy,
     ) {
       return ipcRenderer.invoke(
         'runtime-host-management:configure-direct-peer',
@@ -1538,6 +1539,7 @@ const makaBridge = {
         enabled,
         coordinationRelays,
         automaticRelayDiscovery,
+        webRtcStunPolicy,
       );
     },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
@@ -1558,6 +1560,14 @@ const makaBridge = {
     },
   },
   runtimeHostPeerMesh: {
+    getConnectivityPolicy() {
+      return ipcRenderer.invoke('runtime-host-peer-mesh:get-connectivity-policy');
+    },
+    setConnectivityPolicy(
+      policy: import('@maka/runtime-host/client').RuntimeHostWebRtcStunPolicy,
+    ) {
+      return ipcRenderer.invoke('runtime-host-peer-mesh:set-connectivity-policy', policy);
+    },
     execute(
       target: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshTarget,
       action: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshAction,

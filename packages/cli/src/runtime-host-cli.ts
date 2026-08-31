@@ -24,6 +24,10 @@ import {
 } from '@maka/runtime-host/operator/update-package-evidence';
 import type { RuntimeHostManagedUpdatePolicy } from '@maka/runtime-host/operator';
 import {
+  decodeRuntimeHostWebRtcStunPolicy,
+  type RuntimeHostWebRtcStunPolicy,
+} from '@maka/runtime-host/operator';
+import {
   canonicalProjectDirectoryRootSpec,
   isCanonicalRuntimeHostWebSocketPath,
   PROJECT_DIRECTORY_MAX_ROOTS,
@@ -120,6 +124,7 @@ export type RuntimeHostCliCommand =
         expectedPeerId?: string;
         listenAddresses?: string[];
         coordinationRelays?: string[];
+        webRtcStunUrls?: string[];
       };
     }
   | {
@@ -180,6 +185,8 @@ export type RuntimeHostCliCommand =
       coordinationRelays?: string[];
       automaticRelayDiscovery?: boolean;
       relayDiscoveryStatus?: true;
+      webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy;
+      webRtcStunStatus?: true;
       expectedTarget?: RuntimeHostManagedServiceTarget;
       allowInterruptActiveTasks?: true;
     }
@@ -978,6 +985,10 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   let clearCoordinationRelays = false;
   let automaticRelayDiscovery: boolean | undefined;
   let relayDiscoveryStatus = false;
+  let defaultPublicStun = false;
+  let noPublicStun = false;
+  let webRtcStunStatus = false;
+  const webRtcStunUrls: string[] = [];
   let allowInterruptActiveTasks = false;
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: false,
@@ -1007,6 +1018,18 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
         if (relayDiscoveryStatus) return error('Duplicate --relay-discovery-status');
         relayDiscoveryStatus = true;
       },
+      '--default-public-stun': () => {
+        if (defaultPublicStun) return error('Duplicate --default-public-stun');
+        defaultPublicStun = true;
+      },
+      '--no-public-stun': () => {
+        if (noPublicStun) return error('Duplicate --no-public-stun');
+        noPublicStun = true;
+      },
+      '--webrtc-stun-status': () => {
+        if (webRtcStunStatus) return error('Duplicate --webrtc-stun-status');
+        webRtcStunStatus = true;
+      },
     },
     valueOptions: {
       '--client-data-root': (value) => {
@@ -1020,6 +1043,9 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
       '--coordination-relay': (value) => {
         coordinationRelays.push(value);
       },
+      '--webrtc-stun': (value) => {
+        webRtcStunUrls.push(value);
+      },
     },
   });
   if ('kind' in options) return options;
@@ -1028,6 +1054,24 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (relayDiscoveryStatus && !options.framed) {
     return error('--relay-discovery-status requires --framed');
+  }
+  if (webRtcStunStatus && !options.framed) {
+    return error('--webrtc-stun-status requires --framed');
+  }
+  if (Number(defaultPublicStun) + Number(noPublicStun) + Number(webRtcStunUrls.length > 0) > 1) {
+    return error('Specify only one WebRTC STUN policy');
+  }
+  let webRtcStunPolicy: RuntimeHostWebRtcStunPolicy | undefined;
+  try {
+    webRtcStunPolicy = defaultPublicStun
+      ? { kind: 'default' }
+      : noPublicStun
+        ? { kind: 'disabled' }
+        : webRtcStunUrls.length > 0
+          ? decodeRuntimeHostWebRtcStunPolicy({ kind: 'custom', urls: webRtcStunUrls })
+          : undefined;
+  } catch (failure) {
+    return error(failure instanceof Error ? failure.message : String(failure));
   }
   if (listenAddresses.some(hasEphemeralRuntimeHostPeerPort)) {
     return error('--listen requires a stable non-zero transport port');
@@ -1040,7 +1084,8 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
     (listenAddresses.length > 0 ||
       coordinationRelays.length > 0 ||
       clearCoordinationRelays ||
-      automaticRelayDiscovery !== undefined)
+      automaticRelayDiscovery !== undefined ||
+      webRtcStunPolicy !== undefined)
   ) {
     return error('Peer listener options are only valid with peer enable');
   }
@@ -1077,6 +1122,8 @@ function parseServicePeerCommand(argv: string[]): RuntimeHostCliCommand {
         : {}),
     ...(automaticRelayDiscovery === undefined ? {} : { automaticRelayDiscovery }),
     ...(relayDiscoveryStatus ? { relayDiscoveryStatus: true as const } : {}),
+    ...(webRtcStunPolicy ? { webRtcStunPolicy } : {}),
+    ...(webRtcStunStatus ? { webRtcStunStatus: true as const } : {}),
     ...(options.expectedTarget ? { expectedTarget: options.expectedTarget } : {}),
     ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
   };

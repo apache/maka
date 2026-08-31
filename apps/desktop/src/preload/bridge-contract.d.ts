@@ -322,6 +322,7 @@ export interface DesktopRuntimeHostProfileEntry {
   readonly isDefault: boolean;
   readonly readiness: 'disabled' | 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly hostId?: string;
+  readonly peerPath?: import('@maka/runtime-host/client').RuntimeHostPeerConnectionPath;
   readonly message?: string;
 }
 
@@ -582,6 +583,7 @@ export interface DesktopRuntimeHostDirectPeerSnapshot {
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
   readonly automaticRelayDiscovery: boolean;
+  readonly webRtcStunPolicy?: import('@maka/runtime-host/operator').RuntimeHostWebRtcStunPolicy;
   readonly profilePresent: boolean;
   readonly profileEnabled: boolean;
   readonly clientAvailable: boolean;
@@ -843,6 +845,7 @@ export interface MakaBridge {
       enabled: boolean,
       coordinationRelays: readonly string[],
       automaticRelayDiscovery: boolean,
+      webRtcStunPolicy?: import('@maka/runtime-host/operator').RuntimeHostWebRtcStunPolicy,
     ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
@@ -853,6 +856,10 @@ export interface MakaBridge {
   };
 
   runtimeHostPeerMesh: {
+    getConnectivityPolicy(): Promise<import('@maka/runtime-host/client').RuntimeHostWebRtcStunPolicy>;
+    setConnectivityPolicy(
+      policy: import('@maka/runtime-host/client').RuntimeHostWebRtcStunPolicy,
+    ): Promise<import('@maka/runtime-host/client').RuntimeHostWebRtcStunPolicy>;
     execute(
       target: DesktopRuntimeHostPeerMeshTarget,
       action: DesktopRuntimeHostPeerMeshAction,

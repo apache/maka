@@ -18,6 +18,7 @@
  */
 
 import type { RuntimeHostPeerMeshManagementAction } from '@maka/runtime-host/operator';
+import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
 import type {
   PeerMeshInvitationResult,
   PeerMeshQueryResult,
@@ -42,6 +43,7 @@ export interface PeerMeshDirectPeerSnapshot {
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
   readonly automaticRelayDiscovery: boolean;
+  readonly webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy;
   readonly profilePresent: boolean;
   readonly profileEnabled: boolean;
   readonly clientAvailable: boolean;
@@ -56,6 +58,8 @@ export class PeerMeshOperationOutcomeUnknownError extends Error {
 }
 
 export interface PeerMeshServices {
+  getConnectivityPolicy(): Promise<RuntimeHostWebRtcStunPolicy>;
+  setConnectivityPolicy(policy: RuntimeHostWebRtcStunPolicy): Promise<RuntimeHostWebRtcStunPolicy>;
   execute(
     target: PeerMeshTarget,
     action: RuntimeHostPeerMeshManagementAction,
@@ -68,6 +72,7 @@ export interface PeerMeshServices {
     enabled: boolean,
     coordinationRelays: readonly string[],
     automaticRelayDiscovery: boolean,
+    webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy,
   ): Promise<PeerMeshDirectPeerSnapshot>;
   copyText(value: string): Promise<void>;
   createOperationId(): string;

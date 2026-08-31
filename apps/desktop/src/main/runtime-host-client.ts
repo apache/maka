@@ -46,6 +46,7 @@ import {
   type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
   type RuntimeHostRetirementMode,
   type RuntimeHostRetirementPreparation,
   type RuntimeHostSessionSubscription,
@@ -270,6 +271,10 @@ export class DesktopRuntimeHostClient {
 
   get hostId(): string {
     return this.connection.rootId;
+  }
+
+  get peerPath(): RuntimeHostPeerConnectionPath | undefined {
+    return this.connection.peerPath;
   }
 
   get lifecycleState(): 'ready' | 'unavailable' {

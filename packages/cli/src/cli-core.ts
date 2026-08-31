@@ -219,6 +219,9 @@ function helpText(cliCommand: string): string {
     '  --clear-coordination-relays   Remove every manually configured relay',
     '  --automatic-relay-discovery   Enable best-effort public relay discovery',
     '  --no-automatic-relay-discovery  Disable public discovery and retain manual relays',
+    '  --default-public-stun          Use the packaged best-effort public STUN policy',
+    '  --no-public-stun               Disable public STUN and keep host candidates only',
+    '  --webrtc-stun <stun-url>       Use a custom STUN endpoint (repeatable)',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
@@ -298,8 +301,11 @@ export async function runMakaCli(
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
       if (command.managedDeployment) {
-        const { resolveRuntimeHostManagedDeployment, resolveRuntimeHostNpmDeploymentLayout } =
-          await import('@maka/runtime-host/operator');
+        const {
+          resolveRuntimeHostManagedDeployment,
+          resolveRuntimeHostNpmDeploymentLayout,
+          resolveRuntimeHostWebRtcStunUrls,
+        } = await import('@maka/runtime-host/operator');
         const { config } = await resolveRuntimeHostManagedDeployment(
           command.managedDeployment.rootId,
         );
@@ -326,6 +332,7 @@ export async function runMakaCli(
                   listenAddresses: peer.listenAddresses,
                   coordinationRelays: peer.coordinationRelays,
                   automaticRelayDiscovery: peer.automaticRelayDiscovery,
+                  webRtcStunUrls: resolveRuntimeHostWebRtcStunUrls(peer.webRtcStunPolicy),
                   meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
                 },
               }
@@ -501,6 +508,8 @@ export async function runMakaCli(
           ? {}
           : { automaticRelayDiscovery: command.automaticRelayDiscovery }),
         ...(command.relayDiscoveryStatus ? { relayDiscoveryStatus: true } : {}),
+        ...(command.webRtcStunPolicy ? { webRtcStunPolicy: command.webRtcStunPolicy } : {}),
+        ...(command.webRtcStunStatus ? { webRtcStunStatus: true } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });

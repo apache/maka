@@ -25,11 +25,13 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
+import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/client';
 import {
   Badge,
   Button,
   MoreMenu,
   redactSecrets,
+  Selector,
   Switch,
   Text,
   TextArea,
@@ -89,6 +91,11 @@ type LocalHostAvailability =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'available'; readonly peerId: string };
 
+type DesktopConnectivityPolicyState =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'failed'; readonly message: string }
+  | { readonly kind: 'ready'; readonly policy: RuntimeHostWebRtcStunPolicy };
+
 interface ActivePeerMeshOperation {
   readonly operationId: string;
   readonly cancellable: boolean;
@@ -114,6 +121,15 @@ export function RuntimeHostPeerMeshDialog(props: {
   const [workingAction, setWorkingAction] = useState<PeerMeshWorkingAction>();
   const [settling, setSettling] = useState(false);
   const [operationCancellable, setOperationCancellable] = useState(false);
+  const [connectivityPolicy, setConnectivityPolicy] = useState<DesktopConnectivityPolicyState>(
+    { kind: 'loading' },
+  );
+  const [connectivityPolicyKind, setConnectivityPolicyKind] =
+    useState<RuntimeHostWebRtcStunPolicy['kind']>('default');
+  const [customStunUrls, setCustomStunUrls] = useState('');
+  const [savingConnectivityPolicy, setSavingConnectivityPolicy] = useState(false);
+  const [connectivityPolicyRestartRequired, setConnectivityPolicyRestartRequired] =
+    useState(false);
   const [managedHostPeerSetup, setManagedHostPeerSetup] = useState<ManagedHostPeerSetup>(
     props.target.kind === 'managed_host' ? { kind: 'loading' } : { kind: 'idle' },
   );
@@ -216,6 +232,31 @@ export function RuntimeHostPeerMeshDialog(props: {
       cancelStatusOperations();
     };
   }, [cancelStatusOperations, copy.unknownError, offerLocalHost, refresh]);
+
+  useEffect(() => {
+    if (props.target.kind !== 'desktop') return;
+    let disposed = false;
+    setConnectivityPolicy({ kind: 'loading' });
+    void services.getConnectivityPolicy().then(
+      (policy) => {
+        if (disposed) return;
+        setConnectivityPolicy({ kind: 'ready', policy });
+        setConnectivityPolicyKind(policy.kind);
+        setCustomStunUrls(policy.kind === 'custom' ? policy.urls.join(', ') : '');
+      },
+      (failure) => {
+        if (!disposed) {
+          setConnectivityPolicy({
+            kind: 'failed',
+            message: peerMeshErrorMessage(failure, copy.connectivityPolicyLoadFailed),
+          });
+        }
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [copy.connectivityPolicyLoadFailed, props.target.kind, services]);
 
   useEffect(() => {
     if (view.kind !== 'overview' || working) return;
@@ -471,6 +512,36 @@ export function RuntimeHostPeerMeshDialog(props: {
     }
   }
 
+  async function saveConnectivityPolicy(): Promise<void> {
+    if (savingConnectivityPolicy || connectivityPolicy.kind !== 'ready') return;
+    setSavingConnectivityPolicy(true);
+    setError(undefined);
+    try {
+      const policy = await services.setConnectivityPolicy(
+        connectivityPolicyKind === 'custom'
+          ? {
+              kind: 'custom',
+              urls: customStunUrls
+                .split(',')
+                .map((url) => url.trim())
+                .filter(Boolean),
+            }
+          : { kind: connectivityPolicyKind },
+      );
+      if (closed.current) return;
+      setConnectivityPolicy({ kind: 'ready', policy });
+      setConnectivityPolicyKind(policy.kind);
+      setCustomStunUrls(policy.kind === 'custom' ? policy.urls.join(', ') : '');
+      setConnectivityPolicyRestartRequired(true);
+    } catch (failure) {
+      if (!closed.current) {
+        setError(peerMeshErrorMessage(failure, copy.connectivityPolicySaveFailed));
+      }
+    } finally {
+      if (!closed.current) setSavingConnectivityPolicy(false);
+    }
+  }
+
   async function joinLocalHost(meshId: string, operationId: string): Promise<void> {
     const prepared = await services.execute(activeTarget, 'invite', {
       meshId,
@@ -640,6 +711,19 @@ export function RuntimeHostPeerMeshDialog(props: {
                   </Text>
                 </div>
               ) : null}
+              {activeTarget.kind === 'desktop' && view.kind === 'overview' ? (
+                <DesktopConnectivityPolicy
+                  state={connectivityPolicy}
+                  selectedKind={connectivityPolicyKind}
+                  customUrls={customStunUrls}
+                  restartRequired={connectivityPolicyRestartRequired}
+                  saving={savingConnectivityPolicy}
+                  copy={copy}
+                  onKindChange={setConnectivityPolicyKind}
+                  onCustomUrlsChange={setCustomStunUrls}
+                  onSave={() => void saveConnectivityPolicy()}
+                />
+              ) : null}
               {workingAction ? (
                 <Banner
                   status="info"
@@ -727,6 +811,81 @@ export function RuntimeHostPeerMeshDialog(props: {
         }
       />
     </Dialog>
+  );
+}
+
+function DesktopConnectivityPolicy(props: {
+  readonly state: DesktopConnectivityPolicyState;
+  readonly selectedKind: RuntimeHostWebRtcStunPolicy['kind'];
+  readonly customUrls: string;
+  readonly restartRequired: boolean;
+  readonly saving: boolean;
+  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly onKindChange: (kind: RuntimeHostWebRtcStunPolicy['kind']) => void;
+  readonly onCustomUrlsChange: (value: string) => void;
+  readonly onSave: () => void;
+}) {
+  return (
+    <details className="settingsPeerMeshConnectivity">
+      <summary>
+        <span>{props.copy.adaptiveConnectivity}</span>
+        <Tooltip content={props.copy.adaptiveConnectivityHelp}>
+          <span className="settingsPeerMeshConnectivityHelp" aria-label={props.copy.adaptiveConnectivityHelp}>
+            <HelpCircle size={ICON_SIZE.control} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      </summary>
+      {props.state.kind === 'loading' ? (
+        <Text type="supporting" color="secondary">{props.copy.connectivityPolicyLoading}</Text>
+      ) : props.state.kind === 'failed' ? (
+        <Banner status="error" title={props.copy.connectivityPolicyLoadFailed} description={props.state.message} />
+      ) : (
+        <div className="settingsPeerMeshConnectivityBody">
+          <Selector
+            label={props.copy.publicAddressDiscovery}
+            value={props.selectedKind}
+            options={[
+              { value: 'default', label: props.copy.publicStunDefault },
+              { value: 'disabled', label: props.copy.publicStunDisabled },
+              { value: 'custom', label: props.copy.publicStunCustom },
+            ]}
+            isDisabled={props.saving}
+            onChange={(value) => props.onKindChange(value as RuntimeHostWebRtcStunPolicy['kind'])}
+          />
+          {props.selectedKind === 'custom' ? (
+            <TextInput
+              label={props.copy.customStunUrls}
+              value={props.customUrls}
+              placeholder="stun:stun.example.com:3478"
+              isDisabled={props.saving}
+              onChange={props.onCustomUrlsChange}
+            />
+          ) : null}
+          <Text type="supporting" color="secondary">
+            {props.selectedKind === 'default'
+              ? props.copy.publicStunDefaultHelp
+              : props.selectedKind === 'disabled'
+                ? props.copy.publicStunDisabledHelp
+                : props.copy.publicStunCustomHelp}
+          </Text>
+          {props.restartRequired ? (
+            <Banner status="info" title={props.copy.connectivityPolicyRestartRequired} />
+          ) : null}
+          <HStack hAlign="end">
+            <Button
+              variant="secondary"
+              size="sm"
+              label={props.copy.saveConnectivityPolicy}
+              isDisabled={
+                props.saving ||
+                (props.selectedKind === 'custom' && props.customUrls.trim().length === 0)
+              }
+              onClick={props.onSave}
+            />
+          </HStack>
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -1507,6 +1666,25 @@ function peerMeshCopy(locale: string) {
         hostEndpoint: '本机 Runtime Host',
         desktopEndpointHelp: '此 Client 用于连接 Mesh 中的 Runtime Host。',
         hostEndpointHelp: '此 Host 加入后，其他成员才能连接本机分享的任务。',
+        adaptiveConnectivity: '自适应连接',
+        adaptiveConnectivityHelp:
+          'Maka 会自动竞速可用的直连方式，并在获准时使用成员转发；这里不需要选择具体协议。',
+        connectivityPolicyLoading: '正在读取连接策略…',
+        connectivityPolicyLoadFailed: '无法读取连接策略',
+        connectivityPolicySaveFailed: '无法保存连接策略',
+        connectivityPolicyRestartRequired: '已保存。重启 Maka 后应用到新的连接。',
+        publicAddressDiscovery: '公网地址发现',
+        publicStunDefault: '公共 STUN（推荐）',
+        publicStunDisabled: '不使用公共 STUN',
+        publicStunCustom: '自定义 STUN',
+        customStunUrls: 'STUN 地址',
+        publicStunDefaultHelp:
+          '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不承载 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
+        publicStunDisabledHelp:
+          '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
+        publicStunCustomHelp:
+          '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
+        saveConnectivityPolicy: '保存连接策略',
         thisRuntimeHost: '本机 Runtime Host',
         thisDesktop: '本机 Desktop',
         displayName: '在 Mesh 中显示的名称',
@@ -1631,6 +1809,25 @@ function peerMeshCopy(locale: string) {
         hostEndpoint: 'Local Runtime Host',
         desktopEndpointHelp: 'This Client connects to Runtime Hosts in the Mesh.',
         hostEndpointHelp: 'Add this Host so other members can reach tasks shared from this device.',
+        adaptiveConnectivity: 'Adaptive connectivity',
+        adaptiveConnectivityHelp:
+          'Maka races available direct paths automatically and uses approved member transit when needed. You do not choose a transport protocol here.',
+        connectivityPolicyLoading: 'Loading connectivity policy…',
+        connectivityPolicyLoadFailed: 'Could not load connectivity policy',
+        connectivityPolicySaveFailed: 'Could not save connectivity policy',
+        connectivityPolicyRestartRequired: 'Saved. Restart Maka to apply it to new connections.',
+        publicAddressDiscovery: 'Public address discovery',
+        publicStunDefault: 'Public STUN (recommended)',
+        publicStunDisabled: 'No public STUN',
+        publicStunCustom: 'Custom STUN',
+        customStunUrls: 'STUN addresses',
+        publicStunDefaultHelp:
+          'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
+        publicStunDisabledHelp:
+          'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
+        publicStunCustomHelp:
+          'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
+        saveConnectivityPolicy: 'Save connectivity policy',
         thisRuntimeHost: 'This Runtime Host',
         thisDesktop: 'This Desktop',
         displayName: 'Name shown in the Mesh',
