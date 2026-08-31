@@ -50,6 +50,7 @@ use super::{
 };
 
 const OUTBOUND_COMMAND_CAPACITY: usize = 1;
+const OUTBOUND_STREAM_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(super) struct Behaviour {
     protocol: StreamProtocol,
@@ -92,10 +93,7 @@ impl Behaviour {
         path: PeerConnectionPath,
         allow_relayed: bool,
     ) -> Handler {
-        let relay_peer_id = match path {
-            PeerConnectionPath::Direct(_) => None,
-            PeerConnectionPath::Transit { relay_peer_id } => Some(relay_peer_id),
-        };
+        let relay_peer_id = path.relay_peer_id();
         if relay_peer_id.is_some()
             && !allow_relayed
             && self.trusted_transit_relays.as_ref().is_some_and(|trusted| {
@@ -192,7 +190,7 @@ impl Control {
             .filter_map(|(connection_id, connection)| {
                 active_streams
                     .contains_key(connection_id)
-                    .then_some(connection.relay_peer_id)
+                    .then_some(connection.path.relay_peer_id())
                     .flatten()
             })
             .collect()
@@ -204,7 +202,8 @@ impl Control {
             .iter()
             .filter_map(|(connection_id, connection)| {
                 connection
-                    .relay_peer_id
+                    .path
+                    .relay_peer_id()
                     .is_some_and(|relay| relays.contains(&relay))
                     .then_some(*connection_id)
             })
@@ -217,16 +216,24 @@ impl Control {
         excluded: &HashSet<ConnectionId>,
         allowed_relays: &HashSet<PeerId>,
     ) -> bool {
-        lock(&self.shared)
-            .connection(peer_id, excluded, allowed_relays)
-            .is_some()
+        !self
+            .eligible_connections(peer_id, excluded, allowed_relays)
+            .is_empty()
+    }
+
+    pub(super) fn eligible_connections(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Vec<(ConnectionId, PeerConnectionPath)> {
+        lock(&self.shared).eligible_connections(peer_id, excluded, allowed_relays)
     }
 
     pub(super) fn has_relayed_connection(&self, peer_id: PeerId) -> bool {
-        lock(&self.shared)
-            .connections
-            .values()
-            .any(|connection| connection.peer_id == peer_id && connection.relay_peer_id.is_some())
+        lock(&self.shared).connections.values().any(|connection| {
+            connection.peer_id == peer_id && connection.path.relay_peer_id().is_some()
+        })
     }
 
     pub(super) fn has_relayed_connection_via(
@@ -240,14 +247,14 @@ impl Control {
             .is_some()
     }
 
-    pub(super) async fn open_stream(
+    pub(super) async fn open_stream_on(
         &mut self,
+        connection_id: ConnectionId,
         peer_id: PeerId,
-        excluded: &HashSet<ConnectionId>,
         allowed_relays: &HashSet<PeerId>,
     ) -> Result<OpenedStream, OpenStreamError> {
-        let (connection_id, path, sender) = lock(&self.shared)
-            .connection(peer_id, excluded, allowed_relays)
+        let (path, sender) = lock(&self.shared)
+            .connection_by_id(connection_id, peer_id, allowed_relays)
             .ok_or(OpenStreamError::NoEligibleConnection)?;
         let (result, receiver) = oneshot::channel();
         sender
@@ -257,11 +264,7 @@ impl Control {
         let stream = receiver
             .await
             .map_err(|_| OpenStreamError::ConnectionClosed)??;
-        Ok(OpenedStream {
-            connection_id,
-            path,
-            stream,
-        })
+        Ok(OpenedStream { path, stream })
     }
 
     pub(super) async fn open_relayed_stream(
@@ -270,7 +273,7 @@ impl Control {
         excluded: &HashSet<ConnectionId>,
         allowed_relays: &HashSet<PeerId>,
     ) -> Result<OpenedStream, OpenStreamError> {
-        let (connection_id, relay_peer_id, sender) = lock(&self.shared)
+        let (relay_peer_id, sender) = lock(&self.shared)
             .relayed_connection(peer_id, excluded, allowed_relays)
             .ok_or(OpenStreamError::NoEligibleConnection)?;
         let (result, receiver) = oneshot::channel();
@@ -282,7 +285,6 @@ impl Control {
             .await
             .map_err(|_| OpenStreamError::ConnectionClosed)??;
         Ok(OpenedStream {
-            connection_id,
             path: PeerConnectionPath::Transit { relay_peer_id },
             stream,
         })
@@ -290,7 +292,6 @@ impl Control {
 }
 
 pub(super) struct OpenedStream {
-    pub(super) connection_id: ConnectionId,
     pub(super) path: PeerConnectionPath,
     pub(super) stream: Stream,
 }
@@ -328,7 +329,6 @@ struct DirectConnections {
 
 struct DirectConnection {
     peer_id: PeerId,
-    relay_peer_id: Option<PeerId>,
     path: PeerConnectionPath,
     sender: Option<mpsc::Sender<NewStream>>,
 }
@@ -341,15 +341,10 @@ impl DirectConnections {
         path: PeerConnectionPath,
         sender: Option<mpsc::Sender<NewStream>>,
     ) {
-        let relay_peer_id = match path {
-            PeerConnectionPath::Direct(_) => None,
-            PeerConnectionPath::Transit { relay_peer_id } => Some(relay_peer_id),
-        };
         self.connections.insert(
             connection_id,
             DirectConnection {
                 peer_id,
-                relay_peer_id,
                 path,
                 sender,
             },
@@ -360,24 +355,43 @@ impl DirectConnections {
         self.connections.remove(&connection_id);
     }
 
-    fn connection(
+    fn eligible_connections(
         &self,
         peer_id: PeerId,
         excluded: &HashSet<ConnectionId>,
         allowed_relays: &HashSet<PeerId>,
-    ) -> Option<(ConnectionId, PeerConnectionPath, mpsc::Sender<NewStream>)> {
+    ) -> Vec<(ConnectionId, PeerConnectionPath)> {
         self.connections
             .iter()
-            .find_map(|(connection_id, connection)| {
+            .filter_map(|(connection_id, connection)| {
                 let sender = connection.sender.as_ref()?;
                 (connection.peer_id == peer_id
                     && !excluded.contains(connection_id)
                     && connection
-                        .relay_peer_id
+                        .path
+                        .relay_peer_id()
                         .is_none_or(|relay| allowed_relays.contains(&relay))
                     && !sender.is_closed())
-                .then(|| (*connection_id, connection.path.clone(), sender.clone()))
+                .then(|| (*connection_id, connection.path.clone()))
             })
+            .collect()
+    }
+
+    fn connection_by_id(
+        &self,
+        connection_id: ConnectionId,
+        peer_id: PeerId,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Option<(PeerConnectionPath, mpsc::Sender<NewStream>)> {
+        let connection = self.connections.get(&connection_id)?;
+        let sender = connection.sender.as_ref()?;
+        (connection.peer_id == peer_id
+            && connection
+                .path
+                .relay_peer_id()
+                .is_none_or(|relay| allowed_relays.contains(&relay))
+            && !sender.is_closed())
+        .then(|| (connection.path.clone(), sender.clone()))
     }
 
     fn relayed_connection(
@@ -385,17 +399,17 @@ impl DirectConnections {
         peer_id: PeerId,
         excluded: &HashSet<ConnectionId>,
         allowed_relays: &HashSet<PeerId>,
-    ) -> Option<(ConnectionId, PeerId, mpsc::Sender<NewStream>)> {
+    ) -> Option<(PeerId, mpsc::Sender<NewStream>)> {
         self.connections
             .iter()
             .find_map(|(connection_id, connection)| {
                 let sender = connection.sender.as_ref()?;
-                let relay = connection.relay_peer_id?;
+                let relay = connection.path.relay_peer_id()?;
                 (connection.peer_id == peer_id
                     && !excluded.contains(connection_id)
                     && allowed_relays.contains(&relay)
                     && !sender.is_closed())
-                .then(|| (*connection_id, relay, sender.clone()))
+                .then(|| (relay, sender.clone()))
             })
     }
 }
@@ -516,7 +530,8 @@ impl ConnectionHandler for Handler {
                             protocol: libp2p::swarm::SubstreamProtocol::new(
                                 ProtocolUpgrade(vec![protocol]),
                                 request_id,
-                            ),
+                            )
+                            .with_timeout(OUTBOUND_STREAM_OPEN_TIMEOUT),
                         },
                     );
                 }
@@ -649,7 +664,7 @@ mod tests {
         );
         assert!(
             lock(&control.shared)
-                .connection(peer_id, &HashSet::new(), &HashSet::new())
+                .connection_by_id(ConnectionId::new_unchecked(1), peer_id, &HashSet::new(),)
                 .is_none()
         );
         assert!(!control.has_connection(peer_id, &HashSet::new(), &HashSet::new()));
@@ -675,8 +690,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![protocol.clone()]
         );
-        let (_, relay_path, _) = lock(&control.shared)
-            .connection(peer_id, &HashSet::new(), &HashSet::from([relay_peer_id]))
+        let (relay_path, _) = lock(&control.shared)
+            .connection_by_id(
+                ConnectionId::new_unchecked(2),
+                peer_id,
+                &HashSet::from([relay_peer_id]),
+            )
             .expect("trusted relay connection");
         assert_eq!(relay_path, PeerConnectionPath::Transit { relay_peer_id });
         let relay_connections = control.connections_via(&HashSet::from([relay_peer_id]));
@@ -705,11 +724,11 @@ mod tests {
         );
         assert!(
             lock(&control.shared)
-                .connection(peer_id, &HashSet::new(), &HashSet::new())
+                .connection_by_id(ConnectionId::new_unchecked(3), peer_id, &HashSet::new(),)
                 .is_some()
         );
-        let (_, direct_path, _) = lock(&control.shared)
-            .connection(peer_id, &HashSet::new(), &HashSet::new())
+        let (direct_path, _) = lock(&control.shared)
+            .connection_by_id(ConnectionId::new_unchecked(3), peer_id, &HashSet::new())
             .expect("direct connection");
         assert_eq!(
             direct_path,
