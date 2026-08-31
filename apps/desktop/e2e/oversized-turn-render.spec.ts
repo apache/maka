@@ -206,3 +206,50 @@ test('keyboard focus into a skipped card releases the live tail', async ({
   expect(Math.abs(afterGrowth.top - focused.top)).toBeLessThanOrEqual(4);
   expect(Math.abs(afterGrowth.activeTop - focused.activeTop)).toBeLessThanOrEqual(4);
 });
+
+test('visible transcript focus during pending growth keeps the live tail', async ({
+  oversizedTurnWindow: page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  const root = page.locator(SCROLLER);
+  await root.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await waitForPaintedFrames(page);
+
+  await root.evaluate((element) => {
+    const list = element.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    const rootRect = element.getBoundingClientRect();
+    const control = [...list.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]')]
+      .reverse()
+      .find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom > rootRect.top && rect.top < rootRect.bottom;
+      });
+    if (!control) throw new Error('no visible transcript control is available');
+
+    // Keep both mutations and focus in one task. ResizeObserver is therefore
+    // still pending when the visible control receives focus, which is the race
+    // where root distance must not be mistaken for reader movement.
+    const firstGrowth = document.createElement('div');
+    firstGrowth.dataset.pendingFocusGrowth = 'true';
+    firstGrowth.style.height = '600px';
+    list.append(firstGrowth);
+    control.focus();
+    const secondGrowth = document.createElement('div');
+    secondGrowth.dataset.followUpFocusGrowth = 'true';
+    secondGrowth.style.height = '300px';
+    list.append(secondGrowth);
+  });
+  await waitForPaintedFrames(page, 6);
+
+  const result = await root.evaluate((element) => ({
+    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    activeInTranscript: Boolean(
+      document.activeElement?.closest('.maka-chat-message-list'),
+    ),
+  }));
+  expect(result.activeInTranscript).toBe(true);
+  expect(result.distance).toBeLessThanOrEqual(4);
+});

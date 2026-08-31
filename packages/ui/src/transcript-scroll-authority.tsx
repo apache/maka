@@ -231,14 +231,24 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       // Chromium materializes that subtree and scrolls it into view, but the
       // resulting scroll/resize deliveries cannot distinguish that reader move
       // from geometry growth. Release while focus ownership is unambiguous.
-      // Merely focusing a control already in the viewport keeps tail-following.
+      // A visible composer is outside the transcript and must never release the
+      // tail. A visible transcript control also keeps following when geometry
+      // grew before ResizeObserver delivered it: in that window the root is
+      // still on the offset this authority wrote. Focus navigation that moved
+      // the reader changes that offset, or leaves the target outside the root
+      // viewport before Chromium brings it into view.
       const onFocusIn = (event: FocusEvent): void => {
         if (!pinned || !(event.target instanceof HTMLElement)) return;
+        if (!event.target.closest('.maka-chat-message-list')) return;
         const focusedRect = event.target.getBoundingClientRect();
         const rootRect = target.getBoundingClientRect();
         const outsideViewport =
           focusedRect.bottom <= rootRect.top || focusedRect.top >= rootRect.bottom;
-        if (outsideViewport || distanceToTail() > PIN_THRESHOLD_PX) releaseTail();
+        const readerMoved =
+          lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) >= 1;
+        if (outsideViewport || (readerMoved && distanceToTail() > PIN_THRESHOLD_PX)) {
+          releaseTail();
+        }
       };
       target.addEventListener('focusin', onFocusIn);
       // Everything that moves the tail without the reader asking, watched in
