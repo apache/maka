@@ -142,6 +142,56 @@ test('does not trust a pre-observation projection over its canonical attempt', a
   }
 });
 
+test('upgrades exact-matched mixed-era composition into the current projection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    const oldProjection = latestContext('attempt-1', 10);
+    oldProjection.snapshot.schemaVersion = 1;
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200),
+      { durable: true, latestContext: oldProjection },
+    );
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model', 40, 200, [
+        {
+          kind: 'tool_schema',
+          index: 0,
+          cacheable: true,
+          hash: 'legacy',
+          bytes: 700,
+          label: 'HistoricalTool',
+        },
+      ]),
+    );
+
+    let scanned = 0;
+    const reader = createSqliteAgentRunStore(root);
+    const counted = countingStore(reader, () => {
+      scanned += 1;
+    });
+    const upgraded = await readLatestContextDiagnostics(counted, 'session-1');
+
+    assert.equal(upgraded.status, 'available');
+    if (upgraded.status !== 'available') return;
+    assert.deepEqual(upgraded.composition?.tools, [{ name: 'HistoricalTool', bytes: 700 }]);
+
+    scanned = 0;
+    const warm = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(warm.status, 'available');
+    if (warm.status !== 'available') return;
+    assert.deepEqual(warm.composition, upgraded.composition);
+    assert.equal(scanned, 0, 'the mixed-era composition is sealed into the v2 projection');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('a failed call does not replace the last good snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
@@ -372,6 +422,34 @@ test('cold rebuild takes composition from the canonical attempt observation', as
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
   assert.deepEqual(diagnostics.composition?.tools, [{ name: 'CanonicalTool', bytes: 800 }]);
+});
+
+test('does not enrich a canonical attempt from an identity-mismatched provider row', async () => {
+  const store = runStore([
+    {
+      header: runHeader('run-1', 1),
+      events: [
+        meteringEvent('run-1', 'attempt-1', 10, 'model-canonical', 40, 200),
+        attemptEvent('run-1', 'attempt-1', 11, 'completed', 'model-other', 40, 200, [
+          {
+            kind: 'tool_schema',
+            index: 0,
+            cacheable: true,
+            hash: 'legacy',
+            bytes: 999,
+            label: 'WrongRequestTool',
+          },
+        ]),
+      ],
+    },
+  ]);
+
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+
+  assert.equal(diagnostics.status, 'available');
+  if (diagnostics.status !== 'available') return;
+  assert.equal(diagnostics.modelId, 'model-canonical');
+  assert.equal(diagnostics.composition, undefined);
 });
 
 test('a legacy request whose capture is missing reports no composition, not an older one', async () => {

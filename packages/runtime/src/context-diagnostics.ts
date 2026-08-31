@@ -201,6 +201,10 @@ async function rebuildContextFromLedger(
   // legacy provider rows answer for it would resurrect the very request the
   // canonical rule declined to report.
   let sawCanonicalRecord = false;
+  // Historical provider rows never select a canonical-era request. They may
+  // only restore composition for the exact physical attempt selected above
+  // when that transitional canonical record predates request observations.
+  const historicalAttempts: LegacyProviderAnchor[] = [];
   const checkpoints: CheckpointCandidate[] = [];
 
   for (const run of runs) {
@@ -213,7 +217,10 @@ async function rebuildContextFromLedger(
       }
       if (event.type === PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE) {
         const candidate = legacyProviderAnchor(event);
-        if (candidate && supersedesLatestContext(candidate, legacy)) legacy = candidate;
+        if (candidate) {
+          historicalAttempts.push(candidate);
+          if (supersedesLatestContext(candidate, legacy)) legacy = candidate;
+        }
         continue;
       }
       if (event.type !== CHECKPOINT_EVENT_TYPE) continue;
@@ -233,6 +240,13 @@ async function rebuildContextFromLedger(
     return { status: 'unavailable', reason: 'no_completed_request' };
   }
   const boundary = latestCheckpointBefore(checkpoints, resolved);
+  // Selection stays canonical. This is a one-field compatibility join, not a
+  // fallback for provider/model/status/timing/usage or for a different attempt.
+  const composition =
+    resolved.composition ??
+    (anchor && !anchor.hasRequestObservation
+      ? exactHistoricalComposition(anchor, historicalAttempts)
+      : undefined);
   const snapshot: LatestContextSnapshot = {
     schemaVersion: LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     attemptId: resolved.attemptId,
@@ -244,7 +258,7 @@ async function rebuildContextFromLedger(
       ? { cacheReadInputTokens: resolved.cacheReadInputTokens }
       : {}),
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
-    ...(resolved.composition ? { composition: resolved.composition } : {}),
+    ...(composition ? { composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
@@ -303,9 +317,10 @@ async function repairLatestContext(
 function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
   const data = event.data;
   if (!data || data.status !== 'completed') return undefined;
-  const { attemptId, providerId, modelId, completedAt, startedAt } = data;
+  const { attemptId, traceId, providerId, modelId, completedAt, startedAt } = data;
   if (
     typeof attemptId !== 'string' ||
+    typeof traceId !== 'string' ||
     typeof providerId !== 'string' ||
     typeof modelId !== 'string' ||
     typeof completedAt !== 'number'
@@ -315,10 +330,12 @@ function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined 
   const composition = readPromptCompositionEvent(event)?.composition;
   return {
     attemptId,
+    traceId,
     providerId,
     modelId,
     startedAt: typeof startedAt === 'number' ? startedAt : completedAt,
     completedAt,
+    hasRequestObservation: false,
     ...(typeof data.inputTokens === 'number' ? { inputTokens: data.inputTokens } : {}),
     ...(typeof data.contextWindow === 'number' ? { contextWindow: data.contextWindow } : {}),
     ...(composition ? { composition } : {}),
@@ -348,6 +365,7 @@ const CHECKPOINT_EVENT_TYPE = 'history_compact_checkpoint_recorded';
 
 interface MeteringAnchor {
   attemptId: string;
+  traceId: string;
   providerId: string;
   modelId: string;
   startedAt: number;
@@ -356,6 +374,7 @@ interface MeteringAnchor {
   cacheReadInputTokens?: number;
   contextWindow?: number;
   composition?: ContextDiagnosticsComposition;
+  hasRequestObservation: boolean;
 }
 
 interface CheckpointCandidate {
@@ -378,10 +397,12 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     : undefined;
   return {
     attemptId: attempt.attemptId,
+    traceId: attempt.traceId,
     providerId: attempt.providerId,
     modelId: attempt.modelId,
     startedAt: attempt.startedAt,
     completedAt: attempt.completedAt,
+    hasRequestObservation: attempt.requestObservation !== undefined,
     ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
     ...(attempt.cacheReadInputTokens !== undefined
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
@@ -389,6 +410,23 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     ...(attempt.contextWindow !== undefined ? { contextWindow: attempt.contextWindow } : {}),
     ...(composition ? { composition } : {}),
   };
+}
+
+function exactHistoricalComposition(
+  anchor: MeteringAnchor,
+  candidates: readonly LegacyProviderAnchor[],
+): ContextDiagnosticsComposition | undefined {
+  const matches = candidates.filter(
+    (candidate) =>
+      candidate.composition !== undefined &&
+      candidate.attemptId === anchor.attemptId &&
+      candidate.traceId === anchor.traceId &&
+      candidate.providerId === anchor.providerId &&
+      candidate.modelId === anchor.modelId &&
+      candidate.startedAt === anchor.startedAt &&
+      candidate.completedAt === anchor.completedAt,
+  );
+  return matches.length === 1 ? matches[0]!.composition : undefined;
 }
 
 function latestCheckpointBefore(
