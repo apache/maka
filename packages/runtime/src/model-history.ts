@@ -72,7 +72,6 @@ import type {
 import {
   decodeEffectiveToolResultProjection,
   durableProjectionToToolResultOutput,
-  estimateToolResultOutputChars,
 } from './durable-tool-result-projection.js';
 import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
@@ -84,45 +83,52 @@ export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
 // ============================================================================
 
 /**
- * The model-facing value a `function_response` event contributes to effective
- * history. Sizing and checkpoint source digests both read THIS, never the raw
- * execution fact that the durable projection already bounded or redacted.
+ * Model-visible character count of a `function_response`'s EFFECTIVE value —
+ * the durable projection when the response has one, never the raw execution
+ * fact the projection already bounded or redacted.
+ *
+ * Memoized on the content object because a legacy response (no durable
+ * projection) is re-derived through the whole compatibility codec, and one
+ * request measures the same events several times: budget verdicts, the
+ * compactable-content filter, and checkpoint prefix matching all walk the
+ * history. Content is immutable once committed, so identity is a sound key.
  */
-export type EffectiveToolResultModelValue =
-  | { kind: 'output'; output: ToolResultOutput }
-  | { kind: 'opaque'; value: unknown }
-  | { kind: 'invalid'; message: string };
+const effectiveToolResultChars = new WeakMap<object, number>();
 
-export function effectiveToolResultModelValue(
-  content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
-  sessionId: string,
-): EffectiveToolResultModelValue {
-  const effective = decodeEffectiveToolResultProjection(content, sessionId);
-  switch (effective.kind) {
-    case 'projection':
-      return { kind: 'output', output: durableProjectionToToolResultOutput(effective.projection) };
-    case 'provider_native':
-    case 'legacy_output':
-      return { kind: 'opaque', value: effective.output };
-    case 'invalid_legacy':
-      return { kind: 'invalid', message: effective.message };
+/** Model-visible character count of one materialized Tool Result output. */
+function estimateToolResultOutputChars(output: ToolResultOutput): number {
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value.length;
+    case 'json':
+    case 'error-json':
+      return stableJsonLength(output.value);
+    case 'content':
+      return output.value.reduce(
+        (total, part) => total + (part.type === 'text' ? part.text.length : 0),
+        0,
+      );
+    case 'execution-denied':
+      return output.reason?.length ?? 0;
   }
 }
 
-/** Model-visible character count of a `function_response`'s effective value. */
 export function estimateEffectiveToolResultChars(
   content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
   sessionId: string,
 ): number {
-  const value = effectiveToolResultModelValue(content, sessionId);
-  switch (value.kind) {
-    case 'output':
-      return estimateToolResultOutputChars(value.output);
-    case 'opaque':
-      return stableJsonLength(value.value);
-    case 'invalid':
-      return value.message.length;
-  }
+  const memoized = effectiveToolResultChars.get(content);
+  if (memoized !== undefined) return memoized;
+  const effective = decodeEffectiveToolResultProjection(content, sessionId);
+  const chars =
+    effective.kind === 'projection'
+      ? estimateToolResultOutputChars(durableProjectionToToolResultOutput(effective.projection))
+      : effective.kind === 'invalid_legacy'
+        ? effective.message.length
+        : stableJsonLength(effective.output);
+  effectiveToolResultChars.set(content, chars);
+  return chars;
 }
 
 export function estimateRuntimeEventChars(event: RuntimeEvent): number {

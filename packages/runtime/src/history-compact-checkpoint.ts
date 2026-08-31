@@ -28,7 +28,6 @@ import {
   SECTIONED_SUMMARY_FORMAT,
   type SectionedSummaryFormat,
 } from './history-compact-summary-validation.js';
-import { effectiveToolResultModelValue } from './model-history.js';
 
 // v2: coverage and source digest are taken over EFFECTIVE model history (the
 // durable Tool Result projection), not raw RuntimeEvent evidence. A v1
@@ -751,14 +750,26 @@ function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   return `sha256:${hash.digest('hex')}`;
 }
 
+/**
+ * Selects the persisted field that carries a response's model-visible content,
+ * dropping the others. This is a structural choice over durable data only —
+ * never a code-derived materialization — so the digest of an already-persisted
+ * checkpoint cannot drift when a projector, a codec bound, or a placeholder
+ * string changes. A response with no durable projection (legacy, or
+ * provider-native) keeps the raw field its effective content is still derived
+ * from, which is what the pre-projection digest already hashed.
+ */
 function effectiveDigestEvent(event: RuntimeEvent): unknown {
   const content = event.content;
   if (content?.kind !== 'function_response') return event;
   const { result, providerOutput, modelProjection, ...identity } = content;
-  return {
-    ...event,
-    content: { ...identity, effective: effectiveToolResultModelValue(content, event.sessionId) },
-  };
+  if (content.providerExecuted && providerOutput !== undefined) {
+    return { ...event, content: { ...identity, providerOutput } };
+  }
+  if (modelProjection !== undefined) {
+    return { ...event, content: { ...identity, modelProjection } };
+  }
+  return { ...event, content: { ...identity, result } };
 }
 
 function sha256(value: string): string {
