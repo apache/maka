@@ -410,6 +410,47 @@ test('failed on-demand candidate activation restores the known-good package auth
   assert.deepEqual(operatorProjection.launch, current.launch);
 });
 
+test('revalidates product invariants after Host retirement and restores the prior lifecycle', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-retired-validation-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const authorityDirectory = dirname(
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+  );
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'on_demand');
+  const desired = config(capability.canonicalPath, capability.rootId, 2, 'on_demand');
+  await claimRuntimeHostManagedDeployment(capability, current);
+  let previousActivations = 0;
+
+  await assert.rejects(
+    replaceRuntimeHostLifecycle({
+      operation: 'configure',
+      current,
+      desired,
+      validateRetiredState: async () => {
+        assert.equal(await tryAcquireStateRootOwner(capability), undefined);
+        throw new Error('Peer Mesh identity gained an obligation during retirement');
+      },
+      activatePrevious: async () => {
+        previousActivations += 1;
+      },
+      deps: {
+        convergeOperator: async () => assert.fail('validation must precede lifecycle commit'),
+        verifyOperator: async () => undefined,
+        resolveProvider: () => {
+          throw new Error('On-demand replacement must not resolve a supervisor');
+        },
+      },
+    }),
+    /gained an obligation/u,
+  );
+
+  assert.equal(previousActivations, 1);
+  assert.deepEqual(await readRuntimeHostManagedDeploymentAuthorityRecord(capability), current);
+});
+
 test('interrupted activation compensation completes the previous semantics', async (t) => {
   const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-root-'));
   const authorityRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-compensation-authority-'));

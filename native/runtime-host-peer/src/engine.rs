@@ -134,6 +134,7 @@ pub enum EngineCommand {
 
 pub struct TransitPolicy {
     pub allowed_peers: HashSet<PeerId>,
+    pub approved_relays: HashSet<PeerId>,
     pub relays: Vec<TransitRelayCandidate>,
 }
 
@@ -234,6 +235,7 @@ struct StartedConnect {
 
 struct TransitRuntime {
     allowed_peers: Arc<RwLock<HashSet<PeerId>>>,
+    approved_relays: HashSet<PeerId>,
     trusted_relays: Arc<RwLock<HashSet<PeerId>>>,
     reservations: HashSet<PeerId>,
     circuits: HashMap<(PeerId, PeerId), usize>,
@@ -524,6 +526,7 @@ async fn run_endpoint_async(
         )?;
     let mut transit = TransitRuntime {
         allowed_peers: allowed_transit_peers,
+        approved_relays: HashSet::new(),
         trusted_relays: trusted_transit_relays,
         reservations: HashSet::new(),
         circuits: HashMap::new(),
@@ -816,6 +819,16 @@ async fn run_endpoint_async(
                 match completed.kind {
                     StreamCompletion::Application { connection_id } => {
                         release_active_stream(&mut direct.active, connection_id);
+                        let candidates = retained_transit_candidates(&coordination_relays, &transit);
+                        reconcile_transit_reservations(
+                            &mut swarm,
+                            &mut coordination_relays,
+                            candidates,
+                            &HashSet::new(),
+                            local_peer_id,
+                            &direct.active,
+                            &stream_control,
+                        );
                     }
                     StreamCompletion::MeshControl {
                         connection_id,
@@ -1602,6 +1615,7 @@ fn configure_transit(
 ) -> HashSet<PeerId> {
     let TransitPolicy {
         allowed_peers,
+        approved_relays,
         relays,
     } = policy;
     let trusted_relays = relays
@@ -1614,38 +1628,38 @@ fn configure_transit(
         .map(|current| !current.is_empty())
         .unwrap_or(false);
     let enabled = !allowed_peers.is_empty();
-    let removed = transit
+    let removed_allowed_peers = transit
         .allowed_peers
         .read()
         .map(|current| {
             current
                 .difference(&allowed_peers)
                 .copied()
-                .collect::<Vec<_>>()
+                .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    let (changed_relays, revoked_relays) = transit
+    let removed_trusted_relays = transit
         .trusted_relays
         .read()
         .map(|current| {
-            (
-                current
-                    .symmetric_difference(&trusted_relays)
-                    .copied()
-                    .collect::<HashSet<_>>(),
-                current
-                    .difference(&trusted_relays)
-                    .copied()
-                    .collect::<HashSet<_>>(),
-            )
+            current
+                .difference(&trusted_relays)
+                .copied()
+                .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
+    let revoked_relays = transit
+        .approved_relays
+        .difference(&approved_relays)
+        .copied()
+        .collect::<HashSet<_>>();
     if let Ok(mut current) = transit.allowed_peers.write() {
         *current = allowed_peers;
     }
     if let Ok(mut current) = transit.trusted_relays.write() {
         *current = trusted_relays;
     }
+    transit.approved_relays = approved_relays;
     if enabled && !was_enabled {
         let existing = swarm.external_addresses().cloned().collect::<HashSet<_>>();
         transit.published_addresses = transit
@@ -1662,21 +1676,32 @@ fn configure_transit(
             swarm.remove_external_address(&address);
         }
     }
-    for peer_id in removed {
+    for peer_id in removed_allowed_peers.iter().copied().filter(|peer_id| {
+        transit.reservations.contains(peer_id)
+            || transit
+                .circuits
+                .keys()
+                .any(|(source, destination)| source == peer_id || destination == peer_id)
+    }) {
         let _ = swarm.disconnect_peer_id(peer_id);
     }
-    for connection_id in application_stream.connections_via(&changed_relays) {
+    for connection_id in application_stream.connections_via(&revoked_relays) {
         let _ = swarm.close_connection(connection_id);
     }
     reconcile_transit_reservations(
         swarm,
         coordination_relays,
         relays,
+        &revoked_relays,
         local_peer_id,
         active_streams,
+        application_stream,
     );
     publish_transit_snapshot(transit);
-    revoked_relays
+    removed_trusted_relays
+        .union(&revoked_relays)
+        .copied()
+        .collect()
 }
 
 fn reconcile_pending_transit_connects(
@@ -1776,9 +1801,12 @@ fn reconcile_transit_reservations(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     candidates: Vec<TransitRelayCandidate>,
+    revoked_relays: &HashSet<PeerId>,
     local_peer_id: PeerId,
     active_streams: &HashMap<ConnectionId, usize>,
+    application_stream: &application_stream::Control,
 ) {
+    let active_relays = application_stream.relays_with_active_streams(active_streams);
     let desired = candidates
         .into_iter()
         .filter(|candidate| candidate.peer_id != local_peer_id)
@@ -1803,14 +1831,22 @@ fn reconcile_transit_reservations(
     peer_ids.extend(bootstrap.keys().copied());
     for peer_id in peer_ids {
         let relay = relays.entry(peer_id).or_default();
-        let next_transit_addresses = desired
-            .get(&peer_id)
-            .map(|candidate| candidate.addresses.clone())
-            .unwrap_or_default();
-        let next_transit_coordination_relays = desired
-            .get(&peer_id)
-            .map(|candidate| candidate.coordination_relays.clone())
-            .unwrap_or_default();
+        let retain_live_route =
+            active_relays.contains(&peer_id) && !revoked_relays.contains(&peer_id);
+        let next_transit_addresses = if let Some(candidate) = desired.get(&peer_id) {
+            candidate.addresses.clone()
+        } else if retain_live_route {
+            relay.transit_addresses.clone()
+        } else {
+            Vec::new()
+        };
+        let next_transit_coordination_relays = if let Some(candidate) = desired.get(&peer_id) {
+            candidate.coordination_relays.clone()
+        } else if retain_live_route {
+            relay.transit_coordination_relays.clone()
+        } else {
+            Vec::new()
+        };
         let (next_bootstrap_addresses, next_bootstrap_references) =
             bootstrap.get(&peer_id).cloned().unwrap_or_default();
         let reachability_changed = relay.transit_addresses != next_transit_addresses
@@ -1860,6 +1896,29 @@ fn reconcile_transit_reservations(
         relay.direct_connection_addresses.clear();
     }
     maintain_coordination_relays(swarm, relays, active_streams, true, Instant::now());
+}
+
+fn retained_transit_candidates(
+    relays: &HashMap<PeerId, CoordinationRelay>,
+    transit: &TransitRuntime,
+) -> Vec<TransitRelayCandidate> {
+    transit
+        .trusted_relays
+        .read()
+        .map(|trusted| {
+            trusted
+                .iter()
+                .filter_map(|peer_id| {
+                    let relay = relays.get(peer_id)?;
+                    Some(TransitRelayCandidate {
+                        peer_id: *peer_id,
+                        addresses: relay.transit_addresses.clone(),
+                        coordination_relays: relay.transit_coordination_relays.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn handle_transit_event(transit: &mut TransitRuntime, event: relay::Event) {
@@ -2749,7 +2808,30 @@ mod tests {
             1,
         );
 
-        configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
+        configure_test_transit_policy(
+            &source,
+            HashSet::new(),
+            HashSet::from([relay.peer_id]),
+            Vec::new(),
+        )
+        .await;
+        write_test_stream(&source_stream, b"after-route-expiry").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), target_stream.incoming.recv())
+                .await
+                .expect("expired route read timeout")
+                .expect("expired route stream ended")
+                .expect("expired route read failed"),
+            b"after-route-expiry",
+        );
+        configure_test_transit_with_reservations(
+            &source,
+            HashSet::new(),
+            vec![relay_address.clone()],
+        )
+        .await;
+
+        configure_test_transit(&source, HashSet::new()).await;
         wait_for_test_snapshot(&relay, |snapshot| snapshot.active_circuit_count == 0).await;
         let (result, response) = oneshot::channel();
         if source_stream
@@ -2769,6 +2851,12 @@ mod tests {
                 "revoked transit stream remained writable",
             );
         }
+        configure_test_transit_with_reservations(
+            &source,
+            HashSet::new(),
+            vec![relay_address.clone()],
+        )
+        .await;
 
         let response = begin_test_connect(
             &source,
@@ -2791,6 +2879,7 @@ mod tests {
             panic!("revoked pending transit connect succeeded");
         };
         assert_eq!(error.code, "transit_unavailable");
+        configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
 
         close_test_stream(source_stream).await;
         close_test_stream(target_stream).await;
@@ -3121,12 +3210,27 @@ mod tests {
         allowed_peers: HashSet<PeerId>,
         reservation_relays: Vec<TransitRelayCandidate>,
     ) {
+        let approved_relays = reservation_relays
+            .iter()
+            .map(|candidate| candidate.peer_id)
+            .collect();
+        configure_test_transit_policy(endpoint, allowed_peers, approved_relays, reservation_relays)
+            .await;
+    }
+
+    async fn configure_test_transit_policy(
+        endpoint: &StartedEndpoint,
+        allowed_peers: HashSet<PeerId>,
+        approved_relays: HashSet<PeerId>,
+        reservation_relays: Vec<TransitRelayCandidate>,
+    ) {
         let (result, response) = oneshot::channel();
         endpoint
             .commands
             .send(EngineCommand::ConfigureTransit {
                 policy: TransitPolicy {
                     allowed_peers,
+                    approved_relays,
                     relays: reservation_relays,
                 },
                 result,

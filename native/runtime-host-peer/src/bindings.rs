@@ -58,6 +58,7 @@ pub struct ConnectPeerOptions {
 #[napi(object)]
 pub struct ConfigurePeerTransitOptions {
     pub allowed_peer_ids: Vec<String>,
+    pub approved_relay_peer_ids: Vec<String>,
     pub relay_candidates: Vec<PeerTransitRelayCandidate>,
 }
 
@@ -141,13 +142,17 @@ impl PeerEndpoint {
     #[napi]
     pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
         let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
+        let approved_relays = parse_peer_ids(options.approved_relay_peer_ids)?;
         let relays = parse_transit_relay_candidates(options.relay_candidates)?;
         let trusted_relays = relays
             .iter()
             .map(|candidate| candidate.peer_id)
             .collect::<HashSet<_>>();
         let local_peer_id = parse_peer_id(&self.peer_id)?;
-        if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
+        if allowed_peers.contains(&local_peer_id)
+            || approved_relays.contains(&local_peer_id)
+            || trusted_relays.contains(&local_peer_id)
+        {
             return Err(Error::new(
                 Status::InvalidArg,
                 "peer endpoint cannot configure itself as a transit peer",
@@ -158,6 +163,7 @@ impl PeerEndpoint {
             .send(EngineCommand::ConfigureTransit {
                 policy: engine::TransitPolicy {
                     allowed_peers,
+                    approved_relays,
                     relays,
                 },
                 result: result_tx,

@@ -33,4 +33,4 @@ export {
   openRuntimeHostPeerMeshOwner,
   type RuntimeHostPeerMeshOwner,
 } from './owner.js';
-export { hasActivePeerMeshMembership, hasPeerMeshIdentityObligations } from './store.js';
+export { hasPeerMeshIdentityObligations } from './store.js';

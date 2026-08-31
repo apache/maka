@@ -79,8 +79,7 @@ export type PeerMeshStateV1 = PeerMeshAuthorityStateV1 | PeerMeshReplicaStateV1;
 
 export interface PendingPeerMeshJoin {
   readonly invitation: PeerMeshInvitationV1;
-  readonly desiredMembership: 'active' | 'left';
-  readonly redemptionState: 'prepared' | 'outcome_unknown';
+  readonly phase: 'prepared' | 'outcome_unknown' | 'leave_pending';
 }
 
 export interface PeerMeshStoredStateV1 {
@@ -124,14 +123,6 @@ export async function openPeerMeshStateStore(
   }
 }
 
-export async function hasActivePeerMeshMembership(
-  dataRoot: string,
-  localPeerId: string,
-): Promise<boolean> {
-  const state = await readState(join(dataRoot, STATE_FILE), localPeerId);
-  return state.meshes.some((mesh) => isActiveMembership(mesh, localPeerId));
-}
-
 export async function hasPeerMeshIdentityObligations(
   dataRoot: string,
   localPeerId: string,
@@ -139,9 +130,7 @@ export async function hasPeerMeshIdentityObligations(
   const state = await readState(join(dataRoot, STATE_FILE), localPeerId);
   return (
     state.pendingJoins.length > 0 ||
-    state.meshes.some(
-      (mesh) => !mesh.roster.roster.closed && mesh.roster.roster.members.includes(localPeerId),
-    )
+    state.meshes.some((mesh) => !isRetiredPeerMeshState(mesh, localPeerId))
   );
 }
 
@@ -336,7 +325,7 @@ function assertStateAdvance(
       ({ roster }) => roster.roster.meshId === previous.roster.roster.meshId,
     );
     if (!updated) {
-      if (isRetired(previous, localPeerId)) continue;
+      if (isRetiredPeerMeshState(previous, localPeerId)) continue;
       throw new Error('Active Peer Mesh state cannot be removed implicitly');
     }
     if (updated.role !== previous.role) {
@@ -357,16 +346,16 @@ function assertStateAdvance(
   }
 }
 
-function isRetired(state: PeerMeshStateV1, localPeerId: string): boolean {
+export function isRetiredPeerMeshState(state: PeerMeshStateV1, localPeerId: string): boolean {
   return (
     state.roster.roster.closed ||
     (state.role === 'replica' && !state.roster.roster.members.includes(localPeerId))
   );
 }
 
-function isActiveMembership(state: PeerMeshStateV1, localPeerId: string): boolean {
+export function isActivePeerMeshMembership(state: PeerMeshStateV1, localPeerId: string): boolean {
   return (
-    !isRetired(state, localPeerId) &&
+    !isRetiredPeerMeshState(state, localPeerId) &&
     state.roster.roster.members.includes(localPeerId) &&
     (state.role === 'authority' || state.desiredMembership === 'active')
   );
@@ -623,7 +612,8 @@ function decodePeerMeshStoredState(
     transitMeshId !== null &&
     !meshes.some(
       (mesh) =>
-        mesh.roster.roster.meshId === transitMeshId && isActiveMembership(mesh, localPeerId),
+        mesh.roster.roster.meshId === transitMeshId &&
+        isActivePeerMeshMembership(mesh, localPeerId),
     )
   ) {
     throw new Error('Peer Mesh transit selection is not an active membership');
@@ -650,31 +640,34 @@ function decodePendingJoins(
       !entry ||
       typeof entry !== 'object' ||
       Array.isArray(entry) ||
-      Object.keys(entry).length !== 3 ||
+      Object.keys(entry).length !== 2 ||
       !Object.hasOwn(entry, 'invitation') ||
-      !Object.hasOwn(entry, 'desiredMembership') ||
-      !Object.hasOwn(entry, 'redemptionState')
+      !Object.hasOwn(entry, 'phase')
     ) {
       throw new Error('Invalid pending Peer Mesh join');
     }
     const record = entry as Record<string, unknown>;
-    const desiredMembership = decodeDesiredMembership(record.desiredMembership);
-    const redemptionState = decodeRedemptionState(record.redemptionState);
-    if (desiredMembership === 'left' && redemptionState === 'prepared') {
-      throw new Error('Invalid cancelled Peer Mesh join');
-    }
     return Object.freeze({
       invitation: validatePeerMeshInvitation(record.invitation),
-      desiredMembership,
-      redemptionState,
+      phase: decodePendingJoinPhase(record.phase),
     });
   });
   const meshIds = joins.map(({ invitation }) => invitation.meshId);
+  const activeMeshIds = meshes
+    .filter((mesh) => isActivePeerMeshMembership(mesh, localPeerId))
+    .map(({ roster }) => roster.roster.meshId);
   if (
     new Set(meshIds).size !== meshIds.length ||
-    meshIds.some((meshId) => meshes.some(({ roster }) => roster.roster.meshId === meshId)) ||
-    joins.length + meshes.filter((mesh) => isActiveMembership(mesh, localPeerId)).length >
-      PEER_MESH_MAX_MESHES
+    joins.some(({ invitation }) => {
+      const existing = meshes.find(({ roster }) => roster.roster.meshId === invitation.meshId);
+      return (
+        existing !== undefined &&
+        (existing.role !== 'replica' ||
+          existing.roster.roster.closed ||
+          existing.roster.authorityPublicKey !== invitation.authorityPublicKey)
+      );
+    }) ||
+    new Set([...activeMeshIds, ...meshIds]).size > PEER_MESH_MAX_MESHES
   ) {
     throw new Error('Invalid pending Peer Mesh joins');
   }
@@ -688,9 +681,9 @@ function decodeDesiredMembership(value: unknown): PeerMeshReplicaStateV1['desire
   return value;
 }
 
-function decodeRedemptionState(value: unknown): PendingPeerMeshJoin['redemptionState'] {
-  if (value !== 'prepared' && value !== 'outcome_unknown') {
-    throw new Error('Invalid Peer Mesh join redemption state');
+function decodePendingJoinPhase(value: unknown): PendingPeerMeshJoin['phase'] {
+  if (value !== 'prepared' && value !== 'outcome_unknown' && value !== 'leave_pending') {
+    throw new Error('Invalid Peer Mesh join phase');
   }
   return value;
 }
@@ -707,7 +700,8 @@ function pruneUnreferencedRoutes(
   const routes = state.routes.filter(({ route }) => knownPeers.has(route.peerId));
   const transitMeshId = state.meshes.some(
     (mesh) =>
-      mesh.roster.roster.meshId === state.transitMeshId && isActiveMembership(mesh, localPeerId),
+      mesh.roster.roster.meshId === state.transitMeshId &&
+      isActivePeerMeshMembership(mesh, localPeerId),
   )
     ? state.transitMeshId
     : null;

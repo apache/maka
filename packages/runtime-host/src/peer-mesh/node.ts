@@ -52,6 +52,8 @@ import { canonicalPeerMeshDisplayName } from './display-name.js';
 import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 import {
   authorityKeys,
+  isActivePeerMeshMembership as isActiveMembership,
+  isRetiredPeerMeshState as isRetired,
   openPeerMeshStateStore,
   type PendingPeerMeshJoin,
   type PeerMeshAuthorityStateV1,
@@ -120,6 +122,7 @@ type SyncPeerMeshResponse =
 interface LeavePeerMeshRequest {
   readonly kind: 'leave';
   readonly meshId: string;
+  readonly roster: SignedPeerMeshRosterV1;
 }
 
 type LeavePeerMeshResponse =
@@ -197,6 +200,7 @@ export interface PeerMeshTransport {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   connectMeshControl(
@@ -345,7 +349,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const stored = this.#store.read();
     return Object.freeze(
       stored.meshes
-        .filter((state) => isActiveMembership(state, identity.peerId))
+        .filter((state) => state.roster.roster.closed || isActiveMembership(state, identity.peerId))
         .map((state) =>
           peerMeshStatus(state, identity, this.#endpointKind, stored.routes, this.#now()),
         ),
@@ -469,11 +473,18 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         throw new Error('Peer Mesh invitation has expired');
       }
       const localPeerId = this.#peer.identity().peerId;
+      if (existing?.roster.roster.closed) {
+        throw new Error('Peer Mesh is closed');
+      }
       if (existing?.role === 'authority') {
         throw new Error('This peer already belongs to that Peer Mesh');
       }
+      assertRejoinSettled(existing, localPeerId);
       if (pending && pending.invitation.secret !== invitation.secret) {
         throw new Error('This Peer Mesh already has an unresolved join attempt');
+      }
+      if (pending?.phase === 'leave_pending') {
+        throw new Error('This Peer Mesh join is still being cancelled');
       }
       if (!existing && !pending) {
         assertMeshCapacity(current.meshes, localPeerId, current.pendingJoins.length);
@@ -499,29 +510,25 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           if (existing?.role === 'authority') {
             throw new Error('This peer already belongs to that Peer Mesh');
           }
+          assertRejoinSettled(existing, localPeerId);
           const pending = current.pendingJoins.find(
             ({ invitation: candidate }) => candidate.meshId === invitation.meshId,
           );
           if (pending && pending.invitation.secret !== invitation.secret) {
             throw new Error('This Peer Mesh already has an unresolved join attempt');
           }
-          const meshes = existing
-            ? current.meshes.filter(({ roster }) => roster.roster.meshId !== invitation.meshId)
-            : current.meshes;
-          if (!pending) {
-            assertMeshCapacity(meshes, localPeerId, current.pendingJoins.length);
+          if (pending?.phase === 'leave_pending') {
+            throw new Error('This Peer Mesh join is still being cancelled');
+          }
+          if (!existing && !pending) {
+            assertMeshCapacity(current.meshes, localPeerId, current.pendingJoins.length);
           }
           const next: PendingPeerMeshJoin = pending
-            ? { ...pending, invitation, desiredMembership: 'active' }
-            : {
-                invitation,
-                desiredMembership: 'active',
-                redemptionState: 'prepared',
-              };
+            ? { ...pending, invitation }
+            : { invitation, phase: 'prepared' };
           return {
             state: {
               ...current,
-              meshes,
               pendingJoins: pending
                 ? current.pendingJoins.map((candidate) =>
                     candidate === pending ? next : candidate,
@@ -534,7 +541,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         joinIntentAdmitted = true;
         return await this.#redeemPendingJoin(invitation, localRoute, stream, operationSignal);
       } catch (error) {
-        if (operationSignal.aborted && joinIntentAdmitted) {
+        if (signal?.aborted && joinIntentAdmitted) {
           await this.#cancelPendingJoin(invitation.meshId);
           await this.#reconcileTransit();
         }
@@ -553,26 +560,28 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     signal: AbortSignal,
   ): Promise<PeerMeshStatus> {
     signal.throwIfAborted();
-    await this.#store.mutate((current) => {
+    const dispatch = await this.#store.mutate((current) => {
       const pending = current.pendingJoins.find(
         ({ invitation: candidate }) =>
           candidate.meshId === invitation.meshId && candidate.secret === invitation.secret,
       );
-      if (!pending || pending.redemptionState === 'outcome_unknown') {
-        return { state: current, result: undefined };
+      if (!pending) {
+        return { state: current, result: false };
+      }
+      if (pending.phase !== 'prepared') {
+        return { state: current, result: true };
       }
       return {
         state: {
           ...current,
           pendingJoins: current.pendingJoins.map((candidate) =>
-            candidate === pending
-              ? { ...candidate, redemptionState: 'outcome_unknown' }
-              : candidate,
+            candidate === pending ? { ...candidate, phase: 'outcome_unknown' } : candidate,
           ),
         },
-        result: undefined,
+        result: true,
       };
     });
+    if (!dispatch) throw new Error('Peer Mesh join is no longer pending');
     signal.throwIfAborted();
     const response = await exchangeControl(
       stream,
@@ -624,7 +633,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           coordinationRelays: invitation.coordinationRelays,
         },
         roster: selectedRoster,
-        desiredMembership: pending.desiredMembership,
+        desiredMembership: pending.phase === 'leave_pending' ? 'left' : 'active',
       };
       return {
         state: {
@@ -674,9 +683,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
               : current.meshes,
           pendingJoins: current.pendingJoins.flatMap((pending) => {
             if (pending.invitation.meshId !== meshId) return [pending];
-            return pending.redemptionState === 'prepared'
-              ? []
-              : [{ ...pending, desiredMembership: 'left' as const }];
+            return pending.phase === 'prepared' ? [] : [{ ...pending, phase: 'leave_pending' }];
           }),
         },
         result: undefined,
@@ -932,6 +939,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           readonly targets: readonly PeerMeshAuthorityTarget[];
           readonly authorityRouteExpired: boolean;
           readonly desiredMembership: PeerMeshReplicaStateV1['desiredMembership'];
+          readonly roster: SignedPeerMeshRosterV1;
         }
     > = stored.pendingJoins.map((join) => ({ kind: 'join', join }));
     const gossipCursor = this.#gossipCursor;
@@ -958,6 +966,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         authorityRouteExpired:
           authorityRoute !== undefined && authorityRoute.route.expiresAt <= now,
         desiredMembership: state.desiredMembership,
+        roster: state.roster,
       });
     }
     if (pending.length === 0) return;
@@ -976,7 +985,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           if (operation.kind === 'join') {
             await this.#resumePendingJoin(operation.join, operationSignal);
           } else if (operation.desiredMembership === 'left') {
-            await this.#notifyLeave(operation.meshId, operation.targets[0]!, operationSignal);
+            await this.#notifyLeave(
+              operation.meshId,
+              operation.targets[0]!,
+              operation.roster,
+              operationSignal,
+            );
           } else {
             await this.#syncTargets(
               operation.meshId,
@@ -1009,6 +1023,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async #notifyLeave(
     meshId: string,
     target: PeerMeshAuthorityTarget,
+    roster: SignedPeerMeshRosterV1,
     signal: AbortSignal,
   ): Promise<void> {
     const stream = await this.#peer.connectMeshControl(
@@ -1018,7 +1033,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     try {
       const response = await exchangeControl(
         stream,
-        { kind: 'leave', meshId },
+        { kind: 'leave', meshId, roster },
         decodeLeaveResponse,
         signal,
       );
@@ -1437,7 +1452,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       } else if (request.kind === 'sync') {
         response = await this.#sync(request, stream.peerId);
       } else if (request.kind === 'leave') {
-        response = await this.#leave(request.meshId, stream.peerId);
+        response = await this.#leave(request, stream.peerId);
       } else {
         response = await this.#observeRoster(request);
       }
@@ -1635,16 +1650,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return response;
   }
 
-  async #leave(meshId: string, remotePeerId: string): Promise<LeavePeerMeshResponse> {
+  async #leave(
+    request: LeavePeerMeshRequest,
+    remotePeerId: string,
+  ): Promise<LeavePeerMeshResponse> {
     const response = await this.#store.mutate<LeavePeerMeshResponse>((current) => {
-      const state = findMesh(current.meshes, meshId);
+      const state = findMesh(current.meshes, request.meshId);
       if (
         !state ||
         state.role !== 'authority' ||
-        (!state.roster.roster.members.includes(remotePeerId) &&
-          !state.invitations.some(
-            (invitation) => invitation.status === 'redeemed' && invitation.peerId === remotePeerId,
-          ))
+        request.roster.roster.meshId !== request.meshId ||
+        request.roster.authorityPublicKey !== state.roster.authorityPublicKey ||
+        request.roster.roster.revision > state.roster.roster.revision ||
+        !request.roster.roster.members.includes(remotePeerId)
       ) {
         return {
           state: current,
@@ -1677,7 +1695,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     if (response.kind === 'left') {
       await this.#reconcileTransit();
       const stored = this.#store.read();
-      const state = findMesh(stored.meshes, meshId);
+      const state = findMesh(stored.meshes, request.meshId);
       if (state) {
         this.#scheduleRosterAnnouncement(
           state.roster,
@@ -1764,10 +1782,19 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       })
       .sort((left, right) => left.route.peerId.localeCompare(right.route.peerId));
     const relayCandidates = transitRelayCandidates(eligibleRelays);
+    const approvedRelayPeerIds = [
+      ...new Set(
+        stored.meshes
+          .filter((mesh) => isActiveMembership(mesh, localPeerId))
+          .flatMap((mesh) => mesh.roster.roster.members)
+          .filter((peerId) => peerId !== localPeerId),
+      ),
+    ].sort();
     await this.#peer.configureTransit({
       allowedPeerIds: selected
         ? selected.roster.roster.members.filter((peerId) => peerId !== localPeerId)
         : [],
+      approvedRelayPeerIds,
       relayCandidates,
     });
   }
@@ -1979,18 +2006,14 @@ function appendMesh(
   return [...states.slice(0, retired), ...states.slice(retired + 1), state];
 }
 
-function isActiveMembership(state: PeerMeshStateV1, localPeerId: string): boolean {
-  return (
-    !isRetired(state, localPeerId) &&
-    (state.role === 'authority' || state.desiredMembership === 'active')
-  );
-}
-
-function isRetired(state: PeerMeshStateV1, localPeerId: string): boolean {
-  return (
-    state.roster.roster.closed ||
-    (state.role === 'replica' && !state.roster.roster.members.includes(localPeerId))
-  );
+function assertRejoinSettled(state: PeerMeshStateV1 | undefined, localPeerId: string): void {
+  if (
+    state?.role === 'replica' &&
+    state.desiredMembership === 'left' &&
+    state.roster.roster.members.includes(localPeerId)
+  ) {
+    throw new Error('This Peer Mesh leave is still being reconciled');
+  }
 }
 
 function selectRoster(
@@ -2184,8 +2207,12 @@ function decodeControlRequest(value: unknown): PeerMeshControlRequest {
       knownRoutes: decodeRouteSequences(record.knownRoutes),
     };
   }
-  if (record.kind === 'leave' && hasExactKeys(record, ['kind', 'meshId'])) {
-    return { kind: 'leave', meshId: requiredString(record.meshId, 128) };
+  if (record.kind === 'leave' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
+    return {
+      kind: 'leave',
+      meshId: requiredString(record.meshId, 128),
+      roster: decodeSignedPeerMeshRoster(record.roster),
+    };
   }
   if (record.kind === 'announce-roster' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
     return {
