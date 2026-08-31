@@ -354,11 +354,6 @@ export interface DesktopRuntimeHostRef {
   readonly hostId: string;
 }
 
-export type DesktopConnectionOnboardingIdentity = Extract<
-  OperationOutput<'connection.onboarding.save'>,
-  { readonly kind: 'saved' }
->['connection'];
-
 export type DesktopConnectionOnboardingSaveOutcome =
   | {
       readonly kind: 'result';

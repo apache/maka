@@ -24,7 +24,6 @@ export {
 export type {
   ApiKeyOnboardingBridge,
   ConnectionSettingsServices,
-  ConnectionSettingsHost,
   ConnectionsBridge,
   DesktopConnectionOnboardingIdentity,
   RuntimeHostSettingsConnectionsBridge,
@@ -32,13 +31,11 @@ export type {
 export {
   categoryLabel,
   connectionLastTestMessageDisplay,
-  connectionTestFailureFallback,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,
 } from './provider-panel-shared';
 export { getProviderSettingsCopy } from './settings-provider-copy';
 export type { ProviderSettingsCopy } from './settings-provider-copy';
 export type {
-  ConnectionTestTroubleshootingCopy,
   CredentialPresenceStatus,
 } from './provider-panel-shared';

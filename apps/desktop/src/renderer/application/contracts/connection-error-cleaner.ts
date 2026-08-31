@@ -29,7 +29,7 @@ export function cleanErrorMessage(error: unknown): string {
   return cleanEventMessage(raw);
 }
 
-export function cleanEventMessage(message: string): string {
+function cleanEventMessage(message: string): string {
   return message
     .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z_$][\w$]*)?Error: /, '')
     .replace(NO_REAL_CONNECTION_REASON_RE, '')

@@ -21,16 +21,12 @@ import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
 import type { SessionEvent } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
-  cleanErrorMessage,
-  cleanEventMessage,
   NO_REAL_CONNECTION_CODE,
   parseNoRealConnectionError,
 } from './application/contracts/connection-error-cleaner.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
-
-export { cleanErrorMessage, cleanEventMessage };
 
 export function isNoRealConnectionError(error: unknown): boolean {
   return parseNoRealConnectionError(error).matched;
