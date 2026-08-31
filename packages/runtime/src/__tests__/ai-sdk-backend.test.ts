@@ -95,6 +95,7 @@ import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
 import {
   createTestAiSdkBackend,
+  createTestToolRuntime,
   readExternalExecutionBoundary,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
@@ -3784,49 +3785,38 @@ describe('AiSdkBackend model history', () => {
     const databasePath = join(root, 'runtime.sqlite');
     const source = createSqliteRuntimeStore(databasePath);
     try {
-      await source.importConversationCopyRuntimeEvents('session-1', [
-        {
-          runId: 'run-prev',
-          events: [
-            runtimeEvent({
-              id: 'restart-call',
-              turnId: 'turn-prev',
-              role: 'model',
-              author: 'agent',
-              content: {
-                kind: 'function_call',
-                id: 'restart-tool-call',
-                name: 'PrivateTool',
-                args: {},
-              },
-            }),
-            runtimeEvent({
-              id: 'restart-result',
-              turnId: 'turn-prev',
-              role: 'tool',
-              author: 'tool',
-              content: {
-                kind: 'function_response',
-                id: 'restart-tool-call',
-                name: 'PrivateTool',
-                result: { secretExecutionFact: 'raw-secret-must-not-replay' },
-                modelProjection: {
-                  version: 1,
-                  kind: 'text',
-                  text: 'durable-safe-fact',
-                },
-              },
-            }),
-            runtimeEvent({
-              id: 'restart-terminal',
-              turnId: 'turn-prev',
-              role: 'system',
-              author: 'system',
-              status: 'completed',
-            }),
-          ],
+      const runtime = createTestToolRuntime({
+        sessionId: 'session-1',
+        header: header(),
+        connection: connection(),
+        modelId: 'mock-model-id',
+        appendMessage: async () => {},
+        newId: idGenerator(),
+        now: monotonicClock(),
+        getPermissionPauseTarget: () => null,
+        turnId: 'turn-prev',
+        runId: 'run-prev',
+        invocationId: 'invocation-prev',
+        runtimeCommitSink: source,
+      });
+      await runtime.settleToolCall({
+        tool: {
+          name: 'PrivateTool',
+          description: 'returns a private execution fact',
+          parameters: z.object({}),
+          recoveryMode: 'replay_safe',
+          impl: async () => ({ secretExecutionFact: 'raw-secret-must-not-replay' }),
+          toModelOutput: () => ({ type: 'text', value: 'durable-safe-fact' }),
         },
-      ]);
+        turnId: 'turn-prev',
+        toolCallId: 'restart-tool-call',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => {},
+          pushAndWaitUntilConsumed: async () => {},
+        },
+      });
     } finally {
       source.close();
     }
