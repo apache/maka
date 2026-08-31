@@ -85,7 +85,7 @@ jobs:
   release-predecessor:
     name: Resolve immutable release predecessor
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     outputs:
       version: ${{ steps.predecessor.outputs.version }}
       tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
