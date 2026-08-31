@@ -65,8 +65,8 @@ export function SessionListPanel() {
   //
   // Text labels, not icons: a clock and a folder are two icons the rail has to
   // teach, and it never had anywhere to teach them — 全部任务 / 按项目 is the
-  // whole vocabulary and it fits. Grouping takes the available width beside
-  // the compact sorting menu, keeping both list controls in one row.
+  // whole vocabulary and it fits. Hug the labels instead of equal-width
+  // segments so grouping and sorting stay on one row at the minimum rail width.
   //
   // It lives here, in the sticky top region, and NOT as a list heading's
   // endContent: the heading is gone (the rail landmark already names the panel,
@@ -81,9 +81,13 @@ export function SessionListPanel() {
         onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
         label={copy.groupingAriaLabel}
         size="sm"
-        layout="fill"
+        layout="hug"
       >
-        <SegmentedControlItem value="conversation" label={copy.allTasks} />
+        <SegmentedControlItem
+          value="conversation"
+          label={copy.groupingAllTasks}
+          aria-description={copy.groupingAllTasks === copy.allTasks ? undefined : copy.allTasks}
+        />
         <SegmentedControlItem value="project" label={copy.groupByProject} />
       </SegmentedControl>
     </div>

@@ -233,8 +233,8 @@
  * region, above the scrolling history it governs.
  *
  * Block padding only. The zone already insets its content to the same two
- * vertical lines the nav rows' boxes sit on. Grouping fills the space beside
- * the fixed-size sorting button, without adding a second row of chrome.
+ * vertical lines the nav rows' boxes sit on. Content-sized grouping leaves room
+ * for sorting on the same row, with Astryx's stock item padding at every width.
  */
 .maka-session-list-controls {
   display: flex;
@@ -244,12 +244,8 @@
 }
 
 .maka-session-grouping-switch {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
-}
-
-.maka-session-list-controls .maka-session-grouping-switch [role='radio'] {
-  padding-inline: var(--spacing-1);
 }
 
 .maka-session-sorting-switch {
