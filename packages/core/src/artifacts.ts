@@ -88,6 +88,7 @@ export function resolveArtifactImagePreview(
 
 export const ARTIFACT_SOURCES = [
   'tool_result',
+  'tool_result_projection',
   'tool_result_archive',
   'synthesis_cache_block',
   'history_compact_block',
@@ -154,6 +155,7 @@ export interface ArtifactRecord extends ArtifactDescriptor {
 
 const ARTIFACT_USER_DELETE_ALLOWED_BY_SOURCE = {
   tool_result: true,
+  tool_result_projection: false,
   tool_result_archive: false,
   synthesis_cache_block: true,
   history_compact_block: true,

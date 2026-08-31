@@ -51,7 +51,7 @@ import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js
 const MAX_ACTIVE_ARTIFACT_UPLOADS = 16;
 const MAX_STAGED_ARTIFACT_UPLOAD_BYTES = 128 * 1024 * 1024;
 const ARTIFACT_UPLOAD_TTL_MS = 5 * 60 * 1000;
-const SHARED_ARTIFACT_SOURCES = new Set(['user_upload', 'tool_result']);
+const SHARED_ARTIFACT_SOURCES = new Set(['user_upload', 'tool_result', 'tool_result_projection']);
 
 interface ArtifactUploadMetadata {
   readonly attachmentKind: AttachmentRef['kind'];

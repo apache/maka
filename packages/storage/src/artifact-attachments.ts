@@ -189,7 +189,7 @@ export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore
             kind: 'image',
             content: accepted.bytes,
             mimeType: accepted.mimeType,
-            source: 'tool_result',
+            source: 'tool_result_projection',
           })
           .then((artifact) => {
             if (artifact.id !== id) throw new Error('Artifact publication changed its planned id');
