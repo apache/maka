@@ -20,11 +20,13 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 import {
   assertExpectedEpochRelation,
   parseQualificationArgs,
+  qualificationSandboxArgs,
+  qualificationSandboxInvocation,
   sha256File,
 } from './qualify-released-cli-state-root.mjs';
 
@@ -32,23 +34,25 @@ const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 
 test('parses two exact artifacts and an epoch relation', () => {
+  const source = resolve(tmpdir(), 'source.tgz');
+  const target = resolve(tmpdir(), 'target.tgz');
   assert.deepEqual(
     parseQualificationArgs([
       '--source',
-      '/tmp/source.tgz',
+      source,
       '--source-sha256',
       SHA_A,
       '--target',
-      '/tmp/target.tgz',
+      target,
       '--target-sha256',
       SHA_B,
       '--expect-epoch-relation',
       'same',
     ]),
     {
-      source: '/tmp/source.tgz',
+      source,
       sourceSha256: SHA_A,
-      target: '/tmp/target.tgz',
+      target,
       targetSha256: SHA_B,
       expectedEpochRelation: 'same',
     },
@@ -56,6 +60,7 @@ test('parses two exact artifacts and an epoch relation', () => {
 });
 
 test('rejects ambiguous artifact identity and unknown arguments', () => {
+  const target = resolve(tmpdir(), 'target.tgz');
   assert.throws(
     () =>
       parseQualificationArgs([
@@ -64,7 +69,7 @@ test('rejects ambiguous artifact identity and unknown arguments', () => {
         '--source-sha256',
         SHA_A,
         '--target',
-        '/tmp/target.tgz',
+        target,
         '--target-sha256',
         SHA_B,
         '--expect-epoch-relation',
@@ -76,11 +81,11 @@ test('rejects ambiguous artifact identity and unknown arguments', () => {
     () =>
       parseQualificationArgs([
         '--source',
-        '/tmp/source.tgz',
+        resolve(tmpdir(), 'source.tgz'),
         '--source-sha256',
         SHA_A,
         '--target',
-        '/tmp/target.tgz',
+        target,
         '--target-sha256',
         SHA_B,
         '--extra',
@@ -88,6 +93,57 @@ test('rejects ambiguous artifact identity and unknown arguments', () => {
       ]),
     /Unknown qualification argument/u,
   );
+});
+
+test('uses a fixed privileged Bubblewrap launcher and drops back to the account', () => {
+  const args = ['--die-with-parent', '--', '/usr/bin/node'];
+  assert.deepEqual(
+    qualificationSandboxInvocation({ args, account: { uid: 1001, gid: 1002 }, useSudo: false }),
+    { command: 'bwrap', args },
+  );
+  assert.deepEqual(
+    qualificationSandboxInvocation({ args, account: { uid: 1001, gid: 1002 }, useSudo: true }),
+    {
+      command: 'sudo',
+      args: [
+        '--non-interactive',
+        '--',
+        'bwrap',
+        '--unshare-user',
+        '--gid',
+        '1002',
+        '--uid',
+        '1001',
+        ...args,
+      ],
+    },
+  );
+});
+
+test('maps only the sandbox private temp directory onto the Host IPC temp root', () => {
+  const args = qualificationSandboxArgs({
+    innerInputPath: '/qualification/input.json',
+    scope: '/qualification',
+    sandbox: {
+      home: '/qualification/home',
+      temp: '/qualification/tmp',
+      passwd: '/qualification/etc/passwd',
+      group: '/qualification/etc/group',
+      environment: {
+        XDG_CACHE_HOME: '/qualification/home/.cache',
+        XDG_CONFIG_HOME: '/qualification/home/.config',
+        XDG_DATA_HOME: '/qualification/home/.local/share',
+      },
+    },
+  });
+  assert.deepEqual(args.slice(args.indexOf('/qualification') + 1, args.indexOf('/etc/passwd')), [
+    '/qualification',
+    '--bind',
+    '/qualification/tmp',
+    '/tmp',
+    '--ro-bind',
+    '/qualification/etc/passwd',
+  ]);
 });
 
 test('classifies and fences the expected epoch relationship', () => {

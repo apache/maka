@@ -42,6 +42,7 @@ const fixturePath = fileURLToPath(
   new URL('./released-cli-state-root-fixture.mjs', import.meta.url),
 );
 const qualificationPath = fileURLToPath(import.meta.url);
+const SUDO_BWRAP_ENV = 'MAKA_QUALIFICATION_BWRAP_USE_SUDO';
 
 export function parseQualificationArgs(argv) {
   const allowedNames = new Set([
@@ -88,12 +89,32 @@ export function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
+export function qualificationSandboxInvocation({ args, account, useSudo }) {
+  if (!useSudo) return { command: 'bwrap', args };
+  return {
+    command: 'sudo',
+    args: [
+      '--non-interactive',
+      '--',
+      'bwrap',
+      '--unshare-user',
+      '--gid',
+      String(account.gid),
+      '--uid',
+      String(account.uid),
+      ...args,
+    ],
+  };
+}
+
 export async function qualifyReleasedCliStateRoot(input) {
   if (process.platform !== 'linux') {
     throw new Error('Released State Root qualification currently requires Linux');
   }
   assertCommandAvailable('bwrap');
   assertCommandAvailable('timeout');
+  const useSudo = parseSudoBwrapEnvironment(process.env[SUDO_BWRAP_ENV]);
+  if (useSudo) assertCommandAvailable('sudo');
   assertTarballDigest(input.source, input.sourceSha256, 'source');
   assertTarballDigest(input.target, input.targetSha256, 'target');
   const scope = mkdtempSync(join(tmpdir(), 'maka-released-state-root-'));
@@ -129,7 +150,7 @@ export async function qualifyReleasedCliStateRoot(input) {
       })}\n`,
       { mode: 0o600 },
     );
-    return runQualificationSandbox({ innerInputPath, sandbox, scope });
+    return runQualificationSandbox({ innerInputPath, sandbox, scope, useSudo });
   } finally {
     rmSync(scope, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
@@ -220,6 +241,7 @@ function prepareSandbox(scope) {
   );
   writeFileSync(group, `maka-qualification:x:${account.gid}:\n`);
   return {
+    account,
     home,
     temp,
     passwd,
@@ -233,6 +255,12 @@ function prepareSandbox(scope) {
       TMPDIR: temp,
     },
   };
+}
+
+function parseSudoBwrapEnvironment(value) {
+  if (value === undefined || value === '') return false;
+  if (value === '1') return true;
+  throw new Error(`${SUDO_BWRAP_ENV} must be 1 when set`);
 }
 
 function installArtifact({ role, tarball, scope, sandbox }) {
@@ -288,7 +316,7 @@ function installArtifact({ role, tarball, scope, sandbox }) {
   return { role, prefix, packageRoot, cliPath, version, compatibilityEpoch: Number(epoch) };
 }
 
-function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
+export function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
   return [
     '--die-with-parent',
     '--ro-bind',
@@ -297,6 +325,9 @@ function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
     '--bind',
     scope,
     scope,
+    '--bind',
+    sandbox.temp,
+    '/tmp',
     '--ro-bind',
     sandbox.passwd,
     '/etc/passwd',
@@ -328,8 +359,13 @@ function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
   ];
 }
 
-function runQualificationSandbox({ innerInputPath, sandbox, scope }) {
-  const result = spawnSync('bwrap', qualificationSandboxArgs({ innerInputPath, sandbox, scope }), {
+function runQualificationSandbox({ innerInputPath, sandbox, scope, useSudo }) {
+  const invocation = qualificationSandboxInvocation({
+    args: qualificationSandboxArgs({ innerInputPath, sandbox, scope }),
+    account: sandbox.account,
+    useSudo,
+  });
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: scope,
     env: sandbox.environment,
     encoding: 'utf8',

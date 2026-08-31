@@ -362,6 +362,7 @@ jobs:
       - name: Qualify the released State Root transition
         env:
           EXPECTED_EPOCH_RELATION: ${{ matrix.epoch_relation }}
+          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
         run: |
           set -o pipefail
           npm run --silent release:cli:qualify-state-root -- \

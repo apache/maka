@@ -58,6 +58,7 @@ test('CLI validation qualifies exact published State Roots without weakening art
   assert.match(sandbox, /apt-get install --yes bubblewrap/u);
   const qualify = namedStep(steps, 'Qualify the released State Root transition');
   assert.match(qualify, /release:cli:qualify-state-root/u);
+  assert.match(qualify, /MAKA_QUALIFICATION_BWRAP_USE_SUDO:\s*'1'/u);
   assert.match(qualify, /--source-sha256/u);
   assert.match(qualify, /--target-sha256/u);
   assert.match(qualify, /--expect-epoch-relation/u);
