@@ -31,7 +31,6 @@ import type { PricingConfig } from '@maka/core/usage-stats/types';
 import {
   capturePreparedProviderRequest,
   type PreparedProviderRequestCapture,
-  type PreparedRequestSegment,
 } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
 import {
@@ -99,18 +98,14 @@ export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
   step: number;
   attempt: number;
   /**
-   * Present only when a capture sink is wired. The request shape below is
-   * computed locally and always present; these two are the join keys to the
-   * persisted artifact, so they are absent when there is nothing to join to.
+   * Present only when a capture sink is wired. These are private-artifact join
+   * keys, not a second request-observation authority.
    */
   captureId?: string;
   captureArtifactId?: string;
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  requestHash: string;
-  requestBytes: number;
-  segments: PreparedRequestSegment[];
   startedAt: number;
   completedAt: number;
   status: ProviderRequestAttemptStatus;
@@ -549,9 +544,6 @@ export class ProviderRequestTracker {
         providerId: input.providerId,
         modelId: input.modelId,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
-        requestHash: capture.capture.requestHash,
-        requestBytes: capture.capture.requestBytes,
-        segments: capture.capture.segments,
         startedAt,
         completedAt,
         status,

@@ -36,7 +36,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
+import {
+  decodeModelCallAttempt,
+  PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
@@ -45,7 +49,7 @@ import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
-test('a real send seals its row all the way into SQLite, with nothing injected', async () => {
+test('a real send seals its observation into SQLite and reconstructs it after restart', async () => {
   // Tracker → backend → the kernel seam a backend is actually built with →
   // AgentRun → the storage transaction. Every layer in that list once had a
   // signature that compiled while dropping the row, and no test crossed all of
@@ -133,6 +137,49 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
     assert.equal(scanned, 0, 'the row was committed by the send, not rebuilt by the read');
 
     await manager.stopSession(session.id, { source: 'stop_button' });
+    runStore.close?.();
+
+    const reopened = createSqliteAgentRunStore(root);
+    try {
+      const runs = await reopened.listSessionRuns(session.id);
+      const canonicalAttempts = (
+        await Promise.all(
+          runs.map(async (run) => {
+            const events = await reopened.readEvents(session.id, run.runId);
+            return events
+              .filter((event) => event.type === 'model_call_attempt_recorded')
+              .map((event) => decodeModelCallAttempt(event.data));
+          }),
+        )
+      ).flat();
+      assert.equal(canonicalAttempts.length, 1);
+      const observation = canonicalAttempts[0]?.requestObservation;
+      assert.ok(observation);
+      assert.ok(observation.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS);
+      assert.ok(observation.segments.length > 0);
+      assert.ok(observation.segments.every((segment) => segment.comparison === 'exact'));
+
+      let coldScans = 0;
+      const cold = await readLatestContextDiagnostics(
+        {
+          listSessionRuns: (sessionId) => reopened.listSessionRuns(sessionId),
+          readEvents: async (sessionId, runId) => {
+            coldScans += 1;
+            return reopened.readEvents(sessionId, runId);
+          },
+          repairEventProjection: (sessionId, type, event, options) =>
+            reopened.repairEventProjection(sessionId, type, event, options),
+        },
+        session.id,
+      );
+
+      assert.ok(coldScans > 0, 'omitting the projection reader forces a restart-safe ledger fold');
+      assert.equal(cold.status, 'available');
+      if (cold.status !== 'available') return;
+      assert.deepEqual(cold.composition, diagnostics.composition);
+    } finally {
+      reopened.close?.();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1205,12 +1205,14 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.captureArtifactId, undefined, 'there is no artifact to point at');
     assert.match(attempt.requestObservation?.digest ?? '', /^sha256:[a-f0-9]{64}$/);
     assert.ok((attempt.requestObservation?.segments.length ?? 0) > 0);
-    // The request shape is computed locally, so it does not need the sink.
+    // Best-effort attempt telemetry remains body-free; only the canonical
+    // attempt carries the observation that describes a dispatched request.
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.captureId, undefined);
     assert.equal(attempts[0]?.captureArtifactId, undefined);
-    assert.ok((attempts[0]?.requestHash?.length ?? 0) > 0);
-    assert.ok((attempts[0]?.requestBytes ?? 0) > 0);
+    assert.equal(Object.hasOwn(attempts[0]!, 'requestHash'), false);
+    assert.equal(Object.hasOwn(attempts[0]!, 'requestBytes'), false);
+    assert.equal(Object.hasOwn(attempts[0]!, 'segments'), false);
   });
 
   test('an unresolvable price records unpriced rather than zero', async () => {

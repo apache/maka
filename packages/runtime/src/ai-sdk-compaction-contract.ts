@@ -45,7 +45,6 @@ export interface HistoryCompactSummaryInput {
     maxEstimatedTokens: number;
     charsPerToken: number;
   };
-  requestShapeHashBefore?: string;
   abortSignal?: AbortSignal;
   /**
    * Physical-call tracking for this summarization, built by the backend (#1679).

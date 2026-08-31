@@ -22,10 +22,10 @@
  * from AiSdkBackend (issue #1084, runtime/compaction lane, slice 2).
  *
  * Owns the compaction planning and persistence paths that AiSdkBackend's
- * Runtime request projection drives. Behavior-neutral collaborator: methods move
- * verbatim, turn-scoped state (abortSignal, requestShapeHashBefore) is passed
- * per call, and replay/telemetry capabilities that stay on AiSdkBackend are
- * injected as host callbacks.
+ * Runtime request projection drives. Behavior-neutral collaborator: methods
+ * move verbatim, turn-scoped state (such as abortSignal) is passed per call,
+ * and replay/telemetry capabilities that stay on AiSdkBackend are injected as
+ * host callbacks.
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -225,7 +225,6 @@ export class AiSdkCompaction {
 
   public async compactHistory(
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
-    requestShapeHashBefore?: string,
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
     const historyCompactAbortController = new AbortController();
@@ -335,7 +334,6 @@ export class AiSdkCompaction {
               maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
               charsPerToken,
             },
-            ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
             abortSignal: historyCompactAbortController.signal,
             ...(tracker ? { providerRequestTracker: tracker } : {}),
           }),
@@ -451,9 +449,9 @@ export class AiSdkCompaction {
         historyCompactRoute: this.input.historyCompactRoute,
         contextBudget: this.input.contextBudget,
         inputBudget: input.inputBudget,
-        requestShapeHashBefore: input.requestShapeHashBefore,
-        previousCheckpointId: input.previousCheckpoint?.checkpointId,
+        previousCheckpoint: input.previousCheckpoint,
         foldedRuntimeEvents: input.source.foldedRuntimeEvents,
+        newlyFoldedRuntimeEvents: input.newlyFoldedRuntimeEvents,
       }),
     );
     const priorFailure = this.malformedSummaryFailures.get(fingerprint);

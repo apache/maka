@@ -20,11 +20,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-  canonicalizeToolSet,
-  toolSchemaCharsForDiagnostics,
-  computeRequestShapeDiagnostic,
-} from '../request-shape.js';
+import { canonicalizeToolSet, toolSchemaCharsForDiagnostics } from '../request-shape.js';
 import * as requestShape from '../request-shape.js';
 import type { MakaTool } from '../tool-runtime.js';
 
@@ -75,29 +71,8 @@ describe('canonicalizeToolSet active allow-list', () => {
 });
 
 describe('diagnostics measure the provider-visible (active) tool subset', () => {
-  const connection = { providerType: 'openai', slug: 'c' } as never;
-
   function rich(name: string, schema: unknown): MakaTool {
     return { name, description: name, parameters: schema, impl: () => ({}) };
-  }
-
-  function diag(
-    providerTools: MakaTool[],
-    activeTools: string[],
-    prior?: ReturnType<typeof computeRequestShapeDiagnostic>,
-  ) {
-    return computeRequestShapeDiagnostic(
-      {
-        connection,
-        modelId: 'm',
-        systemPrompt: 's',
-        providerOptions: {},
-        providerTools,
-        activeTools,
-        priorMessages: [],
-      },
-      prior,
-    );
   }
 
   test('char count excludes an inactive tool schema', () => {
@@ -108,24 +83,6 @@ describe('diagnostics measure the provider-visible (active) tool subset', () => 
       withRive > withoutRive + 400,
       'activating Rive should add its schema chars to the count',
     );
-  });
-
-  test('toolSchemaHash ignores an INACTIVE tool schema change', () => {
-    const a = [rich('Read', { a: 1 }), rich('Rive', { v: 1 })];
-    const b = [rich('Read', { a: 1 }), rich('Rive', { v: 2 })];
-    assert.equal(
-      diag(a, ['Read']).componentHashes.toolSchemaHash,
-      diag(b, ['Read']).componentHashes.toolSchemaHash,
-      'a change to an unadvertised schema must not move the hash',
-    );
-  });
-
-  test('activating a hidden tool moves toolSchemaHash and reports tool_schema_changed', () => {
-    const tools = [rich('Read', { a: 1 }), rich('Rive', { v: 1 })];
-    const before = diag(tools, ['Read']);
-    const after = diag(tools, ['Read', 'Rive'], before);
-    assert.notEqual(after.componentHashes.toolSchemaHash, before.componentHashes.toolSchemaHash);
-    assert.equal(after.prefixChangeReason, 'tool_schema_changed');
   });
 });
 

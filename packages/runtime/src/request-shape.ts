@@ -19,13 +19,6 @@
 
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import type {
-  PrefixChangeReason,
-  ToolSchemaChangeReason,
-  ToolAvailabilityDiagnostic,
-} from '@maka/core/usage-stats/types';
-import type { ModelMessage } from './model-protocol.js';
 import { toJSONSchema } from 'zod';
 
 import type { MakaTool } from './tool-runtime.js';
@@ -33,39 +26,6 @@ import type { MakaTool } from './tool-runtime.js';
 export interface CanonicalToolSet {
   providerTools: MakaTool[];
   activeTools: string[];
-}
-
-export interface RequestShapeInput {
-  connection: RuntimeExecutionConnection;
-  modelId: string;
-  systemPrompt?: string;
-  providerOptions?: Record<string, unknown>;
-  providerTools: readonly MakaTool[];
-  activeTools: readonly string[];
-  priorMessages: readonly ModelMessage[];
-  toolAvailability?: ToolAvailabilityDiagnostic;
-}
-
-export interface RequestShapeComponents {
-  modelProviderHash: string;
-  systemPromptHash: string;
-  providerOptionsHash: string;
-  toolSchemaHash: string;
-  historyProjectionHash: string;
-}
-
-export type DurablePrefixComponents = Omit<RequestShapeComponents, 'historyProjectionHash'>;
-
-export interface RequestShapeDiagnostic {
-  /** Durable provider prefix shape, excluding prior-history projection. */
-  prefixHash: string;
-  prefixChangeReason: PrefixChangeReason;
-  /** Full request shape, including prior-history projection. */
-  requestShapeHash: string;
-  requestShapeChangeReason: PrefixChangeReason;
-  componentHashes: RequestShapeComponents;
-  toolSchemaChangeReason?: ToolSchemaChangeReason;
-  toolAvailability?: ToolAvailabilityDiagnostic;
 }
 
 export type PreparedRequestSegmentKind =
@@ -149,53 +109,6 @@ export function canonicalizeToolSet(
   return {
     providerTools: [...visibleTools, invalidTool],
     activeTools,
-  };
-}
-
-export function computeRequestShapeDiagnostic(
-  input: RequestShapeInput,
-  prior: RequestShapeDiagnostic | undefined,
-): RequestShapeDiagnostic {
-  const componentHashes: RequestShapeComponents = {
-    modelProviderHash: stableHash({
-      providerId: input.connection.providerType,
-      connectionSlug: input.connection.slug,
-      modelId: input.modelId,
-    }),
-    systemPromptHash: stableHash(input.systemPrompt ?? ''),
-    providerOptionsHash: stableHash(input.providerOptions ?? {}),
-    toolSchemaHash: stableHash({
-      activeTools: [...input.activeTools],
-      // Only the provider-visible (active) subset crosses the wire, so the
-      // schema hash must reflect that subset — otherwise an inactive deferred
-      // tool's schema change would falsely fire `tool_schema_changed`, and a
-      // load would not be distinguishable from churn.
-      providerTools: providerVisibleTools(input.providerTools, input.activeTools).map(
-        toolShapeForDiagnostics,
-      ),
-    }),
-    historyProjectionHash: stableHash(input.priorMessages.map(messageShapeForHash)),
-  };
-  const durablePrefixComponents = durableComponents(componentHashes);
-  const prefixHash = stableHash(durablePrefixComponents);
-  const requestShapeHash = stableHash(componentHashes);
-  const toolSchemaChangeReason = classifyToolSchemaChange(
-    componentHashes,
-    prior?.componentHashes,
-    input.toolAvailability,
-    prior?.toolAvailability,
-  );
-  return {
-    prefixHash,
-    prefixChangeReason: classifyDurablePrefixChange(
-      durablePrefixComponents,
-      prior ? durableComponents(prior.componentHashes) : undefined,
-    ),
-    requestShapeHash,
-    requestShapeChangeReason: classifyRequestShapeChange(componentHashes, prior?.componentHashes),
-    componentHashes,
-    ...(toolSchemaChangeReason !== undefined ? { toolSchemaChangeReason } : {}),
-    ...(input.toolAvailability !== undefined ? { toolAvailability: input.toolAvailability } : {}),
   };
 }
 
@@ -757,105 +670,6 @@ function containsComparisonOpaqueRedaction(value: unknown, seen = new Set<object
   return Object.values(value).some((entry) => containsComparisonOpaqueRedaction(entry, seen));
 }
 
-function classifyDurablePrefixChange(
-  current: DurablePrefixComponents,
-  prior: DurablePrefixComponents | undefined,
-): PrefixChangeReason {
-  if (!prior) return 'first_turn';
-  if (current.modelProviderHash !== prior.modelProviderHash) return 'model_or_provider_changed';
-  if (current.systemPromptHash !== prior.systemPromptHash) return 'system_prompt_changed';
-  if (current.toolSchemaHash !== prior.toolSchemaHash) return 'tool_schema_changed';
-  if (current.providerOptionsHash !== prior.providerOptionsHash) return 'provider_options_changed';
-  return 'stable';
-}
-
-function classifyRequestShapeChange(
-  current: RequestShapeComponents,
-  prior: RequestShapeComponents | undefined,
-): PrefixChangeReason {
-  if (!prior) return 'first_turn';
-  if (current.modelProviderHash !== prior.modelProviderHash) return 'model_or_provider_changed';
-  if (current.systemPromptHash !== prior.systemPromptHash) return 'system_prompt_changed';
-  if (current.toolSchemaHash !== prior.toolSchemaHash) return 'tool_schema_changed';
-  if (current.providerOptionsHash !== prior.providerOptionsHash) return 'provider_options_changed';
-  if (current.historyProjectionHash !== prior.historyProjectionHash)
-    return 'history_projection_changed';
-  return 'stable';
-}
-
-function classifyToolSchemaChange(
-  current: RequestShapeComponents,
-  prior: RequestShapeComponents | undefined,
-  currentAvail: ToolAvailabilityDiagnostic | undefined,
-  priorAvail: ToolAvailabilityDiagnostic | undefined,
-): ToolSchemaChangeReason | undefined {
-  if (!prior || current.toolSchemaHash === prior.toolSchemaHash) return undefined;
-  if (
-    isEnabledSourceStrictSuperset(currentAvail, priorAvail) &&
-    sourceCatalogStable(currentAvail, priorAvail)
-  ) {
-    return 'tool_source_enabled';
-  }
-  if (sourceStateChanged(currentAvail, priorAvail)) {
-    return 'tool_source_state_changed';
-  }
-  return 'tool_schema_changed';
-}
-
-function isEnabledSourceStrictSuperset(
-  current: ToolAvailabilityDiagnostic | undefined,
-  prior: ToolAvailabilityDiagnostic | undefined,
-): boolean {
-  if (
-    !current ||
-    !prior ||
-    current.mode !== prior.mode ||
-    (current.mode !== 'economy' && current.mode !== 'search')
-  )
-    return false;
-  const currentIds = new Set(current.enabledSourceIds);
-  const priorIds = new Set(prior.enabledSourceIds);
-  if (currentIds.size <= priorIds.size) return false;
-  for (const sourceId of priorIds) {
-    if (!currentIds.has(sourceId)) return false;
-  }
-  return true;
-}
-
-function sourceCatalogStable(
-  current: ToolAvailabilityDiagnostic | undefined,
-  prior: ToolAvailabilityDiagnostic | undefined,
-): boolean {
-  if (!current || !prior) return false;
-  return (
-    stableStringify(sourceCatalogShape(current)) === stableStringify(sourceCatalogShape(prior))
-  );
-}
-
-function sourceStateChanged(
-  current: ToolAvailabilityDiagnostic | undefined,
-  prior: ToolAvailabilityDiagnostic | undefined,
-): boolean {
-  return stableStringify(current ?? null) !== stableStringify(prior ?? null);
-}
-
-function sourceCatalogShape(diagnostic: ToolAvailabilityDiagnostic): unknown {
-  return {
-    mode: diagnostic.mode,
-    connectorToolName: diagnostic.connectorToolName,
-    visibleToolNamesBySource: diagnostic.visibleToolNamesBySource ?? {},
-  };
-}
-
-function durableComponents(components: RequestShapeComponents): DurablePrefixComponents {
-  return {
-    modelProviderHash: components.modelProviderHash,
-    systemPromptHash: components.systemPromptHash,
-    providerOptionsHash: components.providerOptionsHash,
-    toolSchemaHash: components.toolSchemaHash,
-  };
-}
-
 function toolShapeForDiagnostics(tool: MakaTool): unknown {
   return {
     name: tool.name,
@@ -893,44 +707,6 @@ function stripJsonSchemaRuntimeFields(value: unknown): unknown {
     out[key] = stripJsonSchemaRuntimeFields(entry);
   }
   return out;
-}
-
-function messageShapeForHash(message: ModelMessage): unknown {
-  const raw = message as unknown as { role?: unknown; content?: unknown };
-  return {
-    role: typeof raw.role === 'string' ? raw.role : 'unknown',
-    content: contentShapeForHash(raw.content),
-  };
-}
-
-function contentShapeForHash(content: unknown): unknown {
-  if (typeof content === 'string') {
-    return { type: 'text', chars: content.length };
-  }
-  if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (!isObjectLike(part)) return { type: typeof part };
-      const type = typeof part.type === 'string' ? part.type : 'unknown';
-      return {
-        type,
-        ...(typeof part.toolName === 'string' ? { toolName: part.toolName } : {}),
-        ...(typeof part.toolCallId === 'string' ? { toolCallId: part.toolCallId } : {}),
-        ...(typeof part.text === 'string' ? { chars: part.text.length } : {}),
-        ...('output' in part ? { output: payloadShapeForHash(part.output) } : {}),
-      };
-    });
-  }
-  return { type: typeof content };
-}
-
-function payloadShapeForHash(value: unknown): unknown {
-  const serialized = stableStringify(value);
-  return {
-    type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value,
-    chars: serialized.length,
-    bytes: Buffer.byteLength(serialized, 'utf8'),
-    hash: stableHash(value),
-  };
 }
 
 function canonicalize(value: unknown, parentKey?: string): unknown {
