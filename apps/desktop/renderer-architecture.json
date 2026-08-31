@@ -325,7 +325,6 @@
   "legacyPlatformImports": [
     "src/renderer/platform/desktop/create-workbar-services.ts -> src/renderer/session-message-settlement"
   ],
-  "hookTransitions": [],
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-app-update.ts": {

@@ -7,6 +7,7 @@
   "sideEffects": false,
   "private": true,
   "exports": {
+    "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-event": "./dist/runtime-event.js",

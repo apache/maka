@@ -497,6 +497,40 @@ describe('RuntimeEvent content variants', () => {
   });
 });
 
+test('rejects a Tool Result projection that references another Session artifact', () => {
+  assert.throws(
+    () =>
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'call-1',
+            name: 'Read',
+            result: { kind: 'image' },
+            modelProjection: {
+              version: 1,
+              kind: 'content',
+              parts: [
+                {
+                  kind: 'artifact',
+                  mediaType: 'image/png',
+                  ref: {
+                    kind: 'session_context',
+                    sessionId: 'another-session',
+                    refId: 'image-1',
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    /Invalid RuntimeEvent schema/,
+  );
+});
+
 describe('RuntimeEvent actions', () => {
   test('binds the managed mutation digest to its canonical execution semantics', () => {
     const canonicalProfile = JSON.stringify({

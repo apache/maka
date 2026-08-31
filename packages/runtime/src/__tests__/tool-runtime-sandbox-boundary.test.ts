@@ -1007,6 +1007,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       getPermissionPauseTarget: () => null,
     });
 
+    const events: SessionEvent[] = [];
     const settlement = await runtime.settleToolCall({
       tool: buildRequestSandboxBoundaryTool() as unknown as MakaTool,
       turnId: 'turn-1',
@@ -1017,14 +1018,19 @@ describe('ToolRuntime session sandbox boundary', () => {
       },
       abortSignal: new AbortController().signal,
       eventSink: {
-        push: () => {},
-        pushAndWaitUntilConsumed: async () => {},
+        push: (event) => events.push(event),
+        pushAndWaitUntilConsumed: async (event) => {
+          events.push(event);
+        },
       },
     });
 
-    assert.deepEqual(settlement.modelOutput, {
-      type: 'error-text',
-      value: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+    assert.equal(settlement.providerError, SANDBOX_BOUNDARY_UNAVAILABLE);
+    assert.deepEqual(events.find((event) => event.type === 'tool_result')?.modelProjection, {
+      version: 1,
+      kind: 'text',
+      text: `Error: ${SANDBOX_BOUNDARY_UNAVAILABLE}`,
+      isError: true,
     });
   });
 });

@@ -34,6 +34,7 @@ import {
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 
 import type { BackendSessionEvent } from '@maka/core/backend-types';
+import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export interface RuntimeEventMapContext {
   readonly sessionId: string;
@@ -332,6 +333,24 @@ function mapBackendSessionEvent(
       };
     case 'tool_result': {
       const name = memory.toolNameByUseId.get(event.toolUseId) ?? '';
+      const content = {
+        kind: 'function_response' as const,
+        id: event.toolUseId,
+        name,
+        result: event.content,
+        ...(event.isError ? { isError: true as const } : {}),
+        ...(event.providerExecuted !== undefined
+          ? { providerExecuted: event.providerExecuted }
+          : {}),
+        ...(event.providerExecuted && event.providerOutput !== undefined
+          ? { providerOutput: structuredClone(event.providerOutput) }
+          : {}),
+      };
+      const modelProjection =
+        event.modelProjection ??
+        (event.operationId === undefined
+          ? compatibilityToolResultProjection(content, ctx.sessionId)
+          : undefined);
       const ev: RuntimeEvent = {
         ...base,
         role: 'tool',
@@ -339,17 +358,8 @@ function mapBackendSessionEvent(
         ...(event.origin !== undefined ? { origin: event.origin } : {}),
         ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
         content: {
-          kind: 'function_response',
-          id: event.toolUseId,
-          name,
-          result: event.content,
-          ...(event.isError ? { isError: true } : {}),
-          ...(event.providerExecuted !== undefined
-            ? { providerExecuted: event.providerExecuted }
-            : {}),
-          ...(event.providerExecuted && event.providerOutput !== undefined
-            ? { providerOutput: structuredClone(event.providerOutput) }
-            : {}),
+          ...content,
+          ...(modelProjection ? { modelProjection } : {}),
         },
         refs: {
           toolCallId: event.toolUseId,

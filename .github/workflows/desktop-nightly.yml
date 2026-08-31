@@ -184,14 +184,14 @@ jobs:
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.dmg" \
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip" \
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip.blockmap" \
-              apps/desktop/release/latest-mac.yml \
+              apps/desktop/release/dev-mac.yml \
               "$STAGE_DIRECTORY/"
           else
             cp -- \
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe" \
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe.blockmap" \
               "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.zip" \
-              apps/desktop/release/latest.yml \
+              apps/desktop/release/dev.yml \
               "$STAGE_DIRECTORY/"
           fi
 
@@ -212,7 +212,7 @@ jobs:
     permissions:
       artifact-metadata: write
       attestations: write
-      contents: read
+      contents: write
       id-token: write
     steps:
       - name: Reject in-place workflow reruns
@@ -243,29 +243,26 @@ jobs:
           path: ${{ github.workspace }}/.nightly-input
           merge-multiple: true
 
-      - name: Stage the versioned Nightly site
+      - name: Stage the exact GitHub Release assets
         env:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
-          SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
         run: |
           node scripts/desktop-nightly.mjs stage \
             "$GITHUB_WORKSPACE/.nightly-input" \
-            "$GITHUB_WORKSPACE/.nightly-publish" \
-            "$NIGHTLY_VERSION" \
-            "$SOURCE_COMMIT"
+            "$GITHUB_WORKSPACE/.nightly-stage" \
+            "$NIGHTLY_VERSION"
 
-      - name: Attest the exact Nightly payloads
+      - name: Attest every GitHub Nightly asset subject
         id: attest
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ github.workspace }}/.nightly-publish/versions/${{ needs.identity.outputs.version }}/*
+          subject-path: ${{ github.workspace }}/.nightly-stage/release/*
 
       - name: Verify the issued Nightly provenance
         env:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
           CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main
           GH_TOKEN: ${{ github.token }}
-          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
         run: |
           verified=0
           while IFS= read -r -d '' artifact; do
@@ -275,70 +272,51 @@ jobs:
               --cert-identity "$CERTIFICATE_IDENTITY" \
               --cert-oidc-issuer https://token.actions.githubusercontent.com
             verified=$((verified + 1))
-          done < <(find "$GITHUB_WORKSPACE/.nightly-publish/versions/$NIGHTLY_VERSION" -maxdepth 1 -type f -print0)
-          if (( verified == 0 )); then
-            echo "No Desktop Nightly artifacts were verified" >&2
+          done < <(find "$GITHUB_WORKSPACE/.nightly-stage/release" -maxdepth 1 -type f -print0)
+          if (( verified != 8 )); then
+            echo "Expected 8 verified Desktop Nightly subjects, found $verified" >&2
             exit 1
           fi
 
-      - name: Add the offline provenance bundle
+      - name: Add the one offline provenance bundle
         env:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
-        run: >-
-          cp -- "$ATTESTATION_BUNDLE"
-          "$GITHUB_WORKSPACE/.nightly-publish/versions/$NIGHTLY_VERSION/Maka-$NIGHTLY_VERSION-attestation.sigstore.json"
-
-      - name: Prepare authenticated Nightlies SSH transport
-        env:
-          NIGHTLIES_RSYNC_HOST: ${{ secrets.NIGHTLIES_RSYNC_HOST }}
-          NIGHTLIES_RSYNC_KEY: ${{ secrets.NIGHTLIES_RSYNC_KEY }}
-          NIGHTLIES_RSYNC_PATH: ${{ secrets.NIGHTLIES_RSYNC_PATH }}
-          NIGHTLIES_RSYNC_PORT: ${{ secrets.NIGHTLIES_RSYNC_PORT }}
-          NIGHTLIES_RSYNC_USER: ${{ secrets.NIGHTLIES_RSYNC_USER }}
         run: |
-          test -n "$NIGHTLIES_RSYNC_HOST"
-          test -n "$NIGHTLIES_RSYNC_KEY"
-          test -n "$NIGHTLIES_RSYNC_PATH"
-          test -n "$NIGHTLIES_RSYNC_USER"
-          [[ "$NIGHTLIES_RSYNC_PORT" =~ ^[0-9]{1,5}$ ]]
-          (( NIGHTLIES_RSYNC_PORT >= 1 && NIGHTLIES_RSYNC_PORT <= 65535 ))
-          ssh_directory="$RUNNER_TEMP/nightlies-ssh"
-          install -m 700 -d "$ssh_directory"
-          umask 077
-          printf '%s\n' "$NIGHTLIES_RSYNC_KEY" > "$ssh_directory/key"
-          {
-            echo "NIGHTLIES_RSYNC_BASE=$NIGHTLIES_RSYNC_USER@$NIGHTLIES_RSYNC_HOST:${NIGHTLIES_RSYNC_PATH%/}"
-            echo "NIGHTLIES_RSYNC_TARGET=$NIGHTLIES_RSYNC_USER@$NIGHTLIES_RSYNC_HOST:${NIGHTLIES_RSYNC_PATH%/}/maka/desktop"
-            echo "RSYNC_RSH=ssh -i $ssh_directory/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p $NIGHTLIES_RSYNC_PORT"
-          } >> "$GITHUB_ENV"
+          node scripts/desktop-nightly.mjs add-attestation \
+            "$GITHUB_WORKSPACE/.nightly-stage" \
+            "$NIGHTLY_VERSION" \
+            "$ATTESTATION_BUNDLE"
 
-      - name: Ensure the Nightly destination exists
-        run: |
-          mkdir -p .nightly-empty/maka/desktop
-          rsync -rlptDz --protect-args .nightly-empty/maka/ "$NIGHTLIES_RSYNC_BASE/maka/"
-
-      - name: Require the Desktop Nightly feed to advance
+      - name: Ensure the exact versioned Nightly tag
         env:
+          GH_TOKEN: ${{ github.token }}
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
         run: |
-          mkdir -p .nightly-current-feed
-          rsync -rlptDz --protect-args \
-            --include='/latest-mac.yml' \
-            --include='/latest.yml' \
-            --exclude='*' \
-            "$NIGHTLIES_RSYNC_TARGET/" \
-            .nightly-current-feed/
-          node scripts/desktop-nightly.mjs assert-feed-advance \
-            .nightly-current-feed \
-            "$NIGHTLY_VERSION"
+          gh auth setup-git
+          node scripts/product-release-tag.mjs ensure "v$NIGHTLY_VERSION" "$SOURCE_COMMIT"
 
-      - name: Publish immutable Nightly payloads
-        run: rsync -rlptDvz --protect-args .nightly-publish/versions/ "$NIGHTLIES_RSYNC_TARGET/versions/"
+      - name: Prepare and verify the draft GitHub Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
+        run: |
+          node scripts/desktop-nightly-release.mjs prepare \
+            "$GITHUB_WORKSPACE/.nightly-stage/release" \
+            "$NIGHTLY_VERSION" \
+            "$SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY"
 
-      - name: Advance the Nightly update feed last
-        run: rsync -rlptDvz --protect-args .nightly-publish/feed/ "$NIGHTLIES_RSYNC_TARGET/"
-
-      - name: Remove the temporary Nightlies credentials
-        if: always()
-        run: rm -f "$RUNNER_TEMP/nightlies-ssh/key"
+      - name: Publish the complete GitHub Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
+          SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
+        run: |
+          node scripts/desktop-nightly-release.mjs publish \
+            "$GITHUB_WORKSPACE/.nightly-stage/release" \
+            "$NIGHTLY_VERSION" \
+            "$SOURCE_COMMIT" \
+            "$GITHUB_REPOSITORY"

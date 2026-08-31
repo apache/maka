@@ -13,6 +13,7 @@
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",
     "./deep-research-tools": "./dist/deep-research-tools.js",
+    "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./tool-artifacts": "./dist/tool-artifacts.js",
     "./model-factory": "./dist/model-factory.js",
     "./model-runtime": "./dist/model-runtime.js",
