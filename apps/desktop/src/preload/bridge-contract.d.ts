@@ -204,7 +204,7 @@ import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpd
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
-  PersistedRuntimeHostProfile,
+  RemoteRuntimeHostProfile,
   RuntimeHostProfile,
   RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
@@ -391,8 +391,8 @@ export interface DesktopNewTaskCatalog {
 }
 
 export interface DesktopRuntimeHostProfileAddInput {
-  readonly profile: PersistedRuntimeHostProfile;
-  readonly credential?: string;
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential: string;
 }
 
 export type DesktopRuntimeHostProfileAddResult =

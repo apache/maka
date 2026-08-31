@@ -1613,7 +1613,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onUiLocalePreferenceChange={noop}
           uiLocaleUpdateGate={uiLocaleUpdateGate}
           onDefaultPermissionModeChange={noop}
-          requestedSection={props.section}
+          request={{ section: props.section }}
           openProviderCatalog={props.openProviderCatalog}
           initialConnectionSlug={props.initialConnectionSlug}
           initialFocusRef={initialFocusRef}

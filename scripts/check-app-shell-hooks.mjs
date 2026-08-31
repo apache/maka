@@ -149,7 +149,7 @@ export const ALLOWED = {
     useShellRunUpdates: 1,
     useShellSearch: 1,
     useStableActions: 7,
-    useState: 16,
+    useState: 15,
     useTaskEntryController: 1,
     useTaskSubmissionReadiness: 1,
     useToast: 1,

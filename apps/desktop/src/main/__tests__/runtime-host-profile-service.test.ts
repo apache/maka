@@ -41,7 +41,11 @@ import {
   RuntimeHostPairingFinalizationInterruptedError,
   type RuntimeHostDesktopTargetState,
 } from "../runtime-host-desktop-manager.js";
-import { createDesktopRuntimeHostManagedServiceStore } from "../runtime-host-managed-services.js";
+import {
+  createDesktopRuntimeHostManagedServiceStore,
+  findDesktopRuntimeHostManagedServiceBinding,
+  isDesktopRuntimeHostManagedSshServiceBinding,
+} from "../runtime-host-managed-services.js";
 import {
   createDesktopRuntimeHostPairingIntent,
   writeDesktopRuntimeHostPairingIntents,
@@ -269,6 +273,58 @@ test("keeps Local enabled while a new remote Host connects", async () => {
       "opaque-token",
     ),
     false,
+  );
+});
+
+test("reuses the existing WSL profile when the same managed Host is added again", async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const managedServices = createDesktopRuntimeHostManagedServiceStore(root);
+  const existing = {
+    id: "ubuntu",
+    name: "Ubuntu",
+    kind: "environment" as const,
+    provider: { kind: "wsl" as const, distribution: "Ubuntu-24.04" },
+    rootId: ROOT_ID,
+    operatorPath: "/home/operator/.local/share/Maka/runtime-host-services/operator",
+  };
+  await catalog.create(existing);
+  const enabled: string[] = [];
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup: await resolveDesktopRuntimeHostStartup(root, { catalog }),
+    catalog,
+    managedServices,
+    states: () => [connectingLocal()],
+    enable: async (target) => {
+      enabled.push(target.profile.id);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+  const managedService = {
+    deployment: {
+      id: ROOT_ID,
+      rootPath: "/home/operator/.config/Maka/workspaces/default",
+      deploymentId: "11111111-1111-4111-8111-111111111111",
+    },
+  };
+
+  const result = await service.addManagedEnvironmentAndEnable({
+    profile: { ...existing, id: "replacement", name: "Replacement" },
+    managedService,
+  });
+
+  assert.equal(result.profileId, existing.id);
+  assert.deepEqual((await catalog.read()).profiles, [existing]);
+  assert.deepEqual(enabled, [existing.id]);
+  assert.deepEqual(
+    findDesktopRuntimeHostManagedServiceBinding(
+      await managedServices.read(),
+      existing,
+    ),
+    { profile: existing, ...managedService, state: "active" },
   );
 });
 
@@ -711,6 +767,7 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   };
   const managedBinding = await service.resolveManagedService(MANAGED_PROFILE.id);
   assert.ok(managedBinding);
+  assert.ok(isDesktopRuntimeHostManagedSshServiceBinding(managedBinding));
   await assert.rejects(
     service.remove(MANAGED_PROFILE.id),
     /remove the Direct peer profile/u,
@@ -786,6 +843,7 @@ test("recovers interrupted managed credential rotation after restart", async () 
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "new-token");
   const managed = await service.resolveManagedService(MANAGED_PROFILE.id);
   assert.ok(managed);
+  assert.ok(isDesktopRuntimeHostManagedSshServiceBinding(managed));
   await assert.rejects(
     service.markManagedServiceUninstalling(managed),
     /unfinished pairing/u,

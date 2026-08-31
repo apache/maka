@@ -154,7 +154,7 @@ export function SettingsSurface(props: {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  requestedSection?: SettingsSection;
+  request?: { readonly section?: SettingsSection; readonly profileId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -172,7 +172,7 @@ export function SettingsSurface(props: {
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
   const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.requestedSection ?? readLastSettingsSection());
+  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -190,15 +190,15 @@ export function SettingsSurface(props: {
     setCreateProviderRequest(props.initialCreateProviderType);
   }, [props.initialCreateProviderType]);
 
-  // When the parent updates requestedSection (e.g. the palette opens
+  // When the parent updates the navigation request (e.g. the palette opens
   // Settings with a different section while it's already mounted), reflect
-  // that into the local state.
+  // its section into the local state.
   useEffect(() => {
-    if (props.requestedSection && props.requestedSection !== section) {
-      setSection(props.requestedSection);
+    if (props.request?.section && props.request.section !== section) {
+      setSection(props.request.section);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.requestedSection]);
+  }, [props.request?.section]);
 
   // Focus follows the active section's nav button: on mount, and whenever
   // `section` changes (nav click — a native-focus no-op — or a ⌘K palette
@@ -252,12 +252,14 @@ export function SettingsSurface(props: {
     () => snapshotCache.readRuntimeHostCatalog(),
     [snapshotCache],
   );
+  const initialSelectedProfileId =
+    props.request?.profileId ?? initialRuntimeHostCatalog?.defaultProfileId;
   const initialRuntimeHost = useMemo(
     () => readyRuntimeHost(
       initialRuntimeHostCatalog,
-      initialRuntimeHostCatalog?.defaultProfileId,
+      initialSelectedProfileId,
     ),
-    [initialRuntimeHostCatalog],
+    [initialRuntimeHostCatalog, initialSelectedProfileId],
   );
   const initialRuntimeHostKey = initialRuntimeHost
     ? runtimeHostSettingsKey(initialRuntimeHost)
@@ -288,7 +290,7 @@ export function SettingsSurface(props: {
     initialRuntimeHostCatalog,
   ));
   const [selectedProfileId, setSelectedProfileId] = useState<string | undefined>(
-    initialRuntimeHostCatalog?.defaultProfileId,
+    initialSelectedProfileId,
   );
   const selectedProfileIdRef = useRef(selectedProfileId);
   const defaultRuntimeHostProfileIdRef = useRef(
@@ -309,7 +311,9 @@ export function SettingsSurface(props: {
   const usageReloadTicketRef = useRef(0);
   const runtimeHostReloadTicketRef = useRef(0);
   const runtimeHostCatalogHydratedRef = useRef(false);
-  const selectedProfileChangedByUserRef = useRef(false);
+  const selectedProfileChangedByUserRef = useRef(
+    props.request?.profileId !== undefined,
+  );
   const runtimeHostLifecycleByProfileRef = useRef(
     new Map<string, DesktopRuntimeHostProfileChangedEvent>(),
   );

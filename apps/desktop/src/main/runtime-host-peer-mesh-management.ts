@@ -36,6 +36,7 @@ import type {
   DesktopRuntimeHostPeerMeshTarget,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
+import { isDesktopRuntimeHostManagedSshServiceBinding } from './runtime-host-managed-services.js';
 import type {
   DesktopRuntimeHostSshPeerMeshManagementInput,
   createDesktopRuntimeHostSshTerminal,
@@ -187,7 +188,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     if (
       !managed ||
       managed.state !== 'active' ||
-      managed.profile.transport.kind !== 'ssh' ||
+      !isDesktopRuntimeHostManagedSshServiceBinding(managed) ||
       !managed.deployment.deploymentId
     ) {
       throw new Error('This Runtime Host does not have an active SSH management channel');

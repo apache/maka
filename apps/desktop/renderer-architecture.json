@@ -624,7 +624,7 @@
           "react": 1
         },
         "importSpecifiers": 22,
-        "nonTriviaTokens": 990
+        "nonTriviaTokens": 977
       },
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 9,
@@ -945,7 +945,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 7,
-          "useState": 18,
+          "useState": 17,
           "useSystemUiLocale": 1,
           "useTaskEntryController": 1,
           "useTaskSubmissionReadiness": 1,
@@ -1063,7 +1063,7 @@
           "react": 1
         },
         "importSpecifiers": 187,
-        "nonTriviaTokens": 15912
+        "nonTriviaTokens": 15908
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,

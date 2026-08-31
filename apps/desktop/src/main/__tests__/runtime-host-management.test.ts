@@ -36,6 +36,7 @@ import type {
   DesktopRuntimeHostSshUpdatePolicyInput,
   DesktopRuntimeHostSshUpdateReconciliationInput,
 } from '../runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostWslManagementInput } from '../runtime-host-wsl-controller.js';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -174,6 +175,100 @@ test('requires explicit interruption authority before a provider restarts active
     () => run({}, 'local', 'status', true),
     /authority is not valid for this action/u,
   );
+});
+
+test('routes WSL status and directory configuration through the persisted operator route', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const calls: DesktopRuntimeHostWslManagementInput[] = [];
+  const profile = {
+    id: 'ubuntu',
+    name: 'Ubuntu',
+    kind: 'environment' as const,
+    provider: { kind: 'wsl' as const, distribution: 'Ubuntu-24.04' },
+    rootId: 'a'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  const binding = {
+    profile,
+    deployment: {
+      id: 'a'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      deploymentId: DEPLOYMENT_ID,
+    },
+    state: 'active' as const,
+  };
+  let reconnects = 0;
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => binding,
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async () => assert.fail('uninstall is not expected'),
+      markManagedServiceCleanupPending: async () => assert.fail('uninstall is not expected'),
+      clearManagedServiceBinding: async () => assert.fail('uninstall is not expected'),
+    },
+    runServiceManagement: async () => assert.fail('WSL must not use SSH management'),
+    runWslManagement: async (input) => {
+      calls.push(input);
+      return serviceResult(input.action);
+    },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+    currentHostEpoch: () => 'before-configure',
+    awaitUpdatedConnection: async () => {
+      reconnects += 1;
+    },
+  });
+
+  const run = handlers.get('runtime-host-management:run');
+  const configure = handlers.get('runtime-host-management:configure-project-directories');
+  assert.ok(run);
+  assert.ok(configure);
+  await run({}, profile.id, 'status');
+  await configure(
+    {},
+    profile.id,
+    [{ label: 'Work', path: '/srv/work' }],
+    `sha256:${'b'.repeat(64)}`,
+    false,
+  );
+
+  assert.deepEqual(calls.map(({ action, distribution, operatorPath, expectedTarget }) => ({
+    action,
+    distribution,
+    operatorPath,
+    expectedTarget,
+  })), [
+    {
+      action: 'status',
+      distribution: 'Ubuntu-24.04',
+      operatorPath: profile.operatorPath,
+      expectedTarget: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+        deploymentId: DEPLOYMENT_ID,
+      },
+    },
+    {
+      action: 'configure',
+      distribution: 'Ubuntu-24.04',
+      operatorPath: profile.operatorPath,
+      expectedTarget: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+        deploymentId: DEPLOYMENT_ID,
+      },
+    },
+  ]);
+  assert.equal(reconnects, 0);
 });
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
@@ -538,6 +633,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
       clearManagedServiceBinding: async () => undefined,
     },
     runServiceManagement: async () => assert.fail('ordinary management is not expected'),
+    runWslManagement: async () => assert.fail('WSL management is not expected'),
     runPeerManagement: async () => assert.fail('direct peer management is not expected'),
     directPeerClientAvailable: false,
     runUpdate: async (input, onProgress) => {
@@ -1312,6 +1408,8 @@ function serviceSummary(installedVersion: string) {
 
 function unusedUpdateDependencies() {
   return {
+    runWslManagement: async (): Promise<never> =>
+      assert.fail('WSL management is not expected'),
     runUpdate: async (): Promise<never> => assert.fail('update is not expected'),
     runUpdatePolicy: async (): Promise<never> => assert.fail('update policy is not expected'),
     runUpdateReconciliation: async (): Promise<never> =>
