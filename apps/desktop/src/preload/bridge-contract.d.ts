@@ -135,6 +135,12 @@ import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type {
+  SessionCollaborationCancelResult,
+  SessionCollaborationImportPhase,
+  SessionCollaborationImportResult,
+  SessionCollaborationMountSummary,
+} from '../shared/session-collaboration.js';
 /**
  * Outcome of importing artwork. `cancelled` is the user closing the dialog and
  * is not an error; the rest name why the file could not become an icon, so the
@@ -198,8 +204,9 @@ import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpd
 import type { ConfigCategory } from '@maka/storage/config-transfer';
 import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from '@maka/core/onboarding';
 import type {
-  PersistedRuntimeHostProfile,
+  RemoteRuntimeHostProfile,
   RuntimeHostProfile,
+  RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -325,18 +332,13 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly pairingRecoveryPending?: true;
 }
 
-export type DesktopSessionCollaborationImportResult =
-  | { readonly kind: 'connected' }
-  | { readonly kind: 'pairing_pending'; readonly profileId: string }
-  | {
-      readonly kind: 'error';
-      readonly reason:
-        | 'invalid_code'
-        | 'insecure_confirmation_required'
-        | 'peer_path_unavailable'
-        | 'connection_failed';
-      readonly message?: string;
-    };
+export type DesktopSessionCollaborationImportResult = SessionCollaborationImportResult;
+
+export type DesktopGuestSessionMountSummary = SessionCollaborationMountSummary;
+
+export type DesktopSessionCollaborationImportPhase = SessionCollaborationImportPhase;
+
+export type DesktopSessionCollaborationCancelResult = SessionCollaborationCancelResult;
 
 export type DesktopSessionCollaborationPrepareResult =
   | {
@@ -389,8 +391,8 @@ export interface DesktopNewTaskCatalog {
 }
 
 export interface DesktopRuntimeHostProfileAddInput {
-  readonly profile: PersistedRuntimeHostProfile;
-  readonly credential?: string;
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential: string;
 }
 
 export type DesktopRuntimeHostProfileAddResult =
@@ -409,10 +411,19 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly profileId: string;
   readonly profileName: string;
   readonly profileKind: RuntimeHostProfileKind;
+  readonly profileAccess: RuntimeHostProfileAccess;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly hostId?: string;
   readonly isDefault: boolean;
   readonly removed?: boolean;
+}
+
+export interface DesktopRuntimeHostIdentity extends DesktopRuntimeHostRef {
+  readonly targetEpoch: string;
+  readonly profileName: string;
+  readonly profileKind: RuntimeHostProfileKind;
+  readonly profileAccess: RuntimeHostProfileAccess;
+  readonly readiness: 'ready' | 'reconnecting';
 }
 
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
@@ -569,6 +580,10 @@ export type DesktopRuntimeHostPeerMeshResult =
   | import('@maka/runtime-host/protocol').PeerMeshQueryResult
   | import('@maka/runtime-host/protocol').PeerMeshInvitationResult;
 
+export type DesktopRuntimeHostPeerMeshExecutionOutcome =
+  | { readonly kind: 'completed'; readonly result: DesktopRuntimeHostPeerMeshResult }
+  | { readonly kind: 'outcome_unknown' };
+
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,
   { kind: 'result'; action: 'update_policy' }
@@ -700,7 +715,11 @@ export interface MakaBridge {
     importInvitation(input: {
       readonly code: string;
       readonly allowInsecure?: boolean;
-    }): Promise<DesktopSessionCollaborationImportResult>;
+      readonly operationId: string;
+    }, onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void): Promise<DesktopSessionCollaborationImportResult>;
+    cancelImport(operationId: string): Promise<DesktopSessionCollaborationCancelResult>;
+    listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
+    removeMount(mountId: string): Promise<void>;
     requestTurn(
       sessionId: string,
       input: { readonly turnId: string; readonly text: string },
@@ -817,14 +836,14 @@ export interface MakaBridge {
     execute(
       target: DesktopRuntimeHostPeerMeshTarget,
       action: DesktopRuntimeHostPeerMeshAction,
-      input?: {
+      input: {
         readonly meshId?: string | null;
         readonly peerId?: string;
         readonly invitation?: string;
         readonly displayName?: string | null;
-        readonly operationId?: string;
+        readonly operationId: string;
       },
-    ): Promise<DesktopRuntimeHostPeerMeshResult>;
+    ): Promise<DesktopRuntimeHostPeerMeshExecutionOutcome>;
     cancel(operationId: string): Promise<void>;
   };
 
@@ -1438,11 +1457,11 @@ export interface MakaBridge {
   };
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'openai-codex';
       runtimeState:
         | 'not_logged_in'
@@ -1456,15 +1475,15 @@ export interface MakaBridge {
       picture?: string;
       errorMessage?: string;
     }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
   };
   xaiOAuth: {
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
       provider: 'xai-oauth';
       runtimeState:
         | 'not_logged_in'
@@ -1475,8 +1494,8 @@ export interface MakaBridge {
         | 'storage_failed';
       errorMessage?: string;
     }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;

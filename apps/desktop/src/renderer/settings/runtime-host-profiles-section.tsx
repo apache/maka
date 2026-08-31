@@ -63,7 +63,7 @@ import {
   RuntimeHostProfileMoreMenu,
   type RuntimeHostPairingActionCopy,
 } from '../features/runtime-host-management';
-import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
+import { SessionCollaborationJoinDialog } from '../features/session-collaboration';
 import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
@@ -360,14 +360,15 @@ export function RuntimeHostProfilesSection(props: {
   const connectedEntries = snapshot?.entries.filter((entry) => entry.profile.kind !== 'local') ?? [];
   const localProfile = snapshot?.entries.find((entry) => entry.profile.kind === 'local')?.profile;
   const localManagementTarget = localProfile
-    ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
+    ? {
+        id: localProfile.id,
+        name: localProfile.name,
+        scope: 'full' as const,
+        directPeerManagement: false,
+      }
     : undefined;
   const profileOptions = (snapshot?.entries ?? [])
-    .filter(
-      (entry) =>
-        entry.enabled &&
-        (entry.profile.kind !== 'remote' || entry.profile.access !== 'session_guest'),
-    )
+    .filter((entry) => entry.enabled)
     .map((entry) => ({
       value: entry.profile.id,
       label: entry.profile.name,
@@ -634,14 +635,25 @@ export function RuntimeHostProfilesSection(props: {
             {connectedEntries.map((entry) => {
               const profile = entry.profile;
               if (profile.kind === 'local') return null;
-              const isSharedAccess =
-                profile.kind === 'remote' && profile.access === 'session_guest';
-              const managedSshDestination =
-                !isSharedAccess &&
-                profile.kind === 'remote' &&
-                profile.transport.kind === 'ssh' &&
+              const managementTarget: RuntimeHostManagementTarget | undefined =
                 entry.managedService
-                  ? profile.transport.destination
+                  ? profile.kind === 'environment'
+                    ? {
+                        id: profile.id,
+                        name: profile.name,
+                        subtitle: profile.provider.distribution,
+                        scope: 'project_directories',
+                        directPeerManagement: false,
+                      }
+                    : profile.transport.kind === 'ssh'
+                      ? {
+                          id: profile.id,
+                          name: profile.name,
+                          subtitle: profile.transport.destination,
+                          scope: 'full',
+                          directPeerManagement: true,
+                        }
+                      : undefined
                   : undefined;
               return (
                 <ListItem
@@ -677,9 +689,6 @@ export function RuntimeHostProfilesSection(props: {
                       {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
                         <Badge variant="warning" label={copy.experimentalBadge} />
                       ) : null}
-                      {isSharedAccess ? (
-                        <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
-                      ) : null}
                       {entry.pairingPending ? (
                         <Badge variant="warning" label={copy.pairingPendingBadge} />
                       ) : null}
@@ -708,24 +717,21 @@ export function RuntimeHostProfilesSection(props: {
                         onChanged={() => void reload()}
                         onWorkingChange={setSwitching}
                         items={[
-                          ...(managedSshDestination && !entry.pairingPending
+                          ...(managementTarget && !entry.pairingPending
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,
-                                onClick: () => setManagedTarget({
-                                  id: profile.id,
-                                  name: profile.name,
-                                  subtitle: managedSshDestination,
-                                  directPeerManagement: true,
-                                }),
-                              }, {
-                                label: copy.managePeerMesh,
-                                isDisabled: switching,
-                                onClick: () => setPeerMeshTarget({
-                                  target: { kind: 'managed_host', profileId: profile.id },
-                                  name: profile.name,
-                                }),
-                              }]
+                                onClick: () => setManagedTarget(managementTarget),
+                              }, ...(managementTarget.directPeerManagement
+                                ? [{
+                                    label: copy.managePeerMesh,
+                                    isDisabled: switching,
+                                    onClick: () => setPeerMeshTarget({
+                                      target: { kind: 'managed_host', profileId: profile.id },
+                                      name: profile.name,
+                                    }),
+                                  }]
+                                : [])]
                             : []),
                           {
                             label: copy.remove,
@@ -801,8 +807,8 @@ export function RuntimeHostProfilesSection(props: {
         />
       ) : null}
       {showJoinSharedSession ? (
-        <SessionCollaborationDialog
-          mode="join"
+        <SessionCollaborationJoinDialog
+          copy={collaborationCopy}
           onClose={() => setShowJoinSharedSession(false)}
           onImported={() => {
             void reload();

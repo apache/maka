@@ -25,6 +25,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
+import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 
 const run = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -38,12 +39,30 @@ test('a nightly package embeds only the Apache Nightlies update authority', () =
   assert.equal(config.extraMetadata.version, version);
   assert.equal(config.extraMetadata.runtimeHostSetupPackage, `maka-agent@${version}`);
   assert.equal(config.extraMetadata.makaUpdateChannel, 'nightly');
-  assert.deepEqual(config.publish, [
-    {
-      provider: 'generic',
-      url: 'https://nightlies.apache.org/maka/desktop/',
-    },
-  ]);
+  assert.equal(config.publish.length, 1);
+  assert.equal(config.publish[0].provider, 'generic');
+  assert.equal(config.publish[0].url, 'https://nightlies.apache.org/maka/desktop/');
+});
+
+test('a dev Nightly identity still advances the latest Desktop feed', () => {
+  const config = resolveDesktopBuilderConfig({
+    MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.42.20260829',
+  });
+
+  assert.equal(config.publish[0].channel, 'latest');
+});
+
+test('a packaged Nightly accepts the pinned latest update channel', async () => {
+  const packagedConfiguration = `provider: generic
+url: https://nightlies.apache.org/maka/desktop/
+channel: latest
+updaterCacheDirName: '@makadesktop-updater'
+`;
+
+  await assertPackagedUpdateConfiguration('/fixture', {
+    channel: 'nightly',
+    read: async () => packagedConfiguration,
+  });
 });
 
 test('formal release checks ignore the ambient Nightly packaging environment', async () => {

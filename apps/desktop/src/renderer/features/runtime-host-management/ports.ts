@@ -33,7 +33,7 @@ export interface PeerMeshOperationInput {
   readonly peerId?: string;
   readonly invitation?: string;
   readonly displayName?: string | null;
-  readonly operationId?: string;
+  readonly operationId: string;
 }
 
 export interface PeerMeshDirectPeerSnapshot {
@@ -48,11 +48,18 @@ export interface PeerMeshDirectPeerSnapshot {
   readonly managementAvailable: boolean;
 }
 
+export class PeerMeshOperationOutcomeUnknownError extends Error {
+  constructor(readonly action: RuntimeHostPeerMeshManagementAction) {
+    super('Peer Mesh operation outcome is unknown');
+    this.name = 'PeerMeshOperationOutcomeUnknownError';
+  }
+}
+
 export interface PeerMeshServices {
   execute(
     target: PeerMeshTarget,
     action: RuntimeHostPeerMeshManagementAction,
-    input?: PeerMeshOperationInput,
+    input: PeerMeshOperationInput,
   ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult>;
   cancel(operationId: string): Promise<void>;
   getDirectPeer(profileId: string): Promise<PeerMeshDirectPeerSnapshot>;

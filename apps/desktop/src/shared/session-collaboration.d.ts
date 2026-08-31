@@ -17,10 +17,30 @@
  * under the License.
  */
 
-import type { OAuthLoginProvider } from '@maka/runtime-host/protocol';
+export type SessionCollaborationImportResult =
+  | { readonly kind: 'connected'; readonly mountId: string }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'insecure_confirmation_required'
+        | 'peer_path_unavailable'
+        | 'connection_failed';
+      readonly message?: string;
+    };
 
-/** Stable Desktop connection identities for Host-supported interactive OAuth providers. */
-export const INTERACTIVE_OAUTH_CONNECTION_SLUGS = {
-  'openai-codex': 'codex-subscription',
-  'xai-oauth': 'xai-oauth',
-} as const satisfies Readonly<Record<OAuthLoginProvider, string>>;
+export type SessionCollaborationImportPhase =
+  | 'validating_invitation'
+  | 'discovering_host'
+  | 'preparing_route'
+  | 'connecting'
+  | 'authenticating'
+  | 'finalizing_access'
+  | 'loading_session';
+
+export type SessionCollaborationCancelResult = 'cancelled' | 'settling';
+
+export interface SessionCollaborationMountSummary {
+  readonly mountId: string;
+  readonly name: string;
+}

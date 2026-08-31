@@ -119,10 +119,14 @@ module.exports = {
       },
     });
     const native = await import(nativePath);
+    const phases: string[] = [];
     const abort = new AbortController();
-    const pending = client.connect(peerConnectInput('pending'), abort.signal);
+    const pending = client.connect(peerConnectInput('pending'), abort.signal, (phase) => {
+      phases.push(phase);
+    });
     await waitForRequestCount(native.default.stats, 1);
     assert.equal(routesPrepared, true);
+    assert.deepEqual(phases, ['discovering', 'connecting']);
     abort.abort();
     await assert.rejects(pending, /aborted/u);
 

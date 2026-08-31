@@ -25,10 +25,97 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import type { RuntimeHostWslProcessFactory } from '@maka/runtime-host/client';
 import {
+  encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
 } from '@maka/runtime-host/operator';
-import { runDesktopRuntimeHostWslSetup } from '../runtime-host-wsl-controller.js';
+import {
+  runDesktopRuntimeHostWslManagement,
+  runDesktopRuntimeHostWslSetup,
+} from '../runtime-host-wsl-controller.js';
+
+test('WSL management invokes the stable operator directly with the exact deployment target', async () => {
+  let launch:
+    | { readonly executable: string; readonly args: readonly string[]; readonly environment: NodeJS.ProcessEnv }
+    | undefined;
+  const frame = encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'configure',
+    service: {
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.8.0',
+      state: 'running',
+      pid: 42,
+      lastExitCode: 0,
+      installedVersion: '0.2.0',
+      configurationFingerprint: `sha256:${'c'.repeat(64)}`,
+      projectDirectoryRoots: [{ label: '工作', path: '/srv/work' }],
+    },
+    configuration: { kind: 'configured' },
+  });
+  const result = await runDesktopRuntimeHostWslManagement({
+    distribution: 'Ubuntu',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'configure',
+    expectedTarget: {
+      serviceId: 'a'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+    projectDirectoryRoots: [{ label: 'Work', path: '/srv/work' }],
+    expectedConfigFingerprint: `sha256:${'b'.repeat(64)}`,
+  }, {
+    wslExecutable: 'wsl.exe',
+    processFactory: (executable, args, environment) => {
+      launch = { executable, args: [...args], environment };
+      const child = new EventEmitter() as ChildProcessWithoutNullStreams;
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      Object.assign(child, { stdin, stdout, stderr, kill: () => true });
+      process.nextTick(() => {
+        const bytes = Buffer.from(frame);
+        const split = bytes.indexOf(Buffer.from('工作')) + 1;
+        stdout.write(bytes.subarray(0, split));
+        stdout.end(bytes.subarray(split));
+        stderr.end();
+        child.emit('close', 0, null);
+      });
+      return child;
+    },
+  });
+
+  assert.equal(launch?.executable, 'wsl.exe');
+  assert.deepEqual(launch?.args.slice(0, 5), [
+    '--distribution',
+    'Ubuntu',
+    '--exec',
+    '/home/operator/.local/share/maka/operator',
+    'configure',
+  ]);
+  assert.ok(launch?.args.includes('--expected-deployment-id'));
+  assert.equal(
+    launch?.environment[RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV],
+    '1',
+  );
+  assert.ok(
+    launch?.environment.WSLENV?.split(':').includes(
+      RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+    ),
+  );
+  assert.equal(result.kind, 'result');
+  assert.equal(result.action, 'configure');
+  if (result.kind !== 'result' || result.action !== 'configure') {
+    assert.fail('Expected the WSL operator configure result');
+  }
+  assert.deepEqual(result.service.projectDirectoryRoots, [
+    { label: '工作', path: '/srv/work' },
+  ]);
+});
 
 test('WSL setup forwards the development archive and its exact evidence', async () => {
   const launches: string[][] = [];

@@ -33,7 +33,8 @@ import {
   verifyToolchainDirectory,
 } from './toolchain-verification.js';
 
-const BUNDLED_EXTERNAL_WRAPPER = '/opt/maka-agent/packages/eval/dist/harbor-external-subject.js';
+const BUNDLED_EXTERNAL_WRAPPER =
+  '/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js';
 
 export function createExternalSubjectAdapter(): SubjectAdapter {
   const verifiedToolchains = new Map<string, ToolchainIdentity>();

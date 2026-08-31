@@ -1613,7 +1613,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           onUiLocalePreferenceChange={noop}
           uiLocaleUpdateGate={uiLocaleUpdateGate}
           onDefaultPermissionModeChange={noop}
-          requestedSection={props.section}
+          request={{ section: props.section }}
           openProviderCatalog={props.openProviderCatalog}
           initialConnectionSlug={props.initialConnectionSlug}
           initialFocusRef={initialFocusRef}
@@ -1797,6 +1797,7 @@ export const GeneralHostGenerationRevalidation: Story = {
       profileId: 'local',
       profileName: 'Local',
       profileKind: 'local',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'storybook-local-host',
       isDefault: true,
@@ -1849,6 +1850,7 @@ export const GeneralBackgroundHostReconnectThenSelect: Story = {
       profileId: 'remote',
       profileName: 'Remote',
       profileKind: 'remote',
+      profileAccess: 'owner',
       readiness: 'reconnecting',
       hostId: 'storybook-remote-host',
       isDefault: false,
@@ -2243,6 +2245,7 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
       profileId: 'local',
       profileName: 'Local',
       profileKind: 'local',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'storybook-local-host',
       isDefault: true,
@@ -2286,6 +2289,7 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
       profileId: 'local',
       profileName: 'Local',
       profileKind: 'local',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'storybook-local-host',
       isDefault: true,
@@ -2333,6 +2337,7 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
       profileId: 'local',
       profileName: 'Local',
       profileKind: 'local',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'storybook-local-host',
       isDefault: true,
@@ -2384,6 +2389,7 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
       profileId: 'local',
       profileName: 'Local',
       profileKind: 'local',
+      profileAccess: 'owner',
       readiness: 'ready',
       hostId: 'storybook-local-host',
       isDefault: true,

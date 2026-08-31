@@ -21,15 +21,20 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import {
   normalizeRuntimeHostWslDistribution,
+  normalizeRuntimeHostWslOperatorPath,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslProcessFactory,
 } from '@maka/runtime-host/client';
 import {
   decodeRuntimeHostSetupFrame,
+  decodeRuntimeHostServiceManagementFrame,
+  RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+  RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
+  type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 import type { DesktopRuntimeHostSetupPackage } from './runtime-host-setup-package.js';
@@ -39,6 +44,103 @@ const WSL_SETUP_OUTPUT_MAX_BYTES = 64 * 1024;
 const WSL_SETUP_STDERR_MAX_BYTES = 8 * 1024;
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
+type RuntimeHostManagementTerminalFrame = Exclude<
+  RuntimeHostServiceManagementFrame,
+  { readonly kind: 'progress' }
+>;
+
+export interface DesktopRuntimeHostWslManagementInput {
+  readonly distribution: string;
+  readonly operatorPath: string;
+  readonly action: 'status' | 'configure';
+  readonly expectedTarget: {
+    readonly serviceId: string;
+    readonly rootPath: string;
+    readonly rootId: string;
+    readonly deploymentId?: string;
+  };
+  readonly projectDirectoryRoots?: readonly {
+    readonly label: string;
+    readonly path: string;
+  }[];
+  readonly expectedConfigFingerprint?: string;
+  readonly allowInterruptActiveTasks?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+type RuntimeHostWslManagementProcessFactory = (
+  executable: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+) => ChildProcessWithoutNullStreams;
+
+export async function runDesktopRuntimeHostWslManagement(
+  input: DesktopRuntimeHostWslManagementInput,
+  overrides: {
+    readonly processFactory?: RuntimeHostWslManagementProcessFactory;
+    readonly wslExecutable?: string;
+  } = {},
+): Promise<RuntimeHostManagementTerminalFrame> {
+  input.signal?.throwIfAborted();
+  const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
+  const operatorPath = normalizeRuntimeHostWslOperatorPath(input.operatorPath);
+  const args = [
+    '--distribution',
+    distribution,
+    '--exec',
+    operatorPath,
+    input.action,
+    '--framed',
+    ...(input.projectDirectoryRoots === undefined
+      ? []
+      : input.projectDirectoryRoots.length === 0
+        ? ['--no-project-roots']
+        : input.projectDirectoryRoots.flatMap(({ label, path }) => [
+            '--project-root-json',
+            JSON.stringify({ label, path }),
+          ])),
+    ...(input.expectedConfigFingerprint
+      ? ['--expected-config-fingerprint', input.expectedConfigFingerprint]
+      : []),
+    ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
+    '--expected-service-id',
+    input.expectedTarget.serviceId,
+    '--expected-root-path',
+    input.expectedTarget.rootPath,
+    '--expected-root-id',
+    input.expectedTarget.rootId,
+    ...(input.expectedTarget.deploymentId
+      ? ['--expected-deployment-id', input.expectedTarget.deploymentId]
+      : []),
+  ];
+  const environment = passEnvironmentToWsl(
+    process.env,
+    RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV,
+    '1',
+  );
+  const child = (overrides.processFactory ?? spawnWslManagement)(
+    overrides.wslExecutable ?? resolveSystemRuntimeHostWslExecutable(),
+    args,
+    environment,
+  );
+  const terminal = await runWslFramedProcess({
+    child,
+    signal: input.signal,
+    prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
+    decode: decodeRuntimeHostServiceManagementFrame,
+    label: 'WSL Runtime Host management',
+    onFrame: (frame) => {
+      if (frame.kind === 'progress') {
+        throw new Error('WSL Runtime Host management returned unexpected progress');
+      }
+      return frame;
+    },
+  });
+  if (terminal.action !== input.action) {
+    throw new Error('WSL Runtime Host returned an unrelated management result');
+  }
+  return terminal;
+}
 
 export interface DesktopRuntimeHostWslSetupInput {
   readonly distribution: string;
@@ -72,61 +174,22 @@ export async function runDesktopRuntimeHostWslSetup(
   );
   const command = runtimeHostWslSetupCommand(setupPackage, input);
   const child = processFactory(executable, ['--distribution', distribution, '--exec', '/bin/sh', '-lc', command]);
-  const abort = () => child.kill();
-  input.signal?.addEventListener('abort', abort, { once: true });
-  if (input.signal?.aborted) abort();
-  child.stdin.end();
-  let complete: RuntimeHostSetupCompleteFrame | undefined;
-  let failure: Error | undefined;
-  const filter = createRuntimeHostFramedOutputFilter({
+  return runWslFramedProcess({
+    child,
+    signal: input.signal,
     prefix: RUNTIME_HOST_SETUP_FRAME_PREFIX,
-    pendingMaxBytes: WSL_SETUP_OUTPUT_MAX_BYTES,
     decode: decodeRuntimeHostSetupFrame,
     label: 'WSL Maka setup',
     onFrame: (frame) => {
-      if (frame.kind === 'progress') onProgress(frame);
-      else if (frame.kind === 'complete') {
-        if (complete) failure = new Error('WSL Maka setup returned multiple results');
-        else {
-          complete = frame;
-          onComplete?.();
-        }
-      } else failure = new Error(frame.error.message);
+      if (frame.kind === 'progress') {
+        onProgress(frame);
+        return undefined;
+      }
+      if (frame.kind === 'error') throw new Error(frame.error.message);
+      return frame;
     },
-    onError: (error) => {
-      failure = error;
-    },
+    onResult: () => onComplete?.(),
   });
-  let outputBytes = 0;
-  child.stdout.on('data', (value: Buffer | string) => {
-    const chunk = typeof value === 'string' ? Buffer.from(value) : value;
-    outputBytes += chunk.byteLength;
-    if (outputBytes > WSL_SETUP_OUTPUT_MAX_BYTES) {
-      failure = new Error('WSL Maka setup output exceeded its byte limit');
-      child.kill();
-      return;
-    }
-    filter.push(chunk.toString('utf8'));
-  });
-  const stderr = collectBounded(child.stderr, WSL_SETUP_STDERR_MAX_BYTES);
-  const timeout = setTimeout(() => child.kill(), WSL_SETUP_TIMEOUT_MS);
-  const [exit, capturedStderr] = await Promise.all([
-    childExit(child),
-    stderr,
-  ]).finally(() => {
-    clearTimeout(timeout);
-    input.signal?.removeEventListener('abort', abort);
-  });
-  filter.finish();
-  input.signal?.throwIfAborted();
-  if (failure) throw failure;
-  if (!complete) {
-    const diagnostic = formatBoundedDiagnostic(capturedStderr);
-    throw new Error(
-      `WSL Maka setup exited with code ${String(exit.code)} without a result${diagnostic ? `: ${diagnostic}` : ''}`,
-    );
-  }
-  return complete;
 }
 
 async function resolveWslPackageSpecifier(
@@ -205,6 +268,103 @@ function spawnWsl(executable: string, args: readonly string[]) {
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+}
+
+function spawnWslManagement(
+  executable: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+) {
+  return spawn(executable, args, {
+    shell: false,
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: environment,
+  });
+}
+
+function passEnvironmentToWsl(
+  source: NodeJS.ProcessEnv,
+  name: string,
+  value: string,
+): NodeJS.ProcessEnv {
+  const existing = source.WSLENV?.split(':').filter(Boolean) ?? [];
+  const included = existing.some((entry) => entry.split('/')[0] === name);
+  return {
+    ...source,
+    [name]: value,
+    WSLENV: included ? existing.join(':') : [...existing, name].join(':'),
+  };
+}
+
+async function runWslFramedProcess<Frame, Result>(input: {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly signal?: AbortSignal;
+  readonly prefix: string;
+  readonly decode: (line: string) => Frame | undefined;
+  readonly label: string;
+  readonly onFrame: (frame: Frame) => Result | undefined;
+  readonly onResult?: (result: Result) => void;
+}): Promise<Result> {
+  const abort = () => input.child.kill();
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) abort();
+  input.child.stdin.end();
+  let result: Result | undefined;
+  let failure: Error | undefined;
+  const filter = createRuntimeHostFramedOutputFilter({
+    prefix: input.prefix,
+    pendingMaxBytes: WSL_SETUP_OUTPUT_MAX_BYTES,
+    decode: input.decode,
+    label: input.label,
+    onFrame: (frame) => {
+      try {
+        const terminal = input.onFrame(frame);
+        if (terminal === undefined) return;
+        if (result !== undefined) {
+          throw new Error(`${input.label} returned multiple results`);
+        }
+        result = terminal;
+        input.onResult?.(terminal);
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+      }
+    },
+    onError: (error) => {
+      failure = error;
+    },
+  });
+  let outputBytes = 0;
+  input.child.stdout.setEncoding('utf8');
+  input.child.stdout.on('data', (value: Buffer | string) => {
+    const chunk = typeof value === 'string' ? Buffer.from(value) : value;
+    outputBytes += chunk.byteLength;
+    if (outputBytes > WSL_SETUP_OUTPUT_MAX_BYTES) {
+      failure = new Error(`${input.label} output exceeded its byte limit`);
+      input.child.kill();
+      return;
+    }
+    filter.push(chunk.toString('utf8'));
+  });
+  const stderr = collectBounded(input.child.stderr, WSL_SETUP_STDERR_MAX_BYTES);
+  const timeout = setTimeout(() => input.child.kill(), WSL_SETUP_TIMEOUT_MS);
+  const [exit, capturedStderr] = await Promise.all([
+    childExit(input.child),
+    stderr,
+  ]).finally(() => {
+    clearTimeout(timeout);
+    input.signal?.removeEventListener('abort', abort);
+  });
+  filter.finish();
+  input.signal?.throwIfAborted();
+  if (failure) throw failure;
+  if (result === undefined) {
+    const diagnostic = formatBoundedDiagnostic(capturedStderr);
+    throw new Error(
+      `${input.label} exited with code ${String(exit.code)} without a result${diagnostic ? `: ${diagnostic}` : ''}`,
+    );
+  }
+  return result;
 }
 
 function childExit(child: ChildProcessWithoutNullStreams): Promise<{

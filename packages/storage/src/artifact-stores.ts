@@ -155,6 +155,9 @@ function createWriterFacade(
         ...(input.excludeArtifactIds
           ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
           : {}),
+        ...(input.includeArtifactIds
+          ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
+          : {}),
         ...(input.linkedArtifacts
           ? {
               linkedArtifacts: Object.freeze(

@@ -39,20 +39,14 @@ import type {
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
 import { turnRequestStateLabel } from './session-turn-request-composer.js';
 
-type Props =
-  | {
-      readonly mode: 'share';
-      readonly sessionId: string;
-      readonly sessionName: string;
-      readonly requiresRemoteAccess: boolean;
-      readonly onEnableRemoteAccess: () => void;
-      readonly onClose: () => void;
-    }
-  | {
-      readonly mode: 'join';
-      readonly onImported: () => void;
-      readonly onClose: () => void;
-    };
+type Props = {
+  readonly mode: 'share';
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly requiresRemoteAccess: boolean;
+  readonly onEnableRemoteAccess: () => void;
+  readonly onClose: () => void;
+};
 
 type CollaborationAuthorityState =
   | 'loading'
@@ -61,12 +55,10 @@ type CollaborationAuthorityState =
   | 'unavailable';
 
 export function SessionCollaborationDialog(props: Props) {
-  return props.mode === 'share'
-    ? <ShareSessionDialog {...props} />
-    : <JoinSharedSessionDialog {...props} />;
+  return <ShareSessionDialog {...props} />;
 }
 
-function ShareSessionDialog(props: Extract<Props, { readonly mode: 'share' }>) {
+function ShareSessionDialog(props: Props) {
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
@@ -385,113 +377,6 @@ function guestIdentityLabel(principalId: string, label: string): string {
   return `${label} ${identity.slice(0, 8)}`;
 }
 
-function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }>) {
-  const copy = getSessionCollaborationCopy(useUiLocale());
-  const toast = useToast();
-  const [code, setCode] = useState('');
-  const [joinState, setJoinState] = useState<
-    | { readonly kind: 'idle' }
-    | { readonly kind: 'working' }
-    | { readonly kind: 'pairing_pending' }
-    | { readonly kind: 'failed'; readonly message: string }
-  >({ kind: 'idle' });
-  const working = joinState.kind === 'working';
-  const pairingPending = joinState.kind === 'pairing_pending';
-  const failure = joinState.kind === 'failed' ? joinState.message : undefined;
-
-  async function join(allowInsecure = false): Promise<void> {
-    setJoinState({ kind: 'working' });
-    try {
-      const result = await window.maka.sessionCollaboration.importInvitation({
-        code: code.trim(),
-        allowInsecure,
-      });
-      if (result.kind === 'error' && result.reason === 'insecure_confirmation_required') {
-        const confirmed = await toast.confirm({
-          title: copy.insecureTitle,
-          description: copy.insecureBody,
-          confirmLabel: copy.joinInsecure,
-          cancelLabel: copy.close,
-          destructive: true,
-        });
-        if (confirmed) await join(true);
-        return;
-      }
-      if (result.kind === 'error') {
-        const message = importError(copy, result.reason, result.message);
-        setJoinState({ kind: 'failed', message });
-        toast.error(copy.joinTitle, message);
-        return;
-      }
-      if (result.kind === 'pairing_pending') {
-        setJoinState({ kind: 'pairing_pending' });
-        props.onImported();
-        return;
-      }
-      props.onImported();
-      props.onClose();
-    } catch (error) {
-      const message = errorMessage(error);
-      setJoinState({ kind: 'failed', message });
-      toast.error(copy.joinTitle, message);
-    } finally {
-      setJoinState((current) => current.kind === 'working' ? { kind: 'idle' } : current);
-    }
-  }
-
-  return (
-    <Dialog isOpen onOpenChange={(open) => !open && !working && props.onClose()} purpose="form" width={560}>
-      <Layout
-        header={<DialogHeader title={copy.joinTitle} subtitle={copy.joinDescription} onOpenChange={(open) => !open && !working && props.onClose()} />}
-        content={(
-          <LayoutContent padding={4}>
-            <FormLayout>
-              {working ? <Banner status="info" title={copy.joining} /> : null}
-              {pairingPending ? <Banner status="warning" title={copy.pairingPending} /> : null}
-              {failure ? <Banner status="error" title={copy.connectionFailed} description={failure} /> : null}
-              <TextArea
-                label={copy.code}
-                value={code}
-                rows={6}
-                hasSpellCheck={false}
-                isDisabled={working || pairingPending}
-                onChange={setCode}
-              />
-            </FormLayout>
-          </LayoutContent>
-        )}
-        footer={(
-          <LayoutFooter>
-            <Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} />
-            <Button
-              variant="primary"
-              label={copy.join}
-              isDisabled={working || pairingPending || !code.trim()}
-              isLoading={working}
-              onClick={() => void join()}
-            />
-          </LayoutFooter>
-        )}
-      />
-    </Dialog>
-  );
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function importError(
-  copy: ReturnType<typeof getSessionCollaborationCopy>,
-  reason:
-    | 'invalid_code'
-    | 'insecure_confirmation_required'
-    | 'peer_path_unavailable'
-    | 'connection_failed',
-  message?: string,
-): string {
-  if (reason === 'invalid_code') return copy.invalidCode;
-  if (reason === 'insecure_confirmation_required') return copy.insecureBody;
-  if (reason === 'peer_path_unavailable') return copy.directPathUnavailable;
-  return message ?? copy.connectionFailed;
 }

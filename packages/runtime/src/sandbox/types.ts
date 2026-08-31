@@ -132,26 +132,9 @@ export type SandboxTransformResult =
       message?: string;
     };
 
-/**
- * Non-materializing capability preview used by diagnostics. Success means
- * static planning selected an enforcing executable; invocation-specific work
- * may still fail later as the workspace or one-shot launch resources change.
- */
-export type SandboxCapabilityProbeResult =
-  | {
-      ok: true;
-      executable: string;
-      sandboxType: SandboxType;
-      requiresSandbox: boolean;
-      preference: SandboxablePreference;
-    }
-  | Extract<SandboxTransformResult, { ok: false }>;
-
 export interface SandboxBackend {
   readonly type: Exclude<SandboxType, 'none'>;
   isAvailable?(platform?: SandboxPlatform): boolean;
   canEnforceProfile?(profile: PermissionProfile): boolean;
-  /** Must not create files, open execution-owned descriptors, or scan workspace contents. */
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult;
   transform(request: SandboxTransformRequest): SandboxTransformResult;
 }

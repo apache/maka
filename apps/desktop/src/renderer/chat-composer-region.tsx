@@ -74,6 +74,7 @@ interface ChatComposerRegionProps
     | 'hidden'
     | 'draftKey'
     | 'stopPending'
+    | 'allowAttachmentImportWhileStreaming'
     // Read from ComposerMentionsProvider, so a catalog reload repaints the
     // popups without re-rendering the shell that would otherwise pass them.
     | 'mentionSkills'
@@ -217,6 +218,10 @@ export function ChatComposerRegion({
       <Composer
         ref={composerRef}
         {...composerRest}
+        // AppShell carries staged attachments into both queued and steering
+        // follow-ups. Other Composer hosts remain gated by default because a
+        // text-only running-turn submission would leave attachments behind.
+        allowAttachmentImportWhileStreaming
         mentionSkills={mentions?.mentionSkills}
         mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
         mentionSkillsLoading={mentions?.mentionSkillsLoading}

@@ -38,6 +38,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
@@ -229,6 +230,101 @@ test('conversation copy discovers linked children in persisted retired tool resu
       },
     ],
   );
+});
+
+test('collectConversationCopySessionFileRefs gathers source-Session refs across sites', () => {
+  const sourceRef = (relativePath: string, sessionId = 'session-source') => ({
+    kind: 'session_file' as const,
+    sessionId,
+    relativePath,
+  });
+  const messages: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'attached',
+      attachments: [
+        {
+          kind: 'image',
+          name: 'upload.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: sourceRef('attachment-upload'),
+        },
+        {
+          kind: 'image',
+          name: 'child.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: sourceRef('attachment-child', 'child-session'),
+        },
+      ],
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      content: { kind: 'image', mimeType: 'image/png', ref: sourceRef('attachment-tool-result') },
+    } as StoredMessage,
+  ];
+  const runtimeEvents: RuntimeEvent[] = [
+    {
+      author: 'user',
+      content: {
+        kind: 'text',
+        text: 'evt',
+        attachments: [
+          {
+            kind: 'image',
+            name: 'event.png',
+            mimeType: 'image/png',
+            bytes: 10,
+            ref: sourceRef('attachment-event'),
+          },
+        ],
+      },
+    } as RuntimeEvent,
+    {
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'fn-1',
+        name: 'Read',
+        result: { kind: 'image', mimeType: 'image/png', ref: sourceRef('attachment-fn') },
+      },
+    } as RuntimeEvent,
+  ];
+
+  const refs = collectConversationCopySessionFileRefs({
+    sourceSessionId: 'session-source',
+    messages,
+    runtimeEvents,
+    archivedResults: [
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived'),
+      }),
+      // A child-Session archived image must be ignored.
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived-child', 'child-session'),
+      }),
+    ],
+  });
+
+  assert.deepEqual([...refs].sort(), [
+    'attachment-archived',
+    'attachment-event',
+    'attachment-fn',
+    'attachment-tool-result',
+    'attachment-upload',
+  ]);
 });
 
 test('Side Conversation preflight identifies linked-child archive bodies', () => {

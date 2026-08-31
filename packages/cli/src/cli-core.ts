@@ -403,6 +403,19 @@ export async function runMakaCli(
         ...(command.awaitCoordinatorCommit ? { inheritableAuthorityLeaseFd: 4 } : {}),
       });
     }
+    case 'runtime-host-local-source-retire': {
+      const { runRuntimeHostLocalSourceRetirement } = await import(
+        './runtime-host-local-source-retirement.js'
+      );
+      return runRuntimeHostLocalSourceRetirement({
+        rootPath: command.rootPath,
+        expectedRootId: command.expectedRootId,
+        expectedHostEpoch: command.expectedHostEpoch,
+        activeWorkPolicy: command.allowInterruptActiveTasks
+          ? 'interrupt_active_work'
+          : 'refuse_active_work',
+      });
+    }
     case 'runtime-host-setup': {
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
       const { RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV } = await import(

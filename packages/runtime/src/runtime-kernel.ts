@@ -2323,8 +2323,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
           sessionId,
         }),
         allowMidTurnHistoryCompaction: Boolean(this.deps.runtimeEventStore),
-        shellRunContextSummary: () =>
-          this.deps.shellRuns?.buildContextSummary(sessionId) ?? Promise.resolve(undefined),
       });
       await this.rejectCancelledBackendActivation(backend, header, execution);
       const generation = this.createBackendGeneration(sessionId, backend, header);

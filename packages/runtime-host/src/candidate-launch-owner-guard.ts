@@ -21,11 +21,17 @@ import { closeSync } from 'node:fs';
 
 export const RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD';
 export const RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_GUARD';
+export const RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID';
 export const RUNTIME_HOST_LAUNCH_OWNER_RELEASE_KIND = 'runtime-host-launch-owner-release';
 
 export interface RuntimeHostLaunchOwnerGuard {
+  readonly admission?: RuntimeHostLaunchOwnerAdmission;
   bind(closeHost: () => Promise<unknown>): void;
   dispose(): Promise<void>;
+}
+
+export interface RuntimeHostLaunchOwnerAdmission {
+  isClientAdmitted(clientInstanceId: string): boolean;
 }
 
 /**
@@ -46,6 +52,18 @@ export function createRuntimeHostLaunchOwnerGuard(
       throw new Error('Runtime Host launch-owner authority descriptor is invalid');
     }
   }
+  const clientInstanceId = env[RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV];
+  if (leaseFd !== undefined && !clientInstanceId) {
+    throw new Error('Runtime Host launch-owner Client identity is missing');
+  }
+  const admission =
+    leaseFd === undefined
+      ? undefined
+      : {
+          isClientAdmitted(candidateClientInstanceId: string) {
+            return state === 'released' || candidateClientInstanceId === clientInstanceId;
+          },
+        };
 
   let state: 'owned' | 'released' | 'lost' = process.connected ? 'owned' : 'lost';
   let closeHost: (() => Promise<unknown>) | undefined;
@@ -88,6 +106,7 @@ export function createRuntimeHostLaunchOwnerGuard(
   process.once('disconnect', onDisconnect);
 
   return {
+    ...(admission ? { admission } : {}),
     bind(close) {
       closeHost = close;
       settleLoss();

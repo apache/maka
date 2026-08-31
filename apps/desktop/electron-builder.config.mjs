@@ -287,7 +287,7 @@ export function resolveDesktopBuilderConfig(environment = process.env) {
       runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
       makaUpdateChannel: 'nightly',
     },
-    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL }],
+    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL, channel: 'latest' }],
   };
 }
 

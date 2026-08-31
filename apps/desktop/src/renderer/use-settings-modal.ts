@@ -17,10 +17,15 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { SettingsSection } from '@maka/core/settings';
 import { safeLocalStorageSet } from './browser-storage';
+
+interface SettingsNavigationRequest {
+  readonly section?: SettingsSection;
+  readonly profileId?: string;
+}
 
 /**
  * Owns the Settings modal surface state (issue #1043): the open flag, the
@@ -33,12 +38,16 @@ import { safeLocalStorageSet } from './browser-storage';
  */
 export function useSettingsModal() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsRequestedSection, setSettingsRequestedSection] = useState<SettingsSection | undefined>(
-    undefined,
-  );
+  const [settingsRequest, setSettingsRequest] = useState<SettingsNavigationRequest>({});
   const [settingsProviderCatalogOpen, setSettingsProviderCatalogOpen] = useState(false);
   const [settingsConnectionDetailSlug, setSettingsConnectionDetailSlug] = useState<string | undefined>(undefined);
   const [settingsCreateProviderType, setSettingsCreateProviderType] = useState<ProviderType | undefined>(undefined);
+
+  const setSettingsProfileId = useCallback((profileId: string | undefined) => {
+    setSettingsRequest((current) =>
+      current.profileId === profileId ? current : { ...current, profileId },
+    );
+  }, []);
 
   function showSettings() {
     // macOS menu commands do not move DOM focus before opening Settings.
@@ -58,7 +67,16 @@ export function useSettingsModal() {
 
   function openSettingsSection(section: SettingsSection) {
     safeLocalStorageSet('maka-settings-section-v1', section);
-    setSettingsRequestedSection(section);
+    setSettingsRequest((current) => ({ ...current, section }));
+    setSettingsProviderCatalogOpen(false);
+    setSettingsConnectionDetailSlug(undefined);
+    setSettingsCreateProviderType(undefined);
+    showSettings();
+  }
+
+  function openProjectSettings(profileId: string) {
+    safeLocalStorageSet('maka-settings-section-v1', 'projects');
+    setSettingsRequest({ section: 'projects', profileId });
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(undefined);
@@ -67,7 +85,7 @@ export function useSettingsModal() {
 
   function openProviderCatalog() {
     safeLocalStorageSet('maka-settings-section-v1', 'models');
-    setSettingsRequestedSection('models');
+    setSettingsRequest((current) => ({ ...current, section: 'models' }));
     setSettingsProviderCatalogOpen(true);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(undefined);
@@ -77,7 +95,7 @@ export function useSettingsModal() {
   /** Open Settings → 模型 with a specific connection's detail sheet expanded. */
   function openConnectionDetail(slug: string) {
     safeLocalStorageSet('maka-settings-section-v1', 'models');
-    setSettingsRequestedSection('models');
+    setSettingsRequest((current) => ({ ...current, section: 'models' }));
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(slug);
     setSettingsCreateProviderType(undefined);
@@ -87,7 +105,7 @@ export function useSettingsModal() {
   /** Open Settings → 模型 with the create-connection dialog for this provider expanded. */
   function openProviderCreate(providerType: ProviderType) {
     safeLocalStorageSet('maka-settings-section-v1', 'models');
-    setSettingsRequestedSection('models');
+    setSettingsRequest((current) => ({ ...current, section: 'models' }));
     setSettingsProviderCatalogOpen(false);
     setSettingsConnectionDetailSlug(undefined);
     setSettingsCreateProviderType(providerType);
@@ -96,14 +114,16 @@ export function useSettingsModal() {
 
   return {
     settingsOpen,
-    settingsRequestedSection,
+    settingsRequest,
     settingsProviderCatalogOpen,
     settingsConnectionDetailSlug,
     settingsCreateProviderType,
     setSettingsOpen,
     setSettingsProviderCatalogOpen,
+    setSettingsProfileId,
     openSettings,
     openSettingsSection,
+    openProjectSettings,
     openProviderCatalog,
     openConnectionDetail,
     openProviderCreate,

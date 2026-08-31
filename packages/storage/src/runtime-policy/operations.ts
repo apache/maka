@@ -145,9 +145,38 @@ export type InteractiveOAuthLoginProvider = Extract<
   'openai-codex' | 'xai-oauth'
 >;
 
+export type InteractiveOAuthLoginTarget =
+  | { readonly kind: 'create'; readonly providerType: InteractiveOAuthLoginProvider }
+  | { readonly kind: 'existing'; readonly connectionId: string };
+
+export interface InteractiveOAuthLoginInput {
+  readonly attemptId: string;
+  readonly target: InteractiveOAuthLoginTarget;
+}
+
+export type InteractiveOAuthConnectionIdentity = Pick<
+  ConnectionCatalogEntry,
+  'connectionId' | 'slug' | 'providerType'
+> & { readonly providerType: InteractiveOAuthLoginProvider };
+
+export type QueryInteractiveOAuthLoginResult =
+  | { readonly kind: 'not_found' }
+  | {
+      readonly kind: 'authenticated';
+      readonly target: InteractiveOAuthLoginTarget;
+      readonly connection: InteractiveOAuthConnectionIdentity;
+    };
+
 export type BeginInteractiveOAuthLoginResult =
+  | {
+      readonly kind: 'authenticated';
+      readonly target: InteractiveOAuthLoginTarget;
+      readonly connection: InteractiveOAuthConnectionIdentity;
+    }
   | { readonly kind: 'connection_not_found' }
   | { readonly kind: 'connection_disabled' }
+  | { readonly kind: 'catalog_full' }
+  | { readonly kind: 'attempt_conflict' }
   | {
       readonly kind: 'provider_action_unavailable';
       readonly availability: UnavailableProviderActionAvailability;
@@ -156,6 +185,8 @@ export type BeginInteractiveOAuthLoginResult =
   | {
       readonly kind: 'ready';
       readonly ticket: InteractiveOAuthLoginTicket;
+      readonly target: InteractiveOAuthLoginTarget;
+      readonly identity: InteractiveOAuthConnectionIdentity;
       readonly connection: ConnectionCatalogEntry & {
         readonly providerType: InteractiveOAuthLoginProvider;
       };
@@ -168,6 +199,7 @@ export type InteractiveOAuthLoginCompletionResult =
       readonly kind: 'committed';
       readonly credentialId: string;
       readonly revision: number;
+      readonly connection: InteractiveOAuthConnectionIdentity;
     }
   | {
       readonly kind: 'superseded';
@@ -346,7 +378,10 @@ export interface RuntimePolicyOperationCoordinator {
     input: CompareAndSetOAuthCredentialInput,
   ): Promise<CompareAndSetOAuthCredentialResult>;
   importConnectionCredential(input: SetCredentialInput): Promise<CredentialMutationResult>;
-  beginInteractiveOAuthLogin(connectionId: string): Promise<BeginInteractiveOAuthLoginResult>;
+  beginInteractiveOAuthLogin(
+    input: InteractiveOAuthLoginInput,
+  ): Promise<BeginInteractiveOAuthLoginResult>;
+  queryInteractiveOAuthLogin(attemptId: string): Promise<QueryInteractiveOAuthLoginResult>;
   completeInteractiveOAuthLogin(
     ticket: InteractiveOAuthLoginTicket,
     secret: string,

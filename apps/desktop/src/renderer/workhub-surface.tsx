@@ -374,7 +374,7 @@ export function WorkHubSurface(props: {
         />
       )}
     >
-      <main className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline" aria-label="WorkHub">
+      <section className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline" aria-label="WorkHub">
         <header className="workhub-header">
           <div>
             <h1>WorkHub</h1>
@@ -448,7 +448,7 @@ export function WorkHubSurface(props: {
             )}
           </ChatMessageList>
         </div>
-      </main>
+      </section>
     </ChatSurfaceLayout>
   );
 }
@@ -484,7 +484,7 @@ export function WorkHubCoordinationStatus(props: {
         />
       )}
     >
-      <main
+      <section
         className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline"
         aria-label="WorkHub"
       >
@@ -518,7 +518,7 @@ export function WorkHubCoordinationStatus(props: {
             )}
           </ChatMessageList>
         </div>
-      </main>
+      </section>
     </ChatSurfaceLayout>
   );
 }

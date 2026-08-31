@@ -31,6 +31,18 @@ export interface DesktopSessionRef extends DesktopHostRef {
 
 export interface DesktopTargetSessionRef extends DesktopSessionRef, DesktopTargetScope {}
 
+export function runtimeHostChangeRetiresSession(
+  change: { readonly removed?: boolean; readonly readiness: string },
+  activeSessionId: string | undefined,
+  refreshedSessions: readonly { readonly id: string }[],
+): activeSessionId is string {
+  return (
+    (change.removed === true || change.readiness === 'unavailable') &&
+    activeSessionId !== undefined &&
+    !refreshedSessions.some(({ id }) => id === activeSessionId)
+  );
+}
+
 export function desktopSessionKey(ref: DesktopSessionRef): string {
   return JSON.stringify([ref.hostId, ref.sessionId]);
 }
