@@ -363,9 +363,15 @@ test('Rust build caches publish immutable source generations only from the defau
     assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
     const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);
     assert.ok(primaryKeys.length > 0, name);
-    primaryKeys.forEach((key) =>
-      assert.match(key, /\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, name),
-    );
+    const restoreKeys = [...workflow.matchAll(/^\s+(kache-[^\n]+-)$/gmu)].map(([, key]) => key);
+    assert.equal(restoreKeys.length, primaryKeys.length, name);
+    primaryKeys.forEach((key) => {
+      assert.match(key, /\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, name);
+      assert.ok(
+        restoreKeys.includes(key.replace(/\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, '')),
+        name,
+      );
+    });
     assert.match(
       workflow,
       /name: Save [^\n]*Rust build cache\n\s+if: [^\n]*github\.event\.repository\.default_branch/u,

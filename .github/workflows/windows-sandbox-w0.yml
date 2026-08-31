@@ -77,9 +77,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kache
-          key: kache-windows-sandbox-launcher-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ hashFiles('experiments/windows-sandbox/launcher/Cargo.lock') }}-${{ steps.rustc.outputs.revision }}
+          key: kache-windows-sandbox-launcher-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ steps.rustc.outputs.revision }}
           restore-keys: |
-            kache-windows-sandbox-launcher-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ hashFiles('experiments/windows-sandbox/launcher/Cargo.lock') }}-
             kache-windows-sandbox-launcher-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-
       - name: Record atomic launcher capability
         shell: pwsh
