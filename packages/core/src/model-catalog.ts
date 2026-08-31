@@ -34,7 +34,14 @@ import {
   curatedCatalogFallbackModelsForProvider,
   hasModelMetadata,
   lookupModelMetadata,
+  resolveModelVisionSupport,
 } from './model-metadata.js';
+import {
+  relayModelProfile,
+  thinkingVariantsForConnection,
+  type RelayModelProfiles,
+  type ThinkingLevel,
+} from './model-thinking.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
 
 export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
@@ -106,6 +113,15 @@ export interface ModelCatalogEntry {
   canUseAsChatDefault: boolean;
   isDefault: boolean;
   capabilities: KnownModelCapabilities;
+  /**
+   * Reasoning levels this model offers on this connection, in display order;
+   * empty for a non-reasoning model. Part of the entry rather than a second
+   * lookup because a picker that lists a model always has to render its
+   * thinking choices, and two projections of one model's facts drifted: the
+   * entry's capabilities ignored the user's relay declaration that the
+   * thinking projection honoured.
+   */
+  thinkingLevels: readonly ThinkingLevel[];
   lifecycle: ModelCatalogLifecycle;
   recommendedRank?: number;
   docsUrl?: string;
@@ -136,6 +152,7 @@ export interface BuildConnectionModelCatalogInput {
     | 'models'
     | 'modelSource'
     | 'modelsFetchedAt'
+    | 'relayModelProfiles'
   >;
   savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
   fallbackModels?: string[];
@@ -162,6 +179,8 @@ export interface BuildModelCatalogInput {
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
   savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
+  /** Per-model user declarations; authoritative over every catalog source. */
+  relayModelProfiles?: RelayModelProfiles;
 }
 
 const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -295,6 +314,7 @@ export function buildConnectionModelCatalogEntries(
     authOk: input.authOk,
     pricing: input.pricing,
     pricingSource: input.pricingSource,
+    ...(connection.relayModelProfiles ? { relayModelProfiles: connection.relayModelProfiles } : {}),
     // Enabling a model IS a user choice — the raw array is written only by the
     // user, in connection settings — so it projects an entry even when no
     // catalog describes the id. Without this a model the user enabled on a
@@ -379,7 +399,22 @@ function makeEntry(
   const structuredOutput = normalizedModel.structuredOutput ?? metadata.structuredOutput;
   const lastUpdated = normalizedModel.lastUpdated ?? metadata.lastUpdated;
   const modalities = normalizedModel.modalities ?? metadata.modalities;
-  const capabilities = mergeCapabilities(normalizedModel.capabilities, metadata.capabilities);
+  // The user's per-model declaration outranks every catalog source, so both
+  // capability reads that honour it — vision and thinking — resolve here
+  // rather than being recomputed by whoever renders the entry.
+  const thinkingContext = {
+    providerType: input.providerType,
+    ...(input.relayModelProfiles ? { relayModelProfiles: input.relayModelProfiles } : {}),
+  };
+  const capabilities = {
+    ...mergeCapabilities(normalizedModel.capabilities, metadata.capabilities),
+    vision: resolveModelVisionSupport(
+      input.providerType,
+      [normalizedModel],
+      normalizedModel.id,
+      relayModelProfile(thinkingContext, normalizedModel.id)?.vision,
+    ),
+  };
   // `modalities` too, not just `capabilities`: both are merged from the
   // provider row and the bundled metadata a few lines up, and the chat guard
   // reads the modality. Passing the unmerged `normalizedModel.modalities`
@@ -411,6 +446,7 @@ function makeEntry(
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     capabilities: normalizeCapabilities(capabilities),
+    thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),

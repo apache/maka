@@ -19,12 +19,7 @@
 
 import { normalizeOpenAiCodexConnection } from './connection-readiness.js';
 import { buildConnectionModelCatalogEntries } from './model-catalog.js';
-import { resolveModelVisionSupport } from './model-metadata.js';
-import {
-  relayModelProfile,
-  thinkingVariantsForConnection,
-  type ThinkingLevel,
-} from './model-thinking.js';
+import { type ThinkingLevel } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   connectionEnabledModelIds,
@@ -93,13 +88,8 @@ export function buildChatModelChoices(
         ...(entry.knowledgeCutoff !== undefined ? { knowledgeCutoff: entry.knowledgeCutoff } : {}),
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
-        thinkingLevels: thinkingVariantsForConnection(connection, entry.id),
-        supportsVision: resolveModelVisionSupport(
-          connection.providerType,
-          connection.models,
-          entry.id,
-          relayModelProfile(connection, entry.id)?.vision,
-        ),
+        thinkingLevels: entry.thinkingLevels,
+        supportsVision: entry.capabilities.vision === true,
       });
     }
   }
