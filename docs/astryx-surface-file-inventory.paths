@@ -13,6 +13,7 @@ apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
