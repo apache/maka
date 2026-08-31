@@ -95,6 +95,7 @@ import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
+  runtimeHostApiKeyOnboardingBridge,
   runtimeHostConnectionsBridge,
   type RuntimeHostSettingsConnectionsBridge,
 } from './runtime-host-settings-bridge.js';
@@ -351,6 +352,12 @@ export function SettingsSurface(props: {
   const connectionsBridge = useMemo(
     () => selectedRuntimeHost
       ? runtimeHostConnectionsBridge(selectedRuntimeHost)
+      : undefined,
+    [selectedRuntimeHost],
+  );
+  const apiKeyOnboardingBridge = useMemo(
+    () => selectedRuntimeHost
+      ? runtimeHostApiKeyOnboardingBridge(selectedRuntimeHost)
       : undefined,
     [selectedRuntimeHost],
   );
@@ -1015,6 +1022,7 @@ export function SettingsSurface(props: {
                             }
                             connections={connections}
                             connectionsBridge={connectionsBridge}
+                            apiKeyOnboardingBridge={apiKeyOnboardingBridge}
                             defaultSlug={defaultSlug}
                             runtimeHost={selectedRuntimeHost}
                             runtimeHostAvailabilityStatus={runtimeHostAvailabilityStatus}
@@ -1070,6 +1078,7 @@ function SettingsPageBody(props: {
   usageStats: UsageStats | null;
   connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
+  apiKeyOnboardingBridge: ReturnType<typeof runtimeHostApiKeyOnboardingBridge> | undefined;
   defaultSlug: string | null;
   runtimeHost: DesktopRuntimeHostRef | undefined;
   runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus;
@@ -1116,6 +1125,7 @@ function SettingsPageBody(props: {
         <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
             bridge={props.connectionsBridge}
+            apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}

@@ -55,9 +55,17 @@ import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
-import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
+import {
+  providerPanelActionErrorMessage,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from './provider-panel-shared';
 import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
+import {
+  RuntimeHostSettingsGenerationBoundary,
+  useRuntimeHostSettingsErrorReporter,
+} from './runtime-host-settings-target.js';
 
 export type { ConnectionsBridge } from './provider-panel-shared';
 
@@ -81,8 +89,16 @@ export type { ConnectionsBridge } from './provider-panel-shared';
 type PanelRoute =
   | { kind: 'list' }
   | { kind: 'catalog' }
-  | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
-  | { kind: 'adopting-oauth'; identity: CreatedOAuthConnectionIdentity }
+  | {
+      kind: 'setup';
+      target: SetupTarget;
+      origin: 'list' | 'catalog';
+      managedSaveDispatched?: true;
+    }
+  | {
+      kind: 'adopting-connection';
+      identity: DesktopConnectionOnboardingIdentity | CreatedOAuthConnectionIdentity;
+    }
   | { kind: 'detail'; connectionId: string };
 
 function backTarget(route: PanelRoute): PanelRoute {
@@ -90,8 +106,9 @@ function backTarget(route: PanelRoute): PanelRoute {
   return { kind: 'list' };
 }
 
-export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
+export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   initialPage?: 'connections' | 'catalog';
   /**
    * When set, open this connection's detail once the list has loaded.
@@ -115,6 +132,8 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const [connections, setConnections] = useState<ProjectedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
+  const hasOnboardingUncertainty =
+    apiKeyOnboardingBridge?.saveUncertainty.isUncertain() === true;
   // Browsing state, not navigation state: it outlives the catalog so that
   // backing out of a provider returns the user to the search they typed.
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
@@ -169,15 +188,20 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      initialPage !== 'catalog' ||
+      initialCatalogOpenedRef.current
+    ) return;
     initialCatalogOpenedRef.current = true;
     setRoute({ kind: 'catalog' });
     onInitialCatalogConsumed?.();
-  }, [initialPage, loading, onInitialCatalogConsumed]);
+  }, [hasOnboardingUncertainty, initialPage, loading, onInitialCatalogConsumed]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
-    if (route.kind === 'adopting-oauth') {
+    if (route.kind === 'adopting-connection') {
       const created = connections.find(
         (connection) => connection.connectionId === route.identity.connectionId,
       );
@@ -203,7 +227,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || !initialCreateProviderType || initialCreateOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      !initialCreateProviderType ||
+      initialCreateOpenedRef.current
+    ) return;
     initialCreateOpenedRef.current = true;
     // Straight to the form, so `origin` is the list: the user never saw a
     // catalog and must not be dropped into one on the way out.
@@ -217,7 +246,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       },
     });
     onInitialCreateProviderConsumed?.();
-  }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
+  }, [hasOnboardingUncertainty, loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
   function goBack() {
     setRoute(backTarget(route));
@@ -240,12 +269,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const selected = route.kind === 'detail'
     ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
-  const pendingOAuthIdentity = route.kind === 'adopting-oauth' ? route.identity : null;
+  const pendingConnectionIdentity = route.kind === 'adopting-connection' ? route.identity : null;
 
   // A detail route whose connection vanished (deleted in another window) is an
   // unsatisfiable route, not a state to correct: the list is what it renders
   // as. Deriving that beats scheduling a setState from inside render.
-  const level: Exclude<PanelRoute['kind'], 'adopting-oauth'> = route.kind === 'adopting-oauth'
+  const level: Exclude<PanelRoute['kind'], 'adopting-connection'> = route.kind === 'adopting-connection'
     ? 'list'
     : route.kind === 'detail' && !selected
       ? 'list'
@@ -398,6 +427,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
         <VStack gap={5}>
           <SettingsRouteHeader
             onBack={goBack}
+            isBackDisabled={route.managedSaveDispatched === true}
             backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
             logo={<ProviderLogo type={route.target.providerType} compact />}
             titleId={setupTitleId}
@@ -408,18 +438,44 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
               : copy.createSubtitle}
           />
-          <ProviderSetupPage
-            bridge={bridge}
-            target={route.target}
-            existingSlugs={connections.map((connection) => connection.slug)}
-            labelledBy={setupTitleId}
-            onCancel={goBack}
-            onAccountCreated={async (identity) => {
-              if (!identity) return;
-              setRoute({ kind: 'adopting-oauth', identity });
-              await reload();
-            }}
-            onCreated={async (slug, modelDiscoveryError) => {
+          <RuntimeHostSettingsGenerationBoundary>
+            <ProviderSetupPage
+              bridge={bridge}
+              apiKeyOnboardingBridge={apiKeyOnboardingBridge}
+              target={route.target}
+              existingSlugs={connections.map((connection) => connection.slug)}
+              labelledBy={setupTitleId}
+              managedSaveDispatched={route.managedSaveDispatched}
+              onManagedSaveDispatched={() => {
+                const attemptId = apiKeyOnboardingBridge?.saveUncertainty.markDispatched();
+                setRoute((current) => current.kind === 'setup'
+                  ? { ...current, managedSaveDispatched: true }
+                  : current);
+                return attemptId;
+              }}
+              onManagedSaveSettled={(attemptId) => {
+                if (attemptId !== undefined) {
+                  apiKeyOnboardingBridge?.saveUncertainty.settle(attemptId);
+                }
+                setRoute((current) => current.kind === 'setup'
+                  ? { kind: 'setup', target: current.target, origin: current.origin }
+                  : current);
+              }}
+              onCancel={goBack}
+              onAccountCreated={async (identity) => {
+                if (!identity) return;
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboarded={async (identity) => {
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboardingOutcomeUnknown={async () => {
+                setRoute({ kind: 'list' });
+                await reload();
+              }}
+              onCreated={async (slug, modelDiscoveryError) => {
               const snapshot = await reload();
               if (!snapshot || !providersPanelMountedRef.current) return;
               // The new connection's detail, not the list: creating it is the
@@ -442,8 +498,9 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   ),
                 );
               }
-            }}
-          />
+              }}
+            />
+          </RuntimeHostSettingsGenerationBoundary>
         </VStack>
       ) : (
         <>
@@ -462,23 +519,49 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               variant="primary"
               label={copy.addConnection}
               onClick={openCatalog}
-              isDisabled={pendingOAuthIdentity !== null}
+              isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty}
               data-maka-contract="add-connection"
             />
           </HStack>
-          {pendingOAuthIdentity && loadError ? (
+          {hasOnboardingUncertainty && (
+            <Banner
+              status="warning"
+              role="status"
+              title={providerCopy.add.onboardingOutcomeUnknown}
+              description={providerCopy.add.onboardingOutcomeUnknownDetail}
+              endContent={(
+                <HStack gap={2}>
+                  <Button
+                    variant="ghost"
+                    label={providerCopy.add.onboardingReloadConnections}
+                    onClick={() => void reload()}
+                  />
+                  <Button
+                    variant="secondary"
+                    label={providerCopy.add.onboardingRestart}
+                    onClick={() => {
+                      apiKeyOnboardingBridge?.saveUncertainty.restart();
+                      openCatalog();
+                    }}
+                  />
+                </HStack>
+              )}
+            />
+          )}
+          {pendingConnectionIdentity && loadError ? (
             <Banner
               status="warning"
               role="status"
               title={copy.connectedLoadFailed}
-              description={loadError}
+              description={`${pendingConnectionIdentity.slug} · ${loadError}`}
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
-          ) : pendingOAuthIdentity ? (
+          ) : pendingConnectionIdentity ? (
             <Banner
               status="info"
               role="status"
               title={copy.connectedLoading}
+              description={pendingConnectionIdentity.slug}
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
           ) : loadError ? (
@@ -493,7 +576,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingOAuthIdentity !== null} />}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty} />}
             />
           ) : (
             <List hasDividers>
