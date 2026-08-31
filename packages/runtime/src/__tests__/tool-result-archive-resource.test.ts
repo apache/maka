@@ -26,6 +26,7 @@ import {
   readToolResultArchiveResource,
   TOOL_RESULT_ARCHIVE_MAX_LIMIT,
   TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS,
+  TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES,
   type ToolResultArchiveResourceReader,
 } from '../tool-result-archive-resource.js';
 
@@ -151,6 +152,107 @@ describe('tool-result archive resources', () => {
     assert.equal((seen[0] as { bodySha256: string }).bodySha256, sha256(body));
   });
 });
+
+describe('ArchiveRead retrieval ergonomics', () => {
+  test('inspect surfaces a positional index and preview for text payloads', async () => {
+    const text = ['line one', 'line two', 'line three'].join('\n');
+    const { ref, reader } = textFixture(text);
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    })) as Record<string, unknown>;
+
+    assert.equal(result.valueType, 'text');
+    assert.equal(result.totalChars, text.length);
+    assert.equal(result.totalLines, 3);
+    assert.match(result.preview as string, /line one/);
+  });
+
+  test('read pages the decoded string for text payloads, not the escaped JSON', async () => {
+    const text = 'line1\nline2"quote';
+    const { ref, reader } = textFixture(text);
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      offset: 0,
+      limit: 100,
+    })) as Record<string, unknown>;
+
+    // Decoded: starts with the real first char and carries a literal newline,
+    // rather than the JSON serialization that would begin with a quote and \n.
+    assert.equal((result.content as string).startsWith('line1'), true);
+    assert.equal((result.content as string).includes('\n'), true);
+    assert.equal((result.content as string).includes('\\n'), false);
+  });
+
+  test('read by line range returns whole lines and resumes with nextLineOffset', async () => {
+    const text = Array.from({ length: 10 }, (_, index) => `L${index}`).join('\n');
+    const { ref, reader } = textFixture(text);
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 2,
+      limit: 3,
+    })) as Record<string, unknown>;
+
+    assert.equal(result.unit, 'line');
+    assert.equal(result.lineOffset, 2);
+    assert.equal(result.lineLimit, 3);
+    assert.equal(result.totalLines, 10);
+    assert.equal(result.content, 'L2\nL3\nL4');
+    assert.equal(result.nextLineOffset, 5);
+    assert.equal(result.hasMore, true);
+  });
+
+  test('search locates a case-insensitive substring with offsets, lines, and snippets', async () => {
+    const text = 'alpha\nbravo NEEDLE charlie\nNEEDLE delta';
+    const { ref, reader } = textFixture(text);
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'needle',
+    })) as Record<string, unknown>;
+
+    const matches = result.matches as Array<Record<string, unknown>>;
+    assert.equal(result.matchCount, 2);
+    assert.equal(matches[0]!.line, 2);
+    assert.equal(matches[1]!.line, 3);
+    assert.ok((matches[0]!.offset as number) < (matches[1]!.offset as number));
+    assert.match(matches[0]!.snippet as string, /NEEDLE/);
+    assert.equal(result.hasMore, false);
+  });
+
+  test('search stays within the response budget and resumes for pathological match counts', async () => {
+    const text = 'x'.repeat(200_000).replace(/x/g, 'ab'); // dense, overlapping-free hits of "ab"
+    const { ref, reader } = textFixture(text);
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'ab',
+    })) as Record<string, unknown>;
+
+    assert.ok(JSON.stringify(result).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
+    assert.ok((result.matchCount as number) <= TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES);
+    assert.equal(result.hasMore, true);
+    assert.equal(typeof result.nextOffset, 'number');
+  });
+
+  test('search without a pattern fails closed', async () => {
+    const { ref, reader } = textFixture('anything');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+    })) as Record<string, unknown>;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'pattern_required');
+  });
+});
+
+function textFixture(text: string): { ref: string; reader: ToolResultArchiveResourceReader } {
+  return fixture(JSON.stringify(text));
+}
 
 function fixture(body: string): { ref: string; reader: ToolResultArchiveResourceReader } {
   const identity = {

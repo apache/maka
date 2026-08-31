@@ -31,7 +31,18 @@ const MAX_MANIFEST_ITEMS = 100;
 const MAX_METADATA_STRING_CHARS = 160;
 const MANIFEST_RESPONSE_RESERVE_CHARS = 600;
 
-export type ToolResultArchiveResourceOperation = 'inspect' | 'read' | 'query';
+export type ToolResultArchiveResourceOperation = 'inspect' | 'read' | 'query' | 'search';
+
+export type ToolResultArchiveReadUnit = 'char' | 'line';
+
+/** Upper bound on matches returned by a single search page. */
+export const TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES = 50;
+/** Characters of surrounding context kept on each side of a search match. */
+const SEARCH_SNIPPET_RADIUS = 80;
+/** Longest search snippet retained, so many matches still fit one response. */
+const MAX_SEARCH_SNIPPET_CHARS = 240;
+/** Preview length surfaced by inspect for text/object payloads. */
+const INSPECT_PREVIEW_CHARS = 600;
 
 export interface ToolResultArchiveResourceIdentity {
   artifactId: string;
@@ -56,6 +67,10 @@ export interface ToolResultArchiveResourceRequest {
   offset?: number;
   limit?: number;
   itemId?: string;
+  /** For `read`: whether offset/limit count characters (default) or lines. */
+  unit?: ToolResultArchiveReadUnit;
+  /** For `search`: the literal, case-insensitive substring to locate. */
+  pattern?: string;
 }
 
 export function buildToolResultArchiveResourceRef(
@@ -139,30 +154,45 @@ export async function readToolResultArchiveResource(
   const operation = request.operation ?? 'inspect';
   const limit = normalizeLimit(request.limit);
   const offset = normalizeOffset(request.offset);
-  if (operation === 'read') {
-    return pagedContent({
-      ref: request.ref,
-      operation,
-      content: read.serializedResult,
-      offset,
-      limit,
-    });
-  }
-
   const parsed = deserializeArchive(read.serializedResult);
+
+  if (operation === 'search') {
+    const text = resolveArchiveText(parsed, read.serializedResult);
+    return searchArchive(request.ref, text, request.pattern, offset);
+  }
+  if (operation === 'read') {
+    // Page the decoded text for string payloads so offsets land on real
+    // characters, not JSON escape bytes; structured payloads still page their
+    // canonical JSON serialization.
+    const text = resolveArchiveText(parsed, read.serializedResult);
+    if (request.unit === 'line') {
+      return pagedLines(request.ref, text, offset, limit);
+    }
+    return pagedContent({ ref: request.ref, operation, content: text, offset, limit });
+  }
   if (operation === 'query') {
     return queryArchiveItem(request.ref, parsed, request.itemId, offset, limit);
   }
-  return inspectArchive(request.ref, identity, parsed);
+  return inspectArchive(request.ref, identity, parsed, read.serializedResult);
+}
+
+/**
+ * The text an archive should page/search over. String payloads (terminal output,
+ * plain text) decode to their raw content; everything else pages its canonical
+ * JSON serialization, matching the shape `inspect` and `read` already reported.
+ */
+function resolveArchiveText(parsed: unknown, serializedResult: string): string {
+  return typeof parsed === 'string' ? parsed : serializedResult;
 }
 
 export const TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS =
-  'This result is archived but still readable. Call ArchiveRead with the provided ref and operation "inspect"; use operation "query" with itemId for one structured item, or operation "read" with offset/limit for a bounded page. Do not use Glob to find the archive.';
+  'This result is archived but still readable. Call ArchiveRead with the provided ref and operation "inspect"; use operation "query" with itemId for one structured item, operation "search" with a pattern to locate text, or operation "read" with offset/limit (unit "char" or "line") for a bounded page. Do not use Glob to find the archive.';
 
 function inspectArchive(
   ref: string,
   identity: ToolResultArchiveResourceIdentity,
   value: unknown,
+  serializedResult: string,
 ): unknown {
   const base = {
     ok: true,
@@ -172,12 +202,27 @@ function inspectArchive(
     artifactId: identity.artifactId,
     originalBytes: identity.originalBytes,
   };
+  const readHint =
+    'Call ArchiveRead with operation "read" (unit "char" or "line"), offset, and limit for bounded pages, or operation "search" with a pattern to locate text.';
+  if (typeof value === 'string') {
+    // A plain-text/terminal payload: report the char/line coordinate space plus
+    // a short preview so the model can page or search without a blind first read.
+    return {
+      ...base,
+      valueType: 'text',
+      totalChars: value.length,
+      totalLines: countLines(value),
+      preview: boundedString(value, INSPECT_PREVIEW_CHARS),
+      readHint,
+    };
+  }
   if (isRecord(value)) {
     const items = Array.isArray(value.items) ? value.items : undefined;
     const manifestItems = items ? fitManifestItems(base, items) : undefined;
     const result = {
       ...base,
       valueType: 'object',
+      totalChars: serializedResult.length,
       keys: Object.keys(value)
         .slice(0, 25)
         .map((key) => boundedString(key)),
@@ -190,8 +235,8 @@ function inspectArchive(
             queryHint:
               'Call ArchiveRead with operation "query" and one of the listed itemId values.',
           }
-        : {}),
-      readHint: 'Call ArchiveRead with operation "read", offset, and limit for raw JSON pages.',
+        : { preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS) }),
+      readHint,
     };
     return {
       ...result,
@@ -205,13 +250,17 @@ function inspectArchive(
       ...base,
       valueType: 'array',
       itemCount: value.length,
-      readHint: 'Call ArchiveRead with operation "read", offset, and limit for raw JSON pages.',
+      totalChars: serializedResult.length,
+      preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS),
+      readHint,
     };
   }
   return {
     ...base,
     valueType: value === null ? 'null' : typeof value,
-    readHint: 'Call ArchiveRead with operation "read", offset, and limit for content pages.',
+    totalChars: serializedResult.length,
+    preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS),
+    readHint,
   };
 }
 
@@ -297,6 +346,168 @@ function pagedContent(input: {
   return buildPage(low);
 }
 
+/**
+ * Locate a literal (case-insensitive) substring inside the archived text and
+ * return matched offsets with bounded context snippets. Literal — never a regex
+ * — so a search can neither backtrack pathologically nor exceed the response
+ * budget: matches accumulate only while the envelope stays within
+ * TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS, and `nextOffset` resumes the scan.
+ */
+function searchArchive(
+  ref: string,
+  text: string,
+  pattern: string | undefined,
+  offset: number,
+): unknown {
+  if (!pattern) return archiveFailure(ref, 'pattern_required');
+  const haystack = text.toLowerCase();
+  const needle = pattern.toLowerCase();
+  const step = Math.max(1, needle.length);
+  const base = {
+    ok: true as const,
+    kind: 'tool_result_archive' as const,
+    operation: 'search' as const,
+    ref,
+    pattern: boundedString(pattern),
+    totalChars: text.length,
+  };
+  const buildResponse = (
+    matches: unknown[],
+    nextOffset: number | null,
+  ): Record<string, unknown> => ({
+    ...base,
+    matchCount: matches.length,
+    matches,
+    nextOffset,
+    hasMore: nextOffset !== null,
+  });
+
+  const matches: unknown[] = [];
+  // Line numbers are assigned by a single forward scan; match offsets only
+  // increase, so total work stays linear in the text length.
+  let scanChar = 0;
+  let scanLine = 1;
+  const lineAt = (index: number): number => {
+    while (scanChar < index && scanChar < text.length) {
+      if (text.charCodeAt(scanChar) === 10) scanLine++;
+      scanChar++;
+    }
+    return scanLine;
+  };
+
+  let from = Math.min(Math.max(0, offset), text.length);
+  while (matches.length < TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES) {
+    const index = haystack.indexOf(needle, from);
+    if (index === -1) return buildResponse(matches, null);
+    const snippetStart = Math.max(0, index - SEARCH_SNIPPET_RADIUS);
+    const snippetEnd = Math.min(text.length, index + needle.length + SEARCH_SNIPPET_RADIUS);
+    const candidate = {
+      offset: index,
+      line: lineAt(index),
+      snippetStart,
+      snippet: boundedString(text.slice(snippetStart, snippetEnd), MAX_SEARCH_SNIPPET_CHARS),
+    };
+    if (
+      JSON.stringify(buildResponse([...matches, candidate], index)).length >
+      TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS
+    ) {
+      // This match would overflow the budget; resume here next call.
+      return buildResponse(matches, index);
+    }
+    matches.push(candidate);
+    from = index + step;
+  }
+  // Hit the per-page match cap; report where an unread match still waits.
+  const more = haystack.indexOf(needle, from);
+  return buildResponse(matches, more === -1 ? null : more);
+}
+
+/** Count 1-based lines in text (an empty string has zero lines). */
+function countLines(text: string): number {
+  if (text.length === 0) return 0;
+  let count = 1;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++;
+  }
+  return count;
+}
+
+/**
+ * Collect up to `maxLines` lines starting at the zero-based `lineOffset` without
+ * materializing the whole text as an array — the scan stops after the window,
+ * so cost is bounded by the requested window, not the archive size.
+ */
+function collectLineWindow(
+  text: string,
+  lineOffset: number,
+  maxLines: number,
+): { lines: string[]; startChar: number } {
+  let cursor = 0;
+  let line = 0;
+  while (line < lineOffset && cursor <= text.length) {
+    const nl = text.indexOf('\n', cursor);
+    if (nl === -1) return { lines: [], startChar: text.length };
+    cursor = nl + 1;
+    line++;
+  }
+  const startChar = cursor;
+  const lines: string[] = [];
+  while (lines.length < maxLines && cursor <= text.length) {
+    const nl = text.indexOf('\n', cursor);
+    if (nl === -1) {
+      lines.push(text.slice(cursor));
+      break;
+    }
+    lines.push(text.slice(cursor, nl));
+    cursor = nl + 1;
+    if (cursor > text.length) break;
+  }
+  return { lines, startChar };
+}
+
+/**
+ * Read a bounded window of whole lines. offset/limit count lines; the returned
+ * line count is trimmed by binary search so the response never exceeds
+ * TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS, and `nextLineOffset` resumes paging.
+ */
+function pagedLines(
+  ref: string,
+  text: string,
+  lineOffset: number,
+  lineLimit: number,
+): Record<string, unknown> {
+  const totalLines = countLines(text);
+  const { lines } = collectLineWindow(text, lineOffset, lineLimit);
+  const buildPage = (count: number): Record<string, unknown> => {
+    const endLine = lineOffset + count;
+    const hasMore = endLine < totalLines;
+    return {
+      ok: true,
+      kind: 'tool_result_archive',
+      operation: 'read',
+      ref,
+      unit: 'line',
+      lineOffset,
+      lineLimit: count,
+      totalLines,
+      nextLineOffset: hasMore ? endLine : null,
+      hasMore,
+      content: lines.slice(0, count).join('\n'),
+    };
+  };
+  let low = 0;
+  let high = lines.length;
+  while (low < high) {
+    const candidate = Math.ceil((low + high) / 2);
+    if (JSON.stringify(buildPage(candidate)).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS) {
+      low = candidate;
+    } else {
+      high = candidate - 1;
+    }
+  }
+  return buildPage(low);
+}
+
 function inspectItem(value: unknown): unknown {
   if (!isRecord(value)) return { valueType: value === null ? 'null' : typeof value };
   return {
@@ -355,10 +566,8 @@ function fitManifestItems(base: Record<string, unknown>, items: readonly unknown
   return fitted;
 }
 
-function boundedString(value: string): string {
-  return value.length <= MAX_METADATA_STRING_CHARS
-    ? value
-    : `${value.slice(0, MAX_METADATA_STRING_CHARS - 1)}…`;
+function boundedString(value: string, max: number = MAX_METADATA_STRING_CHARS): string {
+  return value.length <= max ? value : `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
 function deserializeArchive(serialized: string): unknown {
