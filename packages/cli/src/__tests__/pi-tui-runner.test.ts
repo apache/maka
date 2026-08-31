@@ -3912,7 +3912,7 @@ describe('Maka Pi TUI runner', () => {
     // label) and keeps only its matching choice. The fixture's three distinct
     // providers (openai / zai / google) let `zai` exercise the providerType
     // line alone (its label `Z.AI` is not a substring) and `gemini` exercise
-    // the PROVIDER_DEFAULTS label line alone (its type `google` is not), so
+    // the PROVIDER_REGISTRY label line alone (its type `google` is not), so
     // deleting either line would fail its assertion. Ctrl+U (deleteToLineStart)
     // clears the search field in one event so the next criterion starts from
     // the full list again.

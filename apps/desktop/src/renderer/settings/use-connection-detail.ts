@@ -30,7 +30,7 @@ import {
   type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
 import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
@@ -142,7 +142,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     connectionId: connection.connectionId,
     slug: connection.slug,
   } as const;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const [apiKey, setApiKey] = useState('');
   const [hasSecret, setHasSecret] = useState<CredentialPresenceStatus>(
     defaults.authKind === 'none' ? true : 'loading',
@@ -775,7 +775,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
-    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
+    const usesOAuth = PROVIDER_REGISTRY[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
       description: copy.deleteDescription(props.isDefault, usesOAuth),

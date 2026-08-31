@@ -27,7 +27,7 @@ import type {
 import {
   classifyConnectionModelInventory,
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerDefaultsOf,
   providerSupportsModelDiscovery,
   type ConnectionModelInventory,
@@ -357,7 +357,7 @@ export function normalizeOpenAiCodexConnection<
   T extends Pick<LlmConnection, 'providerType' | 'models' | 'defaultModel'>,
 >(connection: T): T {
   if (connection.providerType !== 'openai-codex') return connection;
-  const fallbackModels = PROVIDER_DEFAULTS['openai-codex'].fallbackModels;
+  const fallbackModels = PROVIDER_REGISTRY['openai-codex'].fallbackModels;
   const safeModels = (connection.models ?? []).filter(
     (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
   );

@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type {
@@ -56,13 +56,13 @@ export async function ensureRuntimeHostAccountConnection(
       ? enabledModelIds
       : existing?.enabledModelIds.length
         ? existing.enabledModelIds
-        : PROVIDER_DEFAULTS[identity.providerType].fallbackModels;
+        : PROVIDER_REGISTRY[identity.providerType].fallbackModels;
   if (!existing) {
     const slugOwner = catalog.connections.find(({ slug }) => slug === identity.slug);
     if (slugOwner) {
       throw new Error(`Connection slug belongs to ${slugOwner.providerType}`);
     }
-    const defaults = PROVIDER_DEFAULTS[identity.providerType];
+    const defaults = PROVIDER_REGISTRY[identity.providerType];
     const created = await client.createConnection(catalog.revision, {
       slug: identity.slug,
       name: defaults.label,
@@ -226,7 +226,7 @@ export function findRuntimeHostAccountConnectionById(
 export function runtimeHostAccountCredential(
   connection: ConnectionCatalogEntry,
 ): CredentialLocator {
-  if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+  if (PROVIDER_REGISTRY[connection.providerType].authKind !== 'oauth_token') {
     throw new Error('Account Connection does not use an OAuth credential');
   }
   return {

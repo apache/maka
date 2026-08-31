@@ -22,7 +22,7 @@ import {
   OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, deriveConnectionSlug } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, deriveConnectionSlug } from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
@@ -79,7 +79,7 @@ export function AddProviderForm(props: {
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).add;
-  const defaults = PROVIDER_DEFAULTS[props.providerType];
+  const defaults = PROVIDER_REGISTRY[props.providerType];
   const display = providerDisplay(props.providerType, locale);
   const recommendedDefaultModel = buildCatalogRecommendedDefaultModel(props.providerType);
   const [slug, setSlug] = useState(() =>
@@ -378,6 +378,6 @@ export function AddProviderForm(props: {
 }
 
 function usesQuickApiKeyDialog(providerType: ProviderType): boolean {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   return defaults.authKind === 'api_key' && Boolean(defaults.baseUrl);
 }

@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   classifyConnectionModelInventory,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
@@ -150,7 +150,7 @@ async function testConnectionStrict(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
   // clear failure rather than crashing. Mirrors `isRealConnection`.
   if (!defaults) {
@@ -209,7 +209,7 @@ async function testConnectionModel(
   // A stored connection can still be opened long after its provider stopped
   // being offered, and the caller renders this result — so a retired provider
   // has to fail the test, not crash it.
-  if (PROVIDER_DEFAULTS[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
+  if (PROVIDER_REGISTRY[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);

@@ -309,7 +309,7 @@ test('chat model choices project exact vision support for attachment composition
 });
 
 test('provider recognition does not resolve inherited object members', () => {
-  // `PROVIDER_DEFAULTS` is an object literal, so plain indexing answers truthy
+  // `PROVIDER_REGISTRY` is an object literal, so plain indexing answers truthy
   // for `__proto__` / `toString` / `constructor` and they would read as
   // registered providers. #3211 made `backendKindOf` throw for unknown types,
   // which turns that leak from a wrong-but-closed `'fake'` into an `undefined`

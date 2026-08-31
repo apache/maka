@@ -30,7 +30,7 @@ import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
@@ -433,7 +433,7 @@ async function updateCredential(
 }
 
 function connectionCredential(connection: ConnectionCatalogEntry): CredentialLocator {
-  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
   return {
     scope: 'connection',
     connectionId: connection.connectionId,

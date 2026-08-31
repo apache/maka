@@ -19,7 +19,7 @@
 
 import {
   isRelayProviderType,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
   type ProviderType,
@@ -744,7 +744,7 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    PROVIDER_REGISTRY[providerType].authKind === 'oauth_token'
   ) {
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
@@ -761,7 +761,7 @@ export function decodeCanonicalConnectionBaseUrl(
 }
 
 function canonicalProviderBaseUrl(providerType: ProviderType): string | undefined {
-  const raw = PROVIDER_DEFAULTS[providerType].baseUrl.trim();
+  const raw = PROVIDER_REGISTRY[providerType].baseUrl.trim();
   if (!raw) return undefined;
   try {
     return new URL(raw).toString();

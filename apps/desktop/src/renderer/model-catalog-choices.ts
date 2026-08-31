@@ -23,7 +23,7 @@ import {
   type ModelCatalogEntry,
 } from '@maka/core/model-catalog';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   connectionEnabledModelIds,
   providerDefaultsOf,
 } from '@maka/core/llm-connections';
@@ -132,7 +132,7 @@ function safeConnectionLabel(
   connectionSlug: string,
   providerCounts: ReadonlyMap<ProviderType, number>,
 ): string {
-  const label = PROVIDER_DEFAULTS[providerType].label;
+  const label = PROVIDER_REGISTRY[providerType].label;
   return (providerCounts.get(providerType) ?? 0) > 1 ? `${label} · ${connectionSlug}` : label;
 }
 

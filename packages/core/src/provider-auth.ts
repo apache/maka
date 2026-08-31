@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
   providerSupportsModelDiscovery,
   type ConnectionAuth,
@@ -79,7 +79,7 @@ export interface ProviderAuthContract {
 }
 
 export function deriveProviderAuthContract(input: ProviderAuthContractInput): ProviderAuthContract {
-  const defaults = PROVIDER_DEFAULTS[input.providerType];
+  const defaults = PROVIDER_REGISTRY[input.providerType];
   const enabled = input.enabled ?? true;
   const hasSecret = Boolean(input.hasSecret);
   // Unknown providerType (legacy seed, or a connection persisted on a branch
@@ -274,7 +274,7 @@ function setupModeForAuthKind(authKind: ConnectionAuth['kind']): ProviderAuthSet
 }
 
 function setupModeForProvider(providerType: ProviderType): ProviderAuthSetupMode {
-  return setupModeForAuthKind(PROVIDER_DEFAULTS[providerType]?.authKind);
+  return setupModeForAuthKind(PROVIDER_REGISTRY[providerType]?.authKind);
 }
 
 function copyForApiKey(label: string, state: ProviderAuthState): ProviderAuthContract['copy'] {

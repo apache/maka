@@ -30,7 +30,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
@@ -86,7 +86,7 @@ import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
-  const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
+  const defaults = PROVIDER_REGISTRY[props.connection.providerType];
   // Unknown providerType (a connection persisted on a branch that registers a
   // provider this build doesn't know) → render a non-actionable fallback so
   // opening the orphan connection doesn't crash on `.authKind`/`.baseUrl`.
@@ -150,7 +150,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const display = providerDisplay(connection.providerType, locale);
   const {
     apiKey,

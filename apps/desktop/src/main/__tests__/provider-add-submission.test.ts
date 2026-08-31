@@ -26,7 +26,7 @@ import {
   type AddProviderField,
 } from '../../renderer/settings/provider-add-submission.js';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerSupportsModelDiscovery,
   type CreateConnectionInput,
   type IdentifiedLlmConnection,
@@ -89,8 +89,8 @@ test('no provider type demands a model id at creation', () => {
   // Stated across the catalog rather than for the two relays alone: the rule
   // that came back would be a per-provider `if`, and asserting only where it
   // used to live would let it reappear next door.
-  for (const providerType of Object.keys(PROVIDER_DEFAULTS) as ProviderType[]) {
-    const defaults = PROVIDER_DEFAULTS[providerType];
+  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+    const defaults = PROVIDER_REGISTRY[providerType];
     if (defaults.status === 'phase3-experimental') continue;
     const issue = validateAddProviderDraft(
       draft({
@@ -160,7 +160,7 @@ test('a successful catalog fetch reports no error', async () => {
 });
 
 test('a provider without discovery is not asked, and reports no error', async () => {
-  const withoutDiscovery = (Object.keys(PROVIDER_DEFAULTS) as ProviderType[]).find(
+  const withoutDiscovery = (Object.keys(PROVIDER_REGISTRY) as ProviderType[]).find(
     (providerType) => !providerSupportsModelDiscovery(providerType),
   );
   assert.ok(withoutDiscovery, 'expected at least one provider with no discovery endpoint');

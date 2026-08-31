@@ -161,7 +161,7 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
  * Since the in-process `fake` backend was retired (#3211) every registered
  * provider runs on `ai-sdk`, so this is exactly "is this `providerType` one
  * the build knows". An unknown one (legacy seed, future provider not yet in
- * PROVIDER_DEFAULTS) is treated as non-real — onboarding then routes the user
+ * PROVIDER_REGISTRY) is treated as non-real — onboarding then routes the user
  * to the add-provider flow which will rebuild a real connection.
  *
  * @kenji PR110a review gate: telemetry / lastTestStatus must NOT

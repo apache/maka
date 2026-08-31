@@ -47,7 +47,7 @@ import {
   type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
@@ -527,7 +527,7 @@ export class ConnectionCatalogDocumentOwner {
     const connectionId = decodeConnectionInput(() => decodeRuntimePolicyEntityId(rawConnectionId));
     const slug = decodeConnectionInput(() => decodeConnectionSlug(rawSlug));
     const providerType = decodeConnectionInput(() => decodeProviderType(rawProviderType));
-    const definition = PROVIDER_DEFAULTS[providerType];
+    const definition = PROVIDER_REGISTRY[providerType];
     // Identity first: the intent's connectionId names the connection being
     // edited, whatever slug it lives under — a relay created in Desktop under
     // a custom slug is updated in place, never duplicated at the canonical
@@ -838,7 +838,7 @@ export class ConnectionCatalogDocumentOwner {
 function fallbackInventory(
   providerType: ConnectionCatalogEntry['providerType'],
 ): ConnectionCatalogEntry['models'] {
-  const provider = PROVIDER_DEFAULTS[providerType];
+  const provider = PROVIDER_REGISTRY[providerType];
   return provider.modelDiscovery.kind === 'fallback'
     ? provider.fallbackModels.map((id) => ({ id }))
     : [];

@@ -23,7 +23,7 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
@@ -64,7 +64,7 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     typeof input.name !== 'string' ||
     input.name.length === 0 ||
     typeof input.providerType !== 'string' ||
-    !(input.providerType in PROVIDER_DEFAULTS)
+    !(input.providerType in PROVIDER_REGISTRY)
   ) {
     throw new Error('Invalid Connection input');
   }
@@ -110,8 +110,8 @@ export function normalizeConnectionPatchSecretsForIpc(value: unknown): UpdateCon
 }
 
 export function normalizeConnectionBaseUrlForIpc<T extends CreateConnectionInput>(input: T): T {
-  if (PROVIDER_DEFAULTS[input.providerType].authKind === 'oauth_token') {
-    return { ...input, baseUrl: PROVIDER_DEFAULTS[input.providerType].baseUrl };
+  if (PROVIDER_REGISTRY[input.providerType].authKind === 'oauth_token') {
+    return { ...input, baseUrl: PROVIDER_REGISTRY[input.providerType].baseUrl };
   }
   if (input.baseUrl === undefined) return input;
   return {
@@ -124,7 +124,7 @@ export function normalizeConnectionBaseUrlValueForIpc(
   providerType: CreateConnectionInput['providerType'],
   value: string,
 ): string {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   if (defaults.authKind === 'oauth_token') return defaults.baseUrl;
   const result = normalizeConnectionBaseUrl(value);
   if (!result.ok) throw new Error(result.error);

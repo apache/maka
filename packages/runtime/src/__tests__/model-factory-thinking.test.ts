@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
@@ -484,10 +484,10 @@ describe('buildProviderOptions: thinking level', () => {
       connection: LlmConnection;
       modelId: string;
     }> = [];
-    for (const providerType of Object.keys(PROVIDER_DEFAULTS) as LlmConnection['providerType'][]) {
+    for (const providerType of Object.keys(PROVIDER_REGISTRY) as LlmConnection['providerType'][]) {
       if (isRetiredProvider(providerType)) continue;
       const connection = conn(providerType);
-      for (const modelId of PROVIDER_DEFAULTS[providerType].fallbackModels) {
+      for (const modelId of PROVIDER_REGISTRY[providerType].fallbackModels) {
         const familyModelId = modelId.includes('/')
           ? modelId.slice(modelId.lastIndexOf('/') + 1)
           : modelId;

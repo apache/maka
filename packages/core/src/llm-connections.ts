@@ -301,7 +301,7 @@ export function authorizeConnectionModel(
   // The one veto: quarantined ids fail in a shape the send cannot surface
   // (e.g. a billed 200 with an empty completion), so the request settling it
   // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
-  if (PROVIDER_DEFAULTS[connection.providerType]?.brokenModelIds?.includes(model)) {
+  if (PROVIDER_REGISTRY[connection.providerType]?.brokenModelIds?.includes(model)) {
     return undefined;
   }
   // The observed row wins wherever it exists: it carries wire metadata such as
@@ -475,42 +475,40 @@ export interface ConnectionTestResult {
   errorClass?: ConnectionTestErrorClass;
 }
 
-export const PROVIDER_DEFAULTS = PROVIDER_REGISTRY;
-
 /**
  * The registry entry for a provider, or `undefined` when this build does not
  * register one.
  *
  * Sole owner of the question "is this `providerType` one we know". Plain
- * indexing cannot answer it: `PROVIDER_DEFAULTS` is an object literal, so
- * `PROVIDER_DEFAULTS['__proto__']` and `['toString']` resolve to inherited
+ * indexing cannot answer it: `PROVIDER_REGISTRY` is an object literal, so
+ * `PROVIDER_REGISTRY['__proto__']` and `['toString']` resolve to inherited
  * members and read as registered providers. Every recognition site goes
  * through here rather than repeating the own-property check.
  */
 export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
-  return Object.hasOwn(PROVIDER_DEFAULTS, providerType)
-    ? PROVIDER_DEFAULTS[providerType as ProviderType]
+  return Object.hasOwn(PROVIDER_REGISTRY, providerType)
+    ? PROVIDER_REGISTRY[providerType as ProviderType]
     : undefined;
 }
 
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
-  return PROVIDER_DEFAULTS[providerType].defaultEnabledModelIds;
+  return PROVIDER_REGISTRY[providerType].defaultEnabledModelIds;
 }
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
+  const authKind = PROVIDER_REGISTRY[providerType]?.authKind;
   return authKind === 'api_key' || authKind === 'oauth_token';
 }
 
 export function providerAuthSupportsApiKey(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_DEFAULTS[providerType]?.authKind;
+  const authKind = PROVIDER_REGISTRY[providerType]?.authKind;
   return authKind === 'api_key' || authKind === 'optional_api_key';
 }
 
 export function providerSupportsModelDiscovery(providerType: ProviderType): boolean {
-  const discovery = PROVIDER_DEFAULTS[providerType]?.modelDiscovery;
+  const discovery = PROVIDER_REGISTRY[providerType]?.modelDiscovery;
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
@@ -533,7 +531,7 @@ export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKi
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {
   if (c.baseUrl && c.baseUrl.trim()) return c.baseUrl.trim();
-  return PROVIDER_DEFAULTS[c.providerType]?.baseUrl ?? '';
+  return PROVIDER_REGISTRY[c.providerType]?.baseUrl ?? '';
 }
 
 /**
@@ -554,7 +552,7 @@ export function persistedBaseUrl(
 ): string | undefined {
   const trimmed = baseUrl?.trim();
   if (!trimmed) return undefined;
-  if (trimmed === PROVIDER_DEFAULTS[providerType]?.baseUrl) return undefined;
+  if (trimmed === PROVIDER_REGISTRY[providerType]?.baseUrl) return undefined;
   return trimmed;
 }
 

@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   effectiveBaseUrl,
   providerAuthSupportsApiKey,
   type LlmConnection,
@@ -131,7 +131,7 @@ type RawGitHubCopilotModel = {
 };
 
 type FireworksModelDiscovery = Extract<
-  (typeof PROVIDER_DEFAULTS)[keyof typeof PROVIDER_DEFAULTS]['modelDiscovery'],
+  (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]['modelDiscovery'],
   { kind: 'fireworks' }
 >;
 
@@ -180,7 +180,7 @@ async function fetchProviderModelsStrict(
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
   const baseUrl = effectiveBaseUrl(connection);
-  const definition = PROVIDER_DEFAULTS[connection.providerType];
+  const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
   // Mirrors `isRealConnection` in @maka/core/connection-readiness.ts.

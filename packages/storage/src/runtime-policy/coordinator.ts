@@ -66,7 +66,7 @@ import {
   deriveConnectionSlug,
   deriveInteractiveOAuthConnectionSlug,
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -432,7 +432,7 @@ export class RuntimePolicyCoordinator {
         assertConnectionIsWritable(connection);
         const required = connectionCredentialLocator(
           connection.connectionId,
-          PROVIDER_DEFAULTS[connection.providerType].authKind,
+          PROVIDER_REGISTRY[connection.providerType].authKind,
         );
         if (locator.kind !== 'request_headers' && (!required || required.kind !== locator.kind)) {
           throw codecError(
@@ -494,7 +494,7 @@ export class RuntimePolicyCoordinator {
       // reaches it today (execution resolution refuses first), which is
       // exactly why it would have stayed open.
       assertConnectionIsWritable(connection);
-      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+      if (PROVIDER_REGISTRY[connection.providerType].authKind !== 'oauth_token') {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
@@ -1159,7 +1159,7 @@ export class RuntimePolicyCoordinator {
       let requestHeadersSecret: string | null = null;
       const locator = connectionCredentialLocator(
         target.candidate.connectionId,
-        PROVIDER_DEFAULTS[providerType].authKind,
+        PROVIDER_REGISTRY[providerType].authKind,
       );
       if (locator) {
         credential = credentialStatus(vault, locator);
@@ -1519,7 +1519,7 @@ export class RuntimePolicyCoordinator {
     | PreparedConnectionMaterial
     | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   > {
-    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
     const locator = connectionCredentialLocator(connection.connectionId, authKind);
     const policy = await this.policy.read(root);
     const networkProxy = structuredClone(policy.policy.networkProxy);
@@ -1590,7 +1590,7 @@ export class RuntimePolicyCoordinator {
     if (locator.kind === 'request_headers') return true;
     const required = connectionCredentialLocator(
       connection.connectionId,
-      PROVIDER_DEFAULTS[connection.providerType].authKind,
+      PROVIDER_REGISTRY[connection.providerType].authKind,
     );
     if (!required || required.kind !== locator.kind) {
       throw codecError(
@@ -2281,7 +2281,7 @@ function newInteractiveOAuthConnection(
   slug: string,
   providerType: InteractiveOAuthLoginProvider,
 ): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   return {
     connectionId,
     revision: 1,

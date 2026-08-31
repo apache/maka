@@ -20,7 +20,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { isConnectionReady } from '../connection-readiness.js';
-import { PROVIDER_DEFAULTS, type LlmConnection, type ProviderType } from '../llm-connections.js';
+import { PROVIDER_REGISTRY, type LlmConnection, type ProviderType } from '../llm-connections.js';
 import {
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
@@ -423,7 +423,7 @@ test('unknown persisted provider ids return an empty catalog', () => {
 test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retired preview alias', () => {
   const modelId = 'qwen3.8-max';
   for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
-    const defaults = PROVIDER_DEFAULTS[providerType];
+    const defaults = PROVIDER_REGISTRY[providerType];
     assert.equal(defaults.fallbackModels[0], modelId, providerType);
     assert.equal(defaults.fallbackModels.includes('qwen3.8-max-preview'), false, providerType);
 
@@ -452,7 +452,7 @@ test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retire
 
 test('Alibaba (China) catalogs Qwen3.8 Max as the default model on the China endpoint', () => {
   const providerType = 'alibaba-cn';
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   assert.equal(defaults.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
   assert.equal(defaults.fallbackModels[0], 'qwen3.8-max');
 
