@@ -54,6 +54,7 @@ import {
 after(removeTrackedControlDirectories);
 
 const require = createRequire(import.meta.url);
+const WORKSPACE_IDENTITY = 'workspace:v1:123e4567-e89b-42d3-a456-426614174000';
 
 describe('SqliteMemoryItemStore', () => {
   test('creates a private, versioned WAL database and reopens it idempotently', async () => {
@@ -319,7 +320,7 @@ describe('SqliteMemoryItemStore', () => {
           content: 'Maka uses RuntimeEvent as evidence.',
           kind: 'knowledge',
           scopeType: 'workspace',
-          scopeKey: 'workspace-maka',
+          scopeKey: WORKSPACE_IDENTITY,
           keys: [
             { key: 'RuntimeEvent', keyType: 'code', keyOrigin: 'deterministic' },
             { key: 'memory_item', keyType: 'code', keyOrigin: 'deterministic' },
@@ -336,8 +337,12 @@ describe('SqliteMemoryItemStore', () => {
       assert.equal((await store.readItem(global))?.keys[1]?.keyOrigin, 'user');
       assert.deepEqual(await itemIds(store, ['偏好']), [global]);
       assert.deepEqual(await itemIds(store, ['runtime'], 'prefix'), []);
-      assert.deepEqual(await itemIds(store, ['runtime'], 'prefix', 'workspace-maka'), [workspace]);
-      assert.deepEqual(await itemIds(store, ['memory_'], 'prefix', 'workspace-maka'), [workspace]);
+      assert.deepEqual(await itemIds(store, ['runtime'], 'prefix', WORKSPACE_IDENTITY), [
+        workspace,
+      ]);
+      assert.deepEqual(await itemIds(store, ['memory_'], 'prefix', WORKSPACE_IDENTITY), [
+        workspace,
+      ]);
       assert.deepEqual(await itemIds(store, ['偏'], 'prefix'), [global]);
       await assert.rejects(
         store.searchByKeys({
@@ -346,6 +351,30 @@ describe('SqliteMemoryItemStore', () => {
           includeArchived: 'false' as unknown as boolean,
         }),
         /includeArchived/,
+      );
+      await assert.rejects(
+        store.searchByKeys({
+          terms: ['runtime'],
+          match: 'prefix',
+          workspaceKey: '/workspace/maka',
+        }),
+        /stable Workspace identity/,
+      );
+    });
+  });
+
+  test('rejects path-based Workspace scope keys for new Memory Items', async () => {
+    await withStore(async ({ store }) => {
+      await assert.rejects(
+        createItem(
+          store,
+          'create-path-scoped-workspace',
+          write({
+            scopeType: 'workspace',
+            scopeKey: '/workspace/maka',
+          }),
+        ),
+        /stable Workspace identity/,
       );
     });
   });

@@ -30,12 +30,16 @@ import { ToolRuntime, type ToolRuntimeInput } from '../tool-runtime.js';
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
   createExternalExecutionBoundary();
 
-type TestAiSdkBackendInput = Omit<AiSdkBackendInput, 'readExecutionBoundary'> &
-  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary'>>;
+type TestAiSdkBackendInput = Omit<
+  AiSdkBackendInput,
+  'readExecutionBoundary' | 'workspaceIdentity'
+> &
+  Partial<Pick<AiSdkBackendInput, 'readExecutionBoundary' | 'workspaceIdentity'>>;
 
 export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBackend {
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
+    workspaceIdentity: 'workspace:v1:123e4567-e89b-42d3-a456-426614174000',
     ...input,
   });
 }

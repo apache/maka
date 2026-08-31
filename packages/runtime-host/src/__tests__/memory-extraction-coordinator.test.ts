@@ -45,6 +45,8 @@ import { type MemoryExtractionSourceSnapshot } from '@maka/runtime/memory-extrac
 import { HostMemoryExtractionCoordinator } from '../server/memory-extraction-coordinator.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 
+const WORKSPACE_IDENTITY = 'workspace:v1:123e4567-e89b-42d3-a456-426614174000' as const;
+
 describe('HostMemoryExtractionCoordinator', () => {
   test('extracts incidental memory through the post-terminal memory_extract path', async () => {
     await withMemoryWriter(async (writer) => {
@@ -85,7 +87,7 @@ describe('HostMemoryExtractionCoordinator', () => {
       const stored = await writer.searchByKeys({
         terms: ['response preference'],
         match: 'exact',
-        workspaceKey: '/workspace/maka',
+        workspaceKey: WORKSPACE_IDENTITY,
       });
       assert.deepEqual(
         stored.map(({ item: storedItem }) => storedItem.content),
@@ -156,7 +158,7 @@ describe('HostMemoryExtractionCoordinator', () => {
         await writer.searchByKeys({
           terms: ['response preference'],
           match: 'exact',
-          workspaceKey: '/workspace/maka',
+          workspaceKey: WORKSPACE_IDENTITY,
         }),
         [],
       );
@@ -215,13 +217,13 @@ describe('HostMemoryExtractionCoordinator', () => {
       const stored = await writer.searchByKeys({
         terms: ['response preference'],
         match: 'exact',
-        workspaceKey: '/workspace/maka',
+        workspaceKey: WORKSPACE_IDENTITY,
       });
       assert.equal(stored.length, 2);
       assert.deepEqual(
         stored.map(({ item }) => [item.content, item.scopeType, item.scopeKey]),
         [
-          ['The user prefers detailed English.', 'workspace', '/workspace/maka'],
+          ['The user prefers detailed English.', 'workspace', WORKSPACE_IDENTITY],
           ['The user prefers concise Chinese.', 'global', null],
         ],
       );
@@ -1109,7 +1111,7 @@ describe('HostMemoryExtractionCoordinator', () => {
           await writer.searchByKeys({
             terms: ['response preference'],
             match: 'exact',
-            workspaceKey: '/workspace/maka',
+            workspaceKey: WORKSPACE_IDENTITY,
           })
         ).map(({ item }) => item.content),
         ['The user approved SQLite for the project database.'],
@@ -2365,7 +2367,7 @@ function snapshot(
     sessionId: 'session-1',
     runId,
     turnId,
-    workspaceKey: '/workspace/maka',
+    workspaceIdentity: WORKSPACE_IDENTITY,
     toolCallId,
   };
 }
@@ -2394,7 +2396,7 @@ function extractSnapshot(
     sessionId: 'session-1',
     runId,
     turnId,
-    workspaceKey: '/workspace/maka',
+    workspaceIdentity: WORKSPACE_IDENTITY,
     terminalEventId,
   };
 }
@@ -2422,7 +2424,7 @@ function compactionSnapshot(
     sessionId: 'session-1',
     runId: 'run-current-trigger',
     turnId: 'turn-current-trigger',
-    workspaceKey: '/workspace/maka',
+    workspaceIdentity: WORKSPACE_IDENTITY,
     compactionCheckpointId: checkpoint.checkpointId,
     compactionBoundaryEventId: boundary.runtimeEventId,
   };

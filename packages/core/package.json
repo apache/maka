@@ -16,6 +16,7 @@
     "./tool-recovery-bundle": "./dist/tool-recovery-bundle.js",
     "./tool-result-preview": "./dist/tool-result-preview.js",
     "./workspace-version-authority": "./dist/workspace-version-authority.js",
+    "./workspace-identity": "./dist/workspace-identity.js",
     "./runtime-policy": "./dist/runtime-policy.js",
     "./goal": "./dist/goal.js",
     "./execution-log-coverage": "./dist/execution-log-coverage.js",

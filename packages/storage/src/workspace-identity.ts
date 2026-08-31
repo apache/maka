@@ -24,12 +24,19 @@ import { lstat, open, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, normalize, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
+import {
+  isWorkspaceIdentityUuid,
+  workspaceIdentityFromUuid,
+  WORKSPACE_IDENTITY_PREFIX,
+  type WorkspaceIdentity,
+} from '@maka/core/workspace-identity';
+
 import { hasEnclosingGitEntry } from './git-entry.js';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 
 export const WORKSPACE_MARKER_FILE = '.maka-workspace.json';
 export const WORKSPACE_MARKER_SCHEMA_VERSION = 1 as const;
-export const WORKSPACE_IDENTITY_PREFIX = 'workspace:v1:' as const;
+export { WORKSPACE_IDENTITY_PREFIX };
 const MAX_WORKSPACE_MARKER_BYTES = 4_096;
 const MAX_GIT_EXCLUDE_BYTES = 1024 * 1024;
 const execFileAsync = promisify(execFile);
@@ -40,7 +47,7 @@ interface WorkspaceMarker {
 }
 
 export interface WorkspaceIdentityResolution {
-  workspaceIdentity: string;
+  workspaceIdentity: WorkspaceIdentity;
   canonicalPath: string;
 }
 
@@ -267,17 +274,13 @@ function isWorkspaceMarker(value: unknown): value is WorkspaceMarker {
     keys[1] === 'workspaceId' &&
     marker.schemaVersion === WORKSPACE_MARKER_SCHEMA_VERSION &&
     typeof marker.workspaceId === 'string' &&
-    isUuid(marker.workspaceId)
+    isWorkspaceIdentityUuid(marker.workspaceId)
   );
-}
-
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function toResolution(canonicalPath: string, marker: WorkspaceMarker): WorkspaceIdentityResolution {
   return {
-    workspaceIdentity: `${WORKSPACE_IDENTITY_PREFIX}${marker.workspaceId}`,
+    workspaceIdentity: workspaceIdentityFromUuid(marker.workspaceId),
     canonicalPath,
   };
 }

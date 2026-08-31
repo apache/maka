@@ -78,6 +78,7 @@ import type {
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { isWorkspaceIdentity, type WorkspaceIdentity } from '@maka/core/workspace-identity';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
@@ -698,6 +699,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Session context ────────────────────────────────────────────────────
   sessionId: string;
   header: SessionHeader;
+  /** Stable workspace identity used as the long-term-memory Scope key. */
+  workspaceIdentity?: WorkspaceIdentity;
   /** Append-message function bound to this session (e.g. SessionStore wrapper). */
   appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
@@ -1069,6 +1072,9 @@ export class AiSdkBackend implements AgentBackend {
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
   private readonly memoryReplayMessageEvents = new WeakMap<ModelMessage, readonly string[]>();
   constructor(input: AiSdkBackendInput) {
+    if (input.memoryExtraction && !isWorkspaceIdentity(input.workspaceIdentity)) {
+      throw new Error('Long-term-memory extraction requires a stable Workspace identity');
+    }
     this.input = input;
     this.sessionId = input.sessionId;
     this.newId = input.newId ?? (() => crypto.randomUUID());
@@ -1217,7 +1223,7 @@ export class AiSdkBackend implements AgentBackend {
       sessionId: this.sessionId,
       runId: scope.runId,
       turnId: scope.turnId,
-      workspaceKey: this.input.header.workspaceRoot,
+      workspaceIdentity: this.input.workspaceIdentity!,
     };
   }
 
@@ -1260,7 +1266,7 @@ export class AiSdkBackend implements AgentBackend {
         sessionId: this.sessionId,
         runId: scope.runId,
         turnId: scope.turnId,
-        workspaceKey: this.input.header.workspaceRoot,
+        workspaceIdentity: this.input.workspaceIdentity!,
         compactionCheckpointId: dispatch.checkpoint.checkpointId,
         compactionBoundaryEventId: boundary.runtimeEventId,
       });

@@ -62,6 +62,7 @@ import {
   type SettleMemoryExtractionFailureRequest,
   type SettleMemoryExtractionFailureResult,
 } from '@maka/core/long-term-memory';
+import { isWorkspaceIdentity } from '@maka/core/workspace-identity';
 import {
   assertSupportedSqliteLongTermMemorySchemaVersion,
   configureSqliteLongTermMemoryDatabase,
@@ -863,6 +864,9 @@ export class SqliteMemoryItemStore implements MemoryItemStore {
       request.workspaceKey === undefined
         ? undefined
         : normalizeIdentifier(request.workspaceKey, 'workspaceKey');
+    if (workspaceKey !== undefined && !isWorkspaceIdentity(workspaceKey)) {
+      throw new Error('Memory search workspaceKey must be a stable Workspace identity');
+    }
     const limit = request.limit ?? 20;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SEARCH_RESULTS) {
       throw new Error(`Memory key search limit must be between 1 and ${MAX_SEARCH_RESULTS}`);
@@ -1355,7 +1359,11 @@ function normalizeScopeKey(
     }
     return null;
   }
-  return normalizeIdentifier(input, 'workspace scopeKey');
+  const scopeKey = normalizeIdentifier(input, 'workspace scopeKey');
+  if (!isWorkspaceIdentity(scopeKey)) {
+    throw new Error('Workspace Memory scopeKey must be a stable Workspace identity');
+  }
+  return scopeKey;
 }
 
 function normalizeKeys(input: readonly MemoryItemKeyInput[]): readonly MemoryItemKey[] {
