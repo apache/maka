@@ -18,11 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { acquireOperationalStateDatabase } from '../operational-state-store.js';
+import { CONTEXT_OFFLOAD_DATABASE_NAME } from '../sqlite-context-offload-store.js';
 import { openStorageWriterComposition } from '../storage-writer-composition.js';
 import {
   resolveStorageRoot,
@@ -37,6 +39,12 @@ import {
 // The control directory of each resolved root lives outside that root, so a
 // temporary root's removal leaves it behind; reclaim the recorded rootIds here.
 after(removeTrackedControlDirectories);
+
+const contextOffloadLimits: ContextOffloadLimits = Object.freeze({
+  ownerMaxBytes: Object.freeze({ read_image_snapshot: 1024, tool_result_archive: 1024 }),
+  sessionLogicalBytes: 4096,
+  workspacePhysicalBytes: 4096,
+});
 
 test('storage writer composition rejects reuse until close completes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-storage-composition-'));
@@ -80,6 +88,73 @@ test('opening a second storage writer composition creates a usable lifecycle', a
       await second.execution.sessionStore.list();
       await second.usage.telemetry.logs({ range: 'all' }, 0, 1);
       await second.close();
+    } finally {
+      await owner.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('context-offload authority is optional and participates in composition close', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-storage-context-composition-'));
+  try {
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    try {
+      const withoutContext = await openStorageWriterComposition(owner.lease);
+      assert.equal(withoutContext.contextOffload, undefined);
+      await withoutContext.close();
+
+      const withContext = await openStorageWriterComposition(owner.lease, {
+        contextOffloadLimits,
+      });
+      assert.ok(withContext.contextOffload);
+      assert.deepEqual(
+        await withContext.contextOffload.read({
+          sessionId: 'session-1',
+          refId: 'missing',
+          maxBytes: 1024,
+        }),
+        { ok: false, reason: 'not_found' },
+      );
+      await withContext.close();
+
+      const reopened = await openStorageWriterComposition(owner.lease, {
+        contextOffloadLimits,
+      });
+      assert.ok(reopened.contextOffload);
+      await reopened.close();
+    } finally {
+      await owner.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('an unavailable context-offload authority does not fail the storage composition', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-storage-context-unavailable-'));
+  try {
+    await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
+    const capability = trackControlDirectory(
+      await resolveStorageRoot({ path: root, kind: 'interactive' }),
+    );
+    const owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    try {
+      const composition = await openStorageWriterComposition(owner.lease, {
+        contextOffloadLimits,
+      });
+      assert.equal(composition.contextOffload, undefined);
+      assert.ok(composition.contextOffloadUnavailable);
+      assert.ok(composition.contextOffloadUnavailable.cause instanceof Error);
+      await composition.execution.sessionStore.list();
+      await composition.artifacts.listPage('session-1', { offset: 0, limit: 1 });
+      await composition.close();
     } finally {
       await owner.close();
     }

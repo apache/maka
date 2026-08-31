@@ -24,7 +24,7 @@ import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   connectionEnabledModelIds,
   providerDefaultsOf,
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ProviderType,
 } from './llm-connections.js';
 
@@ -42,6 +42,7 @@ const MODEL_MENU_PROVIDER_LABELS: Partial<Record<ProviderType, string>> = {
 };
 
 export interface ChatModelChoice {
+  connectionId: string;
   connectionSlug: string;
   providerType: ProviderType;
   providerLabel: string;
@@ -54,7 +55,9 @@ export interface ChatModelChoice {
   thinkingLevels: readonly ThinkingLevel[];
 }
 
-export function buildChatModelChoices(connections: readonly LlmConnection[]): ChatModelChoice[] {
+export function buildChatModelChoices(
+  connections: readonly IdentifiedLlmConnection[],
+): ChatModelChoice[] {
   const choices: ChatModelChoice[] = [];
   for (const rawConnection of connections) {
     const connection = normalizeOpenAiCodexConnection(rawConnection);
@@ -73,6 +76,7 @@ export function buildChatModelChoices(connections: readonly LlmConnection[]): Ch
         continue;
       }
       choices.push({
+        connectionId: rawConnection.connectionId,
         connectionSlug: connection.slug,
         providerType: connection.providerType,
         providerLabel: MODEL_MENU_PROVIDER_LABELS[connection.providerType] ?? provider.label,

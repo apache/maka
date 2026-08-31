@@ -65,7 +65,6 @@ import {
   DEFAULT_SHELL_RUN_FLUSH_INTERVAL_MS,
   MAX_FOREGROUND_BASH_TIMEOUT_MS,
   MAX_SHELL_RUN_TIMEOUT_MS,
-  SHELL_RUN_CONTEXT_SUMMARY_LIMIT,
   ShellRunPtyControlClosedError,
   parseShellRunResourceRef,
   shellRunResourceRef,
@@ -125,6 +124,15 @@ function backgroundTaskRefError(ref: string): Error {
   return new Error(BACKGROUND_TASK_REF_HELP, {
     cause: new Error(`Unsupported runtime background task ref: ${ref}`),
   });
+}
+
+function assertShellRunCaller(record: ShellRunRecord, caller: 'model' | 'client' = 'model'): void {
+  if (caller === 'client' || record.visibility !== 'user') return;
+  const notFound = new Error(
+    'Runtime background task not found in this session',
+  ) as NodeJS.ErrnoException;
+  notFound.code = 'ENOENT';
+  throw notFound;
 }
 type DriverExit =
   | { mode: 'pipes'; value: PipeProcessExit }
@@ -358,6 +366,7 @@ export class ShellRunProcessManager
     if (!target) throw backgroundTaskRefError(input.ref);
     const live = this.liveResource(input.sessionId, target.shellRunId);
     if (!live) return this.writeStdinWithoutLive(input, target.shellRunId);
+    assertShellRunCaller(live.record, input.caller);
     if (live.mode !== 'pty') throw new Error('WriteStdin requires a PTY background task ref');
     if (live.driverExit) {
       const record = await this.markObserved(await live.finished.join());
@@ -502,7 +511,7 @@ export class ShellRunProcessManager
     ref: string,
     abortSignal: AbortSignal,
   ): Promise<ToolResultContent> {
-    return this.resourceDetail(sessionId, ref, true, abortSignal);
+    return this.resourceDetail(sessionId, ref, true, abortSignal, true);
   }
 
   async inspectResource(sessionId: string, ref: string): Promise<ShellRunSnapshotResult> {
@@ -518,11 +527,13 @@ export class ShellRunProcessManager
     sessionId: string,
     ref: string,
     abortSignal: AbortSignal,
+    caller: 'model' | 'client' = 'model',
   ): Promise<ToolResultContent> {
     const target = parseShellRunResourceRef(ref);
     if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
-    if (!live) return this.stopWithoutLive(sessionId, target.shellRunId, abortSignal);
+    if (!live) return this.stopWithoutLive(sessionId, target.shellRunId, abortSignal, caller);
+    assertShellRunCaller(live.record, caller);
     if (live.driverExit) {
       const record = await this.markObserved(await live.finished.join());
       return shellRunContent(record, { kind: 'stop', applied: false });
@@ -559,33 +570,6 @@ export class ShellRunProcessManager
     }
     const record = await this.markObserved(await live.finished.join());
     return shellRunContent(record, { kind: 'stop', applied });
-  }
-
-  async buildContextSummary(sessionId: string): Promise<string | undefined> {
-    const records = await this.actionableRecords(sessionId);
-    if (records.length === 0) return undefined;
-    const visible = records.slice(0, SHELL_RUN_CONTEXT_SUMMARY_LIMIT);
-    const lines = [
-      'Background tasks for this session:',
-      ...visible.map((record) => {
-        const completed =
-          record.completedAt !== undefined ? ` completedAt=${record.completedAt}` : '';
-        return `- ref=${shellRunResourceRef(record.shellRunId)} mode=${record.output.mode} status=${record.status} cwd=${record.cwd} updatedAt=${record.updatedAt}${completed} command=${JSON.stringify(record.command)}`;
-      }),
-    ];
-    const overflow = records.length - visible.length;
-    if (overflow > 0)
-      lines.push(`- ${overflow} more background task(s) not shown in this turn tail.`);
-    const hasControllablePty = records.some((record) => {
-      const live = this.liveResource(sessionId, record.shellRunId);
-      return live?.mode === 'pty' && isPtyControlOpen(live);
-    });
-    lines.push(
-      hasControllablePty
-        ? 'Use Read on a ref for its bounded output snapshot; use WriteStdin to control a running PTY task.'
-        : 'Use Read on a ref for its bounded output snapshot.',
-    );
-    return lines.join('\n');
   }
 
   async listSessionUpdates(sessionId: string): Promise<ShellRunUpdate[]> {
@@ -964,6 +948,7 @@ export class ShellRunProcessManager
       ...(input.sourceRunId ? { sourceRunId: input.sourceRunId } : {}),
       sourceTurnId: input.sourceTurnId,
       sourceToolCallId: input.sourceToolCallId,
+      ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
       cwd: input.cwd,
       command: redactSecrets(input.command),
       status: 'starting',
@@ -1645,12 +1630,14 @@ export class ShellRunProcessManager
     ref: string,
     markObserved: boolean,
     abortSignal: AbortSignal,
+    modelOnly = false,
   ): Promise<ShellRunToolResult> {
     const target = parseShellRunResourceRef(ref);
     if (!target) throw backgroundTaskRefError(ref);
     const live = this.liveResource(sessionId, target.shellRunId);
     let record: ShellRunRecord;
     if (live) {
+      if (modelOnly) assertShellRunCaller(live.record, 'model');
       if (live.integrityFailure || live.driverExit) {
         record = await live.finished.join();
       } else {
@@ -1662,6 +1649,7 @@ export class ShellRunProcessManager
       if (abortSignal.aborted)
         throw abortError('Read aborted before the durable runtime snapshot was read');
       record = await this.readDurableRecord(sessionId, target.shellRunId);
+      if (modelOnly) assertShellRunCaller(record, 'model');
       if (isActiveShellRunStatus(record.status)) {
         record = await this.markOrphaned(
           record,
@@ -1689,6 +1677,7 @@ export class ShellRunProcessManager
       throw abortError('WriteStdin aborted before the terminal state was observed');
     }
     let record = await this.readDurableRecord(input.sessionId, shellRunId);
+    assertShellRunCaller(record, input.caller);
     if (record.output.mode !== 'pty')
       throw new Error('WriteStdin requires a PTY background task ref');
     if (isActiveShellRunStatus(record.status)) {
@@ -1715,11 +1704,13 @@ export class ShellRunProcessManager
     sessionId: string,
     shellRunId: string,
     abortSignal?: AbortSignal,
+    caller: 'model' | 'client' = 'model',
   ): Promise<ShellRunToolResult> {
     if (abortSignal?.aborted) {
       throw abortError('StopBackgroundTask aborted before the terminal state was observed');
     }
     let record = await this.readDurableRecord(sessionId, shellRunId);
+    assertShellRunCaller(record, caller);
     if (isActiveShellRunStatus(record.status)) {
       record = await this.markOrphaned(
         record,
@@ -1792,17 +1783,6 @@ export class ShellRunProcessManager
       if (!isActiveShellRunStatus(current.status)) return current;
       return this.input.store.updateShellRun(current.sessionId, current.shellRunId, buildPatch());
     }
-  }
-
-  private async actionableRecords(sessionId: string): Promise<ShellRunRecord[]> {
-    const records = await this.input.store.listSessionShellRuns(sessionId);
-    return records
-      .filter(
-        (record) =>
-          isActiveShellRunStatus(record.status) ||
-          (record.observedAt === undefined && isTerminalShellRunStatus(record.status)),
-      )
-      .sort(compareActionableShellRuns);
   }
 
   private notifyShellRunUpdate(record: ShellRunRecord): void {
@@ -2018,16 +1998,6 @@ function startupCleanupError(startupError: Error, cleanupFailure: unknown): Erro
   return new Error(
     `Shell process startup failed: ${safeFailureMessage(startupError)}; startup cleanup failed: ${safeFailureMessage(cleanupError)}`,
     { cause: new AggregateError([startupError, cleanupError]) },
-  );
-}
-
-function compareActionableShellRuns(a: ShellRunRecord, b: ShellRunRecord): number {
-  const rank = (record: ShellRunRecord) => (isActiveShellRunStatus(record.status) ? 1 : 0);
-  return (
-    rank(a) - rank(b) ||
-    b.updatedAt - a.updatedAt ||
-    b.startedAt - a.startedAt ||
-    a.shellRunId.localeCompare(b.shellRunId)
   );
 }
 

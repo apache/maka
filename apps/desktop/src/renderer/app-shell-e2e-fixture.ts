@@ -34,7 +34,7 @@ export function createAppShellE2eFixtureActions(options: {
   setActiveId: (sessionId: string | undefined) => void;
   setNavSelection: Dispatch<SetStateAction<NavSelection>>;
   setSearchModalOpen: Dispatch<SetStateAction<boolean>>;
-  setSessionListCollapsed: Dispatch<SetStateAction<boolean>>;
+  setSessionListCollapsed(collapsed: boolean): void;
   workbar: {
     rightCollapsed: boolean;
     toggleRight(): void;

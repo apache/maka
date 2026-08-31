@@ -27,6 +27,7 @@ import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalo
 import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
 import type {
   SessionCatalogProjection,
+  SharedSessionCatalogProjection,
   SessionCreateInput,
   WorkspaceTarget,
   SessionModelTarget,
@@ -59,6 +60,7 @@ type RuntimeHostSessionCatalogClient = Pick<
 
 export interface DesktopHostSessionSummary extends SessionCatalogSummary {
   labelsTruncated: boolean;
+  shared?: true;
 }
 
 export interface RuntimeHostSessionCatalogIpcDeps {
@@ -76,6 +78,10 @@ export interface RuntimeHostSessionCatalogIpcDeps {
   releaseSessionResources: (sessionId: string) => void | Promise<void>;
   sessionCopyCleanup: SessionCopyCleanupAuthority;
   newId?: () => string;
+}
+
+export interface RuntimeHostSharedSessionCatalogIpcDeps {
+  getSession(): Promise<DesktopHostSessionSummary | null>;
 }
 
 export function registerRuntimeHostSessionCatalogIpc(
@@ -221,6 +227,50 @@ export function registerRuntimeHostSessionCatalogIpc(
   });
 }
 
+export function registerRuntimeHostSharedSessionCatalogIpc(
+  deps: RuntimeHostSharedSessionCatalogIpcDeps,
+  ipcMain: ReconnectableReadIpcMain,
+): void {
+  handleReconnectableRead(ipcMain, 'sessions:list', async (_event, filter?: unknown) => {
+    if (normalizeSessionListFilter(filter)?.subagentParentSessionId) return [];
+    const session = await deps.getSession();
+    return session ? [session] : [];
+  });
+}
+
+export function toDesktopHostSharedSessionSummary(
+  session: SharedSessionCatalogProjection,
+): DesktopHostSessionSummary {
+  return {
+    id: session.id,
+    name: session.name,
+    activityAt: session.activityAt,
+    isFlagged: false,
+    isArchived: false,
+    labels: [],
+    labelsTruncated: false,
+    hasUnread: false,
+    ...(session.lastMessageAt === undefined ? {} : { lastMessageAt: session.lastMessageAt }),
+    ...(session.lastMessagePreview === undefined
+      ? {}
+      : { lastMessagePreview: session.lastMessagePreview }),
+    status: session.status,
+    ...(session.liveRunState === undefined
+      ? {}
+      : { runningTurnIds: [...session.liveRunState.runningTurnIds] }),
+    ...(session.blockedReason === undefined ? {} : { blockedReason: session.blockedReason }),
+    ...(session.statusUpdatedAt === undefined
+      ? {}
+      : { statusUpdatedAt: session.statusUpdatedAt }),
+    backend: 'ai-sdk',
+    llmConnectionSlug: '',
+    connectionLocked: true,
+    model: '',
+    permissionMode: 'ask',
+    shared: true,
+  };
+}
+
 /**
  * Reads the archived premise off the remove options.
  *
@@ -294,19 +344,23 @@ function normalizeSessionListFilter(value: unknown): SessionListFilter | undefin
 }
 
 function normalizeModelTarget(input: CreateSessionRequestInput | undefined): SessionModelTarget {
+  const connectionId = normalizeOptionalString(input?.llmConnectionId, 'model connection id');
   const slug = normalizeOptionalString(input?.llmConnectionSlug, 'model connection');
   const model = normalizeOptionalString(input?.model, 'model');
-  if (slug === undefined && model === undefined) return { kind: 'default' };
-  if (slug === undefined || model === undefined) {
-    throw new Error('Explicit model selection requires both connection and model');
+  if (connectionId === undefined && slug === undefined && model === undefined) {
+    return { kind: 'default' };
   }
-  return { kind: 'explicit', connectionSlug: slug, model };
+  if (connectionId === undefined || slug === undefined || model === undefined) {
+    throw new Error('Explicit model selection requires connection id, connection, and model');
+  }
+  return { kind: 'explicit', connectionId, connectionSlug: slug, model };
 }
 
 function normalizeExplicitModel(input: unknown): Extract<SessionModelTarget, { kind: 'explicit' }> {
   const selection = normalizeSessionModelSelection(input);
   return {
     kind: 'explicit',
+    connectionId: selection.llmConnectionId,
     connectionSlug: selection.llmConnectionSlug,
     model: selection.model,
   };

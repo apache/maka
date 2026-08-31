@@ -36,6 +36,7 @@ export function aboutUpdateStatusDetail(
   if (status.state === 'downloading') {
     return copy.updateDownloading(status.latestVersion, Math.round(status.progress.percent));
   }
+  if (status.state === 'verifying') return copy.updateVerifying(status.latestVersion);
   if (status.state === 'downloaded') return copy.updateDownloaded(status.latestVersion);
   if (status.state === 'installing') return copy.updateInstalling(status.latestVersion);
   return copy.updateCheckFailedDetail(status.message);

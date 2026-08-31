@@ -40,8 +40,7 @@ const PROTOCOL = {
 } as const;
 const REQUEST_TIMEOUT_MS = 5_000;
 
-test('two UDS clients converge on one lease-bound Skill catalog authority', {
-  skip: process.platform === 'win32',
+test('two local IPC clients converge on one lease-bound Skill catalog authority', {
   timeout: 20_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-skill-catalog-two-client-'));
@@ -85,7 +84,9 @@ Keep ${privateMarker} inside the lazy-loaded body.
     host = await RuntimeHostKernel.start({
       owner,
       idleGraceMs: 30_000,
-      composition: defineInteractiveRuntimeHostComposition(createExecutionRuntimeHostComposition),
+      composition: defineInteractiveRuntimeHostComposition((context) =>
+        createExecutionRuntimeHostComposition(context, { skillHomeDirectory: isolatedHome }),
+      ),
     });
     endpoint = host.endpoint;
 
@@ -197,7 +198,7 @@ Keep ${privateMarker} inside the lazy-loaded body.
       if (closure.status === 'rejected') cleanupErrors.push(closure.reason);
     }
     await host?.close().catch((error: unknown) => cleanupErrors.push(error));
-    if (endpoint)
+    if (endpoint && process.platform !== 'win32')
       await assert.rejects(lstat(endpoint), { code: 'ENOENT' }).catch((error: unknown) => {
         cleanupErrors.push(error);
       });

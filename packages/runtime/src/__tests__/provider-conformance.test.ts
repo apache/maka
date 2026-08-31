@@ -84,6 +84,121 @@ describe('models.dev provider conformance', () => {
     });
 
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
+    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
+  });
+
+  test('custom Anthropic relays request summarized thinking for known Claude models', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/messages');
+      requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      respondJson(response, 200, {
+        id: 'msg_anthropic_relay',
+        type: 'message',
+        role: 'assistant',
+        model: 'claude-opus-4-8',
+        content: [{ type: 'text', text: 'Relayed.' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 4, output_tokens: 1 },
+      });
+    });
+    const connection: LlmConnection = {
+      slug: 'anthropic-relay',
+      name: 'Anthropic Relay',
+      providerType: 'anthropic-compatible',
+      baseUrl: server.url,
+      defaultModel: 'claude-opus-4-8',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await generateText({
+      model: getAIModel({
+        connection,
+        apiKey: 'relay-key',
+        modelId: connection.defaultModel,
+      }),
+      prompt: 'Hello.',
+      providerOptions: buildProviderOptions(connection, connection.defaultModel),
+    });
+
+    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
+    assert.equal(requestBody?.cache_control, undefined);
+  });
+
+  test('Anthropic request bodies follow the SDK adaptive-thinking capability', async () => {
+    const cases = [
+      {
+        modelId: 'claude-sonnet-4-5',
+        providerType: 'anthropic' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+      {
+        modelId: 'claude-opus-4-5',
+        providerType: 'anthropic' as const,
+        thinkingLevel: 'high' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+        expectedOutputConfig: { effort: 'high' },
+      },
+      {
+        modelId: 'claude-opus-4-8',
+        providerType: 'anthropic' as const,
+        expectedThinking: { type: 'adaptive', display: 'summarized' },
+      },
+      {
+        modelId: 'claude-sonnet-4',
+        providerType: 'opencode' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+      {
+        modelId: 'anthropic/claude-opus-4.5',
+        providerType: 'anthropic-compatible' as const,
+        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+      },
+    ];
+
+    for (const testCase of cases) {
+      let requestBody: Record<string, unknown> | undefined;
+      const server = await startJsonServer(async (request, response) => {
+        requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+        respondJson(response, 200, {
+          id: 'msg_anthropic_thinking_mode',
+          type: 'message',
+          role: 'assistant',
+          model: testCase.modelId,
+          content: [{ type: 'text', text: 'Done.' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 4, output_tokens: 1 },
+        });
+      });
+      const connection: LlmConnection = {
+        slug: `${testCase.providerType}-${testCase.modelId}`,
+        name: testCase.modelId,
+        providerType: testCase.providerType,
+        baseUrl: server.url,
+        defaultModel: testCase.modelId,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      await generateText({
+        model: getAIModel({
+          connection,
+          apiKey: 'test-key',
+          modelId: testCase.modelId,
+        }),
+        prompt: 'Hello.',
+        providerOptions: buildProviderOptions(connection, testCase.modelId, testCase.thinkingLevel),
+      });
+
+      assert.deepEqual(requestBody?.thinking, testCase.expectedThinking, testCase.modelId);
+      assert.deepEqual(requestBody?.output_config, testCase.expectedOutputConfig, testCase.modelId);
+    }
   });
 
   test('Anthropic Messages accepts the Claude Code web_search_20250305 tool', async () => {

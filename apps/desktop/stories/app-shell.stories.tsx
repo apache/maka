@@ -18,6 +18,7 @@
  */
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, waitFor } from 'storybook/test';
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import type { ComponentProps } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
@@ -27,10 +28,10 @@ import {
   ChatView,
   Composer,
   deriveTitlebarProjectName,
-  SessionListPanel,
   TitlebarSessionIdentity,
 } from '@maka/ui';
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
+import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
@@ -60,13 +61,14 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 type ChatViewProps = ComponentProps<typeof ChatView>;
 type ComposerProps = ComponentProps<typeof Composer>;
-type SessionListPanelProps = ComponentProps<typeof SessionListPanel>;
+type SessionListPanelProps = SessionRailStoryProps;
 type SessionGroup = NonNullable<SessionListPanelProps['groups']>[number];
 
 const noop = () => undefined;
 
 const modelChoices: ChatModelChoice[] = [
   {
+    connectionId: 'connection-anthropic-main',
     connectionSlug: 'anthropic-main',
     providerType: 'anthropic',
     providerLabel: 'Anthropic',
@@ -76,6 +78,7 @@ const modelChoices: ChatModelChoice[] = [
     thinkingLevels: [],
   },
   {
+    connectionId: 'connection-openai-main',
     connectionSlug: 'openai-main',
     providerType: 'openai',
     providerLabel: 'OpenAI',
@@ -106,6 +109,7 @@ function makeSession(input: {
     status: input.status ?? 'active',
     lastMessageAt: input.lastMessageAt ?? NOW - 12 * 60_000,
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-anthropic-main',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: false,
     model: 'claude-sonnet-4-5',
@@ -419,7 +423,7 @@ function ComposedShell(props: {
         contentPadding={0}
         mobileNav={{ breakpoint: 'none', hasToggle: false }}
         sideNav={
-          <SessionListPanel
+          <SessionRail
             collapsed={collapsed}
             onCollapsedChange={setCollapsed}
             width={sidebarWidth}
@@ -453,6 +457,7 @@ function ComposedShell(props: {
             (<div className="maka-detail-with-artifacts">
               <div className="mainColumn">
               <ChatSurfaceLayout
+                scrollOwner="host"
                 composer={
                   <Composer
                     {...baseComposerProps}
@@ -502,9 +507,9 @@ export const UpdateFailed: Story = {
   render: () => <ComposedShell updateReminder={{ state: 'error', latestVersion: '0.1.7' }} />,
 };
 
-// Real path: an update is waiting while the rail is collapsed to 48px. The row
-// cannot hold two controls side by side there, so it stacks — off the frame's
-// own `data-sidebar-state`, which is why ShellFrame above has to carry it.
+// Real path: an update is waiting while the sidebar is fully hidden. The
+// titlebar's restore action remains visible; expanding the sidebar reveals the
+// pending update in its footer again.
 export const UpdateDownloadedCollapsed: Story = {
   render: () => (
     <ComposedShell sidebarCollapsed updateReminder={{ state: 'downloaded', latestVersion: '0.1.7' }} />
@@ -568,6 +573,280 @@ export const RunningStatusDuringToolRun: Story = {
             }],
           }],
         },
+      }}
+    />
+  ),
+};
+
+// A real prefix of `npm test` stdout, copied verbatim from an actual run killed
+// mid-build (the full suite runs for minutes, so a cancel here is genuinely
+// reachable). Kept short by cutting inside the build phase — no test-runner
+// interleaving, no truncation. Cutting the fixture from a real run is what keeps
+// the expanded panel's bytes honest.
+const NPM_TEST_STDOUT_AT_CANCEL = "\n> maka@0.2.0 test\n> npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3\n\n\n> maka@0.2.0 build:test\n> npm run clean && npm --workspace @maka/core run build && npm --workspace @maka/storage run build && npm --workspace @maka/mcp run build && npm --workspace @maka/runtime run build && npm --workspace @maka/runtime-host run build && npm --workspace @maka/computer-use run build && npm --workspace @maka/eval run build && npm --workspace maka-agent run build && npm --workspace @maka/ui run build && npm --workspace @maka/desktop run build:test\n\n\n> maka@0.2.0 clean\n> node scripts/clean-build.mjs\n\ncleaned packages/core/dist\ncleaned packages/core/tsconfig.tsbuildinfo\ncleaned packages/storage/dist\ncleaned packages/storage/tsconfig.tsbuildinfo\ncleaned packages/mcp/dist\ncleaned packages/mcp/tsconfig.tsbuildinfo\ncleaned packages/runtime/dist\ncleaned packages/runtime/tsconfig.tsbuildinfo\ncleaned packages/runtime-host/dist\ncleaned packages/runtime-host/tsconfig.tsbuildinfo\ncleaned packages/eval/dist\ncleaned packages/eval/tsconfig.tsbuildinfo\ncleaned packages/computer-use/dist\ncleaned packages/computer-use/tsconfig.tsbuildinfo\ncleaned packages/cli/dist\ncleaned packages/cli/tsconfig.tsbuildinfo\ncleaned packages/ui/dist\ncleaned packages/ui/tsconfig.tsbuildinfo\ncleaned apps/desktop/dist\ncleaned apps/desktop/tsconfig.main.tsbuildinfo\ncleaned apps/desktop/tsconfig.renderer.tsbuildinfo\ncleaned 21 path(s).\n\n> @maka/core@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/storage@0.1.0 build\n> tsc -p tsconfig.json\n\n\n> @maka/mcp@0.1.0 build\n> tsc -p tsconfig.json\n";
+
+// Real path: run the full test suite → the user hits stop before it returns.
+// Aborting settles the call as a cancelled `terminal` result (isError), and
+// `toolResultActivityStatus` maps a cancelled terminal to `interrupted`. There is
+// no `interrupted` turn status (only running/completed/aborted/failed) — the
+// tool-level state is derived from the settled result, not asserted. Because the
+// turn kept that partial result, `partialOutputRetained` is true.
+//
+// `npm test` runs for minutes (build:test then the runner), so a cancel at ~16s is
+// still inside a running process — it settles `cancelled`/130, not `timed_out`/124
+// (which needs the 120s foreground default) and not a `completed` run. The retained
+// stdout is a verbatim prefix of a real run (see NPM_TEST_STDOUT_AT_CANCEL), cut in
+// the build phase so there is no runner interleaving and nothing is truncated.
+//
+// This is the interrupted counterpart to RunningStatusDuringToolRun, and the only
+// story that reaches the interrupted tool row. It goes through the real
+// ChatView → materializeTurns → ToolTrow path, so the row renders inside the
+// production `.maka-turn` frame. The session is `aborted` too, so the sidebar row
+// and composer agree with the transcript instead of still reading as active.
+export const InterruptedToolAfterTurnAbort: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'aborted', lastMessageAt: NOW - 98_000 }}
+      chat={{
+        messages: [
+          user('msg-i-1', 'turn-i', 2, '把整套测试跑一遍，我刚改完 core，想确认没打断别的。'),
+          {
+            type: 'turn_state',
+            id: 'state-i-running',
+            turnId: 'turn-i',
+            ts: NOW - 118_000,
+            status: 'running',
+            partialOutputRetained: false,
+          },
+          {
+            type: 'assistant',
+            id: 'msg-assistant-i',
+            turnId: 'turn-i',
+            ts: NOW - 116_000,
+            text: '跑 npm test —— 先全量重建再跑用例。',
+            modelId: 'claude-sonnet-4-5',
+          },
+          {
+            type: 'tool_call',
+            id: 'tool-i-1',
+            turnId: 'turn-i',
+            ts: NOW - 114_000,
+            toolName: 'Bash',
+            activityKind: 'command',
+            stepId: 'msg-assistant-i',
+            origin: 'provider',
+            modelVisibility: 'visible',
+            args: { command: 'npm test' },
+          },
+          {
+            type: 'tool_result',
+            id: 'tool-i-1-result',
+            turnId: 'turn-i',
+            ts: NOW - 98_000,
+            toolUseId: 'tool-i-1',
+            isError: true,
+            durationMs: 16_000,
+            origin: 'provider',
+            modelVisibility: 'visible',
+            content: {
+              kind: 'terminal',
+              cwd: '/workspace/maka-agent/.worktree/storybook',
+              cmd: 'npm test',
+              status: 'cancelled',
+              exitCode: 130,
+              failureMessage: 'Command cancelled',
+              output: {
+                mode: 'pipes',
+                stdout: NPM_TEST_STDOUT_AT_CANCEL,
+                stderr: '',
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                redacted: false,
+              },
+            },
+          },
+          {
+            type: 'turn_state',
+            id: 'state-i-aborted',
+            turnId: 'turn-i',
+            ts: NOW - 98_000,
+            status: 'aborted',
+            abortedAt: NOW - 98_000,
+            abortSource: 'renderer.stop_button',
+            partialOutputRetained: true,
+          },
+        ],
+      }}
+    />
+  ),
+};
+
+// Real path: a tool call fails mid-turn and the turn settles as failed. The
+// errored tool row renders inside `.maka-turn`, and the turn wears its failed
+// Banner (`describeTurnErrorClass('tool_failed')`) with the erroredTool
+// execution-state description — the failed-turn chrome no story exercised.
+export const FailedTurnWithToolError: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 4 * 60_000 }}
+      chat={{
+        messages: [
+          user('msg-f-1', 'turn-f', 5, '把 core 里的类型错误修掉，然后跑一遍类型检查确认。'),
+          { type: 'turn_state', id: 'state-f-running', turnId: 'turn-f', ts: NOW - 290_000, status: 'running', partialOutputRetained: false },
+          { type: 'assistant', id: 'msg-assistant-f', turnId: 'turn-f', ts: NOW - 285_000, text: '先运行类型检查定位问题。', modelId: 'claude-sonnet-4-5' },
+          {
+            type: 'tool_call',
+            id: 'tool-f-1',
+            turnId: 'turn-f',
+            ts: NOW - 284_000,
+            toolName: 'Bash',
+            activityKind: 'command',
+            stepId: 'msg-assistant-f',
+            origin: 'provider',
+            modelVisibility: 'visible',
+            args: { command: 'npm run typecheck' },
+          },
+          {
+            type: 'tool_result',
+            id: 'tool-f-1-result',
+            turnId: 'turn-f',
+            ts: NOW - 281_000,
+            toolUseId: 'tool-f-1',
+            isError: true,
+            durationMs: 3_400,
+            origin: 'provider',
+            modelVisibility: 'visible',
+            content: {
+              kind: 'text',
+              text: "src/session.ts(88,7): error TS2322: Type 'string' is not assignable to type 'number'.\nnpm run typecheck exited with code 2.",
+            },
+          },
+          { type: 'turn_state', id: 'state-f-failed', turnId: 'turn-f', ts: NOW - 281_000, status: 'failed', errorClass: 'tool_failed', partialOutputRetained: false },
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const banner = canvasElement.querySelector('.maka-turn-failed-banner');
+      expect(banner?.textContent).toContain('工具调用失败');
+      expect(banner?.textContent).toContain('这一轮有工具执行出错');
+    });
+  },
+};
+
+// Real path: the provider rate-limits the request and the turn settles failed.
+// The failed Banner carries the rate-limit guidance — the settled provider
+// error a bare transcript never shows.
+export const ProviderRateLimited: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 3 * 60_000 }}
+      chat={{
+        messages: [
+          user('msg-r-1', 'turn-r', 4, '再生成三个对照方案，越详细越好。'),
+          { type: 'turn_state', id: 'state-r-running', turnId: 'turn-r', ts: NOW - 200_000, status: 'running', partialOutputRetained: false },
+          { type: 'turn_state', id: 'state-r-failed', turnId: 'turn-r', ts: NOW - 198_000, status: 'failed', errorClass: 'rate_limit', partialOutputRetained: false },
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.querySelector('.maka-turn-failed-banner')?.textContent).toContain(
+        '模型请求太频繁被限流了',
+      ),
+    );
+  },
+};
+
+// Real path: the provider throttles a live request and Runtime schedules a
+// retry. The running turn swaps its working phrase for the retry Banner
+// (`ModelProviderRetryIndicator`) — the "retrying" state no story reached.
+export const ProviderRetrying: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ status: 'running', streaming: true }}
+      chat={{
+        runningStatus: true,
+        messages: [
+          user('msg-rr-1', 'turn-rr', 1, '把这份长文档翻译成英文。'),
+          { type: 'turn_state', id: 'state-rr', turnId: 'turn-rr', ts: NOW - 20_000, status: 'running', partialOutputRetained: false },
+        ],
+        liveTurn: {
+          turnId: 'turn-rr',
+          phase: 'streamed',
+          steps: [{ stepId: 'msg-assistant-rr', tools: [] }],
+          providerRetry: {
+            event: {
+              type: 'provider_retry',
+              phase: 'scheduled',
+              id: 'retry-rr',
+              turnId: 'turn-rr',
+              ts: NOW - 5_000,
+              attempt: 2,
+              maxAttempts: 5,
+              delayMs: 30_000,
+              remainingMs: 30_000,
+              reason: 'rate_limit',
+            },
+            receivedAtMs: NOW - 5_000,
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.querySelector('.maka-turn-provider-retry')).not.toBeNull(),
+    );
+  },
+};
+
+// Real path: the app restarted mid-turn, so the last turn is failed with
+// errorClass 'app_restarted' and offers safe-resume. The warning-severity
+// Banner carries the 继续这一轮 button (`safeResumeAction`) — the recovery
+// affordance no story reached.
+export const SafeResumeAfterRestart: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 2 * 60_000 }}
+      chat={{
+        safeResumeAction: { pending: false, onResume: noop },
+        messages: [
+          user('msg-sr-1', 'turn-sr', 3, '把这份报告整理成要点清单。'),
+          { type: 'turn_state', id: 'state-sr-running', turnId: 'turn-sr', ts: NOW - 150_000, status: 'running', partialOutputRetained: false },
+          { type: 'assistant', id: 'msg-assistant-sr', turnId: 'turn-sr', ts: NOW - 148_000, text: '好的，我先通读一遍，抓住主要结论——', modelId: 'claude-sonnet-4-5' },
+          { type: 'turn_state', id: 'state-sr-failed', turnId: 'turn-sr', ts: NOW - 146_000, status: 'failed', errorClass: 'app_restarted', partialOutputRetained: true },
+        ],
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      const banner = canvasElement.querySelector('.maka-turn-failed-banner');
+      expect(banner?.textContent).toContain('本地应用重启');
+      expect(banner?.textContent).toContain('继续这一轮');
+    });
+  },
+};
+
+// Real path: a long session with 120 turns — past the transcript virtualizer's
+// window, so it must stay correct and quiet where a handful of seeded turns
+// would never trip the virtualization path.
+export const ManyTurns: Story = {
+  render: () => (
+    <ComposedShell
+      session={{ lastMessageAt: NOW - 60_000 }}
+      chat={{
+        messages: Array.from({ length: 120 }, (_, index) => {
+          const turnId = `turn-m-${index}`;
+          const minutesAgo = (120 - index) * 3;
+          return [
+            user(`msg-m-u-${index}`, turnId, minutesAgo, `第 ${index + 1} 轮：这个模块的边界条件该怎么覆盖？`),
+            assistant(`msg-m-a-${index}`, turnId, minutesAgo - 1, `第 ${index + 1} 轮回答：先列输入域，再对空、超长、并发三类分别加断言。`),
+          ];
+        }).flat(),
       }}
     />
   ),
@@ -677,7 +956,7 @@ export const NewChatComposer: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
       }}
@@ -693,7 +972,7 @@ export const NewChatComposerEmptyLocalHost: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
         workspacePicker: {
@@ -718,7 +997,7 @@ export const NewChatComposerProjectPending: Story = {
       session={null}
       chat={{ messages: [] }}
       composer={{
-        newChatModel: { llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
+        newChatModel: { llmConnectionId: 'connection-anthropic-main', llmConnectionSlug: 'anthropic-main', model: 'claude-sonnet-4-5' },
         onPickNewChatModel: noop,
         onOpenModelSettings: noop,
         workspacePicker: {

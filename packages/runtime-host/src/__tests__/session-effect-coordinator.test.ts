@@ -202,21 +202,20 @@ test('Session effect leaves Turn admission free and drain aborts accepted recap 
   );
 });
 
-test('Automatic title generation fences retirement until the effect settles', async () => {
+test('Automatic naming fences retirement until the effect settles', async () => {
   const started = gate();
   await withHarness(
     async ({ coordinator }) => {
-      const pending = coordinator.generateTitle({
+      coordinator.nameSessionFromRootMessage({
         sessionId: 'session-1',
-        header: { id: 'session-1' } as SessionHeader,
-        sourceText: 'A first user message',
+        content: { text: 'A first user message' },
       });
       await started.promise;
       assert.equal(coordinator.hasLiveSessionState('session-1'), true);
       assert.equal(coordinator.hasLiveSessionState('session-2'), false);
 
       coordinator.beginDrain();
-      assert.equal(await pending, undefined);
+      await coordinator.close();
       assert.equal(coordinator.hasLiveSessionState('session-1'), false);
     },
     {
@@ -227,7 +226,13 @@ test('Automatic title generation fences retirement until the effect settles', as
         );
         return undefined;
       },
-      generateRecap: async () => assert.fail('title generation must not call recap'),
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      // Draining retires the effect rather than downgrading it: the fallback
+      // name answers an unreachable model, not a Host that is shutting down.
+      nameSessionIfUnnamed: async () => assert.fail('an aborted naming must not write'),
     },
   );
 });
@@ -277,6 +282,139 @@ test('Session recap keeps accounting failures non-terminal and unsafe to retry',
     { requestDrain: () => (drains += 1) },
   );
 });
+
+test('Naming writes what the title model generated, not the Message', async () => {
+  const named = gate();
+  const titles: string[] = [];
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello world' },
+      });
+      await named.promise;
+      assert.deepEqual(titles, ['Model title']);
+    },
+    {
+      generateTitle: async () => 'Model title',
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      nameSessionIfUnnamed: async (_sessionId, title) => {
+        titles.push(title);
+        return unnamedHeader();
+      },
+      onSessionNamed: () => named.release(),
+    },
+  );
+});
+
+test('Naming falls back to the Message when the title model is unreachable', async () => {
+  const named = gate();
+  const titles: string[] = [];
+  let notifications = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: '\nFallback title\nignored' },
+      });
+      await named.promise;
+      assert.deepEqual(titles, ['Fallback title']);
+      assert.equal(notifications, 1);
+    },
+    {
+      generateTitle: async () => {
+        throw new Error('offline');
+      },
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      nameSessionIfUnnamed: async (_sessionId, title) => {
+        titles.push(title);
+        return unnamedHeader();
+      },
+      onSessionNamed: () => {
+        notifications += 1;
+        named.release();
+      },
+    },
+  );
+});
+
+test('A named Session is never renamed by the effect', async () => {
+  let modelCalls = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello' },
+      });
+      await coordinator.close();
+      assert.equal(modelCalls, 0);
+    },
+    {
+      generateTitle: async () => {
+        modelCalls += 1;
+        return 'Generated loses';
+      },
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => ({
+        ...unnamedHeader(),
+        name: 'Manual wins',
+        titleIsManual: true,
+      }),
+      nameSessionIfUnnamed: async () => assert.fail('a named Session must not be renamed'),
+      onSessionNamed: () => assert.fail('a named Session must not notify'),
+    },
+  );
+});
+
+test('A racing manual rename wins over the generated title', async () => {
+  const attempted = gate();
+  let notifications = 0;
+  await withHarness(
+    async ({ coordinator }) => {
+      coordinator.nameSessionFromRootMessage({
+        sessionId: 'session-1',
+        content: { text: 'hello' },
+      });
+      await attempted.promise;
+      await coordinator.close();
+      assert.equal(notifications, 0);
+    },
+    {
+      generateTitle: async () => 'Generated loses',
+      generateRecap: async () => assert.fail('naming must not call recap'),
+    },
+    {
+      readSessionHeader: async () => unnamedHeader(),
+      // The store re-checks the name under its own write: the rename landed
+      // first, so the generated title is refused.
+      nameSessionIfUnnamed: async () => {
+        attempted.release();
+        return null;
+      },
+      onSessionNamed: () => {
+        notifications += 1;
+      },
+    },
+  );
+});
+
+function unnamedHeader(): SessionHeader {
+  return {
+    id: 'session-1',
+    name: 'New Chat',
+    titleIsManual: false,
+    isArchived: false,
+    status: 'active',
+  } as unknown as SessionHeader;
+}
 
 async function withHarness(
   run: (input: {
@@ -336,6 +474,8 @@ function createCoordinator(
       options.readSessionHeader ??
       (async () => ({ isArchived: false, status: 'active' }) as unknown as SessionHeader),
     sessionAdmission: options.admission ?? new SessionAdmissionGate(),
+    nameSessionIfUnnamed: options.nameSessionIfUnnamed ?? (async () => null),
+    onSessionNamed: options.onSessionNamed ?? (() => undefined),
     acquireResidency: () => ({ release: () => undefined }),
     requestDrain:
       options.requestDrain ??
@@ -347,6 +487,11 @@ interface CoordinatorOptions {
   readonly admission?: SessionAdmissionGate;
   readonly readSessionHeader?: (sessionId: string) => Promise<SessionHeader>;
   readonly requestDrain?: () => void;
+  readonly nameSessionIfUnnamed?: (
+    sessionId: string,
+    title: string,
+  ) => Promise<SessionHeader | null>;
+  readonly onSessionNamed?: (sessionId: string) => void;
 }
 
 function gate(): { promise: Promise<void>; release(): void } {

@@ -43,7 +43,11 @@ import type {
   ClientCapabilityConnection,
   ClientCapabilityService,
 } from './client-capability-service.js';
-import type { HostChangeFeed, HostChangeSubscription } from './host-change-feed.js';
+import type {
+  HostChangeFeed,
+  HostChangeSubscription,
+  HostChangeSubscriptionMask,
+} from './host-change-feed.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import {
   authorizeClientCapabilityFrame,
@@ -69,6 +73,7 @@ export interface RuntimeHostConnectionSessionOptions {
   resolveContinuity(): SessionContinuityService | undefined;
   resolveClientCapabilities?(): ClientCapabilityService | undefined;
   resolveHostChanges?(): HostChangeFeed | undefined;
+  resolveSharedSessionId?(): string | undefined;
   beginOperation(frame: RequestFrame): Promise<ConnectionOperationLease | HostOperationErrorCode>;
   onTeardown(): void;
 }
@@ -222,8 +227,12 @@ export class RuntimeHostConnectionSession {
       const response = await dispatchOperation(frame, this.#options.resolveHandlers(), {
         ...this.#options.connection,
         principal: this.#options.connection.authority.principalId,
+        principalKind: this.#options.connection.authority.principalKind,
         ...(this.#options.connection.authority.credentialId
           ? { credentialId: this.#options.connection.authority.credentialId }
+          : {}),
+        ...(this.#options.connection.authority.clientInstanceId
+          ? { credentialClientInstanceId: this.#options.connection.authority.clientInstanceId }
           : {}),
         acquireResidency: () => admission.acquireResidency(),
       });
@@ -290,7 +299,16 @@ export class RuntimeHostConnectionSession {
           connectionId: this.#options.connection.connectionId,
           principalId: this.#options.connection.authority.principalId,
           clientInstanceId: this.#options.connection.clientInstanceId,
+          ...(this.#options.connection.authority.clientInstanceId
+            ? {
+                credentialBoundClientInstanceId:
+                  this.#options.connection.authority.clientInstanceId,
+              }
+            : {}),
           principalKind: this.#options.connection.authority.principalKind,
+          ...(this.#options.connection.authority.capabilityOwner
+            ? { capabilityOwner: this.#options.connection.authority.capabilityOwner }
+            : {}),
         },
         {
           send: (frame) => {
@@ -319,6 +337,20 @@ export class RuntimeHostConnectionSession {
     if (this.#closed || this.#inputClosed) return;
     const service = this.#options.resolveHostChanges?.();
     if (!service || this.#hostChanges) return;
+    const sharedSessionId =
+      this.#options.connection.authority.principalKind === 'session_guest' &&
+      hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.shared.query')
+        ? this.#options.resolveSharedSessionId?.()
+        : undefined;
+    const sessionCatalog: HostChangeSubscriptionMask['sessionCatalog'] =
+      sharedSessionId !== undefined
+        ? {
+            sessionId: sharedSessionId,
+            principalId: this.#options.connection.authority.principalId,
+          }
+        : hasRuntimeHostOperationGrant(this.#options.connection.authority, 'session.catalog.query')
+          ? true
+          : undefined;
     this.#hostChanges = service.attachConnection(
       this.#options.connection.connectionId,
       {
@@ -330,10 +362,7 @@ export class RuntimeHostConnectionSession {
           this.#options.connection.authority,
           'project.catalog.query',
         ),
-        sessionCatalog: hasRuntimeHostOperationGrant(
-          this.#options.connection.authority,
-          'session.catalog.query',
-        ),
+        sessionCatalog,
         scheduledTask: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'scheduled-task.query',

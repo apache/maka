@@ -163,6 +163,7 @@ function subscription(
     activeAssistantStreams: [],
     transcriptBootstrap: {
       throughSequence: null,
+      durableCoverage: 'complete',
       overlayMessageCount: 0,
       durable: emptyTranscriptPage(sessionId, 'durable'),
       overlay: emptyTranscriptPage(sessionId, 'overlay'),
@@ -209,6 +210,8 @@ function emptyTranscriptPage(sessionId: string, source: 'durable' | 'overlay') {
     throughSequence: null,
     rawBytes: 0,
     fragments: [],
+    rangeBoundarySequence: null,
+    protectedTurnSequence: null,
     nextCursor: null,
   };
 }

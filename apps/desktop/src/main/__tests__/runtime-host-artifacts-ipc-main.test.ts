@@ -25,6 +25,51 @@ import { test } from "node:test";
 import { registerRuntimeHostArtifactsIpc } from "../runtime-host-artifacts-ipc-main.js";
 
 type Handler = (event: unknown, ...args: any[]) => unknown;
+type StreamArtifact = (
+  sessionId: string,
+  artifactId: string,
+  writeChunk: (chunk: Uint8Array) => Promise<void>,
+) => Promise<number>;
+
+function previewArtifact(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "artifact-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    createdAt: 1,
+    name: "preview.png",
+    kind: "image",
+    sizeBytes: 4,
+    mimeType: "image/png",
+    status: "live",
+    ...overrides,
+  };
+}
+
+function attachmentReadHandler(
+  artifact: Record<string, unknown>,
+  streamArtifact: StreamArtifact,
+): Handler {
+  const handlers = new Map<string, Handler>();
+  registerRuntimeHostArtifactsIpc({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as Handler),
+    },
+    client: {
+      hostEpoch: "host-1",
+      async getArtifact() {
+        return artifact;
+      },
+      streamArtifact,
+    } as never,
+    mainWindowController: {} as never,
+    sendToRenderer() {},
+    showItemInFolder() {},
+  });
+  const handler = handlers.get("attachments:readBytes");
+  assert.ok(handler);
+  return handler;
+}
 
 test("Runtime Host Artifact IPC preserves previews and streams complete exports", async () => {
   const root = await mkdtemp(join(tmpdir(), "maka-host-artifact-ipc-"));
@@ -40,8 +85,9 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
     turnId: "turn-1",
     createdAt: 1,
     name: "result.bin",
-    kind: "file",
+    kind: "image",
     sizeBytes: content.byteLength,
+    mimeType: "image/png",
     status: "live",
   } as const;
   const client = {
@@ -92,6 +138,14 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
       { ok: false, reason: "too_large" },
     );
     assert.deepEqual(
+      await handlers.get("attachments:readBytes")?.({}, "session-1", "artifact-1"),
+      {
+        ok: true,
+        base64: content.toString("base64"),
+        mimeType: "image/png",
+      },
+    );
+    assert.deepEqual(
       await handlers.get("app:saveArtifactAs")?.({}, "session-1", "artifact-1"),
       { ok: true, saved: "result.bin" },
     );
@@ -109,4 +163,34 @@ test("Runtime Host Artifact IPC preserves previews and streams complete exports"
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Attachment byte IPC rejects preview-ineligible metadata before streaming", async () => {
+  for (const [overrides, reason] of [
+    [{ id: "artifact-large", sizeBytes: 2 * 1024 * 1024 + 1 }, "too_large"],
+    [{ id: "artifact-svg", name: "vector.svg", mimeType: "image/svg+xml" }, "unsupported_mime"],
+  ] as const) {
+    let streamCalls = 0;
+    const read = attachmentReadHandler(previewArtifact(overrides), async () => {
+      streamCalls += 1;
+      return 0;
+    });
+    assert.deepEqual(await read({}, "session-1", overrides.id), { ok: false, reason });
+    assert.equal(streamCalls, 0);
+  }
+});
+
+test("Attachment byte IPC stops a stream that exceeds its preview admission", async () => {
+  const read = attachmentReadHandler(
+    previewArtifact({ id: "artifact-drifted" }),
+    async (_sessionId, _artifactId, writeChunk) => {
+      await writeChunk(new Uint8Array(2 * 1024 * 1024 + 1));
+      return 2 * 1024 * 1024 + 1;
+    },
+  );
+
+  assert.deepEqual(
+    await read({}, "session-1", "artifact-drifted"),
+    { ok: false, reason: "too_large" },
+  );
 });

@@ -21,7 +21,16 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION, type ModelCallAttempt } from '../model-call-attempt.js';
-import { mergeUsageBuckets, mergeUsageLogs, mergeUsageSummary } from '../usage-ledger-merge.js';
+import {
+  EMPTY_USAGE_PROVENANCE,
+  estimatedUsageCost,
+  hasUnavailableUsage,
+  legacyUsageProvenance,
+  mergeUsageBuckets,
+  mergeUsageLogs,
+  mergeUsageSummary,
+  type UsageProvenance,
+} from '../usage-ledger-merge.js';
 import type { UsageBucket, UsageLogRow, UsageSummaryV2 } from '../usage-stats/types.js';
 
 // A realistic epoch-ms clock: a small NOW would push relative ranges negative
@@ -262,5 +271,35 @@ describe('usage ledger merge', () => {
 
     assert.deepEqual(merged.rows, []);
     assert.equal(merged.total, 0);
+  });
+});
+
+describe('presenting usage provenance', () => {
+  function provenance(overrides: Partial<UsageProvenance> = {}): UsageProvenance {
+    return { ...EMPTY_USAGE_PROVENANCE, ...overrides };
+  }
+
+  test('estimatedUsageCost trusts the total once any attempt was priced', () => {
+    const withPriced = provenance({
+      coverage: { ...EMPTY_USAGE_PROVENANCE.coverage, attempts: 2, pricedAttempts: 1 },
+    });
+    assert.equal(estimatedUsageCost(withPriced, 4.2), 4.2);
+    assert.equal(estimatedUsageCost(withPriced, 0), 0);
+  });
+
+  test('estimatedUsageCost treats a positive legacy total as an estimate but a zero as unknown', () => {
+    assert.equal(estimatedUsageCost(legacyUsageProvenance(3), 1.5), 1.5);
+    assert.equal(estimatedUsageCost(legacyUsageProvenance(3), 0), undefined);
+  });
+
+  test('estimatedUsageCost is unknown when nothing was priced and there are no legacy records', () => {
+    assert.equal(estimatedUsageCost(EMPTY_USAGE_PROVENANCE, 9.9), undefined);
+  });
+
+  test('hasUnavailableUsage flags unreadable or pending records only', () => {
+    assert.equal(hasUnavailableUsage(EMPTY_USAGE_PROVENANCE), false);
+    assert.equal(hasUnavailableUsage(provenance({ unreadableRecords: 1 })), true);
+    assert.equal(hasUnavailableUsage(provenance({ pendingRepairs: 2 })), true);
+    assert.equal(hasUnavailableUsage(legacyUsageProvenance(5)), false);
   });
 });

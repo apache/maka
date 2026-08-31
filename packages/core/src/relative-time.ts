@@ -57,31 +57,44 @@ function relativeAgeMs(ts: number, now: number): number {
   return Math.max(0, now - ts);
 }
 
-let cachedRelativeFormat: Intl.RelativeTimeFormat | null = null;
-let cachedAbsoluteFormat: Intl.DateTimeFormat | null = null;
-let cachedLocale: string | null = null;
+// One cache per formatter. They used to share `cachedLocale` and clear each
+// other on a miss, so alternating relative and absolute reads — which is what
+// the sidebar does, once per row — rebuilt an `Intl` formatter every call.
+let cachedRelativeFormat: { locale: string; format: Intl.RelativeTimeFormat } | null = null;
+let cachedAbsoluteFormat: { locale: string; format: Intl.DateTimeFormat } | null = null;
 
 function getRelativeFormat(uiLocale: UiLocale): Intl.RelativeTimeFormat {
   const locale = uiLocaleToIntlLocale(uiLocale);
-  if (!cachedRelativeFormat || cachedLocale !== locale) {
-    cachedRelativeFormat = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
-    cachedAbsoluteFormat = null;
-    cachedLocale = locale;
+  if (cachedRelativeFormat?.locale !== locale) {
+    cachedRelativeFormat = {
+      locale,
+      format: new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }),
+    };
   }
-  return cachedRelativeFormat;
+  return cachedRelativeFormat.format;
 }
 
 function getAbsoluteFormat(uiLocale: UiLocale): Intl.DateTimeFormat {
   const locale = uiLocaleToIntlLocale(uiLocale);
-  if (!cachedAbsoluteFormat || cachedLocale !== locale) {
-    cachedAbsoluteFormat = new Intl.DateTimeFormat(locale, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    });
-    cachedRelativeFormat = null;
-    cachedLocale = locale;
+  if (cachedAbsoluteFormat?.locale !== locale) {
+    cachedAbsoluteFormat = {
+      locale,
+      format: new Intl.DateTimeFormat(locale, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }),
+    };
   }
-  return cachedAbsoluteFormat;
+  return cachedAbsoluteFormat.format;
+}
+
+/**
+ * Date and time for `ts`, spelled out. The single authority for the absolute
+ * reading a relative label falls back to and a tooltip shows; `@maka/ui` had
+ * its own uncached copy of the same `Intl` options until this became public.
+ */
+export function formatAbsoluteTimestamp(ts: number, locale: UiLocale = 'zh'): string {
+  return getAbsoluteFormat(locale).format(new Date(ts));
 }
 
 /**
@@ -180,7 +193,6 @@ export function formatSidebarTimestamp(
 export function resetRelativeTimeFormatters(): void {
   cachedRelativeFormat = null;
   cachedAbsoluteFormat = null;
-  cachedLocale = null;
   cachedCompactSameYearFormat = null;
   cachedCompactOtherYearFormat = null;
   cachedCompactLocale = null;

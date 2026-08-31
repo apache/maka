@@ -19,9 +19,28 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 9;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 10;
+
+const RELEASED_WORKFLOW_PROJECTION_TABLES = [
+  {
+    name: 'workflow_task_ledger_projections',
+    sql: `CREATE TABLE workflow_task_ledger_projections (
+      session_id TEXT PRIMARY KEY,
+      record_json TEXT NOT NULL
+    )`,
+  },
+  {
+    name: 'workflow_plan_projections',
+    sql: `CREATE TABLE workflow_plan_projections (
+      session_id TEXT PRIMARY KEY,
+      store_version INTEGER NOT NULL CHECK (store_version >= 0),
+      record_json TEXT NOT NULL
+    )`,
+  },
+] as const;
 
 export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
+  retireReleasedWorkflowProjections(db);
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
@@ -35,11 +54,6 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       UNIQUE (session_id, event_id)
     );
 
-    CREATE TABLE IF NOT EXISTS workflow_task_ledger_projections (
-      session_id TEXT PRIMARY KEY,
-      record_json TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS workflow_plan_events (
       session_id TEXT NOT NULL,
       sequence INTEGER NOT NULL CHECK (sequence >= 0),
@@ -49,12 +63,6 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       PRIMARY KEY (session_id, sequence),
       UNIQUE (session_id, event_id),
       UNIQUE (session_id, store_version)
-    );
-
-    CREATE TABLE IF NOT EXISTS workflow_plan_projections (
-      session_id TEXT PRIMARY KEY,
-      store_version INTEGER NOT NULL CHECK (store_version >= 0),
-      record_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS workflow_deep_research_events (
@@ -173,4 +181,53 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
     )
     WHERE record_json IS NULL
   `).run();
+}
+
+function retireReleasedWorkflowProjections(db: DatabaseSync): void {
+  for (const table of RELEASED_WORKFLOW_PROJECTION_TABLES) {
+    assertReleasedWorkflowProjectionShape(db, table);
+  }
+  db.exec(`
+    DROP TABLE IF EXISTS workflow_task_ledger_projections;
+    DROP TABLE IF EXISTS workflow_plan_projections;
+  `);
+}
+
+function assertReleasedWorkflowProjectionShape(
+  db: DatabaseSync,
+  table: (typeof RELEASED_WORKFLOW_PROJECTION_TABLES)[number],
+): void {
+  const objects = db
+    .prepare(`
+      SELECT type, name, sql
+      FROM sqlite_schema
+      WHERE tbl_name COLLATE NOCASE = ?
+        AND type IN ('table', 'index', 'trigger', 'view')
+        AND sql IS NOT NULL
+      ORDER BY type, name
+    `)
+    .all(table.name) as Array<{ type: string; name: string; sql: string }>;
+  if (objects.length === 0) return;
+
+  const releasedTable = objects.find(
+    (object) => object.type === 'table' && object.name === table.name,
+  );
+  if (!releasedTable || normalizeSql(releasedTable.sql) !== normalizeSql(table.sql)) {
+    throw new Error(`Workflow projection table ${table.name} has an unfamiliar released shape`);
+  }
+  const unexpected = objects.find((object) => object !== releasedTable);
+  if (unexpected) {
+    throw new Error(
+      `Workflow projection table ${table.name} carries an unexpected object ` +
+        `${unexpected.type}:${unexpected.name}`,
+    );
+  }
+}
+
+function normalizeSql(value: string): string {
+  return value
+    .replace(/\s+/gu, ' ')
+    .replace(/\s*([(),;])\s*/gu, '$1')
+    .trim()
+    .toUpperCase();
 }

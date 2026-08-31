@@ -119,8 +119,6 @@ test('source legal authority and generated provenance select the ASF source gate
     'apps/desktop/src/renderer/assets/provider-brands/example.svg',
     'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
-    'packages/core/src/model-metadata.generated.ts',
-    'packages/runtime/src/telemetry/model-pricing.generated.ts',
     'scripts/model-metadata/models-dev-api.snapshot.json',
     'scripts/sync-model-metadata.mjs',
   ]) {
@@ -130,19 +128,22 @@ test('source legal authority and generated provenance select the ASF source gate
 
 test('release authority changes select their dedicated contract gate', () => {
   for (const path of [
+    'apps/desktop/src/main/app-update-test-context.ts',
     'apps/desktop/build/entitlements.mac.plist',
     'apps/desktop/electron-builder.config.mjs',
     'apps/desktop/package.json',
     '.github/workflows/cli-package-validation.yml',
+    '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
     'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
     'scripts/product-release-artifacts.mjs',
-    'scripts/product-release-artifacts.test.mjs',
     'scripts/product-release-authority.mjs',
     'scripts/product-release-authority.test.mjs',
     'scripts/product-release-identity.mjs',
@@ -153,6 +154,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
     'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-macos-autoupdate.mjs',
+    'scripts/desktop-update-contract.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
     'scripts/windows-upgrade-baseline.json',
@@ -162,6 +165,21 @@ test('release authority changes select their dedicated contract gate', () => {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
+});
+
+test('Product Nightly authority changes select the release contract gate', () => {
+  for (const path of [
+    '.github/workflows/desktop-nightly.yml',
+    '.github/workflows/npm-publication.yml',
+    'scripts/desktop-nightly.mjs',
+    'scripts/desktop-nightly.test.mjs',
+    'scripts/desktop-nightly-stage.test.mjs',
+    'scripts/desktop-nightly-workflow-policy.test.mjs',
+    'scripts/product-nightly.mjs',
+    'scripts/product-nightly.test.mjs',
+  ]) {
+    assert.equal(planTests([path], { graph }).releaseContract, true, path);
+  }
 });
 
 // Both notices are committed generator output. A hand edit or a merge-conflict
@@ -190,6 +208,7 @@ test('ASF source authority changes select their dedicated gate', () => {
   for (const path of [
     '.gitattributes',
     '.github/workflows/asf-source-candidate.yml',
+    'docs/code-origin-audit.md',
     'scripts/asf-source-release.mjs',
     'scripts/asf-source-release.test.mjs',
   ]) {
@@ -306,6 +325,20 @@ test('core CI checks the Astryx inventory for every code change before building'
   assert.doesNotMatch(inventoryStep, /continue-on-error/u);
 });
 
+test('CI installs dependencies whenever the Astryx surface inventory runs', () => {
+  const workflow = readWorkflow('ci.yml');
+  // The inventory step imports the generator, which resolves @astryxdesign/core
+  // and parses the @maka/ui barrel. An inventory-doc-only PR is `astryx_surface`
+  // without `code`, so the `npm ci` step must gate on astryx_surface too — else
+  // the generator runs with no dependencies installed and fails closed.
+  const npmCi = workflow.indexOf('run: npm ci');
+  assert.ok(npmCi >= 0, 'expected an `npm ci` install step');
+  const stepStart = workflow.lastIndexOf('\n      - name:', npmCi) + 1;
+  const stepEnd = workflow.indexOf('\n      - ', npmCi);
+  const installStep = workflow.slice(stepStart, stepEnd);
+  assert.match(installStep, /steps\.plan\.outputs\.astryx_surface == 'true'/u);
+});
+
 test('core CI validates affected installed CLI packages on its existing runner', () => {
   const workflow = readWorkflow('ci.yml');
   const toolchain = workflow.indexOf(
@@ -352,6 +385,45 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'windows-recovery.yml',
     'windows-sandbox-w0.yml',
   ]);
+});
+
+test('every pull request lane holds a scarce runner for the same bounded time', () => {
+  // One tier, not per-lane values. The worst observed successful runs are 19
+  // minutes (ci.yml) and 20 (release-windows-check), so 45 is about 2.3x the
+  // slowest lane: enough headroom for a cold cache and a flake retry, and far
+  // short of the 120 and 90 a hung job used to hold. A lane with no limit at
+  // all inherits GitHub's 360 and fails here.
+  // `pull_request` only: a `pull_request_target` lane reads the pull request
+  // rather than gating it, so it is not competing for a runner the author is
+  // waiting on and keeps its own tighter limit.
+  // Granularity is the file, not the job: a job inside a gating workflow that
+  // opts out of pull requests still carries the tier, because reading a job's
+  // `if:` would need the YAML parser this file cannot install.
+  const gates = readdirSync(WORKFLOW_DIR).filter((name) =>
+    /\bpull_request\b/u.test(triggerBlock(name)),
+  );
+  assert.ok(gates.length > 0, 'no pull request lane found');
+
+  for (const name of gates) {
+    // From `jobs:` on, with comment lines stripped, so prose above the triggers
+    // cannot be read as a job.
+    const workflow = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
+    const start = workflow.indexOf('\njobs:');
+    assert.ok(start >= 0, `${name}: no jobs block`);
+    const jobs = workflow.slice(start);
+
+    const limits = [...jobs.matchAll(/^ {4}timeout-minutes: (\d+)$/gmu)].map((match) => match[1]);
+    // Counted by `runs-on`, one per job that consumes a runner, rather than by
+    // job id: a quoted id escapes an id pattern, and a two-space line inside a
+    // `run: |` block satisfies one.
+    const runners = [...jobs.matchAll(/^ {4}runs-on:/gmu)].length;
+    assert.ok(runners > 0, `${name}: no job consumes a runner`);
+    assert.deepEqual(
+      limits,
+      Array.from({ length: runners }, () => '45'),
+      name,
+    );
+  }
 });
 
 test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
@@ -576,6 +648,19 @@ test('Windows recovery executes the root initialization replacement race', () =>
   assert.match(recovery, /packages\/storage\/dist\/__tests__\/root-authority\.test\.js/u);
   assert.match(recovery, /# tests 1/u);
   assert.match(recovery, /# pass 1/u);
+  assert.match(recovery, /# skipped 0/u);
+});
+
+test('Windows recovery executes the complete Skill catalog suite', () => {
+  const recovery = readWorkflow('windows-recovery.yml');
+
+  assert.match(recovery, /skill-catalog-coordinator\.test\.js/u);
+  assert.match(recovery, /skill-catalog-protocol\.test\.js/u);
+  assert.match(recovery, /skill-catalog-repository\.test\.js/u);
+  assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
+  assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
+  assert.match(recovery, /# tests 91/u);
+  assert.match(recovery, /# pass 91/u);
   assert.match(recovery, /# skipped 0/u);
 });
 

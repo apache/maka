@@ -209,6 +209,37 @@ export class RuntimeHostSessionObservationRegistry {
     return [...new Set([...this.#registrations.values()].map((registration) => registration.sessionId))];
   }
 
+  trackedSessionIds(): string[] {
+    return [
+      ...new Set([
+        ...[...this.#registrations.values()].map((registration) => registration.sessionId),
+        ...[...this.#transcripts.values()].map((registration) => registration.sessionId),
+      ]),
+    ];
+  }
+
+  async forgetSession(sessionId: string): Promise<void> {
+    const source = this.#source;
+    const observations = [...this.#registrations].filter(
+      ([, registration]) => registration.sessionId === sessionId,
+    );
+    const transcripts = [...this.#transcripts].filter(
+      ([, registration]) => registration.sessionId === sessionId,
+    );
+    for (const [observerId, registration] of observations) {
+      this.#deleteRegistration(observerId, registration);
+    }
+    for (const [consumerId, registration] of transcripts) {
+      this.#deleteTranscript(consumerId, registration);
+    }
+    if (source) {
+      await Promise.allSettled([
+        ...observations.map(([observerId]) => source.unobserve(observerId)),
+        ...transcripts.map(([consumerId]) => source.closeTranscript?.(consumerId)),
+      ]);
+    }
+  }
+
   detach(source: SessionObservationSource): void {
     if (this.#source === source) {
       this.#source = undefined;

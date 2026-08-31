@@ -18,13 +18,31 @@
  */
 
 import { invalidProtocolFrame } from './errors.js';
-import { requireExactRecord, requireId, requireString, requireUtf8String } from './codec.js';
+import {
+  requireExactRecord,
+  requireId,
+  requireShapedRecord,
+  requireString,
+  requireUtf8String,
+} from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import type { OperationKey } from './operations.js';
 
 export const ACCESS_CREDENTIAL_MAX_GRANTS = 256;
 
-export type AccessCredentialPrincipalKind = 'remote_owner' | 'capability_provider';
+export type AccessCredentialPrincipalKind =
+  | 'remote_owner'
+  | 'capability_provider'
+  | 'session_guest';
+export type ManagedAccessCredentialPrincipalKind = Exclude<
+  AccessCredentialPrincipalKind,
+  'session_guest'
+>;
+
+export interface ClientCapabilityOwnerIdentity {
+  readonly principalId: string;
+  readonly clientInstanceId: string;
+}
 
 const ACCESS_ERRORS = [
   'host_not_ready',
@@ -37,30 +55,44 @@ const ACCESS_ERRORS = [
 ] as const;
 
 export interface AccessCredentialIssueInput {
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
 }
 
 export interface AccessCredentialIssueResult {
   readonly credentialId: string;
   readonly deliveryId: string;
-  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalKind: ManagedAccessCredentialPrincipalKind;
   readonly principalId: string;
   readonly operationGrants: readonly OperationKey[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
 }
 
 export type AccessCredentialReplaceInput = AccessCredentialIssueInput;
 export type AccessCredentialReplaceResult = AccessCredentialIssueResult;
-export type AccessCredentialPrepareInput = AccessCredentialIssueInput;
+export interface AccessCredentialPrepareInput
+  extends Omit<AccessCredentialIssueInput, 'capabilityOwnerCredentialId'> {
+  readonly bindClientInstance?: boolean;
+}
 export type AccessCredentialPrepareResult = AccessCredentialIssueResult;
 
 export interface AccessCredentialRevokeInput {
   readonly credentialId: string;
+}
+
+export interface AccessPrincipalRevokeInput {
+  readonly principalKind: AccessCredentialPrincipalKind;
+  readonly principalId: string;
+}
+
+export interface AccessPrincipalRevokeResult {
+  readonly revoked: boolean;
 }
 
 export interface AccessCredentialRotationPrepareInput {
@@ -82,7 +114,9 @@ export interface AccessCredentialRevokeResult {
 }
 
 export type AccessCredentialFinalizeInput = Record<string, never>;
-export type AccessCredentialFinalizeResult = Record<string, never>;
+export interface AccessCredentialFinalizeResult {
+  readonly reconnectRequired: boolean;
+}
 
 export const ACCESS_AUTHORITY_OPERATION_SPECS = {
   'access.credential.issue': defineOperation<
@@ -115,7 +149,7 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: ACCESS_ERRORS,
-    decodeInput: decodeAccessCredentialIssueInput,
+    decodeInput: decodeAccessCredentialPrepareInput,
     decodeOutput: decodeAccessCredentialIssueResult,
   }),
   'access.credential.revoke': defineOperation<
@@ -128,6 +162,17 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
     errors: ACCESS_ERRORS,
     decodeInput: decodeAccessCredentialRevokeInput,
     decodeOutput: decodeAccessCredentialRevokeResult,
+  }),
+  'access.principal.revoke': defineOperation<
+    AccessPrincipalRevokeInput,
+    AccessPrincipalRevokeResult,
+    (typeof ACCESS_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: ACCESS_ERRORS,
+    decodeInput: decodeAccessPrincipalRevokeInput,
+    decodeOutput: decodeAccessPrincipalRevokeResult,
   }),
   'access.credential.rotation.prepare': defineOperation<
     AccessCredentialRotationPrepareInput,
@@ -165,13 +210,52 @@ export const ACCESS_AUTHORITY_OPERATION_SPECS = {
 } as const;
 
 export function decodeAccessCredentialIssueInput(value: unknown): AccessCredentialIssueInput {
-  const record = requireExactRecord(value, 'access credential issue input', [
-    'principalKind',
-    'principalId',
-    'operationGrants',
-    'canPublishClientCapabilities',
-    'canUseHostPaths',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'access credential issue input',
+    [
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['capabilityOwnerCredentialId'],
+  );
+  const decodedPrincipalKind = principalKind(record.principalKind);
+  const capabilityOwnerCredentialId =
+    record.capabilityOwnerCredentialId === undefined
+      ? undefined
+      : requireId(record.capabilityOwnerCredentialId, 'capabilityOwnerCredentialId');
+  if (capabilityOwnerCredentialId && decodedPrincipalKind !== 'capability_provider') {
+    throw invalidProtocolFrame('Only a capability provider credential may declare a Client owner');
+  }
+  return {
+    principalKind: decodedPrincipalKind,
+    principalId: principalId(record.principalId),
+    operationGrants: operationGrants(record.operationGrants),
+    canPublishClientCapabilities: boolean(
+      record.canPublishClientCapabilities,
+      'canPublishClientCapabilities',
+    ),
+    canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(capabilityOwnerCredentialId ? { capabilityOwnerCredentialId } : {}),
+  };
+}
+
+export function decodeAccessCredentialPrepareInput(value: unknown): AccessCredentialPrepareInput {
+  const record = requireShapedRecord(
+    value,
+    'access credential prepare input',
+    [
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['bindClientInstance'],
+  );
   return {
     principalKind: principalKind(record.principalKind),
     principalId: principalId(record.principalId),
@@ -181,23 +265,39 @@ export function decodeAccessCredentialIssueInput(value: unknown): AccessCredenti
       'canPublishClientCapabilities',
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(record.bindClientInstance === undefined
+      ? {}
+      : { bindClientInstance: boolean(record.bindClientInstance, 'bindClientInstance') }),
   };
 }
 
 export function decodeAccessCredentialIssueResult(value: unknown): AccessCredentialIssueResult {
-  const record = requireExactRecord(value, 'access credential issue result', [
-    'credentialId',
-    'deliveryId',
-    'principalKind',
-    'principalId',
-    'operationGrants',
-    'canPublishClientCapabilities',
-    'canUseHostPaths',
-  ]);
+  const record = requireShapedRecord(
+    value,
+    'access credential issue result',
+    [
+      'credentialId',
+      'deliveryId',
+      'principalKind',
+      'principalId',
+      'operationGrants',
+      'canPublishClientCapabilities',
+      'canUseHostPaths',
+    ],
+    ['capabilityOwner'],
+  );
+  const decodedPrincipalKind = principalKind(record.principalKind);
+  const capabilityOwner =
+    record.capabilityOwner === undefined
+      ? undefined
+      : clientCapabilityOwnerIdentity(record.capabilityOwner);
+  if (capabilityOwner && decodedPrincipalKind !== 'capability_provider') {
+    throw invalidProtocolFrame('Only a capability provider credential may declare a Client owner');
+  }
   return {
     credentialId: requireId(record.credentialId, 'credentialId'),
     deliveryId: requireId(record.deliveryId, 'deliveryId'),
-    principalKind: principalKind(record.principalKind),
+    principalKind: decodedPrincipalKind,
     principalId: principalId(record.principalId),
     operationGrants: operationGrants(record.operationGrants),
     canPublishClientCapabilities: boolean(
@@ -205,11 +305,19 @@ export function decodeAccessCredentialIssueResult(value: unknown): AccessCredent
       'canPublishClientCapabilities',
     ),
     canUseHostPaths: boolean(record.canUseHostPaths, 'canUseHostPaths'),
+    ...(capabilityOwner ? { capabilityOwner } : {}),
   };
 }
 
-function principalKind(value: unknown): AccessCredentialPrincipalKind {
+function principalKind(value: unknown): ManagedAccessCredentialPrincipalKind {
   if (value !== 'remote_owner' && value !== 'capability_provider') {
+    throw invalidProtocolFrame('Invalid access credential principalKind');
+  }
+  return value;
+}
+
+function revocablePrincipalKind(value: unknown): AccessCredentialPrincipalKind {
+  if (value !== 'remote_owner' && value !== 'capability_provider' && value !== 'session_guest') {
     throw invalidProtocolFrame('Invalid access credential principalKind');
   }
   return value;
@@ -218,6 +326,17 @@ function principalKind(value: unknown): AccessCredentialPrincipalKind {
 export function decodeAccessCredentialRevokeInput(value: unknown): AccessCredentialRevokeInput {
   const record = requireExactRecord(value, 'access credential revoke input', ['credentialId']);
   return { credentialId: requireId(record.credentialId, 'credentialId') };
+}
+
+export function decodeAccessPrincipalRevokeInput(value: unknown): AccessPrincipalRevokeInput {
+  const record = requireExactRecord(value, 'access principal revoke input', [
+    'principalKind',
+    'principalId',
+  ]);
+  return {
+    principalKind: revocablePrincipalKind(record.principalKind),
+    principalId: principalId(record.principalId),
+  };
 }
 
 export function decodeAccessCredentialRotationPrepareInput(
@@ -261,6 +380,11 @@ export function decodeAccessCredentialRevokeResult(value: unknown): AccessCreden
   };
 }
 
+export function decodeAccessPrincipalRevokeResult(value: unknown): AccessPrincipalRevokeResult {
+  const record = requireExactRecord(value, 'access principal revoke result', ['revoked']);
+  return { revoked: boolean(record.revoked, 'revoked') };
+}
+
 export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCredentialFinalizeInput {
   requireExactRecord(value, 'access credential finalize input', []);
   return {};
@@ -269,8 +393,10 @@ export function decodeAccessCredentialFinalizeInput(value: unknown): AccessCrede
 export function decodeAccessCredentialFinalizeResult(
   value: unknown,
 ): AccessCredentialFinalizeResult {
-  requireExactRecord(value, 'access credential finalize result', []);
-  return {};
+  const record = requireExactRecord(value, 'access credential finalize result', [
+    'reconnectRequired',
+  ]);
+  return { reconnectRequired: boolean(record.reconnectRequired, 'reconnectRequired') };
 }
 
 function operationGrants(value: unknown): readonly OperationKey[] {
@@ -292,6 +418,17 @@ function principalId(value: unknown): string {
     throw invalidProtocolFrame('Invalid access credential principalId');
   }
   return principal;
+}
+
+function clientCapabilityOwnerIdentity(value: unknown): ClientCapabilityOwnerIdentity {
+  const record = requireExactRecord(value, 'Client Capability owner identity', [
+    'principalId',
+    'clientInstanceId',
+  ]);
+  return {
+    principalId: principalId(record.principalId),
+    clientInstanceId: requireId(record.clientInstanceId, 'clientInstanceId'),
+  };
 }
 
 function boolean(value: unknown, label: string): boolean {

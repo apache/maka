@@ -149,6 +149,9 @@ const zhCopy = {
         : '',
     ].filter(Boolean).join(' '),
     connectionSuccess: (name: string) => `连接成功 · ${name}`, connectionFailed: (name: string) => `连接失败 · ${name}`,
+    connectionFallbackTitle: (name: string) => `连接可用 · ${name}`,
+    connectionFallbackDetail: (selected: readonly string[], tested: string) =>
+      `你选择的 ${selected.join('、')} 当前未响应，已改用 ${tested} 验证连接可用；任务中继续使用你选择的模型可能会失败。`,
     connectionTestError: (name: string) => `连接测试出错 · ${name}`, modelsFetched: (count: number, name: string) => `已拉取 ${count} 个模型 · ${name}`,
     modelsFetchFailed: (name: string) => `拉取模型失败 · ${name}`,
     modelsFetchFailedDetail: (message: string, troubleshooting: string) => `${message} · 当前继续显示静态列表，请确认 ${troubleshooting} 后重试。`,
@@ -299,6 +302,9 @@ const enCopy: ProviderSettingsCopy = {
         : '',
     ].filter(Boolean).join(' '),
     connectionSuccess: (name: string) => `Connected · ${name}`, connectionFailed: (name: string) => `Connection failed · ${name}`,
+    connectionFallbackTitle: (name: string) => `Connection works · ${name}`,
+    connectionFallbackDetail: (selected: readonly string[], tested: string) =>
+      `Your selected ${selected.join(', ')} didn't respond; verified the connection with ${tested} instead. Tasks using your selected model may fail.`,
     connectionTestError: (name: string) => `Connection test error · ${name}`, modelsFetched: (count: number, name: string) => `Fetched ${count} ${count === 1 ? 'model' : 'models'} · ${name}`,
     modelsFetchFailed: (name: string) => `Failed to fetch models · ${name}`,
     modelsFetchFailedDetail: (message: string, troubleshooting: string) => `${message} · The static list remains visible. Check ${troubleshooting} and try again.`,

@@ -1,0 +1,38 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import type { MakaBridge } from '../../../preload/bridge-contract.js';
+import type { TaskEntryServices } from '../../features/task-entry';
+
+export type DesktopTaskEntryBridge = Pick<MakaBridge, 'newTasks'>;
+
+/** The only Desktop-to-Task Entry adapter. */
+export function createDesktopTaskEntryServices(
+  bridge: DesktopTaskEntryBridge = window.maka,
+): TaskEntryServices {
+  return {
+    catalog: {
+      getCatalog: () => bridge.newTasks.getCatalog(),
+      subscribeChanges: (handler) => bridge.newTasks.subscribeChanges(handler),
+      addProject: (host) => bridge.newTasks.addProject(host),
+      relinkProject: (host, projectId) =>
+        bridge.newTasks.relinkProject(host, projectId),
+    },
+  };
+}

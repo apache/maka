@@ -24,7 +24,7 @@
 // - cursor-overlay.html: copied verbatim.
 import * as esbuild from 'esbuild';
 import { resolve, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdir, copyFile } from 'node:fs/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -140,7 +140,7 @@ export async function buildPermissionOverlay({ logLevel = 'info' } = {}) {
 }
 
 // Run directly (npm run build:overlay) or import buildCursorOverlay (dev.mjs).
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const dir = await buildCursorOverlay();
   console.log('overlays built →', dir);
 }

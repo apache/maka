@@ -30,7 +30,7 @@ Runtime Host in one command. Linux uses a systemd user service; macOS uses a Lau
 requires an active GUI login session for that user.
 
 ```sh
-npx --yes --package maka-agent@next maka runtime-host setup \
+npx --yes --package maka-agent@latest maka runtime-host setup \
   --principal my-desktop \
   --preset desktop-client \
   --root "$HOME/.maka/runtime-host" \
@@ -42,7 +42,7 @@ instead of accumulating credentials. The command installs its exact Maka package
 directory, starts a loopback-only service, verifies the new credential, and then prints the connection
 details once. Use `terminal-client` for TUI or CLI.
 
-Run `npx --yes --package maka-agent@next maka runtime-host service uninstall` on the Host to remove the service and
+Run `npx --yes --package maka-agent@latest maka runtime-host service uninstall` on the Host to remove the service and
 managed package. The State Root and Project data are retained.
 
 ## Manual Host setup
@@ -104,9 +104,12 @@ ready; failure restores the previous service.
 
 ### Experimental direct peer
 
-The released CLI includes the native direct-peer transport for CLI and TUI use; the Host does not
-need Rust or a source checkout. Desktop support is not part of this milestone. After managed setup,
-enable it against the exact service target printed by setup:
+The released CLI and Desktop include the native direct-peer transport; the Host does not need Rust
+or a source checkout. For an SSH-managed Host, Desktop can enable it from that computer's management
+dialog and creates a separate experimental profile without deleting the SSH profile. Only one
+profile for the same State Root can be enabled at a time.
+
+The equivalent CLI flow uses the exact service target printed by setup:
 
 ```sh
 maka runtime-host service peer enable \
@@ -128,8 +131,15 @@ service uninstall removes its key while retaining the State Root. Pass
 `peer enable --clear-coordination-relays` to remove every configured coordination relay.
 
 This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It
-does not replace an existing TLS, SSH, or overlay-network fallback and does not use a public relay
-unless one is explicitly configured with `peer enable --coordination-relay`.
+does not replace an existing TLS, SSH, or overlay-network fallback. By default, the Host uses a
+bounded client-only view of the public IPFS DHT to discover Circuit Relay v2 candidates and fills a
+target of two accepted reservations after accounting for manual relays. Manually configured relays
+remain preferred. Disable or restore this
+best-effort discovery with `peer enable --no-automatic-relay-discovery` or
+`peer enable --automatic-relay-discovery`; disabling it leaves manual relays intact. Public peers can
+observe the discovery connection and may refuse or drop reservations. Only accepted reservations
+are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
+connection instead of carrying Session traffic through the relay.
 
 ### Direct TLS
 
@@ -180,6 +190,12 @@ The Client Profile must separately persist the plaintext acknowledgement. Maka n
 Open `Settings → Workspace → Runtime Host` and choose **Add computer**. Enter an OpenSSH destination; Desktop runs the released setup command in an interactive SSH session, stores the resulting credential, verifies the tunnel, and then opens the remote Project picker.
 
 Use **Configure manually** for an existing TLS, SSH, or explicitly acknowledged plaintext endpoint.
+
+To reach the current computer from another Desktop, enable **Remote access** in the same settings
+page. Maka keeps the existing Local Host and State Root, moves that Host under the OS service
+manager, and adds a Direct peer listener alongside Local IPC. Share the one-time connection code
+with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
+the background service returns Local Host ownership to Desktop and retains all data.
 
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 

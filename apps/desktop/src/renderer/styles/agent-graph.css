@@ -18,7 +18,7 @@
  */
 
 .maka-agent-graph-panel {
-  width: min(var(--maka-chat-measure), calc(100% - var(--space-8)));
+  width: min(var(--maka-reading-measure), calc(100% - var(--space-8)));
   max-height: min(300px, 36vh);
   margin: var(--space-2) auto;
   padding: var(--space-3);
@@ -176,7 +176,18 @@
   margin-top: var(--space-2);
 }
 
+/* The label is a fixed cost of the row, not a share of it: leave it shrinkable
+   and flex takes it down to min-content, which in a script without break
+   opportunities is one glyph wide — the label stacks vertically while the id
+   list it names keeps its single line. The ids are the part with room to give,
+   so they take the whole remainder and ellipsis out of it. */
+.maka-agent-graph-results > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .maka-agent-graph-results code {
+  flex: 1 1 0;
   font: var(--maka-text-supporting);
   min-width: 0;
   overflow: hidden;

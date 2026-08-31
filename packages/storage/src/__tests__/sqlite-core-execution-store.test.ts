@@ -220,6 +220,35 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('drops the obsolete AgentRun identity index on upgrade', async () => {
+    await withRoot(async (root) => {
+      createSqliteAgentRunStore(root).close?.();
+      const path = join(root, 'runtime.sqlite');
+      const legacy = new DatabaseSync(path);
+      legacy.exec(`
+        CREATE INDEX IF NOT EXISTS core_agent_runs_identity
+          ON core_agent_runs(run_id, session_id);
+        UPDATE operational_schema_migrations SET version = 5 WHERE scope = 'core_execution';
+      `);
+      legacy.close();
+
+      createSqliteAgentRunStore(root).close?.();
+      const migrated = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          migrated
+            .prepare(
+              "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'core_agent_runs_identity'",
+            )
+            .all(),
+          [],
+        );
+      } finally {
+        migrated.close();
+      }
+    });
+  });
+
   test('pages AgentRuns by stable creation and run identity order', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);

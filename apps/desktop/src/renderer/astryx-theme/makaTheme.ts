@@ -32,6 +32,7 @@
 //   npm run astryx:theme
 import { defineTheme } from '@astryxdesign/core/theme';
 import { neutralTheme, neutralIconRegistry } from '@astryxdesign/theme-neutral';
+import { TYPE_SCALE_BASE_PX } from './type-scale.js';
 
 export const makaTheme = defineTheme({
   name: 'maka',
@@ -89,7 +90,7 @@ export const makaTheme = defineTheme({
   // stacks in the renderer; the product's own --font-sans / --font-mono names
   // are gone, and maka-tokens.css reads these directly (#1875).
   typography: {
-    scale: { base: 14, ratio: 1.125 },
+    scale: { base: TYPE_SCALE_BASE_PX, ratio: 1.125 },
     // PR-UI-ALIGN-0's "clean native" feel comes from the SYSTEM font (SF Pro
     // on macOS), not a bundled geometric face; Geist stays a late fallback.
     body: {

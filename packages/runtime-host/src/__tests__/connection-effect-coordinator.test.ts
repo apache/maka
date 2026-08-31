@@ -27,6 +27,7 @@ import type {
   ConnectionCatalogEntryDraft,
   CredentialStatus,
 } from '@maka/core/runtime-policy';
+import { CONNECTION_CATALOG_MAX_CONNECTIONS } from '@maka/core/runtime-policy';
 import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
 import { type ConnectionEffectFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
 import { type ConnectionTestEffectOutcome } from '@maka/runtime/connection-effect-outcome';
@@ -39,6 +40,7 @@ import { HostConnectionEffectCoordinator } from '../server/connection-effect-coo
 import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import type { ConnectionOnboardingSaveResult, OperationOutcome } from '../protocol/index.js';
 
 const context: ConnectionContext = {
   hostEpoch: 'connection-effect-test-epoch',
@@ -62,7 +64,11 @@ test('verifies a first-run API key without persisting a connection or credential
     });
 
     const result = await coordinator.handlers['connection.onboarding.verify'](
-      { providerType: 'openai', connectionId: null, apiKey: 'first-run-secret', baseUrl: null },
+      {
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'first-run-secret',
+        baseUrl: null,
+      },
       context,
     );
 
@@ -73,6 +79,154 @@ test('verifies a first-run API key without persisting a connection or credential
     assert.deepEqual(observed, { slug: 'openai', secret: 'first-run-secret' });
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
     assert.deepEqual((await stores.credentialVault.getSnapshot()).entries, []);
+  });
+});
+
+test('rejects a semantically invalid onboarding endpoint in Storage before discovery', async () => {
+  await withFixture(async ({ stores }) => {
+    let discoveryRuns = 0;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async () => {
+        discoveryRuns += 1;
+        return { ok: true, models: [{ id: 'must-not-be-observed' }] };
+      },
+    });
+
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          target: { kind: 'create', providerType: 'openai-compatible' },
+          apiKey: 'relay-secret',
+          baseUrl: 'ftp://relay.example.test/v1',
+        },
+        context,
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'invalid_request',
+          message: 'Connection effect request is invalid',
+        },
+      },
+    );
+    assert.equal(discoveryRuns, 0);
+    assert.deepEqual((await stores.connectionCatalog.getSnapshot()).connections, []);
+  });
+});
+
+test('creates multiple accounts with Host-owned identities without changing the default', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+    const save = () =>
+      coordinator.handlers['connection.onboarding.save'](
+        {
+          target: { kind: 'create', providerType: 'openai' },
+          apiKey: 'account-secret',
+          baseUrl: null,
+          enabledModelIds: ['gpt-5'],
+        },
+        context,
+      );
+
+    const first = await save();
+    const second = await save();
+    assertSaved(first);
+    assertSaved(second);
+    assert.notEqual(first.result.connection.connectionId, second.result.connection.connectionId);
+    assert.equal(first.result.connection.slug, 'openai');
+    assert.equal(second.result.connection.slug, 'openai-2');
+
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.deepEqual(
+      catalog.connections.map(({ connectionId, slug }) => ({ connectionId, slug })),
+      [
+        { connectionId: first.result.connection.connectionId, slug: 'openai' },
+        { connectionId: second.result.connection.connectionId, slug: 'openai-2' },
+      ],
+    );
+    assert.equal(catalog.defaultTarget?.connectionId, first.result.connection.connectionId);
+  });
+});
+
+test('two create tickets cannot commit the same planned slug', async () => {
+  await withFixture(async ({ stores }) => {
+    const input = {
+      target: { kind: 'create', providerType: 'openai' } as const,
+      baseUrl: null,
+    };
+    const first = await stores.operations.beginConnectionOnboarding(input);
+    const second = await stores.operations.beginConnectionOnboarding(input);
+    assert.equal(first.kind, 'ready');
+    assert.equal(second.kind, 'ready');
+    if (first.kind !== 'ready' || second.kind !== 'ready') return;
+    assert.equal(first.candidate.slug, 'openai');
+    assert.equal(second.candidate.slug, 'openai');
+    assert.notEqual(first.candidate.connectionId, second.candidate.connectionId);
+
+    const completion = {
+      suppliedSecret: 'secret',
+      enabledModelIds: ['gpt-5'],
+      discovery: { models: [{ id: 'gpt-5' }], source: 'fetched' as const, fetchedAt: 1 },
+    };
+    const committed = await stores.operations.completeConnectionOnboarding(
+      first.ticket,
+      completion,
+    );
+    assert.equal(committed.kind, 'committed');
+    const superseded = await stores.operations.completeConnectionOnboarding(
+      second.ticket,
+      completion,
+    );
+    assert.deepEqual(superseded, { kind: 'superseded', changed: ['connection'] });
+  });
+});
+
+test('reports catalog_full both before discovery and when the last slot fills before commit', async () => {
+  await withFixture(async ({ root, stores }) => {
+    const connections = Array.from(
+      { length: CONNECTION_CATALOG_MAX_CONNECTIONS - 1 },
+      (_value, index) => ({
+        connectionId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+        revision: 1,
+        slug: `occupied-${index + 1}`,
+        name: `Occupied ${index + 1}`,
+        providerType: 'openai' as const,
+        enabled: false,
+        enabledModelIds: [],
+        models: [],
+      }),
+    );
+    await writeFile(
+      join(root, 'connection-catalog.json'),
+      JSON.stringify({ schemaVersion: 1, revision: 1, defaultTarget: null, connections }),
+    );
+
+    const begun = await stores.operations.beginConnectionOnboarding({
+      target: { kind: 'create', providerType: 'openai' },
+      baseUrl: null,
+    });
+    assert.equal(begun.kind, 'ready');
+    if (begun.kind !== 'ready') return;
+    await createConnection(stores, 1, connectionDraft('last-slot', 'openai'));
+
+    const completion = await stores.operations.completeConnectionOnboarding(begun.ticket, {
+      suppliedSecret: 'secret',
+      enabledModelIds: ['gpt-5'],
+      discovery: { models: [{ id: 'gpt-5' }], source: 'fetched', fetchedAt: 1 },
+    });
+    assert.deepEqual(completion, { kind: 'catalog_full' });
+
+    assert.deepEqual(
+      await stores.operations.beginConnectionOnboarding({
+        target: { kind: 'create', providerType: 'openai' },
+        baseUrl: null,
+      }),
+      { kind: 'catalog_full' },
+    );
   });
 });
 
@@ -96,8 +250,7 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
         {
-          providerType: 'openai-compatible',
-          connectionId: null,
+          target: { kind: 'create', providerType: 'openai-compatible' },
           apiKey: 'relay-secret',
           baseUrl: null,
         },
@@ -109,15 +262,15 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
 
     const saved = await coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai-compatible',
+        target: { kind: 'create', providerType: 'openai-compatible' },
         apiKey: 'relay-secret',
-        connectionId: null,
         baseUrl: 'https://relay.example.test/v1',
         enabledModelIds: ['relay/model'],
       },
       context,
     );
-    assert.deepEqual(saved, { ok: true, result: { kind: 'saved' } });
+    assertSaved(saved);
+    assert.equal(saved.result.connection.slug, 'openai-compatible');
     assert.equal(observedBaseUrl, 'https://relay.example.test/v1');
 
     const connection = (await stores.connectionCatalog.getSnapshot()).connections.find(
@@ -127,7 +280,14 @@ test('onboards a custom relay end to end: rejects a missing endpoint, discovers 
     // Re-verifying with a blank endpoint now reuses the persisted one.
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
-        { providerType: 'openai-compatible', connectionId: null, apiKey: '', baseUrl: null },
+        {
+          target: {
+            kind: 'existing',
+            connectionId: saved.result.connection.connectionId,
+          },
+          apiKey: '',
+          baseUrl: null,
+        },
         context,
       ),
       { ok: true, result: { kind: 'verified', models: [{ id: 'relay/model' }] } },
@@ -166,8 +326,7 @@ test('re-onboarding by connection identity edits a Desktop custom-slug relay in 
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
         {
-          providerType: 'openai-compatible',
-          connectionId: connection.connectionId,
+          target: { kind: 'existing', connectionId: connection.connectionId },
           apiKey: '',
           baseUrl: null,
         },
@@ -178,19 +337,18 @@ test('re-onboarding by connection identity edits a Desktop custom-slug relay in 
     assert.equal(observedBaseUrl, 'https://relay-a.example.test/v1');
     assert.equal(observedSecret, 'old-secret');
 
-    assert.deepEqual(
-      await coordinator.handlers['connection.onboarding.save'](
-        {
-          providerType: 'openai-compatible',
-          connectionId: connection.connectionId,
-          apiKey: 'new-secret',
-          baseUrl: 'https://relay-b.example.test/v1',
-          enabledModelIds: ['relay/model'],
-        },
-        context,
-      ),
-      { ok: true, result: { kind: 'saved' } },
+    const edited = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: 'new-secret',
+        baseUrl: 'https://relay-b.example.test/v1',
+        enabledModelIds: ['relay/model'],
+      },
+      context,
     );
+    assertSaved(edited);
+    assert.equal(edited.result.connection.connectionId, connection.connectionId);
+    assert.equal(edited.result.connection.slug, 'my-relay');
     const catalog = await stores.connectionCatalog.getSnapshot();
     // Edited in place: still exactly one connection, same identity, custom
     // slug preserved, endpoint replaced.
@@ -213,8 +371,7 @@ test('re-onboarding by connection identity edits a Desktop custom-slug relay in 
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.verify'](
         {
-          providerType: 'openai-compatible',
-          connectionId: '00000000-0000-4000-8000-00000000dead',
+          target: { kind: 'existing', connectionId: '00000000-0000-4000-8000-00000000dead' },
           apiKey: 'x',
           baseUrl: null,
         },
@@ -261,8 +418,7 @@ test('a save whose connection changed between discovery and commit is superseded
 
     const saving = coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai-compatible',
-        connectionId: connection.connectionId,
+        target: { kind: 'existing', connectionId: connection.connectionId },
         apiKey: '',
         baseUrl: null,
         enabledModelIds: ['model-from-relay-a'],
@@ -322,15 +478,14 @@ test('a save whose connection changed between discovery and commit is superseded
     // commits cleanly.
     const retried = await coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai-compatible',
-        connectionId: connection.connectionId,
+        target: { kind: 'existing', connectionId: connection.connectionId },
         apiKey: '',
         baseUrl: null,
         enabledModelIds: ['model-from-relay-a'],
       },
       context,
     );
-    assert.deepEqual(retried, { ok: true, result: { kind: 'saved' } });
+    assertSaved(retried);
   });
 });
 
@@ -403,8 +558,7 @@ test('onboarding probes with the custom request headers the models path sends, a
 
     const verified = await coordinator.handlers['connection.onboarding.verify'](
       {
-        providerType: 'openai-compatible',
-        connectionId: connection.connectionId,
+        target: { kind: 'existing', connectionId: connection.connectionId },
         apiKey: '',
         baseUrl: null,
       },
@@ -419,8 +573,7 @@ test('onboarding probes with the custom request headers the models path sends, a
     // connection would fetch, and that changed under the probe.
     const saving = coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai-compatible',
-        connectionId: connection.connectionId,
+        target: { kind: 'existing', connectionId: connection.connectionId },
         apiKey: '',
         baseUrl: null,
         enabledModelIds: ['relay/model'],
@@ -473,16 +626,15 @@ test('saves a verified first-run target through the canonical Host authorities',
 
     const result = await coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai',
+        target: { kind: 'create', providerType: 'openai' },
         apiKey: 'first-run-secret',
-        connectionId: null,
         baseUrl: null,
         enabledModelIds: ['second-model'],
       },
       context,
     );
 
-    assert.deepEqual(result, { ok: true, result: { kind: 'saved' } });
+    assertSaved(result);
     const catalog = await stores.connectionCatalog.getSnapshot();
     assert.equal(catalog.connections.length, 1);
     assert.deepEqual(catalog.connections[0]?.models, [
@@ -535,16 +687,16 @@ test('re-enables an existing connection without replacing another default target
 
     const result = await coordinator.handlers['connection.onboarding.save'](
       {
-        providerType: 'openai',
+        target: { kind: 'existing', connectionId: disabledConnection.connectionId },
         apiKey: null,
-        connectionId: null,
         baseUrl: null,
         enabledModelIds: ['restored-model'],
       },
       context,
     );
 
-    assert.deepEqual(result, { ok: true, result: { kind: 'saved' } });
+    assertSaved(result);
+    assert.equal(result.result.connection.connectionId, disabledConnection.connectionId);
     const catalog = await stores.connectionCatalog.getSnapshot();
     const restored = catalog.connections.find(
       ({ connectionId }) => connectionId === disabledConnection.connectionId,
@@ -574,9 +726,8 @@ test('leaves canonical onboarding state unchanged when the durable intent cannot
       assert.deepEqual(
         await coordinator.handlers['connection.onboarding.save'](
           {
-            providerType: 'openai',
+            target: { kind: 'existing', connectionId: connection.connectionId },
             apiKey: 'new-secret',
-            connectionId: null,
             baseUrl: null,
             enabledModelIds: ['new-model'],
           },
@@ -624,9 +775,8 @@ test('recovers a durable onboarding intent instead of rolling back a partial pub
       assert.deepEqual(
         await coordinator.handlers['connection.onboarding.save'](
           {
-            providerType: 'openai',
+            target: { kind: 'existing', connectionId: connection.connectionId },
             apiKey: 'new-secret',
-            connectionId: null,
             baseUrl: null,
             enabledModelIds: ['new-model'],
           },
@@ -669,19 +819,16 @@ test('invalidates a verified result when onboarding rotates only the credential'
     await recordVerifiedConnection(stores, connection);
     const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
 
-    assert.deepEqual(
-      await coordinator.handlers['connection.onboarding.save'](
-        {
-          providerType: 'openai',
-          apiKey: 'new-secret',
-          connectionId: null,
-          baseUrl: null,
-          enabledModelIds: ['gpt-5'],
-        },
-        context,
-      ),
-      { ok: true, result: { kind: 'saved' } },
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: 'new-secret',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
     );
+    assertSaved(saved);
 
     const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
       ({ connectionId }) => connectionId === connection.connectionId,
@@ -714,19 +861,16 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
     await setConnectionCredential(stores, connection, 'old-secret');
     const coordinator = onboardingCoordinator(stores, () => undefined, 'kept-model');
 
-    assert.deepEqual(
-      await coordinator.handlers['connection.onboarding.save'](
-        {
-          providerType: 'openai-compatible',
-          apiKey: 'new-secret',
-          connectionId: null,
-          baseUrl: null,
-          enabledModelIds: ['kept-model'],
-        },
-        context,
-      ),
-      { ok: true, result: { kind: 'saved' } },
+    const firstSave = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: 'new-secret',
+        baseUrl: null,
+        enabledModelIds: ['kept-model'],
+      },
+      context,
     );
+    assertSaved(firstSave);
 
     const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
       ({ connectionId }) => connectionId === connection.connectionId,
@@ -747,19 +891,16 @@ test('onboarding keeps what its wizard never offered and prunes what it did', as
     // Declarations are endpoint-keyed, like the update path enforces: a
     // re-onboarding that swaps the relay URL must not carry the old relay's
     // profile table onto the new one.
-    assert.deepEqual(
-      await coordinator.handlers['connection.onboarding.save'](
-        {
-          providerType: 'openai-compatible',
-          apiKey: '',
-          connectionId: null,
-          baseUrl: 'https://relay-b.example.test/v1',
-          enabledModelIds: ['kept-model'],
-        },
-        context,
-      ),
-      { ok: true, result: { kind: 'saved' } },
+    const secondSave = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: '',
+        baseUrl: 'https://relay-b.example.test/v1',
+        enabledModelIds: ['kept-model'],
+      },
+      context,
     );
+    assertSaved(secondSave);
     const swapped = (await stores.connectionCatalog.getSnapshot()).connections.find(
       ({ connectionId }) => connectionId === connection.connectionId,
     );
@@ -795,19 +936,16 @@ test('onboarding drops a declaration for a model the wizard offered and the user
       }),
     });
 
-    assert.deepEqual(
-      await coordinator.handlers['connection.onboarding.save'](
-        {
-          providerType: 'openai-compatible',
-          apiKey: 'new-secret',
-          connectionId: null,
-          baseUrl: null,
-          enabledModelIds: ['kept-model'],
-        },
-        context,
-      ),
-      { ok: true, result: { kind: 'saved' } },
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: 'new-secret',
+        baseUrl: null,
+        enabledModelIds: ['kept-model'],
+      },
+      context,
     );
+    assertSaved(saved);
 
     const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
       ({ connectionId }) => connectionId === connection.connectionId,
@@ -844,9 +982,8 @@ test('rejects an oversized final catalog before publishing a recovery intent', a
     assert.deepEqual(
       await coordinator.handlers['connection.onboarding.save'](
         {
-          providerType: 'openai',
+          target: { kind: 'create', providerType: 'openai' },
           apiKey: 'capacity-secret',
-          connectionId: null,
           baseUrl: null,
           enabledModelIds: [discovered[0]!.id],
         },
@@ -1410,4 +1547,13 @@ function deferred<T>(): {
 function assertRedacted(value: unknown, forbidden: readonly string[]): void {
   const serialized = JSON.stringify(value);
   for (const text of forbidden) assert.equal(serialized.includes(text), false);
+}
+
+function assertSaved(value: OperationOutcome<'connection.onboarding.save'>): asserts value is {
+  readonly ok: true;
+  readonly result: Extract<ConnectionOnboardingSaveResult, { readonly kind: 'saved' }>;
+} {
+  assert.equal(value.ok, true);
+  if (!value.ok) return;
+  assert.equal(value.result.kind, 'saved');
 }

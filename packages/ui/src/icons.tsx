@@ -143,6 +143,7 @@ export {
   Scan,
   Save,
   Search,
+  Share2,
   Settings,
   ShieldAlert,
   ShieldCheck,

@@ -119,4 +119,31 @@ describe('createRequestCustomizationFetch', () => {
       /Extra request body conflicts/,
     );
   });
+
+  test('applies a provider finalizer after caller body overlays', async () => {
+    let captured: Request | undefined;
+    const fetch = createRequestCustomizationFetch(
+      async (input, init) => {
+        captured = new Request(input, init);
+        return Response.json({ ok: true });
+      },
+      {
+        bodyOverlay: { store: true },
+        finalizeBody: (body) => ({ ...body, store: false }),
+      },
+    );
+
+    await fetch('https://provider.invalid/responses', {
+      method: 'POST',
+      headers: { 'content-length': '999', 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'qwen3.8-max' })).buffer,
+    });
+
+    assert.deepEqual(await captured?.json(), { model: 'qwen3.8-max', store: false });
+    assert.equal(captured?.headers.get('content-length'), null);
+    await assert.rejects(
+      fetch('https://provider.invalid/responses', { method: 'POST', body: 'not-json' }),
+      /finalizer requires a JSON object request body/,
+    );
+  });
 });

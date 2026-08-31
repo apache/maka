@@ -125,6 +125,42 @@ describe('Provider error classification', () => {
       data: { error: { message: 'You do not have access to this model.' } },
     });
     assert.equal(classifyError(forbiddenModel), 'Auth');
+    const serverErrorOn403 = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { code: 'server_error' } },
+    });
+    assert.equal(classifyError(serverErrorOn403), 'Auth');
+  });
+
+  test('classifies exhausted Codex HTML edge 403 retries as provider unavailable', () => {
+    const exhaustedEdgeRejection = Object.assign(
+      new Error('Codex OAuth request failed: HTTP 403 Request rejected'),
+      {
+        name: 'OpenAiCodexEdgeRejectionError',
+        statusCode: 403,
+        data: { error: { code: 'openai_codex_edge_rejection' } },
+      },
+    );
+
+    assert.equal(classifyError(exhaustedEdgeRejection), 'ProviderUnavailable');
+    assert.deepEqual(providerRetryMetadata(exhaustedEdgeRejection), { retryable: false });
+    assert.deepEqual(providerFailureDiagnostic(exhaustedEdgeRejection), {
+      errorClass: 'ProviderUnavailable',
+      httpStatus: 403,
+      providerCode: 'openai_codex_edge_rejection',
+      retryable: false,
+    });
+    const spoofedProviderPayload = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { code: 'openai_codex_edge_rejection' } },
+    });
+    assert.equal(classifyError(spoofedProviderPayload), 'Auth');
+    assert.notEqual(
+      classifyError({ code: 'openai_codex_edge_rejection', message: 'provider payload' }),
+      'ProviderUnavailable',
+    );
   });
 
   test('recovers structured Codex HTTP facts through an SDK wrapper and truncates identifiers', () => {

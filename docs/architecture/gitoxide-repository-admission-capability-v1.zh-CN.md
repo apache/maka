@@ -93,7 +93,7 @@ capability 表示一次明确线性化点上的 immutable Git commit/tree snapsh
 6. exact commit/tree/blob checksum verification、atomic destination claim 与 deterministic zero-parent
    baseline publication。
 
-`managedTreePolicyVersion: 2` 是当前唯一的 **portable lexical materialization policy**，而不只是 Git
+`managedTreePolicyVersion: 3` 是当前唯一的 **portable lexical materialization policy**，而不只是 Git
 object import policy。未发布的 policy v1 已删除；helper、Host capability 和 import response 都拒绝把
 version 1 重新解释成当前语义。v2 只证明 Git tree 的词法身份和受支持 attributes 满足同一套保守规则，
 不宣称已证明某个真实 Windows volume 上的 path-length、8.3 alias、ACL 或大小写能力。
@@ -119,7 +119,7 @@ CRLF 或 tab；literal path 不接受任何 whitespace/control。外部 `filter`
 Unicode 17.0 NFC → Unicode 16.0 Default Full Case Folding（Non-Turkic）→ Unicode 17.0 NFC
 ```
 
-原路径和 folded key 各自执行单路径与累计 byte budget。后续 candidate、tree read 必须消费 policy 2；
+原路径和 folded key 各自执行单路径与累计 byte budget。后续 candidate、tree read 必须消费 policy 3；
 真实 projection 还必须由独立的 `FilesystemMaterializationProfileV1` 在 fresh destination 上证明
 目标 filesystem 的 case/alias/path-length 能力并执行 create/post-observation，不能把本词法检查冒充为
 真实文件系统准入。该 projection/candidate owner 还必须实现与 `text=auto eol=lf` 对称的确定性 LF

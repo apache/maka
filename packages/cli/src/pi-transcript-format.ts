@@ -88,13 +88,6 @@ export function formatToolResultContent(content: ToolResultContent): string {
       ].join('\n\n');
     case 'web_search_error':
       return content.message;
-    case 'explore_agent':
-      return (
-        content.report ??
-        content.summary ??
-        content.message ??
-        `Inspected ${content.filesInspected} files`
-      );
     case 'subagent':
       return content.summary;
     case 'agent_swarm': {

@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-08-29
 owners:
   - maka-backend
 ---
@@ -497,7 +497,25 @@ sequenceDiagram
   end
 ```
 
-CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam，只是把 park 作为命令错误展示。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+CLI/TUI 的 `/resume` 走同一个 `SessionManager` plan/execute seam。Desktop startup auto-resume 也复用同一 planner 和 execution path，不维护第三套恢复逻辑。
+
+### 当前的 parked 原因边界
+
+Runtime Host 负责把 Runtime planner 的 rejection reasons 投影成封闭的
+`TurnResumeParkReason` wire union；CLI 不能重新推断 Host 内部状态。当前 Host 会保留三种容易混淆的原因：
+
+- `resume_feature_disabled`：feature flag 未开启；
+- `continuation_authority_unavailable`：Host 无法取得 continuation authority；
+- `safety_observation_unavailable`：Host 无法取得安全观测事实。
+
+旧的 `continuation_unavailable` 不再出现在当前 wire contract 中。`/resume` driver 通过
+`SafeBoundaryResumeParkedError` 原样携带原因，TUI 只把预期的用户状态显示为普通提示：
+`resume_feature_disabled`、`resume_candidate_missing` 和 `session_busy`。authority、safety
+以及其他恢复失败仍显示为红色错误，并保留原始 reason 供诊断。
+
+这是不兼容的封闭协议变更，因此 Runtime Host compatibility epoch 推进到 57；旧 Client/Host
+组合会在握手阶段被拒绝，而不是把新的 failure reason 误判成“功能未开启”。这次变更只修正
+Host 投影和 CLI 展示，不改变 planner、durable continuation claim 或 feature flag 的 owner。
 
 ## 为什么 Continuation 不复制原用户消息
 
@@ -784,18 +802,6 @@ flowchart LR
 ### Runtime host
 
 Runtime host 使用 strict recovery stores 执行 startup repair。严格模式不会把 unreadable ledger 吞成 best-effort fallback，适合服务端 composition 在接收新写入前建立清楚的恢复边界。
-
-### Managed workspace execution admission（M1.1）
-
-Resume 的 workspace plane 已经有一层 storage-owned 的执行准入地基，但它还没有接入 Runtime host：
-
-- baseline open 只返回绑定 `ManagedWorkspaceOwner` 的 opaque handle，不公开 raw cwd；
-- 每次 admission 都重新证明 storage-root identity、exact SQLite canonical head 和 exact Git receipt/binding/HEAD/tree/ownership；普通生产路径只在签发 scope 前做一次最终 Git verification；
-- 一次 admission 签发一个 callback-scoped、`workspaceEffect: none` 的 opaque scope；同一 handle 可以并发多个只读 scope；
-- `close()` 拒绝新 admission，并等待所有 active scope drain；callback 退出后 scope 立即失效，伪造与过期分别返回 typed `managed_workspace_execution_scope_invalid` / `managed_workspace_execution_scope_expired`；
-- crash harness 可配置 preliminary-verification failpoint，但该测试路径仍须再次通过 final verification 才能签发 scope。
-
-M1.2 在同一交付中完成 owner-bound storage worker bridge 与 runtime-host lifecycle composition：只允许 Read/Glob/Grep，把无 owner 校验的 inspect 降为显式 test support，拒绝 active callback 内 reentrant `owner.close()`，用不可混淆的 attached/managed typed profile 阻止 silent fallback，并固定 tool operations → managed owner → root owner 的关闭顺序。本切片不让 Desktop/CLI 默认开启 managed execution；Write/Edit/Format/Bash/未知工具必须 fail closed。详细合同见 [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
 
 ### Eval
 

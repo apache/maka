@@ -1,0 +1,9 @@
+{
+  "epoch": 67,
+  "files": [
+    "packages/runtime-host/src/protocol/hosted-execution.ts",
+    "packages/runtime-host/src/protocol/message.ts",
+    "packages/runtime-host/src/protocol/turn.ts"
+  ],
+  "reason": "Widens Host result decoding for a durable context reference variant while client admission rejects Host-owned refs; this reader-only slice emits no new wire frames"
+}

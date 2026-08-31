@@ -31,6 +31,7 @@ import {
 import { defineOperation } from './operation-spec.js';
 import {
   decodeMessageContent,
+  decodeMessageAdmissionContent,
   decodeSkillIds,
   decodeTurnOrchestration,
   decodeTurnSnapshot,
@@ -123,6 +124,25 @@ export interface TurnMessageQueryResult {
   readonly cancelledMessageIds: readonly string[];
 }
 
+export interface TurnMessageExecutionQueryInput {
+  readonly sessionId: string;
+  readonly messageIds: readonly string[];
+}
+
+export interface TurnMessageExecutionQueryResult {
+  readonly resolutions: readonly TurnMessageExecutionResolution[];
+}
+
+export type TurnMessageExecutionResolution =
+  | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'cancelled' }
+  | {
+      readonly messageId: string;
+      readonly state: 'owned';
+      readonly turnId: string;
+      readonly runId: string;
+    };
+
 export interface QueueRetractInput {
   readonly originHostEpoch: string;
   readonly sessionId: string;
@@ -201,6 +221,13 @@ export const MESSAGE_OPERATION_SPECS = {
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeTurnMessageQueryInput,
     decodeOutput: decodeTurnMessageQueryResult,
+  }),
+  'turn.message.execution.query': defineOperation({
+    mode: 'query',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeTurnMessageExecutionQueryInput,
+    decodeOutput: decodeTurnMessageExecutionQueryResult,
   }),
   'turn.message.submit': defineOperation({
     mode: 'command',
@@ -302,7 +329,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     placement,
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
@@ -339,6 +366,59 @@ function decodeTurnMessageQueryResult(value: unknown): TurnMessageQueryResult {
     throw invalidProtocolFrame('Duplicate turn.message.query cancelledMessageId');
   }
   return { cancelledMessageIds };
+}
+
+function decodeTurnMessageExecutionQueryInput(value: unknown): TurnMessageExecutionQueryInput {
+  return decodeTurnMessageQueryInput(value);
+}
+
+function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecutionQueryResult {
+  const record = requireExactRecord(value, 'turn.message.execution.query result', ['resolutions']);
+  if (!Array.isArray(record.resolutions) || record.resolutions.length > MESSAGE_QUEUE_MAX_ENTRIES) {
+    throw invalidProtocolFrame('Invalid turn.message.execution.query resolutions');
+  }
+  const resolutions = record.resolutions.map((value): TurnMessageExecutionResolution => {
+    const resolution = requireRecord(value, 'turn.message.execution.query resolution');
+    if (resolution.state === 'pending') {
+      assertExactKeys(resolution, 'turn.message.execution.query pending resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'pending',
+      };
+    }
+    if (resolution.state === 'cancelled') {
+      assertExactKeys(resolution, 'turn.message.execution.query cancelled resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'cancelled',
+      };
+    }
+    if (resolution.state === 'owned') {
+      assertExactKeys(resolution, 'turn.message.execution.query owned resolution', [
+        'messageId',
+        'state',
+        'turnId',
+        'runId',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'owned',
+        turnId: requireEntityId(resolution.turnId, 'turnId'),
+        runId: requireEntityId(resolution.runId, 'runId'),
+      };
+    }
+    throw invalidProtocolFrame('Invalid turn.message.execution.query resolution state');
+  });
+  if (new Set(resolutions.map(({ messageId }) => messageId)).size !== resolutions.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.execution.query messageId');
+  }
+  return { resolutions };
 }
 
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {

@@ -64,6 +64,14 @@ export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
 export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
 export const SESSION_TOOL_NAME_MAX_BYTES = 256;
+export const SESSION_TOOL_INTENT_MAX_BYTES = 512;
+/**
+ * Live `tool_start` frames carry a bounded, redacted args preview (never the
+ * full args — a Write can carry a whole file) so compact tool rows can name
+ * the call during the live window. Sized to fit `@maka/core`
+ * `projectToolArgsPreview`'s 2,048-char JSON cap with UTF-8 headroom.
+ */
+export const SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES = 8 * 1024;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
@@ -167,6 +175,18 @@ export type SessionToolEvent =
       // an event the rest of the system considered valid.
       activityKind?: ToolActivityKind;
       displayName?: string;
+      /**
+       * Model/runtime-authored call intent. Pass-through from the durable
+       * event; bounded on the wire.
+       */
+      intent?: string;
+      /**
+       * Bounded, redacted subset of the call args (see `@maka/core`
+       * `projectToolArgsPreview`) so live compact tool rows can name what the
+       * call does before the durable transcript delivers full args at turn
+       * end. Shaped like the args themselves; never carries file contents.
+       */
+      argsPreview?: unknown;
       stepId?: string;
       shellRunRef?: string;
     })
@@ -273,7 +293,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
 }
 
 export type SubscriptionFrame =
@@ -472,7 +492,11 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       'sequence',
       'reason',
     ]);
-    if (record.reason !== 'slow_consumer' && record.reason !== 'session_removed') {
+    if (
+      record.reason !== 'slow_consumer' &&
+      record.reason !== 'session_removed' &&
+      record.reason !== 'access_revoked'
+    ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }
     frame = { kind: record.kind, ...envelope, reason: record.reason };
@@ -774,6 +798,8 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'operationId',
       'activityKind',
       'displayName',
+      'intent',
+      'argsPreview',
       'stepId',
       'shellRunRef',
     ];
@@ -786,6 +812,13 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'toolName',
     ]);
+    if (record.argsPreview !== undefined) {
+      requireEncodedByteLimit(
+        record.argsPreview,
+        'Session tool args preview',
+        SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES,
+      );
+    }
     return {
       type: record.type,
       ...identity,
@@ -809,6 +842,18 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
               SESSION_TOOL_NAME_MAX_BYTES,
             ),
           }),
+      ...(record.intent === undefined
+        ? {}
+        : {
+            intent: requireUtf8BoundedString(
+              record.intent,
+              'Session tool intent',
+              SESSION_TOOL_INTENT_MAX_BYTES,
+            ),
+          }),
+      ...(record.argsPreview === undefined
+        ? {}
+        : { argsPreview: structuredClone(record.argsPreview) }),
       ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}

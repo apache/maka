@@ -18,7 +18,13 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { SessionHeader, SessionStatus } from '@maka/core/session';
+import type {
+  SessionHeader,
+  SessionStatus,
+  WorkHubDelegationAssignedMessage,
+  WorkHubDelegationCreateSpec,
+  WorkHubDelegationDisposition,
+} from '@maka/core/session';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   isWorkHubCoordinationSessionTarget,
@@ -55,6 +61,7 @@ export type WorkHubActionGateSession = Pick<
 
 export interface WorkHubActionGateEffects {
   listSessions(): Promise<readonly WorkHubActionGateSession[]>;
+  readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
   answer(
     input: { readonly turnId: string; readonly text: string },
     context: ConnectionContext,
@@ -64,19 +71,20 @@ export interface WorkHubActionGateEffects {
     readonly userText: string;
     readonly assistantText: string;
   }): Promise<void>;
-  create(input: {
-    readonly sessionId: string;
-    readonly workspace: WorkspaceTarget;
-    readonly title: string;
-  }): Promise<void>;
-  submit(
-    input: {
-      readonly sessionId: string;
-      readonly messageId: string;
-      readonly text: string;
-    },
+  assign(
+    input: WorkHubDelegationAssignmentInput,
     context: ConnectionContext,
   ): Promise<{ readonly turnId: string; readonly steered?: true }>;
+}
+
+export interface WorkHubDelegationAssignmentInput {
+  readonly actionId: string;
+  readonly actionFingerprint: `sha256:${string}`;
+  readonly targetSessionId: string;
+  readonly targetSessionName: string;
+  readonly disposition: WorkHubDelegationDisposition;
+  readonly userText: string;
+  readonly create?: WorkHubDelegationCreateSpec;
 }
 
 export type WorkHubActionEffectFailureCode =
@@ -120,7 +128,7 @@ export class WorkHubActionGateFailure extends Error {
 }
 
 interface ActionReplay {
-  readonly fingerprint: string;
+  readonly requestFingerprint: string;
   readonly result: Promise<WorkHubCoordinationActResult>;
 }
 
@@ -147,10 +155,21 @@ export class WorkHubCoordinationActionGate {
     input: WorkHubCoordinationActInput,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
-    const fingerprint = digest(input);
+    if (!input.userText.trim()) {
+      return Promise.reject(
+        new WorkHubActionGateFailure('action_conflict', 'WorkHub action text is empty'),
+      );
+    }
+    if (input.proposal.disposition === 'create_new' && !input.proposal.title.trim()) {
+      return Promise.reject(
+        new WorkHubActionGateFailure('action_conflict', 'WorkHub creation title is empty'),
+      );
+    }
+    const fingerprint = actionFingerprint(input);
+    const requestFingerprint = digest(input);
     const replay = this.#actions.get(input.actionId);
     if (replay) {
-      if (replay.fingerprint !== fingerprint) {
+      if (replay.requestFingerprint !== requestFingerprint) {
         return Promise.reject(
           new WorkHubActionGateFailure(
             'action_conflict',
@@ -161,12 +180,12 @@ export class WorkHubCoordinationActionGate {
       return replay.result;
     }
 
-    const result = this.#act(input, context);
-    const action = { fingerprint, result };
+    const result = this.#act(input, fingerprint, context);
+    const action = { requestFingerprint, result };
     this.#actions.set(input.actionId, action);
-    // Successful actions remain replayable. A rejected admission does not own
-    // the action identity forever: callers must be able to refresh stale
-    // candidates or satisfy an actionable precondition and retry safely.
+    // Successful actions remain a Host-lifetime fast path. Rejections release
+    // the slot so a pre-assignment admission can retry; once assigned, SQLite
+    // independently owns the durable action identity.
     void result.catch(() => {
       if (this.#actions.get(input.actionId) === action) {
         this.#actions.delete(input.actionId);
@@ -178,9 +197,20 @@ export class WorkHubCoordinationActionGate {
 
   async #act(
     input: WorkHubCoordinationActInput,
+    fingerprint: `sha256:${string}`,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     const proposal = input.proposal;
+    const durable = await this.#effects.readAssignment(input.actionId);
+    if (durable) {
+      if (durable.actionFingerprint !== fingerprint) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub action identity belongs to a different proposal',
+        );
+      }
+      return this.#assign(assignmentInputFromRecord(durable), context);
+    }
     if (proposal.disposition === 'answer_here') {
       const turnId = coordinationTurnId(input.actionId, 'answer');
       await this.#effects.answer({ turnId, text: input.userText }, context);
@@ -203,20 +233,10 @@ export class WorkHubCoordinationActionGate {
         );
       }
       const sessionId = workHubCreatedSessionId(input.actionId);
-      await this.#effects.create({
-        sessionId,
-        workspace: input.create.workspace,
-        title: proposal.title,
-      });
-      const submitted = await this.#effects.submit(
-        {
-          sessionId,
-          messageId: actionMessageId(input.actionId),
-          text: input.userText,
-        },
+      return this.#assign(
+        delegationAssignment(input, fingerprint, sessionId, proposal.title),
         context,
       );
-      return executionResult('create_new', sessionId, submitted);
     }
 
     const candidates = await this.candidates();
@@ -237,23 +257,23 @@ export class WorkHubCoordinationActionGate {
     }
     this.#assertTarget(target);
 
-    return this.#submitExisting(input, target, context);
-  }
-
-  async #submitExisting(
-    input: WorkHubCoordinationActInput,
-    target: WorkHubCoordinationCandidate,
-    context: ConnectionContext,
-  ): Promise<WorkHubCoordinationActResult> {
-    const submitted = await this.#effects.submit(
-      {
-        sessionId: target.sessionId,
-        messageId: actionMessageId(input.actionId),
-        text: input.userText,
-      },
+    return this.#assign(
+      delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
-    return executionResult('delegate_existing', target.sessionId, submitted);
+  }
+
+  async #assign(
+    assignment: WorkHubDelegationAssignmentInput,
+    context: ConnectionContext,
+  ): Promise<WorkHubCoordinationActResult> {
+    const admitted = await this.#effects.assign(assignment, context);
+    return {
+      disposition: assignment.disposition,
+      targetSessionId: assignment.targetSessionId,
+      targetTurnId: admitted.turnId,
+      ...(admitted.steered ? { steered: true as const } : {}),
+    } as WorkHubCoordinationActResult;
   }
 
   #assertTarget(target: WorkHubCoordinationCandidate): void {
@@ -324,8 +344,44 @@ function coordinationTurnId(actionId: string, kind: 'answer' | 'clarify'): strin
   return `wha_${hash(`${actionId}\0${kind}`).slice(0, 48)}`;
 }
 
-function actionMessageId(actionId: string): string {
-  return `whm_${hash(actionId).slice(0, 48)}`;
+function delegationAssignment(
+  input: WorkHubCoordinationActInput,
+  actionFingerprint: `sha256:${string}`,
+  targetSessionId: string,
+  targetSessionName: string,
+): WorkHubDelegationAssignmentInput {
+  const create = input.create;
+  if (
+    input.proposal.disposition !== 'delegate_existing' &&
+    input.proposal.disposition !== 'create_new'
+  ) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub local action cannot create a delegation intent',
+    );
+  }
+  const base = {
+    actionId: input.actionId,
+    actionFingerprint,
+    targetSessionId,
+    targetSessionName,
+    disposition: input.proposal.disposition,
+    userText: input.userText,
+  } as const;
+  if (input.proposal.disposition === 'delegate_existing') return base;
+  if (!create) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub creation context is unavailable',
+    );
+  }
+  return {
+    ...base,
+    create: {
+      title: input.proposal.title,
+      workspace: create.workspace,
+    },
+  };
 }
 
 function workHubCreatedSessionId(actionId: string): string {
@@ -350,21 +406,38 @@ function updatedAt(session: WorkHubActionGateSession): number {
   return session.lastMessageAt ?? session.statusUpdatedAt ?? session.createdAt;
 }
 
-function executionResult(
-  disposition: 'delegate_existing' | 'create_new',
-  sessionId: string,
-  submitted: { readonly turnId: string; readonly steered?: true },
-): WorkHubCoordinationActResult {
-  return {
-    disposition,
-    targetSessionId: sessionId,
-    targetTurnId: submitted.turnId,
-    ...(submitted.steered ? { steered: true as const } : {}),
-  } as WorkHubCoordinationActResult;
-}
-
 function digest(value: unknown): `sha256:${string}` {
   return `sha256:${hash(JSON.stringify(value))}`;
+}
+
+function actionFingerprint(input: WorkHubCoordinationActInput): `sha256:${string}` {
+  return digest({
+    userText: input.userText,
+    disposition: input.proposal.disposition,
+    ...(input.proposal.disposition === 'create_new'
+      ? {
+          title: input.proposal.title,
+          workspace: input.create?.workspace,
+        }
+      : {}),
+    ...(input.proposal.disposition === 'clarify'
+      ? { assistantText: input.proposal.assistantText }
+      : {}),
+  });
+}
+
+function assignmentInputFromRecord(
+  assignment: WorkHubDelegationAssignedMessage,
+): WorkHubDelegationAssignmentInput {
+  return {
+    actionId: assignment.actionId,
+    actionFingerprint: assignment.actionFingerprint,
+    targetSessionId: assignment.targetSessionId,
+    targetSessionName: assignment.targetSessionName,
+    disposition: assignment.disposition,
+    userText: assignment.userText,
+    ...(assignment.create ? { create: assignment.create } : {}),
+  };
 }
 
 function hash(value: string): string {

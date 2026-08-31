@@ -36,7 +36,11 @@ import type {
 } from '@maka/core/backend-types';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 
-import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
+import type {
+  AiSdkCompactionCapabilities,
+  HistoryCompactSummarizer,
+  HistoryCompactSummaryInput,
+} from './ai-sdk-compaction-contract.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -58,8 +62,13 @@ import {
   projectHistoryCompactCheckpointReplay,
   type HistoryCompactCheckpoint,
   type HistoryCompactMemoryExtractionBoundary,
+  type HistoryCompactProviderState,
 } from './history-compact-checkpoint.js';
-
+import {
+  HistoryCompactSummarizerError,
+  isMalformedHistoryCompactSummaryReason,
+  type MalformedHistoryCompactSummaryReason,
+} from './history-compact-error.js';
 import { createHash } from 'node:crypto';
 import type { ModelMessage } from './model-protocol.js';
 import type { ModelAdapter } from './model-adapter.js';
@@ -168,10 +177,6 @@ export interface AiSdkCompactionDeps {
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
 }
 
 export class AiSdkCompaction {
@@ -192,11 +197,16 @@ export class AiSdkCompaction {
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  private readonly appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
   private historyCompactAbortController: AbortController | null = null;
+  /**
+   * Session-scoped circuit for exact malformed compaction inputs. A retry or
+   * regeneration on the same backend must not dispatch the same doomed call;
+   * changed source/configuration fingerprints remain eligible.
+   */
+  private readonly malformedSummaryFailures = new Map<
+    string,
+    MalformedHistoryCompactSummaryReason
+  >();
 
   constructor(deps: AiSdkCompactionDeps) {
     this.input = deps.input;
@@ -206,7 +216,6 @@ export class AiSdkCompaction {
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
-    this.appendTurnTailPrompt = deps.appendTurnTailPrompt;
   }
 
   /** Abort an in-flight manual history compaction (called by AiSdkBackend.stop). */
@@ -316,22 +325,20 @@ export class AiSdkCompaction {
         ...(automaticMemoryBoundary ? { memoryExtractionBoundary: automaticMemoryBoundary } : {}),
         ...(previousCheckpoint ? { previousCheckpoint } : {}),
         summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) =>
-          await Promise.resolve(
-            summarizer({
-              sessionId: this.sessionId,
-              turnId: input.turnId,
-              source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
-              newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-              ...(previousCheckpoint ? { previousCheckpoint } : {}),
-              inputBudget: {
-                maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
-                charsPerToken,
-              },
-              ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
-              abortSignal: historyCompactAbortController.signal,
-              ...(tracker ? { providerRequestTracker: tracker } : {}),
-            }),
-          ),
+          await this.summarizeWithFailureCircuit(summarizer, {
+            sessionId: this.sessionId,
+            turnId: input.turnId,
+            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+            ...(previousCheckpoint ? { previousCheckpoint } : {}),
+            inputBudget: {
+              maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
+              charsPerToken,
+            },
+            ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
+            abortSignal: historyCompactAbortController.signal,
+            ...(tracker ? { providerRequestTracker: tracker } : {}),
+          }),
       });
       if (historyCompactAbortController.signal.aborted) {
         return { outcome: { kind: 'failed', reason: 'aborted' } };
@@ -430,6 +437,45 @@ export class AiSdkCompaction {
 
   public hasHistoryCompactCheckpointWriter(): boolean {
     return Boolean(this.input.summarizeHistoryCompact && this.input.recordHistoryCompactCheckpoint);
+  }
+
+  private async summarizeWithFailureCircuit(
+    summarizer: HistoryCompactSummarizer,
+    input: HistoryCompactSummaryInput,
+  ): Promise<string | HistoryCompactProviderState | undefined> {
+    const fingerprint = sha256(
+      stableStringifyForSignature({
+        version: 1,
+        connection: this.input.connection,
+        modelId: this.input.modelId,
+        historyCompactRoute: this.input.historyCompactRoute,
+        contextBudget: this.input.contextBudget,
+        inputBudget: input.inputBudget,
+        requestShapeHashBefore: input.requestShapeHashBefore,
+        previousCheckpointId: input.previousCheckpoint?.checkpointId,
+        foldedRuntimeEvents: input.source.foldedRuntimeEvents,
+      }),
+    );
+    const priorFailure = this.malformedSummaryFailures.get(fingerprint);
+    if (priorFailure) throw new HistoryCompactSummarizerError(priorFailure);
+
+    try {
+      return await Promise.resolve(summarizer(input));
+    } catch (error) {
+      if (
+        error instanceof HistoryCompactSummarizerError &&
+        isMalformedHistoryCompactSummaryReason(error.reason)
+      ) {
+        this.malformedSummaryFailures.delete(fingerprint);
+        this.malformedSummaryFailures.set(fingerprint, error.reason);
+        while (this.malformedSummaryFailures.size > 16) {
+          const oldest = this.malformedSummaryFailures.keys().next().value;
+          if (oldest === undefined) break;
+          this.malformedSummaryFailures.delete(oldest);
+        }
+      }
+      throw error;
+    }
   }
 
   public async prepareContextBudgetPolicy(runtimeContext: readonly RuntimeEvent[]): Promise<{
@@ -611,7 +657,7 @@ export class AiSdkCompaction {
    * usage + a signed char/4 payload delta, tool schemas included) against
    * `contextWindow - reserve`; over the high-water, fold a safe completed
    * prefix into a durable mid_turn checkpoint and continue the same turn on
-   * `[compact block, verbatim head anchor, preserved tail]`.
+   * `[compact block, verbatim head anchor]`.
    *
    * This hook never terminates the turn: every failure fails open with a
    * diagnostic and records itself for the final-request estimate owner, which
@@ -628,7 +674,6 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     fallbackActiveTools: () => readonly string[],
-    turnTailPrompt: string | undefined,
     systemPromptChars: number,
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
     origin: ProviderRequestOrigin,
@@ -767,7 +812,6 @@ export class AiSdkCompaction {
         providerTools,
         activeToolsForStep,
         systemPromptChars,
-        turnTailPrompt,
         memoryCompactionDecision,
         onMemoryCompaction,
         abortSignal,
@@ -814,7 +858,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeToolsForStep: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
     phase?: 'pre_turn' | 'mid_turn';
@@ -827,9 +870,15 @@ export class AiSdkCompaction {
       providerTools,
       activeToolsForStep,
       systemPromptChars,
-      turnTailPrompt,
       abortSignal,
     } = input;
+    if (state.malformedSummaryFailure) {
+      return {
+        decision: 'fail',
+        detail: state.malformedSummaryFailure,
+        diagnosticReason: state.malformedSummaryFailure,
+      };
+    }
     const summarizer = this.input.summarizeHistoryCompact!;
     const midTurnTracker = this.createProviderRequestTracker({
       turnId,
@@ -937,29 +986,33 @@ export class AiSdkCompaction {
           }
         : {}),
       summarize: async ({ coveredRuntimeEvents, newlyFoldedRuntimeEvents, previousCheckpoint }) => {
-        return await Promise.resolve(
-          summarizer({
-            sessionId: this.sessionId,
-            turnId,
-            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
-            ...(previousCheckpoint ? { previousCheckpoint } : {}),
-            newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
-            inputBudget: {
-              maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
-              charsPerToken,
-            },
-            ...(abortSignal ? { abortSignal } : {}),
-            ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
-          }),
-        );
+        return await this.summarizeWithFailureCircuit(summarizer, {
+          sessionId: this.sessionId,
+          turnId,
+          source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+          ...(previousCheckpoint ? { previousCheckpoint } : {}),
+          newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
+          inputBudget: {
+            maxEstimatedTokens: Math.max(1, state.capacity.tokens - reserveTokens),
+            charsPerToken,
+          },
+          ...(abortSignal ? { abortSignal } : {}),
+          ...(midTurnTracker ? { providerRequestTracker: midTurnTracker } : {}),
+        });
       },
     });
 
     if (plan.decision === 'fail_open') {
+      const diagnosticReason = plan.diagnosticReason ?? plan.reason;
+      if (isMalformedHistoryCompactSummaryReason(diagnosticReason)) {
+        state.malformedSummaryFailure = diagnosticReason;
+      }
       return {
         decision: 'fail',
-        detail: plan.reason,
-        diagnosticReason: plan.diagnosticReason ?? plan.reason,
+        detail: isMalformedHistoryCompactSummaryReason(diagnosticReason)
+          ? diagnosticReason
+          : plan.reason,
+        diagnosticReason,
       };
     }
 
@@ -983,20 +1036,8 @@ export class AiSdkCompaction {
         diagnosticReason: 'replacement_unmaterializable',
       };
     }
-    // The head anchor must render exactly like the raw projection's current
-    // user message: the initial request decorates it with the volatile turn
-    // tail (cwd, shell context, task state — see send()), which is not part
-    // of the durable anchor bytes. Reuse the same decoration owner
-    // (appendTurnTailPrompt) on the anchor's replay item so a replacement
-    // never silently drops that context — and never counts the drop as
-    // shrinkage in the guard below.
-    const replayItemsWithAnchorTail = replayPlan.items.map((item) =>
-      item.kind === 'text' && item.role === 'user' && item.eventId === state.headAnchor.id
-        ? { ...item, content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string }
-        : item,
-    );
     const replacementMessages = await this.materializeRuntimeReplayPlan(
-      { ...replayPlan, items: replayItemsWithAnchorTail },
+      replayPlan,
       input.origin.imageBudget,
       plan.checkpoint,
     );
@@ -1090,7 +1131,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeTools: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     queue: AsyncEventQueue<SessionEvent>;
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void;
     origin: ProviderRequestOrigin;
@@ -1146,7 +1186,6 @@ export class AiSdkCompaction {
       providerTools: input.providerTools,
       activeToolsForStep: input.activeTools,
       systemPromptChars: input.systemPromptChars,
-      turnTailPrompt: input.turnTailPrompt,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
       abortSignal: input.abortSignal,
@@ -1519,6 +1558,8 @@ export class MidTurnCapacityCompactState {
         diagnosticReason: string;
       }
     | undefined;
+  /** Malformed summaries spend one bounded repair budget for this whole Turn. */
+  malformedSummaryFailure: MalformedHistoryCompactSummaryReason | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,

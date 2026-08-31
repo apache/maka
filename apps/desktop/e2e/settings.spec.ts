@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { test, expect, COMPOSER_INPUT } from './fixtures';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 
 interface SettingsChunkLatchWindow extends Window {
   makaE2eLatch?: {
@@ -52,6 +52,7 @@ test('Settings loading surface owns unmodified Escape', async ({ window: page })
   expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
 
   try {
+    await ensureSidebarExpanded(page);
     await page.getByRole('button', { name: '设置' }).click();
 
     const loadingSurface = page.locator('.maka-lazy-fallback');
@@ -130,6 +131,7 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
   const taskTab = workbarToolbar.getByRole('tab', { name: '待办' });
   await expect(taskTab).toBeVisible();
 
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
   await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
   await expect(workbar).not.toBeVisible();
@@ -141,6 +143,7 @@ test('settings hides expanded workbar chrome and restores it on close', async ({
 
 test('wide settings gutters scroll the whole main pane', async ({ window: page }) => {
   await page.setViewportSize({ width: 1600, height: 520 });
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('button', { name: '通用', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '助手语气偏好' })).toBeEnabled();
@@ -184,6 +187,7 @@ test('appearance choice content stays vertically centered in stretched grid rows
   await page.reload();
   await page.waitForSelector(COMPOSER_INPUT);
   await page.setViewportSize({ width: 1650, height: 992 });
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: 'Settings' }).click();
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'App icon' })).toBeVisible();
@@ -200,6 +204,7 @@ test('appearance choice content stays vertically centered in stretched grid rows
 test('reopening settings keeps the last-ready General page stable while refreshing', async ({
   window: page,
 }) => {
+  await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
   const settings = page.locator('.settingsSurface');
   await page.getByRole('button', { name: '通用', exact: true }).click();

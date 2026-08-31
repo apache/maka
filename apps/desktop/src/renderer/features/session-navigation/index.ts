@@ -18,8 +18,14 @@
  */
 
 export { SessionNavigationServicesProvider } from './services-context.js';
-export { useSessionNavigationController } from './controller/use-session-navigation-controller.js';
-export { SessionNavigationHost } from './ui/session-navigation-host.js';
+export { SessionNavigationProvider } from './ui/session-navigation-provider.js';
+export { createSessionOpenCommand } from './controller/session-open-command.js';
+export { useSessionNavigationReads } from './controller/use-session-navigation-reads.js';
+export type { SessionNavigationPorts } from './controller/use-session-navigation-controller.js';
 export { deriveSessionRail } from './model/session-rail.js';
-export type { SessionPurgeOutcome } from './controller/session-row-actions.js';
+export { sessionRailLayoutStore } from './model/session-rail-layout-store.js';
+export type {
+  SessionNavigationRowActions,
+  SessionPurgeOutcome,
+} from './controller/session-row-actions.js';
 export type { SessionNavigationServices } from './ports.js';

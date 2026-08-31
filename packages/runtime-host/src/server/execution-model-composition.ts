@@ -30,7 +30,10 @@ import {
   resolveSelectedModelContextWindow,
 } from '@maka/runtime/context-budget-policy';
 import { buildLlmHistorySummarizer } from '@maka/runtime/history-compact-summarizer';
-import { buildOpenAiCodexHistoryCompactor } from '@maka/runtime/openai-codex-history-compactor';
+import {
+  buildOpenAiCodexHistoryCompactor,
+  withOpenAiCodexHistoryCompactionFallback,
+} from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
 import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
@@ -43,12 +46,13 @@ import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
-import type { SandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
+import type { InteractiveContextOffloadReader } from '@maka/storage/context-offload-store';
+import { createReadImageSnapshotReader } from '@maka/storage/read-image-snapshot-store';
 import type { RuntimePolicyStoresWriter } from '@maka/storage/runtime-policy-stores';
 import type { InteractiveUsageStoresWriter } from '@maka/storage/usage-stores';
 import {
@@ -67,9 +71,10 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
-  readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
+  readonly contextOffload?: InteractiveContextOffloadReader;
+  readonly contextOffloadUnavailable?: boolean;
   readonly executionArtifacts: HostExecutionArtifactServices;
   readonly usage: HostExecutionUsageAuthority;
   readonly requestDrain: () => void;
@@ -184,18 +189,22 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       fetch: modelFetch,
       requestHeaders: target.requestHeaders,
     });
+  const textHistorySummarizer = buildLlmHistorySummarizer({
+    resolveModel: resolveHistoryCompactModel,
+    providerOptions,
+  });
   const summarizeHistoryCompact =
     target.connection.providerType === 'openai-codex'
-      ? buildOpenAiCodexHistoryCompactor({
-          resolveModel: resolveHistoryCompactModel,
-          connectionSlug: target.connection.slug,
-          modelId: target.model,
-          providerOptions,
-        })
-      : buildLlmHistorySummarizer({
-          resolveModel: resolveHistoryCompactModel,
-          providerOptions,
-        });
+      ? withOpenAiCodexHistoryCompactionFallback(
+          buildOpenAiCodexHistoryCompactor({
+            resolveModel: resolveHistoryCompactModel,
+            connectionSlug: target.connection.slug,
+            modelId: target.model,
+            providerOptions,
+          }),
+          textHistorySummarizer,
+        )
+      : textHistorySummarizer;
   const historyCompactRoute =
     target.connection.providerType === 'openai-codex' ? 'provider_native' : 'text_summary';
   let telemetryDrainRequested = false;
@@ -287,15 +296,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
-    readonly runId?: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
   }) => {
     const resolved = await modelComposition.resolveSystemPrompt({
       sessionId: input.context.sessionId,
       turnId: context.turnId,
-      ...(context.runId ? { runId: context.runId } : {}),
       cwd: input.context.header.cwd,
-      workspaceRoot: input.context.workspaceRoot,
       ...(context.emitSkillCatalogTrace
         ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
         : {}),
@@ -344,7 +350,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
-        sandboxDiagnostics: input.sandboxDiagnostics,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>
@@ -381,6 +386,17 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         readAttachmentBytes: createAttachmentByteReader({
           artifactStore: input.artifacts,
           sessionId: input.context.sessionId,
+          ...(input.contextOffload
+            ? {
+                readImageSnapshots: createReadImageSnapshotReader(
+                  input.contextOffload,
+                  input.context.sessionId,
+                ),
+              }
+            : {}),
+          ...(!input.contextOffload && input.contextOffloadUnavailable
+            ? { readImageSnapshotsUnavailable: true }
+            : {}),
         }),
         recordToolArtifacts: input.executionArtifacts.recordToolArtifacts,
         toolResultArchive: input.executionArtifacts.toolResultArchive,
@@ -413,15 +429,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         systemPrompt: async (context) => {
           const resolved = await resolveRunPrompt({
             turnId: context.turnId,
-            ...(context.runId ? { runId: context.runId } : {}),
             ...(context.emitSkillCatalogTrace
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
           return resolved.text;
         },
-        turnTailPrompt: modelComposition.turnTailPrompt,
-        shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,

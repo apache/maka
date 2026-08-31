@@ -38,16 +38,13 @@ import {
   type ExecutionSessionWriter,
 } from '@maka/storage/execution-stores';
 import {
-  EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS,
   EXECUTION_INSPECT_EVIDENCE_MAX_BYTES,
   EXECUTION_INSPECT_EVIDENCE_MAX_RECORDS,
   EXECUTION_INSPECT_RESULT_MAX_BYTES,
   EXECUTION_INSPECT_SESSION_MAX_RUNS,
   EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS,
-  type ExecutionInspectCandidate,
   type ExecutionInspectQueryInput,
   type ExecutionInspectQueryResult,
-  type ExecutionInspectResolveInput,
   type OperationOutcome,
 } from '../protocol/index.js';
 import type { ExecutionInspectOperationHandlerMap } from './operation-dispatcher.js';
@@ -57,7 +54,6 @@ interface InspectStores {
   readonly agentRunStore: Pick<
     ExecutionAgentRunReader,
     | 'readRun'
-    | 'findRunsById'
     | 'listSessionRunsBounded'
     | 'listSessionRunsPage'
     | 'readEventsBounded'
@@ -70,7 +66,6 @@ interface InspectStores {
 /** Host-owned, payload-safe read model for live Interactive execution evidence. */
 export class HostExecutionInspectCoordinator {
   readonly handlers: ExecutionInspectOperationHandlerMap = {
-    'execution.inspect.resolve': (input) => this.#resolve(input),
     'execution.inspect.query': (input) => this.#query(input),
   };
 
@@ -78,50 +73,6 @@ export class HostExecutionInspectCoordinator {
 
   constructor(stores: InspectStores) {
     this.#stores = stores;
-  }
-
-  async #resolve(
-    input: ExecutionInspectResolveInput,
-  ): Promise<OperationOutcome<'execution.inspect.resolve'>> {
-    try {
-      const [sessionCandidates, runSearch] = await Promise.all([
-        input.requestedKind === 'agent_run' ? [] : this.#findSession(input.id),
-        input.requestedKind === 'session'
-          ? { runs: [], truncated: false }
-          : input.sessionId
-            ? this.#findRunInSession(input.sessionId, input.id)
-            : this.#stores.agentRunStore.findRunsById(
-                input.id,
-                input.requestedKind === undefined
-                  ? EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS - 1
-                  : EXECUTION_INSPECT_CANDIDATE_MAX_ITEMS,
-              ),
-      ]);
-      const candidates = [
-        ...runSearch.runs.map(
-          (run): ExecutionInspectCandidate => ({
-            kind: 'agent_run',
-            id: run.runId,
-            sessionId: run.sessionId,
-          }),
-        ),
-        ...sessionCandidates,
-      ].sort(compareCandidates);
-      const truncated = runSearch.truncated;
-      const status =
-        candidates.length === 0 && !truncated
-          ? 'not_found'
-          : candidates.length === 1 && !truncated
-            ? 'resolved'
-            : 'ambiguous';
-      return { ok: true, result: { status, candidates, truncated } };
-    } catch {
-      return failure(
-        'execution.inspect.resolve',
-        'persistence_failed',
-        'Execution evidence is unavailable',
-      );
-    }
   }
 
   async #query(
@@ -137,11 +88,10 @@ export class HostExecutionInspectCoordinator {
               ? await this.#inspectTurnTrace(input.sessionId, input.turnId)
               : await this.#inspectSessionTracePage(input);
       if (result === undefined) {
-        return failure('execution.inspect.query', 'not_found', 'Execution evidence was not found');
+        return failure('not_found', 'Execution evidence was not found');
       }
       if (encodedBytes(result) > EXECUTION_INSPECT_RESULT_MAX_BYTES) {
         return failure(
-          'execution.inspect.query',
           'invalid_request',
           input.kind === 'session'
             ? 'Session inspection exceeds the live Host result limit; inspect one AgentRun instead'
@@ -155,36 +105,12 @@ export class HostExecutionInspectCoordinator {
       return { ok: true, result };
     } catch (error) {
       if (error instanceof InspectQueryTooLargeError) {
-        return failure('execution.inspect.query', 'invalid_request', error.message);
+        return failure('invalid_request', error.message);
       }
       if (error instanceof InspectQueryInvalidError) {
-        return failure('execution.inspect.query', 'invalid_request', error.message);
+        return failure('invalid_request', error.message);
       }
-      return failure(
-        'execution.inspect.query',
-        'persistence_failed',
-        'Execution evidence is unavailable',
-      );
-    }
-  }
-
-  async #findSession(id: string): Promise<ExecutionInspectCandidate[]> {
-    try {
-      const header = await this.#stores.sessionStore.readHeaderSnapshot(id);
-      return [{ kind: 'session', id: header.id }];
-    } catch (error) {
-      if (isMissing(error)) return [];
-      throw error;
-    }
-  }
-
-  async #findRunInSession(sessionId: string, runId: string) {
-    try {
-      const run = await this.#stores.agentRunStore.readRun(sessionId, runId);
-      return { runs: [run], truncated: false };
-    } catch (error) {
-      if (isMissing(error)) return { runs: [], truncated: false };
-      throw error;
+      return failure('persistence_failed', 'Execution evidence is unavailable');
     }
   }
 
@@ -526,18 +452,6 @@ function decodeTraceCursor(cursor: string): { readonly createdAt: number; readon
   }
 }
 
-function compareCandidates(
-  left: ExecutionInspectCandidate,
-  right: ExecutionInspectCandidate,
-): number {
-  return (
-    left.kind.localeCompare(right.kind) ||
-    (left.kind === 'agent_run' ? left.sessionId : '').localeCompare(
-      right.kind === 'agent_run' ? right.sessionId : '',
-    )
-  );
-}
-
 function isMissing(error: unknown): boolean {
   return isSessionNotFoundError(error) || (error as NodeJS.ErrnoException)?.code === 'ENOENT';
 }
@@ -546,10 +460,9 @@ function isInspectQueryTooLargeError(error: unknown): boolean {
   return error instanceof InspectQueryTooLargeError;
 }
 
-function failure<K extends 'execution.inspect.resolve' | 'execution.inspect.query'>(
-  _operation: K,
-  code: Extract<OperationOutcome<K>, { ok: false }>['error']['code'],
+function failure(
+  code: Extract<OperationOutcome<'execution.inspect.query'>, { ok: false }>['error']['code'],
   message: string,
-): OperationOutcome<K> {
-  return { ok: false, error: { code, message } } as OperationOutcome<K>;
+): OperationOutcome<'execution.inspect.query'> {
+  return { ok: false, error: { code, message } };
 }

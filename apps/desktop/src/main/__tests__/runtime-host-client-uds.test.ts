@@ -175,15 +175,22 @@ test('drives the renderer Session catalog facade through real UDS framing', asyn
           'session.configuration.update': async (input) => {
             assert.ok(projected);
             assert.equal(input.expectedRevision, projected.revision);
+            const { thinkingLevel: _thinkingLevel, ...withoutThinkingLevel } = projected;
             projected = session(projected.id, {
-              ...projected,
+              ...(input.patch.thinkingLevel === null ? withoutThinkingLevel : projected),
               revision: projected.revision + 1,
-              permissionMode: input.configuration.permissionMode,
-              collaborationMode: input.configuration.collaborationMode,
-              orchestrationMode: input.configuration.orchestrationMode,
-              ...(input.configuration.thinkingLevel === null
+              ...(input.patch.permissionMode === undefined
                 ? {}
-                : { thinkingLevel: input.configuration.thinkingLevel }),
+                : { permissionMode: input.patch.permissionMode }),
+              ...(input.patch.collaborationMode === undefined
+                ? {}
+                : { collaborationMode: input.patch.collaborationMode }),
+              ...(input.patch.orchestrationMode === undefined
+                ? {}
+                : { orchestrationMode: input.patch.orchestrationMode }),
+              ...(input.patch.thinkingLevel === null || input.patch.thinkingLevel === undefined
+                ? {}
+                : { thinkingLevel: input.patch.thinkingLevel }),
             });
             return { ok: true, result: { kind: 'committed', session: projected } };
           },
@@ -345,19 +352,16 @@ test('drives the renderer Session execution facade through real UDS framing', as
               result: { kind: 'managed', access: 'read_only', revision: 2 },
             };
           },
-          'turn.start': async (input) => {
+          'turn.message.submit': async (input) => {
             assert.equal(input.sessionId, projected.id);
+            assert.equal(input.messageId, 'turn-1');
+            assert.equal(input.placement, 'current_turn');
             assert.equal(input.content.text, 'Run through the Host');
             return {
               ok: true,
               result: {
-                kind: 'started',
-                turn: {
-                  sessionId: input.sessionId,
-                  turnId: input.turnId,
-                  runId: 'run-1',
-                  status: 'running',
-                },
+                disposition: 'turn_started',
+                turnId: 'turn-host-1',
                 skillInvocation: { loaded: [], failed: [], receipts: [] },
               },
             };
@@ -384,7 +388,6 @@ test('drives the renderer Session execution facade through real UDS framing', as
       {
         client,
         observer,
-        observations: observer,
         attachmentApprovals: createAttachmentApprovalRegistry(),
         emitSessionsChanged() {},
         stat: async () => ({ size: 0 }),
@@ -410,7 +413,7 @@ test('drives the renderer Session execution facade through real UDS framing', as
       }),
       {
         ok: true,
-        turnId: 'turn-1',
+        turnId: 'turn-host-1',
         attachments: [],
         inlineReferences: [],
         skillInvocation: { loaded: [], failed: [], receipts: [] },
@@ -610,6 +613,7 @@ function session(
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test-connection',
     connectionLocked: true,
     model: 'test-model',

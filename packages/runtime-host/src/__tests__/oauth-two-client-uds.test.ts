@@ -154,7 +154,10 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
     const terminal = await waitForTerminal(second, 'uds-attempt');
     assert.equal(terminal.phase, 'authenticated');
     assert.deepEqual(presentations, ['tui']);
-    const resolved = await stores.operations.resolveExecutionConnection(connection.slug);
+    const resolved = await stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: connection.slug,
+    });
     assert.equal(resolved.kind, 'ready');
     if (resolved.kind === 'ready') {
       assert.deepEqual(

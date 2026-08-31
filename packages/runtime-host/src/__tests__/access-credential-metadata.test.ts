@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -29,6 +29,7 @@ import { readRuntimeHostAccessCredentialMetadata } from '../server/access-creden
 import {
   ACCESS_FILE_NAME,
   createAccessCredentialFile,
+  readAccessCredentialFile,
   writeAccessCredentialFile,
   type StoredAccessCredential,
 } from '../server/access-credential-store.js';
@@ -89,9 +90,13 @@ test('credential metadata exposes only usable public access state', async (t) =>
     new Date(Date.now() - 60_000).toISOString(),
   );
   const revoked = credential('revoked', revokedSecret, 'revoked');
+  const guest = {
+    ...credential('guest', 'maka_rh_guest_secret', 'active'),
+    principalKind: 'session_guest' as const,
+  };
   await writeAccessCredentialFile(
     join(owner.controlDirectory, ACCESS_FILE_NAME),
-    createAccessCredentialFile([active, pending, expired, revoked]),
+    createAccessCredentialFile([active, pending, expired, revoked, guest]),
   );
 
   const metadata = await readRuntimeHostAccessCredentialMetadata(root, capability.rootId);
@@ -132,4 +137,36 @@ test('credential metadata exposes only usable public access state', async (t) =>
   ]) {
     assert.equal(serialized.includes(sensitive), false);
   }
+});
+
+test('releases a retired execution.inspect.resolve grant from an existing access file', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'maka-access-retired-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, ACCESS_FILE_NAME);
+  // A file written before the operation was removed still records the grant.
+  // Decoding must release it rather than reject the whole file and keep the
+  // Host from starting over a capability it can no longer serve.
+  await writeFile(
+    path,
+    JSON.stringify({
+      schemaVersion: 1,
+      credentials: [
+        {
+          credentialId: 'legacy',
+          credentialHash: 'a'.repeat(64),
+          principalId: 'desktop:legacy',
+          principalKind: 'remote_owner',
+          status: 'active',
+          operationGrants: ['host.status', 'execution.inspect.resolve'],
+          canPublishClientCapabilities: false,
+          canUseHostPaths: false,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    }),
+    'utf8',
+  );
+
+  const file = await readAccessCredentialFile(path);
+  assert.deepEqual(file.credentials[0]?.operationGrants, ['host.status']);
 });

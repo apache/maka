@@ -51,6 +51,7 @@ import {
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/provider-registry';
+import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 
 export const PROVIDER_CONTRACT_DIMENSIONS = [
   'discovery',
@@ -214,7 +215,7 @@ function usesOpenAiResponsesWire(
   def: ProviderDefaults,
   modelId: string,
 ): boolean {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
   const supportsResponses =
     adapter.kind === 'openai' ||
     (adapter.kind === 'openai-compatible' && adapter.responses !== undefined);
@@ -389,7 +390,7 @@ function reasoningReplayCell(
   providerType: ProviderType,
   def: ProviderDefaults,
 ): ProviderContractCell {
-  const adapter = def.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(def.runtimeAdapter);
   if (adapter.kind === 'unavailable') {
     return {
       state: 'not-applicable',
@@ -434,17 +435,12 @@ function reasoningReplayCell(
       },
     };
   }
-  if (
-    providerType === 'volcengine-agent-plan' &&
-    adapter.kind === 'openai' &&
-    adapter.apiProtocol === 'openai-responses'
-  ) {
+  if (adapter.kind === 'openai' && adapter.apiProtocol === 'openai-responses') {
     return {
       state: 'override',
       dimension: 'reasoning-replay',
       overrideKey: overrideKeyFor(providerType, 'reasoning-replay'),
-      contract:
-        'Stateless OpenAI Responses reasoning items retain their encrypted content across Maka-owned durable replay',
+      contract: 'Native OpenAI Responses reasoning items retain their provider continuation state',
     };
   }
   // Native Anthropic / OpenAI / Google / Cohere SDKs own signed reasoning replay

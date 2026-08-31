@@ -45,14 +45,26 @@ WorkHub exit, active-Session selection, transcript clearing, and renderer-state
 cleanup. Session Navigation does not own catalog authority, transcript/runtime
 state, Session controls, task submission, or Module Hub routing.
 
+Those intents stay intents. Opening a Session also clears the active transcript
+and leaves WorkHub, and the rail does not subscribe to either: it calls them
+through `SessionNavigationPorts`, which the shell composes.
+
 ## Public surface
 
-- `useSessionNavigationController` owns layout, projections, jumps, and row
-  mutation commands.
-- `<SessionNavigationHost>` maps that controller onto the complete
-  `SessionListPanel` surface.
-- `selectors.activeParentSession`, `branchBanner`, and `revisionNavigation`
-  are the narrow projections still consumed by shell/conversation chrome.
+- `<SessionNavigationProvider>` is where the rail's state lives. It calls
+  `useSessionNavigationController` and publishes what the rail reads as two
+  contexts — its data and its chrome — so a re-render of AppShell is not a
+  re-render of the rail (#4109).
+- `useSessionNavigationController` owns layout, projections, and row mutation
+  commands. It is called by the provider and nowhere else; calling it in a
+  render body above the rail is what put the rail's state on the whole tree.
+- `useSessionNavigationReads` is the shell's own narrow read: the rail
+  projection it also needs for the command palette, the branch banner, the
+  revision navigation, and the rail's width. It holds no state.
+- `createSessionOpenCommand` composes an explicit Session jump out of the
+  shell's own actions.
+- `sessionRailLayoutStore` owns collapse, width, and grouping mode, with the
+  existing persistence keys.
 
 ## Lifecycle invariants
 

@@ -20,6 +20,7 @@
 import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
 import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
+import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,
   readNewTaskReloadIntent,
@@ -67,7 +68,20 @@ interface BoundaryUnreadableNotice {
  * `draftKey`, and `stopPending` are derived here from the active-session state
  * so AppShell only forwards the orchestration callbacks and the session maps.
  */
-interface ChatComposerRegionProps extends Omit<ComponentProps<typeof Composer>, 'hidden' | 'draftKey' | 'stopPending'> {
+interface ChatComposerRegionProps
+  extends Omit<
+    ComponentProps<typeof Composer>,
+    | 'hidden'
+    | 'draftKey'
+    | 'stopPending'
+    | 'allowAttachmentImportWhileStreaming'
+    // Read from ComposerMentionsProvider, so a catalog reload repaints the
+    // popups without re-rendering the shell that would otherwise pass them.
+    | 'mentionSkills'
+    | 'mentionSkillsUnavailable'
+    | 'mentionSkillsLoading'
+    | 'onSearchMentionFiles'
+  > {
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
   onboardingComposerHidden: boolean;
@@ -102,6 +116,7 @@ export function ChatComposerRegion({
   boundaryUnreadableNotice,
   ...composerRest
 }: ChatComposerRegionProps) {
+  const mentions = useComposerMentionsContext();
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -203,6 +218,14 @@ export function ChatComposerRegion({
       <Composer
         ref={composerRef}
         {...composerRest}
+        // AppShell carries staged attachments into both queued and steering
+        // follow-ups. Other Composer hosts remain gated by default because a
+        // text-only running-turn submission would leave attachments behind.
+        allowAttachmentImportWhileStreaming
+        mentionSkills={mentions?.mentionSkills}
+        mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+        mentionSkillsLoading={mentions?.mentionSkillsLoading}
+        onSearchMentionFiles={mentions?.searchMentionFiles}
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
         draftKey={activeId ?? newTaskDraftKey}
         draftPersistence={newTaskDraftPersistence}

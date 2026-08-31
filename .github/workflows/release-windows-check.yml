@@ -32,7 +32,12 @@ on:
     paths:
       - 'apps/desktop/electron-builder.config.mjs'
       - 'apps/desktop/package.json'
+      - 'native/runtime-host-peer/**'
+      - 'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv'
+      - 'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt'
       - 'scripts/package-windows-x64.mjs'
+      - 'scripts/generate-runtime-host-peer-dependencies.mjs'
+      - 'scripts/generate-runtime-host-peer-notices.mjs'
       - 'scripts/verify-windows-x64.mjs'
       - 'scripts/verify-windows-sandbox-e2e.mjs'
       - 'scripts/verify-windows-installer-lifecycle.mjs'
@@ -101,7 +106,7 @@ concurrency:
 jobs:
   package:
     runs-on: windows-2025
-    timeout-minutes: 90
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -118,6 +123,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Update stable Rust for Desktop native artifacts
+        run: rustup update stable --no-self-update
 
       - name: Package the Windows installer and ZIP
         run: npm run package:windows-x64

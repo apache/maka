@@ -35,12 +35,7 @@ export async function resolveMoveCwd(rawCwd: string, currentCwd: string): Promis
       (input.startsWith("'") && input.endsWith("'")))
       ? input.slice(1, -1)
       : input;
-  const expanded =
-    unquoted === '~'
-      ? homedir()
-      : unquoted.startsWith('~/')
-        ? resolve(homedir(), unquoted.slice(2))
-        : unquoted;
+  const expanded = expandMoveCwdHome(unquoted, homedir(), process.platform);
   const candidate = resolve(currentCwd, expanded);
   let canonical: string;
   try {
@@ -56,6 +51,18 @@ export async function resolveMoveCwd(rawCwd: string, currentCwd: string): Promis
     throw new Error(`Working directory is not a directory: ${canonical}`);
   }
   return canonical;
+}
+
+export function expandMoveCwdHome(
+  path: string,
+  homeDir: string,
+  platform: NodeJS.Platform,
+): string {
+  if (path === '~') return homeDir;
+  if (path.startsWith('~/') || (platform === 'win32' && path.startsWith('~\\'))) {
+    return resolve(homeDir, path.slice(2));
+  }
+  return path;
 }
 
 export async function inspectGitCwdChanges(cwd: string): Promise<boolean | undefined> {

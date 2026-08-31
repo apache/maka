@@ -28,6 +28,8 @@ import {
   enqueueInteraction,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
+  TOOL_STREAM_MAX_CHUNKS,
+  TOOL_STREAM_MAX_TOTAL_CHARS,
   type LiveTurnProjection,
   type InteractionQueues,
   type TransientUserMessageProjection,
@@ -62,6 +64,7 @@ export interface AppShellSessionEventHandlers {
   reconcilePersistedMessages(sessionId: string, messages: readonly StoredMessage[]): void;
   settleAssistantStreaming(sessionId: string, messageId?: string): Promise<void>;
   flushDisplayEvents(sessionId: string): void;
+  dropDisplayEvents(sessionId: string): void;
   markDisplayPending(sessionId: string): void;
   markDisplayReady(sessionId: string): void;
 }
@@ -173,9 +176,28 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function scheduleDisplayEvent(sessionId: string, event: SessionEvent): void {
-    const events = displayBatch.pendingEvents.get(sessionId);
-    if (events) events.push(event);
-    else displayBatch.pendingEvents.set(sessionId, [event]);
+    const events = displayBatch.pendingEvents.get(sessionId) ?? [];
+    events.push(event);
+    displayBatch.pendingEvents.set(sessionId, events);
+    if (event.type === 'tool_output_delta') {
+      let chunks = 0;
+      let chars = 0;
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const candidate = events[index];
+        if (
+          candidate?.type === 'tool_output_delta'
+          && candidate.turnId === event.turnId
+          && candidate.toolUseId === event.toolUseId
+        ) {
+          chunks += 1;
+          chars += candidate.chunk.length;
+          if (
+            chunks > TOOL_STREAM_MAX_CHUNKS
+            || chars > TOOL_STREAM_MAX_TOTAL_CHARS
+          ) events.splice(index, 1);
+        }
+      }
+    }
     if (displayBatch.framePending || !scheduleFrame) return;
     displayBatch.framePending = true;
     scheduleFrame(() => {
@@ -191,6 +213,11 @@ export function createAppShellSessionEventHandlers(options: {
     const events = takePendingDisplayEvents(sessionId);
     if (events.length === 0) return;
     updateLiveTurn(sessionId, events);
+  }
+
+  function dropDisplayEvents(sessionId: string): void {
+    displayBatch.pendingEvents.delete(sessionId);
+    displayBatch.displayPendingSessions.delete(sessionId);
   }
 
   function markDisplayPending(sessionId: string): void {
@@ -276,11 +303,17 @@ export function createAppShellSessionEventHandlers(options: {
   }
 
   function handleEvent(sessionId: string, event: SessionEvent): void {
+    // Only unbounded, append-only display streams may wait for paint. Every
+    // lifecycle/readiness event stays synchronous and flushes these first.
     if (
       scheduleFrame
       && activeIdRef.current === sessionId
       && canBatchDisplayEvents(sessionId)
-      && (event.type === 'text_delta' || event.type === 'thinking_delta')
+      && (
+        event.type === 'text_delta'
+        || event.type === 'thinking_delta'
+        || event.type === 'tool_output_delta'
+      )
     ) {
       scheduleDisplayEvent(sessionId, event);
       return;
@@ -334,9 +367,21 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire only the renderer-owned tail row; a later nack queue_update
-        // will project it again if the Host returns the message to the queue.
+        // Retire the renderer-owned tail row and its pending-queue card; a
+        // later nack queue_update will project both again if the Host returns
+        // the message to the queue.
         removeTransientMessage?.(sessionId, event.messageId);
+        setMessageQueueBySession?.((current) => {
+          const queue = current[sessionId];
+          if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
+          const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
+          if (entries.length > 0) {
+            return { ...current, [sessionId]: { ...queue, entries } };
+          }
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
         break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
@@ -434,6 +479,7 @@ export function createAppShellSessionEventHandlers(options: {
     reconcilePersistedMessages,
     settleAssistantStreaming,
     flushDisplayEvents,
+    dropDisplayEvents,
     markDisplayPending,
     markDisplayReady,
   };

@@ -1,0 +1,197 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: npm publication
+run-name: npm ${{ inputs.channel || 'nightly' }} publication
+
+on:
+  schedule:
+    - cron: '17 18 * * *'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Publication channel
+        required: true
+        type: choice
+        default: nightly
+        options:
+          - nightly
+          - formal
+      version:
+        description: Exact formal product version; ignored for Nightly
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publication-${{ inputs.channel || 'nightly' }}
+  cancel-in-progress: false
+
+jobs:
+  formal:
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'formal'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/release-cli-stage.yml
+    with:
+      version: ${{ inputs.version }}
+
+  identity:
+    if: vars.NPM_NIGHTLY_ENABLED == 'true' && (github.event_name == 'schedule' || inputs.channel == 'nightly')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - name: Reject in-place workflow reruns
+        if: github.run_attempt != 1
+        run: |
+          echo "npm Nightly retries require a fresh workflow dispatch" >&2
+          exit 1
+
+      - name: Check out the scheduled main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require the Apache main branch
+        run: |
+          test "$GITHUB_REPOSITORY" = apache/maka
+          test "$GITHUB_REF" = refs/heads/main
+
+      - name: Resolve the immutable Nightly identity
+        id: identity
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+        run: node scripts/product-nightly.mjs identity
+
+  cli:
+    name: Validate npm Nightly
+    needs: identity
+    uses: ./.github/workflows/cli-package-validation.yml
+    with:
+      source_commit: ${{ needs.identity.outputs.source_commit }}
+      package_version: ${{ needs.identity.outputs.version }}
+
+  publish:
+    name: Publish npm Nightly
+    needs: [identity, cli]
+    runs-on: ubuntu-24.04
+    environment: npm-publication
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Reject in-place workflow reruns
+        if: github.run_attempt != 1
+        run: |
+          echo "npm Nightly retries require a fresh workflow dispatch" >&2
+          exit 1
+
+      - name: Check out the Nightly publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.identity.outputs.source_commit }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install publisher dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Select the publication npm toolchain
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+
+      - name: Download the validated npm Nightly
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.cli.outputs.release_candidate_artifact_id }}
+          path: packages/cli/release
+
+      - name: Bind the npm Nightly to this workflow run
+        id: npm-nightly
+        env:
+          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          node scripts/release-cli-publication.mjs prepare-nightly \
+            packages/cli/release \
+            "$NIGHTLY_VERSION" \
+            "$GITHUB_OUTPUT"
+
+      - name: Require the Nightly channel to advance
+        env:
+          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
+        run: |
+          current="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/)"
+          node scripts/product-nightly.mjs assert-channel-advance "$NIGHTLY_VERSION" "$current"
+
+      - name: Publish the exact npm Nightly
+        env:
+          NIGHTLY_DIST_TAG: ${{ steps.npm-nightly.outputs.dist_tag }}
+          NIGHTLY_TARBALL: ${{ steps.npm-nightly.outputs.tarball }}
+        run: |
+          test "$NIGHTLY_DIST_TAG" = nightly
+          npm publish "$NIGHTLY_TARBALL" \
+            --tag nightly \
+            --registry https://registry.npmjs.org/ \
+            --provenance
+
+      - name: Require the public npm Nightly
+        env:
+          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
+        run: |
+          for attempt in {1..12}; do
+            published="$(npm view "maka-agent@$NIGHTLY_VERSION" version --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            tagged="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/ 2>/dev/null || true)"
+            if [[ "$published" == "$NIGHTLY_VERSION" && "$tagged" == "$NIGHTLY_VERSION" ]]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "npm Nightly did not become readable with the exact nightly tag" >&2
+          exit 1
+
+      - name: Record the published Product Nightly version
+        env:
+          VERSION_DIRECTORY: ${{ runner.temp }}/product-nightly-version
+          NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
+        run: |
+          mkdir -p "$VERSION_DIRECTORY"
+          node scripts/product-nightly.mjs write-version \
+            "$VERSION_DIRECTORY/version.txt" \
+            "$NIGHTLY_VERSION"
+
+      - name: Hand the exact version to Desktop Nightly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: product-nightly-version
+          path: ${{ runner.temp }}/product-nightly-version/version.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

@@ -104,6 +104,8 @@ export function createDesktopWorkbarServices(
         bridge.inspector.subscribeUsageChanges(sessionId, handler),
     },
     attachments: {
+      readBytes: (sessionId, artifactId) =>
+        bridge.attachments.readBytes(sessionId, artifactId),
       pickFiles: () => bridge.attachments.pickFiles(),
       previewApproval: (approvalId) =>
         bridge.attachments.previewApproval(approvalId),

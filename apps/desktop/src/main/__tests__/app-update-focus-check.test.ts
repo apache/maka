@@ -50,6 +50,7 @@ function createHarness(options: { start: number }) {
     currentVersion: '0.1.8',
     isPackaged: true,
     updater,
+    verifyDownloadedUpdate: async () => {},
     prepareInstall: async () => ({ kind: 'prepared', rollback() {} }),
     clock: {
       // No scheduled checks in these tests: the timer is a separate trigger and

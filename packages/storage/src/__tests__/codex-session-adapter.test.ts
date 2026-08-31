@@ -129,6 +129,64 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
+  test('lists every thread source the foreign-session scanner accepts (#3693)', async () => {
+    // The adapter owned its own token set, so bare `atlas`/`chatgpt` and a
+    // wrapped `{"custom":"cli"}` were dropped here while the scanner in
+    // `@maka/core/foreign-session` listed them. Both gates now share one
+    // authority, so the catalog and the scan agree on every shape.
+    await withCodexHome(async (codexHome) => {
+      const sources = ['cli', 'exec', 'vscode', 'atlas', 'chatgpt'] as const;
+      const rows: StateRow[] = [];
+      for (const [index, source] of sources.entries()) {
+        const bareId = `codex-bare-${source}`;
+        const wrappedId = `codex-wrapped-${source}`;
+        rows.push({
+          id: bareId,
+          rolloutPath: await seedMinimalRollout(codexHome, bareId, false, '/workspace', 'Task'),
+          cwd: '/workspace',
+          name: `bare ${source}`,
+          createdAtMs: 1000 + index,
+          updatedAtMs: 3000 + index,
+          archived: false,
+          source,
+        });
+        rows.push({
+          id: wrappedId,
+          rolloutPath: await seedMinimalRollout(codexHome, wrappedId, false, '/workspace', 'Task'),
+          cwd: '/workspace',
+          name: `wrapped ${source}`,
+          createdAtMs: 1100 + index,
+          updatedAtMs: 3100 + index,
+          archived: false,
+          source: JSON.stringify({ custom: source }),
+        });
+      }
+      const subagentId = 'codex-subagent-drop';
+      rows.push({
+        id: subagentId,
+        rolloutPath: await seedMinimalRollout(codexHome, subagentId, false, '/workspace', 'Task'),
+        cwd: '/workspace',
+        name: 'internal child',
+        createdAtMs: 2000,
+        updatedAtMs: 4000,
+        archived: false,
+        source: '{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}',
+      });
+      await seedStateDatabase(codexHome, rows);
+
+      const listed = new Set(
+        (await new CodexSessionAdapter({ codexHome }).listSessions()).map((session) => session.id),
+      );
+      for (const source of sources) {
+        assert.ok(listed.has(`codex-bare-${source}`), `bare ${source} was dropped`);
+        assert.ok(listed.has(`codex-wrapped-${source}`), `wrapped ${source} was dropped`);
+      }
+      // Internal subagent threads stay out of the catalog.
+      assert.equal(listed.has(subagentId), false);
+      assert.equal(listed.size, sources.length * 2);
+    });
+  });
+
   test('a Windows path spelling reaches the matcher instead of being lost in SQL', async () => {
     // The SQL used to prefilter with `cwd IN (<spelling variants>)`, and
     // SQLite compares those exactly — a row stored `C:\\Repo\\App` was

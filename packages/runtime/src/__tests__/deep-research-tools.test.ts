@@ -128,6 +128,7 @@ async function withTempRoot(fn: (root: string) => Promise<void>): Promise<void> 
 
 describe('Deep Research runtime tools', () => {
   it('admits only the explicit Deep Research tool surface', () => {
+    const standardResearchNames = ['AskUserQuestion', 'Read', 'Glob', 'Grep', 'WebSearch'];
     const canonicalNames = [
       DEEP_RESEARCH_START_TOOL_NAME,
       DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -138,7 +139,9 @@ describe('Deep Research runtime tools', () => {
       DEEP_RESEARCH_STATUS_TOOL_NAME,
       DEEP_RESEARCH_COMPLETE_TOOL_NAME,
     ];
+    assert.ok(standardResearchNames.every((name) => isDeepResearchToolAllowed({ name })));
     assert.ok(canonicalNames.every((name) => isDeepResearchToolAllowed({ name })));
+    assert.equal(isDeepResearchToolAllowed({ name: 'ExploreAgent' }), false);
     assert.equal(isDeepResearchToolAllowed({ name: 'deep_research_unsafe_fixture' }), false);
   });
 
@@ -464,53 +467,55 @@ describe('Deep Research runtime tools', () => {
     });
   });
 
-  it('rejects untraceable derived artifacts at the schema boundary', () => {
-    const tools = buildDeepResearchTools({
-      store: createSqliteDeepResearchStore('/tmp/maka-unused-deep-research-2'),
-      artifactStore: new FakeArtifactStore(),
-    });
-    const save = findTool(tools, DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME);
-    const result = (save.parameters as z.ZodType).safeParse({
-      role: 'evidence_note',
-      name: 'note.md',
-      content: 'Unsupported claim.',
-      summary: 'No source.',
-    });
-    assert.equal(result.success, false);
+  it('rejects untraceable derived artifacts at the schema boundary', async () => {
+    await withTempRoot(async (root) => {
+      const tools = buildDeepResearchTools({
+        store: createSqliteDeepResearchStore(root),
+        artifactStore: new FakeArtifactStore(),
+      });
+      const save = findTool(tools, DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME);
+      const result = (save.parameters as z.ZodType).safeParse({
+        role: 'evidence_note',
+        name: 'note.md',
+        content: 'Unsupported claim.',
+        summary: 'No source.',
+      });
+      assert.equal(result.success, false);
 
-    const update = findTool(tools, DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME);
-    assert.equal(
-      (update.parameters as z.ZodType).safeParse({
-        item_id: 'core_flow',
-        status: 'completed',
-      }).success,
-      false,
-    );
+      const update = findTool(tools, DEEP_RESEARCH_UPDATE_CHECKLIST_TOOL_NAME);
+      assert.equal(
+        (update.parameters as z.ZodType).safeParse({
+          item_id: 'core_flow',
+          status: 'completed',
+        }).success,
+        false,
+      );
 
-    const step = findTool(tools, DEEP_RESEARCH_RECORD_STEP_TOOL_NAME);
-    assert.equal(
-      (step.parameters as z.ZodType).safeParse({
-        kind: 'local_exploration',
-        status: 'stopped',
-        objective: 'Inspect the implementation.',
-        summary: 'Stopped at the declared boundary.',
-        stopping_condition: 'Stop after the entrypoint.',
-        expected_evidence: 'A concrete file reference.',
-      }).success,
-      false,
-    );
-    assert.equal(
-      (step.parameters as z.ZodType).safeParse({
-        kind: 'web_research',
-        status: 'blocked',
-        objective: 'Find primary sources.',
-        summary: 'No source was available.',
-        stopping_condition: 'Stop after primary-source queries.',
-        expected_evidence: 'An archived primary source.',
-        keywords: ['primary source'],
-      }).success,
-      false,
-    );
+      const step = findTool(tools, DEEP_RESEARCH_RECORD_STEP_TOOL_NAME);
+      assert.equal(
+        (step.parameters as z.ZodType).safeParse({
+          kind: 'local_exploration',
+          status: 'stopped',
+          objective: 'Inspect the implementation.',
+          summary: 'Stopped at the declared boundary.',
+          stopping_condition: 'Stop after the entrypoint.',
+          expected_evidence: 'A concrete file reference.',
+        }).success,
+        false,
+      );
+      assert.equal(
+        (step.parameters as z.ZodType).safeParse({
+          kind: 'web_research',
+          status: 'blocked',
+          objective: 'Find primary sources.',
+          summary: 'No source was available.',
+          stopping_condition: 'Stop after primary-source queries.',
+          expected_evidence: 'An archived primary source.',
+          keywords: ['primary source'],
+        }).success,
+        false,
+      );
+    });
   });
 
   it('redacts secrets and strips workspace envelope tags from resumable status text', () => {

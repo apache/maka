@@ -100,7 +100,6 @@ describe('Session Navigation feature boundary', () => {
       'utf8',
     );
     for (const forbidden of [
-      '<SessionListPanel',
       'deriveSessionRail(',
       'deriveSessionRevisionNavigation(',
       'readSessionListViewMode(',
@@ -113,13 +112,11 @@ describe('Session Navigation feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(
-      appShell.includes('const sessionNavigation = useSessionNavigationController({'),
-      true,
-    );
-    assert.equal(
-      appShell.includes('<SessionNavigationHost'),
-      true,
-    );
+    // The rail's state lives under its own provider, so AppShell holds no
+    // controller at all: it renders the provider and reads back the projections
+    // it needs for the palette, the titlebar, and the frame's width (#4109).
+    assert.equal(appShell.includes('useSessionNavigationController'), false);
+    assert.equal(appShell.includes('} = useSessionNavigationReads({'), true);
+    assert.equal(appShell.includes('<SessionNavigationProvider'), true);
   });
 });

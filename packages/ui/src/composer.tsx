@@ -21,6 +21,7 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -55,8 +56,13 @@ import {
 } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
-import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
+import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
+import {
+  appendPromptContextDraft,
+  deriveComposerModelSwitchAvailability,
+  isReferenceSizedPaste,
+  type ComposerModelSwitchAvailability,
+} from './composer-helpers.js';
 import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
@@ -210,6 +216,8 @@ export interface ComposerHandle {
   appendDraft?(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
+  /** Open the active Session's existing account-and-model picker. */
+  openModelPicker(): void;
 }
 
 export interface ComposerSendMetadata {
@@ -234,9 +242,17 @@ export const Composer = forwardRef<
      * Send becomes Stop while the draft is empty. The ＋ menu and permission
      * control stay reachable (#1444); the model and thinking menus stay
      * mounted but lock with an explanatory tooltip, so the footer row never
-     * reflows mid-turn; import stays blocked mid-turn.
+     * reflows mid-turn. Attachment import remains blocked unless the host opts
+     * in via `allowAttachmentImportWhileStreaming`.
      */
     streaming?: boolean;
+    /**
+     * Keep attachment paste, drop, and picker imports available during a
+     * running turn. Only hosts whose running-turn submission carries staged
+     * attachments into a follow-up should opt in; text-only steering hosts
+     * must retain the default gate so text cannot leave its attachment behind.
+     */
+    allowAttachmentImportWhileStreaming?: boolean;
     /**
      * #646: retained for hosts that still track first-token wait vs mid-turn
      * lull. Quiet composer no longer surfaces long status copy from these;
@@ -312,11 +328,18 @@ export const Composer = forwardRef<
     modelChoices?: ChatModelChoice[];
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
     modelSwitchHasHistory?: boolean;
+    /** Identity recovery must not present the stale target as a checked, selectable row. */
+    hideUnavailableCurrentModel?: boolean;
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
-    modelChangePending?: boolean;
-    onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    /** Host-projected availability when another recovery surface opens this picker. */
+    modelSwitchAvailability?: ComposerModelSwitchAvailability;
+    onModelChange?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
     activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
     activeThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
@@ -330,9 +353,13 @@ export const Composer = forwardRef<
      * the otherwise-static model chip becomes a real dropdown so the user can
      * choose the new-chat model inline instead of only via Settings · 模型.
      */
-    newChatModel?: { llmConnectionSlug: string; model: string };
+    newChatModel?: { llmConnectionId: string; llmConnectionSlug: string; model: string };
     newChatProviderType?: ProviderType;
-    onPickNewChatModel?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    onPickNewChatModel?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /**
      * Empty-state only: no models are configured yet, so the model chip is a
      * non-interactive label. When provided, the chip becomes a button into
@@ -484,10 +511,21 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const modelSwitchAvailability =
+    props.modelSwitchAvailability ??
+    deriveComposerModelSwitchAvailability({
+      streaming: props.streaming,
+      sessionStatus: props.activeSession?.status,
+    });
+  const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
+  modelSwitchAvailabilityRef.current = modelSwitchAvailability;
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
   const compositionActiveRef = useRef(false);
+  const plainTextPasteInputActiveRef = useRef(false);
   const importActionOwnerRef = useRef<ChatInputActionOwner<ComposerImportActionId> | null>(null);
   if (!importActionOwnerRef.current) {
     importActionOwnerRef.current = createChatInputActionOwner((action) => {
@@ -1141,6 +1179,10 @@ export const Composer = forwardRef<
       focus() {
         focusInput();
       },
+      openModelPicker() {
+        if (!modelSwitchAvailabilityRef.current.available) return;
+        setModelPickerOpen(true);
+      },
     }),
     [],
   );
@@ -1203,8 +1245,13 @@ export const Composer = forwardRef<
     void sendCurrent();
   }
 
+  const attachmentImportBlocked = Boolean(
+    props.disabled
+      || (props.streaming && !props.allowAttachmentImportWhileStreaming),
+  );
+
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
-    if (!action || props.disabled || props.streaming) return;
+    if (!action || attachmentImportBlocked) return;
     await importActionOwnerRef.current?.run(actionId, async () => {
       await action();
     });
@@ -1281,7 +1328,11 @@ export const Composer = forwardRef<
   }
 
   function canAcceptDroppedFiles(): boolean {
-    return Boolean(props.onAttachFilePaths && !props.disabled && !props.streaming && !importActionOwnerRef.current?.pending);
+    return Boolean(
+      props.onAttachFilePaths
+        && !attachmentImportBlocked
+        && !importActionOwnerRef.current?.pending,
+    );
   }
 
   function hasDraggedFiles(event: DragEvent<HTMLFormElement>): boolean {
@@ -1360,13 +1411,9 @@ export const Composer = forwardRef<
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
   // lock is one state with two wordings, not two locks.
-  const switchLock = props.streaming
-    ? 'streaming'
-    : props.activeSession?.status === 'running'
-      ? 'running'
-      : props.activeSession?.status === 'waiting_for_user'
-        ? 'permission'
-        : undefined;
+  const switchLock = modelSwitchAvailability.available
+    ? undefined
+    : modelSwitchAvailability.reason;
   const modelSwitcherDisabledReason =
     switchLock === 'streaming' ? copy.switchDisabledStreaming
     : switchLock === 'running' ? copy.switchDisabledRunning
@@ -1723,6 +1770,9 @@ export const Composer = forwardRef<
           input={(
             <div
               className="maka-composer-input"
+              onInputCapture={(event) => {
+                if (plainTextPasteInputActiveRef.current) event.stopPropagation();
+              }}
               // PR-FE-BUG-HUNT-10: a paste that lands mid-CJK-composition must
               // not be consumed — `ChatComposerInput` always preventDefault()s
               // the paste, which would interrupt the IME mid-character. The
@@ -1753,6 +1803,36 @@ export const Composer = forwardRef<
                 hasHistory={false}
                 triggers={triggers}
                 pasteAsToken={pasteAsToken}
+                onPaste={(event, pasted) => {
+                  // Astryx has already offered token-adjacent, file, and
+                  // reference-sized-token pastes before it reaches this seam.
+                  const plainTextContainer = document.createElement('div');
+                  plainTextContainer.textContent = pasted;
+                  const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
+                  plainTextPasteInputActiveRef.current = true;
+                  try {
+                    // Deprecated, but still the composer's only insertion
+                    // primitive that creates a browser undo transaction.
+                    // Migrate when Astryx exposes a transactional plain-text
+                    // insertion authority.
+                    return document.execCommand(
+                      'insertHTML',
+                      false,
+                      plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
+                    );
+                  } finally {
+                    plainTextPasteInputActiveRef.current = false;
+                    if (menuWasOpen) {
+                      event.currentTarget.dispatchEvent(
+                        new KeyboardEvent('keydown', {
+                          key: 'Escape',
+                          bubbles: true,
+                          cancelable: true,
+                        }),
+                      );
+                    }
+                  }
+                }}
                 onFiles={onInputFiles}
                 onKeyDown={onInputKeyDown}
                 onCompositionStart={() => { compositionActiveRef.current = true; }}
@@ -1788,7 +1868,7 @@ export const Composer = forwardRef<
                       <DropdownMenuItem
                         label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
                         icon={<Upload size={ICON_SIZE.control} aria-hidden="true" />}
-                        isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                        isDisabled={attachmentImportBlocked || importActionBusy}
                         onClick={() => {
                           void runImportAction('pick', props.onPickAttachments);
                         }}
@@ -1964,8 +2044,11 @@ export const Composer = forwardRef<
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}
                     hasConversationHistory={props.modelSwitchHasHistory}
-                    pending={props.modelChangePending}
+                    availability={modelSwitchAvailability}
                     disabledReason={modelSwitcherDisabledReason}
+                    isMenuOpen={modelPickerOpen}
+                    onMenuOpenChange={setModelPickerOpen}
+                    hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
                     renderProviderMark={props.renderProviderMark}
                     onChange={props.onModelChange}
                   />
@@ -1975,7 +2058,11 @@ export const Composer = forwardRef<
                     choices={props.modelChoices ?? []}
                     currentValue={
                       props.newChatModel
-                        ? modelChoiceValue(props.newChatModel.llmConnectionSlug, props.newChatModel.model)
+                        ? exactModelChoiceValue(
+                            props.newChatModel.llmConnectionId,
+                            props.newChatModel.llmConnectionSlug,
+                            props.newChatModel.model,
+                          )
                         : undefined
                     }
                     currentProviderType={props.newChatProviderType}
@@ -1994,9 +2081,9 @@ export const Composer = forwardRef<
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
                     onChange={props.onThinkingLevelChange}
-                    disabled={Boolean(modelSwitcherDisabledReason) || props.modelChangePending}
+                    disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={props.modelChangePending}
+                    loading={modelSwitchAvailability.pending}
                   />
                 ) : (
                   <ThinkingLevelSelector

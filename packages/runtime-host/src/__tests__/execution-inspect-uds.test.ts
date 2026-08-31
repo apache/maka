@@ -50,6 +50,7 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
   const session = await stores.sessionStore.create({
     cwd: root,
     name: 'Live inspection',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -72,14 +73,6 @@ test('a live Host serves Interactive inspection over its real endpoint while ret
     assert.equal(connected.kind, 'connected');
     if (connected.kind !== 'connected') throw new Error('Live inspection did not connect');
     try {
-      assert.deepEqual(
-        await connected.connection.request('execution.inspect.resolve', { id: session.id }),
-        {
-          status: 'resolved',
-          candidates: [{ kind: 'session', id: session.id }],
-          truncated: false,
-        },
-      );
       const inspected = await connected.connection.request('execution.inspect.query', {
         kind: 'session',
         sessionId: session.id,

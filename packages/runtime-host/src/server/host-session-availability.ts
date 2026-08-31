@@ -35,24 +35,38 @@ export const WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON =
   'WorkHub Coordination Session execution requires WorkHub authority';
 export const WORKHUB_COORDINATION_TARGET_UNAVAILABLE_REASON =
   'WorkHub Coordination execution requires the reserved Coordination Session';
+export const LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON =
+  'This Session requires an explicit account selection before it can run.';
 
 export function runtimeHostExternalTurnUnavailableReason(
   header: Pick<
     SessionHeader,
-    'id' | 'role' | 'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+    | 'id'
+    | 'role'
+    | 'collaborationMode'
+    | 'subagentWorkspace'
+    | 'transcriptLedgerVersion'
+    | 'llmConnectionId'
+    | 'backend'
   >,
 ): string | undefined {
   return runtimeHostExecutionUnavailableReason(header, { kind: 'external_message' });
 }
 
 export function runtimeHostSafeBoundaryContinuationUnavailableReason(
-  header: Pick<SessionHeader, 'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion'>,
+  header: Pick<
+    SessionHeader,
+    'id' | 'role' | 'subagentParent' | 'transcriptLedgerVersion' | 'llmConnectionId' | 'backend'
+  >,
 ): string | undefined {
   return (
     (isWorkHubCoordinationSessionTarget(header)
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
+    (header.llmConnectionId === undefined && header.backend !== 'fake'
+      ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
     (header.subagentParent ? CHILD_CONTINUATION_UNAVAILABLE_REASON : undefined)
   );
 }
@@ -60,7 +74,13 @@ export function runtimeHostSafeBoundaryContinuationUnavailableReason(
 export function runtimeHostExecutionUnavailableReason(
   header: Pick<
     SessionHeader,
-    'id' | 'role' | 'collaborationMode' | 'subagentWorkspace' | 'transcriptLedgerVersion'
+    | 'id'
+    | 'role'
+    | 'collaborationMode'
+    | 'subagentWorkspace'
+    | 'transcriptLedgerVersion'
+    | 'llmConnectionId'
+    | 'backend'
   > & {
     readonly toolProfile?: SessionToolProfile;
     readonly permissionMode?: SessionHeader['permissionMode'];
@@ -88,6 +108,9 @@ export function runtimeHostExecutionUnavailableReason(
       ? WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON
       : undefined) ??
     (header.transcriptLedgerVersion === 0 ? IMPORT_STAGING_UNAVAILABLE_REASON : undefined) ??
+    (header.llmConnectionId === undefined && header.backend !== 'fake'
+      ? LEGACY_CONNECTION_IDENTITY_EXECUTION_UNAVAILABLE_REASON
+      : undefined) ??
     (header.collaborationMode === 'plan' &&
     execution.kind !== 'external_message' &&
     execution.kind !== 'regenerate' &&

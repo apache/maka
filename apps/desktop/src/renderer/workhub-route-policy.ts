@@ -54,8 +54,6 @@ export interface WorkHubRoutePolicy {
   initializeFocus(targets: readonly WorkHubSessionTarget[]): void;
   newVisit(): WorkHubRoutePolicy;
   rememberTarget(target: WorkHubSessionTarget): void;
-  reserveSubmissionOrder(): number;
-  rememberCorrection(text: string, target: WorkHubSessionTarget, order: number): void;
 }
 
 export function workHubNewSessionName(text: string): string {
@@ -75,20 +73,7 @@ export function workHubNewSessionName(text: string): string {
   return firstClause?.slice(0, 48) || '新工作';
 }
 
-interface RouteCorrection {
-  text: string;
-  target: WorkHubSessionTarget;
-  sequence: number;
-}
-
-interface RouteCorrectionMemory {
-  corrections: RouteCorrection[];
-  sequence: number;
-}
-
-const MAX_ROUTE_CORRECTIONS = 32;
 const MIN_EXACT_SESSION_NAME_LENGTH = 2;
-const MIN_CORRECTION_TERM_LENGTH = 3;
 // One four-character Han phrase is usually a meaningful entity rather than
 // grammar; Latin needs either two whole-word matches or one distinctive word.
 const MIN_STRONG_HAN_MATCH_LENGTH = 4;
@@ -104,15 +89,12 @@ const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
  * execution state, and recovery continue to come from the Session port.
  */
 export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
-  return createWorkHubRoutePolicyVisit({ corrections: [], sequence: 0 });
+  return createWorkHubRoutePolicyVisit();
 }
 
-function createWorkHubRoutePolicyVisit(
-  correctionMemory: RouteCorrectionMemory,
-): WorkHubRoutePolicy {
+function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
   let currentFocus: WorkHubSessionTarget | undefined;
   let previousFocus: WorkHubSessionTarget | undefined;
-  const corrections = correctionMemory.corrections;
 
   return {
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
@@ -201,11 +183,6 @@ function createWorkHubRoutePolicyVisit(
         return { kind: 'clarification', options: options.slice(0, MAX_UNCERTAINTY_OPTIONS) };
       }
 
-      const corrected = correctedTarget(text, sessions, corrections);
-      if (corrected) {
-        return { kind: 'target', target: corrected, evidence: 'route_correction' };
-      }
-
       const previousReference = looksLikePreviousFocus(text);
       const currentReference = !previousReference && looksLikeRecentFocus(text);
       const focusCandidate = previousReference
@@ -280,21 +257,12 @@ function createWorkHubRoutePolicyVisit(
       }
     },
     newVisit() {
-      return createWorkHubRoutePolicyVisit(correctionMemory);
+      return createWorkHubRoutePolicyVisit();
     },
     rememberTarget(target) {
       if (currentFocus?.sessionId === target.sessionId) return;
       previousFocus = currentFocus;
       currentFocus = target;
-    },
-    reserveSubmissionOrder() {
-      correctionMemory.sequence += 1;
-      return correctionMemory.sequence;
-    },
-    rememberCorrection(text, target, order) {
-      corrections.push({ text, target, sequence: order });
-      corrections.sort((left, right) => right.sequence - left.sequence);
-      corrections.splice(MAX_ROUTE_CORRECTIONS);
     },
   };
 }
@@ -314,30 +282,6 @@ function rankExactSessions(
     };
   }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
     .sort((left, right) => right.matchLength - left.matchLength);
-}
-
-function correctedTarget(
-  text: string,
-  sessions: WorkHubSessionFacts[],
-  corrections: readonly RouteCorrection[],
-): WorkHubSessionTarget | undefined {
-  const queryTerms = new Set(routingTerms(text));
-  if (queryTerms.size === 0) return undefined;
-  const available = new Set(sessions.map((session) => session.target.sessionId));
-  const ranked = corrections
-    .filter((correction) => available.has(correction.target.sessionId))
-    .map((correction) => {
-      const matches = routingTerms(correction.text).filter((term) => queryTerms.has(term));
-      return {
-        correction,
-        score: matches.reduce((total, term) => total + term.length, 0),
-        longestMatch: matches.reduce((longest, term) => Math.max(longest, term.length), 0),
-      };
-    })
-    .filter(({ longestMatch }) => longestMatch >= MIN_CORRECTION_TERM_LENGTH)
-    .sort((left, right) =>
-      right.score - left.score || right.correction.sequence - left.correction.sequence);
-  return ranked[0]?.correction.target;
 }
 
 function normalizeIdentityText(value: string): string {

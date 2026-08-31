@@ -91,7 +91,7 @@ export interface InspectorPanelModel {
 export function deriveInspectorPanelModel(trace: SessionTrace | undefined): InspectorPanelModel {
   if (!trace) return { turns: [], empty: true };
 
-  const turns = trace.turns.map<InspectorTurnRow>((turn) => {
+  const turns = [...trace.turns].reverse().map<InspectorTurnRow>((turn) => {
     const costUsd = deriveTurnCostUsd(turn.steps);
     return {
       runId: turn.runId,

@@ -190,7 +190,7 @@ describe('ToolRuntime session sandbox boundary', () => {
     });
     assert.match(JSON.stringify(overlapping.result), /already pending/u);
     assert.equal(events.filter((event) => event.type === 'sandbox_boundary_request').length, 1);
-    await runtime.respondToSandboxBoundaryRequest('turn-1', {
+    await runtime.respondToSandboxBoundaryResponse({
       requestId: requestEvent.requestId,
       decision: 'allow',
     });
@@ -266,7 +266,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       false,
     );
     await assert.rejects(
-      runtime.respondToSandboxBoundaryRequest('turn-1', {
+      runtime.respondToSandboxBoundaryResponse({
         requestId: admittedRequest!.requestId,
         decision: 'allow',
       }),
@@ -432,7 +432,7 @@ describe('ToolRuntime session sandbox boundary', () => {
       const request = await waitForBoundaryRequest(events);
       assert.equal(request.expansion.filesystem?.entries[0]?.path, canonicalFile);
       assert.equal(created?.expansion.filesystem?.entries[0]?.path, canonicalFile);
-      await runtime.respondToSandboxBoundaryRequest('turn-1', {
+      await runtime.respondToSandboxBoundaryResponse({
         requestId: request.requestId,
         decision: 'deny',
       });

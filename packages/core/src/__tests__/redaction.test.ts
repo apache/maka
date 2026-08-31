@@ -59,6 +59,20 @@ describe('redactSecrets', () => {
     assert.equal(redactSecrets('1234567890123456789012345678901234567890'), '[redacted]');
   });
 
+  test('replaces bare provider tokens entirely, echoing no part of the match', () => {
+    const cases = [
+      'token sk-abc12345 done',
+      'token sk-ant-abc12345 done',
+      'token AIza0123456789_ABCdefGHIjkl done',
+      'token ghp_0123456789abcdefghij done',
+      'token xoxb-0123456789abcdef done',
+      'token 0123456789abcdef0123456789abcdef01234567 done',
+    ];
+    for (const text of cases) {
+      assert.equal(redactSecrets(text), 'token [redacted] done');
+    }
+  });
+
   test('masks only sensitive URL query values', () => {
     const text = redactSecrets(
       'https://api.example.test/models?model=x&api_key=secret-value&timeout=30',

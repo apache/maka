@@ -42,12 +42,23 @@
   width: 100%;
 }
 
-.maka-turn-virtual-item {
+/* Inserting earlier turns above the reader must not move what they are
+   reading. The browser's scroll anchoring does exactly that, so state the
+   dependency on the scroller that runs it rather than inheriting the `auto`
+   default: Maka reads no geometry and restores no position of its own. The
+   one case anchoring declines is a scroller sitting at zero, compensated in
+   useChatScroll after the turns land. */
+[data-chat-scroll-container='true'] {
+  overflow-anchor: auto;
+}
+
+.maka-transcript-turn {
   display: flex;
   width: 100%;
   flex-direction: column;
   gap: var(--spacing-4);
-  contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 280px;
 }
 
 .maka-chat-message-loading {
@@ -165,8 +176,6 @@
 }
 
 .maka-chat-message-bubble-assistant {
-  width: 100%;
-  max-width: none;
   padding: var(--space-0-5) 0 0;
 }
 
@@ -311,18 +320,6 @@
   }
 }
 
-/* --- Assistant bubble shell ----------------------------------------------- */
-/* User message: a tinted Astryx bubble anchored to the right, sized by the
-   primitive's own compact-density geometry. */
-/* Assistant: no bubble — just text on background, like an editor. The
-   Markdown typography and block rhythm belong to Astryx, so the shell keeps
-   only container geometry.
-   The reading measure is inherited from the conversation surface shared with
-   the composer, so the assistant block matches the composer width. */
-/* The streaming ▎ caret + its trailing-<p> inline hack were retired by the
-   streaming UI rework. Chat smooths the visible text before it reaches
-   Markdown; PR 8 owns the remaining streaming and scroll-anchoring boundary. */
-
 /* --- User-turn meta row (relocated from tool-output.css) ----------------- */
 /* The time is an Astryx `Timestamp`, so the quiet register (supporting tier,
    secondary colour) is the component's own default and is not restated here.
@@ -395,8 +392,6 @@
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 0;
+  width: min(var(--maka-reading-measure), calc(100% - (2 * var(--space-6))));
+  margin: var(--space-2) auto 0;
 }

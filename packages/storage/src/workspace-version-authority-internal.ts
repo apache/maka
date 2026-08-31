@@ -21,28 +21,99 @@ import type {
   WorkspaceBaselineAuthorityInput,
   WorkspaceBaselineCommitResult,
   WorkspaceHeadRecordV1,
+  WorkspaceSuccessorAuthorityInput,
 } from '@maka/core/workspace-version-authority';
-import { lstatSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
-import { basename, dirname, join, normalize, resolve } from 'node:path';
-import { OPERATIONAL_STATE_DATABASE_NAME } from './operational-state-store.js';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 type WorkspaceBaselineAuthorityWriter = (
   input: WorkspaceBaselineAuthorityInput,
   rootId: string,
 ) => Promise<WorkspaceBaselineCommitResult>;
 type WorkspaceStorageRootBinder = (rootId: string) => void;
+export interface WorkspaceSuccessorCommitInput {
+  /** Opaque capability issued by the repository candidate owner. */
+  candidateOutcome: object;
+  toolOutcome: {
+    operationId: string;
+    journalEventId: string;
+    runtimeEvent: RuntimeEvent;
+    committedAt: number;
+  };
+}
+interface VerifiedWorkspaceSuccessorCommitInput {
+  successor: WorkspaceSuccessorAuthorityInput;
+  toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
+}
+export interface WorkspaceSuccessorCommitResult {
+  created: boolean;
+  /** Historical successor accepted by this operation, not necessarily the current head. */
+  committedSuccessor: WorkspaceHeadRecordV1;
+  outcomeRuntimeEventSeq: number;
+}
+export interface ManagedMutationTerminalCommitInput {
+  /** Opaque capability issued after the mutation owner proves that no workspace effect occurred. */
+  noEffectOutcome: object;
+  toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
+}
+export interface ManagedMutationNoEffectClaimV1 {
+  readonly operationId: string;
+  readonly dispatchEventId: string;
+  readonly workspaceInstanceId: string;
+  readonly terminalKind: 'no_workspace_change' | 'operation_failed_no_effect';
+}
+interface VerifiedManagedMutationTerminalCommitInput {
+  noEffect: ManagedMutationNoEffectClaimV1;
+  toolOutcome: WorkspaceSuccessorCommitInput['toolOutcome'];
+}
+export interface ManagedMutationTerminalCommitResult {
+  created: boolean;
+  outcomeRuntimeEventSeq: number;
+}
+type ManagedMutationTerminalAuthorityWriter = (
+  input: VerifiedManagedMutationTerminalCommitInput,
+  rootId: string,
+) => Promise<ManagedMutationTerminalCommitResult>;
+type WorkspaceSuccessorAuthorityWriter = (
+  input: VerifiedWorkspaceSuccessorCommitInput,
+  rootId: string,
+) => Promise<WorkspaceSuccessorCommitResult>;
+type WorkspaceSuccessorCandidateVerifier = (
+  candidateOutcome: object,
+) => WorkspaceSuccessorAuthorityInput;
+type ManagedMutationNoEffectVerifier = (noEffectOutcome: object) => ManagedMutationNoEffectClaimV1;
 type WorkspaceHeadReader = (
   workspaceId: string,
   workspaceEpochId: string,
 ) => Promise<WorkspaceHeadRecordV1 | undefined>;
+export interface ManagedMutationReservationRecordV1 {
+  readonly workspaceInstanceId: string;
+  readonly repositoryId: string;
+  readonly workspaceId: string;
+  readonly workspaceEpochId: string;
+  readonly operationId: string;
+  readonly dispatchEventId: string;
+  readonly baseWorkspaceVersionId: string;
+  readonly baseAcceptedEventId: string;
+  readonly baseHeadRevision: number;
+  readonly baseCommitOid: string;
+  readonly baseTreeOid: string;
+  readonly expectedPath: string;
+  readonly executionProfileDigest: string;
+  readonly reservedAt: number;
+}
+type ManagedMutationReservationReader = (
+  workspaceInstanceId: string,
+) => Promise<ManagedMutationReservationRecordV1 | undefined>;
 
 interface WorkspaceBaselineAuthorityRegistration {
   readonly writer: WorkspaceBaselineAuthorityWriter;
+  readonly successorWriter: WorkspaceSuccessorAuthorityWriter;
+  candidateVerifier?: WorkspaceSuccessorCandidateVerifier;
+  noEffectVerifier?: ManagedMutationNoEffectVerifier;
+  readonly terminalWriter: ManagedMutationTerminalAuthorityWriter;
   readonly readHead: WorkspaceHeadReader;
+  readonly readActiveManagedMutation: ManagedMutationReservationReader;
   readonly bindStorageRoot: WorkspaceStorageRootBinder;
-  readonly databasePath: string;
-  readonly databaseFileIdentity?: string;
   boundRootId?: string;
 }
 
@@ -53,22 +124,33 @@ const workspaceBaselineAuthorityWriters = new WeakMap<
 
 export function registerWorkspaceBaselineAuthorityWriterInternal(
   store: object,
-  databasePath: string,
   writer: WorkspaceBaselineAuthorityWriter,
+  successorWriter: WorkspaceSuccessorAuthorityWriter,
+  terminalWriter: ManagedMutationTerminalAuthorityWriter,
   bindStorageRoot: WorkspaceStorageRootBinder,
   readHead: WorkspaceHeadReader,
+  readActiveManagedMutation: ManagedMutationReservationReader,
 ): void {
   if (workspaceBaselineAuthorityWriters.has(store)) {
     throw new Error('Workspace baseline authority writer is already registered');
   }
-  const resolvedDatabasePath = resolve(databasePath);
   workspaceBaselineAuthorityWriters.set(store, {
     writer,
+    successorWriter,
+    terminalWriter,
     readHead,
+    readActiveManagedMutation,
     bindStorageRoot,
-    databasePath: resolvedDatabasePath,
-    databaseFileIdentity: captureRegularFileIdentity(resolvedDatabasePath),
   });
+}
+
+export function readActiveManagedMutationInternal(
+  store: object,
+  workspaceInstanceId: string,
+): Promise<ManagedMutationReservationRecordV1 | undefined> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Managed mutation reservation reader is unavailable');
+  return registration.readActiveManagedMutation(workspaceInstanceId);
 }
 
 export function readWorkspaceHeadInternal(
@@ -83,9 +165,10 @@ export function readWorkspaceHeadInternal(
 
 /**
  * Storage-internal authority seam. This module is deliberately absent from the
- * @maka/storage package exports. Production composition reaches it only through
- * ManagedWorkspaceOwner after durable Git receipt verification; focused
- * persistence/crash tests use it directly to prove the SQLite transaction.
+ * @maka/storage package exports. The schema-9 reader, migration, and projection
+ * rebuild remain supported even though no production baseline writer is
+ * currently composed. Focused persistence tests use this seam to prove the
+ * SQLite transaction and historical read contract.
  */
 export function commitWorkspaceBaselineInternal(
   store: object,
@@ -99,6 +182,71 @@ export function commitWorkspaceBaselineInternal(
   return registration.writer(input, registration.boundRootId);
 }
 
+export function commitWorkspaceSuccessorInternal(
+  store: object,
+  input: WorkspaceSuccessorCommitInput,
+): Promise<WorkspaceSuccessorCommitResult> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace successor authority writer is unavailable');
+  if (!registration.boundRootId) {
+    throw new Error('Workspace successor authority store has no durable storage-root binding');
+  }
+  if (!registration.candidateVerifier) {
+    throw new Error('Workspace successor candidate verifier is unavailable');
+  }
+  const successor = registration.candidateVerifier(input.candidateOutcome);
+  return registration.successorWriter(
+    { successor, toolOutcome: input.toolOutcome },
+    registration.boundRootId,
+  );
+}
+
+export function registerWorkspaceSuccessorCandidateVerifierInternal(
+  store: object,
+  verifier: WorkspaceSuccessorCandidateVerifier,
+): void {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Workspace successor authority writer is unavailable');
+  if (registration.candidateVerifier) {
+    throw new Error('Workspace successor candidate verifier is already registered');
+  }
+  registration.candidateVerifier = verifier;
+}
+
+export function registerManagedMutationNoEffectVerifierInternal(
+  store: object,
+  verifier: ManagedMutationNoEffectVerifier,
+): void {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Managed mutation terminal authority writer is unavailable');
+  if (registration.noEffectVerifier) {
+    throw new Error('Managed mutation no-effect verifier is already registered');
+  }
+  registration.noEffectVerifier = verifier;
+}
+
+export function commitManagedMutationTerminalInternal(
+  store: object,
+  input: ManagedMutationTerminalCommitInput,
+): Promise<ManagedMutationTerminalCommitResult> {
+  const registration = workspaceBaselineAuthorityWriters.get(store);
+  if (!registration) throw new Error('Managed mutation terminal authority writer is unavailable');
+  if (!registration.boundRootId) {
+    throw new Error('Workspace successor authority store has no durable storage-root binding');
+  }
+  if (!registration.noEffectVerifier) {
+    throw new Error('Managed mutation owner-issued no-effect proof verifier is unavailable');
+  }
+  if (!input.noEffectOutcome || typeof input.noEffectOutcome !== 'object') {
+    throw new Error('Managed mutation terminal requires an owner-issued no-effect proof');
+  }
+  const noEffect = registration.noEffectVerifier(input.noEffectOutcome);
+  return registration.terminalWriter(
+    { noEffect, toolOutcome: input.toolOutcome },
+    registration.boundRootId,
+  );
+}
+
 export function bindWorkspaceBaselineAuthorityStoreRootInternal(
   store: object,
   rootId: string,
@@ -110,66 +258,4 @@ export function bindWorkspaceBaselineAuthorityStoreRootInternal(
   }
   registration.bindStorageRoot(rootId);
   registration.boundRootId = rootId;
-}
-
-export async function assertWorkspaceBaselineAuthorityStoreRootInternal(
-  store: object,
-  storageRoot: string,
-): Promise<void> {
-  const registration = workspaceBaselineAuthorityWriters.get(store);
-  if (
-    !registration ||
-    !registration.databaseFileIdentity ||
-    basename(registration.databasePath) !== OPERATIONAL_STATE_DATABASE_NAME
-  ) {
-    throw new Error('Workspace baseline authority store is unavailable for this storage root');
-  }
-  const expectedDatabasePath = join(storageRoot, OPERATIONAL_STATE_DATABASE_NAME);
-  const currentIdentity = captureRegularFileIdentity(registration.databasePath);
-  if (currentIdentity !== registration.databaseFileIdentity) {
-    throw new Error('Workspace baseline authority database file identity changed');
-  }
-  let databasePath: string;
-  let expectedPath: string;
-  let expectedRoot: string;
-  try {
-    [databasePath, expectedPath, expectedRoot] = await Promise.all([
-      realpath(registration.databasePath),
-      realpath(expectedDatabasePath),
-      realpath(storageRoot),
-    ]);
-  } catch (error) {
-    throw new Error('Workspace baseline authority store belongs to a different storage root', {
-      cause: error,
-    });
-  }
-  const canonicalDatabasePath = normalize(databasePath);
-  const canonicalExpectedPath = normalize(expectedPath);
-  const canonicalExpectedRoot = normalize(expectedRoot);
-  if (
-    !sameFilesystemPath(canonicalDatabasePath, canonicalExpectedPath) ||
-    !sameFilesystemPath(dirname(canonicalDatabasePath), canonicalExpectedRoot)
-  ) {
-    throw new Error('Workspace baseline authority store belongs to a different storage root');
-  }
-}
-
-function captureRegularFileIdentity(path: string): string | undefined {
-  try {
-    const info = lstatSync(path, { bigint: true });
-    // SQLite sidecars are pathname-scoped. Opening the same main database
-    // inode through a second hard-linked storage root can split its WAL/SHM
-    // coordination across two directories, so a canonical authority database
-    // must have exactly one directory entry.
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n) return undefined;
-    return `${info.dev}:${info.ino}:${info.nlink}`;
-  } catch {
-    return undefined;
-  }
-}
-
-function sameFilesystemPath(left: string, right: string): boolean {
-  return process.platform === 'win32'
-    ? left.toLocaleLowerCase('en-US') === right.toLocaleLowerCase('en-US')
-    : left === right;
 }

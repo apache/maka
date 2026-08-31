@@ -26,8 +26,8 @@ inside a Runtime Host Session; it is not an Eval experiment or cell ledger.
 ## Scope
 
 Maka has a session-scoped task ledger with `task_create`, `task_update`,
-`task_list`, `task_get`, `task-events.jsonl`, `tasks.json`, and turn-tail prompt
-injection. The implementation keeps lifecycle validation, event replay, storage
+`task_list`, `task_get`, `task-events.jsonl`, and `tasks.json`. The implementation
+keeps lifecycle validation, event replay, storage
 projection, tool access, and recovery classification on one contract.
 
 Non-goals:
@@ -48,7 +48,7 @@ Every current task has two identifiers:
 
 - `id` is the durable UUID primary key. It is never rewritten.
 - `key` is the session-local short reference (`T1`, `T1.1`, and deeper forms)
-  used in prompts, tools, and UI.
+  used in model-visible tool results, tools, and UI.
 
 Read and update operations accept either form. Keys are allocated inside the
 per-session serialized write queue. A child stores its parent's UUID in
@@ -125,8 +125,7 @@ The source-backed type includes a conservative `resumeTrust` classifier:
 - `untrusted`: ledger, references, or state are corrupt or missing.
 
 The type and pure classifier are source-backed. `resumeTrust` is a system
-diagnostic and is not injected into the model-visible task ledger until recovery
-logic owns the value.
+diagnostic; untrusted tasks are excluded from model-visible tool results.
 
 Recovery/read-model classification uses the conservative classifier:
 
@@ -182,19 +181,15 @@ result and supply `completionEvidence`. A failed or cancelled child records the
 truthful task outcome; a child waiting for permission leaves the task blocked.
 An active task already owned by another child turn cannot be stolen.
 
-## Prompt Budget and Archive
+## Model-visible Reads and Archive
 
-The current-turn task tail is capped at 8,000 characters (approximately 2,000
-tokens). It renders short keys rather than UUIDs and prioritizes
-`in_progress`, `pending`, and `blocked` branches. Ancestors of included active
-tasks are retained so hierarchy remains understandable. Up to three recent
-terminal tasks are added when budget permits. When tasks are omitted, the tail
-reports the omitted count and points the model to `task_list` / `task_get`.
+The task ledger is not injected into every model turn. The model reads it on
+demand through `task_list` and `task_get`; results render short keys and safe
+fielded text rather than copying internal diagnostics.
 
 Terminal tasks receive `endedAt`. They become logically archived after seven
-days: storage remains append-only and no task is deleted, while prompt and UI
-reads exclude archived terminal tasks. Explicit tool reads may opt back into
-them.
+days: storage remains append-only and no task is deleted. Callers choose whether
+archived terminal tasks are included in a read.
 
 Secret redaction, task-ledger tag stripping, evidence validation, and exclusion
 of `resumeTrust=untrusted` tasks apply before model-visible rendering.
@@ -202,7 +197,7 @@ of `resumeTrust=untrusted` tasks apply before model-visible rendering.
 ## Goal Completion Gate
 
 Ordinary interactive turns never trigger an extra model call because tasks are
-unfinished. The turn tail is advisory only.
+unfinished.
 
 When an autonomous Goal is active, its external evaluator still decides first.
 If the evaluator says achieved or impossible, that terminal decision wins. If
@@ -218,10 +213,9 @@ the remaining actionable task keys as well.
 
 ## Debug and Desktop Read Model
 
-The model-visible task ledger remains compact and omits `resumeTrust`, including
-both the turn-tail injection and `task_list` / `task_get` tool results. Debug,
-export, and trace/read-model surfaces may include task summaries with
-`resumeTrust`, reasons, evidence, and refs.
+Model-visible `task_list` / `task_get` results omit `resumeTrust`. Debug, export,
+and trace/read-model surfaces may include task summaries with `resumeTrust`,
+reasons, evidence, and refs.
 
 Desktop reads the same `Task[]` projection through `tasks:list`. Store changes
 emit a signal-only `tasks:changed` event; the renderer reloads instead of

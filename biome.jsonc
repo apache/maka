@@ -104,16 +104,12 @@
   },
   // Import-sorting / organize-imports assist actions stay disabled; they are
   // a formatting concern and belong with the formatter baseline PR (#415).
-  // Generated model metadata and its repository-contained input projection
-  // exceed Biome's 1 MiB default. An over-size file is skipped with a warning
-  // while `format:check` still exits 0, so keep both generated authorities under
-  // the formatter without raising the ceiling for hand-written files.
+  // The repository-contained model metadata input projection exceeds Biome's
+  // 1 MiB default. Keep the committed authority under the formatter without
+  // raising the ceiling for hand-written files. Build outputs are gitignored.
   "overrides": [
     {
-      "includes": [
-        "packages/core/src/model-metadata.generated.ts",
-        "scripts/model-metadata/models-dev-api.snapshot.json"
-      ],
+      "includes": ["scripts/model-metadata/models-dev-api.snapshot.json"],
       "files": { "maxSize": 2097152 }
     }
   ],

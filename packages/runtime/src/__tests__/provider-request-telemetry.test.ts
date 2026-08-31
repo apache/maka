@@ -1045,6 +1045,64 @@ describe('canonical model-call accounting', () => {
     assert.doesNotMatch(JSON.stringify(attempt), /private|prompt|response body/i);
   });
 
+  test('records the physical route when one compaction call falls back', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    const tracker = accountingTracker({
+      callKind: 'history_compact',
+      historyCompactRoute: 'provider_native',
+      record: ({ attempt }) => {
+        recorded.push(attempt);
+      },
+    });
+    const rejection = Object.assign(new Error('native protocol rejected'), {
+      statusCode: 400,
+      data: { error: { code: 'missing_required_parameter' } },
+    });
+
+    await assert.rejects(
+      tracker.trackGenerate({
+        providerId: 'openai.responses',
+        modelId: 'gpt-codex-test',
+        historyCompactRoute: 'provider_native',
+        params: preparedParams('native compact'),
+        doGenerate: async () => {
+          throw rejection;
+        },
+      }),
+      (error) => error === rejection,
+    );
+    await tracker.trackGenerate({
+      providerId: 'openai.responses',
+      modelId: 'gpt-codex-test',
+      historyCompactRoute: 'text_summary',
+      params: preparedParams('portable summary'),
+      doGenerate: async () => ({ finishReason: 'stop' }),
+    });
+
+    assert.deepEqual(
+      recorded.map((attempt) => ({
+        logicalCallId: attempt.logicalCallId,
+        attempt: attempt.attempt,
+        route: attempt.historyCompactRoute,
+        status: attempt.status,
+      })),
+      [
+        {
+          logicalCallId: recorded[0]?.logicalCallId,
+          attempt: 0,
+          route: 'provider_native',
+          status: 'failed',
+        },
+        {
+          logicalCallId: recorded[0]?.logicalCallId,
+          attempt: 1,
+          route: 'text_summary',
+          status: 'completed',
+        },
+      ],
+    );
+  });
+
   test('a call the provider reported no usage for records usageBasis missing', async () => {
     // The alternative is a record claiming zero tokens, which is a measurement
     // nobody made. `missing` says the call happened and the meter did not read.

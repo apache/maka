@@ -22,6 +22,7 @@ import hashlib
 import importlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -604,15 +605,40 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
         scope_path = f"/tmp/maka-eval-{token}.pid"
         with tempfile.TemporaryDirectory() as directory:
             late_write = Path(directory) / "late-write"
+            child_ready = Path(directory) / "child-ready"
+            release_pipe = Path(directory) / "release"
+            os.mkfifo(release_pipe)
+            # Keep the FIFO open from the test side so the descendant can report
+            # readiness and remain blocked until settlement has completed.
+            release_fd = os.open(release_pipe, os.O_RDWR | os.O_NONBLOCK)
+            child_pid = None
+            execution = None
             request = {
                 "command": sys.executable,
                 "args": [
                     "-c",
-                    (
-                        "import os,time;"
-                        "child=os.fork();"
-                        f"(time.sleep(0.3),open({str(late_write)!r},'w').write('late'),os._exit(0))"
-                        " if child==0 else os._exit(0)"
+                    "\n".join(
+                        [
+                            "import os,time",
+                            f"release_pipe={str(release_pipe)!r}",
+                            f"child_ready={str(child_ready)!r}",
+                            f"late_write={str(late_write)!r}",
+                            "child=os.fork()",
+                            "if child == 0:",
+                            "    with open(release_pipe, 'rb', buffering=0) as pipe:",
+                            "        ready=child_ready+'.tmp'",
+                            "        with open(ready, 'w') as marker:",
+                            "            marker.write(str(os.getpid()))",
+                            "        os.replace(ready, child_ready)",
+                            "        pipe.read(1)",
+                            "        with open(late_write, 'w') as late:",
+                            "            late.write('late')",
+                            "    os._exit(0)",
+                            "deadline=time.monotonic()+5",
+                            "while not os.path.exists(child_ready) and time.monotonic() < deadline:",
+                            "    time.sleep(0.01)",
+                            "os._exit(0 if os.path.exists(child_ready) else 2)",
+                        ]
                     ),
                 ],
                 "credentials": {},
@@ -640,13 +666,39 @@ class RelayLifecycleTest(unittest.IsolatedAsyncioTestCase):
                     if time.monotonic() >= deadline:
                         self.fail("scope PID was not published")
                     await asyncio.sleep(0.01)
+                deadline = time.monotonic() + 1
+                while not child_ready.exists():
+                    if time.monotonic() >= deadline:
+                        self.fail("descendant did not become ready")
+                    await asyncio.sleep(0.01)
+                child_pid = int(child_ready.read_text())
+                self.assertEqual(os.getpgid(child_pid), int(pid))
                 completed = await execution
                 self.assertEqual(completed.returncode, 0)
                 result = await relay._settle(environment, directory, scope_path, execution)
                 self.assertEqual(result.returncode, 0)
-                await asyncio.sleep(0.4)
+                # A broken quiescence check leaves the descendant alive. Releasing
+                # it now makes that bug observable as a late workspace write.
+                os.write(release_fd, b"x")
+                deadline = time.monotonic() + 1
+                while not late_write.exists() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
                 self.assertFalse(late_write.exists())
             finally:
+                with contextlib.suppress(OSError):
+                    os.write(release_fd, b"x")
+                if child_pid is None and child_ready.exists():
+                    with contextlib.suppress(OSError, ValueError):
+                        child_pid = int(child_ready.read_text())
+                if child_pid is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(child_pid, signal.SIGKILL)
+                if execution is not None and not execution.done():
+                    with contextlib.suppress(Exception):
+                        await relay._signal(environment, directory, scope_path, "KILL")
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.wait_for(execution, timeout=1)
+                os.close(release_fd)
                 Path(scope_path).unlink(missing_ok=True)
 
     async def test_an_exited_subject_is_left_alone_whatever_it_reported(self):

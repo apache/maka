@@ -82,6 +82,62 @@ test('chat-default validation blocks image-only models but accepts merged partia
   assert.deepEqual(verdict(partial), { ok: true });
 });
 
+test('a declared output modality without text rules a model out of chat', () => {
+  // The shape this exists for: `gpt-image-2` on a relay. Bundled metadata
+  // records `modalities.output: ["image"]` and has never set
+  // `capabilities.imageGeneration` for any model, so before this the guard
+  // could not fire and an image model was selectable as a chat model.
+  const imageOnly = {
+    providerType: 'openai' as const,
+    defaultModel: 'gpt-image-2',
+    models: [{ id: 'gpt-image-2' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(imageOnly), { ok: false, reason: 'unsupported_for_chat' });
+
+  // Audio-only too, and a stray `reasoning: true` on a TTS model does not
+  // rescue it: reasoning describes how it composes speech, not that it can
+  // answer in text.
+  const audioOnly = {
+    providerType: 'google' as const,
+    defaultModel: 'gemini-3.1-flash-tts-preview',
+    models: [{ id: 'gemini-3.1-flash-tts-preview' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(audioOnly), { ok: false, reason: 'unsupported_for_chat' });
+});
+
+test('an empty output modality list is not evidence against chat', () => {
+  // `modalities.output` is typed to text, image, and audio, so a video model's
+  // real output has no representation and serializes as `[]` — the same shape
+  // a generator bug would produce. Blocking on it would be guessing.
+  const video = {
+    providerType: 'google' as const,
+    defaultModel: 'gemini-omni-flash-preview',
+    models: [{ id: 'gemini-omni-flash-preview' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(video), { ok: true });
+});
+
+test('an explicit chat capability outranks the declared output modality', () => {
+  // A provider that says both is contradicting itself, and the direct claim
+  // about chat is the more specific one.
+  const contradictory = {
+    providerType: 'openai-compatible' as const,
+    defaultModel: 'relay-omni',
+    models: [
+      {
+        id: 'relay-omni',
+        capabilities: { chat: true },
+        modalities: { input: ['text' as const], output: ['image' as const] },
+      },
+    ],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(contradictory), { ok: true });
+});
+
 test('catalog entries preserve advertised parallel tool-call support', () => {
   const [entry] = buildModelCatalogEntries({
     providerType: 'openai-compatible',
@@ -349,5 +405,36 @@ test('Alibaba (China) catalogs Qwen3.8 Max as the default model on the China end
   assert.equal(model?.structuredOutput, true);
   assert.deepEqual(model?.capabilities, { vision: true, reasoning: true, functionCalling: true });
   assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+  assert.equal(model?.canUseAsChatDefault, true);
+});
+
+test('DeepSeek catalogs the V4 vision model display metadata from a bare provider id', () => {
+  const modelId = 'deepseek-v4-flash-vision-exp';
+  const [model] = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'deepseek',
+      providerType: 'deepseek',
+      defaultModel: modelId,
+      models: [{ id: modelId }],
+      modelSource: 'fetched',
+    },
+  });
+
+  assert.equal(model?.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+  assert.equal(
+    model?.description,
+    'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+  );
+  assert.equal(model?.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
+  assert.equal(model?.contextWindow, 1_000_000);
+  assert.equal(model?.maxOutputTokens, 384_000);
+  assert.equal(model?.structuredOutput, true);
+  assert.equal(model?.lastUpdated, '2026-08-21');
+  assert.deepEqual(model?.capabilities, {
+    reasoning: true,
+    functionCalling: true,
+    vision: true,
+  });
+  assert.deepEqual(model?.modalities, { input: ['text', 'image'], output: ['text'] });
   assert.equal(model?.canUseAsChatDefault, true);
 });

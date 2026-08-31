@@ -203,7 +203,9 @@ export function ProjectsSettingsPage(props: {
   if (!host) {
     return (
       <SettingsPage as="section" aria-label={copy.section}>
-        <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
+        <RuntimeHostProfilesSection
+          onRemoteHostAdded={props.onRemoteHostAdded}
+        />
         {props.runtimeHostStatus !== 'loading' ? (
           <Banner
             status={props.runtimeHostStatus === 'error' ? 'error' : 'warning'}
@@ -228,7 +230,9 @@ export function ProjectsSettingsPage(props: {
   }
   return (
     <SettingsPage as="section" aria-label={copy.section}>
-      <RuntimeHostProfilesSection onRemoteHostAdded={props.onRemoteHostAdded} />
+      <RuntimeHostProfilesSection
+        onRemoteHostAdded={props.onRemoteHostAdded}
+      />
       {props.runtimeHostStatus === 'error' ? (
         <Banner
           status="error"

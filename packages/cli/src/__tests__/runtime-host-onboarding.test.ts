@@ -20,7 +20,12 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
-import { projectProviders, projectRuntimeHostModelChoices } from '../runtime-host-onboarding.js';
+import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import {
+  createRuntimeHostOnboardingSurface,
+  projectProviders,
+  projectRuntimeHostModelChoices,
+} from '../runtime-host-onboarding.js';
 
 function catalog(connections: ConnectionCatalogSnapshot['connections']): ConnectionCatalogSnapshot {
   return { revision: 1, defaultTarget: null, connections };
@@ -36,6 +41,92 @@ const live = {
   enabledModelIds: ['gpt-5-mini'],
   models: [{ id: 'gpt-5-mini', displayName: 'GPT-5 Mini' }],
 } as const;
+
+describe('createRuntimeHostOnboardingSurface', () => {
+  test('preserves Host failure codes without projecting backend text', async () => {
+    const connection = {
+      request: async (operation: string) => {
+        if (operation === 'connection.onboarding.verify') {
+          return { kind: 'rejected', reason: 'connection_not_found' };
+        }
+        if (operation === 'connection.onboarding.save') {
+          return { kind: 'failed', errorClass: 'network' };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+    const surface = createRuntimeHostOnboardingSurface(connection);
+
+    assert.deepEqual(
+      await surface.verify({
+        target: { kind: 'existing', connectionId: 'gone-id' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'rejected', reason: 'connection_not_found' },
+    );
+    assert.deepEqual(
+      await surface.save({
+        target: { kind: 'existing', connectionId: 'live-id' },
+        apiKey: 'sk-test',
+        enabledModelIds: ['gpt-5-mini'],
+        models: [{ id: 'gpt-5-mini' }],
+      }),
+      { kind: 'failed', errorClass: 'network' },
+    );
+  });
+
+  test('classifies transport exceptions without exposing their message', async () => {
+    const connection = {
+      request: async () => {
+        throw new Error('Host transport leaked this English detail');
+      },
+    } as unknown as RuntimeHostConnection;
+
+    assert.deepEqual(
+      await createRuntimeHostOnboardingSurface(connection).verify({
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'unavailable' },
+    );
+  });
+
+  test('keeps the committed Connection when the follow-up catalog refresh fails', async () => {
+    const committed = {
+      connectionId: 'committed-openai-id',
+      revision: 3,
+      slug: 'openai-2',
+      providerType: 'openai',
+    } as const;
+    const connection = {
+      request: async (operation: string) => {
+        if (operation === 'connection.onboarding.save') {
+          return { kind: 'saved', connection: committed };
+        }
+        if (operation === 'connection.catalog.query') {
+          throw new Error('transient catalog failure');
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+
+    const result = await createRuntimeHostOnboardingSurface(connection).save({
+      target: { kind: 'create', providerType: 'openai' },
+      apiKey: 'sk-test',
+      enabledModelIds: ['gpt-5-mini'],
+      models: [{ id: 'gpt-5-mini' }],
+    });
+
+    assert.deepEqual(result, {
+      kind: 'ok',
+      connection: committed,
+      refresh: {
+        kind: 'failed',
+        reason: 'catalog_unavailable',
+      },
+    });
+  });
+});
 
 describe('projectRuntimeHostModelChoices', () => {
   test('a retained retired connection contributes no /model choices', () => {
@@ -92,31 +183,43 @@ describe('projectProviders', () => {
     models: [{ id: 'relay/model' }],
   } as const;
 
-  test('a Desktop-created relay under a custom slug reads as the existing connection', () => {
-    // Identity must survive the projection: a sole connection of the provider
-    // type is "the" one to edit even off the canonical slug, or saving would
-    // duplicate it there (#3467 review).
-    const entry = projectProviders(catalog([relay])).find(
+  test('a Desktop-created relay and add-account action are both explicit', () => {
+    const entries = projectProviders(catalog([relay])).filter(
       ({ providerType }) => providerType === 'openai-compatible',
     );
-    assert.equal(entry?.hasConnection, true);
-    assert.equal(entry?.connectionId, 'relay-custom-id');
+    const entry = entries.find(({ target }) => target.kind === 'existing');
+    assert.deepEqual(entry?.target, { kind: 'existing', connectionId: 'relay-custom-id' });
+    assert.equal(entry && 'connectionSlug' in entry ? entry.connectionSlug : undefined, 'my-relay');
     assert.deepEqual(entry?.enabledModelIds, ['relay/model']);
-  });
-
-  test('several non-canonical connections resolve to none — the wizard offers a fresh setup', () => {
-    const entry = projectProviders(
-      catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
-    ).find(({ providerType }) => providerType === 'openai-compatible');
-    assert.equal(entry?.hasConnection, false);
-    assert.equal(entry?.connectionId, undefined);
-  });
-
-  test('the canonical-slug connection wins over other connections of the type', () => {
-    const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
-    const entry = projectProviders(catalog([relay, canonical])).find(
-      ({ providerType }) => providerType === 'openai-compatible',
+    assert.deepEqual(entries.find(({ target }) => target.kind === 'create')?.target, {
+      kind: 'create',
+      providerType: 'openai-compatible',
+    });
+    assert.equal(
+      entries.find(({ target }) => target.kind === 'create')?.label,
+      'Custom relay (OpenAI Chat-compatible)',
     );
-    assert.equal(entry?.connectionId, 'canonical-id');
+  });
+
+  test('several non-canonical connections remain independently editable', () => {
+    const entries = projectProviders(
+      catalog([relay, { ...relay, connectionId: 'relay-2-id', slug: 'my-relay-2' }]),
+    ).filter(({ providerType }) => providerType === 'openai-compatible');
+    assert.deepEqual(
+      entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),
+      ['relay-custom-id', 'relay-2-id'],
+    );
+  });
+
+  test('a canonical connection does not hide another account', () => {
+    const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
+    const entries = projectProviders(catalog([relay, canonical])).filter(
+      ({ providerType, target }) =>
+        providerType === 'openai-compatible' && target.kind === 'existing',
+    );
+    assert.deepEqual(
+      entries.flatMap(({ target }) => (target.kind === 'existing' ? [target.connectionId] : [])),
+      ['relay-custom-id', 'canonical-id'],
+    );
   });
 });

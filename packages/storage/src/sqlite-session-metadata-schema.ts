@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 33;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 35;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1203,6 +1203,31 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     33,
     `
+    UPDATE session_metadata
+    SET
+      payload_json = json_set(payload_json, '$.connectionLocked', json('true')),
+      metadata_version = metadata_version + 1,
+      committed_at = MAX(
+        committed_at,
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000
+      )
+    WHERE
+      json_extract(payload_json, '$.connectionLocked') = 0
+      AND json_extract(payload_json, '$.subagentParent') IS NOT NULL;
+  `,
+  ],
+  [
+    34,
+    `
+    -- WorkHub delegation_assigned records are decoded by schema-aware builds.
+    -- Advancing the profile schema prevents an older build from opening a
+    -- transcript containing this new canonical message type.
+    SELECT 1;
+  `,
+  ],
+  [
+    35,
+    `
     ALTER TABLE message_admissions ADD COLUMN origin_json TEXT;
   `,
   ],
@@ -1256,6 +1281,10 @@ export function migrateSqliteSessionMetadataDatabase(
         `SQLite session metadata schema ${current} is newer than supported version ${SQLITE_SESSION_METADATA_SCHEMA_VERSION}`,
       );
     }
+    // A development build of the mailbox branch used version 33 for the
+    // origin column before main assigned that version to the subagent lock
+    // migration. Replaying the latter is idempotent and converges both shapes.
+    if (current === 33) db.exec(MIGRATIONS.get(33)!);
     for (
       let version = current + 1;
       version <= SQLITE_SESSION_METADATA_SCHEMA_VERSION;
@@ -1263,14 +1292,15 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      // The mailbox branch and main both used version 32 during development,
-      // but each added a different column. Version 33 converges either shape.
-      if (version === 33 && !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
+      // Earlier development builds also assigned version 32 to different
+      // message-admission columns. Ensure main's column exists before later
+      // migrations regardless of which v32 shape is on disk.
+      if (version >= 33 && !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
         db.exec(MIGRATIONS.get(32)!);
       }
       const columnAlreadyPresent =
         (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
-        (version === 33 && hasColumn(db, 'message_admissions', 'origin_json'));
+        (version === 35 && hasColumn(db, 'message_admissions', 'origin_json'));
       if (!columnAlreadyPresent) {
         db.exec(sql);
       }

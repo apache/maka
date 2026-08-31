@@ -88,7 +88,7 @@
 }
 
 .maka-composer-interaction-inner {
-  width: min(var(--maka-chat-measure), 100%);
+  width: min(var(--maka-reading-measure), 100%);
   box-sizing: border-box;
   display: grid;
   gap: var(--space-2);
