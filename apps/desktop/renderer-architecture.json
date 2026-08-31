@@ -3588,7 +3588,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../features/connection-settings": 1,
+          "../features/connection-settings/index.js": 1,
           "@maka/core/llm-connections": 1,
           "@maka/core/provider-registry": 1,
           "@maka/core/ui-locale": 1,
