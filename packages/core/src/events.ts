@@ -794,7 +794,13 @@ export type ToolResultContent =
       originalEstimatedTokens: number;
       originalBytes: number;
       rewriteVersion: number;
-      reason: 'stale_tool_result_pruned_before_compact';
+      /**
+       * Both prune paths now record the same durable projection transition
+       * (#4283), so the archived-result read model spans both reasons.
+       */
+      reason:
+        | 'stale_tool_result_pruned_before_compact'
+        | 'active_current_turn_tool_result_pruned_before_next_step';
     }
   | {
       kind: 'terminal';
