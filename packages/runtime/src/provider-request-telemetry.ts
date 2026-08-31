@@ -19,10 +19,13 @@
 
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH,
+  PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION,
   type HistoryCompactRoute,
   type ModelCallAttempt,
   type ModelCallKind,
   type ModelCallUsageBasis,
+  type PreparedRequestObservation,
 } from '@maka/core/model-call-attempt';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import {
@@ -568,6 +571,7 @@ export class ProviderRequestTracker {
           logicalCallId,
           usage,
           contextWindow,
+          requestObservation: preparedRequestObservation(capture.capture),
           // Frozen when THIS request was prepared, so a checkpoint published
           // mid-flight by another turn cannot be sealed into a prompt built
           // before it existed.
@@ -611,6 +615,7 @@ export class ProviderRequestTracker {
       logicalCallId: string;
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
+      requestObservation: PreparedRequestObservation;
       historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
       historyCompactRoute: HistoryCompactRoute | undefined;
     },
@@ -650,6 +655,7 @@ export class ProviderRequestTracker {
       ...(record.captureArtifactId !== undefined
         ? { captureArtifactId: record.captureArtifactId }
         : {}),
+      requestObservation: context.requestObservation,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       latencyMs: record.latencyMs,
@@ -678,7 +684,11 @@ export class ProviderRequestTracker {
     // call commits its metering alone and leaves the last answer standing.
     const latestContext =
       attempt.callKind === 'main' && attempt.status === 'completed'
-        ? latestContextProjectionInput(attempt, record.segments, context.historyCompactBoundary)
+        ? latestContextProjectionInput(
+            attempt,
+            attempt.requestObservation?.segments,
+            context.historyCompactBoundary,
+          )
         : undefined;
 
     try {
@@ -725,6 +735,33 @@ export class ProviderRequestTracker {
       throw error;
     }
   }
+}
+
+function preparedRequestObservation(
+  capture: PreparedProviderRequestCapture,
+): PreparedRequestObservation {
+  return {
+    schemaVersion: PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION,
+    digest: capture.requestHash,
+    bytes: capture.requestBytes,
+    segments: capture.segments.map((segment) => ({
+      kind: segment.kind,
+      index: segment.index,
+      cacheable: segment.cacheable,
+      comparison: segment.comparison,
+      digest: segment.hash,
+      bytes: segment.bytes,
+      ...(segment.representedSegments !== undefined
+        ? { representedSegments: segment.representedSegments }
+        : {}),
+      ...(segment.role !== undefined
+        ? { role: segment.role.slice(0, PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH) }
+        : {}),
+      ...(segment.label !== undefined
+        ? { label: segment.label.slice(0, PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH) }
+        : {}),
+    })),
+  };
 }
 
 function throwIfAbortedBeforeDispatch(signal: AbortSignal | undefined): void {

@@ -130,6 +130,99 @@ describe('diagnostics measure the provider-visible (active) tool subset', () => 
 });
 
 describe('prepared provider request capture', () => {
+  test('serializes non-JSON request values without collapsing their semantic identity', () => {
+    const capture = requestShape.capturePreparedProviderRequest({
+      providerId: 'provider',
+      modelId: 'model',
+      messages: [],
+      requestPayload: {
+        bigint: 42n,
+        missing: undefined,
+        createdAt: new Date('2026-08-31T00:00:00.000Z'),
+        headers: new Map([['x-observation', 'present']]),
+      },
+    });
+    const plain = requestShape.capturePreparedProviderRequest({
+      providerId: 'provider',
+      modelId: 'model',
+      messages: [],
+      requestPayload: {
+        bigint: '42',
+        missing: '[undefined]',
+        createdAt: '2026-08-31T00:00:00.000Z',
+        headers: { 'x-observation': 'present' },
+      },
+    });
+
+    assert.doesNotThrow(() => JSON.parse(capture.serializedRequest));
+    assert.equal(capture.requestBytes, Buffer.byteLength(capture.serializedRequest, 'utf8'));
+    assert.notEqual(capture.requestHash, plain.requestHash);
+  });
+
+  test('marks redacted compaction content comparison-opaque', () => {
+    const prompt = [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'custom',
+            kind: 'openai.compaction',
+            providerOptions: { openai: { redacted: true } },
+          },
+        ],
+      },
+    ];
+    const capture = requestShape.capturePreparedProviderRequest({
+      providerId: 'openai',
+      modelId: 'gpt-test',
+      messages: prompt,
+      requestPayload: { prompt },
+    });
+
+    assert.equal(capture.segments[0]?.kind, 'message');
+    assert.equal(
+      (capture.segments[0] as { comparison?: string } | undefined)?.comparison,
+      'opaque',
+    );
+  });
+
+  test('bounds stored segments without dropping their composition bytes', () => {
+    const messages = Array.from({ length: 1_000 }, (_, index) => ({
+      role: 'user',
+      content: `message-${index}`,
+    }));
+    const capture = requestShape.capturePreparedProviderRequest({
+      providerId: 'provider',
+      modelId: 'model',
+      messages,
+    });
+    const expectedBytes = messages.reduce(
+      (total, message) =>
+        total +
+        requestShape.capturePreparedProviderRequest({
+          providerId: 'provider',
+          modelId: 'model',
+          messages: [message],
+        }).segments[0]!.bytes,
+      0,
+    );
+
+    assert.ok(capture.segments.length <= 256);
+    assert.equal(
+      capture.segments.reduce((total, segment) => total + segment.bytes, 0),
+      expectedBytes,
+    );
+    assert.equal(
+      capture.segments.reduce(
+        (total, segment) =>
+          total + ((segment as { representedSegments?: number }).representedSegments ?? 1),
+        0,
+      ),
+      messages.length,
+    );
+    assert.equal(capture.segments.at(-1)?.comparison, 'opaque');
+  });
+
   test('records cacheable request segments in provider-prefix order', () => {
     const capture = Reflect.get(requestShape, 'capturePreparedProviderRequest') as
       | ((input: {

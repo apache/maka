@@ -78,8 +78,12 @@ export interface PreparedRequestSegment {
   kind: PreparedRequestSegmentKind;
   index: number;
   cacheable: boolean;
+  /** Exact hashes may be compared; opaque hashes are diagnostic-only. */
+  comparison: 'exact' | 'opaque';
   hash: string;
   bytes: number;
+  /** Number of source segments represented; greater than one is an opaque remainder. */
+  representedSegments?: number;
   role?: string;
   /**
    * What this segment is, when the seam can name it. Set for `tool_schema` from
@@ -217,49 +221,133 @@ export function capturePreparedProviderRequest(
   input: PreparedProviderRequestInput,
 ): PreparedProviderRequestCapture {
   const payload = input.requestPayload ?? {
-    instructions: input.instructions,
+    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
     messages: input.messages,
     tools: input.tools ?? [],
-    providerOptions: input.providerOptions ?? {},
+    ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
   };
-  // This is the evidence body, not the hash canonicalizer: preserve the exact
-  // JSON ordering and values presented at the model-call seam.
-  const serializedRequest = JSON.stringify(payload);
+  const normalizedPayload = normalizePreparedValue(payload);
+  const serializedRequest = JSON.stringify(normalizedPayload.value);
   const segments: PreparedRequestSegment[] = [];
+  const parts = semanticRequestParts(payload, input);
 
-  for (const [index, tool] of (input.tools ?? []).entries()) {
+  for (const [index, tool] of parts.tools.entries()) {
     segments.push(preparedSegment('tool_schema', index, tool, true, undefined, toolLabel(tool)));
   }
-  if (input.instructions !== undefined) {
-    const instructions = Array.isArray(input.instructions)
-      ? input.instructions
-      : [input.instructions];
+  if (parts.instructions !== undefined) {
+    const instructions = Array.isArray(parts.instructions)
+      ? parts.instructions
+      : [parts.instructions];
     for (const [index, instruction] of instructions.entries()) {
       segments.push(preparedSegment('system_prompt', index, instruction, true));
     }
   }
-  for (const [index, message] of input.messages.entries()) {
+  for (const [index, message] of parts.messages.entries()) {
     const role =
       isObjectLike(message) && typeof message.role === 'string' ? message.role : undefined;
     segments.push(preparedSegment('message', index, message, true, role));
   }
-  if (input.providerOptions !== undefined) {
-    segments.push(preparedSegment('provider_options', 0, input.providerOptions, false));
+  if (parts.providerOptions !== undefined) {
+    segments.push(preparedSegment('provider_options', 0, parts.providerOptions, false));
   }
 
   return {
     schemaVersion: 2,
-    requestHash: stableHash({
-      providerId: input.providerId,
-      modelId: input.modelId,
-      payload,
-    }),
+    requestHash: hashSerialized(
+      JSON.stringify([
+        'prepared-request',
+        input.providerId,
+        input.modelId,
+        normalizedPayload.value,
+      ]),
+    ),
     requestPayloadWithoutProviderOptionsHash: stableHash(
-      protocolIndependentRequestPayload(payload),
+      normalizePreparedValue(protocolIndependentRequestPayload(payload)).value,
     ),
     requestBytes: Buffer.byteLength(serializedRequest, 'utf8'),
     serializedRequest,
-    segments,
+    segments: boundPreparedRequestSegments(segments),
+  };
+}
+
+const MAX_PREPARED_REQUEST_SEGMENTS = 256;
+const MAX_PREPARED_REQUEST_REMAINDERS = 4;
+
+function boundPreparedRequestSegments(
+  segments: readonly PreparedRequestSegment[],
+): PreparedRequestSegment[] {
+  if (segments.length <= MAX_PREPARED_REQUEST_SEGMENTS) return [...segments];
+  const kept = segments.slice(0, MAX_PREPARED_REQUEST_SEGMENTS - MAX_PREPARED_REQUEST_REMAINDERS);
+  const remainders: PreparedRequestSegment[] = [];
+  for (const segment of segments.slice(kept.length)) {
+    const previous = remainders.at(-1);
+    if (previous?.kind === segment.kind) {
+      previous.bytes += segment.bytes;
+      previous.representedSegments = (previous.representedSegments ?? 1) + 1;
+      previous.hash = hashSerialized(
+        JSON.stringify(['prepared-segment-remainder', previous.hash, segment.hash]),
+      );
+      continue;
+    }
+    remainders.push({
+      kind: segment.kind,
+      index: segment.index,
+      cacheable: segment.cacheable,
+      comparison: 'opaque',
+      hash: hashSerialized(JSON.stringify(['prepared-segment-remainder', segment.hash])),
+      bytes: segment.bytes,
+      representedSegments: 1,
+    });
+  }
+  return [...kept, ...remainders];
+}
+
+function semanticRequestParts(
+  payload: unknown,
+  fallback: PreparedProviderRequestInput,
+): {
+  instructions?: unknown;
+  messages: readonly unknown[];
+  tools: readonly unknown[];
+  providerOptions?: Record<string, unknown>;
+} {
+  if (!isObjectLike(payload)) {
+    return {
+      ...(fallback.instructions !== undefined ? { instructions: fallback.instructions } : {}),
+      messages: fallback.messages,
+      tools: fallback.tools ?? [],
+      ...(fallback.providerOptions !== undefined
+        ? { providerOptions: fallback.providerOptions }
+        : {}),
+    };
+  }
+  const prompt = Array.isArray(payload.prompt) ? payload.prompt : undefined;
+  const instructions: unknown[] = [];
+  const messages: unknown[] = [];
+  if (prompt) {
+    for (const item of prompt) {
+      const record = isObjectLike(item) ? item : undefined;
+      if (record?.role === 'system') instructions.push(record.content);
+      else messages.push(item);
+    }
+  }
+  const payloadMessages = Array.isArray(payload.messages) ? payload.messages : undefined;
+  const providerOptions = isPlainObject(payload.providerOptions)
+    ? payload.providerOptions
+    : fallback.providerOptions;
+  return {
+    ...(prompt
+      ? instructions.length > 0
+        ? { instructions }
+        : {}
+      : payload.instructions !== undefined
+        ? { instructions: payload.instructions }
+        : fallback.instructions !== undefined
+          ? { instructions: fallback.instructions }
+          : {}),
+    messages: prompt ? messages : (payloadMessages ?? fallback.messages),
+    tools: Array.isArray(payload.tools) ? payload.tools : (fallback.tools ?? []),
+    ...(providerOptions !== undefined ? { providerOptions } : {}),
   };
 }
 
@@ -471,12 +559,14 @@ function preparedSegment(
   role?: string,
   label?: string,
 ): PreparedRequestSegment {
-  const serialized = stableStringify(value);
+  const normalized = normalizePreparedValue(value);
+  const serialized = JSON.stringify(normalized.value);
   return {
     kind,
     index,
     cacheable,
-    hash: stableHash(value),
+    comparison: normalized.opaque || containsComparisonOpaqueRedaction(value) ? 'opaque' : 'exact',
+    hash: hashSerialized(serialized),
     bytes: Buffer.byteLength(serialized, 'utf8'),
     ...(role !== undefined ? { role } : {}),
     ...(label !== undefined ? { label } : {}),
@@ -499,6 +589,10 @@ export function stableHash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(stableStringify(value)).digest('hex')}`;
 }
 
+function hashSerialized(serialized: string): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(serialized).digest('hex')}`;
+}
+
 export function toolCatalogHash(tools: readonly MakaTool[]): `sha256:${string}` {
   return stableHash(
     [...tools]
@@ -509,6 +603,158 @@ export function toolCatalogHash(tools: readonly MakaTool[]): `sha256:${string}` 
 
 export function stableStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
+}
+
+interface NormalizedPreparedValue {
+  value: unknown;
+  opaque: boolean;
+}
+
+/**
+ * Lossless JSON representation for the semantic values accepted by the model
+ * seam. Every value is tagged, so a bigint cannot collide with a user string
+ * and an undefined property cannot disappear. Values that cannot be described
+ * exactly are retained as explicit opaque markers instead of pretending they
+ * were equal to another request.
+ */
+function normalizePreparedValue(value: unknown): NormalizedPreparedValue {
+  const tag = '__makaPreparedValue';
+  const ancestors = new Set<object>();
+  const visit = (current: unknown, depth: number): NormalizedPreparedValue => {
+    if (current === null || typeof current === 'string' || typeof current === 'boolean') {
+      return { value: current, opaque: false };
+    }
+    if (typeof current === 'number') {
+      if (Number.isFinite(current) && !Object.is(current, -0)) {
+        return { value: current, opaque: false };
+      }
+      const encoded = Number.isNaN(current)
+        ? 'NaN'
+        : current === Infinity
+          ? 'Infinity'
+          : current === -Infinity
+            ? '-Infinity'
+            : '-0';
+      return { value: { [tag]: 'number', value: encoded }, opaque: false };
+    }
+    if (typeof current === 'bigint') {
+      return { value: { [tag]: 'bigint', value: current.toString() }, opaque: false };
+    }
+    if (typeof current === 'undefined') {
+      return { value: { [tag]: 'undefined' }, opaque: false };
+    }
+    if (typeof current === 'function' || typeof current === 'symbol') {
+      return { value: { [tag]: 'opaque', kind: typeof current }, opaque: true };
+    }
+    if (typeof current !== 'object') {
+      return { value: { [tag]: 'opaque', kind: typeof current }, opaque: true };
+    }
+    if (depth >= 64) {
+      return { value: { [tag]: 'opaque', kind: 'max-depth' }, opaque: true };
+    }
+    if (ancestors.has(current)) {
+      return { value: { [tag]: 'opaque', kind: 'cycle' }, opaque: true };
+    }
+    ancestors.add(current);
+    try {
+      if (current instanceof Date) {
+        const timestamp = current.getTime();
+        return {
+          value: {
+            [tag]: 'date',
+            value: Number.isNaN(timestamp) ? 'invalid' : current.toISOString(),
+          },
+          opaque: false,
+        };
+      }
+      if (current instanceof Map) {
+        let opaque = false;
+        const entries = [...current.entries()].map(([key, entry]) => {
+          const normalizedKey = visit(key, depth + 1);
+          const normalizedEntry = visit(entry, depth + 1);
+          opaque ||= normalizedKey.opaque || normalizedEntry.opaque;
+          return [normalizedKey.value, normalizedEntry.value];
+        });
+        return { value: { [tag]: 'map', entries }, opaque };
+      }
+      if (current instanceof Set) {
+        let opaque = false;
+        const entries = [...current].map((entry) => {
+          const normalized = visit(entry, depth + 1);
+          opaque ||= normalized.opaque;
+          return normalized.value;
+        });
+        return { value: { [tag]: 'set', entries }, opaque };
+      }
+      if (Array.isArray(current)) {
+        let opaque = false;
+        const entries = Array.from({ length: current.length }, (_, index) => {
+          if (!(index in current)) return { [tag]: 'array-hole' };
+          const normalized = visit(current[index], depth + 1);
+          opaque ||= normalized.opaque;
+          return normalized.value;
+        });
+        return { value: entries, opaque };
+      }
+      if (isPlainObject(current)) {
+        let opaque = false;
+        const entries = Object.keys(current).map((key) => {
+          let normalized: NormalizedPreparedValue;
+          try {
+            normalized = visit(current[key], depth + 1);
+          } catch {
+            normalized = {
+              value: { [tag]: 'opaque', kind: 'unreadable-property' },
+              opaque: true,
+            };
+          }
+          opaque ||= normalized.opaque;
+          return [key, normalized.value];
+        });
+        if (Object.hasOwn(current, tag)) {
+          return { value: { [tag]: 'object', entries }, opaque };
+        }
+        return { value: Object.fromEntries(entries), opaque };
+      }
+      const toJSON = (current as { toJSON?: unknown }).toJSON;
+      if (typeof toJSON === 'function') {
+        try {
+          return visit(toJSON.call(current), depth + 1);
+        } catch {
+          return { value: { [tag]: 'opaque', kind: 'toJSON-failed' }, opaque: true };
+        }
+      }
+      return {
+        value: {
+          [tag]: 'opaque',
+          kind: current.constructor?.name ?? 'non-plain-object',
+        },
+        opaque: true,
+      };
+    } finally {
+      ancestors.delete(current);
+    }
+  };
+  return visit(value, 0);
+}
+
+function containsComparisonOpaqueRedaction(value: unknown, seen = new Set<object>()): boolean {
+  if (!isObjectLike(value)) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsComparisonOpaqueRedaction(entry, seen));
+  }
+  if (
+    value.type === 'custom' &&
+    value.kind === 'openai.compaction' &&
+    isPlainObject(value.providerOptions) &&
+    isPlainObject(value.providerOptions.openai) &&
+    value.providerOptions.openai.redacted === true
+  ) {
+    return true;
+  }
+  return Object.values(value).some((entry) => containsComparisonOpaqueRedaction(entry, seen));
 }
 
 function classifyDurablePrefixChange(

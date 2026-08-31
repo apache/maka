@@ -12476,6 +12476,7 @@ class ProviderRequestTraceBackend implements AgentBackend {
         kind: 'message' as const,
         index,
         cacheable: true,
+        comparison: 'exact' as const,
         hash: `sha256:${index}`,
         bytes: 1,
       })),

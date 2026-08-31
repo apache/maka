@@ -1042,7 +1042,10 @@ describe('canonical model-call accounting', () => {
       providerRequestId: 'req-compact-1',
       retryable: false,
     });
-    assert.doesNotMatch(JSON.stringify(attempt), /private|prompt|response body/i);
+    assert.doesNotMatch(
+      JSON.stringify(attempt),
+      /private request body|private response body|private prompt/i,
+    );
   });
 
   test('records the physical route when one compaction call falls back', async () => {
@@ -1158,6 +1161,8 @@ describe('canonical model-call accounting', () => {
     const attempt = decodeModelCallAttempt(recorded[0]);
     assert.equal(attempt.usageBasis, 'reported');
     assert.equal(attempt.captureArtifactId, undefined, 'there is no artifact to point at');
+    assert.match(attempt.requestObservation?.digest ?? '', /^sha256:[a-f0-9]{64}$/);
+    assert.ok((attempt.requestObservation?.segments.length ?? 0) > 0);
     // The request shape is computed locally, so it does not need the sink.
     assert.equal(attempts.length, 1);
     assert.equal(attempts[0]?.captureId, undefined);
