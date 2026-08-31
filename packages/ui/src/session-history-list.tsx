@@ -621,11 +621,7 @@ function SessionHoverCardDescription(props: {
     .filter((value): value is string => Boolean(value))
     .join(' · ');
 
-  return (
-    <span id={props.id} className="maka-visually-hidden">
-      {description}
-    </span>
-  );
+  return <span id={props.id} className="maka-visually-hidden" aria-label={description} />;
 }
 
 function SessionHoverCardContent(props: {
@@ -705,11 +701,7 @@ function ProjectHoverCardDescription(props: {
     .filter((value): value is string => Boolean(value))
     .join(' · ');
 
-  return (
-    <span id={props.id} className="maka-visually-hidden">
-      {description}
-    </span>
-  );
+  return <span id={props.id} className="maka-visually-hidden" aria-label={description} />;
 }
 
 function ProjectHoverCardContent(props: {

@@ -116,9 +116,19 @@ function assertDescriptionReferencesResolve(markup: string): void {
     const describedBy = element.getAttribute('aria-describedby');
     assert.ok(describedBy);
     for (const id of describedBy.split(/\s+/)) {
+      const description = document.getElementById(id);
       assert.ok(
-        document.getElementById(id),
+        description,
         `aria-describedby token ${JSON.stringify(id)} must resolve while the card is closed`,
+      );
+      assert.equal(
+        description.textContent,
+        '',
+        'the stable description must not duplicate session or project content into DOM text queries',
+      );
+      assert.ok(
+        description.getAttribute('aria-label'),
+        'the stable description keeps its accessible text through aria-label',
       );
     }
   }

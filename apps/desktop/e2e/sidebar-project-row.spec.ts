@@ -156,7 +156,11 @@ test('project and task rows show contextual hover details', async ({
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
   const taskSessionId = `${LONG_SIDEBAR_SESSION_PREFIX}00`;
   const taskRow = sessionRow(sidebar, taskSessionId);
-  await taskRow.locator('.astryx-side-nav-item').hover();
+  const taskNavigation = taskRow.locator('.astryx-side-nav-item');
+  await expect(taskNavigation).toHaveAccessibleDescription(
+    /已归档第 00 条研究记录。.*glm-5\.1/,
+  );
+  await taskNavigation.hover();
 
   const taskCard = page.locator('.maka-sidebar-hover-card[data-kind="session"]');
   await expect(taskCard).toBeVisible();
@@ -173,7 +177,9 @@ test('project and task rows show contextual hover details', async ({
   const projectRow = sidebar.locator(
     `[data-project-id="project:${LONG_SIDEBAR_PROJECT_ID}"]`,
   );
-  await projectRow.locator(':scope > div > .astryx-side-nav-item').hover();
+  const projectNavigation = projectRow.locator(':scope > div > .astryx-side-nav-item');
+  await expect(projectNavigation).toHaveAccessibleDescription(/3 个任务.*目录可用/);
+  await projectNavigation.hover();
 
   const projectCard = page.locator('.maka-sidebar-hover-card[data-kind="project"]');
   await expect(projectCard).toBeVisible();
