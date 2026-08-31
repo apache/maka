@@ -27,12 +27,9 @@ import {
 import { cn } from './utils.js';
 
 /**
- * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
- * seam (`patches/@astryxdesign+core+0.5.0.patch`) forwarding Astryx's own
- * published `enabled` option to `useChatStreamScroll`, and `scrollOwner`
- * decides it — a caller-supplied value would be silently overwritten.
+ * ChatLayoutProps with Maka-specific scroll ownership controls.
  */
-export type ChatSurfaceLayoutProps = Omit<ComponentProps<typeof ChatLayout>, 'autoScroll'> & {
+export type ChatSurfaceLayoutProps = ComponentProps<typeof ChatLayout> & {
   /**
    * Who positions this transcript.
    *
@@ -84,7 +81,6 @@ export function ChatSurfaceLayout({
   const layout = (
     <ChatLayout
       {...props}
-      autoScroll={!hostOwned}
       // Astryx's default button reads `isScrolledUp`, which stops updating the
       // moment its scroll layer is off. Maka's reads Maka's pin instead.
       scrollButton={hostOwned ? <TranscriptScrollButton /> : props.scrollButton}

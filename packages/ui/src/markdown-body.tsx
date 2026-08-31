@@ -142,6 +142,7 @@ export function MarkdownBody(props: {
     [],
   );
   const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
+  const transformedText = transformMathSource(budgetedText);
   const density = props.density ?? 'default';
   const components = props.streaming
     ? density === 'compact'
@@ -185,9 +186,8 @@ export function MarkdownBody(props: {
         inlinePlugins={MARKDOWN_MATH_PLUGINS}
         isStreaming={props.streaming}
         settledText={props.settledText}
-        transformSource={transformMathSource}
       >
-        {budgetedText}
+        {transformedText}
       </AstryxMarkdown>
     </div>
   );
