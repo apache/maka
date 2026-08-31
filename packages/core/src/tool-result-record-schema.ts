@@ -207,13 +207,17 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         (value.sandboxFailure === undefined ||
           (isRecord(value.sandboxFailure) &&
             hasExactShape(value.sandboxFailure, SANDBOX_FAILURE_SHAPE) &&
-            (value.sandboxFailure.reason === 'sandbox_boundary_required' ||
+            (value.sandboxFailure.reason === 'invalid_boundary_declaration' ||
+              value.sandboxFailure.reason === 'sandbox_boundary_required' ||
               value.sandboxFailure.reason === 'requires_bypass') &&
-            (value.sandboxFailure.source === undefined ||
-              (value.sandboxFailure.reason === 'requires_bypass' &&
-                value.sandboxFailure.source === 'client_capability')) &&
-            (value.sandboxFailure.requiredExpansion === undefined ||
-              validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok))) &&
+            (value.sandboxFailure.reason === 'invalid_boundary_declaration'
+              ? value.sandboxFailure.source === undefined &&
+                value.sandboxFailure.requiredExpansion === undefined
+              : (value.sandboxFailure.source === undefined ||
+                  (value.sandboxFailure.reason === 'requires_bypass' &&
+                    value.sandboxFailure.source === 'client_capability')) &&
+                (value.sandboxFailure.requiredExpansion === undefined ||
+                  validateSandboxBoundaryExpansion(value.sandboxFailure.requiredExpansion).ok)))) &&
         (value.uncertainOutcome === undefined ||
           (isRecord(value.uncertainOutcome) &&
             hasExactShape(value.uncertainOutcome, UNCERTAIN_OUTCOME_SHAPE) &&

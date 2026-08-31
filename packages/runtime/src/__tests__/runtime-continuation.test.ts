@@ -131,6 +131,64 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   });
 });
 
+test('RuntimeContinuationPlanner restores a durable denial when its RuntimeEvent ack was lost', async () => {
+  const sourceEvents = [
+    event({
+      id: 'source-user',
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'Need network access.' },
+    }),
+    event({
+      id: 'source-terminal',
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      actions: { endInvocation: true },
+    }),
+  ];
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async () => runHeader('run-1'),
+    readImmutableRuntimePrefix: async () => immutablePrefix(sourceEvents),
+    readSandboxBoundaryRequests: async () => [
+      {
+        sessionId: 'session-1',
+        requestId: 'boundary-1',
+        status: 'denied',
+        baseRevision: 0,
+        expansion: { network: { enabled: true } },
+        justification: 'Need network access.',
+        createdAt: 1,
+        settledAt: 2,
+        turnId: 'turn-1',
+        runId: 'run-1',
+      },
+    ],
+    newId: (() => {
+      const ids = ['invocation-2', 'run-2', 'turn-2', 'claim-2'];
+      return () => ids.shift() ?? 'unexpected-id';
+    })(),
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-1',
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'continue');
+  assert.deepEqual(plan.continuation?.sandboxBoundaryNegotiationState, {
+    denied: true,
+    invalidRounds: 0,
+    unresolvedRounds: 0,
+    finalizationRequested: false,
+  });
+});
+
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceInvocation: async () => runInvocation('run-1'),

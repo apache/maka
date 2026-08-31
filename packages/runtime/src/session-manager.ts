@@ -598,6 +598,7 @@ export interface SessionStore {
   createSandboxBoundaryRequest?(
     input: CreateSandboxBoundaryRequest,
   ): Promise<SandboxBoundaryRequest>;
+  listSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listPendingSandboxBoundaryRequests?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   listSandboxBoundaryRestartClosures?(sessionId: string): Promise<SandboxBoundaryRequest[]>;
   settleSandboxBoundaryRequest?(
@@ -2104,6 +2105,8 @@ export class SessionManager {
         }
         return authority.readImmutableRuntimePrefix(prefixInput);
       },
+      readSandboxBoundaryRequests: async (targetSessionId) =>
+        (await this.deps.store.listSandboxBoundaryRequests?.(targetSessionId)) ?? [],
       readContinuationClaimStateByBoundary: async (boundaryDigest) => {
         const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
         if (!authority) throw new Error('Continuation authority is not configured');
