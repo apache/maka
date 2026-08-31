@@ -30,7 +30,7 @@
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
     "ws": "^8.21.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.1"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
