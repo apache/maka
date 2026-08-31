@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import { estimateRuntimeEventsTokens } from '../context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from '../model-history.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 
 test('estimates only model-visible provider context', () => {

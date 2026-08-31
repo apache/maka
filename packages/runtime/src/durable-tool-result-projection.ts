@@ -42,6 +42,7 @@ import { markPersisted } from '@maka/core/persisted-value';
 import { decodePersistedToolResultContent } from '@maka/core/tool-result-record-schema';
 
 import type { ToolResultOutput } from './model-protocol.js';
+import { stableJsonLength } from './context-budget-helpers.js';
 import { toolResultOutput } from './tool-result-output.js';
 import { withToolResultArchiveResourceRef } from './tool-result-archive.js';
 import { projectBashToolResultForModel } from './bash-model-output.js';
@@ -160,6 +161,42 @@ export function durableProjectionToToolResultOutput(
       };
     case 'failure':
       return { type: 'error-text', value: projection.message };
+  }
+}
+
+/**
+ * The one pure materialization of a replayed Tool Result into model-facing
+ * output. A durable projection wins; only a response that has none (legacy or
+ * provider-native) falls back to its raw output. Every consumer of effective
+ * model history — replay, summarization, provider-native compaction — goes
+ * through here so no second path can re-read what the projection removed.
+ */
+export function effectiveReplayToolResultOutput(item: {
+  modelProjection?: DurableToolResultProjection;
+  output: unknown;
+  isError: boolean;
+}): ToolResultOutput {
+  return item.modelProjection
+    ? durableProjectionToToolResultOutput(item.modelProjection)
+    : toolResultOutput(item.output, item.isError);
+}
+
+/** Model-visible character count of one materialized Tool Result output. */
+export function estimateToolResultOutputChars(output: ToolResultOutput): number {
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value.length;
+    case 'json':
+    case 'error-json':
+      return stableJsonLength(output.value);
+    case 'content':
+      return output.value.reduce(
+        (total, part) => total + (part.type === 'text' ? part.text.length : 0),
+        0,
+      );
+    case 'execution-denied':
+      return output.reason?.length ?? 0;
   }
 }
 

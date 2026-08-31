@@ -63,11 +63,117 @@ import {
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
-import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
-import { decodeEffectiveToolResultProjection } from './durable-tool-result-projection.js';
+import type {
+  ModelMessage,
+  ToolResultOutput,
+  UserContent,
+  UserModelMessage,
+} from './model-protocol.js';
+import {
+  decodeEffectiveToolResultProjection,
+  durableProjectionToToolResultOutput,
+  estimateToolResultOutputChars,
+} from './durable-tool-result-projection.js';
+import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 
 export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
+
+// ============================================================================
+// Effective model-history sizing
+// ============================================================================
+
+/**
+ * The model-facing value a `function_response` event contributes to effective
+ * history. Sizing and checkpoint source digests both read THIS, never the raw
+ * execution fact that the durable projection already bounded or redacted.
+ */
+export type EffectiveToolResultModelValue =
+  | { kind: 'output'; output: ToolResultOutput }
+  | { kind: 'opaque'; value: unknown }
+  | { kind: 'invalid'; message: string };
+
+export function effectiveToolResultModelValue(
+  content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
+  sessionId: string,
+): EffectiveToolResultModelValue {
+  const effective = decodeEffectiveToolResultProjection(content, sessionId);
+  switch (effective.kind) {
+    case 'projection':
+      return { kind: 'output', output: durableProjectionToToolResultOutput(effective.projection) };
+    case 'provider_native':
+    case 'legacy_output':
+      return { kind: 'opaque', value: effective.output };
+    case 'invalid_legacy':
+      return { kind: 'invalid', message: effective.message };
+  }
+}
+
+/** Model-visible character count of a `function_response`'s effective value. */
+export function estimateEffectiveToolResultChars(
+  content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
+  sessionId: string,
+): number {
+  const value = effectiveToolResultModelValue(content, sessionId);
+  switch (value.kind) {
+    case 'output':
+      return estimateToolResultOutputChars(value.output);
+    case 'opaque':
+      return stableJsonLength(value.value);
+    case 'invalid':
+      return value.message.length;
+  }
+}
+
+export function estimateRuntimeEventChars(event: RuntimeEvent): number {
+  let total = 0;
+  const content = event.content;
+  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
+  else if (content?.kind === 'function_call')
+    total += content.name.length + stableJsonLength(content.args);
+  else if (content?.kind === 'function_response')
+    total += content.name.length + estimateEffectiveToolResultChars(content, event.sessionId);
+  else if (content?.kind === 'error') total += content.message.length;
+  return total;
+}
+
+export function estimateRuntimeEventsTokens(
+  events: readonly RuntimeEvent[],
+  charsPerToken = 4,
+): number {
+  const chars = events.reduce(
+    (total, event) =>
+      event.modelVisibility === 'hidden' ? total : total + estimateRuntimeEventChars(event),
+    0,
+  );
+  return estimateTokens(chars, charsPerToken);
+}
+
+export function groupEventsByTurn(
+  events: readonly RuntimeEvent[],
+  charsPerToken: number,
+): Array<{
+  turnId: string;
+  estimatedTokens: number;
+  events: RuntimeEvent[];
+}> {
+  const order: string[] = [];
+  const byTurn = new Map<string, RuntimeEvent[]>();
+  for (const event of events) {
+    const key = turnKey(event);
+    const group = byTurn.get(key);
+    if (group) group.push(event);
+    else {
+      order.push(key);
+      byTurn.set(key, [event]);
+    }
+  }
+  return order.map((turnId) => ({
+    turnId,
+    events: byTurn.get(turnId) ?? [],
+    estimatedTokens: estimateRuntimeEventsTokens(byTurn.get(turnId) ?? [], charsPerToken),
+  }));
+}
 
 // ============================================================================
 // Output type

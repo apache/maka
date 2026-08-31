@@ -28,9 +28,15 @@ import {
   SECTIONED_SUMMARY_FORMAT,
   type SectionedSummaryFormat,
 } from './history-compact-summary-validation.js';
+import { effectiveToolResultModelValue } from './model-history.js';
 
+// v2: coverage and source digest are taken over EFFECTIVE model history (the
+// durable Tool Result projection), not raw RuntimeEvent evidence. A v1
+// checkpoint's digest was computed over a different source, so it fails the
+// shape check and its session re-summarizes rather than replaying a
+// coverage claim this policy never made.
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
-  'maka.compactable_runtime_event_projection.v1' as const;
+  'maka.compactable_runtime_event_projection.v2' as const;
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
@@ -725,16 +731,34 @@ function sameHistoryCompactSourceCoverage(
   );
 }
 
+/**
+ * A checkpoint replaces a contiguous prefix of EFFECTIVE model history, so its
+ * source digest must pin exactly that: raw execution evidence a durable
+ * projection already bounded or redacted is not part of what was folded, and
+ * changing it must not invalidate a valid checkpoint. Conversely, replacing a
+ * response's effective projection does change the digest, so a checkpoint can
+ * never be replayed over content it never covered.
+ */
 function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   const hash = createHash('sha256');
   for (const event of events) {
-    const serialized = stableStringify(event);
+    const serialized = stableStringify(effectiveDigestEvent(event));
     hash.update(String(Buffer.byteLength(serialized, 'utf8')));
     hash.update(':');
     hash.update(serialized);
     hash.update(';');
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+function effectiveDigestEvent(event: RuntimeEvent): unknown {
+  const content = event.content;
+  if (content?.kind !== 'function_response') return event;
+  const { result, providerOutput, modelProjection, ...identity } = content;
+  return {
+    ...event,
+    content: { ...identity, effective: effectiveToolResultModelValue(content, event.sessionId) },
+  };
 }
 
 function sha256(value: string): string {

@@ -17,15 +17,13 @@
  * under the License.
  */
 
-import {
-  estimateTokens,
-  estimateRuntimeEventsTokens,
-  stableJsonLength,
-} from './context-budget-helpers.js';
+import { estimateTokens, stableJsonLength } from './context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 
 // Public re-export surface for @maka/runtime consumers. Explicit list keeps
 // the ./context-budget subpath from leaking leaf-internal collaboration symbols.
-export { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+export { estimateTokens } from './context-budget-helpers.js';
+export { estimateRuntimeEventsTokens } from './model-history.js';
 export {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
