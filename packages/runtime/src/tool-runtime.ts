@@ -199,12 +199,12 @@ export interface MakaTool<P = any, R = unknown> {
    * settlement instead of detaching, so late side effects cannot outlive `exec`.
    */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
-  /** Optional provider-visible content mapping, used for screenshot image parts. */
+  /** Optional synchronous provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
     toolCallId: string;
     input: unknown;
     output: unknown;
-  }) => ToolResultOutput | PromiseLike<ToolResultOutput>;
+  }) => ToolResultOutput;
 }
 
 export interface MakaToolContext {
@@ -779,6 +779,12 @@ export class ToolRuntime {
         return encodeDefaultDurableToolResultOutput(result, this.input.sessionId);
       }
       const output = tool.toModelOutput({ toolCallId, input, output: result });
+      // Projection is deliberately synchronous and total at the tool boundary.
+      // Fail closed for untyped/plugin implementations that violate the
+      // contract so a completed effect can never be stranded before T2.
+      if (isPromiseLike<ToolResultOutput>(output)) {
+        return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
+      }
       const encode = (resolved: ToolResultOutput) =>
         encodeDurableToolResultOutputWithArtifacts(
           resolved,
@@ -792,12 +798,7 @@ export class ToolRuntime {
                 })
             : undefined,
         );
-      return isPromiseLike(output)
-        ? Promise.resolve(output).then(
-            (resolved) => encode(resolved),
-            () => DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
-          )
-        : encode(output);
+      return encode(output);
     } catch {
       return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
     }

@@ -262,6 +262,35 @@ describe('ToolRuntime durable boundary', () => {
     );
   });
 
+  it('commits fallback instead of awaiting an asynchronous projector', {
+    timeout: 1_000,
+  }, async () => {
+    const outcomes: ToolOutcomeCommit[] = [];
+    const harness = makeHarness({
+      commitToolPrepared: async () => ({ created: true, runtimeEventSeq: 1 }),
+      commitToolOutcome: async (input) => {
+        outcomes.push(input);
+        return { created: true, runtimeEventSeq: 2 };
+      },
+    });
+    const invalidTool = tool(() => ({ private: 'completed execution fact' }));
+    invalidTool.toModelOutput = (() =>
+      new Promise<never>(() => undefined)) as unknown as NonNullable<MakaTool['toModelOutput']>;
+
+    await harness.execute(invalidTool);
+
+    const response = outcomes[0]?.runtimeEvent.content;
+    assert.deepEqual(
+      response?.kind === 'function_response' ? response.modelProjection : undefined,
+      {
+        version: 1,
+        kind: 'failure',
+        reason: 'projection_failed',
+        message: 'The tool completed, but its model-visible result could not be projected safely.',
+      },
+    );
+  });
+
   it('persists inline image output as a Session artifact before committing T2', async () => {
     const order: string[] = [];
     const outcomes: ToolOutcomeCommit[] = [];
