@@ -25,15 +25,11 @@
 
 <p align="center">
   <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
   <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
   <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux 尚未支持" />
   <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
-</p>
-
-<p align="center">
   <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
 </p>
 
@@ -42,13 +38,18 @@
   Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
 </p>
 
+<p align="center">
+  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
+  每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
+</p>
+
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
 
 > [!IMPORTANT]
-> Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
+> Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。
 
 ## 为什么是 Maka
 
@@ -98,7 +99,7 @@ Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包�
 
 在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-在获批源码 release 出现之前，本 README 不推荐任何预构建下载，请按下文从源码构建并运行 Maka。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
+[Desktop Nightly](https://nightlies.apache.org/maka/desktop/) 面向开发者和测试者，每天从 `main` 构建。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
 
 ### 环境要求
 

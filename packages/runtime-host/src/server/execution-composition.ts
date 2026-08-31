@@ -1098,6 +1098,10 @@ export async function createExecutionRuntimeHostComposition(
       context.requestDrain,
       runtimePolicyActivation,
       registerBackendInvalidation,
+      // Name the Task column from the durable session header. Reads by id
+      // straight from the session store, so it also names reserved-role,
+      // coordination, and legacy sessions the filtered catalog omits.
+      async (sessionId) => (await stores.sessionStore.readHeaderSnapshot(sessionId)).name,
     );
     const webSearch = new HostWebSearchCoordinator(webSearchService);
     const networkProxy = new HostNetworkProxyCoordinator(runtimePolicyStores.operations);

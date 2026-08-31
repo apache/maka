@@ -208,6 +208,28 @@ describe('Usage/Pricing protocol', () => {
         nextOffset: null,
       }),
     );
+    // The Host-resolved session title rides on both log kinds as bounded text.
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      usageResponse({
+        kind: 'logs',
+        source: 'tool',
+        rows: [{ ...validToolLog(), sessionId: 'session-1', sessionTitle: '重构任务列' }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+      }),
+    );
 
     const tooMany = Array.from({ length: USAGE_PAGE_MAX_ITEMS + 1 }, () => validBucket());
     const byteHeavy = Array.from({ length: 50 }, (_, index) => ({
@@ -239,6 +261,15 @@ describe('Usage/Pricing protocol', () => {
         kind: 'logs',
         source: 'llm',
         rows: [{ ...validLog(), errorClass: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
+        offset: 0,
+        total: 1,
+        nextOffset: null,
+        provenance: validProvenance(),
+      },
+      {
+        kind: 'logs',
+        source: 'llm',
+        rows: [{ ...validLog(), sessionTitle: 'x'.repeat(USAGE_PROJECTION_TEXT_MAX_BYTES + 1) }],
         offset: 0,
         total: 1,
         nextOffset: null,

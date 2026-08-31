@@ -95,9 +95,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 77 as const;
-// 77: Message content carries Host-bound directory references. Older peers
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 78 as const;
+// 78: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
+// 77: LLM and tool usage-log projections carry an optional `sessionTitle` (the
+// Host-resolved session name for the usage Task column). Older Clients reject
+// the unknown field, so a newer Host's usage logs are unreadable to them.
 // 76: Peer Mesh endpoint and Mesh display names are signed, persisted facts
 // managed through Host operations rather than local-only Client labels.
 // 75: Peer Mesh routes identify whether a peer is a Client or Runtime Host so
