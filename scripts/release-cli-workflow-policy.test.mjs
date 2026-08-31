@@ -46,6 +46,29 @@ test('validation consumers download the artifact produced by the build job', () 
   }
 });
 
+test('CLI validation qualifies exact published State Roots without weakening artifact identity', () => {
+  const workflow = readWorkflow('cli-package-validation.yml');
+  assert.match(workflow, /state-root-qualification:\n[\s\S]*?needs: build/u);
+  assert.match(workflow, /source_sha256: [a-f0-9]{64}/u);
+  assert.match(workflow, /target_sha256: [a-f0-9]{64}/u);
+  assert.match(workflow, /epoch_relation: different/u);
+  assert.match(workflow, /epoch_relation: same/u);
+  const steps = workflowSteps(workflow);
+  const sandbox = namedStep(steps, 'Require the account-isolation sandbox');
+  assert.match(sandbox, /apt-get install --yes bubblewrap/u);
+  const qualify = namedStep(steps, 'Qualify the released State Root transition');
+  assert.match(qualify, /release:cli:qualify-state-root/u);
+  assert.match(qualify, /--source-sha256/u);
+  assert.match(qualify, /--target-sha256/u);
+  assert.match(qualify, /--expect-epoch-relation/u);
+  assert.match(qualify, /set -o pipefail/u);
+  assert.match(qualify, /npm run --silent/u);
+  const prepare = namedStep(steps, 'Prepare exact source and target artifacts');
+  assert.match(prepare, /--max-filesize 67108864/gu);
+  const preserve = namedStep(steps, 'Preserve the qualification report');
+  assert.match(preserve, /if-no-files-found: error/u);
+});
+
 test('stage consumes the validated artifact and makes provenance staging the final step', () => {
   const workflow = readWorkflow('release-cli-stage.yml');
   assert.match(workflow, /environment:\n\s+name: npm-publication/u);
