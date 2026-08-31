@@ -291,6 +291,7 @@ jobs:
         shell: bash
         run: |
           echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           {
             echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache-cli-package"
             echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-cli-package-runtime"
@@ -309,8 +310,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kache-cli-package
-          key: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ hashFiles('native/runtime-host-peer/Cargo.lock') }}
-          restore-keys: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
+          key: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ hashFiles('native/runtime-host-peer/Cargo.lock') }}-${{ steps.cli-rustc.outputs.revision }}
+          restore-keys: |
+            kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ hashFiles('native/runtime-host-peer/Cargo.lock') }}-
+            kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
 
       - name: Install cargo-deny for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
@@ -325,7 +328,7 @@ jobs:
       - name: Report CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true'
         shell: bash
-        run: kache report --format github --since 24h >> "$GITHUB_STEP_SUMMARY"
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save CLI Rust build cache
         if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
