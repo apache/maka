@@ -318,7 +318,7 @@ test('Client Capability channel correlates one admitted nested form before the f
       },
     ],
     call: async (_frame, options) => {
-      await options.accept();
+      await options.accept({ kind: 'none' });
       const answer = await options.requestInteraction({
         message: 'Choose a target',
         requester: { name: 'deploy', source: 'Fixture' },
@@ -422,7 +422,7 @@ test('Client Capability release rejects a pending nested form', async () => {
       },
     ],
     call: async (_frame, options) => {
-      await options.accept();
+      await options.accept({ kind: 'none' });
       try {
         await options.requestInteraction({
           message: 'Choose a target',

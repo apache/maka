@@ -26,6 +26,7 @@ import type {
   McpToolDescriptor,
   McpToolSnapshot,
 } from '@maka/core/mcp';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
@@ -66,6 +67,10 @@ export interface McpToolCallOptions {
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
   readonly emitProgress?: (current: number, total: number) => void;
+  readonly requestInteraction?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
 }
 
 export interface McpToolInvocationContext {
@@ -171,6 +176,14 @@ export function buildMcpTools(
             cwd: context.cwd,
           },
           ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
+          ...(context.requestUserForm
+            ? {
+                requestInteraction: (
+                  form: InteractionFormInput,
+                  interactionOptions?: { readonly cancellationSignal?: AbortSignal },
+                ) => context.requestUserForm!(form, interactionOptions),
+              }
+            : {}),
         });
       },
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),

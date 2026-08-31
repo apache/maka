@@ -97,6 +97,44 @@ test('buildMcpTools projects discovery, abort, and rich model output', async () 
   assert.match(model?.value[2]?.type === 'text' ? model.value[2].text : '', /structuredContent/u);
 });
 
+test('buildMcpTools carries the Runtime-owned form callback to the provider', async () => {
+  const cancellation = new AbortController();
+  const provider = fakeProvider(
+    [boundTool(descriptor('client', 'deploy'), binding('nested-form-binding'))],
+    async (_binding, _args, options) => {
+      assert.ok(options.requestInteraction);
+      const answer = await options.requestInteraction(
+        {
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+        },
+        { cancellationSignal: cancellation.signal },
+      );
+      assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+      return { content: [] };
+    },
+  );
+  const [tool] = buildMcpTools(provider);
+
+  await tool?.impl(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+      requestUserForm: async (form, options) => {
+        assert.equal(form.message, 'Choose a target');
+        assert.equal(options?.cancellationSignal, cancellation.signal);
+        return { action: 'accept', values: { target: 'staging' } };
+      },
+    },
+  );
+});
+
 test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
   const sequence: string[] = [];
   const boundary = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);

@@ -785,16 +785,16 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   releaseConnection(connectionId: string): Promise<void> {
-    this.#invocations.releaseConnection(connectionId);
+    const invocationCleanup = this.#invocations.releaseConnection(connectionId);
     const connection = this.#connections.get(connectionId);
-    if (!connection) return Promise.resolve();
+    if (!connection) return invocationCleanup;
     let task!: Promise<void>;
     task = this.#activation
       .runMutation(() => this.#releaseConnectionState(connection))
       .finally(() => this.#pendingConnectionReleases.delete(task));
     this.#pendingConnectionReleases.add(task);
     void task.catch(() => undefined);
-    return task;
+    return Promise.all([invocationCleanup, task]).then(() => undefined);
   }
 
   #releaseConnectionState(connection: ClientProviderConnection): void {
@@ -1052,6 +1052,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.context,
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
+          undefined,
+          options.requestInteraction,
         );
         try {
           const evidence = await prepared.waitUntilAccepted();
@@ -1108,6 +1110,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
           options.emitProgress,
+          options.requestInteraction,
         );
       },
     };
