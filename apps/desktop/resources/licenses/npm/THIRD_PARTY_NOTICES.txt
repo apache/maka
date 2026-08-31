@@ -710,7 +710,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: @astryxdesign/core@0.5.0
+Package: @astryxdesign/core@0.5.2
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/facebook/astryx.git#packages/core
