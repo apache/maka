@@ -623,7 +623,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/');
     await waitFor(() => {
       const screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
-      return autocompleteSuggestionLines(screen).some((line) => line.includes('→ /compact'));
+      return autocompleteSuggestionLines(screen).some((line) => line.includes('→ /attach'));
     });
 
     let screen = plainTerminalOutput(terminal.screenOutput()).split(/\r?\n/);
@@ -636,7 +636,7 @@ describe('Maka Pi TUI runner', () => {
     const shortVisibleCommands = autocompleteSuggestionLines(screen).length;
     assert.ok(totalCommands > shortVisibleCommands);
     assert.equal(bottomBorder, terminal.rows - 2);
-    assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /compact')));
+    assert.ok(autocompleteSuggestionLines(screen).some((line) => line.includes('→ /attach')));
 
     terminal.input('\x1b[A');
     await waitFor(() => {
