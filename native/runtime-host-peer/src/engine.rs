@@ -34,12 +34,19 @@ use libp2p::{
     noise, ping, relay,
     swarm::{
         ConnectionId, NetworkBehaviour, SwarmEvent,
+        behaviour::toggle::Toggle,
         dial_opts::{DialOpts, PeerCondition},
     },
     tcp, yamux,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+
+use crate::webrtc_direct::{
+    SIGNALING_PROTOCOL, UpgradeOptions, UpgradeRole, WebRtcTransport, WebRtcTransportControl,
+    upgrade_connection,
+};
 
 mod address;
 mod application_stream;
@@ -59,6 +66,9 @@ const IDENTIFY_PROTOCOL: &str = "/maka/runtime-host/peer-identify/1";
 const COMMAND_CAPACITY: usize = 32;
 const INCOMING_STREAM_CAPACITY: usize = 16;
 const MESH_INCOMING_STREAM_CAPACITY: usize = 32;
+const WEBRTC_SIGNALING_STREAM_CAPACITY: usize = 8;
+const MAX_CONCURRENT_WEBRTC_UPGRADES: usize = 4;
+const WEBRTC_UPGRADE_DEADLINE: Duration = Duration::from_secs(15);
 const MAX_PENDING_INCOMING_CONNECTIONS: u32 = 32;
 const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 1024;
 const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 32;
@@ -86,6 +96,7 @@ pub struct StartOptions {
     pub listen_addresses: Vec<Multiaddr>,
     pub coordination_relays: Vec<Multiaddr>,
     pub automatic_relay_discovery: bool,
+    pub web_rtc_stun_urls: Option<Vec<String>>,
 }
 
 pub struct StartedEndpoint {
@@ -197,6 +208,7 @@ struct Behaviour {
     ping: ping::Behaviour,
     application_stream: application_stream::Behaviour,
     mesh_control: application_stream::Behaviour,
+    webrtc_signaling: Toggle<application_stream::Behaviour>,
 }
 
 struct PendingConnect {
@@ -559,14 +571,23 @@ async fn run_endpoint_async(
         None => load_or_create_key(&options.key_path).await?,
     };
     let local_peer_id = PeerId::from(key.public());
+    let webrtc_stun_urls = options.web_rtc_stun_urls.clone();
     let allowed_transit_peers = Arc::new(RwLock::new(HashSet::new()));
     let trusted_transit_relays = Arc::new(RwLock::new(HashSet::new()));
-    let (mut swarm, stream_control, mut incoming_streams, mesh_control, mut mesh_incoming) =
-        build_swarm(
-            key,
-            Arc::clone(&allowed_transit_peers),
-            Arc::clone(&trusted_transit_relays),
-        )?;
+    let BuiltSwarm {
+        mut swarm,
+        stream_control,
+        mut incoming_streams,
+        mesh_control,
+        mut mesh_incoming,
+        mut webrtc_signaling_incoming,
+        webrtc_transport,
+    } = build_swarm(
+        key,
+        Arc::clone(&allowed_transit_peers),
+        Arc::clone(&trusted_transit_relays),
+        webrtc_stun_urls.is_some(),
+    )?;
     let mut transit = TransitRuntime {
         allowed_peers: allowed_transit_peers,
         approved_relays: HashSet::new(),
@@ -649,6 +670,11 @@ async fn run_endpoint_async(
     let mut bound_addresses = bound_addresses.into_iter().collect::<Vec<_>>();
     bound_addresses.sort_unstable_by_key(ToString::to_string);
     transit.listen_addresses.clone_from(&bound_addresses);
+    if webrtc_stun_urls.is_some() {
+        swarm
+            .listen_on("/webrtc".parse().expect("constant multiaddr"))
+            .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))?;
+    }
     let _ = ready_tx.send(Ok((local_peer_id, bound_addresses)));
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
@@ -661,6 +687,8 @@ async fn run_endpoint_async(
     let mut discovered_relays = options
         .automatic_relay_discovery
         .then(relay_discovery::spawn);
+    let webrtc_cancellation = CancellationToken::new();
+    let mut incoming_webrtc_upgrades = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -793,10 +821,16 @@ async fn run_endpoint_async(
                     let _ = result.send(());
                 }
                 Some(EngineCommand::Stop { result }) => {
+                    webrtc_cancellation.cancel();
+                    incoming_webrtc_upgrades.abort_all();
                     let _ = result.send(());
                     return Ok(());
                 }
-                None => return Ok(()),
+                None => {
+                    webrtc_cancellation.cancel();
+                    incoming_webrtc_upgrades.abort_all();
+                    return Ok(());
+                }
             },
             Some(stream) = incoming_streams.recv() => {
                 *direct.active.entry(stream.connection_id).or_default() += 1;
@@ -829,6 +863,50 @@ async fn run_endpoint_async(
                 );
                 if mesh_incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream applies bounded backpressure to Mesh control callers.
+                }
+            }
+            Some(stream) = webrtc_signaling_incoming.recv() => {
+                if incoming_webrtc_upgrades.len() >= MAX_CONCURRENT_WEBRTC_UPGRADES {
+                    webrtc_debug(format_args!(
+                        "rejected inbound upgrade from {}: concurrency limit reached",
+                        stream.peer_id,
+                    ));
+                    continue;
+                }
+                let cancellation = webrtc_cancellation.child_token();
+                let stun_urls = webrtc_stun_urls.clone().unwrap_or_default();
+                incoming_webrtc_upgrades.spawn(async move {
+                    upgrade_connection(
+                        stream.stream,
+                        stream.peer_id,
+                        stream.peer_id,
+                        UpgradeRole::Answerer,
+                        UpgradeOptions {
+                            stun_urls,
+                            udp_bind_addresses: vec!["0.0.0.0:0".to_owned()],
+                            deadline: WEBRTC_UPGRADE_DEADLINE,
+                            cancellation,
+                        },
+                    )
+                    .await
+                });
+            }
+            Some(upgrade) = incoming_webrtc_upgrades.join_next(), if !incoming_webrtc_upgrades.is_empty() => {
+                match upgrade {
+                    Ok(Ok((peer, connection))) => {
+                        if let Err(error) = webrtc_transport.inject_inbound(peer, connection) {
+                            webrtc_debug(format_args!(
+                                "discarded completed inbound upgrade from {peer}: {error}",
+                            ));
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        webrtc_debug(format_args!("inbound upgrade failed: {error}"));
+                    }
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        webrtc_debug(format_args!("inbound upgrade task failed: {error}"));
+                    }
                 }
             }
             Some(candidate) = async {
@@ -1123,18 +1201,21 @@ fn pending_connect_deadline_error(waiter: &PendingConnect) -> PeerError {
     PeerError::new(code, message)
 }
 
-type BuiltSwarm = (
-    Swarm<Behaviour>,
-    application_stream::Control,
-    mpsc::Receiver<application_stream::InboundStream>,
-    application_stream::Control,
-    mpsc::Receiver<application_stream::InboundStream>,
-);
+struct BuiltSwarm {
+    swarm: Swarm<Behaviour>,
+    stream_control: application_stream::Control,
+    incoming_streams: mpsc::Receiver<application_stream::InboundStream>,
+    mesh_control: application_stream::Control,
+    mesh_incoming: mpsc::Receiver<application_stream::InboundStream>,
+    webrtc_signaling_incoming: mpsc::Receiver<application_stream::InboundStream>,
+    webrtc_transport: WebRtcTransportControl,
+}
 
 fn build_swarm(
     key: identity::Keypair,
     allowed_transit_peers: Arc<RwLock<HashSet<PeerId>>>,
     trusted_transit_relays: Arc<RwLock<HashSet<PeerId>>>,
+    webrtc_enabled: bool,
 ) -> Result<BuiltSwarm, PeerError> {
     let (application_stream, control, incoming) = application_stream::Behaviour::new(
         StreamProtocol::new(APPLICATION_PROTOCOL),
@@ -1146,6 +1227,13 @@ fn build_swarm(
         MESH_INCOMING_STREAM_CAPACITY,
         None,
     );
+    let (webrtc_signaling, _webrtc_signaling_control, webrtc_signaling_incoming) =
+        application_stream::Behaviour::new(
+            StreamProtocol::new(SIGNALING_PROTOCOL),
+            WEBRTC_SIGNALING_STREAM_CAPACITY,
+            None,
+        );
+    let (webrtc, webrtc_transport) = WebRtcTransport::new();
     let swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
@@ -1155,6 +1243,8 @@ fn build_swarm(
         )
         .map_err(native_error)?
         .with_quic()
+        .with_other_transport(move |_| webrtc)
+        .map_err(native_error)?
         .with_dns()
         .map_err(native_error)?
         .with_relay_client(noise::Config::new, yamux::Config::default)
@@ -1182,6 +1272,7 @@ fn build_swarm(
             ping: ping::Behaviour::new(ping::Config::new()),
             application_stream,
             mesh_control: mesh_stream,
+            webrtc_signaling: Toggle::from(webrtc_enabled.then_some(webrtc_signaling)),
         })
         .map_err(native_error)
         .map(|builder| {
@@ -1190,7 +1281,15 @@ fn build_swarm(
             })
         })
         .map(|builder| builder.build())?;
-    Ok((swarm, control, incoming, mesh_control, mesh_incoming))
+    Ok(BuiltSwarm {
+        swarm,
+        stream_control: control,
+        incoming_streams: incoming,
+        mesh_control,
+        mesh_incoming,
+        webrtc_signaling_incoming,
+        webrtc_transport,
+    })
 }
 
 fn transit_relay_config(allowed_peers: Arc<RwLock<HashSet<PeerId>>>) -> relay::Config {
@@ -2536,6 +2635,12 @@ fn discovery_debug(message: std::fmt::Arguments<'_>) {
     }
 }
 
+fn webrtc_debug(message: std::fmt::Arguments<'_>) {
+    if std::env::var_os("MAKA_WEBRTC_DIAGNOSTICS").is_some() {
+        eprintln!("[peer-webrtc] {message}");
+    }
+}
+
 fn retry_connect_routes(
     swarm: &mut Swarm<Behaviour>,
     direct: &mut DirectConnectState,
@@ -3202,6 +3307,7 @@ mod tests {
             ],
             coordination_relays: Vec::new(),
             automatic_relay_discovery: false,
+            web_rtc_stun_urls: None,
         }
     }
 

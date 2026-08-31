@@ -35,6 +35,8 @@ type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerEr
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
 const MAX_TRANSIT_PEERS: usize = 64;
 const MAX_TRANSIT_RELAY_ADDRESSES: usize = 256;
+const MAX_WEBRTC_STUN_URLS: usize = 8;
+const MAX_WEBRTC_STUN_URL_BYTES: usize = 512;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -43,6 +45,7 @@ pub struct StartPeerEndpointOptions {
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
     pub automatic_relay_discovery: Option<bool>,
+    pub web_rtc_stun_urls: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -381,6 +384,10 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             "coordination relay",
         )?,
         automatic_relay_discovery: options.automatic_relay_discovery.unwrap_or(false),
+        web_rtc_stun_urls: options
+            .web_rtc_stun_urls
+            .map(parse_webrtc_stun_urls)
+            .transpose()?,
     })
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
@@ -464,6 +471,27 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
             })
         })
         .collect()
+}
+
+fn parse_webrtc_stun_urls(values: Vec<String>) -> Result<Vec<String>> {
+    if values.len() > MAX_WEBRTC_STUN_URLS {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "WebRTC cannot use more than 8 STUN URLs",
+        ));
+    }
+    for value in &values {
+        if value.len() > MAX_WEBRTC_STUN_URL_BYTES
+            || !value.starts_with("stun:")
+            || value.chars().any(char::is_whitespace)
+        {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "WebRTC STUN URL must use the stun: scheme and contain no whitespace",
+            ));
+        }
+    }
+    Ok(values)
 }
 
 fn parse_transit_relay_candidates(
@@ -598,5 +626,14 @@ mod tests {
             relays[0].coordination_relays,
             vec![coordination.parse().expect("coordination multiaddr")],
         );
+    }
+
+    #[test]
+    fn webrtc_configuration_accepts_explicit_host_only_ice_and_rejects_turn() {
+        assert_eq!(
+            parse_webrtc_stun_urls(Vec::new()).expect("host-only ICE"),
+            Vec::<String>::new()
+        );
+        assert!(parse_webrtc_stun_urls(vec!["turn:relay.example:3478".to_owned()]).is_err());
     }
 }

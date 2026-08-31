@@ -128,6 +128,7 @@ interface RuntimeHostPeerNativeModule {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
   }): unknown;
 }
 
@@ -199,6 +200,7 @@ export function startRuntimeHostPeerEndpoint(input: {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   try {
     const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
@@ -209,6 +211,7 @@ export function startRuntimeHostPeerEndpoint(input: {
       ...(input.automaticRelayDiscovery === undefined
         ? {}
         : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
+      ...(input.webRtcStunUrls === undefined ? {} : { webRtcStunUrls: input.webRtcStunUrls }),
     });
     if (!isPeerNativeEndpoint(endpoint)) {
       throw new RuntimeHostPeerError(

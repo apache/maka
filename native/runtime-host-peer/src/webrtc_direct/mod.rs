@@ -17,12 +17,17 @@
  * under the License.
  */
 
-mod bindings;
-mod engine;
-mod webrtc_direct;
+mod muxer;
+mod signaling;
+mod transport;
+mod upgrade;
 
-pub use bindings::{
-    ConfigurePeerTransitOptions, ConnectPeerOptions, PeerEndpoint, PeerIdentitySignature,
-    PeerStream, PeerTransitRelayCandidate, PeerTransitSnapshot, StartPeerEndpointOptions,
-    ensure_peer_identity, sign_peer_identity, start_peer_endpoint, verify_peer_identity,
-};
+pub(crate) use muxer::WebRtcConnection;
+pub(crate) use signaling::{Signal, SignalingError, read_signal, write_signal};
+pub(crate) use transport::{WebRtcTransport, WebRtcTransportControl};
+pub(crate) use upgrade::{UpgradeOptions, UpgradeRole, upgrade_connection};
+
+pub(crate) const SIGNALING_PROTOCOL: &str = "/webrtc-signaling/0.0.1";
+
+#[cfg(test)]
+mod tests;

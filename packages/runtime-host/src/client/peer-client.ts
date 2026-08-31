@@ -92,6 +92,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
@@ -113,6 +114,7 @@ export function createRuntimeHostPeerClient(input: {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
   readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
@@ -125,6 +127,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
   readonly #automaticRelayDiscovery: boolean;
+  readonly #webRtcStunUrls: readonly string[] | undefined;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
@@ -144,6 +147,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
@@ -152,6 +156,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
     this.#automaticRelayDiscovery = input.automaticRelayDiscovery ?? false;
+    this.#webRtcStunUrls =
+      input.webRtcStunUrls === undefined ? undefined : [...input.webRtcStunUrls];
     this.#routeResolver = input.routeResolver;
   }
 
@@ -390,6 +396,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
       automaticRelayDiscovery: this.#automaticRelayDiscovery,
+      ...(this.#webRtcStunUrls === undefined ? {} : { webRtcStunUrls: this.#webRtcStunUrls }),
     });
     this.#endpoint = endpoint;
     this.#draining = this.#drainInbound(endpoint);
