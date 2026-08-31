@@ -107,12 +107,14 @@ impl WebRtcTransportControl {
     ) -> Result<Multiaddr, io::Error> {
         let mut outgoing = lock(&self.outgoing);
         if outgoing.contains_key(&peer) {
+            connection.close_in_background();
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "WebRTC transport already has a pending connection for this peer",
             ));
         }
         if outgoing.len() >= OUTGOING_CONNECTION_CAPACITY {
+            connection.close_in_background();
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "WebRTC transport outbound queue is full",
@@ -123,7 +125,9 @@ impl WebRtcTransportControl {
     }
 
     pub fn discard_outbound(&self, peer: PeerId) {
-        lock(&self.outgoing).remove(&peer);
+        if let Some(connection) = lock(&self.outgoing).remove(&peer) {
+            connection.close_in_background();
+        }
     }
 }
 
