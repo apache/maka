@@ -22,7 +22,10 @@ import type {
   DesktopRuntimeHostRef,
   MakaBridge,
 } from '../../preload/bridge-contract.js';
-import type { ConnectionsBridge } from './provider-panel-shared.js';
+import type {
+  ApiKeyOnboardingBridge,
+  ConnectionsBridge,
+} from './provider-panel-shared.js';
 import type {
   OAuthAccountFlowBridge,
   OAuthAuthorizationFlowBridge,
@@ -52,6 +55,37 @@ export function runtimeHostConnectionsBridge(
       window.maka.connections.subscribeEvents(handler, host),
   };
 }
+
+export function runtimeHostApiKeyOnboardingBridge(
+  host: DesktopRuntimeHostRef,
+): ApiKeyOnboardingBridge {
+  const targetKey = `${host.profileId}\u0000${host.hostId}`;
+  return {
+    saveUncertainty: {
+      isUncertain: () => uncertainApiKeyOnboardingTargets.has(targetKey),
+      markDispatched: () => {
+        const attemptId = nextApiKeyOnboardingAttemptId++;
+        uncertainApiKeyOnboardingTargets.set(targetKey, attemptId);
+        return attemptId;
+      },
+      settle: (attemptId) => {
+        if (uncertainApiKeyOnboardingTargets.get(targetKey) === attemptId) {
+          uncertainApiKeyOnboardingTargets.delete(targetKey);
+        }
+      },
+      restart: () => uncertainApiKeyOnboardingTargets.delete(targetKey),
+    },
+    verify: (input) => window.maka.connections.verifyOnboarding(input, host),
+    save: (input) => window.maka.connections.saveOnboarding(input, host),
+  };
+}
+
+// A Host replacement remounts the settings projection while a dispatched save
+// may still settle. Keep the safety gate target-scoped instead of form-scoped;
+// durable reconciliation across a Desktop process restart belongs to the
+// follow-up Host journal protocol.
+const uncertainApiKeyOnboardingTargets = new Map<string, number>();
+let nextApiKeyOnboardingAttemptId = 1;
 
 type RuntimeHostOAuthBridge = MakaBridge['openAiCodex'] | MakaBridge['xaiOAuth'];
 

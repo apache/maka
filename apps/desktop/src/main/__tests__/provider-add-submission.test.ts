@@ -21,10 +21,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createProviderWithDiscovery,
+  apiKeyOnboardingRoute,
+  initialOnboardingModelIds,
+  initialManagedOnboardingPhase,
+  stableOnboardingModels,
   validateAddProviderDraft,
   type AddProviderDraft,
   type AddProviderField,
 } from '../../renderer/settings/provider-add-submission.js';
+import { runtimeHostApiKeyOnboardingBridge } from '../../renderer/settings/runtime-host-settings-bridge.js';
 import {
   PROVIDER_REGISTRY,
   providerSupportsModelDiscovery,
@@ -222,4 +227,71 @@ test('a duplicate slug outranks a missing key, so one fix is asked for at a time
     ),
     { field: 'slug', reason: 'duplicate' },
   );
+});
+
+test('routes only fixed-endpoint API-key drafts without request customization to Host onboarding', () => {
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'openai',
+    requestHeaderCount: 0,
+    hasRequestBodyOverlay: false,
+  }), { kind: 'host' });
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'openai',
+    requestHeaderCount: 1,
+    hasRequestBodyOverlay: false,
+  }), { kind: 'legacy', reason: 'request_headers' });
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'openai',
+    requestHeaderCount: 0,
+    hasRequestBodyOverlay: true,
+  }), { kind: 'legacy', reason: 'request_body' });
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'openai-compatible',
+    requestHeaderCount: 0,
+    hasRequestBodyOverlay: false,
+  }), { kind: 'legacy', reason: 'custom_endpoint' });
+  assert.deepEqual(apiKeyOnboardingRoute({
+    providerType: 'cloudflare-workers-ai',
+    requestHeaderCount: 0,
+    hasRequestBodyOverlay: false,
+  }), { kind: 'legacy', reason: 'cloudflare' });
+});
+
+test('uses a stable discovered-model order and prefers the registered recommendation', () => {
+  const models = [
+    { id: 'z-model', displayName: 'Zulu' },
+    { id: 'a-model', displayName: 'Alpha' },
+  ];
+  assert.deepEqual(stableOnboardingModels(models).map(({ id }) => id), [
+    'a-model',
+    'z-model',
+  ]);
+  assert.deepEqual(initialOnboardingModelIds(models, 'z-model'), ['z-model']);
+  assert.deepEqual(initialOnboardingModelIds(models, 'missing'), ['a-model']);
+  assert.deepEqual(initialOnboardingModelIds([], 'missing'), []);
+});
+
+test('a remounted setup becomes uncertain only after save dispatch', () => {
+  assert.equal(initialManagedOnboardingPhase(false), 'input');
+  assert.equal(initialManagedOnboardingPhase(true), 'outcome_unknown');
+});
+
+test('a late old save cannot clear the uncertainty lease for a newer attempt', () => {
+  const firstView = runtimeHostApiKeyOnboardingBridge({
+    profileId: 'local',
+    hostId: 'same-host',
+  });
+  const oldAttempt = firstView.saveUncertainty.markDispatched();
+  firstView.saveUncertainty.restart();
+
+  const replacementView = runtimeHostApiKeyOnboardingBridge({
+    profileId: 'local',
+    hostId: 'same-host',
+  });
+  const newAttempt = replacementView.saveUncertainty.markDispatched();
+  firstView.saveUncertainty.settle(oldAttempt);
+  assert.equal(replacementView.saveUncertainty.isUncertain(), true);
+
+  replacementView.saveUncertainty.settle(newAttempt);
+  assert.equal(firstView.saveUncertainty.isUncertain(), false);
 });

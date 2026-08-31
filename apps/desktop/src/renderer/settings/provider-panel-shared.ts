@@ -24,6 +24,7 @@ import {
   type IdentifiedLlmConnection,
   type LlmConnection,
   type ModelDiscoveryResult,
+  type ModelInfo,
   type RequestHeaderUpdate,
   type SavedRequestHeaders,
   type ProviderCategory,
@@ -37,6 +38,78 @@ import type {
   DesktopConnectionIdentity,
   DesktopConnectionSnapshot,
 } from '../../shared/desktop-connection-snapshot.js';
+
+export type DesktopConnectionOnboardingIdentity = {
+  readonly connectionId: string;
+  readonly revision: number;
+  readonly slug: string;
+  readonly providerType: ProviderType;
+};
+
+export type ApiKeyOnboardingTarget =
+  | { readonly kind: 'create'; readonly providerType: ProviderType }
+  | { readonly kind: 'existing'; readonly connectionId: string };
+
+export type ApiKeyOnboardingVerifyResult =
+  | { readonly kind: 'verified'; readonly models: readonly ModelInfo[] }
+  | {
+      readonly kind: 'rejected';
+      readonly reason:
+        | 'provider_unsupported'
+        | 'connection_not_found'
+        | 'credential_not_configured'
+        | 'base_url_not_configured'
+        | 'catalog_full';
+    }
+  | {
+      readonly kind: 'failed';
+      readonly errorClass:
+        | 'auth'
+        | 'timeout'
+        | 'provider_unavailable'
+        | 'network'
+        | 'invalid_response'
+        | 'unknown';
+    };
+
+export type ApiKeyOnboardingSaveResult =
+  | { readonly kind: 'saved'; readonly connection: DesktopConnectionOnboardingIdentity }
+  | {
+      readonly kind: 'rejected';
+      readonly reason:
+        | 'provider_unsupported'
+        | 'connection_not_found'
+        | 'credential_not_configured'
+        | 'base_url_not_configured'
+        | 'catalog_full'
+        | 'model_unavailable'
+        | 'superseded';
+    }
+  | Exclude<ApiKeyOnboardingVerifyResult, { readonly kind: 'verified' | 'rejected' }>;
+
+export interface ApiKeyOnboardingBridge {
+  readonly saveUncertainty: {
+    isUncertain(): boolean;
+    markDispatched(): number;
+    settle(attemptId: number): void;
+    restart(): void;
+  };
+  verify(input: {
+    readonly target: ApiKeyOnboardingTarget;
+    readonly apiKey: string | null;
+    readonly baseUrl: string | null;
+  }): Promise<ApiKeyOnboardingVerifyResult>;
+  save(input: {
+    readonly target: ApiKeyOnboardingTarget;
+    readonly apiKey: string | null;
+    readonly baseUrl: string | null;
+    readonly enabledModelIds: readonly string[];
+  }): Promise<
+    | { readonly kind: 'result'; readonly result: ApiKeyOnboardingSaveResult }
+    | { readonly kind: 'not_saved' }
+    | { readonly kind: 'outcome_unknown' }
+  >;
+}
 
 export interface ConnectionsBridge {
   getSnapshot(): Promise<DesktopConnectionSnapshot>;

@@ -3972,12 +3972,14 @@
           "window.maka.connections.getRequestHeaders": 1,
           "window.maka.connections.getSnapshot": 1,
           "window.maka.connections.hasSecret": 1,
+          "window.maka.connections.saveOnboarding": 1,
           "window.maka.connections.setDefault": 1,
           "window.maka.connections.setDefaultModel": 1,
           "window.maka.connections.setRequestHeaders": 1,
           "window.maka.connections.subscribeEvents": 1,
           "window.maka.connections.test": 1,
-          "window.maka.connections.update": 1
+          "window.maka.connections.update": 1,
+          "window.maka.connections.verifyOnboarding": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {},
