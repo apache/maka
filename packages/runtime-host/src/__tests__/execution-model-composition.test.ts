@@ -45,7 +45,7 @@ import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
-import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
+import { createDefaultRuntimePolicy, type RuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
 import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import {
@@ -182,6 +182,31 @@ test('prepared backend activation builds from its admitted provider snapshot', a
 
   const backend = await prepared.build(context);
   await backend.dispose();
+});
+
+test('connection and proxy changes qualify the admitted provider identity', async () => {
+  const prepare = async (revision: number, networkProxy?: RuntimePolicy['networkProxy']) => {
+    const input = backendCreationFixture({
+      abortSignal: new AbortController().signal,
+      resolveExecutionConnection: async () =>
+        readyExecutionConnection(undefined, { revision, networkProxy }),
+      readPricing: async () => ({ revision: 0, overrides: [] }),
+    });
+    const { context, ...dependencies } = input;
+    return prepareHostAiSdkBackend({ context, ...dependencies });
+  };
+
+  const original = (await prepare(1)).providerStateIdentity;
+  assert.notEqual(original, (await prepare(2)).providerStateIdentity);
+  assert.notEqual(
+    original,
+    (
+      await prepare(1, {
+        ...createDefaultRuntimePolicy().networkProxy,
+        enabled: true,
+      })
+    ).providerStateIdentity,
+  );
 });
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -4047,12 +4072,15 @@ function readyExecutionConnection(
   customization: {
     readonly requestHeaders?: Readonly<Record<string, string>>;
     readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+    readonly networkProxy?: RuntimePolicy['networkProxy'];
+    readonly revision?: number;
     readonly vision?: boolean;
   } = {},
 ) {
   return {
     kind: 'ready',
     connection: {
+      revision: customization.revision ?? 1,
       slug: 'backend-creation-connection',
       providerType: 'moonshot',
       ...(baseUrl ? { baseUrl } : {}),
@@ -4073,7 +4101,7 @@ function readyExecutionConnection(
         },
       ],
     },
-    networkProxy: { enabled: false },
+    networkProxy: customization.networkProxy ?? { enabled: false },
     secretMaterial: {
       connection: { secret: API_KEY },
       ...(customization.requestHeaders

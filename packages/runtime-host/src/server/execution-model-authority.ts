@@ -763,15 +763,21 @@ function providerStateIdentityForResolvedExecution(
     { kind: 'ready' }
   >,
 ): `sha256:${string}` {
-  const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
-    material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  const credentialBasis = (
+    material: { readonly credentialId?: string; readonly revision?: number } | null | undefined,
+  ) => (material ? { credentialId: material.credentialId, revision: material.revision } : null);
+  const proxy = resolved.networkProxy.enabled ? resolved.networkProxy : null;
   return stableHash({
     protocol: 'provider_state_identity_v1',
     connectionId: resolved.connection.connectionId,
+    connectionRevision: resolved.connection.revision,
     providerType: resolved.connection.providerType,
     endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
     credential: credentialBasis(resolved.secretMaterial.connection),
     requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+    proxy,
+    proxyCredential:
+      proxy?.authEnabled === true ? credentialBasis(resolved.secretMaterial.networkProxy) : null,
   });
 }
 
