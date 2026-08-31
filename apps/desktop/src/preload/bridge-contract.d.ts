@@ -350,6 +350,26 @@ export interface DesktopRuntimeHostRef {
   readonly hostId: string;
 }
 
+/** Desktop-local OAuth intent. Runtime Host remains the identity allocator. */
+export type DesktopOAuthLoginTarget =
+  | { readonly kind: 'create' }
+  | { readonly kind: 'existing'; readonly connectionId: string };
+
+/** Secret-free canonical identity returned by the Runtime Host OAuth flow. */
+export interface DesktopOAuthConnectionIdentity {
+  readonly connectionId: string;
+  readonly slug: string;
+  readonly providerType: 'openai-codex' | 'xai-oauth';
+}
+
+export type DesktopOAuthAuthorizationStartResult =
+  | (AuthorizationUrlPayload & { readonly connection: DesktopOAuthConnectionIdentity })
+  | Exclude<SubscriptionActionResult, { readonly ok: true }>;
+
+export type DesktopOAuthAuthorizationResult =
+  | { readonly ok: true; readonly connection: DesktopOAuthConnectionIdentity }
+  | Exclude<SubscriptionActionResult, { readonly ok: true }>;
+
 export type DesktopNewTaskHostRef = DesktopRuntimeHostRef;
 
 export interface DesktopNewTaskTarget extends DesktopRuntimeHostRef {
@@ -1438,45 +1458,51 @@ export interface MakaBridge {
   };
   openAiCodex: {
     isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
-    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
-      provider: 'openai-codex';
-      runtimeState:
-        | 'not_logged_in'
-        | 'authorizing'
-        | 'authenticated'
-        | 'refreshing'
-        | 'refresh_failed';
-      accountId?: string;
-      email?: string;
-      plan?: string;
-      picture?: string;
-      errorMessage?: string;
-    }>;
-    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<
+      | {
+          provider: 'openai-codex';
+          runtimeState:
+            | 'not_logged_in'
+            | 'authorizing'
+            | 'authenticated'
+            | 'refreshing'
+            | 'refresh_failed';
+          accountId?: string;
+          email?: string;
+          plan?: string;
+          picture?: string;
+          errorMessage?: string;
+        }
+      | Exclude<SubscriptionActionResult, { readonly ok: true }>
+    >;
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   xaiOAuth: {
-    getAuthUrl(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<AuthorizationUrlPayload | SubscriptionActionResult>;
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult>;
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }>;
-    getAccountState(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<{
-      provider: 'xai-oauth';
-      runtimeState:
-        | 'not_logged_in'
-        | 'authorizing'
-        | 'authenticated'
-        | 'refreshing'
-        | 'refresh_failed'
-        | 'storage_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef, connectionId?: string): Promise<SubscriptionActionResult>;
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<
+      | {
+          provider: 'xai-oauth';
+          runtimeState:
+            | 'not_logged_in'
+            | 'authorizing'
+            | 'authenticated'
+            | 'refreshing'
+            | 'refresh_failed'
+            | 'storage_failed';
+          errorMessage?: string;
+        }
+      | Exclude<SubscriptionActionResult, { readonly ok: true }>
+    >;
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;

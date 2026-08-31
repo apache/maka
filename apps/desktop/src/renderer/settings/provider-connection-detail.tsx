@@ -1104,9 +1104,12 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
   const providerCopy = getProviderSettingsCopy(useUiLocale());
   const copy = providerCopy.detail;
   const flow = useOAuthLoginFlow({
-    bridge: props.service.bridge,
+    mode: 'existing',
+    authorizationBridge: props.service.authorizationBridge,
+    accountBridge: props.service.accountBridge,
     display: props.service.display,
-    onLoginSuccess: props.onRelogin,
+    onLoginSuccess: () => props.onRelogin(),
+    onAccountChanged: props.onRelogin,
   });
   const { hasSecret } = props;
   const loggedIn = hasSecret === true;
@@ -1139,6 +1142,7 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
         </>
       ) : detail}
       endContent={!loading ? (
+        <HStack gap={2}>
           <Button
             variant="primary"
             size="sm"
@@ -1146,6 +1150,18 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
             onClick={() => void flow.startLogin()}
             label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
           />
+          {loggedIn && flow.logout && (
+            <Button
+              variant="ghost"
+              size="sm"
+              isDisabled={flow.actionBusy}
+              onClick={() => void flow.logout?.()}
+              label={flow.pendingAction === 'logout'
+                ? providerCopy.oauthSection.loggingOut
+                : providerCopy.oauthSection.logout}
+            />
+          )}
+        </HStack>
       ) : undefined} />
   );
 }

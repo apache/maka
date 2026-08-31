@@ -176,7 +176,7 @@ const zhCopy = {
   panel: {
     tabs: { all: '全部', recommended: '推荐', accounts: '账号', plans: '模型计划', api: 'API', aggregators: '聚合服务', local: '本地' },
     loadFailed: '载入模型连接失败', loadingAria: '正在加载模型供应商', connections: '模型连接',
-    retry: '点击重试。', empty: '还没有模型连接',
+    retry: '点击重试。', empty: '还没有模型连接', connectionRemoved: '原账号已被删除或移除，已返回模型连接列表。',
     emptyHelp: '从下方选择一种连接方式开始。', default: '默认', setDefault: '设为默认', setDefaultTitle: '让新任务默认使用这个连接', setDefaultPending: '设置中…', setDefaultFailed: '设为默认失败', addHelp: '选择账号登录、模型计划、API、聚合服务或本地运行时。',
     categoriesAria: '模型供应商分类', searchPlaceholder: '搜索服务商', searchAria: '搜索模型服务商', noMatch: '没有匹配的服务商', clearSearch: '清除搜索',
     createSubtitle: '完成必要配置后，连接会出现在模型页上方。', connection: '模型连接',
@@ -214,7 +214,8 @@ const zhCopy = {
     logoutTitle: (name: string) => `退出 ${name} 登录？`,
   },
   oauthSection: {
-    signedIn: '已登录', codexDescription: 'ChatGPT Plus / Pro 订阅账号登录。', xaiDescription: 'SuperGrok / X Premium 账号登录。',
+    signedIn: '已登录', codexDescription: '使用 ChatGPT Plus / Pro 账号添加连接。', xaiDescription: '使用 SuperGrok / X Premium 账号添加连接。',
+    configuredConnections: (count: number) => `已有 ${count} 个连接 · 添加另一个账号`,
     copilotDescription: '导入兼容 GitHub 凭据连接 Copilot 订阅。', serviceUnavailable: '登录服务暂时不可用，请检查网络后重试。',
     aria: 'OAuth 登录',
     staleState: 'OAuth 登录状态暂时没刷新成功，已保留上一次状态。',
@@ -225,7 +226,7 @@ const zhCopy = {
     reimport: '重新导入', importCredential: '导入兼容凭据', verifying: '验证中…', reverify: '重新验证', removing: '移除中…', removeLocal: '移除本地登录',
     loadingAccount: '正在加载账号状态…', authorizing: '请在弹出的浏览器窗口完成登录。', refreshing: '正在刷新访问令牌…', refreshTokenFailed: '令牌刷新失败，请重新登录。',
     cardAria: (name: string, status: string | undefined, description: string) => `打开 OAuth 登录：${name}${status ? `，状态：${status}` : ''}，${description.replace(/[。.!！？?]+$/u, '')}`,
-    connectTitle: (name: string) => `连接 ${name}`, login: (name: string) => `登录 ${name}`, signedOut: (name: string) => `${name} 尚未登录。`,
+    connectTitle: (name: string) => `连接 ${name}`, addAccountTitle: (name: string) => `添加 ${name} 账号`, login: (name: string) => `登录 ${name}`, loginAndAdd: '登录并添加', signedOut: (name: string) => `${name} 尚未登录。`,
     storageFailed: (name: string) => `${name} 本地凭据读取失败，请重新登录。`, providerUnavailable: (name: string) => `${name} 已登录，但当前 provider 状态不可用。`,
   },
 } as const;
@@ -329,7 +330,7 @@ const enCopy: ProviderSettingsCopy = {
   panel: {
     tabs: { all: 'All', recommended: 'Recommended', accounts: 'Accounts', plans: 'Model plans', api: 'API', aggregators: 'Aggregators', local: 'Local' },
     loadFailed: 'Failed to load model connections', loadingAria: 'Loading model providers', connections: 'Connections',
-    retry: 'Select to retry.', empty: 'No model connections yet',
+    retry: 'Select to retry.', empty: 'No model connections yet', connectionRemoved: 'The original account was deleted or removed. Returned to the connection list.',
     emptyHelp: 'Choose a connection method below to begin.', default: 'Default', setDefault: 'Set as default', setDefaultTitle: 'New chats will use this connection', setDefaultPending: 'Setting…', setDefaultFailed: 'Could not set as default', addHelp: 'Choose account sign-in, a model plan, API, aggregator, or local runtime.',
     categoriesAria: 'Model provider categories', searchPlaceholder: 'Search providers', searchAria: 'Search model providers', noMatch: 'No matching providers', clearSearch: 'Clear search',
     createSubtitle: 'After required setup, the connection appears above on the Models page.', connection: 'Model connection',
@@ -367,7 +368,8 @@ const enCopy: ProviderSettingsCopy = {
     logoutTitle: (name: string) => `Sign out of ${name}?`,
   },
   oauthSection: {
-    signedIn: 'Signed in', codexDescription: 'Sign in with a ChatGPT Plus / Pro subscription.', xaiDescription: 'Sign in with SuperGrok or X Premium.',
+    signedIn: 'Signed in', codexDescription: 'Use a ChatGPT Plus / Pro account to add a connection.', xaiDescription: 'Use a SuperGrok or X Premium account to add a connection.',
+    configuredConnections: (count: number) => `${count} ${count === 1 ? 'connection' : 'connections'} configured · Add another account`,
     copilotDescription: 'Import compatible GitHub credentials to connect a Copilot subscription.', serviceUnavailable: 'The sign-in service is temporarily unavailable. Check the network and try again.',
     aria: 'OAuth sign-in',
     staleState: 'OAuth sign-in status could not be refreshed. The last known state is preserved. ',
@@ -378,7 +380,7 @@ const enCopy: ProviderSettingsCopy = {
     reimport: 'Reimport', importCredential: 'Import compatible credentials', verifying: 'Verifying…', reverify: 'Verify again', removing: 'Removing…', removeLocal: 'Remove local sign-in',
     loadingAccount: 'Loading account status…', authorizing: 'Complete sign-in in the browser window.', refreshing: 'Refreshing access token…', refreshTokenFailed: 'Token refresh failed. Sign in again.',
     cardAria: (name: string, status: string | undefined, description: string) => `Open OAuth sign-in: ${name}${status ? `; status: ${status}` : ''}; ${description.replace(/[。.!！？?]+$/u, '')}`,
-    connectTitle: (name: string) => `Connect ${name}`, login: (name: string) => `Sign in to ${name}`, signedOut: (name: string) => `${name} is signed out.`,
+    connectTitle: (name: string) => `Connect ${name}`, addAccountTitle: (name: string) => `Add ${name} account`, login: (name: string) => `Sign in to ${name}`, loginAndAdd: 'Sign in and add', signedOut: (name: string) => `${name} is signed out.`,
     storageFailed: (name: string) => `Could not read local credentials for ${name}. Sign in again.`, providerUnavailable: (name: string) => `${name} is signed in, but the provider status is currently unavailable.`,
   },
 };

@@ -80,7 +80,7 @@ type PanelRoute =
   | { kind: 'list' }
   | { kind: 'catalog' }
   | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
-  | { kind: 'detail'; slug: string };
+  | { kind: 'detail'; connectionId: string };
 
 function backTarget(route: PanelRoute): PanelRoute {
   if (route.kind === 'setup' && route.origin === 'catalog') return { kind: 'catalog' };
@@ -119,29 +119,34 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const addButtonRef = useRef<HTMLButtonElement>(null);
   // Which row the user left the list from, so returning puts focus back where
   // they were rather than on the page's primary action.
-  const listReturnFocusRef = useRef<string | null>(null);
+  const returnFocusRef = useRef<
+    | { level: 'list'; connectionId: string }
+    | { level: 'catalog'; providerType: ProviderType }
+    | null
+  >(null);
   const detailTitleId = useId();
+  const setupTitleId = useId();
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
 
-  async function reload(): Promise<boolean> {
+  async function reload(): Promise<Awaited<ReturnType<ConnectionsBridge['getSnapshot']>> | null> {
     const ticket = ++providersReloadTicketRef.current;
     try {
       const snapshot = await bridge.getSnapshot();
-      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
+      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return null;
       setConnections(snapshot.connections);
       setDefaultSlug(snapshot.defaultConnection);
       setLoadError(null);
       setLoading(false);
-      return true;
+      return snapshot;
     } catch (error) {
-      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
+      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return null;
       const message = providerPanelActionErrorMessage(error, locale);
       setLoadError(message);
       setLoading(false);
       reportHostError(copy.loadFailed, message);
-      return false;
+      return null;
     }
   }
 
@@ -167,9 +172,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
-    if (!connections.some((candidate) => candidate.slug === initialConnectionSlug)) return;
+    const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
+    if (!connection?.connectionId) return;
     initialConnectionDetailOpenedRef.current = true;
-    setRoute({ kind: 'detail', slug: initialConnectionSlug });
+    setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }, [loading, initialConnectionSlug, connections]);
 
   const initialCreateOpenedRef = useRef(false);
@@ -198,18 +204,22 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'list' });
   }
 
-  function openDetail(slug: string) {
-    listReturnFocusRef.current = slug;
-    setRoute({ kind: 'detail', slug });
+  function openDetail(connection: LlmConnection) {
+    if (!connection.connectionId) {
+      reportHostError(copy.loadFailed, copy.connectionRemoved);
+      return;
+    }
+    returnFocusRef.current = { level: 'list', connectionId: connection.connectionId };
+    setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }
 
   function openCatalog() {
-    listReturnFocusRef.current = null;
+    returnFocusRef.current = null;
     setRoute({ kind: 'catalog' });
   }
 
   const selected = route.kind === 'detail'
-    ? connections.find((connection) => connection.slug === route.slug) ?? null
+    ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
 
   // A detail route whose connection vanished (deleted in another window) is an
@@ -223,7 +233,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     isReady: !loading,
     resolveTarget: (current) => {
       const find = (selector: string) => document.querySelector<HTMLElement>(selector);
-      if (current === 'catalog') return find('[data-maka-contract="provider-catalog"] input');
+      if (current === 'catalog') {
+        const target = returnFocusRef.current;
+        returnFocusRef.current = null;
+        return (target?.level === 'catalog'
+          ? find(`[data-provider="${target.providerType}"] button`)
+          : null) ?? find('[data-maka-contract="provider-catalog"] input');
+      }
       if (current === 'setup') {
         return find('[data-maka-contract="provider-setup"] input')
           ?? find('[data-maka-contract="provider-setup"]');
@@ -235,9 +251,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       // survive the levels in between. The row the user came from may be gone —
       // that is exactly what a deletion does — so the primary action is the
       // fallback, not the default.
-      const returnToSlug = listReturnFocusRef.current;
-      listReturnFocusRef.current = null;
-      return (returnToSlug ? find(`[data-connection-slug="${returnToSlug}"] button`) : null)
+      const target = returnFocusRef.current;
+      returnFocusRef.current = null;
+      return (target?.level === 'list'
+        ? find(`[data-connection-id="${target.connectionId}"] button`)
+        : null)
         ?? addButtonRef.current;
     },
   });
@@ -268,7 +286,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             backLabel={copy.backToList}
             logo={<ProviderLogo type={selected.providerType} compact />}
             titleId={detailTitleId}
-            title={selected.name}
+            title={connectionDisplayName(selected, connections)}
             /* The control sits in the slot that shows the state. Setting the
                default connection was reachable only from the command palette,
                while this page displayed a 默认 Badge and offered no way to
@@ -322,7 +340,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             subtitle={connectionSubtitle(selected, locale)}
           />
           <ConnectionDetail
-            key={selected.slug}
+            key={selected.connectionId ?? selected.slug}
             bridge={bridge}
             connection={selected}
             isDefault={selected.slug === defaultSlug}
@@ -344,8 +362,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           />
           <ProviderCatalogPage
             filter={catalogFilter}
+            connections={connections}
             onFilterChange={setCatalogFilter}
-            onPick={(target) => setRoute({ kind: 'setup', target, origin: 'catalog' })}
+            onPick={(target) => {
+              returnFocusRef.current = { level: 'catalog', providerType: target.providerType };
+              setRoute({ kind: 'setup', target, origin: 'catalog' });
+            }}
           />
         </VStack>
       ) : level === 'setup' && route.kind === 'setup' ? (
@@ -354,7 +376,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             onBack={goBack}
             backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
             logo={<ProviderLogo type={route.target.providerType} compact />}
-            title={copy.connectTitle(route.target.name)}
+            titleId={setupTitleId}
+            title={route.target.method === 'account' && route.target.cardId !== 'github-copilot'
+              ? providerCopy.oauthSection.addAccountTitle(route.target.name)
+              : copy.connectTitle(route.target.name)}
             subtitle={route.target.method === 'account'
               ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
               : copy.createSubtitle}
@@ -363,16 +388,35 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             bridge={bridge}
             target={route.target}
             existingSlugs={connections.map((connection) => connection.slug)}
+            labelledBy={setupTitleId}
             onCancel={goBack}
-            onAccountChanged={async () => { await reload(); }}
+            onAccountCreated={async (identity) => {
+              const snapshot = await reload();
+              if (!snapshot || !providersPanelMountedRef.current) return;
+              if (!identity) return;
+              const created = snapshot.connections.find(
+                (connection) => connection.connectionId === identity.connectionId,
+              );
+              if (!created || created.slug !== identity.slug || created.providerType !== identity.providerType) {
+                reportHostError(copy.loadFailed, copy.connectionRemoved);
+                return;
+              }
+              returnFocusRef.current = null;
+              setRoute({ kind: 'detail', connectionId: created.connectionId });
+            }}
             onCreated={async (slug, modelDiscoveryError) => {
-              await reload();
-              if (!providersPanelMountedRef.current) return;
+              const snapshot = await reload();
+              if (!snapshot || !providersPanelMountedRef.current) return;
               // The new connection's detail, not the list: creating it is the
               // start of setting it up, and every next move — pick the default
               // model, enable models, fix the endpoint the discovery error just
               // complained about — is on that page.
-              setRoute({ kind: 'detail', slug });
+              const created = snapshot.connections.find((connection) => connection.slug === slug);
+              if (!created?.connectionId) {
+                reportHostError(copy.loadFailed, copy.connectionRemoved);
+                return;
+              }
+              setRoute({ kind: 'detail', connectionId: created.connectionId });
               if (modelDiscoveryError) {
                 const providerName = providerDisplay(route.target.providerType, locale).name;
                 reportHostError(
@@ -388,6 +432,9 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
         </VStack>
       ) : (
         <>
+          {route.kind === 'detail' && !selected && (
+            <Banner status="warning" role="status" title={copy.connectionRemoved} />
+          )}
           <HStack gap={2} vAlign="center" hAlign="between">
             <HStack gap={2} vAlign="center">
               <Heading level={3}>{copy.connections}</Heading>
@@ -424,15 +471,16 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 const isDefault = connection.slug === defaultSlug;
                 return (
                   <ListItem
-                    key={connection.slug}
+                    key={connection.connectionId ?? connection.slug}
                     className="connectionRow"
+                    data-connection-id={connection.connectionId}
                     data-connection-slug={connection.slug}
                     data-disabled={connection.enabled ? undefined : 'true'}
                     startContent={<ProviderLogo type={connection.providerType} compact />}
                     label={(
                       <HStack gap={2} vAlign="center">
                         {/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/}
-                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connection.name}</span>
+                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connectionDisplayName(connection, connections)}</span>
                         {isDefault && <Badge variant="neutral" label={copy.default} />}
                       </HStack>
                     )}
@@ -448,7 +496,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                         <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
                       </HStack>
                     )}
-                    onClick={() => openDetail(connection.slug)}
+                    onClick={() => openDetail(connection)}
                   />
                 );
               })}
@@ -462,7 +510,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   function chipAriaLabel(connection: LlmConnection, isDefault: boolean): string {
     const provider = providerDisplay(connection.providerType, locale).name;
     const status = connectionChipStatus(connection, locale);
-    return copy.chipAria(connection.name, provider, isDefault, status?.label);
+    return copy.chipAria(
+      connectionDisplayName(connection, connections),
+      provider,
+      isDefault,
+      status?.label,
+    );
   }
 }
 
@@ -472,4 +525,17 @@ function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): str
   const parts = [providerName];
   if (connection.defaultModel) parts.push(connection.defaultModel);
   return parts.join(' · ');
+}
+
+function connectionDisplayName(
+  connection: LlmConnection,
+  connections: readonly LlmConnection[],
+): string {
+  const ambiguous = connections.some(
+    (candidate) =>
+      candidate.connectionId !== connection.connectionId &&
+      candidate.providerType === connection.providerType &&
+      candidate.name === connection.name,
+  );
+  return ambiguous ? `${connection.name} · ${connection.slug}` : connection.name;
 }

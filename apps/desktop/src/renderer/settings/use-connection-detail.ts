@@ -50,7 +50,10 @@ import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow';
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
@@ -62,7 +65,9 @@ import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
-import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
+import {
+  runtimeHostOAuthExistingLoginBridges,
+} from './runtime-host-settings-bridge.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -70,7 +75,8 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 // here; plain API-key providers return null so the notice falls back to
 // prose instead of rendering a dead button.
 export interface OAuthLoginService {
-  bridge: OAuthLoginFlowBridge;
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
   display: { name: string; shortName: string };
   // Codex's device-authorization page requires the user to type the code the
   // flow surfaces as `stateHint` — the verification URL does not embed it, so
@@ -87,13 +93,21 @@ export function oauthLoginServiceFor(
   switch (providerType) {
     case 'openai-codex':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host, connectionId),
+        ...runtimeHostOAuthExistingLoginBridges(
+          window.maka.openAiCodex,
+          host,
+          connectionId,
+        ),
         display: { name: 'OpenAI Codex', shortName: 'Codex' },
         showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host, connectionId),
+        ...runtimeHostOAuthExistingLoginBridges(
+          window.maka.xaiOAuth,
+          host,
+          connectionId,
+        ),
         display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
         showsDeviceCode: false,
       };

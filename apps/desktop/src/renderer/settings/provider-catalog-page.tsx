@@ -34,7 +34,7 @@ import {
   type ProviderCatalogGroup,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
@@ -66,6 +66,12 @@ export interface CatalogFilter {
 
 export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all' };
 
+interface CreatedOAuthConnectionIdentity {
+  connectionId: string;
+  slug: string;
+  providerType: 'openai-codex' | 'xai-oauth';
+}
+
 /**
  * One provider being set up. `credentials` is a form, `account` is a browser
  * login — two bodies of one level, not two levels: they are reached the same
@@ -87,6 +93,7 @@ export type SetupTarget =
  */
 export function ProviderCatalogPage(props: {
   filter: CatalogFilter;
+  connections: readonly LlmConnection[];
   onFilterChange(filter: CatalogFilter): void;
   onPick(target: SetupTarget): void;
 }) {
@@ -96,7 +103,10 @@ export function ProviderCatalogPage(props: {
   const catalogCopy = providerCopy.catalog;
   const { query, category } = props.filter;
   const showsOAuth = category === 'all' || category === 'recommended' || category === 'accounts';
-  const oauth = useOAuthCards({ query: showsOAuth ? query : undefined });
+  const oauth = useOAuthCards({
+    query: showsOAuth ? query : undefined,
+    connections: props.connections,
+  });
 
   // Category is a Selector, not a second TabList: the page header already owns
   // one level of navigation, and six tabs beside a search field made the
@@ -215,17 +225,18 @@ export function ProviderSetupPage(props: {
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
-  onAccountChanged(): Promise<void>;
+  onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
+  labelledBy?: string;
 }) {
   if (props.target.method === 'account') {
     return (
-      <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountChanged} />
+      <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
+        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountCreated} />
       </div>
     );
   }
   return (
-    <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
+    <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
       <AddProviderForm
         key={props.target.providerType}
         bridge={props.bridge}

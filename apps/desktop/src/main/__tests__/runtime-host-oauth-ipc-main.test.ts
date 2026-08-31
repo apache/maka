@@ -167,9 +167,18 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
   const authorization = await invoke(
     handlers,
     'openai-codex:get-auth-url',
-    catalog.connections[0]?.connectionId,
+    { kind: 'existing', connectionId: catalog.connections[0]?.connectionId },
   );
-  assert.deepEqual(authorization, { authRequestId: attemptId, stateHint: 'STATE-HINT' });
+  const expectedConnection = {
+    connectionId: catalog.connections[0]?.connectionId,
+    slug: 'codex-subscription',
+    providerType: provider,
+  };
+  assert.deepEqual(authorization, {
+    authRequestId: attemptId,
+    stateHint: 'STATE-HINT',
+    connection: expectedConnection,
+  });
   assert.deepEqual(opened, ['https://codex.example/authorize']);
   assert.deepEqual(
     await invoke(
@@ -178,7 +187,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
       attemptId,
       'authorization-code#state',
     ),
-    { ok: true },
+    { ok: true, connection: expectedConnection },
   );
   assert.equal(changed, 1);
   assert.deepEqual(catalog.defaultTarget, {
@@ -187,7 +196,11 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
   });
   // No quota: reporting it required the retired provider's own client identity,
   // so the account state carries the runtime state alone.
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-account-state'), {
+  assert.deepEqual(await invoke(
+    handlers,
+    'openai-codex:get-account-state',
+    catalog.connections[0]?.connectionId,
+  ), {
     provider,
     runtimeState: 'authenticated',
   });
@@ -231,7 +244,10 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
   });
 
   assert.deepEqual(
-    await invoke(handlers, 'openai-codex:get-auth-url', xaiConnection.connectionId),
+    await invoke(handlers, 'openai-codex:get-auth-url', {
+      kind: 'existing',
+      connectionId: xaiConnection.connectionId,
+    }),
     {
       ok: false,
       reason: 'unknown',
@@ -240,14 +256,18 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
   );
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:get-account-state', xaiConnection.connectionId),
-    { provider: 'openai-codex', runtimeState: 'not_logged_in' },
+    {
+      ok: false,
+      reason: 'unknown',
+      message: 'OAuth account does not match this provider',
+    },
   );
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:refresh-tokens', xaiConnection.connectionId),
     {
       ok: false,
       reason: 'refresh_failed',
-      message: 'OAuth account is not connected',
+      message: 'OAuth account does not match this provider',
     },
   );
   assert.deepEqual(await invoke(handlers, 'openai-codex:logout', xaiConnection.connectionId), {
@@ -395,9 +415,9 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     isProviderEnabled: () => true,
   });
 
-  const firstAuthorization = invoke(handlers, 'openai-codex:get-auth-url');
+  const firstAuthorization = invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' });
   await firstPresentationPoll;
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' }), {
     ok: false,
     reason: 'unknown',
     message: 'Another OAuth login is already in progress',
@@ -413,6 +433,11 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
   assert.deepEqual(await firstAuthorization, {
     authRequestId: firstAttemptId,
     stateHint: 'FIRST',
+    connection: {
+      connectionId,
+      slug: 'codex-subscription',
+      providerType: provider,
+    },
   });
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:logout', foreignConnection.connectionId),
@@ -425,7 +450,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
   assert.deepEqual(await invoke(handlers, 'openai-codex:logout'), {
     ok: false,
     reason: 'unknown',
-    message: 'Select a specific OAuth account to log out',
+    message: 'Invalid OAuth Connection identity',
   });
   assert.equal(cancels, 0);
   assert.deepEqual(
@@ -435,7 +460,14 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
   assert.equal(cancels, 0);
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:complete-authorization', firstAttemptId),
-    { ok: true },
+    {
+      ok: true,
+      connection: {
+        connectionId,
+        slug: 'codex-subscription',
+        providerType: provider,
+      },
+    },
   );
   assert.equal(cancels, 0);
   assertNoUnexpectedClientCalls();
@@ -475,7 +507,7 @@ test('completion rejects a terminal projection that changes Connection identity'
     isProviderEnabled: () => true,
   });
 
-  await invoke(handlers, 'openai-codex:get-auth-url');
+  await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' });
   assert.deepEqual(await invoke(handlers, 'openai-codex:complete-authorization', attemptId), {
     ok: false,
     reason: 'unknown',
@@ -575,18 +607,34 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     isProviderEnabled: () => true,
   });
 
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', { kind: 'create' }), {
     authRequestId: attemptId,
     stateHint: 'DEVICE-CODE',
+    connection: {
+      connectionId: created.connectionId,
+      slug: created.slug,
+      providerType: provider,
+    },
   });
   assert.deepEqual(
     await invoke(handlers, 'openai-codex:complete-authorization', attemptId, undefined),
-    { ok: true },
+    {
+      ok: true,
+      connection: {
+        connectionId: created.connectionId,
+        slug: created.slug,
+        providerType: provider,
+      },
+    },
   );
   assert.equal(changed, 1);
   assert.deepEqual(fetchedConnectionIds, [created.connectionId]);
   assert.deepEqual(catalog.defaultTarget, { connectionId: created.connectionId, modelId });
-  assert.deepEqual(await invoke(handlers, 'openai-codex:get-account-state'), {
+  assert.deepEqual(await invoke(
+    handlers,
+    'openai-codex:get-account-state',
+    created.connectionId,
+  ), {
     provider,
     runtimeState: 'authenticated',
   });

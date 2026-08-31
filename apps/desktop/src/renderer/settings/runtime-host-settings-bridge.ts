@@ -17,9 +17,16 @@
  * under the License.
  */
 
-import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
+import type {
+  DesktopOAuthLoginTarget,
+  DesktopRuntimeHostRef,
+  MakaBridge,
+} from '../../preload/bridge-contract.js';
 import type { ConnectionsBridge } from './provider-panel-shared.js';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow.js';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow.js';
 
 export type RuntimeHostSettingsConnectionsBridge = ConnectionsBridge & {
   setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
@@ -46,20 +53,62 @@ export function runtimeHostConnectionsBridge(
   };
 }
 
-export function runtimeHostOAuthLoginBridge(
-  bridge: typeof window.maka.openAiCodex | typeof window.maka.xaiOAuth,
+type RuntimeHostOAuthBridge = MakaBridge['openAiCodex'] | MakaBridge['xaiOAuth'];
+
+export function runtimeHostOAuthAuthorizationBridge(
+  bridge: RuntimeHostOAuthBridge,
   host: DesktopRuntimeHostRef,
-  connectionId?: string,
-): OAuthLoginFlowBridge {
+  target: DesktopOAuthLoginTarget,
+): OAuthAuthorizationFlowBridge {
   return {
-    getAuthUrl: () =>
-      bridge.getAuthUrl(host, connectionId) as ReturnType<OAuthLoginFlowBridge['getAuthUrl']>,
+    getAuthUrl: () => bridge.getAuthUrl(host, target),
     openAuthUrl: (authRequestId) => bridge.openAuthUrl(authRequestId, host),
-    completeAuthorization: (authRequestId) =>
-      bridge.completeAuthorization(authRequestId, host),
-    cancelAuthorization: (authRequestId) =>
-      bridge.cancelAuthorization(authRequestId, host),
-    getAccountState: () => bridge.getAccountState(host, connectionId),
+    completeAuthorization: (authRequestId) => bridge.completeAuthorization(authRequestId, host),
+    cancelAuthorization: (authRequestId) => bridge.cancelAuthorization(authRequestId, host),
+  };
+}
+
+export function runtimeHostOAuthAccountBridge(
+  bridge: RuntimeHostOAuthBridge,
+  host: DesktopRuntimeHostRef,
+  connectionId: string,
+): OAuthAccountFlowBridge {
+  return {
+    getAccountState: async () => requireOAuthAccountState(
+      await bridge.getAccountState(host, connectionId),
+    ),
     logout: () => bridge.logout(host, connectionId),
+  };
+}
+
+function requireOAuthAccountState(value: unknown): unknown {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'ok' in value &&
+    value.ok === false &&
+    'message' in value &&
+    typeof value.message === 'string'
+  ) {
+    throw new Error(value.message);
+  }
+  return value;
+}
+
+export function runtimeHostOAuthExistingLoginBridges(
+  bridge: RuntimeHostOAuthBridge,
+  host: DesktopRuntimeHostRef,
+  connectionId: string,
+): {
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
+} {
+  return {
+    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
+      bridge,
+      host,
+      { kind: 'existing', connectionId },
+    ),
+    accountBridge: runtimeHostOAuthAccountBridge(bridge, host, connectionId),
   };
 }
