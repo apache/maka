@@ -619,6 +619,66 @@ test('a damaged projection is repaired, not preserved forever', async () => {
   }
 });
 
+test('rebuilds a nested-malformed v2 projection from the canonical ledger', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200, {
+        requestObservation: requestObservation([
+          {
+            kind: 'tool_schema',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'a'.repeat(64)}`,
+            bytes: 800,
+            label: 'Bash',
+          },
+        ]),
+      }),
+      { durable: true, latestContext: latestContext('attempt-1', 10) },
+    );
+    await writer.repairEventProjection(
+      'session-1',
+      'latest_context',
+      {
+        type: 'latest_context',
+        id: 'latest-context-malformed-v2',
+        runId: 'run-1',
+        sessionId: 'session-1',
+        turnId: 'turn-run-1',
+        ts: 10,
+        data: {
+          ...latestContext('attempt-1', 10).snapshot,
+          composition: { segments: 'not-an-array' },
+        },
+      },
+      { replaceEventId: 'latest-context-attempt-1' },
+    );
+
+    let scanned = 0;
+    const counted = countingStore(createSqliteAgentRunStore(root), () => {
+      scanned += 1;
+    });
+    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(first.status, 'available');
+    if (first.status !== 'available') return;
+    assert.deepEqual(first.composition?.tools, [{ name: 'Bash', bytes: 800 }]);
+    assert.ok(scanned > 0, 'the malformed nested value cannot answer the warm read');
+
+    scanned = 0;
+    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(second.status, 'available');
+    assert.equal(scanned, 0, 'the canonical rebuild repaired the rejected projection');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('an old readable-order projection is upgraded after one cold rebuild', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {

@@ -126,18 +126,117 @@ export function readLatestContextSnapshot(
   event: Pick<AgentRunEvent, 'type' | 'data'> | undefined,
 ): LatestContextSnapshot | undefined {
   if (!event) return undefined;
-  const data = event.data;
-  if (!data || typeof data !== 'object') return undefined;
-  const record = data as Record<string, unknown>;
+  const record = shapedRecord(
+    event.data,
+    ['schemaVersion', 'attemptId', 'providerId', 'modelId', 'completedAt'],
+    ['inputTokens', 'cacheReadInputTokens', 'contextWindow', 'composition', 'compaction'],
+  );
+  if (!record) return undefined;
   if (
     record.schemaVersion !== LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION ||
-    typeof record.attemptId !== 'string' ||
-    record.attemptId.length === 0 ||
-    typeof record.providerId !== 'string' ||
-    typeof record.modelId !== 'string' ||
-    typeof record.completedAt !== 'number'
+    !isBoundedString(record.attemptId, 512) ||
+    !isBoundedString(record.providerId, 512) ||
+    !isBoundedString(record.modelId, 512) ||
+    !isCount(record.completedAt) ||
+    !isOptionalCount(record.inputTokens) ||
+    !isOptionalCount(record.cacheReadInputTokens) ||
+    (record.contextWindow !== undefined &&
+      (!isCount(record.contextWindow) || record.contextWindow === 0)) ||
+    (record.composition !== undefined && !isContextDiagnosticsComposition(record.composition)) ||
+    (record.compaction !== undefined && !isContextDiagnosticsCompaction(record.compaction))
   ) {
     return undefined;
   }
   return record as unknown as LatestContextSnapshot;
+}
+
+function isContextDiagnosticsComposition(value: unknown): value is ContextDiagnosticsComposition {
+  const composition = shapedRecord(
+    value,
+    ['segments'],
+    ['tools', 'remainingTools', 'unlabelledToolBytes'],
+  );
+  if (
+    !composition ||
+    !Array.isArray(composition.segments) ||
+    composition.segments.length > 4 ||
+    !composition.segments.every(isContextDiagnosticsSegment) ||
+    (composition.tools !== undefined &&
+      (!Array.isArray(composition.tools) ||
+        composition.tools.length > 256 ||
+        !composition.tools.every(isContextDiagnosticsTool))) ||
+    (composition.remainingTools !== undefined &&
+      !isContextDiagnosticsRemainder(composition.remainingTools)) ||
+    !isOptionalCount(composition.unlabelledToolBytes)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isContextDiagnosticsSegment(value: unknown): boolean {
+  const segment = shapedRecord(value, ['kind', 'bytes'], []);
+  return Boolean(
+    segment &&
+      (segment.kind === 'system_instructions' ||
+        segment.kind === 'tool_definitions' ||
+        segment.kind === 'messages' ||
+        segment.kind === 'other') &&
+      isCount(segment.bytes),
+  );
+}
+
+function isContextDiagnosticsTool(value: unknown): boolean {
+  const tool = shapedRecord(value, ['name', 'bytes'], []);
+  return Boolean(tool && isBoundedString(tool.name, 512) && isCount(tool.bytes));
+}
+
+function isContextDiagnosticsRemainder(value: unknown): boolean {
+  const remainder = shapedRecord(value, ['count', 'bytes'], []);
+  return Boolean(remainder && isCount(remainder.count) && isCount(remainder.bytes));
+}
+
+function isContextDiagnosticsCompaction(value: unknown): value is ContextDiagnosticsCompaction {
+  const compaction = shapedRecord(
+    value,
+    ['kind', 'phase', 'eventCount', 'turnCount', 'estimatedTokens'],
+    [],
+  );
+  return Boolean(
+    compaction &&
+      compaction.kind === 'history' &&
+      (compaction.phase === 'pre_turn' || compaction.phase === 'mid_turn') &&
+      isCount(compaction.eventCount) &&
+      isCount(compaction.turnCount) &&
+      isCount(compaction.estimatedTokens),
+  );
+}
+
+function shapedRecord(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[],
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const allowed = new Set([...required, ...optional]);
+  if (
+    required.some((key) => !Object.hasOwn(record, key)) ||
+    Object.keys(record).some((key) => !allowed.has(key))
+  ) {
+    return undefined;
+  }
+  return record;
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength;
+}
+
+function isCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isOptionalCount(value: unknown): boolean {
+  return value === undefined || isCount(value);
 }
