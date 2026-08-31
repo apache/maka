@@ -261,7 +261,7 @@ test('renders collapsible project navigation and row actions as sibling controls
 test('omits a zero count on empty projects', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
-      <SessionHistoryList
+      <Rail
         sessions={[]}
         groups={[{ id: project.id, label: project.name, project, sessions: [] }]}
         groupVariant="project"
