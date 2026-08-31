@@ -3467,16 +3467,23 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: [],
       };
     }
-    const priorRuntimeContext = input.runtimeContext.filter(
+    const rawPriorRuntimeContext = input.runtimeContext.filter(
       (event) => event.turnId !== input.turnId,
     );
+    // Everything below reads EFFECTIVE model history: raw events folded through
+    // the durable projection-transition reducer (#4283). Replay, budgeting and
+    // compaction share one input, so no path can resurrect content a committed
+    // transition removed.
+    const preparedContextBudget = await this.compaction.prepareContextBudgetPolicy(
+      rawPriorRuntimeContext,
+      input.turnId,
+    );
+    const priorRuntimeContext = preparedContextBudget.events;
     const projectedMessages = await this.materializePriorMessages(
       scope.imageBudget,
       priorStored,
       buildSteeringSidecar(priorRuntimeContext),
     );
-    const preparedContextBudget =
-      await this.compaction.prepareContextBudgetPolicy(priorRuntimeContext);
     let contextBudget = preparedContextBudget.policy;
     const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
     let runtimeContext = budgeted?.events ?? priorRuntimeContext;

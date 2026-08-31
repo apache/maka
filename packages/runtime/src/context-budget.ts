@@ -40,7 +40,6 @@ export type {
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadFailureReason,
   ToolResultArchiveReadResult,
-  ToolResultArchiveRef,
   ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
 export type { ArchivedToolResultReason } from './tool-result-archive.js';
@@ -48,15 +47,11 @@ export type {
   HistoryCompactionPolicy,
   HistoryCompactionReplayResult,
 } from './history-compaction.js';
-export { ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND } from './active-tool-result-prune.js';
-export type { ActiveArchivedToolResultPlaceholder } from './active-tool-result-prune.js';
-
-import {
-  collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow,
-  pruneStaleToolResultsBeforeCompact,
-  type StaleToolResultPrunePolicy,
-  type StaleToolResultArchiveCandidate,
+import type {
+  StaleToolResultPrunePolicy,
+  StaleToolResultArchiveCandidate,
 } from './tool-result-archive.js';
+import { collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow } from './tool-result-archive-transition.js';
 import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
@@ -144,12 +139,12 @@ export function applyRuntimeEventContextBudget(
     policy?.maxHistoryEstimatedTokens,
     { charsPerToken },
   );
-  const pruned = pruneStaleToolResultsBeforeCompact(
-    compacted.events,
-    policy?.staleToolResultPrune,
-    charsPerToken,
-  );
-  const keptEvents = pruned.events;
+  // Stale Tool Result pruning is no longer a step of the budget: it is a
+  // durable projection transition committed before this projection runs, and
+  // the events arriving here have already been folded through the reducer
+  // (#4283). A second rewrite here could only disagree with the ledger about
+  // what the model is allowed to see.
+  const keptEvents = compacted.events;
   const keptTurnIds = new Set(keptEvents.map((event) => runtimeEventTurnKey(event)));
   const originalTurnIds = new Set(events.map((event) => runtimeEventTurnKey(event)));
 
@@ -166,23 +161,6 @@ export function applyRuntimeEventContextBudget(
     keptEvents: keptEvents.length,
     droppedEvents: Math.max(0, events.length - keptEvents.length),
     ...compacted.diagnosticPatch,
-    ...(pruned.prunedToolResults > 0
-      ? {
-          prunedToolResults: pruned.prunedToolResults,
-          prunedToolResultEstimatedTokensBefore: pruned.estimatedTokensBefore,
-          prunedToolResultEstimatedTokensAfter: pruned.estimatedTokensAfter,
-          archivePlaceholders: pruned.prunedToolResults,
-          archivePlaceholderReasonCounts: {
-            stale_tool_result_pruned_before_compact: pruned.prunedToolResults,
-          },
-        }
-      : {}),
-    ...(pruned.archiveWriteFailures > 0
-      ? {
-          archiveWriteFailures: pruned.archiveWriteFailures,
-          unarchivedToolResults: pruned.archiveWriteFailures,
-        }
-      : {}),
   };
   return {
     events: keptEvents,

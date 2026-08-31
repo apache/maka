@@ -99,6 +99,8 @@ import {
 } from './session-projection-helpers.js';
 import { buildToolsForAgentDefinition } from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
+import { loadModelProjectionTransitionsFromRunLedger } from './model-projection-transition-ledger.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import {
   canReplaceHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -2229,6 +2231,8 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
+    | 'loadModelProjectionTransitions'
+    | 'recordModelProjectionTransition'
     | 'loadTurnRuntimeEvents'
   > {
     const { sessionId } = input;
@@ -2270,6 +2274,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
               checkpoint: HistoryCompactCheckpoint,
               turnId: string,
             ) => this.historyCompactCoordinator.record(sessionId, checkpoint, runFor(turnId)),
+            loadModelProjectionTransitions: () =>
+              loadModelProjectionTransitionsFromRunLedger(this.deps.runStore!, sessionId),
+            recordModelProjectionTransition: (
+              transition: ModelProjectionTransition,
+              turnId: string,
+            ) => {
+              const run = runFor(turnId);
+              if (!run) {
+                return Promise.reject(
+                  new Error('No active AgentRun for model projection transition'),
+                );
+              }
+              return run.recordModelProjectionTransition(transition);
+            },
           }
         : {}),
       ...(this.deps.runtimeEventStore

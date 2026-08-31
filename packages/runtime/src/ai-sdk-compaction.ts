@@ -43,13 +43,10 @@ import type {
 } from './ai-sdk-compaction-contract.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
-  ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildContextBudgetDiagnosticShell,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
-  type ActiveArchivedToolResultPlaceholder,
   type ContextBudgetPolicy,
-  type ToolResultArchiveRef,
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
@@ -79,10 +76,22 @@ import type {
 } from './request-projection.js';
 import {
   rewriteActiveToolResultsInMessages,
-  type ActiveToolResultArchiveCandidate,
+  type ActiveToolResultProjectionSource,
   type ActiveToolResultPruneDiagnosticPatch,
 } from './active-tool-result-prune.js';
-import { collectStaleToolResultArchiveCandidates } from './tool-result-archive.js';
+import {
+  archiveToolResultAsTransition,
+  collectStaleToolResultArchiveCandidates,
+  serializedToolResultProjection,
+  type ToolResultArchiveTransitionServices,
+} from './tool-result-archive-transition.js';
+import { estimateTokens } from './context-budget-helpers.js';
+import {
+  baseToolResultProjection,
+  reduceEffectiveModelProjections,
+} from './model-projection-transition-ledger.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 import type { ContextBudgetExhaustedDetail, SessionEvent } from '@maka/core/events';
 import type { AsyncEventQueue } from './async-queue.js';
@@ -216,6 +225,39 @@ export class AiSdkCompaction {
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
+  }
+
+  /**
+   * Every transition this session has committed, folded by the reducer.
+   *
+   * Read from the durable ledger rather than remembered: a Turn that pruned and
+   * a Turn that replays it may be different processes.
+   */
+  public async loadModelProjectionTransitions(): Promise<ModelProjectionTransition[]> {
+    try {
+      return (await this.input.loadModelProjectionTransitions?.()) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The archive-and-commit writer, or `undefined` when this session cannot make
+   * a lossy model-history change durable. Without both halves — an archive to
+   * put the body in and a ledger to record the replacement — no prune may run.
+   */
+  private toolResultArchiveTransitionServices(
+    turnId: string,
+  ): ToolResultArchiveTransitionServices | undefined {
+    const archive = this.input.toolResultArchive?.services.archiveToolResult;
+    const record = this.input.recordModelProjectionTransition;
+    if (!archive || !record) return undefined;
+    return {
+      sessionId: this.sessionId,
+      archiveToolResult: (candidate) => archive(candidate),
+      recordTransition: (transition) => record(transition, turnId),
+      now: this.now,
+    };
   }
 
   /** Abort an in-flight manual history compaction (called by AiSdkBackend.stop). */
@@ -478,58 +520,87 @@ export class AiSdkCompaction {
     }
   }
 
-  public async prepareContextBudgetPolicy(runtimeContext: readonly RuntimeEvent[]): Promise<{
+  /**
+   * Fold the durable transition ledger onto this session's prior history, and
+   * commit any new stale-result transition the prune policy calls for.
+   *
+   * This is the one seam where raw RuntimeEvents become effective model
+   * history: the caller uses the returned events for replay, budgeting and
+   * compaction alike, so no later stage can read content a transition removed.
+   */
+  public async prepareContextBudgetPolicy(
+    runtimeContext: readonly RuntimeEvent[],
+    turnId: string,
+  ): Promise<{
     policy: ContextBudgetPolicy | undefined;
+    events: RuntimeEvent[];
     diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
   }> {
     const policy = this.input.contextBudget;
-    if (!policy) return { policy };
+    let transitions = await this.loadModelProjectionTransitions();
+    let effective = reduceEffectiveModelProjections(runtimeContext, transitions);
+    if (!policy) return { policy, events: effective.events };
     let nextPolicy = policy;
+    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
 
-    if (policy.staleToolResultPrune?.enabled === true) {
+    const services = this.toolResultArchiveTransitionServices(turnId);
+    if (policy.staleToolResultPrune?.enabled === true && services) {
+      // The decision is taken over EFFECTIVE history, so a result an earlier
+      // Turn already replaced is never re-measured — or re-archived — at the
+      // size it used to have.
       const candidates = collectStaleToolResultArchiveCandidates(
-        runtimeContext,
-        policy?.staleToolResultPrune,
-        policy?.charsPerToken ?? 4,
+        effective.events,
+        policy.staleToolResultPrune,
+        policy.charsPerToken ?? 4,
       );
-      if (candidates.length > 0) {
-        const archiveRefs = new Map<string, ToolResultArchiveRef>();
-        const existingArchiveRefs = nextPolicy.staleToolResultPrune?.archiveRefs;
-        if (Array.isArray(existingArchiveRefs)) {
-          for (const ref of existingArchiveRefs) archiveRefs.set(ref.runtimeEventId, ref);
-        } else if (existingArchiveRefs) {
-          for (const ref of Object.values(existingArchiveRefs))
-            archiveRefs.set(ref.runtimeEventId, ref);
+      const committed: ModelProjectionTransition[] = [];
+      let archiveFailures = 0;
+      let estimatedTokensBefore = 0;
+      let estimatedTokensAfter = 0;
+      for (const candidate of candidates) {
+        const outcome = await archiveToolResultAsTransition(services, {
+          runtimeEventId: candidate.runtimeEventId,
+          turnId: candidate.turnId,
+          toolCallId: candidate.toolCallId,
+          toolName: candidate.toolName,
+          sourceProjection: candidate.sourceProjection,
+          serializedResult: candidate.serializedResult,
+          originalBytes: candidate.originalBytes,
+          originalEstimatedTokens: candidate.originalEstimatedTokens,
+          reason: candidate.reason,
+          result: candidate.result,
+        });
+        if (!outcome) {
+          archiveFailures += 1;
+          continue;
         }
-        for (const candidate of candidates) {
-          const bodySha256 = sha256(candidate.serializedResult);
-          const archived = await Promise.resolve(
-            this.input.toolResultArchive?.services.archiveToolResult({
-              ...candidate,
-              sessionId: this.sessionId,
-              bodySha256,
-            }),
-          ).catch(() => undefined);
-          if (!archived?.artifactId) continue;
-          archiveRefs.set(candidate.runtimeEventId, {
-            runtimeEventId: candidate.runtimeEventId,
-            toolCallId: candidate.toolCallId,
-            toolName: candidate.toolName,
-            artifactId: archived.artifactId,
-            bodySha256,
-            originalEstimatedTokens: candidate.originalEstimatedTokens,
-            originalBytes: candidate.originalBytes,
-            rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
-            reason: candidate.reason,
-          });
-        }
-
-        nextPolicy = {
-          ...nextPolicy,
-          staleToolResultPrune: {
-            ...nextPolicy.staleToolResultPrune!,
-            archiveRefs: [...archiveRefs.values()],
-          },
+        committed.push(outcome.transition);
+        estimatedTokensBefore += candidate.originalEstimatedTokens;
+        estimatedTokensAfter += estimateTokens(
+          serializedToolResultProjection(outcome.transition.replacement).length,
+          policy.charsPerToken ?? 4,
+        );
+      }
+      if (committed.length > 0) {
+        transitions = [...transitions, ...committed];
+        effective = reduceEffectiveModelProjections(runtimeContext, transitions);
+      }
+      if (committed.length > 0 || archiveFailures > 0) {
+        diagnosticPatch = {
+          ...(committed.length > 0
+            ? {
+                prunedToolResults: committed.length,
+                prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
+                prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
+                archivePlaceholders: committed.length,
+                archivePlaceholderReasonCounts: {
+                  stale_tool_result_pruned_before_compact: committed.length,
+                },
+              }
+            : {}),
+          ...(archiveFailures > 0
+            ? { archiveWriteFailures: archiveFailures, unarchivedToolResults: archiveFailures }
+            : {}),
         };
       }
     }
@@ -553,7 +624,11 @@ export class AiSdkCompaction {
         historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
       };
     }
-    return { policy: nextPolicy };
+    return {
+      policy: nextPolicy,
+      events: effective.events,
+      ...(diagnosticPatch ? { diagnosticPatch } : {}),
+    };
   }
 
   public buildActiveToolResultPruneProjection(
@@ -563,8 +638,49 @@ export class AiSdkCompaction {
   ): RequestProjectionStage | undefined {
     const policy = this.input.contextBudget?.activeToolResultPrune;
     if (policy?.enabled !== true) return undefined;
+    const services = this.toolResultArchiveTransitionServices(turnId);
+    // No durable ledger, no lossy rewrite. The old per-Turn placeholder map let
+    // this run prune content that the NEXT request would have shown again.
+    if (!services || !this.input.loadTurnRuntimeEvents) return undefined;
 
-    const archivedPlaceholders = new Map<string, ActiveArchivedToolResultPlaceholder>();
+    // Read-through cache of what this run has already committed for a target,
+    // so step N+1 chains onto step N's transition instead of racing it. Derived
+    // state only: a restart rebuilds the same answer from the ledger.
+    const committed = new Map<
+      string,
+      { projection: DurableToolResultProjection; transitionId: string }
+    >();
+    let turnEvents: RuntimeEvent[] | undefined;
+    const resolveProjection = async (
+      toolCallId: string,
+    ): Promise<ActiveToolResultProjectionSource | undefined> => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (!turnEvents || attempt === 1) {
+          try {
+            turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);
+          } catch {
+            return undefined;
+          }
+        }
+        const event = turnEvents.find(
+          (candidate) =>
+            candidate.partial !== true &&
+            candidate.content?.kind === 'function_response' &&
+            candidate.content.id === toolCallId,
+        );
+        if (!event || event.content?.kind !== 'function_response') continue;
+        const projection = baseToolResultProjection(event);
+        if (!projection) return undefined;
+        return {
+          runtimeEventId: event.id,
+          turnId: event.turnId,
+          toolName: event.content.name,
+          projection,
+        };
+      }
+      return undefined;
+    };
+
     return async (options) => {
       const eligibleToolCallIds = collectPrunableCompletedStepToolCallIds(
         options.completedSteps,
@@ -586,16 +702,9 @@ export class AiSdkCompaction {
             stepNumber,
           })),
         ),
-        archivedPlaceholders,
-        archiveToolResult: async (candidate) => {
-          return await Promise.resolve(
-            this.input.toolResultArchive?.services.archiveToolResult({
-              ...candidate,
-              sessionId: this.sessionId,
-              runtimeEventId: candidate.runtimeEventId ?? activeToolResultArchiveKey(candidate),
-            }),
-          );
-        },
+        resolveProjection,
+        transitions: services,
+        committed,
       });
       if (hasActiveToolResultPruneDiagnosticPatch(rewritten.diagnosticPatch)) {
         onDiagnosticPatch?.(rewritten.diagnosticPatch);
@@ -1394,12 +1503,6 @@ function mergeCountsInto(
 }
 
 // -- moved helpers (prepare-step / signature / prune) ------------------------
-
-function activeToolResultArchiveKey(
-  candidate: ActiveToolResultArchiveCandidate & { bodySha256: string },
-): string {
-  return `active:${candidate.turnId}:${candidate.toolCallId}:${candidate.bodySha256}`;
-}
 
 /**
  * Tool results from the newest completed step have not crossed the provider

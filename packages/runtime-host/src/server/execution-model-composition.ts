@@ -432,6 +432,8 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         summarizeHistoryCompact,
         historyCompactRoute,
         recordHistoryCompactCheckpoint: input.context.recordHistoryCompactCheckpoint,
+        loadModelProjectionTransitions: input.context.loadModelProjectionTransitions,
+        recordModelProjectionTransition: input.context.recordModelProjectionTransition,
         loadTurnRuntimeEvents: input.context.loadTurnRuntimeEvents,
         allowMidTurnHistoryCompaction: input.context.allowMidTurnHistoryCompaction,
         recordRunTrace: input.context.recordRunTrace,

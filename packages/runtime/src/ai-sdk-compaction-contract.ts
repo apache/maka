@@ -20,9 +20,9 @@
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
-import type { ActiveToolResultArchiveCandidate } from './active-tool-result-prune.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
 import type {
   HistoryCompactCheckpoint,
@@ -83,6 +83,11 @@ export type HistoryCompactCheckpointRecorder = (
   checkpoint: HistoryCompactCheckpoint,
   turnId: string,
 ) => void | Promise<void>;
+export type ModelProjectionTransitionLoader = () => Promise<ModelProjectionTransition[]>;
+export type ModelProjectionTransitionLedgerRecorder = (
+  transition: ModelProjectionTransition,
+  turnId: string,
+) => Promise<void>;
 /** Provider and persistence capabilities used by the compaction collaborator. */
 export interface AiSdkCompactionCapabilities {
   connection: RuntimeExecutionConnection;
@@ -107,6 +112,14 @@ export interface AiSdkCompactionCapabilities {
   historyCompactRoute?: HistoryCompactRoute;
   /** Durable recorder for accepted checkpoints; persistence precedes projection. */
   recordHistoryCompactCheckpoint?: HistoryCompactCheckpointRecorder;
+  /**
+   * Session-scoped read of every committed model-projection transition (#4283).
+   * Absent means this session cannot make a lossy model-history change durable,
+   * and therefore must not make one at all.
+   */
+  loadModelProjectionTransitions?: ModelProjectionTransitionLoader;
+  /** Durable append for one transition; persistence precedes model-visible loss. */
+  recordModelProjectionTransition?: ModelProjectionTransitionLedgerRecorder;
   /**
    * Durable read of the given turn's persisted RuntimeEvents from the
    * authoritative run ledger. Mid-turn capacity compaction derives its
