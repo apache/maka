@@ -22,7 +22,7 @@ import { type BotChannelSettings, type BotProvider } from '@maka/core/bot-chat-s
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { WebClient } from '@slack/web-api';
 import type { BotTestResult } from './types.js';
-import { proxiedFetch } from './proxied-fetch.js';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 import {
   normalizeWechatIlinkBaseUrl,
   testWechatBridge,

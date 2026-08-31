@@ -28,7 +28,7 @@ import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
-import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { type ProxiedFetchTransport } from '@maka/network/scoped-fetch-transport';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
   type RuntimePolicyCredentialMaterial,

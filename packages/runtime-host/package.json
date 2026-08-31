@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@maka/core": "0.1.0",
+    "@maka/network": "0.1.0",
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
     "ws": "^8.21.3",

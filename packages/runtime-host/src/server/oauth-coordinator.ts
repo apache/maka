@@ -18,7 +18,7 @@
  */
 
 import { OAuthTokenEndpointError } from '@maka/runtime/oauth-login';
-import { createProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { createProxiedFetchTransport } from '@maka/network/scoped-fetch-transport';
 import {
   exchangeCodexDeviceAuthorizationCode,
   pollCodexDeviceAuthorization,

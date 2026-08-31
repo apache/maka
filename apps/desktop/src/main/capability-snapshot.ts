@@ -36,7 +36,7 @@ import {
 } from '@maka/core/capabilities';
 import { type AppSettings } from '@maka/core/settings';
 import type { CuBackendId } from '@maka/computer-use';
-import type { BotStatus } from '@maka/runtime/bots';
+import type { BotStatus } from '@maka/bots';
 import type { computerUseServiceHealth } from './computer-use-host.js';
 import {
   mapMediaAccessStatus,

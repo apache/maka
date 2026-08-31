@@ -44,7 +44,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import {
   generateToolFreeModelCall,
   generateProviderPrefixModelCall,

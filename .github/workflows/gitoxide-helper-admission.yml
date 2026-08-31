@@ -111,6 +111,7 @@ jobs:
       - name: Build the helper invocation owner
         run: >-
           npm --workspace @maka/core run build &&
+          npm --workspace @maka/network run build &&
           npm --workspace @maka/storage run build &&
           npm --workspace @maka/runtime run build &&
           npm --workspace @maka/runtime-host run build

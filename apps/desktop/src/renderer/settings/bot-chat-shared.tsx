@@ -19,7 +19,7 @@
 
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
 import type { UiLocale } from '@maka/core/ui-locale';
-import type { BotStatus } from '@maka/runtime/bots';
+import type { BotStatus } from '@maka/bots';
 import { BotBrandLogo as BotBrandMark } from '@maka/ui';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
 

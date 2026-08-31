@@ -53,7 +53,7 @@ import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime'
 import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import { type ScannedSkill } from '@maka/runtime/skills';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { resolveTurnShellPlan, ShellPreferenceError } from '@maka/runtime/shell-detect';

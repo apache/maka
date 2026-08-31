@@ -37,7 +37,7 @@ import type {
   BotStatus,
   SendCapable,
 } from './types.js';
-import { proxiedFetch } from './proxied-fetch.js';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 
 const TELEGRAM_POLL_TIMEOUT_S = 15;
 const TELEGRAM_REQUEST_TIMEOUT_MS = 10_000;

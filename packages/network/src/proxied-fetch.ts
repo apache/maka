@@ -18,10 +18,10 @@
  */
 
 import { fetch, type Dispatcher, type RequestInit as UndiciRequestInit } from 'undici';
-import { matchesBypassList } from '../network/bypass-matcher.js';
-import { buildProxyDispatcher } from '../network/proxy-dispatcher.js';
-import { resolveActiveProxy } from '../network/active-proxy-state.js';
-import { FETCH_PROXY_SNAPSHOT } from '../network/scoped-fetch-transport.js';
+import { matchesBypassList } from './bypass-matcher.js';
+import { buildProxyDispatcher } from './proxy-dispatcher.js';
+import { resolveActiveProxy } from './active-proxy-state.js';
+import { FETCH_PROXY_SNAPSHOT } from './scoped-fetch-transport.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 

@@ -198,7 +198,7 @@ import type {
   AgentGraphClientSnapshotOptions,
   AgentGraphOperatorInspection,
 } from '@maka/runtime/stream-graph-read-model';
-import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/runtime/bots';
+import type { BotStatus, WechatBridgeQrCodeResult } from '@maka/bots';
 import type { ShellRunPtyDataEvent, ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
 import type { BundledSkillCatalogEntry, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry } from '@maka/ui';
 import type { ConfigCategory } from '@maka/storage/config-transfer';

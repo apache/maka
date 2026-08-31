@@ -25,7 +25,7 @@ import {
   type BotOnboardingProvider,
 } from '@maka/core/bot-onboarding';
 import { type BotChannelSettings, type BotProvider, type BotReadinessState } from '@maka/core/bot-chat-settings';
-import type { BotStatus } from '@maka/runtime/bots';
+import type { BotStatus } from '@maka/bots';
 import { MAX_ALLOWED_USER_IDS, parseAllowedUserIdsFromText } from '@maka/core/settings';
 import { Card, MetadataList, MetadataListItem, SegmentedControl, SegmentedControlItem, StatusDot, Text, VStack } from '@astryxdesign/core';
 import {

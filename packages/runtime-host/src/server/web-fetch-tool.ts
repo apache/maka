@@ -23,7 +23,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';

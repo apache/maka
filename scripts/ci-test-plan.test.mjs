@@ -96,6 +96,44 @@ test('runtime changes retain the dedicated Runtime Host lane', () => {
   assert.deepEqual(plan.standardWorkspaces, ['packages/runtime', 'packages/cli', 'apps/desktop']);
 });
 
+test('bot delivery stays outside the runtime and CLI dependency closures', () => {
+  for (const dir of ['packages/runtime', 'packages/runtime-host', 'packages/cli']) {
+    const closure = dependencyClosure([dir]);
+    assert.ok(closure.includes('packages/network'), `${dir}: shared network transport`);
+    assert.ok(!closure.includes('packages/bots'), `${dir}: must not install bot bridges`);
+  }
+  for (const dir of ['packages/bots', 'packages/network']) {
+    const closure = dependencyClosure([dir]);
+    assert.ok(!closure.includes('packages/runtime'), `${dir}: must not depend on runtime`);
+    assert.ok(!closure.includes('packages/runtime-host'), `${dir}: must not depend on Host`);
+  }
+});
+
+test('bot changes select their consumer without dragging in runtime tests', () => {
+  const plan = planTests(['packages/bots/src/bot-registry.ts'], {
+    graph: loadWorkspaceGraph(),
+  });
+  assert.deepEqual(plan.workspaces, ['packages/bots', 'apps/desktop']);
+  assert.equal(plan.cliPackage, false);
+});
+
+test('shared transport changes select both bot and runtime consumers and CLI packaging', () => {
+  const plan = planTests(['packages/network/src/proxied-fetch.ts'], {
+    graph: loadWorkspaceGraph(),
+  });
+  for (const dir of [
+    'packages/network',
+    'packages/bots',
+    'packages/runtime',
+    'packages/runtime-host',
+    'packages/cli',
+    'apps/desktop',
+  ]) {
+    assert.ok(plan.workspaces.includes(dir), dir);
+  }
+  assert.equal(plan.cliPackage, true);
+});
+
 test('CLI release inputs select installed-package validation', () => {
   const plan = planTests(['packages/runtime/src/runtime.ts'], { graph });
 

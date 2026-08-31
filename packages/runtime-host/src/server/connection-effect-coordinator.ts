@@ -29,7 +29,7 @@ import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
   type ConnectionEffectProxySnapshot,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import { createRequestCustomizationFetch } from '@maka/runtime/request-customization-fetch';
 import { isOAuthSubscriptionProvider } from '@maka/runtime/subscription-credentials';
 import { runConnectionModelDiscoveryEffect } from '@maka/runtime/model-fetcher';

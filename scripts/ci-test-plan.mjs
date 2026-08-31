@@ -131,6 +131,7 @@ const CLI_PACKAGE_WORKSPACES = [
   'packages/core',
   'packages/eval',
   'packages/mcp',
+  'packages/network',
   'packages/runtime',
   'packages/runtime-host',
   'packages/storage',

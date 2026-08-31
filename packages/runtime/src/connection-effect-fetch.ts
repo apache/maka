@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { proxiedFetch, type ProxiedFetchInit } from './bots/proxied-fetch.js';
+import { proxiedFetch, type ProxiedFetchInit } from '@maka/network/proxied-fetch';
 import { ConnectionEffectInvalidResponseError } from './connection-effect-outcome.js';
 
 export type ConnectionEffectFetch = typeof globalThis.fetch;

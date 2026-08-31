@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { BotIncomingMessage } from '@maka/runtime/bots';
+import type { BotIncomingMessage } from '@maka/bots';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,

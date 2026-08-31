@@ -41,7 +41,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';

@@ -59,8 +59,15 @@ flowchart LR
 - Desktop main `BotOnboardingService`：session authority、HTTP polling、credential persistence、rollback 和 runtime effect。
 - Desktop preload：暴露 narrow start/poll/cancel/open API，不暴露任意 HTTP 或 provider response。
 - Renderer modal：只显示 QR、状态、非敏感 identity 和操作按钮。
-- `@maka/runtime/bots`：credential 生效后的长连接、消息映射、allowlist 和发送能力。
+- `@maka/bots`：credential 生效后的长连接、消息映射、allowlist 和发送能力。
+- `@maka/network`：共享 HTTP transport、代理解析、dispatcher 和代理状态；bots 与 runtime 都依赖它，它不依赖二者。
 - `SettingsStore.updateIf`：把 compare 与 write 放进同一 write queue，为取消 rollback 提供原子 compare-and-set。
+
+`@maka/bots` 不依赖 runtime，也不直接创建或管理 Session。Desktop 通过
+`BotRegistry` 的 `onIncomingMessage` 回调连接 Runtime Host，并把回复交给 bot bridge。
+旧的 `@maka/runtime/bots` 入口已移除，仓库内调用方统一导入 `@maka/bots`；
+`proxiedFetch` 从 `@maka/network/proxied-fetch` 导入，模型连接使用
+`@maka/network/scoped-fetch-transport`。这只调整代码依赖，不改变历史会话或持久化格式。
 
 ## 3. Provider flow
 

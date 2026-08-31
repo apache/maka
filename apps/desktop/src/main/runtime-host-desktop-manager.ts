@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { BotIncomingMessage } from '@maka/runtime/bots';
+import type { BotIncomingMessage } from '@maka/bots';
 import {
   abortable,
   RuntimeHostOperationError,

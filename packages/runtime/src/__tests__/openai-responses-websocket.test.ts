@@ -30,7 +30,7 @@ import {
   OPENAI_RESPONSES_LANE_HEADER,
   webSocketProxyAgent,
 } from '../openai-responses-websocket.js';
-import { createProxiedFetchTransport } from '../network/scoped-fetch-transport.js';
+import { createProxiedFetchTransport } from '@maka/network/scoped-fetch-transport';
 import { classifyError, providerRetryMetadata } from '../provider-error-classification.js';
 
 const disposers: Array<() => Promise<void>> = [];

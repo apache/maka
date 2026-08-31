@@ -36,7 +36,7 @@
  */
 
 import { GatewayBridgeBase } from './gateway-bridge-base.js';
-import { proxiedFetch } from './proxied-fetch.js';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 import type { BotSendOptions, SendCapable } from './types.js';
 import type { WsCloseDecision } from './ws-bridge-base.js';
 

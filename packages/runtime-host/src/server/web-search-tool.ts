@@ -22,7 +22,7 @@ import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
-} from '@maka/runtime/network/scoped-fetch-transport';
+} from '@maka/network/scoped-fetch-transport';
 import { queryTavily } from '@maka/runtime/tavily-search';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { WebSearchResponse } from '@maka/core/web-search';

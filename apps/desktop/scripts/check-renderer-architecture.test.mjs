@@ -1118,6 +1118,52 @@ describe('renderer architecture checker fixtures', () => {
     );
   });
 
+  it('allows a count-neutral external dependency rename paid by removed dependency debt', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(`
+        import { botStatus } from '@maka/bots';
+        export const legacySessionHelper = botStatus;
+      `),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(
+          desktopRoot,
+          transitiveAppShellSeedConfig(),
+        );
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {
+          '@maka/runtime/bots': 1,
+        };
+
+        assert.deepEqual(violationsFor(desktopRoot, currentConfig, baseConfig), []);
+      },
+    );
+  });
+
+  it('rejects an external dependency migration not paid by same-scope removed debt', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(`
+        import { run } from '@slack/web-api';
+        export const legacySessionHelper = run;
+      `),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(
+          desktopRoot,
+          transitiveAppShellSeedConfig(),
+        );
+        const baseConfig = structuredClone(currentConfig);
+        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {
+          '@maka/runtime/bots': 1,
+        };
+
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: new dependency debt @slack\/web-api$/u,
+        );
+      },
+    );
+  });
+
   it('rejects a stale AppShell closure ledger when another legacy file becomes reachable', async () => {
     const newlyReachablePath = 'src/renderer/legacy-session-store.ts';
     await withDesktopFixture(

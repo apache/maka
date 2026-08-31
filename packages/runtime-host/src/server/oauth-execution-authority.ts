@@ -29,7 +29,7 @@ import {
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
 import { openAiCodexHeaders } from '@maka/runtime/subscription-auth';
-import { type ProxiedFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { type ProxiedFetchTransport } from '@maka/network/scoped-fetch-transport';
 import {
   authenticateRuntimePolicyStoresWriter,
   RuntimePolicyStoreError,

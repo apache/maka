@@ -20,7 +20,7 @@
 import type { ReactNode } from 'react';
 import { ICON_SIZE, ChevronRight } from '@maka/ui/icons';
 import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settings';
-import type { BotStatus } from '@maka/runtime/bots';
+import type { BotStatus } from '@maka/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
 import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';

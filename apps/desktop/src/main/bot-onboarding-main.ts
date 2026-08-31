@@ -30,8 +30,8 @@ import type {
 } from '@maka/core/bot-onboarding';
 import { generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import { isBotOnboardingBrand, isBotOnboardingProvider } from '@maka/core/bot-onboarding';
-import type { BotRegistry } from '@maka/runtime/bots';
-import { proxiedFetch } from '@maka/runtime/bots';
+import type { BotRegistry } from '@maka/bots';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import { createQQBindTask, pollQQBindTask } from './qq-bot-scan-login.js';
 import { fetchWeChatQrcode, pollWeChatQrcodeStatus } from './wechat-scan-login.js';

@@ -27,10 +27,10 @@ import {
   CONNECTION_EFFECT_JSON_BODY_MAX_BYTES,
   ConnectionEffectFetchError,
   fetchForConnectionEffect,
-} from '../../connection-effect-fetch.js';
-import { runConnectionModelDiscoveryEffect } from '../../model-fetcher.js';
-import { runConnectionTestEffect, testConnection } from '../../test-connection.js';
-import { createConnectionEffectFetchTransport } from '../scoped-fetch-transport.js';
+} from '../connection-effect-fetch.js';
+import { runConnectionModelDiscoveryEffect } from '../model-fetcher.js';
+import { runConnectionTestEffect, testConnection } from '../test-connection.js';
+import { createConnectionEffectFetchTransport } from '@maka/network/scoped-fetch-transport';
 
 describe('connection effect network transport', () => {
   test('concurrent discovery uses immutable per-effect proxy snapshots', async () => {

@@ -32,7 +32,7 @@ import {
   maskSensitive,
   type TestProxyResult,
 } from "@maka/core/settings/network-settings";
-import type { BotTestResult } from '@maka/runtime/bots';
+import type { BotTestResult } from '@maka/bots';
 import { collectPersonalizationWarnings } from '@maka/runtime/system-prompt/personalization-prompt';
 import { getTavilyCredentialSource } from "./web-search/credentials.js";
 

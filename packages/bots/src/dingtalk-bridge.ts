@@ -43,7 +43,7 @@
  * from `appKey` (DingTalk's chatbot SDK uses appKey as robotCode).
  */
 
-import { proxiedFetch } from './proxied-fetch.js';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 import type { BotSendOptions, SendCapable } from './types.js';
 import { WsBridgeBase, type WsCloseDecision } from './ws-bridge-base.js';
 

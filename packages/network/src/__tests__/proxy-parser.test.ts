@@ -18,21 +18,21 @@
  */
 
 import { describe, test } from 'node:test';
-import { expect } from '../../test-helpers.js';
+import assert from 'node:assert/strict';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { buildProxyUrl, parseProxyConfig } from '../proxy-parser.js';
 
 describe('parseProxyConfig', () => {
   test('coerces type and port safely', () => {
-    expect(parseProxyConfig({ type: 'ftp', port: '7890' })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'ftp', port: '7890' }), {
       type: 'http',
       port: 7890,
     });
-    expect(parseProxyConfig({ type: 'socks5', port: 0 })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'socks5', port: 0 }), {
       type: 'socks5',
       port: 8080,
     });
-    expect(parseProxyConfig({ type: 'https', port: 999_999 })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'https', port: 999_999 }), {
       type: 'https',
       port: 8080,
     });
@@ -44,15 +44,15 @@ describe('parseProxyConfig', () => {
       password: '',
       bypassList: ['localhost', 42, '', '127.0.0.1'],
     });
-    expect(proxy.username).toBeUndefined();
-    expect(proxy.password).toBeUndefined();
-    expect(proxy.bypassList).toEqual(['localhost', '127.0.0.1']);
+    assert.equal(proxy.username, undefined);
+    assert.equal(proxy.password, undefined);
+    assert.deepEqual(proxy.bypassList, ['localhost', '127.0.0.1']);
   });
 });
 
 describe('buildProxyUrl', () => {
   test('builds proxy URLs with encoded credentials', () => {
-    expect(
+    assert.equal(
       buildProxyUrl({
         ...PROXY_DEFAULTS,
         enabled: true,
@@ -62,11 +62,13 @@ describe('buildProxyUrl', () => {
         username: 'u',
         password: 'p@ss',
       }),
-    ).toBe('https://u:p%40ss@proxy.example.com:443');
+      'https://u:p%40ss@proxy.example.com:443',
+    );
   });
 
   test('brackets IPv6 hosts', () => {
-    expect(buildProxyUrl({ ...PROXY_DEFAULTS, enabled: true, host: '::1', port: 7890 })).toBe(
+    assert.equal(
+      buildProxyUrl({ ...PROXY_DEFAULTS, enabled: true, host: '::1', port: 7890 }),
       'http://[::1]:7890',
     );
   });

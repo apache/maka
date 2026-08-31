@@ -157,6 +157,12 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await expect(composer).toHaveText('');
 
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  // An empty editor only proves that the draft moved to the new-task slot;
+  // wait for the Send gate before Enter so the submission is not attempted
+  // while sending is still disabled.
+  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
+    timeout: 20_000,
+  });
   await composer.press('Enter');
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting',

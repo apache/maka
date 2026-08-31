@@ -19,7 +19,6 @@
 
 import type { ProxySettings } from '@maka/core/settings/network-settings';
 import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
-import type { ConnectionEffectFetch } from '../connection-effect-fetch.js';
 import { matchesBypassList } from './bypass-matcher.js';
 import { buildProxyDispatcher } from './proxy-dispatcher.js';
 
@@ -36,7 +35,7 @@ export interface ConnectionEffectProxySnapshot {
 }
 
 export interface ConnectionEffectFetchTransport {
-  readonly fetch: ConnectionEffectFetch;
+  readonly fetch: typeof globalThis.fetch;
   close(): Promise<void>;
 }
 
