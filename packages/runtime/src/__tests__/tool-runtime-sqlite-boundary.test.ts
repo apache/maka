@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
@@ -734,12 +735,6 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1040,15 +1041,6 @@ function configStoreHarness(get: () => Promise<McpConfigFile>) {
       apply(await get()),
   };
 }
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function deferredValue<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((settle) => {

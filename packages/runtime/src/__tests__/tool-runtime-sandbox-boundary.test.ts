@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1073,12 +1074,6 @@ function header(cwd = process.cwd()): SessionHeader {
     schemaVersion: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 async function waitForBoundaryRequest(
   events: SessionEvent[],
 ): Promise<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
@@ -1088,15 +1083,4 @@ async function waitForBoundaryRequest(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error('Sandbox boundary request was not emitted');
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T | PromiseLike<T>) => void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }

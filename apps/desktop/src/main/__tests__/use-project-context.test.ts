@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -37,15 +38,6 @@ const NO_PROJECT_CAPABILITIES = {
   setLocalDefault: false,
   viewClientPath: false,
 } as const;
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 test('discards a pending Project projection after the default Host changes', async () => {
   const projectContext = await importProjectContext();
   const { root } = installReactRenderer();

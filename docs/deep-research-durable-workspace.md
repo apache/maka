@@ -333,8 +333,8 @@ The focused tests cover:
 Run:
 
 ```sh
-npm --workspace @maka/core test
-npm --workspace @maka/storage test
-npm --workspace @maka/runtime test
-npm --workspace @maka/desktop test
+npm --workspace @maka/core run test:dist
+npm --workspace @maka/storage run test:dist
+npm --workspace @maka/runtime run test:dist
+npm --workspace @maka/desktop run test:dist
 ```

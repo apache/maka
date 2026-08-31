@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -49,17 +50,6 @@ const originalGlobals = {
 let mountedRoot: Root | undefined;
 const SOURCE_SESSION = session('source-session');
 type SideChatStopTarget = Parameters<WorkbarServices['sideChat']['stop']>[1];
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
-}
-
 type QueueUpdate = Extract<SessionEvent, { type: 'queue_update' }>;
 type QueueEntry = NonNullable<QueueUpdate['steeringEntries']>[number];
 

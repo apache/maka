@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -734,15 +735,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
 async function waitForGoalRun(
   fixture: Fixture,
   goalId: string,

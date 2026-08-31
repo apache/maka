@@ -120,7 +120,6 @@
     "build": "tsc -p tsconfig.json && node scripts/build-filesystem-worker.mjs",
     "pretypecheck": "npm --prefix ../.. run sync:model-metadata",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

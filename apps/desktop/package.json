@@ -34,8 +34,6 @@
     "package:windows-x64": "electron-builder --config electron-builder.config.mjs --win --x64 --publish never",
     "typecheck": "tsc -p tsconfig.preload.json --noEmit && tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.storybook.json --noEmit",
     "typecheck:stories": "tsc -p tsconfig.storybook.json --noEmit",
-    "pretest": "npm run build:workspace-deps",
-    "test": "npm run clean:main && npm run build:main && node --test \"dist/main/**/*.test.js\"",
     "test:dist": "node --test \"dist/main/**/*.test.js\" scripts/dev-app-runtime.test.mjs",
     "e2e": "npm run build:with-deps && playwright test --config e2e/playwright.config.ts",
     "build:with-deps": "npm run build:workspace-deps && npm run build",

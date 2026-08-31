@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, rename, rm } from 'node:fs/promises';
@@ -920,18 +921,6 @@ function requirePricingPage(
   if (result.kind !== 'page') throw new Error('Pricing revision changed during page read');
   return result;
 }
-
-function deferred(): {
-  readonly promise: Promise<void>;
-  resolve(): void;
-} {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function usageRecord(
   id: string,
   ts: number,

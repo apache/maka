@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1535,18 +1536,6 @@ function recordingTransport(onClose: () => void): ConnectionEffectFetchTransport
     },
   };
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function assertRedacted(value: unknown, forbidden: readonly string[]): void {
   const serialized = JSON.stringify(value);
   for (const text of forbidden) assert.equal(serialized.includes(text), false);
