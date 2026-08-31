@@ -275,6 +275,74 @@
   padding-inline-start: var(--spacing-2) !important;
 }
 
+/*
+ * Project/task hover details. Astryx owns the floating surface, top-layer
+ * positioning, radius, padding, shadow, and open/close motion. This content
+ * only defines the reading hierarchy inside that established component.
+ */
+.maka-sidebar-hover-card {
+  font: var(--maka-text-supporting);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  width: min(304px, calc(100vw - var(--space-6)));
+  min-width: 248px;
+  text-align: start;
+}
+
+.maka-sidebar-hover-card-title {
+  font: var(--maka-text-heading-4);
+  min-width: 0;
+  color: var(--foreground);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.maka-sidebar-hover-card-preview {
+  color: var(--foreground-secondary);
+  line-height: var(--leading-relaxed);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.maka-sidebar-hover-card-preview[data-empty="true"],
+.maka-sidebar-hover-card-updated {
+  color: var(--muted-foreground);
+}
+
+.maka-sidebar-hover-card-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5) var(--space-1);
+  color: var(--foreground-secondary);
+}
+
+.maka-sidebar-hover-card-path {
+  font: var(--maka-text-code);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-sidebar-hover-card-updated {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-0-5);
+}
+
+.maka-sidebar-hover-card-updated small {
+  font: inherit;
+}
+
 .maka-session-row-end,
 .maka-project-item-end {
   display: inline-flex;
