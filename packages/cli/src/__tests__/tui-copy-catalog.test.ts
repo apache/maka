@@ -34,6 +34,7 @@ describe('TUI copy resources', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       assert.ok(catalog.en, `${domain}/en`);
       assert.ok(catalog.zh, `${domain}/zh`);
+      assert.ok((catalog as Record<string, unknown>).ko, `${domain}/ko`);
     }
   });
 
@@ -59,6 +60,20 @@ describe('TUI copy resources', () => {
           zhTemplate,
           `${domain}/zh/${path}`,
         );
+      }
+    }
+  });
+
+  test('keeps Korean coverage and variables aligned with English', () => {
+    for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
+      const enLeaves = new Map(leafEntries(catalog.en));
+      const koLeaves = new Map(leafEntries((catalog as Record<string, unknown>).ko as Record<string, unknown>));
+      assert.deepEqual([...koLeaves.keys()].sort(), [...enLeaves.keys()].sort(), `${domain}/ko`);
+      for (const [path, enTemplate] of enLeaves) {
+        const koTemplate = koLeaves.get(path)!;
+        const enVariables = messageVariables(enTemplate);
+        const koVariables = messageVariables(String(koTemplate));
+        assert.deepEqual(koVariables, enVariables, `${domain}/ko/${path}`);
       }
     }
   });
