@@ -17,17 +17,13 @@
  * under the License.
  */
 
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import { tryAcquireFileLifetimeOwner } from '../../file-lifetime-owner.js';
 
-/** Immutable identity plus the human-readable locator last shown by Desktop. */
-export interface DesktopConnectionIdentity {
-  readonly connectionId: string;
-  readonly slug: string;
-}
-
-export interface DesktopConnectionSnapshot {
-  readonly connections: IdentifiedLlmConnection[];
-  readonly defaultConnection: string | null;
-  readonly chatModelChoices: ChatModelChoice[];
-}
+const path = process.argv[2];
+if (!path) throw new Error('Missing file lifetime owner path');
+const owner = await tryAcquireFileLifetimeOwner(path);
+if (!owner) throw new Error('File lifetime owner is already active');
+process.send?.('owned');
+setInterval(() => undefined, 1_000).unref();
+await new Promise<void>((resolve) => process.once('disconnect', resolve));
+await owner.close();

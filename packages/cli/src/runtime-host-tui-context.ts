@@ -68,6 +68,7 @@ import {
   type TuiMcpController,
   type TuiMcpManagement,
 } from './tui-mcp-control.js';
+import { createRemoteTuiMcpPublicationTarget } from './tui-mcp-remote-publication.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -159,13 +160,26 @@ export async function createRuntimeHostTuiContext(
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
+    if (connected.profile.kind === 'local') {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
       mcp = createTuiMcpController({
         workspaceRoot: input.rootPath,
         connection,
+      });
+    } else if (connected.profile.kind === 'remote') {
+      if (!connected.profileIncarnationId) {
+        throw new Error('Remote Runtime Host profile incarnation is unavailable');
+      }
+      mcp = createTuiMcpController({
+        workspaceRoot: input.rootPath,
+        connection: createRemoteTuiMcpPublicationTarget({
+          clientDataRoot: input.clientDataRoot,
+          profile: connected.profile,
+          profileIncarnationId: connected.profileIncarnationId,
+          ownerClientInstanceId: connected.clientInstanceId,
+        }),
       });
     }
     const modelContextWindow = selectedTarget.connection?.models.find(

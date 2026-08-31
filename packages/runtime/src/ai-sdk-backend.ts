@@ -808,7 +808,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   prepareDurableProjectionArtifact?: ToolRuntimeInput['prepareDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
-   * image parts; false/unknown stay as text refs with a fallback note.
+   * image parts; false/unknown keep the attachment's model-facing Read reference.
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
@@ -822,10 +822,6 @@ export interface SystemPromptContext {
   cwd: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
-}
-
-function appendNonVisionImageFallbackNotice(textContent: string): string {
-  return `${textContent}\n\n[image attachments omitted: the selected model does not support image input. Tell the user you cannot view the attached image(s) and ask them to describe the image or switch to a vision-capable model.]`;
 }
 
 function isImageToolResult(
@@ -4357,7 +4353,10 @@ export class AiSdkBackend implements AgentBackend {
       return textContent;
     }
     if (this.input.supportsVision !== true) {
-      return appendNonVisionImageFallbackNotice(textContent);
+      // `textContent` already carries each attachment's stable Read argument.
+      // Native provider image delivery is unavailable here, but that does not
+      // establish whether the model can process the image through a tool.
+      return textContent;
     }
     if (!this.input.readAttachmentBytes) {
       return textContent;

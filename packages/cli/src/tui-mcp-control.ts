@@ -51,6 +51,10 @@ const RUNTIME_HOST_CREDENTIAL_ENV = 'MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL';
 export type TuiMcpPublicationState =
   | 'waiting'
   | 'host_unavailable'
+  | 'credential_required'
+  | 'credential_rejected'
+  | 'provider_conflict'
+  | 'target_mismatch'
   | 'publishing'
   | 'published'
   | 'not_published'
@@ -74,6 +78,7 @@ export interface TuiMcpSnapshot {
   readonly initialization: 'loading' | 'ready' | 'error';
   readonly configuration: 'ready' | 'synchronizing' | 'out_of_sync';
   readonly publication: TuiMcpPublicationState;
+  readonly canManagePublicationCredential?: boolean;
   readonly toolCount: number;
   readonly servers: readonly TuiMcpServerSnapshot[];
 }
@@ -119,7 +124,9 @@ export type TuiMcpAction =
   | { readonly kind: 'set_enabled'; readonly serverId: string; readonly enabled: boolean }
   | { readonly kind: 'remove'; readonly serverId: string }
   | { readonly kind: 'test'; readonly serverId: string }
-  | { readonly kind: 'reconnect'; readonly serverId: string };
+  | { readonly kind: 'reconnect'; readonly serverId: string }
+  | { readonly kind: 'set_publication_credential'; readonly credential: string }
+  | { readonly kind: 'remove_publication_credential' };
 
 export type TuiMcpActionEffect =
   | 'published'
@@ -140,6 +147,7 @@ export type TuiMcpActionResult =
         | 'closed'
         | 'invalid-config'
         | 'credential-cleanup-failed'
+        | 'publication-credential-failed'
         | 'persist-failed'
         | 'manager-failed';
     };
@@ -168,10 +176,32 @@ type TuiMcpManager = Pick<
   | 'close'
 >;
 
-type TuiMcpConnection = Pick<
-  RuntimeHostReconnectingConnection,
-  'replaceClientCapabilities' | 'unregisterClientCapabilities' | 'subscribeConnectionAvailability'
->;
+export type TuiMcpPublicationUnavailableReason =
+  | 'host_unavailable'
+  | 'credential_required'
+  | 'credential_rejected'
+  | 'provider_conflict'
+  | 'target_mismatch';
+
+export type TuiMcpPublicationAvailability =
+  | {
+      readonly kind: 'unavailable';
+      readonly reason?: TuiMcpPublicationUnavailableReason;
+    }
+  | Extract<RuntimeHostConnectionAvailability, { kind: 'connected' }>;
+
+export interface TuiMcpPublicationTarget
+  extends Pick<
+    RuntimeHostReconnectingConnection,
+    'replaceClientCapabilities' | 'unregisterClientCapabilities'
+  > {
+  subscribeConnectionAvailability(
+    listener: (availability: TuiMcpPublicationAvailability) => void,
+  ): () => void;
+  setCredential?(credential: string): Promise<void>;
+  removeCredential?(): Promise<void>;
+  closePublication?(): Promise<void>;
+}
 
 interface TuiMcpControllerDeps {
   readonly configStore: Pick<McpConfigStore, 'get' | 'transform'>;
@@ -182,7 +212,7 @@ interface TuiMcpControllerDeps {
 export function createTuiMcpController(
   input: {
     readonly workspaceRoot: string;
-    readonly connection: TuiMcpConnection;
+    readonly connection: TuiMcpPublicationTarget;
   },
   overrides: Partial<TuiMcpControllerDeps> = {},
 ): TuiMcpController {
@@ -201,13 +231,13 @@ export function createTuiMcpController(
 }
 
 class TuiMcpControllerImpl implements TuiMcpController {
-  readonly #connection: TuiMcpConnection;
+  readonly #connection: TuiMcpPublicationTarget;
   readonly #deps: TuiMcpControllerDeps;
   readonly #listeners = new Set<() => void>();
   readonly #disposeManagerChange: () => void;
   readonly #disposeConnectionAvailability: () => void;
   readonly #initialization: Promise<void>;
-  #availability: RuntimeHostConnectionAvailability = { kind: 'unavailable' };
+  #availability: TuiMcpPublicationAvailability = { kind: 'unavailable' };
   #closed = false;
   #config: McpConfigFile | undefined;
   #preparedImport:
@@ -232,13 +262,20 @@ class TuiMcpControllerImpl implements TuiMcpController {
     initialization: 'loading',
     configuration: 'synchronizing',
     publication: 'waiting',
+    canManagePublicationCredential: false,
     toolCount: 0,
     servers: [],
   });
 
-  constructor(connection: TuiMcpConnection, deps: TuiMcpControllerDeps) {
+  constructor(connection: TuiMcpPublicationTarget, deps: TuiMcpControllerDeps) {
     this.#connection = connection;
     this.#deps = deps;
+    this.#snapshot = freezeSnapshot({
+      ...this.#snapshot,
+      canManagePublicationCredential: Boolean(
+        connection.setCredential && connection.removeCredential,
+      ),
+    });
     this.#disposeManagerChange = deps.manager.onChange(() => {
       try {
         this.#refreshManagerSnapshot();
@@ -254,7 +291,12 @@ class TuiMcpControllerImpl implements TuiMcpController {
         this.#availability = availability;
         if (availability.kind === 'unavailable') {
           this.#published = undefined;
-          this.#updateSnapshot({ publication: 'host_unavailable' });
+          this.#updateSnapshot({
+            publication: availability.reason ?? 'host_unavailable',
+            ...(availability.reason === 'provider_conflict'
+              ? { canManagePublicationCredential: false }
+              : {}),
+          });
         } else {
           this.#updateSnapshot({ publication: 'waiting' });
           if (this.#snapshot.initialization === 'ready') this.#requestPublication();
@@ -338,6 +380,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       await this.#connection.unregisterClientCapabilities().catch(() => undefined);
     }
     this.#published = undefined;
+    await this.#connection.closePublication?.().catch(() => undefined);
     await managerClosing;
     await this.#initialization.catch(() => undefined);
   }
@@ -368,6 +411,28 @@ class TuiMcpControllerImpl implements TuiMcpController {
 
   async #executeAction(action: TuiMcpAction): Promise<TuiMcpActionResult> {
     if (this.#closed) return { status: 'failed', reason: 'closed' };
+    if (action.kind === 'set_publication_credential') {
+      if (!this.#connection.setCredential) {
+        return { status: 'failed', reason: 'publication-credential-failed' };
+      }
+      try {
+        await this.#connection.setCredential(action.credential);
+        return { status: 'applied', effect: await this.#settlePublication() };
+      } catch {
+        return { status: 'failed', reason: 'publication-credential-failed' };
+      }
+    }
+    if (action.kind === 'remove_publication_credential') {
+      if (!this.#connection.removeCredential) {
+        return { status: 'failed', reason: 'publication-credential-failed' };
+      }
+      try {
+        await this.#connection.removeCredential();
+        return { status: 'applied', effect: 'pending_host' };
+      } catch {
+        return { status: 'failed', reason: 'publication-credential-failed' };
+      }
+    }
     if (action.kind === 'test') {
       try {
         const test = await this.#deps.manager.test(action.serverId);
@@ -391,7 +456,11 @@ class TuiMcpControllerImpl implements TuiMcpController {
   }
 
   async #commitMutation(
-    action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
+    action: Exclude<
+      TuiMcpAction,
+      | { kind: 'test' | 'reconnect' }
+      | { kind: 'set_publication_credential' | 'remove_publication_credential' }
+    >,
   ): Promise<TuiMcpActionResult> {
     let committed: McpConfigFile;
     try {
@@ -452,7 +521,11 @@ class TuiMcpControllerImpl implements TuiMcpController {
 
   #prepareMutation(
     current: McpConfigFile,
-    action: Exclude<TuiMcpAction, { kind: 'test' | 'reconnect' }>,
+    action: Exclude<
+      TuiMcpAction,
+      | { kind: 'test' | 'reconnect' }
+      | { kind: 'set_publication_credential' | 'remove_publication_credential' }
+    >,
   ):
     | { readonly next: McpConfigFile }
     | Extract<TuiMcpActionResult, { status: 'conflict' | 'failed' }> {
@@ -502,8 +575,20 @@ class TuiMcpControllerImpl implements TuiMcpController {
     while (!this.#closed && (this.#publicationTask || this.#publicationRequested)) {
       await this.#publicationTask?.catch(() => undefined);
     }
-    if (this.#snapshot.publication === 'error') return 'publication_failed';
-    if (this.#snapshot.publication === 'host_unavailable') return 'pending_host';
+    if (
+      this.#snapshot.publication === 'error' ||
+      this.#snapshot.publication === 'credential_rejected' ||
+      this.#snapshot.publication === 'provider_conflict' ||
+      this.#snapshot.publication === 'target_mismatch'
+    ) {
+      return 'publication_failed';
+    }
+    if (
+      this.#snapshot.publication === 'host_unavailable' ||
+      this.#snapshot.publication === 'credential_required'
+    ) {
+      return 'pending_host';
+    }
     return 'published';
   }
 
@@ -521,6 +606,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
       initialization,
       configuration,
       publication: this.#snapshot.publication,
+      canManagePublicationCredential: this.#snapshot.canManagePublicationCredential,
       toolCount: this.#deps.manager.toolSnapshot().tools.length,
       servers: [...serverIds]
         .sort((left, right) => left.localeCompare(right))
@@ -560,7 +646,7 @@ class TuiMcpControllerImpl implements TuiMcpController {
   async #publishCurrentSnapshot(): Promise<void> {
     const availability = this.#availability;
     if (availability.kind !== 'connected') {
-      this.#updateSnapshot({ publication: 'host_unavailable' });
+      this.#updateSnapshot({ publication: availability.reason ?? 'host_unavailable' });
       return;
     }
     const identity = connectionIdentity(availability);

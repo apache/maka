@@ -1062,7 +1062,7 @@
           "react": 1
         },
         "importSpecifiers": 187,
-        "nonTriviaTokens": 15903
+        "nonTriviaTokens": 15882
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -3674,9 +3674,7 @@
           "window.maka.githubCopilotSubscription.logout": 1,
           "window.maka.githubCopilotSubscription.refreshTokens": 1,
           "window.maka.openAiCodex": 1,
-          "window.maka.openAiCodex.getAccountState": 1,
-          "window.maka.xaiOAuth": 1,
-          "window.maka.xaiOAuth.getAccountState": 1
+          "window.maka.xaiOAuth": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {
@@ -3983,9 +3981,7 @@
           "window.maka.connections.test": 1,
           "window.maka.connections.update": 1
         },
-        "environmentCapabilities": {
-          "window": 2
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -4839,8 +4835,8 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useEffect": 1,
-          "useRef": 2,
+          "useEffect": 2,
+          "useRef": 3,
           "useState": 2,
           "useUiLocale": 1
         },

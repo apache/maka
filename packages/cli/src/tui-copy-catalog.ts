@@ -26,6 +26,8 @@ export const TUI_COPY_RESOURCES = {
         readOnly: '↑/↓ scroll · q/Esc close',
         manage:
           'a Add · Enter Edit · Space Enable/disable · t Test · r Reconnect · d Remove · Esc Close',
+        managePublication:
+          'a Add · Enter Edit · Space Enable/disable · t Test · r Reconnect · d Remove · p Set provider credential · x Remove credential · Esc Close',
       },
       unavailableTitle: 'This TUI is not connected to a local MCP control plane.',
       unavailableDetail:
@@ -37,6 +39,10 @@ export const TUI_COPY_RESOURCES = {
       publication: {
         waiting: 'waiting to publish',
         host_unavailable: 'Runtime Host reconnecting',
+        credential_required: 'provider credential required',
+        credential_rejected: 'provider credential rejected',
+        provider_conflict: 'provider active in another TUI',
+        target_mismatch: 'provider target mismatch',
         publishing: 'publishing',
         published: 'published',
         not_published: 'not published',
@@ -60,6 +66,8 @@ export const TUI_COPY_RESOURCES = {
         back: 'Esc 返回',
         readOnly: '↑/↓ 滚动 · q/Esc 关闭',
         manage: 'a 添加 · Enter 编辑 · Space 启用/停用 · t 测试 · r 重连 · d 删除 · Esc 关闭',
+        managePublication:
+          'a 添加 · Enter 编辑 · Space 启用/停用 · t 测试 · r 重连 · d 删除 · p 设置 Provider 凭据 · x 删除凭据 · Esc 关闭',
       },
       unavailableTitle: '当前 TUI 未连接本地 MCP 控制面。',
       unavailableDetail: '远程 Runtime Host 的客户端 MCP 工具关联将在后续版本提供。',
@@ -69,6 +77,10 @@ export const TUI_COPY_RESOURCES = {
       publication: {
         waiting: '等待发布',
         host_unavailable: 'Runtime Host 重连中',
+        credential_required: '需要 Provider 凭据',
+        credential_rejected: 'Provider 凭据已被拒绝',
+        provider_conflict: 'Provider 已在另一个 TUI 中运行',
+        target_mismatch: 'Provider 目标不匹配',
         publishing: '正在发布',
         published: '已发布',
         not_published: '未发布',

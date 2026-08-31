@@ -68,12 +68,44 @@ jobs:
         with:
           node-version: 24.18.1
           cache: npm
+      - id: rustc
+        name: Resolve Rust cache version
+        shell: bash
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+      - name: Install Kache
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+      - id: kache-cache
+        name: Restore Rust build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: kache-gitoxide-helper-test-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ steps.rustc.outputs.revision }}
+          restore-keys: |
+            kache-gitoxide-helper-test-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-
       - name: Check Rust formatting
         working-directory: native/gitoxide-helper
         run: cargo fmt --check
       - name: Test the short-lived Gitoxide helper
         working-directory: native/gitoxide-helper
         run: cargo test --locked
+      - name: Report Rust build cache
+        shell: bash
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+      - name: Save Rust build cache
+        if: github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: ${{ steps.kache-cache.outputs.cache-primary-key }}
       - name: Install JavaScript dependencies without packaging hooks
         run: npm ci --ignore-scripts
       - name: Build the helper invocation owner

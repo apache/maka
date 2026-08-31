@@ -124,7 +124,10 @@ test('removes obsolete experimental Guest profiles and pairing intents at startu
   const credentials = createClientRuntimeHostCredentialStore(root);
   const catalog = createClientRuntimeHostProfileCatalog(root, credentials);
   const guest = { ...PROFILE, id: 'shared-obsolete', access: 'session_guest' as const };
-  await createRuntimeHostProfileCredentialStore(credentials).set(guest, 'guest-token');
+  await createRuntimeHostProfileCredentialStore(credentials).set(guest, {
+    credential: 'guest-token',
+    profileIncarnationId: 'guest-incarnation',
+  });
   await writeFile(
     join(root, 'runtime-host-profiles.json'),
     `${JSON.stringify({ schemaVersion: 3, profiles: [guest] })}\n`,
@@ -1301,6 +1304,7 @@ test("restores an existing profile when replacement finalization fails", async (
     const root = await clientRoot();
     const catalog = createClientRuntimeHostProfileCatalog(root);
     await catalog.create(PROFILE, "old-token");
+    const original = await catalog.resolve(PROFILE.id);
     await writeFile(
       join(root, "runtime-host-profile-selection.json"),
       `${JSON.stringify({
@@ -1338,13 +1342,7 @@ test("restores an existing profile when replacement finalization fails", async (
       /finalization failed/u,
     );
 
-    assert.deepEqual(await catalog.resolve(PROFILE.id), {
-      profile: {
-        ...PROFILE,
-        transport: { kind: "tls", url: "wss://runtime.example.com/" },
-      },
-      credential: "old-token",
-    });
+    assert.deepEqual(await catalog.resolve(PROFILE.id), original);
     assert.equal(enabled.at(-1)?.credential, "old-token");
 });
 

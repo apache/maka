@@ -285,15 +285,56 @@ jobs:
         if: steps.plan.outputs.cli_package == 'true'
         run: rustup update stable --no-self-update
 
+      - id: cli-rustc
+        name: Resolve CLI Rust cache version
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache-cli-package"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-cli-package-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Kache for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+
+      - id: cli-kache-cache
+        name: Restore CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ steps.cli-rustc.outputs.revision }}
+          restore-keys: |
+            kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
+
       - name: Install cargo-deny for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-deny@0.20.2
 
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:pack -- --allow-dirty
+
+      - name: Report CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: ${{ steps.cli-kache-cache.outputs.cache-primary-key }}
 
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'

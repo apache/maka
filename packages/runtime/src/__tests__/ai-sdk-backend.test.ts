@@ -2719,7 +2719,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('current-turn image attachment falls back to text unless vision support is explicit', async () => {
+  test('current-turn image attachment keeps its Read reference unless vision support is explicit', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
     const model = completionModel();
     const backend = createTestAiSdkBackend({
@@ -2746,7 +2746,7 @@ describe('AiSdkBackend model history', () => {
             name: 'chart.png',
             mimeType: 'image/png',
             bytes: pngBytes.length,
-            ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'fake/chart.png' },
+            ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
           },
         ],
         context: [],
@@ -2766,15 +2766,11 @@ describe('AiSdkBackend model history', () => {
     const text = parts.map((p) => p.text ?? '').join('\n');
     assert.ok(text.includes('describe this chart'), `expected original text in: ${text}`);
     assert.ok(
-      text.includes(
-        '<attachment>\nThe attachment content is unavailable to Read.\nname: "chart.png"\nmime_type: "image/png"\n</attachment>',
-      ),
-      `expected unavailable attachment context in: ${text}`,
+      text.includes('<attachment>\nRead argument: {"ref":"maka://runtime/attachments/artifact-1"}'),
+      `expected attachment Read reference in: ${text}`,
     );
-    assert.ok(
-      text.includes('does not support image input'),
-      `expected non-vision fallback note in: ${text}`,
-    );
+    assert.doesNotMatch(text, /does not support image input/);
+    assert.doesNotMatch(text, /switch to a vision-capable model/);
   });
 
   test('reports unavailable attachment reads without consuming image budget', async () => {
