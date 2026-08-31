@@ -21,6 +21,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io,
     pin::Pin,
+    sync::{Arc, Mutex, MutexGuard},
     task::{Context, Poll},
 };
 
@@ -34,6 +35,7 @@ use libp2p::{
 use super::muxer::WebRtcConnection;
 
 const INCOMING_CONNECTION_CAPACITY: usize = 4;
+const OUTGOING_CONNECTION_CAPACITY: usize = 32;
 
 type TransportOutput = (PeerId, WebRtcConnection);
 
@@ -43,25 +45,30 @@ pub struct WebRtcTransport {
     pending_events:
         VecDeque<TransportEvent<future::Ready<Result<TransportOutput, io::Error>>, io::Error>>,
     pending_incoming: VecDeque<TransportOutput>,
+    outgoing: Arc<Mutex<HashMap<PeerId, WebRtcConnection>>>,
 }
 
 #[derive(Clone)]
 pub struct WebRtcTransportControl {
     incoming: mpsc::Sender<TransportOutput>,
+    outgoing: Arc<Mutex<HashMap<PeerId, WebRtcConnection>>>,
 }
 
 impl WebRtcTransport {
     pub fn new() -> (Self, WebRtcTransportControl) {
         let (incoming_sender, incoming) = mpsc::channel(INCOMING_CONNECTION_CAPACITY);
+        let outgoing = Arc::new(Mutex::new(HashMap::new()));
         (
             Self {
                 incoming,
                 listeners: HashMap::new(),
                 pending_events: VecDeque::new(),
                 pending_incoming: VecDeque::new(),
+                outgoing: Arc::clone(&outgoing),
             },
             WebRtcTransportControl {
                 incoming: incoming_sender,
+                outgoing,
             },
         )
     }
@@ -91,6 +98,32 @@ impl WebRtcTransportControl {
                 },
             )
         })
+    }
+
+    pub fn register_outbound(
+        &self,
+        peer: PeerId,
+        connection: WebRtcConnection,
+    ) -> Result<Multiaddr, io::Error> {
+        let mut outgoing = lock(&self.outgoing);
+        if outgoing.contains_key(&peer) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "WebRTC transport already has a pending connection for this peer",
+            ));
+        }
+        if outgoing.len() >= OUTGOING_CONNECTION_CAPACITY {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "WebRTC transport outbound queue is full",
+            ));
+        }
+        outgoing.insert(peer, connection);
+        Ok(webrtc_peer_address(peer))
+    }
+
+    pub fn discard_outbound(&self, peer: PeerId) {
+        lock(&self.outgoing).remove(&peer);
     }
 }
 
@@ -138,7 +171,16 @@ impl Transport for WebRtcTransport {
         address: Multiaddr,
         _options: DialOpts,
     ) -> Result<Self::Dial, TransportError<Self::Error>> {
-        Err(TransportError::MultiaddrNotSupported(address))
+        let Some(peer) = webrtc_peer_id(&address) else {
+            return Err(TransportError::MultiaddrNotSupported(address));
+        };
+        let Some(connection) = lock(&self.outgoing).remove(&peer) else {
+            return Err(TransportError::Other(io::Error::new(
+                io::ErrorKind::NotFound,
+                "WebRTC transport has no prepared connection for this peer",
+            )));
+        };
+        Ok(future::ready(Ok((peer, connection))))
     }
 
     fn poll(
@@ -177,9 +219,25 @@ pub fn webrtc_peer_address(peer: PeerId) -> Multiaddr {
         .with(Protocol::P2p(peer))
 }
 
+fn webrtc_peer_id(address: &Multiaddr) -> Option<PeerId> {
+    let mut protocols = address.iter();
+    match (protocols.next(), protocols.next(), protocols.next()) {
+        (Some(Protocol::WebRTC), Some(Protocol::P2p(peer)), None) => Some(peer),
+        _ => None,
+    }
+}
+
 fn is_webrtc_listener_address(address: &Multiaddr) -> bool {
     let mut protocols = address.iter();
     matches!(protocols.next(), Some(Protocol::WebRTC)) && protocols.next().is_none()
+}
+
+fn lock(
+    shared: &Arc<Mutex<HashMap<PeerId, WebRtcConnection>>>,
+) -> MutexGuard<'_, HashMap<PeerId, WebRtcConnection>> {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

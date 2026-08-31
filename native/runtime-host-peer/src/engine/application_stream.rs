@@ -221,6 +221,17 @@ impl Control {
             .any(|connection| connection.peer_id == peer_id && connection.relay_peer_id.is_some())
     }
 
+    pub(super) fn has_relayed_connection_via(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> bool {
+        lock(&self.shared)
+            .relayed_connection(peer_id, excluded, allowed_relays)
+            .is_some()
+    }
+
     pub(super) async fn open_stream(
         &mut self,
         peer_id: PeerId,
@@ -241,6 +252,30 @@ impl Control {
         Ok(OpenedStream {
             connection_id,
             relay_peer_id,
+            stream,
+        })
+    }
+
+    pub(super) async fn open_relayed_stream(
+        &mut self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Result<OpenedStream, OpenStreamError> {
+        let (connection_id, relay_peer_id, sender) = lock(&self.shared)
+            .relayed_connection(peer_id, excluded, allowed_relays)
+            .ok_or(OpenStreamError::NoEligibleConnection)?;
+        let (result, receiver) = oneshot::channel();
+        sender
+            .send(NewStream { result })
+            .await
+            .map_err(|_| OpenStreamError::ConnectionClosed)?;
+        let stream = receiver
+            .await
+            .map_err(|_| OpenStreamError::ConnectionClosed)??;
+        Ok(OpenedStream {
+            connection_id,
+            relay_peer_id: Some(relay_peer_id),
             stream,
         })
     }
@@ -328,6 +363,25 @@ impl DirectConnections {
                         .is_none_or(|relay| allowed_relays.contains(&relay))
                     && !sender.is_closed())
                 .then(|| (*connection_id, connection.relay_peer_id, sender.clone()))
+            })
+    }
+
+    fn relayed_connection(
+        &self,
+        peer_id: PeerId,
+        excluded: &HashSet<ConnectionId>,
+        allowed_relays: &HashSet<PeerId>,
+    ) -> Option<(ConnectionId, PeerId, mpsc::Sender<NewStream>)> {
+        self.connections
+            .iter()
+            .find_map(|(connection_id, connection)| {
+                let sender = connection.sender.as_ref()?;
+                let relay = connection.relay_peer_id?;
+                (connection.peer_id == peer_id
+                    && !excluded.contains(connection_id)
+                    && allowed_relays.contains(&relay)
+                    && !sender.is_closed())
+                .then(|| (*connection_id, relay, sender.clone()))
             })
     }
 }

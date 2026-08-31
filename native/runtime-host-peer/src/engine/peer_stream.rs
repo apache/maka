@@ -74,7 +74,11 @@ pub(super) fn spawn_stream(
                                 "peer_stream_aborted",
                                 "peer stream was aborted",
                             )),
-                            outcome = writer.write_all(&bytes) => outcome.map_err(|error| {
+                            outcome = async {
+                                writer.write_all(&bytes).await?;
+                                // Framed transports may buffer a complete write until flush.
+                                writer.flush().await
+                            } => outcome.map_err(|error| {
                                 PeerError::new("peer_native_failed", error.to_string())
                             }),
                         };

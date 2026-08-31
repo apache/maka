@@ -20,10 +20,20 @@
 use std::{pin::Pin, time::Duration};
 
 use futures::{AsyncReadExt as _, AsyncWriteExt as _, future::poll_fn};
-use libp2p::{PeerId, core::muxing::StreamMuxer};
+use libp2p::{
+    PeerId,
+    core::{
+        Endpoint,
+        muxing::StreamMuxer,
+        transport::{DialOpts, PortUse, Transport},
+    },
+};
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 
-use super::{UpgradeOptions, UpgradeRole, upgrade::MAX_INBOUND_SUBSTREAMS, upgrade_connection};
+use super::{
+    UpgradeOptions, UpgradeRole, WebRtcTransport, upgrade::MAX_INBOUND_SUBSTREAMS,
+    upgrade_connection,
+};
 
 #[tokio::test]
 async fn authenticated_signaling_yields_a_libp2p_stream() {
@@ -51,8 +61,23 @@ async fn authenticated_signaling_yields_a_libp2p_stream() {
             options,
         )
     );
-    let (_, mut connection_a) = offer.expect("offerer upgrade");
+    let (_, connection_a) = offer.expect("offerer upgrade");
     let (_, mut connection_b) = answer.expect("answerer upgrade");
+    let (mut transport, control) = WebRtcTransport::new();
+    let address = control
+        .register_outbound(peer_b, connection_a)
+        .expect("register outbound connection");
+    let (_, mut connection_a) = transport
+        .dial(
+            address,
+            DialOpts {
+                role: Endpoint::Dialer,
+                port_use: PortUse::Reuse,
+            },
+        )
+        .expect("dial prepared WebRTC connection")
+        .await
+        .expect("prepared WebRTC connection");
 
     let (outbound, inbound) = tokio::join!(
         poll_fn(|cx| Pin::new(&mut connection_a).poll_outbound(cx)),

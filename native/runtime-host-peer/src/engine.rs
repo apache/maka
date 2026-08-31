@@ -44,8 +44,8 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::webrtc_direct::{
-    SIGNALING_PROTOCOL, UpgradeOptions, UpgradeRole, WebRtcTransport, WebRtcTransportControl,
-    upgrade_connection,
+    SIGNALING_PROTOCOL, UpgradeOptions, UpgradeRole, WebRtcConnection, WebRtcTransport,
+    WebRtcTransportControl, upgrade_connection,
 };
 
 mod address;
@@ -226,6 +226,7 @@ struct PendingConnect {
     transit_after: Instant,
     next_route_attempt: Instant,
     retry_coordination: bool,
+    webrtc_attempted: bool,
     cancellation: CancellationToken,
 }
 
@@ -243,6 +244,7 @@ pub(super) enum DialOrigin {
     Direct,
     Coordination,
     Transit,
+    WebRtc,
 }
 
 struct StartedConnect {
@@ -426,6 +428,13 @@ struct OpenedStream {
     result: Result<application_stream::OpenedStream, String>,
 }
 
+struct OutgoingWebRtcUpgrade {
+    request_id: u32,
+    attempt_id: ConnectAttemptId,
+    peer_id: PeerId,
+    result: Result<WebRtcConnection, String>,
+}
+
 pub(super) enum StreamCompletion {
     Application {
         connection_id: ConnectionId,
@@ -580,6 +589,7 @@ async fn run_endpoint_async(
         mut incoming_streams,
         mesh_control,
         mut mesh_incoming,
+        webrtc_signaling_control,
         mut webrtc_signaling_incoming,
         webrtc_transport,
     } = build_swarm(
@@ -689,6 +699,7 @@ async fn run_endpoint_async(
         .then(relay_discovery::spawn);
     let webrtc_cancellation = CancellationToken::new();
     let mut incoming_webrtc_upgrades = JoinSet::new();
+    let mut outgoing_webrtc_upgrades = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -743,6 +754,7 @@ async fn run_endpoint_async(
                         transit_after,
                         next_route_attempt: Instant::now(),
                         retry_coordination,
+                        webrtc_attempted: false,
                         cancellation: CancellationToken::new(),
                     });
                     retry_connect_routes(
@@ -752,6 +764,14 @@ async fn run_endpoint_async(
                         &stream_control,
                         external_candidate_ready,
                         Instant::now(),
+                    );
+                    start_pending_webrtc_upgrades(
+                        &mut direct.pending,
+                        &direct.retiring_connections,
+                        &stream_control,
+                        webrtc_signaling_control.clone(),
+                        webrtc_stun_urls.as_deref(),
+                        &mut outgoing_webrtc_upgrades,
                     );
                     maybe_open_peer_stream(
                         request_id,
@@ -808,6 +828,14 @@ async fn run_endpoint_async(
                         Instant::now(),
                     );
                     let requests = direct.pending.keys().copied().collect::<Vec<_>>();
+                    start_pending_webrtc_upgrades(
+                        &mut direct.pending,
+                        &direct.retiring_connections,
+                        &stream_control,
+                        webrtc_signaling_control.clone(),
+                        webrtc_stun_urls.as_deref(),
+                        &mut outgoing_webrtc_upgrades,
+                    );
                     for request_id in requests {
                         maybe_open_peer_stream(
                             request_id,
@@ -823,12 +851,20 @@ async fn run_endpoint_async(
                 Some(EngineCommand::Stop { result }) => {
                     webrtc_cancellation.cancel();
                     incoming_webrtc_upgrades.abort_all();
+                    for pending in direct.pending.values() {
+                        pending.cancellation.cancel();
+                    }
+                    outgoing_webrtc_upgrades.abort_all();
                     let _ = result.send(());
                     return Ok(());
                 }
                 None => {
                     webrtc_cancellation.cancel();
                     incoming_webrtc_upgrades.abort_all();
+                    for pending in direct.pending.values() {
+                        pending.cancellation.cancel();
+                    }
+                    outgoing_webrtc_upgrades.abort_all();
                     return Ok(());
                 }
             },
@@ -908,6 +944,30 @@ async fn run_endpoint_async(
                         webrtc_debug(format_args!("inbound upgrade task failed: {error}"));
                     }
                 }
+            }
+            Some(upgrade) = outgoing_webrtc_upgrades.join_next(), if !outgoing_webrtc_upgrades.is_empty() => {
+                match upgrade {
+                    Ok(completed) => {
+                        complete_outgoing_webrtc_upgrade(
+                            &mut swarm,
+                            &webrtc_transport,
+                            &mut direct,
+                            completed,
+                        );
+                    }
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        webrtc_debug(format_args!("outbound upgrade task failed: {error}"));
+                    }
+                }
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    &stream_control,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
+                );
             }
             Some(candidate) = async {
                 match &mut discovered_relays {
@@ -992,6 +1052,14 @@ async fn run_endpoint_async(
                         continue;
                     }
                 };
+                if waiter.webrtc_attempted {
+                    webrtc_debug(format_args!(
+                        "application stream result peer={} request={} success={}",
+                        waiter.peer_id,
+                        request_id,
+                        opened.result.is_ok(),
+                    ));
+                }
                     match opened.result {
                         Ok(opened) => {
                             if waiter.stream_kind == StreamKind::Application
@@ -1125,6 +1193,14 @@ async fn run_endpoint_async(
                     Instant::now(),
                 );
                 let requests = direct.pending.keys().copied().collect::<Vec<_>>();
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    &stream_control,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
+                );
                 for request_id in requests {
                     maybe_open_peer_stream(
                         request_id,
@@ -1162,6 +1238,14 @@ async fn run_endpoint_async(
                     &stream_control,
                     external_candidate_ready,
                     now,
+                );
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    &stream_control,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
                 );
                 let expired = direct.pending.iter()
                     .filter_map(|(request_id, item)| (item.deadline <= now).then_some(*request_id))
@@ -1207,6 +1291,7 @@ struct BuiltSwarm {
     incoming_streams: mpsc::Receiver<application_stream::InboundStream>,
     mesh_control: application_stream::Control,
     mesh_incoming: mpsc::Receiver<application_stream::InboundStream>,
+    webrtc_signaling_control: application_stream::Control,
     webrtc_signaling_incoming: mpsc::Receiver<application_stream::InboundStream>,
     webrtc_transport: WebRtcTransportControl,
 }
@@ -1227,7 +1312,7 @@ fn build_swarm(
         MESH_INCOMING_STREAM_CAPACITY,
         None,
     );
-    let (webrtc_signaling, _webrtc_signaling_control, webrtc_signaling_incoming) =
+    let (webrtc_signaling, webrtc_signaling_control, webrtc_signaling_incoming) =
         application_stream::Behaviour::new(
             StreamProtocol::new(SIGNALING_PROTOCOL),
             WEBRTC_SIGNALING_STREAM_CAPACITY,
@@ -1287,6 +1372,7 @@ fn build_swarm(
         incoming_streams: incoming,
         mesh_control,
         mesh_incoming,
+        webrtc_signaling_control,
         webrtc_signaling_incoming,
         webrtc_transport,
     })
@@ -1429,6 +1515,140 @@ fn release_active_stream(active: &mut HashMap<ConnectionId, usize>, connection_i
     }
 }
 
+fn start_pending_webrtc_upgrades(
+    pending: &mut HashMap<u32, PendingConnect>,
+    retiring_connections: &HashSet<ConnectionId>,
+    application_control: &application_stream::Control,
+    signaling_control: application_stream::Control,
+    stun_urls: Option<&[String]>,
+    upgrades: &mut JoinSet<OutgoingWebRtcUpgrade>,
+) {
+    let Some(stun_urls) = stun_urls else {
+        return;
+    };
+    for request_id in pending.keys().copied().collect::<Vec<_>>() {
+        if upgrades.len() >= MAX_CONCURRENT_WEBRTC_UPGRADES {
+            return;
+        }
+        let Some(waiter) = pending.get_mut(&request_id) else {
+            continue;
+        };
+        if waiter.stream_kind != StreamKind::Application || waiter.webrtc_attempted {
+            continue;
+        }
+        if application_control.has_connection(
+            waiter.peer_id,
+            retiring_connections,
+            &waiter.transit_relay_peers,
+        ) {
+            continue;
+        }
+        let relay_peers = waiter
+            .coordination_relay_peers
+            .iter()
+            .copied()
+            .chain(waiter.transit_relay_peers.iter().copied())
+            .collect::<HashSet<_>>();
+        if !signaling_control.has_relayed_connection_via(
+            waiter.peer_id,
+            retiring_connections,
+            &relay_peers,
+        ) {
+            continue;
+        }
+
+        waiter.webrtc_attempted = true;
+        let attempt_id = waiter.attempt_id;
+        let peer_id = waiter.peer_id;
+        let cancellation = waiter.cancellation.clone();
+        let upgrade_cancellation = cancellation.clone();
+        let excluded_connections = retiring_connections.clone();
+        let stun_urls = stun_urls.to_vec();
+        let mut signaling_control = signaling_control.clone();
+        upgrades.spawn(async move {
+            let operation = async {
+                let signaling = signaling_control
+                    .open_relayed_stream(peer_id, &excluded_connections, &relay_peers)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                upgrade_connection(
+                    signaling.stream,
+                    peer_id,
+                    peer_id,
+                    UpgradeRole::Offerer,
+                    UpgradeOptions {
+                        stun_urls,
+                        udp_bind_addresses: vec!["0.0.0.0:0".to_owned()],
+                        deadline: WEBRTC_UPGRADE_DEADLINE,
+                        cancellation: upgrade_cancellation,
+                    },
+                )
+                .await
+                .map(|(_, connection)| connection)
+                .map_err(|error| error.to_string())
+            };
+            let result = tokio::select! {
+                _ = cancellation.cancelled() => Err("WebRTC direct upgrade was cancelled".to_owned()),
+                result = operation => result,
+            };
+            OutgoingWebRtcUpgrade {
+                request_id,
+                attempt_id,
+                peer_id,
+                result,
+            }
+        });
+    }
+}
+
+fn complete_outgoing_webrtc_upgrade(
+    swarm: &mut Swarm<Behaviour>,
+    transport: &WebRtcTransportControl,
+    direct: &mut DirectConnectState,
+    completed: OutgoingWebRtcUpgrade,
+) {
+    let Some(waiter) = direct.pending.get_mut(&completed.request_id) else {
+        return;
+    };
+    if waiter.attempt_id != completed.attempt_id || waiter.peer_id != completed.peer_id {
+        return;
+    }
+    let connection = match completed.result {
+        Ok(connection) => connection,
+        Err(error) => {
+            webrtc_debug(format_args!(
+                "outbound upgrade to {} failed: {error}",
+                completed.peer_id,
+            ));
+            return;
+        }
+    };
+    let address = match transport.register_outbound(completed.peer_id, connection) {
+        Ok(address) => address,
+        Err(error) => {
+            webrtc_debug(format_args!(
+                "could not register outbound upgrade to {}: {error}",
+                completed.peer_id,
+            ));
+            return;
+        }
+    };
+    let options = DialOpts::peer_id(completed.peer_id)
+        .condition(PeerCondition::Always)
+        .addresses(vec![address])
+        .build();
+    let connection_id = options.connection_id();
+    if swarm.dial(options).is_ok() {
+        waiter.dials.insert(connection_id, DialOrigin::WebRtc);
+        webrtc_debug(format_args!(
+            "direct dial submitted peer={} request={} connection={connection_id}",
+            completed.peer_id, completed.request_id,
+        ));
+    } else {
+        transport.discard_outbound(completed.peer_id);
+    }
+}
+
 fn maybe_open_peer_stream(
     request_id: u32,
     pending: &mut HashMap<u32, PendingConnect>,
@@ -1460,6 +1680,11 @@ fn maybe_open_peer_stream(
     };
     if waiter.opening.is_some() || !available {
         return;
+    }
+    if waiter.stream_kind == StreamKind::Application && waiter.webrtc_attempted {
+        webrtc_debug(format_args!(
+            "opening application stream peer={peer_id} request={request_id}"
+        ));
     }
     let stream_kind = waiter.stream_kind;
     let attempt_id = waiter.attempt_id;
@@ -1501,6 +1726,15 @@ fn handle_swarm_event(
             endpoint,
             ..
         } => {
+            if direct
+                .pending
+                .values()
+                .any(|connect| connect.dials.get(&connection_id) == Some(&DialOrigin::WebRtc))
+            {
+                webrtc_debug(format_args!(
+                    "direct connection established peer={peer_id} connection={connection_id}"
+                ));
+            }
             discovery_debug(format_args!(
                 "connection established peer={peer_id} relayed={}",
                 endpoint.is_relayed()
