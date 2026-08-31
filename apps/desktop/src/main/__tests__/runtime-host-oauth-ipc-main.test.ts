@@ -29,6 +29,9 @@ import {
 } from '../runtime-host-oauth-ipc-main.js';
 import { RuntimeHostOAuthPresentation } from '../runtime-host-oauth-presentation.js';
 
+type OAuthClient = RuntimeHostOAuthIpcDeps['client'];
+type OAuthIpcHandler = Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1];
+
 test('presents the Host OAuth handoff without exposing the authorization URL', async () => {
   const opened: string[] = [];
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
@@ -47,10 +50,6 @@ test('presents the Host OAuth handoff without exposing the authorization URL', a
 
 test('adapts every Host OAuth provider through one Desktop flow', async () => {
   const provider = 'openai-codex' as const;
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const opened: string[] = [];
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
     opened.push(url);
@@ -77,14 +76,8 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
       },
     ],
   };
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => catalog,
-    createConnection: async () => {
-      throw new Error('Existing OAuth Connection must be reused');
-    },
-    updateConnection: async () => {
-      throw new Error('Enabled OAuth Connection must not be rewritten');
-    },
     startOAuthLogin: async (nextAttemptId, target) => {
       attemptId = nextAttemptId;
       assert.deepEqual(target, {
@@ -114,14 +107,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         catalog.connections[0]?.connectionId ?? '',
         phase,
       ),
-    cancelOAuthLogin: async (nextAttemptId) => {
-      phase = 'cancelled';
-      return oauthProjection(
-        nextAttemptId,
-        catalog.connections[0]?.connectionId ?? '',
-        phase,
-      );
-    },
     fetchConnectionModels: async () => {
       const current = catalog.connections[0];
       assert.ok(current);
@@ -161,26 +146,9 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
             updatedAt: 1,
           }
         : null,
-    deleteCredential: async ({ expected }) => ({
-      kind: 'committed' as const,
-      vaultRevision: 1,
-      status: {
-        locator: expected.locator,
-        configured: false as const,
-        credentialId: null,
-        revision: null,
-        updatedAt: null,
-      },
-    }),
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-
-  registerRuntimeHostOAuthIpc({
-    ipcMain: {
-      handle(channel, handler) {
-        handlers.set(channel, handler);
-      },
-    },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => {
       changed += 1;
@@ -223,6 +191,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     provider,
     runtimeState: 'authenticated',
   });
+  assertNoUnexpectedClientCalls();
 });
 
 test('provider-scoped OAuth IPC rejects a Connection ID owned by another provider', async () => {
@@ -236,27 +205,14 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
     enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
     models: [],
   };
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   let starts = 0;
   let mutations = 0;
-  const forbiddenMutation = async () => {
-    mutations += 1;
-    throw new Error('Cross-provider IPC must not mutate a Connection');
-  };
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => ({
       revision: 1,
       defaultTarget: null,
       connections: [xaiConnection],
     }),
-    createConnection: forbiddenMutation,
-    updateConnection: forbiddenMutation,
-    deleteCredential: forbiddenMutation,
-    fetchConnectionModels: forbiddenMutation,
-    setDefaultConnectionTarget: forbiddenMutation,
     queryCredential: async () => {
       throw new Error('Cross-provider IPC must not inspect another credential');
     },
@@ -264,12 +220,9 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
       starts += 1;
       throw new Error('Cross-provider IPC must not start Host OAuth');
     },
-    queryOAuthLogin: async () => oauthProjection('unused', xaiConnection.connectionId, 'cancelled'),
-    cancelOAuthLogin: async () => oauthProjection('unused', xaiConnection.connectionId, 'cancelled'),
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation: new RuntimeHostOAuthPresentation(async () => undefined),
     emitConnectionListChanged: () => {
       mutations += 1;
@@ -304,41 +257,16 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
   });
   assert.equal(starts, 0);
   assert.equal(mutations, 0);
+  assertNoUnexpectedClientCalls();
 });
 
 test('malformed OAuth Connection IDs fail closed before catalog or credential access', async () => {
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
-  let reads = 0;
-  let mutations = 0;
-  const forbiddenRead = async () => {
-    reads += 1;
-    throw new Error('Malformed identity must not reach Runtime Host storage');
-  };
-  const forbiddenMutation = async () => {
-    mutations += 1;
-    throw new Error('Malformed identity must not mutate Runtime Host state');
-  };
-  const client = {
-    loadConnectionCatalog: forbiddenRead,
-    queryCredential: forbiddenRead,
-    createConnection: forbiddenMutation,
-    updateConnection: forbiddenMutation,
-    deleteCredential: forbiddenMutation,
-    fetchConnectionModels: forbiddenMutation,
-    setDefaultConnectionTarget: forbiddenMutation,
-    startOAuthLogin: forbiddenMutation,
-    queryOAuthLogin: forbiddenRead,
-    cancelOAuthLogin: forbiddenMutation,
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+  let emissions = 0;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides: {},
     presentation: new RuntimeHostOAuthPresentation(async () => undefined),
     emitConnectionListChanged: () => {
-      mutations += 1;
+      emissions += 1;
     },
     isProviderEnabled: () => true,
   });
@@ -365,8 +293,8 @@ test('malformed OAuth Connection IDs fail closed before catalog or credential ac
       message: 'Invalid OAuth Connection identity',
     });
   }
-  assert.equal(reads, 0);
-  assert.equal(mutations, 0);
+  assert.equal(emissions, 0);
+  assertNoUnexpectedClientCalls();
 });
 
 test('a second OAuth start cannot replace or cancel a pending active attempt', async () => {
@@ -404,10 +332,6 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
     models: [],
   };
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
   let starts = 0;
   let cancels = 0;
@@ -417,15 +341,12 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
   const firstPresentationPoll = new Promise<void>((resolve) => {
     markFirstPresentationPoll = resolve;
   });
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => ({
       revision: 1,
       defaultTarget: null,
       connections: [...configuredConnections, foreignConnection],
     }),
-    createConnection: async () => {
-      throw new Error('not used');
-    },
     updateConnection: async (expected) => ({
       kind: 'committed' as const,
       catalogRevision: 2,
@@ -444,9 +365,6 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     }),
     fetchConnectionModels: async () => {
       throw new Error('model discovery unavailable');
-    },
-    setDefaultConnectionTarget: async () => {
-      throw new Error('not used');
     },
     queryCredential: async (locator) => ({
       locator,
@@ -469,10 +387,9 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       cancels += 1;
       return oauthProjection(attemptId, connectionId, 'cancelled');
     },
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => undefined,
     isProviderEnabled: () => true,
@@ -521,38 +438,22 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     { ok: true },
   );
   assert.equal(cancels, 0);
+  assertNoUnexpectedClientCalls();
 });
 
 test('completion rejects a terminal projection that changes Connection identity', async () => {
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
   const startedId = '00000000-0000-4000-8000-000000000021';
   const changedId = '00000000-0000-4000-8000-000000000022';
   let attemptId = '';
   let synchronized = 0;
   let emitted = 0;
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
-    createConnection: async () => {
-      throw new Error('not used');
-    },
-    updateConnection: async () => {
-      throw new Error('not used');
-    },
-    deleteCredential: async () => {
-      throw new Error('not used');
-    },
     fetchConnectionModels: async () => {
       synchronized += 1;
       throw new Error('must not synchronize a changed identity');
     },
-    setDefaultConnectionTarget: async () => {
-      throw new Error('not used');
-    },
-    queryCredential: async () => null,
     startOAuthLogin: async (nextAttemptId: string) => {
       attemptId = nextAttemptId;
       await presentation.openExternal(
@@ -564,12 +465,9 @@ test('completion rejects a terminal projection that changes Connection identity'
     },
     queryOAuthLogin: async (nextAttemptId: string) =>
       oauthProjection(nextAttemptId, changedId, 'authenticated'),
-    cancelOAuthLogin: async (nextAttemptId: string) =>
-      oauthProjection(nextAttemptId, startedId, 'cancelled'),
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => {
       emitted += 1;
@@ -585,10 +483,13 @@ test('completion rejects a terminal projection that changes Connection identity'
   });
   assert.equal(synchronized, 0);
   assert.equal(emitted, 0);
+  assertNoUnexpectedClientCalls();
 });
 
 test('keeps a committed OAuth login successful when model discovery fails', async () => {
   const provider = 'openai-codex' as const;
+  const modelId = PROVIDER_DEFAULTS[provider].fallbackModels[0];
+  assert.ok(modelId);
   const existing = {
     connectionId: '00000000-0000-4000-8000-000000000002',
     revision: 1,
@@ -609,22 +510,12 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     defaultTarget: null,
     connections: [existing],
   };
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
   let attemptId = '';
   let changed = 0;
   const fetchedConnectionIds: string[] = [];
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => catalog,
-    createConnection: async () => {
-      throw new Error('Existing OAuth Connection must be reused');
-    },
-    updateConnection: async () => {
-      throw new Error('Enabled OAuth Connection must not be rewritten');
-    },
     startOAuthLogin: async (nextAttemptId: string, target) => {
       attemptId = nextAttemptId;
       assert.deepEqual(target, { kind: 'create', providerType: provider });
@@ -655,21 +546,14 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
         phase: 'authenticated' as const,
       };
     },
-    cancelOAuthLogin: async (nextAttemptId: string) => ({
-      attemptId: nextAttemptId,
-      connection: {
-        connectionId: created.connectionId,
-        slug: created.slug,
-        providerType: provider,
-      },
-      phase: 'cancelled' as const,
-    }),
     fetchConnectionModels: async (connectionId: string) => {
       fetchedConnectionIds.push(connectionId);
       throw new Error('provider temporarily unavailable');
     },
-    setDefaultConnectionTarget: async () => {
-      throw new Error('Default selection must not run after failed discovery');
+    setDefaultConnectionTarget: async (expectedCatalogRevision, target) => {
+      assert.equal(expectedCatalogRevision, catalog.revision);
+      catalog = { ...catalog, revision: catalog.revision + 1, defaultTarget: target };
+      return { kind: 'committed' as const, catalogRevision: catalog.revision };
     },
     queryCredential: async (locator) =>
       locator.scope === 'connection' && locator.connectionId === created.connectionId
@@ -681,14 +565,9 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
             updatedAt: 1,
           }
         : null,
-    deleteCredential: async () => {
-      throw new Error('Credential deletion must not run');
-    },
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => {
       changed += 1;
@@ -706,11 +585,66 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
   );
   assert.equal(changed, 1);
   assert.deepEqual(fetchedConnectionIds, [created.connectionId]);
+  assert.deepEqual(catalog.defaultTarget, { connectionId: created.connectionId, modelId });
   assert.deepEqual(await invoke(handlers, 'openai-codex:get-account-state'), {
     provider,
     runtimeState: 'authenticated',
   });
+  assertNoUnexpectedClientCalls();
 });
+
+function createFailClosedOAuthClient(overrides: Partial<OAuthClient>): {
+  readonly client: OAuthClient;
+  assertNoUnexpectedClientCalls(): void;
+} {
+  const unexpectedCalls: Array<{ readonly method: keyof OAuthClient; readonly args: unknown[] }> = [];
+  const unexpected =
+    (method: keyof OAuthClient) =>
+    (...args: unknown[]): never => {
+      unexpectedCalls.push({ method, args });
+      throw new Error(`Unexpected OAuth client call: ${String(method)}`);
+    };
+  const client = {
+    loadConnectionCatalog: unexpected('loadConnectionCatalog'),
+    createConnection: unexpected('createConnection'),
+    updateConnection: unexpected('updateConnection'),
+    deleteCredential: unexpected('deleteCredential'),
+    fetchConnectionModels: unexpected('fetchConnectionModels'),
+    setDefaultConnectionTarget: unexpected('setDefaultConnectionTarget'),
+    queryCredential: unexpected('queryCredential'),
+    startOAuthLogin: unexpected('startOAuthLogin'),
+    queryOAuthLogin: unexpected('queryOAuthLogin'),
+    cancelOAuthLogin: unexpected('cancelOAuthLogin'),
+    ...overrides,
+  } satisfies OAuthClient;
+  return {
+    client,
+    assertNoUnexpectedClientCalls: () => assert.deepEqual(unexpectedCalls, []),
+  };
+}
+
+function registerOAuthTestHandlers(input: {
+  readonly clientOverrides: Partial<OAuthClient>;
+  readonly presentation: RuntimeHostOAuthPresentation;
+  readonly emitConnectionListChanged: () => void;
+  readonly isProviderEnabled: NonNullable<RuntimeHostOAuthIpcDeps['isProviderEnabled']>;
+}): {
+  readonly handlers: ReadonlyMap<string, OAuthIpcHandler>;
+  assertNoUnexpectedClientCalls(): void;
+} {
+  const handlers = new Map<string, OAuthIpcHandler>();
+  const { client, assertNoUnexpectedClientCalls } = createFailClosedOAuthClient(
+    input.clientOverrides,
+  );
+  registerRuntimeHostOAuthIpc({
+    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
+    client,
+    presentation: input.presentation,
+    emitConnectionListChanged: input.emitConnectionListChanged,
+    isProviderEnabled: input.isProviderEnabled,
+  });
+  return { handlers, assertNoUnexpectedClientCalls };
+}
 
 function oauthProjection(
   attemptId: string,
