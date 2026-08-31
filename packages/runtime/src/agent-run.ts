@@ -482,6 +482,7 @@ export class AgentRun {
         const requestPrefix = await deriveAttemptSemanticPrefixContinuity({
           current: attempt,
           currentProviderStateIdentity: this.providerStateIdentity,
+          currentSessionInline: this.isSessionInline(),
           lineage: {
             ...this.lineage,
             ...(this.header.conversationCopy ? { conversationCopy: true } : {}),

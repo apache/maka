@@ -90,6 +90,7 @@ test('uses the preceding physical retry as its durable baseline', async () => {
       await deriveAttemptSemanticPrefixContinuity({
         current,
         currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
         lineage: {},
         store: prefixStore([run('run-1', 'turn-1', PROVIDER_STATE)], [previous]),
       })
@@ -107,6 +108,7 @@ test('does not compare across provider execution identities', async () => {
       await deriveAttemptSemanticPrefixContinuity({
         current,
         currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
         lineage: {},
         store: prefixStore(
           [run('run-1', 'turn-1', OTHER_PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
@@ -132,6 +134,7 @@ test('does not choose between overlapping durable predecessor runs', async () =>
       await deriveAttemptSemanticPrefixContinuity({
         current,
         currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
         lineage: {},
         store: prefixStore(
           headers,
@@ -145,6 +148,23 @@ test('does not choose between overlapping durable predecessor runs', async () =>
     ).status,
     'unavailable',
   );
+});
+
+test('does not compare a child run against its parent session run', async () => {
+  const previous = attempt({ attemptId: 'parent-attempt', runId: 'run-parent' });
+  const current = attempt({ attemptId: 'child-attempt', runId: 'run-child' });
+  const input = {
+    current,
+    currentProviderStateIdentity: PROVIDER_STATE,
+    currentSessionInline: false,
+    lineage: { parentRunId: 'run-parent' },
+    store: prefixStore(
+      [run('run-parent', 'turn-1', PROVIDER_STATE), run('run-child', 'turn-1', PROVIDER_STATE)],
+      [previous],
+    ),
+  };
+
+  assert.equal((await deriveAttemptSemanticPrefixContinuity(input)).status, 'unavailable');
 });
 
 function observation(segments: PreparedRequestObservationSegment[]): PreparedRequestObservation {

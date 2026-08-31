@@ -57,9 +57,10 @@ interface RootAdmissionReader {
   ): Promise<{ runId: string; previousRootTurnId?: string | null } | undefined>;
 }
 
-export async function deriveAttemptSemanticPrefixContinuity(input: {
+interface AttemptContinuityInput {
   current: ModelCallAttempt;
   currentProviderStateIdentity?: `sha256:${string}`;
+  currentSessionInline: boolean;
   lineage: {
     conversationCopy?: boolean;
     parentRunId?: string;
@@ -70,9 +71,15 @@ export async function deriveAttemptSemanticPrefixContinuity(input: {
     parentSessionId?: string;
   };
   store: PrefixStore;
-}): Promise<SemanticPrefixContinuity> {
+}
+
+export async function deriveAttemptSemanticPrefixContinuity(
+  input: AttemptContinuityInput,
+): Promise<SemanticPrefixContinuity> {
   const { current } = input;
-  if (current.callKind !== 'main' || !current.requestObservation) return unavailable();
+  if (!input.currentSessionInline || current.callKind !== 'main' || !current.requestObservation) {
+    return unavailable();
+  }
 
   const predecessor = await predecessorAttempt(input);
   if (predecessor === null) {
@@ -153,20 +160,9 @@ function segmentRef(segment: PreparedRequestObservationSegment): SemanticPrefixS
   };
 }
 
-async function predecessorAttempt(input: {
-  current: ModelCallAttempt;
-  currentProviderStateIdentity?: `sha256:${string}`;
-  lineage: {
-    conversationCopy?: boolean;
-    parentRunId?: string;
-    parentTurnId?: string;
-    retriedFromTurnId?: string;
-    regeneratedFromTurnId?: string;
-    branchOfTurnId?: string;
-    parentSessionId?: string;
-  };
-  store: PrefixStore;
-}): Promise<{ attempt: ModelCallAttempt; run: AgentRunHeader } | null | undefined> {
+async function predecessorAttempt(
+  input: AttemptContinuityInput,
+): Promise<{ attempt: ModelCallAttempt; run: AgentRunHeader } | null | undefined> {
   const { current, lineage, store } = input;
   const runs = await store.listSessionRuns(current.sessionId);
   const currentRun = runs.find((run) => run.runId === current.runId);
