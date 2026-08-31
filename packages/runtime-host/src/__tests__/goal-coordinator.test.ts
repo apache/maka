@@ -30,6 +30,7 @@ import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storag
 import { HostGoalCoordinator } from '../server/goal-coordinator.js';
 import { HostedExecutionProjectionReader } from '../server/hosted-execution-projection.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('one Host Goal is shared across clients with CAS control and crash-clear residency', async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-goal-'));
@@ -1003,17 +1004,15 @@ function operationContext(connectionId: string) {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for Goal continuation');
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    message: 'Timed out waiting for Goal continuation',
+  });
 }
 
 async function waitForAsync(predicate: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for durable Goal state');
-    await new Promise((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    message: 'Timed out waiting for durable Goal state',
+  });
 }

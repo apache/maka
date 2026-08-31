@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -402,11 +403,15 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', () => {
+        throw new Error('pending continuation setup must not build a backend');
+      });
       const manager = new SessionManager({
         store: stores.sessionStore,
         runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
-        backends: new BackendRegistry(),
+        backends,
         safeBoundaryResumeEnabled: true,
         inspectContinuationSafety: async () => ({
           workspaceIdentity: workspace.workspaceIdentity,
@@ -1735,22 +1740,6 @@ async function acquireReader(capability: StorageRootCapability<'interactive'>) {
       throw new Error('Interactive root reader could not acquire the released root');
     await sleep(20);
   }
-}
-
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }
 
 function sleep(ms: number): Promise<void> {

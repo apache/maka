@@ -63,11 +63,166 @@ import {
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { AttachmentRef, QuoteRef } from '@maka/core/events';
-import type { ModelMessage, UserContent, UserModelMessage } from './model-protocol.js';
-import { decodeEffectiveToolResultProjection } from './durable-tool-result-projection.js';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type {
+  ModelMessage,
+  ToolResultOutput,
+  UserContent,
+  UserModelMessage,
+} from './model-protocol.js';
+import {
+  decodeEffectiveToolResultProjection,
+  durableProjectionToToolResultOutput,
+} from './durable-tool-result-projection.js';
+import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 
-export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
+export const PROVIDER_REPLAY_PROJECTION_VERSION = 2;
+
+/**
+ * Resolve the RuntimeEvents whose provider-owned reasoning may cross the
+ * current provider boundary. Route provenance remains on AgentRunHeader;
+ * current-run events are same-route by construction during mid-turn replay.
+ */
+export function compatibleProviderReasoningReplayEventIds(
+  events: readonly RuntimeEvent[],
+  runHeaders: readonly AgentRunHeader[] | undefined,
+  targetProviderStateIdentity: `sha256:${string}` | undefined,
+  targetModelId: string,
+  currentRunId?: string,
+): ReadonlySet<string> {
+  const compatibleRunIds = new Set(currentRunId ? [currentRunId] : []);
+  if (targetProviderStateIdentity && runHeaders) {
+    for (const run of runHeaders) {
+      if (
+        run.providerStateIdentity === targetProviderStateIdentity &&
+        run.modelId === targetModelId
+      ) {
+        compatibleRunIds.add(run.runId);
+      }
+    }
+  }
+  return new Set(
+    events.filter((event) => compatibleRunIds.has(event.runId)).map((event) => event.id),
+  );
+}
+
+/**
+ * Apply provider-reasoning admission without disturbing portable transcript
+ * or tool evidence. Durable replay identities and wire materializers share
+ * this item projection.
+ */
+export function admitProviderReasoningReplayItems(
+  items: readonly RuntimeEventModelReplayItem[],
+  providerReasoningReplayEventIds: ReadonlySet<string>,
+): RuntimeEventModelReplayItem[] {
+  return items.filter(
+    (item) => item.kind !== 'thinking' || providerReasoningReplayEventIds.has(item.eventId),
+  );
+}
+
+// ============================================================================
+// Effective model-history sizing
+// ============================================================================
+
+/**
+ * Model-visible character count of a `function_response`'s EFFECTIVE value —
+ * the durable projection when the response has one, never the raw execution
+ * fact the projection already bounded or redacted.
+ *
+ * Memoized on the content object because a legacy response (no durable
+ * projection) is re-derived through the whole compatibility codec, and one
+ * request measures the same events several times: budget verdicts, the
+ * compactable-content filter, and checkpoint prefix matching all walk the
+ * history. Content is immutable once committed, so identity is a sound key.
+ */
+const effectiveToolResultChars = new WeakMap<object, number>();
+
+/** Model-visible character count of one materialized Tool Result output. */
+function estimateToolResultOutputChars(output: ToolResultOutput): number {
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value.length;
+    case 'json':
+    case 'error-json':
+      return stableJsonLength(output.value);
+    case 'content':
+      return output.value.reduce(
+        (total, part) => total + (part.type === 'text' ? part.text.length : 0),
+        0,
+      );
+    case 'execution-denied':
+      return output.reason?.length ?? 0;
+  }
+}
+
+export function estimateEffectiveToolResultChars(
+  content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
+  sessionId: string,
+): number {
+  const memoized = effectiveToolResultChars.get(content);
+  if (memoized !== undefined) return memoized;
+  const effective = decodeEffectiveToolResultProjection(content, sessionId);
+  const chars =
+    effective.kind === 'projection'
+      ? estimateToolResultOutputChars(durableProjectionToToolResultOutput(effective.projection))
+      : effective.kind === 'invalid_legacy'
+        ? effective.message.length
+        : stableJsonLength(effective.output);
+  effectiveToolResultChars.set(content, chars);
+  return chars;
+}
+
+export function estimateRuntimeEventChars(event: RuntimeEvent): number {
+  let total = 0;
+  const content = event.content;
+  if (content?.kind === 'text' || content?.kind === 'thinking') total += content.text.length;
+  else if (content?.kind === 'function_call')
+    total += content.name.length + stableJsonLength(content.args);
+  else if (content?.kind === 'function_response')
+    total += content.name.length + estimateEffectiveToolResultChars(content, event.sessionId);
+  else if (content?.kind === 'error') total += content.message.length;
+  return total;
+}
+
+export function estimateRuntimeEventsTokens(
+  events: readonly RuntimeEvent[],
+  charsPerToken = 4,
+): number {
+  const chars = events.reduce(
+    (total, event) =>
+      event.modelVisibility === 'hidden' ? total : total + estimateRuntimeEventChars(event),
+    0,
+  );
+  return estimateTokens(chars, charsPerToken);
+}
+
+export function groupEventsByTurn(
+  events: readonly RuntimeEvent[],
+  charsPerToken: number,
+): Array<{
+  turnId: string;
+  estimatedTokens: number;
+  events: RuntimeEvent[];
+}> {
+  const order: string[] = [];
+  const byTurn = new Map<string, RuntimeEvent[]>();
+  for (const event of events) {
+    const key = turnKey(event);
+    const group = byTurn.get(key);
+    if (group) group.push(event);
+    else {
+      order.push(key);
+      byTurn.set(key, [event]);
+    }
+  }
+  return order.map((turnId) => ({
+    turnId,
+    events: byTurn.get(turnId) ?? [],
+    estimatedTokens: estimateRuntimeEventsTokens(byTurn.get(turnId) ?? [], charsPerToken),
+  }));
+}
 
 // ============================================================================
 // Output type

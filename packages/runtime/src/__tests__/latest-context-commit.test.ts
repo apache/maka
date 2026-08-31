@@ -36,8 +36,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import {
+  decodeModelCallAttempt,
+  PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS,
+  type ModelCallAttempt,
+} from '@maka/core/model-call-attempt';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -45,7 +48,7 @@ import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
-test('a real send seals its row all the way into SQLite, with nothing injected', async () => {
+test('a real send seals its observation into SQLite and reconstructs it after restart', async () => {
   // Tracker → backend → the kernel seam a backend is actually built with →
   // AgentRun → the storage transaction. Every layer in that list once had a
   // signature that compiled while dropping the row, and no test crossed all of
@@ -133,25 +136,137 @@ test('a real send seals its row all the way into SQLite, with nothing injected',
     assert.equal(scanned, 0, 'the row was committed by the send, not rebuilt by the read');
 
     await manager.stopSession(session.id, { source: 'stop_button' });
+    runStore.close?.();
+
+    const reopened = createSqliteAgentRunStore(root);
+    try {
+      const runs = await reopened.listSessionRuns(session.id);
+      const canonicalAttempts = (
+        await Promise.all(
+          runs.map(async (run) => {
+            const events = await reopened.readEvents(session.id, run.runId);
+            return events
+              .filter((event) => event.type === 'model_call_attempt_recorded')
+              .map((event) => decodeModelCallAttempt(event.data));
+          }),
+        )
+      ).flat();
+      assert.equal(canonicalAttempts.length, 1);
+      const observation = canonicalAttempts[0]?.requestObservation;
+      assert.ok(observation);
+      assert.ok(observation.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS);
+      assert.ok(observation.segments.length > 0);
+      assert.ok(observation.segments.every((segment) => segment.comparison === 'exact'));
+
+      let coldScans = 0;
+      const cold = await readLatestContextDiagnostics(
+        {
+          listSessionRuns: (sessionId) => reopened.listSessionRuns(sessionId),
+          readEvents: async (sessionId, runId) => {
+            coldScans += 1;
+            return reopened.readEvents(sessionId, runId);
+          },
+          repairEventProjection: (sessionId, type, event, options) =>
+            reopened.repairEventProjection(sessionId, type, event, options),
+        },
+        session.id,
+      );
+
+      assert.ok(coldScans > 0, 'omitting the projection reader forces a restart-safe ledger fold');
+      assert.equal(cold.status, 'available');
+      if (cold.status !== 'available') return;
+      assert.deepEqual(cold.composition, diagnostics.composition);
+    } finally {
+      reopened.close?.();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('a layer that forwards only the attempt no longer type-checks', () => {
-  // The regression this replaces was invisible precisely because it compiled.
-  // Keeping the shape in a value here means a future narrowing is a build
-  // failure rather than a silently missing feature.
-  const forward = (commit: ModelCallCommit<ModelCallAttempt>) => commit;
-  const commit = {
-    attempt: { attemptId: 'a-1' } as ModelCallAttempt,
-    latestContext: { attemptId: 'a-1', orderedAt: 10, snapshot: { attemptId: 'a-1' } },
-  } satisfies ModelCallCommit<ModelCallAttempt>;
+test('an artifact captured before abort does not create a canonical sent attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-aborted-request-chain-'));
+  try {
+    const sessionStore = createSessionStore(root);
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const backends = new BackendRegistry();
+    let ids = 0;
+    const newId = () => `abort-chain-${++ids}`;
+    let providerCalls = 0;
+    let artifactWrites = 0;
 
-  const forwarded = forward(commit);
+    backends.register('ai-sdk', (ctx) => {
+      let backend!: ReturnType<typeof createTestAiSdkBackend>;
+      backend = createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: async () => {},
+        connection: {
+          slug: 'mock-main',
+          providerType: 'anthropic',
+          defaultModel: 'mock-model-id',
+          models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+        },
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () =>
+          new MockLanguageModelV4({
+            doStream: async () => {
+              providerCalls += 1;
+              return { stream: simulateReadableStream({ chunks: [] }) };
+            },
+          }),
+        tools: [],
+        persistPreparedRequestArtifact: async () => {
+          artifactWrites += 1;
+          void backend.stop('user_stop');
+          return { artifactId: 'abandoned-artifact' };
+        },
+        ...(ctx.recordModelCallAttempt
+          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+          : {}),
+        newId,
+        now: () => 1_000 + ids,
+      });
+      return backend;
+    });
 
-  assert.equal(forwarded.latestContext?.attemptId, 'a-1', 'the derived row survives the hop');
-  assert.equal(forwarded.attempt.attemptId, 'a-1');
+    const manager = new SessionManager({
+      store: sessionStore,
+      runStore,
+      runtimeEventStore,
+      backends,
+      newId,
+      now: () => 1_000 + ids,
+    });
+    const session = await manager.createSession({
+      cwd: root,
+      llmConnectionSlug: 'mock-main',
+      permissionMode: 'bypass',
+    });
+    for await (const _event of manager.sendMessage(session.id, {
+      turnId: 'turn-aborted-before-dispatch',
+      text: 'abort after preparing the request',
+    })) {
+      // Drain the aborted turn through the real AgentRun store.
+    }
+
+    const runs = await runStore.listSessionRuns(session.id);
+    const events = (
+      await Promise.all(runs.map((run) => runStore.readEvents(session.id, run.runId)))
+    ).flat();
+    assert.equal(artifactWrites, 1);
+    assert.equal(providerCalls, 0);
+    assert.equal(events.filter((event) => event.type === 'model_call_attempt_recorded').length, 0);
+    assert.deepEqual(await readLatestContextDiagnostics(runStore, session.id), {
+      status: 'unavailable',
+      reason: 'no_completed_request',
+    });
+    await manager.stopSession(session.id, { source: 'stop_button' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 function answeringModel(): MockLanguageModelV4 {

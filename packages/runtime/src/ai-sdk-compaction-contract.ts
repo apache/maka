@@ -22,6 +22,7 @@ import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
@@ -35,7 +36,12 @@ import type { ToolResultArchiveCapability } from './tool-result-archive-capabili
 export interface HistoryCompactSummaryInput {
   sessionId: string;
   turnId: string;
-  source: { foldedRuntimeEvents: RuntimeEvent[] };
+  /** Run issuing this compaction; its events are same-route by construction. */
+  runId?: string;
+  source: {
+    foldedRuntimeEvents: RuntimeEvent[];
+    runHeaders?: readonly AgentRunHeader[];
+  };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
   /**
@@ -46,7 +52,6 @@ export interface HistoryCompactSummaryInput {
     maxEstimatedTokens: number;
     charsPerToken: number;
   };
-  requestShapeHashBefore?: string;
   abortSignal?: AbortSignal;
   /**
    * Physical-call tracking for this summarization, built by the backend (#1679).

@@ -95,7 +95,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 79 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 80 as const;
+// 80: Runtime Policy catalog models gained validated user-overridden fact
+// provenance. Older peers reject this projected model shape, so they must be
+// refused during the handshake before catalog admission.
 // 79: Every `turn.message.submit` disposition carries the exact Skill
 // invocation outcome. Durable queued replays may omit the previous Host
 // Epoch's transient queue revision; older strict peers reject either shape.

@@ -17,15 +17,13 @@
  * under the License.
  */
 
-import {
-  estimateTokens,
-  estimateRuntimeEventsTokens,
-  stableJsonLength,
-} from './context-budget-helpers.js';
+import { estimateTokens, stableJsonLength } from './context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 
 // Public re-export surface for @maka/runtime consumers. Explicit list keeps
 // the ./context-budget subpath from leaking leaf-internal collaboration symbols.
-export { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+export { estimateTokens } from './context-budget-helpers.js';
+export { estimateRuntimeEventsTokens } from './model-history.js';
 export {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -59,12 +57,10 @@ import {
   type HistoryCompactionCheckpointReplayFit,
 } from './history-compaction.js';
 
-import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
   CompactionDecisionDiagnostic,
   ContextBudgetDiagnostic,
-  PromptSegmentEstimate,
 } from '@maka/core/usage-stats/types';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
@@ -102,16 +98,6 @@ export interface BudgetedRuntimeContext {
    * reporting what a prompt was built from (#2323).
    */
   historyCompactCheckpoint?: HistoryCompactCheckpoint;
-}
-
-export interface PromptSegmentInput {
-  systemPrompt?: string;
-  toolSchemaChars: number;
-  toolCount: number;
-  priorMessages: readonly ModelMessage[];
-  priorRuntimeEventCount?: number;
-  currentUserContent: string;
-  charsPerToken?: number;
 }
 
 export function applyRuntimeEventContextBudget(
@@ -162,67 +148,6 @@ export function applyRuntimeEventContextBudget(
     events: keptEvents,
     diagnostic,
     ...(compacted.checkpoint ? { historyCompactCheckpoint: compacted.checkpoint } : {}),
-  };
-}
-
-export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSegmentEstimate[] {
-  const charsPerToken = input.charsPerToken ?? 4;
-  return [
-    segment('system_prompt', input.systemPrompt?.length ?? 0, charsPerToken),
-    {
-      ...segment('tool_schema', input.toolSchemaChars, charsPerToken),
-      toolCount: input.toolCount,
-    },
-    {
-      ...segment('prior_history', estimateModelMessagesChars(input.priorMessages), charsPerToken),
-      messageCount: input.priorMessages.length,
-      ...(input.priorRuntimeEventCount !== undefined
-        ? { eventCount: input.priorRuntimeEventCount }
-        : {}),
-    },
-    segment('current_user', input.currentUserContent.length, charsPerToken),
-  ];
-}
-
-export function estimateModelMessagesChars(messages: readonly ModelMessage[]): number {
-  return messages.reduce((total, message) => total + estimateModelMessageChars(message), 0);
-}
-
-function estimateModelMessageChars(message: ModelMessage): number {
-  const raw = message as unknown as { content?: unknown };
-  return estimateContentChars(raw.content);
-}
-
-function estimateContentChars(content: unknown): number {
-  if (typeof content === 'string') return content.length;
-  if (Array.isArray(content)) {
-    return content.reduce((total, part) => total + estimatePartChars(part), 0);
-  }
-  return stableJsonLength(content);
-}
-
-function estimatePartChars(part: unknown): number {
-  if (!part || typeof part !== 'object') return stableJsonLength(part);
-  const value = part as Record<string, unknown>;
-  let total = 0;
-  for (const key of ['text', 'toolName', 'toolCallId'] as const) {
-    if (typeof value[key] === 'string') total += value[key].length;
-  }
-  for (const key of ['input', 'output'] as const) {
-    if (value[key] !== undefined) total += stableJsonLength(value[key]);
-  }
-  return total;
-}
-
-function segment(
-  kind: PromptSegmentEstimate['kind'],
-  chars: number,
-  charsPerToken: number,
-): PromptSegmentEstimate {
-  return {
-    kind,
-    chars,
-    estimatedTokens: estimateTokens(chars, charsPerToken),
   };
 }
 

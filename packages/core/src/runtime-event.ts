@@ -336,7 +336,7 @@ export interface RuntimeEventContinuationStartV2 {
     prefixDigest: `sha256:${string}`;
   };
   replayManifestDigest: `sha256:${string}`;
-  providerProjectionVersion: 1;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: `sha256:${string}`;
 }
 
@@ -1030,7 +1030,7 @@ function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContin
     (value.immediateSource.highWater as number) > 0 &&
     isSha256Digest(value.immediateSource.prefixDigest) &&
     isSha256Digest(value.replayManifestDigest) &&
-    value.providerProjectionVersion === 1 &&
+    (value.providerProjectionVersion === 1 || value.providerProjectionVersion === 2) &&
     isSha256Digest(value.providerReplayDigest)
   );
 }

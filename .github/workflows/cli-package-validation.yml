@@ -97,6 +97,29 @@ jobs:
           persist-credentials: false
       - name: Update stable Rust
         run: rustup update stable --no-self-update
+      - id: rustc
+        name: Resolve Rust cache version
+        shell: bash
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+      - name: Install Kache
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+      - id: kache-cache
+        name: Restore Rust build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: kache-runtime-host-peer-release-${{ matrix.target }}-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ steps.rustc.outputs.revision }}
+          restore-keys: |
+            kache-runtime-host-peer-release-${{ matrix.target }}-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-
       - name: Install the Linux baseline linker
         if: startsWith(matrix.target, 'linux-')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
@@ -104,7 +127,7 @@ jobs:
           version: 0.16.0
       - name: Install cargo-zigbuild
         if: startsWith(matrix.target, 'linux-')
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-zigbuild@0.23.2
       - name: Build the release addon
@@ -112,6 +135,15 @@ jobs:
           MAKA_RUNTIME_HOST_PEER_CARGO_SUBCOMMAND: ${{ matrix.rust_target && 'zigbuild' || '' }}
           MAKA_RUNTIME_HOST_PEER_CARGO_TARGET: ${{ matrix.rust_target }}
         run: node native/runtime-host-peer/build.mjs
+      - name: Report Rust build cache
+        shell: bash
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+      - name: Save Rust build cache
+        if: github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: ${{ steps.kache-cache.outputs.cache-primary-key }}
       - name: Enforce the Linux glibc baseline
         if: startsWith(matrix.target, 'linux-')
         run: |
@@ -160,7 +192,7 @@ jobs:
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
       - name: Install cargo-deny
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-deny@0.20.2
       - name: Download direct-peer addons

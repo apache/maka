@@ -115,7 +115,26 @@ export interface ModelInfo {
     input: Array<'text' | 'image' | 'audio' | 'pdf'>;
     output: Array<'text' | 'image' | 'audio'>;
   };
+  /**
+   * Read-time provenance for values overlaid from model-facts.json. This is
+   * never persisted in a provider inventory; it lets catalog consumers show
+   * where a projected value came from.
+   */
+  factOverriddenFields?: readonly ModelFactField[];
 }
+
+export type ModelFactField =
+  | 'displayName'
+  | 'description'
+  | 'apiProtocol'
+  | 'contextWindow'
+  | 'inputLimit'
+  | 'maxOutputTokens'
+  | 'knowledgeCutoff'
+  | 'structuredOutput'
+  | 'lastUpdated'
+  | 'capabilities'
+  | 'modalities';
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
 
@@ -413,7 +432,6 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
-
   // Seed a first choice only for a connection that has never had a list to
   // pick from: four providers ship no `fallbackModels`, so for them discovery
   // is the only place a first default can come from.

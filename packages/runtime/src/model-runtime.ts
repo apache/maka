@@ -244,11 +244,14 @@ function reasoningReplayContract(
     case 'openai-responses':
       return { kind: 'responses', contract: responsesContract(adapter) };
     case 'openai-chat':
-      return adapter.kind === 'openai-compatible'
+      return adapter.kind === 'openai-compatible' || adapter.kind === 'github-copilot'
         ? {
             kind: 'openai-chat-plaintext',
             requestField:
-              adapter.replayAssistantReasoningAs === 'reasoning' ? 'reasoning' : 'observed',
+              adapter.kind === 'openai-compatible' &&
+              adapter.replayAssistantReasoningAs === 'reasoning'
+                ? 'reasoning'
+                : 'observed',
           }
         : { kind: 'none' };
     case 'google-generate':

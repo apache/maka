@@ -853,17 +853,18 @@ function cloneAgentRunEvent(
     );
   } else if (event.type === 'history_compact_checkpoint_recorded') {
     const sourceCheckpoint = event.data?.checkpoint;
-    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) {
-      throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
-    }
     // Conversation copies carry the canonical raw RuntimeEvents and can create
-    // a fresh checkpoint on demand. Do not export opaque provider state into a
-    // new session or degrade it into user-visible placeholder text.
+    // a fresh checkpoint on demand, so a checkpoint this Runtime can no longer
+    // hold to its own contract is DROPPED, never fatal: the copy is complete
+    // without it. That covers opaque provider state (do not export it into a
+    // new session or degrade it into user-visible placeholder text), a
+    // superseded source policy, and a prefix that no longer matches. A ledger
+    // keeps every checkpoint it ever recorded, so a session that compacted
+    // under an older policy would otherwise be permanently uncopyable.
+    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) return null;
     if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
-    if (match.reason) {
-      throw new Error(`Cannot copy unmatched history compact checkpoint ${event.id}`);
-    }
+    if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // including the size floor, re-runnable here because the matched covered
@@ -1038,8 +1039,16 @@ function rewriteProviderRequestAttempt(
     ...data,
     traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
     attemptId: eventId,
-    captureId: requiredMappedId(operationalEventIds, data.captureId, 'provider request capture'),
-    captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
+    ...(data.captureId !== undefined && data.captureArtifactId !== undefined
+      ? {
+          captureId: requiredMappedId(
+            operationalEventIds,
+            data.captureId,
+            'provider request capture',
+          ),
+          captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
+        }
+      : {}),
   };
 }
 
@@ -1111,16 +1120,17 @@ function providerRequestCapture(event: AgentRunEvent): Record<string, unknown> &
 function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> & {
   readonly traceId: string;
   readonly attemptId: string;
-  readonly captureId: string;
-  readonly captureArtifactId: string;
+  readonly captureId?: string;
+  readonly captureArtifactId?: string;
 } {
   const data = event.data;
+  const hasCaptureId = typeof data?.captureId === 'string';
+  const hasArtifactId = typeof data?.captureArtifactId === 'string';
   if (
     !data ||
     data.attemptId !== event.id ||
     typeof data.traceId !== 'string' ||
-    typeof data.captureId !== 'string' ||
-    typeof data.captureArtifactId !== 'string'
+    hasCaptureId !== hasArtifactId
   ) {
     throw new Error(`Cannot copy invalid provider request attempt ${event.id}`);
   }
@@ -1128,8 +1138,9 @@ function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> &
     ...data,
     traceId: data.traceId,
     attemptId: data.attemptId,
-    captureId: data.captureId,
-    captureArtifactId: data.captureArtifactId,
+    ...(hasCaptureId && hasArtifactId
+      ? { captureId: data.captureId as string, captureArtifactId: data.captureArtifactId as string }
+      : {}),
   };
 }
 

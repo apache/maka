@@ -55,6 +55,7 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
     recordModelProjectionTransition: async (transition) => {
       transitions.push(transition);
     },
+    providerStateIdentity: `sha256:${'1'.repeat(64)}`,
     ...backendInput,
     ...(testProjectionArtifacts
       ? {

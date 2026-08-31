@@ -36,7 +36,6 @@ import {
 } from '@maka/runtime/openai-codex-history-compactor';
 import { buildPricingLookup, recordToolInvocation } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
-import { createProviderRequestCaptureRecorder } from '@maka/runtime/provider-request-telemetry';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -44,7 +43,11 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
-import { type BackendFactoryContext } from '@maka/runtime/session-manager';
+import {
+  type BackendFactoryContext,
+  type BackendPreparationContext,
+  type PreparedBackendActivation,
+} from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
 import {
   createAttachmentByteReader,
@@ -63,7 +66,11 @@ import {
 import type { HostChildAgentBackendCapabilities } from './child-agent-composition.js';
 import type { HostExecutionArtifactServices } from './execution-artifacts.js';
 import type { HostMemoryExtractionCoordinator } from './memory-extraction-coordinator.js';
-import { readDuringBackendCreation, resolveExecutionTarget } from './execution-model-authority.js';
+import {
+  readDuringBackendCreation,
+  resolveExecutionTarget,
+  type ResolvedExecutionTarget,
+} from './execution-model-authority.js';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 import type { HostRunComposer, HostRunComposerFactory } from './host-run-composer.js';
 
@@ -83,6 +90,10 @@ export interface HostAiSdkBackendInput {
   readonly childAgents?: HostChildAgentBackendCapabilities;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
+
+export type HostAiSdkBackendPreparationInput = Omit<HostAiSdkBackendInput, 'context'> & {
+  readonly context: BackendPreparationContext;
+};
 
 type HostExecutionRuntimePolicyAuthority = {
   readonly operations: Pick<RuntimePolicyStoresWriter['operations'], 'resolveExecutionConnection'>;
@@ -116,6 +127,14 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       ),
     input.context.abortSignal,
   );
+  return await buildHostAiSdkBackend(input, target);
+}
+
+async function buildHostAiSdkBackend(
+  input: HostAiSdkBackendInput,
+  target: ResolvedExecutionTarget,
+): Promise<AiSdkBackend> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   const pricingSnapshot = await readDuringBackendCreation(
     () => input.usage.pricing.snapshot(),
     input.context.abortSignal,
@@ -195,11 +214,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     providerOptions,
   });
   const summarizeHistoryCompact =
-    target.connection.providerType === 'openai-codex'
+    target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
       ? withOpenAiCodexHistoryCompactionFallback(
           buildOpenAiCodexHistoryCompactor({
             resolveModel: resolveHistoryCompactModel,
-            connectionSlug: target.connection.slug,
+            connectionId: input.context.header.llmConnectionId,
+            providerStateIdentity: target.providerStateIdentity,
             modelId: target.model,
             providerOptions,
           }),
@@ -207,7 +227,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         )
       : textHistorySummarizer;
   const historyCompactRoute =
-    target.connection.providerType === 'openai-codex' ? 'provider_native' : 'text_summary';
+    target.connection.providerType === 'openai-codex' && input.context.header.llmConnectionId
+      ? 'provider_native'
+      : 'text_summary';
   let telemetryDrainRequested = false;
   const persistTelemetry = async (operation: () => Promise<void>): Promise<void> => {
     try {
@@ -269,32 +291,22 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
       throw new Error('Canonical model-call accounting authority is unavailable');
     }
   };
-  let artifactDrainRequested = false;
-  const providerRequestCapture = input.context.recordProviderRequestCapture
-    ? createProviderRequestCaptureRecorder({
-        persistArtifact: async (capture) => {
-          try {
-            const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
-              sessionId: input.context.sessionId,
-              turnId: capture.turnId,
-              captureId: capture.captureId,
-              step: capture.step,
-              serializedRequest: capture.serializedRequest,
-              now: Date.now(),
-            });
-            return { artifactId: artifact.id };
-          } catch (error) {
-            if (!artifactDrainRequested) {
-              artifactDrainRequested = true;
-              input.requestDrain();
-            }
-            throw error;
-          }
-        },
-        recordLedger: input.context.recordProviderRequestCapture,
-      })
-    : undefined;
-  const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
+  const persistPreparedRequestArtifact = async (capture: {
+    turnId: string;
+    captureId: string;
+    step: number;
+    serializedRequest: string;
+  }): Promise<{ artifactId: string }> => {
+    const artifact = await persistProviderRequestCaptureArtifact(input.artifacts, {
+      sessionId: input.context.sessionId,
+      turnId: capture.turnId,
+      captureId: capture.captureId,
+      step: capture.step,
+      serializedRequest: capture.serializedRequest,
+      now: Date.now(),
+    });
+    return { artifactId: artifact.id };
+  };
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
@@ -369,6 +381,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             }
           : {}),
         connection: target.connection,
+        providerStateIdentity: target.providerStateIdentity,
         apiKey,
         modelId: target.model,
         modelFactory,
@@ -454,18 +467,9 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,
+        persistPreparedRequestArtifact,
         recordToolInvocation: (event) => recordToolInvocation({ repo: telemetry }, event),
         ...(input.runtimeCommitSink ? { runtimeCommitSink: input.runtimeCommitSink } : {}),
-        ...(providerRequestCapture
-          ? {
-              recordProviderRequestCapture: providerRequestCapture,
-              ...(input.context.recordProviderRequestAttempt
-                ? {
-                    recordProviderRequestAttempt,
-                  }
-                : {}),
-            }
-          : {}),
         newId: randomUUID,
         now: Date.now,
       },
@@ -480,6 +484,33 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
     }
     throw error;
   }
+}
+
+export async function prepareHostAiSdkBackend(
+  input: HostAiSdkBackendPreparationInput,
+): Promise<PreparedBackendActivation> {
+  const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
+  const preparedTarget = await readDuringBackendCreation(
+    () =>
+      resolveExecutionTarget(
+        input.context.header,
+        input.runtimePolicy,
+        input.oauthCredentials,
+        createFetchTransport,
+      ),
+    input.context.abortSignal,
+  );
+  return {
+    providerStateIdentity: preparedTarget.providerStateIdentity,
+    build: (context) =>
+      buildHostAiSdkBackend(
+        {
+          ...input,
+          context,
+        },
+        preparedTarget,
+      ),
+  };
 }
 
 class HostAiSdkBackend extends AiSdkBackend {

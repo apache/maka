@@ -31,6 +31,7 @@ import {
 import { openInteractiveScheduledTaskStoreForWrite } from '../scheduled-task-store.js';
 import { createSqlitePlanStore } from '../plan-store.js';
 import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
+import { createSqliteSessionTodoStore } from '../session-todo-store.js';
 import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '../root-authority.js';
 import {
@@ -106,7 +107,7 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-  test('migrates released workflow schema 9 projections to event-only schema 10', async () => {
+  test('migrates released workflow schema 9 projections to the current workflow schema', async () => {
     await withRoot(async (root) => {
       const taskStore = createSqliteTaskLedgerStore(root);
       await taskStore.create(SESSION_ID, [{ subject: 'Preserve event authority' }]);
@@ -165,6 +166,46 @@ describe('SQLite workflow stores', () => {
         assert.equal(tableExists(verified, 'workflow_plan_projections'), false);
         assert.equal(rowCount(verified, 'workflow_task_ledger_events'), 1);
         assert.equal(rowCount(verified, 'workflow_plan_events'), 1);
+      } finally {
+        verified.close();
+      }
+    });
+  });
+
+  test('adds SessionTodo storage to workflow schema 10 without changing Task events', async () => {
+    await withRoot(async (root) => {
+      const tasks = createSqliteTaskLedgerStore(root);
+      const created = await tasks.create(SESSION_ID, [{ subject: 'Preserve schema 10 Task' }]);
+      const taskId = created.created[0]!.id;
+      await tasks.update(SESSION_ID, taskId, { status: 'in_progress' });
+      await tasks.update(SESSION_ID, taskId, {
+        status: 'blocked',
+        blockedReason: 'waiting across the upgrade',
+      });
+      tasks.close();
+
+      const released = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        released.exec('DROP TABLE workflow_session_todo_documents');
+        setWorkflowSchemaVersion(released, 10);
+      } finally {
+        released.close();
+      }
+
+      const migrated = createSqliteSessionTodoStore(root);
+      try {
+        assert.deepEqual(await migrated.readOrBootstrap(SESSION_ID), {
+          items: [{ content: 'Preserve schema 10 Task', status: 'pending' }],
+        });
+      } finally {
+        migrated.close();
+      }
+
+      const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(workflowSchemaVersion(verified), SQLITE_WORKFLOW_SCHEMA_VERSION);
+        assert.equal(rowCount(verified, 'workflow_task_ledger_events'), 3);
+        assert.equal(rowCount(verified, 'workflow_session_todo_documents'), 1);
       } finally {
         verified.close();
       }
@@ -403,7 +444,7 @@ describe('SQLite workflow stores', () => {
     });
   });
 
-  test('backs up and restores event-only Task Ledger and Plan state', async () => {
+  test('backs up and restores Task, Plan, and initialized SessionTodo state', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-workflow-backup-'));
     const stateRoot = join(base, 'state');
     const backupRoot = join(base, 'backup');
@@ -426,6 +467,13 @@ describe('SQLite workflow stores', () => {
       });
       planStore.close();
 
+      const todoStore = createSqliteSessionTodoStore(stateRoot);
+      await todoStore.replaceAll('todo-non-empty', [
+        { content: 'Restore current Todo', status: 'in_progress' },
+      ]);
+      await todoStore.replaceAll('todo-empty', []);
+      todoStore.close();
+
       await createOperationalStateBackup({ stateRoot, destinationRoot: backupRoot, now: () => 10 });
       await restoreOperationalStateBackup({ backupRoot, destinationRoot: restoreRoot });
 
@@ -444,6 +492,15 @@ describe('SQLite workflow stores', () => {
       } finally {
         restoredPlan.close();
       }
+      const restoredTodos = createSqliteSessionTodoStore(restoreRoot);
+      try {
+        assert.deepEqual(await restoredTodos.readOrBootstrap('todo-non-empty'), {
+          items: [{ content: 'Restore current Todo', status: 'in_progress' }],
+        });
+        assert.deepEqual(await restoredTodos.readOrBootstrap('todo-empty'), { items: [] });
+      } finally {
+        restoredTodos.close();
+      }
 
       const restored = new DatabaseSync(join(restoreRoot, 'runtime.sqlite'), { readOnly: true });
       try {
@@ -451,6 +508,7 @@ describe('SQLite workflow stores', () => {
         assert.equal(tableExists(restored, 'workflow_plan_projections'), false);
         assert.equal(rowCount(restored, 'workflow_task_ledger_events'), 1);
         assert.equal(rowCount(restored, 'workflow_plan_events'), 1);
+        assert.equal(rowCount(restored, 'workflow_session_todo_documents'), 2);
       } finally {
         restored.close();
       }

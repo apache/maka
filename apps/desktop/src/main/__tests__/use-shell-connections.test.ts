@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -34,17 +35,6 @@ const EMPTY: DesktopConnectionSnapshot = {
 function snapshot(defaultConnection: string): DesktopConnectionSnapshot {
   return { ...EMPTY, defaultConnection };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
-}
-
 test('keeps connection projections isolated and cached by owning Host', async () => {
   const { root } = installReactRenderer();
   const sessionA = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });

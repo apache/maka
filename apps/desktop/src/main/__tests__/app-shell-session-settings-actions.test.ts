@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -24,17 +25,6 @@ import type { StoredMessage } from '@maka/core/session';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
 import type { SessionPendingClaim } from '../../renderer/app-shell-session-ui-state.js';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
-}
-
 function session(id: string): DesktopSessionSummary {
   return {
     id,

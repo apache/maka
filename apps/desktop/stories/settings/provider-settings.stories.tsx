@@ -214,6 +214,37 @@ const problemConnections = [
   }),
 ];
 
+const oauthConnections = [
+  makeConnection({
+    slug: 'openai-codex',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-2',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-3',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'xai-oauth',
+    name: 'xAI Grok',
+    providerType: 'xai-oauth',
+    defaultModel: 'grok-4',
+    lastTestStatus: 'verified',
+  }),
+];
+
 function createBridge(input: {
   connections?: IdentifiedLlmConnection[];
   defaultSlug?: string | null;
@@ -233,8 +264,8 @@ function createBridge(input: {
         chatModelChoices: buildChatModelChoices(connections),
       };
     },
-    async setDefault(slug) {
-      defaultSlug = slug;
+    async setDefault(connection) {
+      defaultSlug = connection?.slug ?? null;
     },
     async create(next) {
       const connection = makeConnection({
@@ -249,8 +280,8 @@ function createBridge(input: {
       defaultSlug ??= connection.slug;
       return connection;
     },
-    async update(slug, patch) {
-      const current = connections.find((connection) => connection.slug === slug);
+    async update(identity, patch) {
+      const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
       const updated: IdentifiedLlmConnection = {
         ...current,
@@ -267,15 +298,15 @@ function createBridge(input: {
             : (patch.requestBodyOverlay ?? undefined),
         updatedAt: NOW,
       };
-      connections = connections.map((connection) => connection.slug === slug ? updated : connection);
+      connections = connections.map((connection) => connection.connectionId === identity.connectionId ? updated : connection);
       return updated;
     },
-    async delete(slug) {
-      connections = connections.filter((connection) => connection.slug !== slug);
-      if (defaultSlug === slug) defaultSlug = connections[0]?.slug ?? null;
+    async delete(identity) {
+      connections = connections.filter((connection) => connection.connectionId !== identity.connectionId);
+      if (defaultSlug === identity.slug) defaultSlug = connections[0]?.slug ?? null;
     },
-    async test(slug): Promise<ConnectionTestResult> {
-      if (slug.includes('rate-limit')) {
+    async test(identity): Promise<ConnectionTestResult> {
+      if (identity.slug.includes('rate-limit')) {
         return {
           ok: false,
           statusCode: 429,
@@ -285,11 +316,11 @@ function createBridge(input: {
       }
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
-    async fetchModels(slug): Promise<ModelDiscoveryResult> {
+    async fetchModels(identity): Promise<ModelDiscoveryResult> {
       return {
         models: [
-          { id: slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
-          { id: slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
+          { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
+          { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
         ],
         source: 'fetched',
         fetchedAt: NOW,
@@ -310,17 +341,65 @@ function createBridge(input: {
   };
 }
 
-function installSubscriptionFixtures() {
+function createOAuthSuccessLifecycleFixture() {
+  const bridge = createBridge({ connections: oauthConnections });
+  let eventHandler: (() => void) | undefined;
+  let delayNextSnapshot = false;
+  let releaseSupersededSnapshot: (() => void) | undefined;
+  return {
+    bridge: {
+      ...bridge,
+      async getSnapshot() {
+        const snapshot = await bridge.getSnapshot();
+        if (delayNextSnapshot) {
+          delayNextSnapshot = false;
+          return new Promise<typeof snapshot>((resolve) => {
+            releaseSupersededSnapshot = () => resolve(snapshot);
+          });
+        }
+        const release = releaseSupersededSnapshot;
+        releaseSupersededSnapshot = undefined;
+        queueMicrotask(() => release?.());
+        return snapshot;
+      },
+      subscribeEvents(handler: () => void) {
+        eventHandler = handler;
+        return () => {
+          if (eventHandler === handler) eventHandler = undefined;
+        };
+      },
+    } satisfies ConnectionsBridge,
+    onOAuthComplete() {
+      // `create` mutates the fixture before its already-resolved Promise is
+      // observed. Delay the completion callback's reload, then emit the Host
+      // event so its newer reload wins the ticket and releases the older one:
+      // this is the exact ordering that used to strand the setup page.
+      void bridge.create({
+        slug: 'openai-codex-4',
+        name: 'OpenAI Codex',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5',
+      });
+      delayNextSnapshot = true;
+      window.setTimeout(() => eventHandler?.(), 0);
+    },
+  };
+}
+
+function installSubscriptionFixtures(onOAuthComplete?: () => void) {
   const target = window as unknown as {
     maka?: Record<string, unknown>;
   };
   target.maka = {
     ...(target.maka ?? {}),
-    openAiCodex: browserSubscriptionFixture({
-      runtimeState: 'authenticated',
-      email: 'codex@example.com',
-      plan: 'Plus',
-    }),
+    openAiCodex: browserSubscriptionFixture(
+      {
+        runtimeState: 'authenticated',
+        email: 'codex@example.com',
+        plan: 'Plus',
+      },
+      onOAuthComplete,
+    ),
     githubCopilotSubscription: browserSubscriptionFixture({
       runtimeState: 'not_logged_in',
     }),
@@ -329,9 +408,14 @@ function installSubscriptionFixtures() {
 }
 
 function xaiDeviceSubscriptionFixture() {
+  const connection = {
+    connectionId: 'connection-xai-oauth-2',
+    slug: 'xai-oauth-2',
+    providerType: 'xai-oauth' as const,
+  };
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
-    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH', connection }),
     openAuthUrl: async () => ({ ok: true }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
     cancelAuthorization: async () => ({ ok: true }),
@@ -344,12 +428,20 @@ function browserSubscriptionFixture(state: {
   email?: string;
   plan?: string;
   errorMessage?: string;
-}) {
+}, onComplete?: () => void) {
+  const connection = {
+    connectionId: 'connection-openai-codex-4',
+    slug: 'openai-codex-4',
+    providerType: 'openai-codex' as const,
+  };
   return {
     getAccountState: async () => state,
-    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook', connection }),
     openAuthUrl: async () => ({ ok: true }),
-    completeAuthorization: async () => ({ ok: true }),
+    completeAuthorization: async () => {
+      onComplete?.();
+      return { ok: true as const, connection };
+    },
     cancelAuthorization: async () => ({ ok: true }),
     logout: async () => ({ ok: true }),
   };
@@ -358,13 +450,14 @@ function browserSubscriptionFixture(state: {
 function ProviderStoryFrame(props: {
   bridge: ConnectionsBridge;
   autoOpen?: AutoOpenTarget;
+  onOAuthComplete?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
 
   useEffect(() => {
-    installSubscriptionFixtures();
-  }, []);
+    installSubscriptionFixtures(props.onOAuthComplete);
+  }, [props.onOAuthComplete]);
 
   useEffect(() => {
     const autoOpen = props.autoOpen;
@@ -496,10 +589,11 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
 function ProviderStory(props: {
   bridge: ConnectionsBridge;
   autoOpen?: AutoOpenTarget;
+  onOAuthComplete?: () => void;
 }): ReactNode {
   return (
     <RuntimeHostSettingsTarget host={{ profileId: 'local', hostId: 'storybook-local-host' }}>
-      <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />
+      <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} onOAuthComplete={props.onOAuthComplete} />
     </RuntimeHostSettingsTarget>
   );
 }
@@ -599,6 +693,72 @@ export const AddConnectionCatalog: Story = {
       autoOpen="catalog"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接. OAuth rows are enrollment intents and
+// describe the number of configured Connection entities, never provider-wide
+// login state.
+export const OAuthCatalogNoAccounts: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} autoOpen="catalog" />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('使用 ChatGPT Plus / Pro 账号添加连接。')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogOneAccount: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections.slice(0, 1) })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogMultipleAccounts: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 3 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthConnectionsDisambiguated: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: oauthConnections })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText('OpenAI Codex · openai-codex')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-2')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-3')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCreateAdoptsExactConnection: Story = {
+  render: () => {
+    const fixture = createOAuthSuccessLifecycleFixture();
+    return <ProviderStory bridge={fixture.bridge} onOAuthComplete={fixture.onOAuthComplete} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /添加账号连接：OpenAI Codex/ }));
+    await userEvent.click(await canvas.findByRole('button', { name: '登录并添加' }));
+
+    await expect(canvas.findByRole('region', { name: 'OpenAI Codex · openai-codex-4' })).resolves.toBeTruthy();
+    await userEvent.click(await canvas.findByRole('button', { name: '返回模型连接' }));
+    const createdRow = canvasElement.querySelector<HTMLElement>(
+      '[data-connection-id="connection-openai-codex-4"]',
+    );
+    await expect(createdRow).not.toBeNull();
+    await expect(within(createdRow!).getByRole('button')).toHaveFocus();
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → pick a provider — level three, its form.

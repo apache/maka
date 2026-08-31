@@ -89,10 +89,6 @@ import {
   type RuntimeContinuationStartAdmissionProof,
 } from './runtime-continuation-admission.js';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureLedgerRecord,
-} from './provider-request-telemetry.js';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
 
@@ -206,6 +202,7 @@ export interface AgentRunBeginResult {
 export interface AgentRunOperationBeginResult {
   backend: AgentBackend;
   runtimeContext: RuntimeEvent[];
+  runtimeContextRunHeaders: AgentRunHeader[];
   startedAt: number;
 }
 
@@ -254,6 +251,7 @@ export class AgentRun {
   private finalized = false;
   private terminalRunHeaderCommitted = false;
   private continuationActive = false;
+  private providerStateIdentity: `sha256:${string}` | undefined;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -329,6 +327,19 @@ export class AgentRun {
 
   isStopped(): boolean {
     return this.stopped;
+  }
+
+  headerSnapshot(): SessionHeader {
+    return this.header;
+  }
+
+  bindProviderStateIdentity(identity: `sha256:${string}` | undefined): void {
+    const claimed = this.input.claimedRunHeader?.providerStateIdentity;
+    const expected = claimed ?? this.providerStateIdentity;
+    if (expected !== undefined && expected !== identity) {
+      throw new Error('Prepared backend provider state does not match the AgentRun admission');
+    }
+    this.providerStateIdentity = identity;
   }
 
   isSessionInline(): boolean {
@@ -442,46 +453,6 @@ export class AgentRun {
     return write.catch((error: unknown) => {
       if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
       throw error;
-    });
-  }
-
-  recordProviderRequestCapture(capture: ProviderRequestCaptureLedgerRecord): Promise<void> {
-    if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
-    return this.enqueueRequiredRunStoreWrite('append provider request capture', async () => {
-      const {
-        schemaVersion,
-        serializedRequest: _serializedRequest,
-        ...data
-      } = capture as ProviderRequestCaptureLedgerRecord & { serializedRequest?: string };
-      await this.input.runStore?.appendEvent(
-        this.sessionId,
-        this.runId,
-        {
-          type: 'provider_request_captured',
-          id: capture.captureId,
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: capture.turnId,
-          ts: this.input.now(),
-          data: { schemaVersion, ...data },
-        },
-        { durable: true },
-      );
-    });
-  }
-
-  recordProviderRequestAttempt(attempt: ProviderRequestAttemptRecord): void {
-    if (!this.input.runStore) return;
-    this.enqueueBestEffortProviderAttempt('append provider request attempt', async () => {
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'provider_request_attempt_recorded',
-        id: attempt.attemptId,
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: attempt.turnId,
-        ts: attempt.completedAt,
-        data: { ...attempt },
-      });
     });
   }
 
@@ -734,7 +705,12 @@ export class AgentRun {
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         context: projectionContext,
-        ...(priorRuntimeContext ? { runtimeContext: priorRuntimeContext.events } : {}),
+        ...(priorRuntimeContext
+          ? {
+              runtimeContext: priorRuntimeContext.events,
+              runtimeContextRunHeaders: priorRuntimeContext.runs,
+            }
+          : {}),
       }),
       initialRuntimeEvent,
     };
@@ -759,6 +735,7 @@ export class AgentRun {
     return {
       backend: this.active.backend,
       runtimeContext: priorRuntimeContext?.events ?? [],
+      runtimeContextRunHeaders: priorRuntimeContext?.runs ?? [],
       startedAt,
     };
   }
@@ -1124,6 +1101,9 @@ export class AgentRun {
       continuation && this.input.claimedRunHeader
         ? this.input.claimedRunHeader.createdAt
         : this.input.now();
+    const providerStateIdentity =
+      this.input.claimedRunHeader?.providerStateIdentity ?? this.providerStateIdentity;
+    this.providerStateIdentity = providerStateIdentity;
     const computedHeader: AgentRunHeader = {
       runId: this.runId,
       invocationId: this.invocationId,
@@ -1134,6 +1114,7 @@ export class AgentRun {
       ...(this.header.llmConnectionId === undefined
         ? {}
         : { llmConnectionId: this.header.llmConnectionId }),
+      ...(providerStateIdentity ? { providerStateIdentity } : {}),
       llmConnectionSlug: this.header.llmConnectionSlug,
       modelId: this.header.model,
       cwd: this.header.cwd,
@@ -1610,19 +1591,6 @@ export class AgentRun {
     });
     this.traceQueue = next.catch(() => {});
     return next;
-  }
-
-  /**
-   * Each physical provider request gets its own best-effort diagnostic row.
-   * One failed attempt append must not suppress later attempts or poison the
-   * general AgentRun store latch; a required capture independently gates every
-   * provider dispatch.
-   */
-  private enqueueBestEffortProviderAttempt(label: string, operation: () => Promise<void>): void {
-    const next = this.traceQueue
-      .then(operation, operation)
-      .catch((error) => this.enqueueTraceWriteFailure(error, label));
-    this.traceQueue = next.catch(() => {});
   }
 
   /**

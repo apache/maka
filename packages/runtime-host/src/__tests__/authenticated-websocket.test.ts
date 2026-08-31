@@ -49,6 +49,7 @@ import {
 } from '../server/access-credential-store.js';
 import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import { authorizeRuntimeHostOperation } from '../server/connection-authority.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -1509,9 +1510,9 @@ function requireRemoteConnection(
 }
 
 async function waitForCondition(condition: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail('condition did not become true');
+  await waitFor(condition, {
+    attempts: 100,
+    pollMs: 10,
+    message: 'condition did not become true',
+  });
 }

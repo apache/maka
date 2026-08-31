@@ -1945,7 +1945,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-source',
+        connectionId: 'connection-codex-source',
         modelId: 'gpt-5-codex',
         itemId: 'cmp-source',
         encryptedContent: 'OPAQUE_SOURCE_COMPACTION_STATE',
@@ -1999,6 +1999,30 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         completedAt: 2.5,
         status: 'completed',
         latencyMs: 0.5,
+      },
+    });
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'provider_request_attempt_recorded',
+      id: 'attempt-without-capture-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.55,
+      data: {
+        traceId: 'provider-trace-without-capture-source',
+        attemptId: 'attempt-without-capture-source',
+        turnId: 'turn-1',
+        step: 2,
+        attempt: 1,
+        providerId: 'provider-without-capture',
+        modelId: 'model',
+        requestHash: 'request-hash-without-capture',
+        requestBytes: 13,
+        segments: [],
+        startedAt: 2.5,
+        completedAt: 2.55,
+        status: 'completed',
+        latencyMs: 0.05,
       },
     });
     // A legacy event from the retired active-full writer is treated like any
@@ -2203,6 +2227,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       [
         'provider_request_captured',
         'provider_request_attempt_recorded',
+        'provider_request_attempt_recorded',
         'history_compact_checkpoint_recorded',
         'run_completed',
       ],
@@ -2211,10 +2236,17 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       (event) => event.type === 'provider_request_captured',
     );
     const targetAttempt = targetOperationalEvents.find(
-      (event) => event.type === 'provider_request_attempt_recorded',
+      (event) =>
+        event.type === 'provider_request_attempt_recorded' && event.data?.providerId === 'provider',
+    );
+    const targetAttemptWithoutCapture = targetOperationalEvents.find(
+      (event) =>
+        event.type === 'provider_request_attempt_recorded' &&
+        event.data?.providerId === 'provider-without-capture',
     );
     assert.ok(targetCapture);
     assert.ok(targetAttempt);
+    assert.ok(targetAttemptWithoutCapture);
     assert.equal(targetCapture.data?.captureId, targetCapture.id);
     assert.equal(targetCapture.data?.artifactId, 'artifact-target');
     assert.notEqual(targetCapture.data?.traceId, 'provider-trace-source');
@@ -2222,6 +2254,8 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     assert.equal(targetAttempt.data?.captureId, targetCapture.id);
     assert.equal(targetAttempt.data?.captureArtifactId, 'artifact-target');
     assert.equal(targetAttempt.data?.traceId, targetCapture.data?.traceId);
+    assert.equal(targetAttemptWithoutCapture.data?.captureId, undefined);
+    assert.equal(targetAttemptWithoutCapture.data?.captureArtifactId, undefined);
     assert.equal(targetEvents[1]?.refs?.providerRequestTraceId, targetCapture.data?.traceId);
     assert.equal(targetEvents[1]?.refs?.traceEventId, targetCapture.id);
     assert.doesNotMatch(JSON.stringify(targetOperationalEvents), /OPAQUE_SOURCE_COMPACTION_STATE/);
@@ -2418,6 +2452,119 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       ).reason,
       undefined,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy drops a checkpoint from a superseded source policy instead of failing', async () => {
+  // A ledger keeps every checkpoint it ever recorded, so a session that
+  // compacted under an older source policy still carries that record forever.
+  // Copy must treat it as absent — the copy carries the canonical raw
+  // RuntimeEvents and can compact again — or those sessions become permanently
+  // unbranchable (apache/maka#4283).
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-legacy-policy-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const run = agentRunHeader({
+      runId: 'run-source',
+      invocationId: 'invocation-1',
+      turnId: 'turn-1',
+      cwd: root,
+      completedAt: 3,
+    });
+    await runStore.createRun(run);
+    const sourceEvents = [
+      runtimeEvent({
+        id: 'event-user',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 2,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      }),
+    ];
+    for (const event of sourceEvents) {
+      await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
+    const current = buildHistoryCompactCheckpoint({
+      sessionId: 'session-source',
+      coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
+      summary: 'Everything so far is complete.',
+      summaryFormat: 'legacy_freeform',
+      highWaterSeq: 5,
+    });
+    const legacyPolicyCheckpoint = {
+      ...current,
+      source: {
+        ...current.source,
+        policyVersion: 'maka.compactable_runtime_event_projection.v1',
+      },
+    };
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'checkpoint-legacy-policy',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.5,
+      data: {
+        checkpointId: legacyPolicyCheckpoint.checkpointId,
+        highWaterName: legacyPolicyCheckpoint.highWaterName,
+        highWaterSeq: legacyPolicyCheckpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint: legacyPolicyCheckpoint,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    let sequence = 0;
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => `target-${++sequence}`,
+    });
+
+    const targetRuns = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRuns.length > 0);
+    const targetOperationalEvents = (
+      await Promise.all(targetRuns.map((run) => runStore.readEvents('session-target', run.runId)))
+    ).flat();
+    assert.equal(
+      targetOperationalEvents.some((event) => event.type === 'history_compact_checkpoint_recorded'),
+      false,
+    );
+    const targetEvents = (
+      await Promise.all(
+        targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
+      )
+    ).flat();
+    assert.equal(targetEvents.length, sourceEvents.length);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

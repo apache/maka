@@ -64,3 +64,19 @@ export function mergeWorkspaceReferences(
   }
   return [...merged.values()].sort((left, right) => left.start - right.start);
 }
+
+export function rebaseWorkspaceFileReferences(
+  sourceText: string,
+  projectedText: string,
+  references: readonly WorkspaceFileReferencePosition[],
+): WorkspaceFileReferencePosition[] {
+  const offset = sourceText.lastIndexOf(projectedText);
+  if (offset < 0) return [];
+  return references
+    .filter(
+      (reference) =>
+        reference.start >= offset &&
+        reference.start + reference.value.length <= offset + projectedText.length,
+    )
+    .map((reference) => ({ ...reference, start: reference.start - offset }));
+}

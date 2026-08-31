@@ -21,9 +21,8 @@
 /**
  * Run each workspace's `test:dist` script.
  *
- * Default: parallel batch.
- * `--serial`: every workspace in package.json workspaces order (CI).
- * `--concurrency N`: cap the parallel batch to avoid overloading small runners.
+ * `--concurrency N`: cap the batch to avoid overloading small runners.
+ *   `--concurrency=1` runs every workspace in package.json workspaces order.
  * `--workspaces a,b`: run only the selected workspace paths.
  *
  * Each workspace owns how its dist tests run via package.json `test:dist`.
@@ -41,11 +40,6 @@ import { fileURLToPath } from 'node:url';
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = dirname(dirname(scriptPath));
 
-// Additions to this list need a measured, precisely stated reason. runtime
-// and runtime-host sat here temporarily while three tests relied on fixed
-// waits that missed their window under load; #2132 replaced those waits with
-// explicit barriers and the entries came out again.
-export const SERIAL_WORKSPACE_DIRS = [];
 export const DEFAULT_WORKSPACE_TIMEOUT_MS = 15 * 60_000;
 
 const PROCESS_TERMINATION_GRACE_MS = 1_000;
@@ -54,14 +48,6 @@ const PROCESS_TERMINATION_POLL_MS = 20;
 export function loadWorkspaceDirs(repoRoot, readFile = readFileSync) {
   const rootPkg = JSON.parse(readFile(join(repoRoot, 'package.json'), 'utf8'));
   return Array.isArray(rootPkg.workspaces) ? rootPkg.workspaces : [];
-}
-
-export function partitionWorkspaces(workspaceDirs, serialDirs = SERIAL_WORKSPACE_DIRS) {
-  const serialSet = new Set(serialDirs);
-  return {
-    parallel: workspaceDirs.filter((dir) => !serialSet.has(dir)),
-    serial: workspaceDirs.filter((dir) => serialSet.has(dir)),
-  };
 }
 
 export function nameForDir(dir) {
@@ -180,13 +166,6 @@ function tempRootSlug(name) {
   return name.replace(/[^a-zA-Z0-9._-]/g, '-');
 }
 
-async function runSerial(dirs, options) {
-  for (const dir of dirs) {
-    if (options.signal?.aborted) throw workspaceRunCancelledError();
-    await runWorkspace(dir, options);
-  }
-}
-
 async function runParallel(dirs, options, concurrency) {
   const failures = [];
   let nextIndex = 0;
@@ -212,7 +191,6 @@ async function runParallel(dirs, options, concurrency) {
 
 export async function runWorkspaceTests(options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
-  const serialFlag = options.serial ?? false;
   const concurrency = options.concurrency ?? Number.POSITIVE_INFINITY;
   if (!(concurrency > 0)) throw new Error('concurrency must be greater than zero');
   const workspaceTimeoutMs = options.workspaceTimeoutMs ?? DEFAULT_WORKSPACE_TIMEOUT_MS;
@@ -221,7 +199,6 @@ export async function runWorkspaceTests(options = {}) {
   }
   const spawn = options.spawn ?? defaultSpawn;
   const workspaceDirs = options.workspaceDirs ?? loadWorkspaceDirs(repoRoot);
-  const serialDirs = options.serialWorkspaceDirs ?? SERIAL_WORKSPACE_DIRS;
   const runOptions = {
     repoRoot,
     spawn,
@@ -230,49 +207,15 @@ export async function runWorkspaceTests(options = {}) {
     terminateWorkspace: options.terminateWorkspace,
   };
 
-  if (serialFlag) {
-    await runSerial(workspaceDirs, runOptions);
-  } else {
-    const { parallel, serial } = partitionWorkspaces(workspaceDirs, serialDirs);
-    // The serial batch runs even when the parallel batch failed, and both
-    // results are reported together.
-    //
-    // It used to be a plain `await` pair, so one failing parallel workspace
-    // threw before the serial batch started and those suites silently did not
-    // run — the summary looked shorter and finished sooner, which reads as
-    // "faster and greener" rather than "three packages were skipped". That is
-    // the wrong direction for a runner whose entire job is to say what passed.
-    //
-    // Cancellation still stops everything at once: an aborted signal skips the
-    // serial batch, because there the caller has asked for no further work.
-    let parallelError;
-    try {
-      await runParallel(parallel, runOptions, concurrency);
-    } catch (error) {
-      parallelError = error;
-    }
-    if (runOptions.signal?.aborted) throw parallelError ?? workspaceRunCancelledError();
-    let serialError;
-    try {
-      await runSerial(serial, runOptions);
-    } catch (error) {
-      serialError = error;
-    }
-    const errors = [parallelError, serialError].filter(Boolean);
-    if (errors.length > 0) {
-      throw new Error(errors.map((error) => error?.message ?? String(error)).join('\n'));
-    }
-  }
+  await runParallel(workspaceDirs, runOptions, concurrency);
 }
 
 export function parseCliArgs(args, availableDirs) {
   let concurrency = Number.POSITIVE_INFINITY;
-  let serial = false;
   const requestedDirs = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === '--serial') serial = true;
-    else if (arg === '--concurrency') concurrency = Number(args[++index]);
+    if (arg === '--concurrency') concurrency = Number(args[++index]);
     else if (arg.startsWith('--concurrency=')) concurrency = Number(arg.slice(14));
     else if (arg === '--workspaces') requestedDirs.push(...(args[++index] ?? '').split(','));
     else if (arg.startsWith('--workspaces=')) requestedDirs.push(...arg.slice(13).split(','));
@@ -291,7 +234,6 @@ export function parseCliArgs(args, availableDirs) {
   if (unknown.length > 0) throw new Error(`Unknown workspace: ${unknown.join(', ')}`);
   return {
     concurrency,
-    serial,
     workspaceDirs:
       selected.length > 0 ? availableDirs.filter((dir) => selected.includes(dir)) : availableDirs,
   };

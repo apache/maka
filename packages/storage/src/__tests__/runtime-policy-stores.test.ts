@@ -1553,7 +1553,7 @@ describe('runtime policy stores', () => {
   });
 
   test('conditionally commits discovery and test facts from the latest admitted state with one-shot tickets', async () => {
-    await withInteractiveOwner(async ({ stores }) => {
+    await withInteractiveOwner(async ({ root, stores }) => {
       const connection = await createConnection(
         stores,
         0,
@@ -1576,6 +1576,14 @@ describe('runtime policy stores', () => {
       );
 
       const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+      await writeFile(
+        join(root, 'model-facts.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          overrides: { 'openai:gpt-5': { apiProtocol: 'openai-responses' } },
+        }),
+        'utf8',
+      );
       const testTicket = await stores.operations.beginConnectionTest(
         connection.connectionId,
         'gpt-5',
@@ -1584,6 +1592,7 @@ describe('runtime policy stores', () => {
       assert.equal(testTicket.kind, 'ready');
       if (fetch.kind !== 'ready' || testTicket.kind !== 'ready') return;
       assert.equal(testTicket.modelId, 'gpt-5');
+      assert.equal(testTicket.connection.models?.[0]?.apiProtocol, 'openai-responses');
       assert.equal(fetch.secretMaterial.connection?.secret, 'effect-secret');
 
       await assert.rejects(
@@ -1618,9 +1627,17 @@ describe('runtime policy stores', () => {
       if (discovered.kind !== 'committed') return;
       const afterDiscovery = discovered.snapshot.connections[0];
       assert.ok(afterDiscovery);
-      assert.deepEqual(afterDiscovery.models, [{ id: 'gpt-5.1' }, { id: 'gpt-5.2' }]);
-      // Discovery records what the provider reported; it does not re-decide what
-      // the user enabled. `gpt-5` was chosen and stays chosen (#1584).
+      assert.deepEqual(afterDiscovery.models, [
+        { id: 'gpt-5.1' },
+        { id: 'gpt-5.2' },
+        {
+          id: 'gpt-5',
+          apiProtocol: 'openai-responses',
+          factOverriddenFields: ['apiProtocol'],
+        },
+      ]);
+      // Discovery records what the provider reported while retaining the
+      // selected fact-backed model for selectors and execution.
       assert.deepEqual(afterDiscovery.enabledModelIds, ['gpt-5']);
       assert.equal(afterDiscovery.modelSource, 'fetched');
       assert.equal(afterDiscovery.modelsFetchedAt, 42);
