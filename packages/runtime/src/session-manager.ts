@@ -704,7 +704,6 @@ export interface BackendFactoryContext {
   loadTurnRuntimeEvents?: (turnId: string) => Promise<RuntimeEvent[]>;
   /** Whether this activation may fold its run ledger into session-scoped history. */
   allowMidTurnHistoryCompaction?: boolean;
-  shellRunContextSummary?: () => Promise<string | undefined>;
 }
 
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;

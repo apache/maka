@@ -35,7 +35,7 @@ export const VAULT_DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
 
 const READ_CHUNK_BYTES = 64 * 1024;
 const RUNTIME_POLICY_TEMP_PATTERN =
-  /^(?:runtime-policy|connection-catalog|credential-vault|runtime-policy-onboarding)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/;
+  /^(?:runtime-policy|connection-catalog|credential-vault|runtime-policy-onboarding|runtime-policy-oauth-login-receipts)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/;
 
 export async function cleanupRuntimePolicyDocumentTemps(root: string): Promise<void> {
   let failure: unknown;

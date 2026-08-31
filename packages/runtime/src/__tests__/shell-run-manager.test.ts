@@ -59,24 +59,6 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
-  test('keeps user-owned terminals out of the model background-task summary', async () => {
-    const store = createSqliteShellRunStore(await workspace());
-    await store.createShellRun({
-      ...record({ shellRunId: 'user-shell', status: 'running' }),
-      visibility: 'user',
-      command: 'user-private-command',
-    });
-    await store.createShellRun({
-      ...record({ shellRunId: 'model-shell', status: 'running' }),
-      command: 'model-background-command',
-    });
-
-    const summary = await createManager(store).buildContextSummary('session-1');
-
-    assert.match(summary ?? '', /model-background-command/u);
-    assert.doesNotMatch(summary ?? '', /user-private-command/u);
-  });
-
   test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
     const store = createSqliteShellRunStore(await workspace());
     await store.createShellRun({

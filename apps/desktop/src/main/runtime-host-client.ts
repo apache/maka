@@ -479,9 +479,9 @@ export class DesktopRuntimeHostClient {
 
   startOAuthLogin(
     attemptId: string,
-    connectionId: string,
+    target: OperationInput<"oauth.login.start">["target"],
   ): Promise<OperationOutput<"oauth.login.start">> {
-    return this.request("oauth.login.start", { attemptId, connectionId });
+    return this.request("oauth.login.start", { attemptId, target });
   }
 
   queryOAuthLogin(

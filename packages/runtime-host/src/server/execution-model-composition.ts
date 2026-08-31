@@ -46,7 +46,6 @@ import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
-import type { SandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import {
   createAttachmentByteReader,
   persistProviderRequestCaptureArtifact,
@@ -72,7 +71,6 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
-  readonly sandboxDiagnostics: SandboxDiagnosticsProvider;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly contextOffload?: InteractiveContextOffloadReader;
@@ -298,15 +296,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
   const recordProviderRequestAttempt = input.context.recordProviderRequestAttempt ?? (() => {});
   const resolveRunPrompt = async (context: {
     readonly turnId: string;
-    readonly runId?: string;
     readonly emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
   }) => {
     const resolved = await modelComposition.resolveSystemPrompt({
       sessionId: input.context.sessionId,
       turnId: context.turnId,
-      ...(context.runId ? { runId: context.runId } : {}),
       cwd: input.context.header.cwd,
-      workspaceRoot: input.context.workspaceRoot,
       ...(context.emitSkillCatalogTrace
         ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
         : {}),
@@ -355,7 +350,6 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
           ((message) => input.context.store.appendMessage(input.context.sessionId, message)),
         readExecutionBoundary: () =>
           input.context.store.readExecutionBoundary(input.context.sessionId),
-        sandboxDiagnostics: input.sandboxDiagnostics,
         ...(input.context.store.createSandboxBoundaryRequest
           ? {
               createSandboxBoundaryRequest: (request) =>
@@ -435,15 +429,12 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         systemPrompt: async (context) => {
           const resolved = await resolveRunPrompt({
             turnId: context.turnId,
-            ...(context.runId ? { runId: context.runId } : {}),
             ...(context.emitSkillCatalogTrace
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
           return resolved.text;
         },
-        turnTailPrompt: modelComposition.turnTailPrompt,
-        shellRunContextSummary: input.context.shellRunContextSummary,
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,

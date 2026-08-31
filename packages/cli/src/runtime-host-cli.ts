@@ -88,6 +88,13 @@ export type RuntimeHostCliCommand =
       targetIntegrity?: string;
     }
   | {
+      kind: 'runtime-host-local-source-retire';
+      rootPath: string;
+      expectedRootId: string;
+      expectedHostEpoch: string;
+      allowInterruptActiveTasks: boolean;
+    }
+  | {
       kind: 'runtime-host-serve';
       rootPath?: string;
       managedServiceConfigPath?: string;
@@ -340,6 +347,7 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   }
   if (argv[0] === 'local-update-apply') return parseLocalUpdateApply(argv.slice(1));
   if (argv[0] === 'local-update-activate') return parseLocalUpdateActivate(argv.slice(1));
+  if (argv[0] === 'local-source-retire') return parseLocalSourceRetire(argv.slice(1));
   if (argv[0] === 'serve') return parseServeCommand(argv.slice(1));
   if (argv[0] === 'setup') return parseSetupCommand(argv.slice(1));
   if (argv[0] === 'service') return parseServiceManagementCommand(argv.slice(1));
@@ -574,6 +582,45 @@ function parseLocalUpdateActivate(argv: string[]): RuntimeHostCliCommand {
     ...(expectedOwnerInstallationId ? { expectedOwnerInstallationId } : {}),
     ...(targetVersion ? { targetVersion } : {}),
     ...(targetIntegrity ? { targetIntegrity } : {}),
+  };
+}
+
+function parseLocalSourceRetire(argv: string[]): RuntimeHostCliCommand {
+  const values = new Map<string, string>();
+  let allowInterruptActiveTasks = false;
+  const options = new Set(['--root', '--expected-root-id', '--expected-host-epoch']);
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--allow-interrupt-active-tasks') {
+      if (allowInterruptActiveTasks) return error(`Duplicate ${argument}`);
+      allowInterruptActiveTasks = true;
+      continue;
+    }
+    if (!argument || !options.has(argument)) return error(`Unexpected argument: ${argument ?? ''}`);
+    if (values.has(argument)) return error(`Duplicate ${argument}`);
+    const parsed = optionValue(argv, index, argument);
+    if (typeof parsed !== 'string') return parsed;
+    values.set(argument, parsed);
+    index += 1;
+  }
+  const rootPath = values.get('--root');
+  const expectedRootId = values.get('--expected-root-id');
+  const expectedHostEpoch = values.get('--expected-host-epoch');
+  if (!rootPath || !expectedRootId || !expectedHostEpoch) {
+    return error('runtime-host local-source-retire requires its exact source Host identity');
+  }
+  if (!isSafeAbsolutePath(rootPath)) {
+    return error('runtime-host local-source-retire root path must be absolute');
+  }
+  if (!/^[a-f0-9]{64}$/u.test(expectedRootId) || !isSafeIdentity(expectedHostEpoch)) {
+    return error('runtime-host local-source-retire Host identity is invalid');
+  }
+  return {
+    kind: 'runtime-host-local-source-retire',
+    rootPath,
+    expectedRootId,
+    expectedHostEpoch,
+    allowInterruptActiveTasks,
   };
 }
 

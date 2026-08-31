@@ -18,8 +18,8 @@
  */
 
 // Session-scoped task ledger primitive for the main agent. The model manages a
-// flat task list via task_create/task_update; each turn tail re-injects the
-// current list. The durable contract is intentionally narrow: task status,
+// flat task list via task_create/task_update and reads it through task_list/task_get.
+// The durable contract is intentionally narrow: task status,
 // compact evidence/reason fields, append-only task events, and conservative
 // resume trust diagnostics. Priority, dependencies, and assignee fields remain
 // out of scope.
@@ -28,24 +28,17 @@ import { redactSecrets } from './redaction.js';
 
 export const TASK_SUBJECT_MAX_CHARS = 200;
 export const TASK_EVIDENCE_MAX_CHARS = 1000;
-/**
- * Hard cap on total tasks per session ledger (any status). The full ledger is
- * re-injected into every turn tail, so an unbounded ledger burns context on
- * every turn; this is a runaway guard on the total count, not a workflow quota
- * — completing or cancelling tasks does not free capacity.
- */
+/** Hard cap on total tasks per session ledger (any status). */
 export const TASK_LEDGER_MAX_TASKS = 200;
 export const TASK_ARCHIVE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Max length of a task id accepted on both the write and read paths. The write
  * path generates randomUUID (36 chars); the bound leaves headroom for a future
- * id format while keeping the turn-tail `id=` fielded render bounded.
+ * id format while keeping model-visible fielded renders bounded.
  */
 export const TASK_ID_MAX_CHARS = 64;
 export const TASK_KEY_MAX_CHARS = 64;
-export const TASK_LEDGER_PROMPT_MAX_CHARS = 8_000;
-export const TASK_LEDGER_PROMPT_RECENT_TERMINAL = 3;
 
 export const TASK_STATUSES = [
   'pending',
@@ -226,7 +219,7 @@ export function isResumeTrust(value: unknown): value is ResumeTrust {
  * ever rendered it: no angle brackets/slashes/quotes/parens/equals (a past
  * whole-string tag strip would have eaten them; even the fielded renderer
  * emits the id bare), no whitespace (would break the list-line structure), no
- * huge length (would bloat every turn tail), and redaction-stable (a renderer
+ * huge length (would bloat model-visible results), and redaction-stable (a renderer
  * that runs redactSecrets must not turn the id into [redacted] while the store
  * keeps the real id -- a later task_update would miss). The whitelist
  * (alphanumeric plus . _ : -, 1-64 chars) plus redactSecrets(id) === id enforces
@@ -251,17 +244,6 @@ export function isTaskKey(value: unknown): value is string {
     value.length <= TASK_KEY_MAX_CHARS &&
     /^T[1-9]\d*(?:\.[1-9]\d*)*$/.test(value)
   );
-}
-
-export function compareTaskKeys(left: string, right: string): number {
-  const a = left.slice(1).split('.').map(Number);
-  const b = right.slice(1).split('.').map(Number);
-  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-    if (a[index] === undefined) return -1;
-    if (b[index] === undefined) return 1;
-    if (a[index] !== b[index]) return a[index]! - b[index]!;
-  }
-  return 0;
 }
 
 export function findTaskByRef(tasks: readonly Task[], ref: string): Task | undefined {
@@ -667,7 +649,7 @@ function validateTaskLedgerEventType(
 
 /**
  * Safe-render the task ledger for any face that persists into history or is
- * re-injected into a prompt (tool results, turn-tail fragment). Two invariants:
+ * included in a model-visible tool result. Two invariants:
  *   - the canonical id is rendered verbatim, and the subject is a safe
  *     (redacted, tag-stripped) rendered payload of what the store holds; and
  *   - the model can unambiguously recover each task's id from what it sees, so
@@ -724,133 +706,6 @@ export function sanitizeTaskLedgerTask(task: Task): Task {
       ? { completionEvidence: safeTaskLedgerField(task.completionEvidence) }
       : {}),
   };
-}
-
-export interface TaskLedgerPromptRender {
-  text: string;
-  included: Task[];
-  omittedCount: number;
-}
-
-export function renderTaskLedgerPromptText(
-  tasks: readonly Task[],
-  maxChars = TASK_LEDGER_PROMPT_MAX_CHARS,
-): TaskLedgerPromptRender {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const selected = new Set<string>();
-  const addWithAncestors = (task: Task): void => {
-    const chain: Task[] = [];
-    let current: Task | undefined = task;
-    const seen = new Set<string>();
-    while (current && !seen.has(current.id)) {
-      seen.add(current.id);
-      chain.unshift(current);
-      current = current.parentId ? byId.get(current.parentId) : undefined;
-    }
-    for (const item of chain) selected.add(item.id);
-  };
-  const active = tasks
-    .filter((task) => !isTerminalTaskStatus(task.status))
-    .sort(compareTaskPromptPriority);
-  for (const task of active) addWithAncestors(task);
-  const recentTerminal = tasks
-    .filter((task) => isTerminalTaskStatus(task.status) && task.status !== 'cancelled')
-    .sort(
-      (a, b) =>
-        (b.endedAt ?? b.updatedAt) - (a.endedAt ?? a.updatedAt) || compareTaskKeys(a.key, b.key),
-    )
-    .slice(0, TASK_LEDGER_PROMPT_RECENT_TERMINAL);
-  for (const task of recentTerminal) addWithAncestors(task);
-
-  const chosen = tasks.filter((task) => selected.has(task.id));
-  const ordered = orderTaskTree(chosen);
-  const lines: string[] = [];
-  const included: Task[] = [];
-  const includedIds = new Set<string>();
-  for (const task of ordered) {
-    if (task.parentId && !includedIds.has(task.parentId)) continue;
-    const depth = task.key.split('.').length - 1;
-    const fields = [
-      `key=${task.key}`,
-      `status=${task.status}`,
-      `subject=${JSON.stringify(safeTaskLedgerField(task.subject))}`,
-    ];
-    if (task.blockedReason)
-      fields.push(`blockedReason=${JSON.stringify(safeTaskLedgerField(task.blockedReason))}`);
-    if (task.failureReason)
-      fields.push(`failureReason=${JSON.stringify(safeTaskLedgerField(task.failureReason))}`);
-    if (task.completionEvidence)
-      fields.push(
-        `completionEvidence=${JSON.stringify(safeTaskLedgerField(task.completionEvidence))}`,
-      );
-    if (task.owner) fields.push(`owner=${JSON.stringify(task.owner)}`);
-    const line = `${'  '.repeat(depth)}${fields.join(' ')}`;
-    const nextLength = lines.length === 0 ? line.length : lines.join('\n').length + 1 + line.length;
-    if (nextLength > maxChars) continue;
-    lines.push(line);
-    included.push(task);
-    includedIds.add(task.id);
-  }
-  return {
-    text: lines.join('\n'),
-    included,
-    omittedCount: tasks.length - included.length,
-  };
-}
-
-function compareTaskPromptPriority(left: Task, right: Task): number {
-  return (
-    taskStatusRank(left.status) - taskStatusRank(right.status) ||
-    compareTaskKeys(left.key, right.key)
-  );
-}
-
-function orderTaskTree(tasks: readonly Task[]): Task[] {
-  const byParent = new Map<string | undefined, Task[]>();
-  for (const task of tasks) {
-    const bucket = byParent.get(task.parentId) ?? [];
-    bucket.push(task);
-    byParent.set(task.parentId, bucket);
-  }
-  const branchRanks = new Map<string, number>();
-  const branchRank = (task: Task): number => {
-    const cached = branchRanks.get(task.id);
-    if (cached !== undefined) return cached;
-    const rank = Math.min(
-      taskStatusRank(task.status),
-      ...(byParent.get(task.id) ?? []).map(branchRank),
-    );
-    branchRanks.set(task.id, rank);
-    return rank;
-  };
-  const out: Task[] = [];
-  const visit = (parentId: string | undefined): void => {
-    for (const task of (byParent.get(parentId) ?? []).sort(
-      (left, right) => branchRank(left) - branchRank(right) || compareTaskKeys(left.key, right.key),
-    )) {
-      out.push(task);
-      visit(task.id);
-    }
-  };
-  visit(undefined);
-  return out;
-}
-
-function taskStatusRank(status: TaskStatus): number {
-  switch (status) {
-    case 'in_progress':
-      return 0;
-    case 'pending':
-      return 1;
-    case 'blocked':
-      return 2;
-    case 'completed':
-      return 3;
-    case 'failed':
-      return 4;
-    case 'cancelled':
-      return 5;
-  }
 }
 
 export function renderTaskLedgerDebugText(tasks: readonly Task[]): string {

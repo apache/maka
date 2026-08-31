@@ -102,6 +102,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'status',
   'errorClass',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_USAGE_LOG_FIELDS = new Set([
@@ -121,6 +122,7 @@ const TOOL_USAGE_LOG_FIELDS = new Set([
   'bytesOut',
   'startedAt',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_RESULT_SUMMARY_FIELDS = new Set([
@@ -167,6 +169,8 @@ export interface LlmUsageLogProjection {
   readonly status: 'success' | 'error' | 'aborted';
   readonly errorClass?: string;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -187,6 +191,8 @@ export interface ToolUsageLogProjection {
   readonly bytesOut: number;
   readonly startedAt: number;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -992,6 +998,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     status: decodeUsageLogStatus(row.status),
     ...optionalProjectionText(row, 'errorClass'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }
@@ -1030,6 +1037,7 @@ function decodeToolUsageLog(value: unknown): ToolUsageLogProjection {
     bytesOut: requireCount(row.bytesOut, 'tool usage log bytes out'),
     startedAt: nonnegativeFinite(row.startedAt, 'tool usage log start time'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }

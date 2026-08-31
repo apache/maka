@@ -196,18 +196,12 @@ import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.j
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
-import {
-  toSandboxRunTraceProjection,
-  type SandboxDiagnosticsProvider,
-  type SandboxDiagnosticsSnapshot,
-} from './sandbox/diagnostics.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
   SANDBOX_BOUNDARY_DENIED_FOR_TURN,
   SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
 } from './sandbox-boundary-tool.js';
-import { renderSandboxTurnTailPrompt } from './system-prompt/sandbox-context-prompt.js';
 import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
@@ -714,8 +708,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
-  /** Optional model guidance derived fresh from the live boundary each Turn. */
-  sandboxDiagnostics?: SandboxDiagnosticsProvider;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -746,12 +738,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   systemPrompt?:
     | string
     | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional provider-visible current-turn tail kept out of the durable system prefix. */
-  turnTailPrompt?:
-    | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional volatile ShellRun summary. Not persisted; appended to the current user turn tail only. */
-  shellRunContextSummary?: () => string | undefined | Promise<string | undefined>;
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -828,9 +814,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
-  runId?: string;
   cwd: string;
-  workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
 }
@@ -1124,8 +1108,6 @@ export class AiSdkBackend implements AgentBackend {
       materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
         this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
-      appendTurnTailPrompt: (content, turnTailPrompt) =>
-        this.appendTurnTailPrompt(content, turnTailPrompt),
     });
     if (
       input.tools.some(
@@ -1605,47 +1587,6 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
     }
-    let sandboxDiagnosticsSnapshot: SandboxDiagnosticsSnapshot | undefined;
-    let sandboxPrompt: string | undefined;
-    let sandboxContextStage: 'resolve' | 'render' = 'resolve';
-    try {
-      sandboxDiagnosticsSnapshot = this.input.sandboxDiagnostics
-        ? await raceWithTurnAbort(this.resolveTurnSandboxDiagnostics(), turnAbortController.signal)
-        : undefined;
-      sandboxContextStage = 'render';
-      sandboxPrompt = sandboxDiagnosticsSnapshot
-        ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
-        : undefined;
-    } catch (err) {
-      if (scope.aborted || turnAbortController.signal.aborted) {
-        queue.push({
-          type: 'abort',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          reason: 'user_stop',
-        } satisfies AbortEvent);
-        queue.push({
-          type: 'complete',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          stopReason: 'user_stop',
-        } satisfies CompleteEvent);
-        queue.close();
-        yield* this.drain(queue);
-        return;
-      }
-      trace.sandboxContextFailed(sandboxContextStage, err);
-      // This context is model guidance, not execution authority. Never fall
-      // back to a stale snapshot; continue without the prompt while the live
-      // ExecutionBoundary remains authoritative for every tool invocation.
-      sandboxDiagnosticsSnapshot = undefined;
-      sandboxPrompt = undefined;
-    }
-    if (sandboxDiagnosticsSnapshot) {
-      trace.sandboxContextResolved(toSandboxRunTraceProjection(sandboxDiagnosticsSnapshot));
-    }
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
       callKind: 'main',
@@ -1747,11 +1688,6 @@ export class AiSdkBackend implements AgentBackend {
         await this.resolveSystemPrompt(scope),
         scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
         scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-        // A safe continuation deliberately has no new user message. Keep its
-        // replay byte-for-byte intact and carry only the current authority fact
-        // in the effective system envelope; ordinary volatile turn-tail facts
-        // remain excluded from continuation.
-        input.continuation ? sandboxPrompt : undefined,
       ]);
     } catch (err) {
       trace.modelStreamFailed(this.modelAdapter.classifyError(err), err);
@@ -1899,13 +1835,6 @@ export class AiSdkBackend implements AgentBackend {
           next.start();
         };
         const activeTools = plan.activeTools;
-        const turnTailPrompt = input.continuation
-          ? undefined
-          : joinPromptFragments([
-              await this.resolveTurnTailPrompt(turnId),
-              await this.resolveShellRunContextSummary(),
-              sandboxPrompt,
-            ]);
         const currentUserContent = input.continuation
           ? undefined
           : await this.buildCurrentUserContent(
@@ -1922,7 +1851,7 @@ export class AiSdkBackend implements AgentBackend {
                 ...priorReplay.messages,
                 {
                   role: 'user' as const,
-                  content: this.appendTurnTailPrompt(currentUserContent, turnTailPrompt),
+                  content: currentUserContent,
                 } as ModelMessage,
               ];
         const settledModelOutputs = new Map<string, ToolResultOutput>();
@@ -1974,25 +1903,8 @@ export class AiSdkBackend implements AgentBackend {
           ) {
             throw new Error('durable current-run projection is not replayable');
           }
-          const anchorEventId = input.headAnchorRuntimeEvent?.id;
-          let decoratedCurrentUser = false;
-          const replayItems = replayPlan.items.map((item) => {
-            if (item.kind !== 'text' || item.role !== 'user') {
-              return item;
-            }
-            if (
-              anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser
-            ) {
-              return item;
-            }
-            decoratedCurrentUser = true;
-            return {
-              ...item,
-              content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string,
-            };
-          });
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
-            { ...replayPlan, items: replayItems },
+            replayPlan,
             scope.imageBudget,
             settledModelOutputs,
             projectionCheckpoint,
@@ -2025,7 +1937,6 @@ export class AiSdkBackend implements AgentBackend {
                     ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
                     ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
                   }),
-              turnTailPrompt,
             }),
             requestShape: computeRequestShapeDiagnostic(
               {
@@ -2090,7 +2001,6 @@ export class AiSdkBackend implements AgentBackend {
           queue,
           providerTools,
           () => currentRepairToolNames(),
-          turnTailPrompt,
           midTurnSystemPromptChars,
           onMidTurnDiagnosticPatch,
           scope,
@@ -2542,7 +2452,6 @@ export class AiSdkBackend implements AgentBackend {
                       providerTools,
                       activeTools: activeToolsForRequest,
                       systemPromptChars: midTurnSystemPromptChars,
-                      turnTailPrompt,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
                       origin: scope,
@@ -4380,19 +4289,6 @@ export class AiSdkBackend implements AgentBackend {
     return out;
   }
 
-  /** Append provider-visible volatile turn facts after the durable user content. */
-  private appendTurnTailPrompt(
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ): ModelMessage['content'] {
-    if (!turnTailPrompt) return content;
-    if (typeof content === 'string') return `${content}\n\n${turnTailPrompt}`;
-    return [
-      ...(content as unknown[]),
-      { type: 'text', text: turnTailPrompt },
-    ] as ModelMessage['content'];
-  }
-
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
   private chargeImageBudget(
     budget: ProviderImageBudget,
@@ -4541,42 +4437,12 @@ export class AiSdkBackend implements AgentBackend {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
-        ...(scope.runId ? { runId: scope.runId } : {}),
         cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
           scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
     }
     return this.input.systemPrompt;
-  }
-
-  private async resolveTurnSandboxDiagnostics(): Promise<SandboxDiagnosticsSnapshot | undefined> {
-    const provider = this.input.sandboxDiagnostics;
-    if (!provider) return undefined;
-    const boundary = await this.input.readExecutionBoundary();
-    if (boundary.kind === 'external') return undefined;
-    return await provider.resolve(
-      boundary.kind === 'managed'
-        ? { cwd: this.input.header.cwd, permissionProfile: boundary.profile }
-        : { cwd: this.input.header.cwd, mode: 'bypass' },
-    );
-  }
-
-  private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
-    if (typeof this.input.turnTailPrompt === 'function') {
-      return await this.input.turnTailPrompt({
-        sessionId: this.sessionId,
-        turnId,
-        cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
-      });
-    }
-    return this.input.turnTailPrompt;
-  }
-
-  private async resolveShellRunContextSummary(): Promise<string | undefined> {
-    return await this.input.shellRunContextSummary?.();
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {

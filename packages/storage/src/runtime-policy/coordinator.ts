@@ -59,12 +59,13 @@ import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   deriveConnectionSlug,
+  deriveInteractiveOAuthConnectionSlug,
   effectiveBaseUrl,
   PROVIDER_DEFAULTS,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { deepFreeze } from './codec.js';
+import { deepFreeze, nextRevision } from './codec.js';
 import {
   catalogSnapshot,
   connectionBasis,
@@ -109,7 +110,9 @@ import {
   type ConnectionOnboardingTicket,
   type ConnectionTestTicket,
   type InteractiveOAuthLoginCompletionResult,
+  type InteractiveOAuthLoginInput,
   type InteractiveOAuthLoginProvider,
+  type InteractiveOAuthLoginTarget,
   type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
   type ExecutionConnectionRef,
@@ -126,10 +129,18 @@ import {
 import {
   clearConnectionOnboardingIntent,
   prepareConnectionOnboardingIntent,
+  prepareInteractiveOAuthEnrollmentIntent,
   readConnectionOnboardingIntent,
   writeConnectionOnboardingIntent,
   type ConnectionOnboardingIntent,
+  type InteractiveOAuthEnrollmentIntent,
 } from './onboarding-transaction.js';
+import {
+  findInteractiveOAuthLoginReceipt,
+  readInteractiveOAuthLoginReceipts,
+  sameInteractiveOAuthLoginTarget,
+  upsertInteractiveOAuthLoginReceipt,
+} from './oauth-login-receipt-document.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
 import { SerializedOperationLane } from '../serialized-operation-lane.js';
 
@@ -227,8 +238,12 @@ interface ConnectionOnboardingTicketRecord {
 
 interface InteractiveOAuthLoginTicketRecord {
   readonly kind: 'interactive_oauth_login';
-  readonly connectionBasis: ConnectionVersionBasis;
-  readonly providerType: InteractiveOAuthLoginProvider;
+  readonly attemptId: string;
+  readonly target: InteractiveOAuthLoginTarget;
+  readonly connectionBefore: ConnectionCatalogEntry | null;
+  readonly connectionAfter: ConnectionCatalogEntry & {
+    readonly providerType: InteractiveOAuthLoginProvider;
+  };
   readonly credentialBasis: CredentialVersionBasis | null;
   state: TicketState;
 }
@@ -254,6 +269,7 @@ export class RuntimePolicyCoordinator {
     return this.lane.run(async (root) => {
       await cleanupRuntimePolicyDocumentTemps(root);
       await this.recoverConnectionOnboarding(root);
+      await readInteractiveOAuthLoginReceipts(root);
       const catalog = await this.catalog.read(root);
       const vault = await this.vault.read(root);
       await this.vault.deleteOrphanedConnectionCredentials(
@@ -477,15 +493,59 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  beginInteractiveOAuthLogin(rawConnectionId: string): Promise<BeginInteractiveOAuthLoginResult> {
+  beginInteractiveOAuthLogin(
+    rawInput: InteractiveOAuthLoginInput,
+  ): Promise<BeginInteractiveOAuthLoginResult> {
     return this.inLane(async (root) => {
-      const connectionId = decodeConnectionInput(() =>
-        decodeRuntimePolicyEntityId(rawConnectionId),
-      );
+      const input = normalizeInteractiveOAuthLoginInput(rawInput);
+      const receipts = await readInteractiveOAuthLoginReceipts(root);
+      const receipt = findInteractiveOAuthLoginReceipt(receipts, input.attemptId);
+      if (receipt) {
+        return deepFreeze(
+          sameInteractiveOAuthLoginTarget(receipt.target, input.target)
+            ? {
+                kind: 'authenticated' as const,
+                target: structuredClone(receipt.target),
+                connection: structuredClone(receipt.connection),
+              }
+            : { kind: 'attempt_conflict' as const },
+        );
+      }
       const catalog = await this.catalog.read(root);
-      const connection = findConnection(catalog, { connectionId });
-      if (!connection) return deepFreeze({ kind: 'connection_not_found' as const });
-      if (!connection.enabled) return deepFreeze({ kind: 'connection_disabled' as const });
+      let connectionBefore: ConnectionCatalogEntry | null;
+      let connectionAfter: ConnectionCatalogEntry & {
+        readonly providerType: InteractiveOAuthLoginProvider;
+      };
+      if (input.target.kind === 'create') {
+        if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+          return deepFreeze({ kind: 'catalog_full' as const });
+        }
+        connectionBefore = null;
+        connectionAfter = newInteractiveOAuthConnection(
+          randomUUID(),
+          deriveInteractiveOAuthConnectionSlug(
+            input.target.providerType,
+            catalog.connections.map(({ slug }) => slug),
+          ),
+          input.target.providerType,
+        );
+      } else {
+        const existing = findConnection(catalog, { connectionId: input.target.connectionId });
+        if (!existing) return deepFreeze({ kind: 'connection_not_found' as const });
+        if (!isInteractiveOAuthLoginProvider(existing.providerType)) {
+          return deepFreeze({
+            kind: 'provider_action_unavailable' as const,
+            availability: 'hidden' as const,
+          });
+        }
+        connectionBefore = structuredClone(existing);
+        connectionAfter = reenabledInteractiveOAuthConnection(
+          existing as ConnectionCatalogEntry & {
+            readonly providerType: InteractiveOAuthLoginProvider;
+          },
+        );
+      }
+      const connection = connectionBefore ?? connectionAfter;
       if (!isInteractiveOAuthLoginProvider(connection.providerType)) {
         return deepFreeze({
           kind: 'provider_action_unavailable' as const,
@@ -515,21 +575,42 @@ export class RuntimePolicyCoordinator {
       }
       const existing = findCredential(await this.vault.read(root), locator);
       const ticket = this.issueInteractiveOAuthLoginTicket(
-        connectionBasis(connection),
-        connection.providerType,
+        input.attemptId,
+        input.target,
+        connectionBefore,
+        connectionAfter,
         existing ? credentialBasis(existing) : null,
       );
       return deepFreeze({
         kind: 'ready' as const,
         ticket,
-        connection: structuredClone(connection) as ConnectionCatalogEntry & {
-          readonly providerType: InteractiveOAuthLoginProvider;
-        },
+        target: structuredClone(input.target),
+        identity: interactiveOAuthConnectionIdentity(connectionAfter),
+        connection: structuredClone(connectionAfter),
         secretMaterial: prepared.secretMaterial.networkProxy
           ? { networkProxy: prepared.secretMaterial.networkProxy }
           : {},
         networkProxy: structuredClone(prepared.networkProxy),
       });
+    });
+  }
+
+  queryInteractiveOAuthLogin(rawAttemptId: string) {
+    return this.inLane(async (root) => {
+      const attemptId = decodeInteractiveOAuthAttemptId(rawAttemptId, 'invalid_connection_input');
+      const receipt = findInteractiveOAuthLoginReceipt(
+        await readInteractiveOAuthLoginReceipts(root),
+        attemptId,
+      );
+      return deepFreeze(
+        receipt
+          ? {
+              kind: 'authenticated' as const,
+              target: structuredClone(receipt.target),
+              connection: structuredClone(receipt.connection),
+            }
+          : { kind: 'not_found' as const },
+      );
     });
   }
 
@@ -542,19 +623,18 @@ export class RuntimePolicyCoordinator {
       this.inLane(async (root) => {
         const secret = decodeCredentialInput(() => normalizeCredentialSecret(rawSecret));
         const catalog = await this.catalog.read(root);
-        const connection = findConnection(catalog, claimed.connectionBasis);
         const changed: Array<'connection' | 'credential'> = [];
-        if (
-          !connection ||
-          connection.revision !== claimed.connectionBasis.revision ||
-          connection.providerType !== claimed.providerType ||
-          !connection.enabled
-        ) {
+        const preparedCatalog = this.catalog.prepareOAuthEnrollmentUpsert(
+          catalog,
+          claimed.connectionBefore,
+          claimed.connectionAfter,
+        );
+        if (preparedCatalog.kind !== 'ready') {
           changed.push('connection');
         }
         const locator = {
           scope: 'connection',
-          connectionId: claimed.connectionBasis.connectionId,
+          connectionId: claimed.connectionAfter.connectionId,
           kind: 'oauth_token',
         } as const;
         const vault = await this.vault.read(root);
@@ -569,43 +649,33 @@ export class RuntimePolicyCoordinator {
         if (changed.length > 0) {
           return deepFreeze({ kind: 'superseded' as const, changed });
         }
-        const prepared = this.vault.prepareSet(vault, {
-          locator,
-          expected: claimed.credentialBasis
-            ? {
-                credentialId: claimed.credentialBasis.credentialId,
-                revision: claimed.credentialBasis.revision,
-              }
-            : null,
+        const intent = prepareInteractiveOAuthEnrollmentIntent({
+          attemptId: claimed.attemptId,
+          target: claimed.target,
+          connectionBefore: claimed.connectionBefore,
+          connectionAfter: claimed.connectionAfter,
+          credentialBasis: claimed.credentialBasis,
           secret,
         });
-        if (prepared.kind !== 'ready') {
-          return deepFreeze({
-            kind: 'superseded' as const,
-            changed: ['credential'] as const,
-          });
-        }
-        const cleared = await this.catalog.clearConnectionLastTest(
-          root,
-          catalog,
-          locator.connectionId,
-        );
         try {
-          await this.vault.commitSet(root, prepared);
+          await writeConnectionOnboardingIntent(root, intent);
         } catch (error) {
-          if (cleared) {
-            throw commitOutcomeUnknown(
-              'Connection verification was cleared before OAuth login completed',
-              error,
-            );
-          }
+          if (isCommitOutcomeUnknown(error)) this.onboardingRecoveryRequired = true;
           throw error;
         }
-        return deepFreeze({
-          kind: 'committed' as const,
-          credentialId: prepared.entry.credentialId,
-          revision: prepared.entry.revision,
-        });
+        try {
+          const result = await this.applyInteractiveOAuthEnrollment(root, intent);
+          await clearConnectionOnboardingIntent(root);
+          this.onboardingRecoveryRequired = false;
+          return deepFreeze({ kind: 'committed' as const, ...result });
+        } catch (error) {
+          this.onboardingRecoveryRequired = true;
+          if (isCommitOutcomeUnknown(error)) throw error;
+          throw commitOutcomeUnknown(
+            'OAuth enrollment has a durable intent and must recover before retrying',
+            error,
+          );
+        }
       }),
     );
   }
@@ -1576,15 +1646,21 @@ export class RuntimePolicyCoordinator {
   }
 
   private issueInteractiveOAuthLoginTicket(
-    connectionBasisValue: ConnectionVersionBasis,
-    providerType: InteractiveOAuthLoginProvider,
+    attemptId: string,
+    target: InteractiveOAuthLoginTarget,
+    connectionBefore: ConnectionCatalogEntry | null,
+    connectionAfter: ConnectionCatalogEntry & {
+      readonly providerType: InteractiveOAuthLoginProvider;
+    },
     credentialBasisValue: CredentialVersionBasis | null,
   ): InteractiveOAuthLoginTicket {
     const ticket = Object.freeze(Object.create(null)) as object;
     this.tickets.set(ticket, {
       kind: 'interactive_oauth_login',
-      connectionBasis: connectionBasisValue,
-      providerType,
+      attemptId,
+      target: structuredClone(target),
+      connectionBefore: connectionBefore ? structuredClone(connectionBefore) : null,
+      connectionAfter: structuredClone(connectionAfter),
       credentialBasis: credentialBasisValue,
       state: 'available',
     });
@@ -1636,7 +1712,11 @@ export class RuntimePolicyCoordinator {
     }
     this.onboardingRecoveryRequired = true;
     try {
-      await this.applyConnectionOnboarding(root, intent);
+      if (intent.schemaVersion === 3) {
+        await this.applyInteractiveOAuthEnrollment(root, intent);
+      } else {
+        await this.applyConnectionOnboarding(root, intent);
+      }
       await clearConnectionOnboardingIntent(root);
       this.onboardingRecoveryRequired = false;
     } catch (error) {
@@ -1648,6 +1728,97 @@ export class RuntimePolicyCoordinator {
       if (isCommitOutcomeUnknown(error)) throw error;
       throw commitOutcomeUnknown('Connection onboarding recovery did not converge', error);
     }
+  }
+
+  private async applyInteractiveOAuthEnrollment(
+    root: string,
+    intent: InteractiveOAuthEnrollmentIntent,
+  ): Promise<{
+    readonly credentialId: string;
+    readonly revision: number;
+    readonly connection: ReturnType<typeof interactiveOAuthConnectionIdentity>;
+  }> {
+    const existingReceipt = findInteractiveOAuthLoginReceipt(
+      await readInteractiveOAuthLoginReceipts(root),
+      intent.attemptId,
+    );
+    const intendedIdentity = interactiveOAuthConnectionIdentity(intent.connectionAfter);
+    if (
+      existingReceipt &&
+      (!sameInteractiveOAuthLoginTarget(existingReceipt.target, intent.target) ||
+        existingReceipt.connection.connectionId !== intendedIdentity.connectionId ||
+        existingReceipt.connection.slug !== intendedIdentity.slug ||
+        existingReceipt.connection.providerType !== intendedIdentity.providerType)
+    ) {
+      throw codecError(
+        'invalid_document',
+        'OAuth login receipt conflicts with the enrollment intent',
+      );
+    }
+    const catalog = await this.catalog.read(root);
+    // Validate the complete catalog transition before the vault-first write.
+    // A damaged intent must never rotate a real account and discover its
+    // identity collision only afterwards.
+    const catalogPrepared = this.catalog.prepareOAuthEnrollmentUpsert(
+      catalog,
+      intent.connectionBefore,
+      intent.connectionAfter,
+    );
+    if (catalogPrepared.kind !== 'ready') {
+      throw codecError(
+        'invalid_document',
+        `OAuth enrollment catalog preflight returned ${catalogPrepared.kind}`,
+      );
+    }
+    const locator = {
+      scope: 'connection',
+      connectionId: intent.connectionAfter.connectionId,
+      kind: 'oauth_token',
+    } as const;
+    const vault = await this.vault.read(root);
+    let credential = findCredential(vault, locator);
+    if (credential?.secret !== intent.secret) {
+      if (
+        intent.credentialBasis
+          ? !sameCredentialBasis(credential, intent.credentialBasis)
+          : credential !== undefined
+      ) {
+        throw codecError('invalid_document', 'OAuth enrollment credential basis changed');
+      }
+      const prepared = this.vault.prepareSet(vault, {
+        locator,
+        expected: intent.credentialBasis
+          ? {
+              credentialId: intent.credentialBasis.credentialId,
+              revision: intent.credentialBasis.revision,
+            }
+          : null,
+        secret: intent.secret,
+      });
+      if (prepared.kind !== 'ready') {
+        throw codecError(
+          'invalid_document',
+          `OAuth enrollment credential write returned ${prepared.kind}`,
+        );
+      }
+      await this.vault.commitSet(root, prepared);
+      credential = prepared.entry;
+    }
+    if (!credential) {
+      throw codecError('invalid_document', 'OAuth enrollment did not produce a credential');
+    }
+    await this.catalog.commitPreparedOnboarding(root, catalogPrepared);
+    const connection = intendedIdentity;
+    await upsertInteractiveOAuthLoginReceipt(root, {
+      attemptId: intent.attemptId,
+      target: intent.target,
+      connection,
+    });
+    return {
+      credentialId: credential.credentialId,
+      revision: credential.revision,
+      connection,
+    };
   }
 
   private async applyConnectionOnboarding(
@@ -1946,4 +2117,78 @@ function isInteractiveOAuthLoginProvider(
   providerType: ProviderType,
 ): providerType is InteractiveOAuthLoginProvider {
   return providerType === 'openai-codex' || providerType === 'xai-oauth';
+}
+
+function normalizeInteractiveOAuthLoginInput(
+  input: InteractiveOAuthLoginInput,
+): InteractiveOAuthLoginInput {
+  const attemptId = decodeInteractiveOAuthAttemptId(input?.attemptId, 'invalid_connection_input');
+  const target = input?.target;
+  if (target?.kind === 'create') {
+    const providerType = decodeConnectionInput(() => decodeProviderType(target.providerType));
+    if (!isInteractiveOAuthLoginProvider(providerType)) {
+      throw codecError('invalid_connection_input', 'OAuth create target provider is unsupported');
+    }
+    return { attemptId, target: { kind: 'create', providerType } };
+  }
+  if (target?.kind === 'existing') {
+    return {
+      attemptId,
+      target: {
+        kind: 'existing',
+        connectionId: decodeConnectionInput(() => decodeRuntimePolicyEntityId(target.connectionId)),
+      },
+    };
+  }
+  throw codecError('invalid_connection_input', 'Unknown interactive OAuth login target');
+}
+
+function newInteractiveOAuthConnection(
+  connectionId: string,
+  slug: string,
+  providerType: InteractiveOAuthLoginProvider,
+): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
+  const defaults = PROVIDER_DEFAULTS[providerType];
+  return {
+    connectionId,
+    revision: 1,
+    slug,
+    name: defaults.label,
+    providerType,
+    enabled: true,
+    enabledModelIds: [...defaults.fallbackModels],
+    models: [],
+  };
+}
+
+function reenabledInteractiveOAuthConnection(
+  connection: ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider },
+): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
+  if (connection.enabled && connection.lastTest === undefined) return structuredClone(connection);
+  const { lastTest: _lastTest, ...withoutLastTest } = connection;
+  return {
+    ...withoutLastTest,
+    revision: nextRevision(connection.revision),
+    enabled: true,
+  };
+}
+
+function interactiveOAuthConnectionIdentity(
+  connection: ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider },
+) {
+  return {
+    connectionId: connection.connectionId,
+    slug: connection.slug,
+    providerType: connection.providerType,
+  } as const;
+}
+
+function decodeInteractiveOAuthAttemptId(
+  value: unknown,
+  source: 'invalid_connection_input' | 'invalid_document',
+): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw codecError(source, 'OAuth attempt id is invalid');
+  }
+  return value;
 }
