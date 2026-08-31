@@ -738,17 +738,18 @@ function cloneAgentRunEvent(
     );
   } else if (event.type === 'history_compact_checkpoint_recorded') {
     const sourceCheckpoint = event.data?.checkpoint;
-    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) {
-      throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
-    }
     // Conversation copies carry the canonical raw RuntimeEvents and can create
-    // a fresh checkpoint on demand. Do not export opaque provider state into a
-    // new session or degrade it into user-visible placeholder text.
+    // a fresh checkpoint on demand, so a checkpoint this Runtime can no longer
+    // hold to its own contract is DROPPED, never fatal: the copy is complete
+    // without it. That covers opaque provider state (do not export it into a
+    // new session or degrade it into user-visible placeholder text), a
+    // superseded source policy, and a prefix that no longer matches. A ledger
+    // keeps every checkpoint it ever recorded, so a session that compacted
+    // under an older policy would otherwise be permanently uncopyable.
+    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) return null;
     if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
-    if (match.reason) {
-      throw new Error(`Cannot copy unmatched history compact checkpoint ${event.id}`);
-    }
+    if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // including the size floor, re-runnable here because the matched covered

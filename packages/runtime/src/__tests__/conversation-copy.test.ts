@@ -2402,6 +2402,119 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
   }
 });
 
+test('conversation copy drops a checkpoint from a superseded source policy instead of failing', async () => {
+  // A ledger keeps every checkpoint it ever recorded, so a session that
+  // compacted under an older source policy still carries that record forever.
+  // Copy must treat it as absent — the copy carries the canonical raw
+  // RuntimeEvents and can compact again — or those sessions become permanently
+  // unbranchable (apache/maka#4283).
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-legacy-policy-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const run = agentRunHeader({
+      runId: 'run-source',
+      invocationId: 'invocation-1',
+      turnId: 'turn-1',
+      cwd: root,
+      completedAt: 3,
+    });
+    await runStore.createRun(run);
+    const sourceEvents = [
+      runtimeEvent({
+        id: 'event-user',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 2,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      }),
+    ];
+    for (const event of sourceEvents) {
+      await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
+    const current = buildHistoryCompactCheckpoint({
+      sessionId: 'session-source',
+      coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
+      summary: 'Everything so far is complete.',
+      summaryFormat: 'legacy_freeform',
+      highWaterSeq: 5,
+    });
+    const legacyPolicyCheckpoint = {
+      ...current,
+      source: {
+        ...current.source,
+        policyVersion: 'maka.compactable_runtime_event_projection.v1',
+      },
+    };
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'checkpoint-legacy-policy',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.5,
+      data: {
+        checkpointId: legacyPolicyCheckpoint.checkpointId,
+        highWaterName: legacyPolicyCheckpoint.highWaterName,
+        highWaterSeq: legacyPolicyCheckpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint: legacyPolicyCheckpoint,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    let sequence = 0;
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => `target-${++sequence}`,
+    });
+
+    const targetRuns = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRuns.length > 0);
+    const targetOperationalEvents = (
+      await Promise.all(targetRuns.map((run) => runStore.readEvents('session-target', run.runId)))
+    ).flat();
+    assert.equal(
+      targetOperationalEvents.some((event) => event.type === 'history_compact_checkpoint_recorded'),
+      false,
+    );
+    const targetEvents = (
+      await Promise.all(
+        targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
+      )
+    ).flat();
+    assert.equal(targetEvents.length, sourceEvents.length);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy rebuilds a resumed child checkpoint over its child run chain', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-child-checkpoint-copy-'));
   try {

@@ -510,6 +510,23 @@ export function validateHistoryCompactCheckpointShape(
 }
 
 /** Accept forward progress, or a compare-and-swap rewrite of the exact same source coverage. */
+/**
+ * A recorded checkpoint that this Runtime no longer holds to its own contract
+ * because it was minted under an older source policy — not a corrupt record.
+ * Every consumer already fails open on it (compaction re-summarizes, copy
+ * drops it); diagnostics use this to say so instead of crying corruption.
+ */
+export function isSupersededHistoryCompactCheckpoint(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const checkpoint = value as Partial<HistoryCompactCheckpoint>;
+  const policyVersion = checkpoint.source?.policyVersion as unknown;
+  return (
+    checkpoint.kind === 'maka.history_compact_checkpoint' &&
+    typeof policyVersion === 'string' &&
+    policyVersion !== HISTORY_COMPACT_SOURCE_POLICY_VERSION
+  );
+}
+
 export function canReplaceHistoryCompactCheckpoint(
   current: HistoryCompactCheckpoint | undefined,
   candidate: HistoryCompactCheckpoint,
