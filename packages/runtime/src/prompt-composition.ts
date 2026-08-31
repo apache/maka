@@ -70,8 +70,8 @@ export function foldPromptComposition(
     if (segment.kind !== 'tool_schema') continue;
     if (segment.label !== undefined) {
       byTool.set(segment.label, (byTool.get(segment.label) ?? 0) + segment.bytes);
-    } else if ((segment.representedSegments ?? 1) > 1) {
-      boundedToolCount += segment.representedSegments ?? 1;
+    } else if (segment.representedSegments !== undefined) {
+      boundedToolCount += segment.representedSegments;
       boundedToolBytes += segment.bytes;
     } else {
       unlabelledToolBytes += segment.bytes;

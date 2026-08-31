@@ -150,6 +150,27 @@ describe('a real observation survives the whole chain into one fold', () => {
       'the per-tool rows sum to the tool total above them',
     );
   });
+
+  test('a single-tool bounded remainder still counts as one remaining tool', () => {
+    const material = prepareRequestObservation({
+      prompt: [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi' },
+      ],
+      tools: Array.from({ length: 253 }, (_, index) => ({
+        name: `tool-${String(index).padStart(3, '0')}`,
+        inputSchema: { type: 'object' },
+      })),
+      providerOptions: { anthropic: { thinking: { type: 'enabled' } } },
+    });
+
+    assert.equal(material.observation.segments.length, 256);
+    const composition = foldPromptComposition(material.observation.segments);
+    assert.equal(composition?.tools?.length, 64);
+    assert.equal(composition?.remainingTools?.count, 189);
+    assert.equal(composition?.unlabelledToolBytes, undefined);
+  });
 });
 
 describe('readPromptCompositionEvent', () => {

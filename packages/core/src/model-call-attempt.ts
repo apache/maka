@@ -103,6 +103,7 @@ export interface PreparedRequestObservationSegment {
   comparison: 'exact' | 'opaque';
   digest: string;
   bytes: number;
+  /** Present only on an opaque bounded remainder; the value is the source-segment count. */
   representedSegments?: number;
   role?: string;
   label?: string;
@@ -332,9 +333,7 @@ function isPreparedRequestObservationSegment(
       (typeof value.representedSegments === 'number' &&
         Number.isSafeInteger(value.representedSegments) &&
         value.representedSegments > 0)) &&
-    (value.representedSegments === undefined ||
-      value.representedSegments === 1 ||
-      value.comparison === 'opaque') &&
+    (value.representedSegments === undefined || value.comparison === 'opaque') &&
     isOptionalBoundedText(value.role) &&
     isOptionalBoundedText(value.label)
   );
