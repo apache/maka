@@ -899,8 +899,8 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: '取消',
       deletedTitle: (name: string) => `已删除 ${name}`,
       deleteRestoredTitle: (name: string) => `${name} 已被恢复，未删除`,
-      deleteSubtaskNote: () => '其链接的子任务不会被删除，将保留并移入归档。',
-      deleteSubtaskNoteUncertain: () => '其链接的子任务（如有）不会被删除，将保留并移入归档。',
+      deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
+      deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
       deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
     },
     skillActions: {
@@ -1428,9 +1428,9 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: 'Cancel',
       deletedTitle: (name: string) => `Deleted ${name}`,
       deleteRestoredTitle: (name: string) => `${name} was restored, so it was kept`,
-      deleteSubtaskNote: () => 'Its linked subtasks will be kept and moved to Archived.',
+      deleteSubtaskNote: () => 'Its ordinary subtasks will be kept and moved to Archived.',
       deleteSubtaskNoteUncertain: () =>
-        'Its linked subtasks, if any, will be kept and moved to Archived.',
+        'Its ordinary subtasks, if any, will be kept and moved to Archived.',
       deletedSubtaskNote: (count: number) =>
         count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
     },

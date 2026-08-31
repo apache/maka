@@ -70,7 +70,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 条已归档任务？`,
     purgeMatchesConfirmTitle: (count: number) => `删除搜索到的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
-    purgeSubtaskNote: '其关联的子任务不会被删除，将保留并移入归档。',
+    purgeSubtaskNote: '其中的普通子任务不会被删除，将保留并移入归档。',
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
     purgedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
@@ -100,7 +100,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
       count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
-    purgeSubtaskNote: 'Any linked subtasks are kept and moved to Archived.',
+    purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
     purgedSubtaskNote: (count: number) =>
