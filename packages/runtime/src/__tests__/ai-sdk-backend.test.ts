@@ -9918,6 +9918,322 @@ describe('AiSdkBackend RunTrace', () => {
     assert.notEqual(assistants[0]?.id, assistants[1]?.id);
   });
 
+  test('retries a retryable network failure after partial thinking by sealing it', async () => {
+    // Incident shape: the provider streamed thinking deltas, then the
+    // connection reset mid-step (ECONNRESET after ~120s). Recovery safety
+    // depends on what the attempt emitted, not on which side detected the
+    // cut: thinking is sealable, so the fragment is flushed under its own
+    // message id and the retry streams into a fresh id — the same contract
+    // as an idle-watchdog recovery.
+    const durable = durableTurnHarness('turn-econnreset-thinking', 'review the commits');
+    const assistants: AssistantMessage[] = [];
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls > 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            { type: 'reasoning-delta', id: 'reasoning-1', delta: 'partial thought' },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'partial thought') {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'network' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'network' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0]?.thinking?.text, 'partial thought');
+    assert.equal(assistants[0]?.text, '');
+    assert.equal(assistants[1]?.text, 'recovered');
+    assert.notEqual(assistants[0]?.id, assistants[1]?.id);
+    // The sealed fragment stays in the transcript but out of the retried
+    // provider request: the retry replays the failed attempt's projection,
+    // so the model never re-reads its own severed thinking.
+    const retryPrompt = JSON.stringify(model.doStreamCalls[1]?.prompt);
+    assert.equal(retryPrompt.includes('partial thought'), false);
+    assert.match(retryPrompt, /review the commits/);
+  });
+
+  test('retries a retryable network failure before any observable output', async () => {
+    const durable = durableTurnHarness('turn-econnreset-no-output', 'review the commits');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        if (calls > 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ],
+              initialDelayInMs: null,
+              chunkDelayInMs: null,
+            }),
+          };
+        }
+        return {
+          stream: new ReadableStream<LanguageModelV4StreamPart>({
+            start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] });
+              controller.error(connectionResetFailure());
+            },
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, reason }) => ({ phase, reason })),
+      [
+        { phase: 'scheduled', reason: 'network' },
+        { phase: 'started', reason: 'network' },
+      ],
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('stops after one sealed-thinking network recovery in the same provider step', async () => {
+    // Every attempt streams thinking and is cut mid-stream. The first cut
+    // seals and retries; the second is terminal, so one recovery per step
+    // bounds how many severed-thinking fragments a systematically cutting
+    // gateway can leave in the transcript.
+    const durable = durableTurnHarness('turn-econnreset-thinking-budget', 'review the commits');
+    const assistants: AssistantMessage[] = [];
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: `reasoning-${calls}` },
+            {
+              type: 'reasoning-delta',
+              id: `reasoning-${calls}`,
+              delta: `partial thought ${calls}`,
+            },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text.startsWith('partial thought ')) {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.filter(
+        (event): event is Extract<SessionEvent, { type: 'provider_retry' }> =>
+          event.type === 'provider_retry' && event.phase === 'scheduled',
+      ).length,
+      1,
+    );
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+    assert.equal(error?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+    assert.equal(assistants.length, 2);
+    assert.equal(assistants[0]?.thinking?.text, 'partial thought 1');
+    assert.equal(assistants[1]?.thinking?.text, 'partial thought 2');
+    assert.notEqual(assistants[0]?.id, assistants[1]?.id);
+  });
+
+  test('does not retry a network failure after provider continuation metadata on thinking', async () => {
+    // Continuation identity (Responses reasoning item ids, encrypted
+    // content) cannot be replayed into a fresh request, so thinking that
+    // carries it stays non-recoverable even though the failure itself is
+    // retryable. The second reasoning part's delta is the fail trigger:
+    // stream ordering guarantees the metadata on the first part's
+    // reasoning-end was already consumed when it arrives.
+    const durable = durableTurnHarness('turn-econnreset-metadata', 'review the commits');
+    let failCurrentStream: (() => void) | undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const failing = midStreamFailureStream(
+          [
+            { type: 'stream-start', warnings: [] },
+            { type: 'reasoning-start', id: 'reasoning-1' },
+            {
+              type: 'reasoning-delta',
+              id: 'reasoning-1',
+              delta: 'completed provider reasoning',
+            },
+            {
+              type: 'reasoning-end',
+              id: 'reasoning-1',
+              providerMetadata: {
+                openai: {
+                  itemId: 'reasoning-item-1',
+                  reasoningEncryptedContent: 'encrypted-reasoning',
+                },
+              },
+            },
+            { type: 'reasoning-start', id: 'reasoning-2' },
+            { type: 'reasoning-delta', id: 'reasoning-2', delta: 'second thought' },
+          ],
+          connectionResetFailure(),
+        );
+        failCurrentStream = failing.fail;
+        return { stream: failing.stream };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send(durable.input())) {
+      durable.record(event);
+      events.push(event);
+      if (event.type === 'thinking_delta' && event.text === 'second thought') {
+        failCurrentStream?.();
+      }
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'error')?.reason, 'network');
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
   test('retries DeepSeek OpenAI Chat reasoning marked only for field replay', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;
@@ -16036,6 +16352,34 @@ function manualWatchdogTimer(): {
     },
     armCount: () => armCount,
   };
+}
+
+function connectionResetFailure(): Error {
+  // Transport reset identified only by the cause code, the same evidence
+  // shape provider-error-classification tests classify as retryable Network.
+  return Object.assign(new Error('Operation failed'), {
+    cause: { code: 'ECONNRESET' },
+  });
+}
+
+/**
+ * Streams `chunks`, then hangs until `fail()` — mirroring a provider that
+ * streams part of a step and then drops the connection mid-stream. The chunks
+ * must already be consumed when the failure lands (controller.error() discards
+ * queued-but-unread chunks), so the test triggers `fail` from a streamed event.
+ */
+function midStreamFailureStream(
+  chunks: readonly LanguageModelV4StreamPart[],
+  failure: Error,
+): { stream: ReadableStream<LanguageModelV4StreamPart>; fail: () => void } {
+  let fail: () => void = () => {};
+  const stream = new ReadableStream<LanguageModelV4StreamPart>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      fail = () => controller.error(failure);
+    },
+  });
+  return { stream, fail: () => fail() };
 }
 
 function hangingProviderStream(

@@ -892,6 +892,11 @@ const MAX_WAITING_CODE_MODE_CELLS = 1;
 const MAX_PROVIDER_ATTEMPTS_PER_STEP = 10;
 const MAX_IDLE_WATCHDOG_RETRIES_PER_STEP = 1;
 const MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP = 1;
+// A mid-stream cut after partial thinking seals one transcript fragment per
+// retry. A gateway that systematically kills long thinking streams (the
+// 2026-08-28 incident shape) would otherwise spend the full attempt budget
+// accumulating fragments before failing anyway, so fail fast after one.
+const MAX_SEALED_THINKING_RETRIES_PER_STEP = 1;
 const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
 const PROVIDER_RETRY_MAX_DELAY_MS = 32_000;
 const PROVIDER_RETRY_JITTER_FACTOR = 0.25;
@@ -2073,6 +2078,7 @@ export class AiSdkBackend implements AgentBackend {
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
           let incompleteStreamRetryCount = 0;
+          let sealedThinkingRetryCount = 0;
           const returnedToolCalls: ToolCallPart[] = [];
           let providerToolActivityCount = 0;
           const providerToolInputs = new Map<string, unknown>();
@@ -2095,7 +2101,13 @@ export class AiSdkBackend implements AgentBackend {
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
               !attemptReachedStepBoundary;
-            const attemptCanRecoverFromIdleTimeout = () =>
+            // Thinking is the only output that can be sealed into its own
+            // message before a retry: flushStep() closes the fragment under
+            // the current message id and the retry streams into a fresh one,
+            // so the user never sees spliced or duplicated content. Text,
+            // tool activity, continuation metadata, and step boundaries stay
+            // non-recoverable for the reasons each of them is tracked.
+            const attemptCanRecoverWithSealedThinking = () =>
               !attemptSawText &&
               !attemptSawToolActivity &&
               !attemptSawContinuationMetadata &&
@@ -2466,33 +2478,50 @@ export class AiSdkBackend implements AgentBackend {
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
-                attemptCanRecoverFromIdleTimeout();
+                attemptCanRecoverWithSealedThinking();
               const incompleteStreamRecovery =
                 incompleteStreamTerminal &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
+              // Same seal-and-retry contract as the watchdog path, entered when
+              // the failure arrives as a retryable provider/network error
+              // instead of a local idle timeout. `!idleWatchdogRecovery` keeps
+              // every watchdog-shaped outcome on its existing path, and
+              // `!attemptHasNoObservableOutput()` keeps no-output retries on
+              // the plain budget so this one is spent only on sealed fragments.
+              const sealedThinkingRecovery =
+                !idleWatchdogRecovery &&
+                failure.retryable &&
+                sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
+                attemptCanRecoverWithSealedThinking() &&
+                !attemptHasNoObservableOutput();
               if (
                 (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 failure.kind !== 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
-                (attemptHasNoObservableOutput() || idleWatchdogRecovery || incompleteStreamRecovery)
+                (attemptHasNoObservableOutput() ||
+                  idleWatchdogRecovery ||
+                  incompleteStreamRecovery ||
+                  sealedThinkingRecovery)
               ) {
-                if (idleWatchdogRecovery) {
-                  idleWatchdogRetryCount += 1;
-                  if (stepThinkingParts.length > 0) {
-                    await flushStep();
-                    currentStepMessageId = this.newId();
-                  }
-                }
+                if (idleWatchdogRecovery) idleWatchdogRetryCount += 1;
+                if (sealedThinkingRecovery) sealedThinkingRetryCount += 1;
                 if (incompleteStreamRecovery) incompleteStreamRetryCount += 1;
+                if (
+                  (idleWatchdogRecovery || sealedThinkingRecovery) &&
+                  stepThinkingParts.length > 0
+                ) {
+                  await flushStep();
+                  currentStepMessageId = this.newId();
+                }
                 // The failed request did not return authoritative usage. Keep
                 // effectiveness recoverable, but fail final metering closed.
                 sawUnusableStepUsage = true;
                 const delayMs = providerRetryDelayMs(providerAttempt, failure.retryAfterMs);
                 const nextAttempt = providerAttempt + 1;
                 const maxAttempts =
-                  idleWatchdogRecovery || incompleteStreamRecovery
+                  idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
                     ? nextAttempt
                     : MAX_PROVIDER_ATTEMPTS_PER_STEP;
                 const reason = providerRetryReason(failure.kind);
