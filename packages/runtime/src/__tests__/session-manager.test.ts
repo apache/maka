@@ -11465,7 +11465,6 @@ describe('SessionManager permission mode updates', () => {
     const [turn] = await store.listTurns(session.id);
     expect(turn?.errorClass).toBe('app_restarted');
   });
-
 });
 
 async function drainAll(iterable: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
