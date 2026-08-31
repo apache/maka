@@ -88,6 +88,8 @@ export async function packageWindowsX64({
   env = process.env,
   remove = rm,
   assertFile = access,
+  makeDirectory = mkdir,
+  copy = copyFile,
 } = {}) {
   if (platform !== 'win32' || arch !== 'x64') {
     throw new Error('Release packaging requires a Windows x64 host.');
@@ -97,7 +99,10 @@ export async function packageWindowsX64({
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
   const exePath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.exe`);
   const zipPath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.zip`);
-  const updateMetadataPath = join(releaseDirectory, 'latest.yml');
+  const updateMetadataPath = join(
+    releaseDirectory,
+    buildVersion === manifest.version ? 'latest.yml' : 'dev.yml',
+  );
   const unpackedDirectory = join(releaseDirectory, 'win-unpacked');
 
   for (const path of requiredElectronLicensePaths) {
@@ -110,8 +115,8 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
   await run('npm', ['run', 'check:windows-cargo-notices']);
-  await mkdir(sandboxResourceDirectory, { recursive: true });
-  await copyFile(sandboxBinaryPath, sandboxResourcePath);
+  await makeDirectory(sandboxResourceDirectory, { recursive: true });
+  await copy(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { open, writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -55,6 +56,7 @@ test('one OAuth generation singleflights refresh and persists its lease with can
     let refreshes = 0;
     const binding = fixture.authority.bind({
       providerType: 'github-copilot',
+      connectionId: connectionId(before),
       connectionSlug: CONNECTION_SLUG,
       material: before,
       createRefreshTransport: () =>
@@ -478,6 +480,7 @@ test('a GitHub Copilot 401 force-refreshes canonical credentials and replays onc
       };
       const binding = fixture.authority.bind({
         providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -534,6 +537,7 @@ test('a caller who cancels during the post-401 refresh is released, not made to 
       };
       const binding = fixture.authority.bind({
         providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -598,6 +602,7 @@ test('a GitHub 401 on a non-expiring account token is not replayed with the same
       };
       const binding = fixture.authority.bind({
         providerType: 'github-copilot',
+        connectionId: connectionId(fixture.material),
         connectionSlug: CONNECTION_SLUG,
         material: fixture.material,
         createRefreshTransport: () => testRefreshTransport(providerFetch),
@@ -870,18 +875,6 @@ async function withPublishedSyncFailure(
 function isOAuthError(code: OAuthExecutionCredentialError['code']): (error: unknown) => boolean {
   return (error) => error instanceof OAuthExecutionCredentialError && error.code === code;
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
 function claudeIdentity(body: Record<string, unknown> | undefined): Record<string, unknown> {
   assert.ok(body);
   const metadata = body.metadata as { user_id?: unknown } | undefined;

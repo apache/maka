@@ -134,6 +134,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for mandatory submit Skill outcomes', () => {
+    // Submit Skill outcomes and explicit OAuth Connection targets independently
+    // claimed epoch 78, so their merge requires a distinct compatibility boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 78);
+  });
+
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
     assert.throws(
       () =>
@@ -215,6 +221,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 52);
   });
 
+  test('publishes a new compatibility epoch for explicit OAuth Connection targets', () => {
+    // Epoch 53 peers still send connectionId directly and receive provider plus
+    // connectionId fields instead of one canonical Connection identity.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 53);
+  });
+
   test('publishes a new compatibility epoch for queued message editing', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 45);
   });
@@ -233,9 +245,9 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // The current main epoch is the floor; adding the new OAuth provider and
-    // enrollment operation changes the closed wire vocabulary.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 76);
+    // The epoch on `main` at merge time is the floor; adding the new OAuth
+    // provider and the enrollment query changes the closed wire vocabulary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
@@ -1689,10 +1701,21 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('decodes exact submit dispositions and bounded retract and interrupt results', () => {
+    const skillInvocation = { loaded: [], failed: [], receipts: [] };
     for (const result of [
-      { disposition: 'steering', queueRevision: 2 },
-      { disposition: 'followup', queueRevision: 3 },
-      { disposition: 'turn_started', turnId: 'turn-2' },
+      { disposition: 'steering', queueRevision: 2, skillInvocation },
+      { disposition: 'followup', queueRevision: 3, skillInvocation },
+      { disposition: 'steering', skillInvocation },
+      { disposition: 'followup', skillInvocation },
+      { disposition: 'turn_started', turnId: 'turn-2', skillInvocation },
+      {
+        disposition: 'blocked',
+        skillInvocation: {
+          loaded: [],
+          failed: [{ request: 'missing', reason: 'not_found' }],
+          receipts: [],
+        },
+      },
     ]) {
       assert.doesNotThrow(() =>
         decodeHostFrame({
@@ -1703,16 +1726,54 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       );
     }
+    for (const result of [
+      { disposition: 'steering', queueRevision: 2 },
+      { disposition: 'followup', queueRevision: 3 },
+      { disposition: 'turn_started', turnId: 'turn-2' },
+      { disposition: 'blocked' },
+    ]) {
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId: 'submit-response',
+            operation: 'turn.message.submit',
+            ok: true,
+            result,
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.throws(
       () =>
         decodeHostFrame({
           requestId: 'submit-response',
           operation: 'turn.message.submit',
           ok: true,
-          result: { disposition: 'turn_started', turnId: 'turn-2', queueRevision: 4 },
+          result: {
+            disposition: 'turn_started',
+            turnId: 'turn-2',
+            queueRevision: 4,
+            skillInvocation,
+          },
         }),
       isInvalidFrame,
     );
+    for (const skillInvocation of [
+      { loaded: 'invalid', failed: [], receipts: [] },
+      { loaded: [{ id: 'writer', name: 'Writer' }], failed: [], receipts: [] },
+      { loaded: [], failed: [], receipts: [] },
+    ]) {
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId: 'submit-response',
+            operation: 'turn.message.submit',
+            ok: true,
+            result: { disposition: 'blocked', skillInvocation },
+          }),
+        isInvalidFrame,
+      );
+    }
     for (const [operation, requestId] of [
       ['queue.entry.retract', 'entry-retract-response'],
       ['queue.entry.promote', 'entry-promote-response'],

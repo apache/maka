@@ -51,9 +51,10 @@ import {
   Workflow,
 } from '@maka/ui/icons';
 import { useRuntimeHostManagementServices } from '../services-context.js';
-import type {
-  PeerMeshDirectPeerSnapshot,
-  PeerMeshTarget,
+import {
+  PeerMeshOperationOutcomeUnknownError,
+  type PeerMeshDirectPeerSnapshot,
+  type PeerMeshTarget,
 } from '../ports.js';
 
 type PeerMeshDialogView =
@@ -88,6 +89,11 @@ type LocalHostAvailability =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'available'; readonly peerId: string };
 
+interface ActivePeerMeshOperation {
+  readonly operationId: string;
+  readonly cancellable: boolean;
+}
+
 const LOCAL_HOST_TARGET = { kind: 'local_host' } as const;
 
 export function RuntimeHostPeerMeshDialog(props: {
@@ -106,12 +112,15 @@ export function RuntimeHostPeerMeshDialog(props: {
   const [view, setView] = useState<PeerMeshDialogView>({ kind: 'overview' });
   const [error, setError] = useState<string>();
   const [workingAction, setWorkingAction] = useState<PeerMeshWorkingAction>();
+  const [settling, setSettling] = useState(false);
+  const [operationCancellable, setOperationCancellable] = useState(false);
   const [managedHostPeerSetup, setManagedHostPeerSetup] = useState<ManagedHostPeerSetup>(
     props.target.kind === 'managed_host' ? { kind: 'loading' } : { kind: 'idle' },
   );
   const working = workingAction !== undefined;
-  const activeOperationId = useRef<string | undefined>(undefined);
-  const cancelledOperationId = useRef<string | undefined>(undefined);
+  const activeOperation = useRef<ActivePeerMeshOperation | undefined>(undefined);
+  const cancelRequestedOperationId = useRef<string | undefined>(undefined);
+  const closeRequested = useRef(false);
   const statusOperationIds = useRef(new Set<string>());
   const refreshSequence = useRef(0);
   const closed = useRef(false);
@@ -166,24 +175,27 @@ export function RuntimeHostPeerMeshDialog(props: {
   const refresh = useCallback(async () => {
     if (closed.current) return;
     const sequence = ++refreshSequence.current;
-    const [result, localHost] = await Promise.all([
-      executeStatus(activeTarget),
-      offerLocalHost
-        ? executeStatus(LOCAL_HOST_TARGET).then(
-            (value) => ({ kind: 'result' as const, value }),
-            () => ({ kind: 'failed' as const }),
-          )
-        : undefined,
-    ]);
+    const result = await executeStatus(activeTarget);
     if (!isSnapshot(result)) throw new Error(copy.invalidResult);
     if (closed.current || sequence !== refreshSequence.current) return;
     setSnapshot(result);
     setError(undefined);
     if (offerLocalHost) {
-      setLocalHost(
-        localHost?.kind === 'result' && isSnapshot(localHost.value) && localHost.value.localPeerId
-          ? { kind: 'available', peerId: localHost.value.localPeerId }
-          : { kind: 'unavailable' },
+      setLocalHost({ kind: 'loading' });
+      void executeStatus(LOCAL_HOST_TARGET).then(
+        (localHost) => {
+          if (closed.current || sequence !== refreshSequence.current) return;
+          setLocalHost(
+            isSnapshot(localHost) && localHost.localPeerId
+              ? { kind: 'available', peerId: localHost.localPeerId }
+              : { kind: 'unavailable' },
+          );
+        },
+        () => {
+          if (!closed.current && sequence === refreshSequence.current) {
+            setLocalHost({ kind: 'unavailable' });
+          }
+        },
       );
     }
   }, [activeTarget, copy.invalidResult, executeStatus, offerLocalHost]);
@@ -202,8 +214,6 @@ export function RuntimeHostPeerMeshDialog(props: {
       closed.current = true;
       refreshSequence.current += 1;
       cancelStatusOperations();
-      const operationId = activeOperationId.current;
-      if (operationId) void services.cancel(operationId);
     };
   }, [cancelStatusOperations, copy.unknownError, offerLocalHost, refresh]);
 
@@ -246,28 +256,82 @@ export function RuntimeHostPeerMeshDialog(props: {
   async function runOperation(
     action: PeerMeshWorkingAction,
     operation: (operationId: string) => Promise<void>,
+    policy: {
+      readonly cancellable?: boolean;
+      readonly preserveResultOnClose?: boolean;
+    } = {},
   ): Promise<boolean> {
     if (closed.current) return false;
     const operationId = services.createOperationId();
-    activeOperationId.current = operationId;
+    activeOperation.current = { operationId, cancellable: policy.cancellable === true };
+    cancelRequestedOperationId.current = undefined;
+    setSettling(false);
+    setOperationCancellable(policy.cancellable === true);
     setWorkingAction(action);
     setError(undefined);
     let completed = false;
-    let cancelled = false;
+    let unknownOutcome = false;
+    let unknownOutcomeReconciled = false;
     try {
       await operation(operationId);
       completed = true;
     } catch (failure) {
-      if (!closed.current && cancelledOperationId.current !== operationId) {
+      if (
+        failure instanceof PeerMeshOperationOutcomeUnknownError &&
+        !closed.current &&
+        cancelRequestedOperationId.current !== operationId
+      ) {
+        unknownOutcome = true;
+        setSettling(true);
+        setOperationCancellable(false);
+        try {
+          await refresh();
+          unknownOutcomeReconciled = true;
+          setError(
+            failure.action === 'invite'
+              ? copy.invitationOutcomeUnknown
+              : copy.outcomeUnknown,
+          );
+        } catch {
+          if (!closed.current) setError(copy.outcomeUnknownRefreshFailed);
+        }
+      } else if (!closed.current && cancelRequestedOperationId.current !== operationId) {
         setError(peerMeshErrorMessage(failure, copy.unknownError));
       }
     } finally {
-      cancelled = cancelledOperationId.current === operationId;
-      if (activeOperationId.current === operationId) activeOperationId.current = undefined;
-      if (cancelled) cancelledOperationId.current = undefined;
-      if (!closed.current) setWorkingAction(undefined);
+      const cancelled = cancelRequestedOperationId.current === operationId;
+      if (cancelled && !closed.current) {
+        try {
+          await refresh();
+        } catch (failure) {
+          if (!closed.current) setError(peerMeshErrorMessage(failure, copy.unknownError));
+        }
+      }
+      if (cancelRequestedOperationId.current === operationId) {
+        cancelRequestedOperationId.current = undefined;
+      }
+      if (activeOperation.current?.operationId === operationId) activeOperation.current = undefined;
+      if (cancelled) completed = false;
+      if (!closed.current && activeOperation.current === undefined) {
+        setWorkingAction(undefined);
+        setSettling(false);
+        setOperationCancellable(false);
+      }
+      if (!closed.current && closeRequested.current) {
+        if (unknownOutcome && !unknownOutcomeReconciled) closeRequested.current = false;
+        else if (completed && policy.preserveResultOnClose) closeRequested.current = false;
+        else finishClose();
+      }
     }
-    return completed && !cancelled && !closed.current;
+    return completed && !closed.current;
+  }
+
+  function operationIsCurrent(operationId: string): boolean {
+    return (
+      !closed.current &&
+      activeOperation.current?.operationId === operationId &&
+      cancelRequestedOperationId.current !== operationId
+    );
   }
 
   async function refreshNow(): Promise<void> {
@@ -284,18 +348,36 @@ export function RuntimeHostPeerMeshDialog(props: {
   }
 
   function cancelOperation(): void {
-    const operationId = activeOperationId.current;
-    if (operationId) {
-      cancelledOperationId.current = operationId;
-      void services.cancel(operationId);
-    }
+    const operation = activeOperation.current;
+    if (
+      !operation?.cancellable ||
+      cancelRequestedOperationId.current === operation.operationId
+    ) return;
+    const operationId = operation.operationId;
+    cancelRequestedOperationId.current = operationId;
+    if (!closed.current) setSettling(true);
+    void services.cancel(operationId);
+  }
+
+  function finishClose(): void {
+    if (closed.current) return;
+    closed.current = true;
+    cancelStatusOperations();
+    props.onClose();
   }
 
   function requestClose(): void {
-    closed.current = true;
-    if (working) cancelOperation();
-    cancelStatusOperations();
-    props.onClose();
+    if (workingAction && workingAction !== 'refresh') {
+      if (activeOperation.current?.cancellable) {
+        cancelOperation();
+        finishClose();
+        return;
+      }
+      closeRequested.current = true;
+      setSettling(true);
+      return;
+    }
+    finishClose();
   }
 
   async function createMesh(): Promise<void> {
@@ -305,49 +387,62 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
       const created = result.meshes.find(({ meshId }) => !previousMeshIds.has(meshId));
       if (created && offerLocalHost) {
         await joinLocalHost(created.meshId, operationId);
+        if (!operationIsCurrent(operationId)) return;
         await refresh();
       }
     });
   }
 
   async function join(): Promise<void> {
-    await runOperation('join', async (operationId) => {
-      const result = await services.execute(activeTarget, 'join', {
-        invitation: joinDraft.trim(),
-        operationId,
-      });
-      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
-      setJoinDraft('');
-      setView({ kind: 'overview' });
-      setSnapshot(result);
-    });
+    await runOperation(
+      'join',
+      async (operationId) => {
+        const result = await services.execute(activeTarget, 'join', {
+          invitation: joinDraft.trim(),
+          operationId,
+        });
+        if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+        if (!operationIsCurrent(operationId)) return;
+        setJoinDraft('');
+        setView({ kind: 'overview' });
+        setSnapshot(result);
+      },
+      { cancellable: activeTarget.kind === 'desktop' },
+    );
   }
 
   async function createInvitation(meshId: string): Promise<void> {
-    await runOperation('invite', async (operationId) => {
-      const result = await services.execute(activeTarget, 'invite', {
-        meshId,
-        operationId,
-      });
-      if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
-      setView({
-        kind: 'invitation',
-        meshId,
-        code: JSON.stringify(result.invitation),
-        expiresAt: result.invitation.expiresAt,
-        hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
-      });
-      setSnapshot(result.snapshot);
-    });
+    await runOperation(
+      'invite',
+      async (operationId) => {
+        const result = await services.execute(activeTarget, 'invite', {
+          meshId,
+          operationId,
+        });
+        if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
+        if (!operationIsCurrent(operationId)) return;
+        setView({
+          kind: 'invitation',
+          meshId,
+          code: JSON.stringify(result.invitation),
+          expiresAt: result.invitation.expiresAt,
+          hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
+        });
+        setSnapshot(result.snapshot);
+      },
+      { preserveResultOnClose: true },
+    );
   }
 
   async function addLocalHost(meshId: string): Promise<void> {
     await runOperation('add-host', async (operationId) => {
       await joinLocalHost(meshId, operationId);
+      if (!operationIsCurrent(operationId)) return;
       await refresh();
     });
   }
@@ -369,7 +464,10 @@ export function RuntimeHostPeerMeshDialog(props: {
     } catch (failure) {
       if (!closed.current) setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
-      if (!closed.current) setWorkingAction(undefined);
+      if (!closed.current) {
+        setWorkingAction(undefined);
+        if (closeRequested.current) finishClose();
+      }
     }
   }
 
@@ -379,7 +477,7 @@ export function RuntimeHostPeerMeshDialog(props: {
       operationId,
     });
     if (!isInvitationResult(prepared)) throw new Error(copy.invalidResult);
-    if (cancelledOperationId.current === operationId) {
+    if (!operationIsCurrent(operationId)) {
       throw new Error('Peer Mesh operation was cancelled');
     }
     const joined = await services.execute(
@@ -388,6 +486,9 @@ export function RuntimeHostPeerMeshDialog(props: {
       { invitation: JSON.stringify(prepared.invitation), operationId },
     );
     if (!isSnapshot(joined)) throw new Error(copy.invalidResult);
+    if (!operationIsCurrent(operationId)) {
+      throw new Error('Peer Mesh operation was cancelled');
+    }
   }
 
   async function mutate(
@@ -415,6 +516,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
   }
@@ -426,6 +528,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
   }
@@ -447,6 +550,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
     if (!completed) throw new Error('Peer Mesh rename did not complete');
@@ -460,6 +564,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
     if (!completed) throw new Error('Peer Mesh rename did not complete');
@@ -538,9 +643,9 @@ export function RuntimeHostPeerMeshDialog(props: {
               {workingAction ? (
                 <Banner
                   status="info"
-                  title={copy.working[workingAction]}
+                  title={settling ? copy.settling : copy.working[workingAction]}
                   endContent={
-                    workingAction === 'enable-peer' || workingAction === 'refresh' ? undefined : (
+                    settling || !operationCancellable ? undefined : (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -1368,6 +1473,11 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh 操作失败',
         invalidResult: 'Peer Mesh 返回了无效结果',
         unknownError: 'Peer Mesh 操作失败',
+        outcomeUnknown: 'Host 可能已完成此操作。已刷新当前状态，请确认后再重试。',
+        invitationOutcomeUnknown:
+          'Host 可能已创建邀请码，但代码未能返回且无法恢复。它会自动过期；创建新邀请前请先检查待使用邀请数量。',
+        outcomeUnknownRefreshFailed:
+          'Host 可能已完成此操作，但当前状态也未能刷新。请恢复连接并刷新后再重试。',
         unavailable: '当前 endpoint 不支持 Peer Mesh',
         loading: '正在读取 Mesh 状态…',
         checkingPeerConnection: '正在检查此 Runtime Host 的 Peer 连接…',
@@ -1391,6 +1501,7 @@ function peerMeshCopy(locale: string) {
           update: '正在更新 Mesh…',
           rename: '正在保存名称…',
         },
+        settling: '正在确认最终状态…',
         endpoint: '管理对象',
         desktopEndpoint: 'Desktop Client',
         hostEndpoint: '本机 Runtime Host',
@@ -1485,6 +1596,12 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh operation failed',
         invalidResult: 'Peer Mesh returned an invalid result',
         unknownError: 'Peer Mesh operation failed',
+        outcomeUnknown:
+          'The Host may have completed this operation. Its current state was refreshed; review it before trying again.',
+        invitationOutcomeUnknown:
+          'The Host may have created an invitation, but its one-time code was not returned and cannot be recovered. It will expire automatically; review the pending invitation count before creating another.',
+        outcomeUnknownRefreshFailed:
+          'The Host may have completed this operation, but its current state could not be refreshed. Reconnect and refresh before trying again.',
         unavailable: 'Peer Mesh is unavailable for this endpoint',
         loading: 'Loading Mesh status…',
         checkingPeerConnection: "Checking this Runtime Host's peer connection…",
@@ -1508,6 +1625,7 @@ function peerMeshCopy(locale: string) {
           update: 'Updating Mesh…',
           rename: 'Saving name…',
         },
+        settling: 'Confirming the final state…',
         endpoint: 'Manage endpoint',
         desktopEndpoint: 'Desktop Client',
         hostEndpoint: 'Local Runtime Host',

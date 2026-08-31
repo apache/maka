@@ -22,13 +22,19 @@ import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import { LocaleProvider } from '@maka/ui';
 import { NEW_TASK_PENDING_KEY } from '../../renderer/pending-items.js';
+import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 import {
   useComposerAttachments,
   type ComposerAttachmentService,
 } from '../../renderer/use-composer-attachments.js';
 import { useAppShellComposerQuotes } from '../../renderer/use-app-shell-composer-quotes.js';
+import {
+  composerModelSupportsVision,
+  type NewChatModel,
+} from '../../renderer/shell-chat-model-selection.js';
 
 /**
  * #3408 for what the composer STAGES. The draft text is covered by
@@ -60,7 +66,7 @@ afterEach(async () => {
 
 async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Promise<{
   latest(): T;
-  render(draftKey: string): Promise<void>;
+  render(draftKey: string, locale?: 'en' | 'zh'): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, {
@@ -82,11 +88,11 @@ async function mountProbe<T>(useHook: (options: { draftKey: string }) => T): Pro
     return null;
   }
 
-  const render = async (draftKey: string) => {
+  const render = async (draftKey: string, locale: 'en' | 'zh' = 'en') => {
     await act(async () => {
       root.render(
         createElement(LocaleProvider, {
-          locale: 'en',
+          locale,
           children: createElement(Probe, { draftKey }),
         }),
       );
@@ -135,6 +141,20 @@ function textFile(name: string): File {
   return { name, type: 'text/plain', size: 12 } as unknown as File;
 }
 
+function modelChoice(model: string, supportsVision: boolean): ChatModelChoice {
+  return {
+    connectionId: 'connection-test',
+    connectionSlug: 'test',
+    providerType: 'openai-compatible',
+    providerLabel: 'Test',
+    model,
+    label: model,
+    isDefault: model === 'text-model',
+    thinkingLevels: [],
+    supportsVision,
+  };
+}
+
 test('a Session keeps its own staged quotes, and the new-task bucket keeps its own', async () => {
   const probe = await mountProbe(useAppShellComposerQuotes);
 
@@ -179,6 +199,80 @@ test('a completing send clears the attachments it submitted', async () => {
   await act(() => clearAfterSend(submitted));
 
   assert.equal(probe.latest().pendingAttachments.length, 0);
+});
+
+test('AppShell composition shows the localized non-vision image notice once per task', async () => {
+  const calls: Array<{ title: string; description?: string }> = [];
+  let nextModel: NewChatModel | undefined = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'text-model',
+  };
+  const choices = [modelChoice('text-model', false), modelChoice('vision-model', true)];
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      imageNotice: {
+        notify(title, description) {
+          calls.push({ title, ...(description === undefined ? {} : { description }) });
+        },
+        supportsVision: () => composerModelSupportsVision({
+          active: undefined,
+          next: nextModel,
+          choices,
+        }),
+      },
+      service: idleAttachmentService,
+    }),
+  );
+  const image = { name: 'chart.png', type: 'image/png', size: 12 } as unknown as File;
+
+  await probe.render('session-en', 'en');
+  await act(() => probe.latest().attachFilePaths([image]));
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(probe.latest().pendingAttachments.length, 2);
+  const en = getDesktopConversationCopy('en').actions;
+  assert.deepEqual(calls, [{
+    title: en.imageAttachmentNotDirectTitle,
+    description: en.imageAttachmentNotDirectDescription,
+  }]);
+
+  await probe.render('session-zh', 'zh');
+  await act(() => probe.latest().attachFilePaths([image]));
+  const zh = getDesktopConversationCopy('zh').actions;
+  assert.deepEqual(calls[1], {
+    title: zh.imageAttachmentNotDirectTitle,
+    description: zh.imageAttachmentNotDirectDescription,
+  });
+
+  probe.latest().imageNoticeLifecycle.transfer('session-zh', 'session-transferred');
+  await probe.render('session-transferred', 'zh');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 2);
+
+  nextModel = undefined;
+  await probe.render('session-no-target');
+  await act(() => probe.latest().attachFilePaths([image]));
+  nextModel = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'vision-model',
+  };
+  await probe.render('session-vision');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 2);
+
+  nextModel = {
+    llmConnectionId: 'connection-test',
+    llmConnectionSlug: 'test',
+    model: 'text-model',
+  };
+  await probe.render('session-reset');
+  await act(() => probe.latest().attachFilePaths([image]));
+  probe.latest().imageNoticeLifecycle.reset('session-reset');
+  await act(() => probe.latest().attachFilePaths([image]));
+  assert.equal(calls.length, 4);
 });
 
 test('retracted queue attachments can be restored and submitted without re-ingest', async () => {

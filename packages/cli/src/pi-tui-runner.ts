@@ -1095,7 +1095,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // was dropped, and the submit answer is the only place it appears: the
         // Turn arrives through the started-Turn subscription, which carries
         // Session state rather than this Message's admission.
-        if (result?.disposition === 'turn_started' && result.skillInvocation) {
+        if (result) {
           const { loaded, failed } = result.skillInvocation;
           if (loaded.length > 0 || failed.length > 0) showSkillInvocation(result.skillInvocation);
         }

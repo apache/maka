@@ -420,8 +420,16 @@ describe('SqliteRuntimeStore', () => {
 
   it('commits function_response, outcome journal fact, and projection atomically in T2', async () => {
     await withStore(async (store) => {
-      await commitPrepared(store);
-      const outcome = functionResponseEvent();
+      await commitPrepared(store, { resultProjectionVersion: 1 });
+      const outcome = functionResponseEvent({
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: 'private execution contents',
+          modelProjection: { version: 1, kind: 'text', text: 'bounded model contents' },
+        },
+      });
 
       const result = await store.commitToolOutcome({
         operationId: 'operation-1',
@@ -434,7 +442,19 @@ describe('SqliteRuntimeStore', () => {
       assert.equal(result.runtimeEventSeq, 3);
       assert.deepEqual(await store.readRuntimeEvents('session-1', 'run-1'), [
         functionCallEvent(),
-        toolDispatchEvent(),
+        toolDispatchEvent({
+          actions: {
+            toolDispatch: {
+              protocol: 't1_after_preflight_v1',
+              operationId: 'operation-1',
+              providerToolCallId: 'provider-call-1',
+              toolName: 'Read',
+              canonicalArgsHash: READ_ARGS_HASH,
+              recoveryMode: 'replay_safe',
+              resultProjectionVersion: 1,
+            },
+          },
+        }),
         outcome,
       ]);
       assert.equal((await store.readImmutableRuntimeEvents('session-1', 'run-1')).length, 3);
@@ -458,6 +478,32 @@ describe('SqliteRuntimeStore', () => {
         ['prepared', 'outcome_committed'],
       );
       assert.deepEqual(await store.listUnsettledToolOperations(), []);
+    });
+  });
+
+  it('keeps projected T2 prepared when its atomic model projection is missing', async () => {
+    await withStore(async (store) => {
+      await commitPrepared(store, { resultProjectionVersion: 1 });
+
+      await assert.rejects(
+        store.commitToolOutcome({
+          operationId: 'operation-1',
+          journalEventId: 'operation-1_outcome',
+          runtimeEvent: functionResponseEvent(),
+          committedAt: 20,
+        }),
+        /requires its durable model projection/,
+      );
+
+      assert.deepEqual(
+        (await store.readRuntimeEvents('session-1', 'run-1')).map((event) => event.id),
+        ['call-event-1', 'dispatch-event-1'],
+      );
+      assert.equal((await store.readToolOperation('operation-1'))?.currentState, 'prepared');
+      assert.deepEqual(
+        (await store.readToolJournal('operation-1')).map((event) => event.state),
+        ['prepared'],
+      );
     });
   });
 
@@ -2069,12 +2115,26 @@ function toolDispatchEvent(overrides: Partial<RuntimeEvent> = {}): RuntimeEvent 
   };
 }
 
-function commitPrepared(store: Store) {
+function commitPrepared(store: Store, options: { resultProjectionVersion?: 1 } = {}) {
   return store.commitToolPrepared({
     operationId: 'operation-1',
     journalEventId: 'operation-1_prepared',
     runtimeEvent: functionCallEvent(),
-    dispatchRuntimeEvent: toolDispatchEvent(),
+    dispatchRuntimeEvent: toolDispatchEvent({
+      actions: {
+        toolDispatch: {
+          protocol: 't1_after_preflight_v1',
+          operationId: 'operation-1',
+          providerToolCallId: 'provider-call-1',
+          toolName: 'Read',
+          canonicalArgsHash: READ_ARGS_HASH,
+          recoveryMode: 'replay_safe',
+          ...(options.resultProjectionVersion !== undefined
+            ? { resultProjectionVersion: options.resultProjectionVersion }
+            : {}),
+        },
+      },
+    }),
     providerToolCallId: 'provider-call-1',
     toolName: 'Read',
     canonicalArgsHash: READ_ARGS_HASH,

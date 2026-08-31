@@ -128,6 +128,8 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   readonly desired?: RuntimeHostManagedDeploymentConfig;
   readonly deps: RuntimeHostLifecycleTransactionDeps;
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
 }): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
   const current = input.current
     ? decodeRuntimeHostManagedDeploymentConfig(input.current)
@@ -139,6 +141,7 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   let transitionError: unknown;
   let previousAuthorityRestored = false;
   try {
+    await input.validateRetiredState?.();
     result = await applyRuntimeHostLifecycleTransition(
       input.owner,
       {
@@ -478,6 +481,8 @@ export async function replaceRuntimeHostLifecycle(input: {
     retire(): Promise<void>;
   };
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
   /** Product-level activation for lifecycles whose readiness is not owned by an OS supervisor. */
   readonly activateDesired?: () => Promise<void>;
 }): Promise<RuntimeHostLifecycleReplacement> {
@@ -508,6 +513,7 @@ export async function replaceRuntimeHostLifecycle(input: {
     desired,
     deps: input.deps,
     ...(input.activatePrevious ? { activatePrevious: input.activatePrevious } : {}),
+    ...(input.validateRetiredState ? { validateRetiredState: input.validateRetiredState } : {}),
   });
   try {
     if (input.activateDesired) {

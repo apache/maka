@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Banner, HStack, Text, VStack } from '@astryxdesign/core';
-import { type ProviderType } from '@maka/core/llm-connections';
+import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
 import {
   Badge,
@@ -32,6 +32,7 @@ import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
+  type OAuthConnectionIdentity,
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 import {
@@ -40,7 +41,9 @@ import {
   useRuntimeHostSettingsGenerationKey,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
-import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
+import {
+  runtimeHostOAuthAuthorizationBridge,
+} from './runtime-host-settings-bridge.js';
 
 export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
 
@@ -48,24 +51,17 @@ export interface OAuthCard {
   id: OAuthCardId;
   providerType: ProviderType;
   name: string;
-  /** Account email once signed in, the static pitch otherwise. */
+  /** Enrollment summary, or the singleton Copilot account summary. */
   description: string;
   /** A meaningful account state; routine availability stays in the description. */
   status?: string;
   isLoggedIn: boolean;
 }
 
-function emptyOAuthCardStates(): Record<OAuthCardId, SubscriptionSnapshot | null> {
-  return {
-    codex: null,
-    'github-copilot': null,
-    xai: null,
-  };
-}
-
 /**
- * Account sign-in rows for the provider catalog, plus the refresh that keeps
- * their badges live.
+ * Account enrollment rows for the provider catalog. Every OAuth provider is
+ * now a connection-scoped add intent, so each row derives its state from the
+ * Connection catalog rather than from a provider-wide account snapshot.
  *
  * This used to be a self-contained `ModelOAuthSection` that rendered both the
  * rows and a Dialog per service. The rows and the login body are now two
@@ -76,22 +72,15 @@ function emptyOAuthCardStates(): Record<OAuthCardId, SubscriptionSnapshot | null
  * login remounts it, which re-reads every account state; that is the refresh,
  * and it is why nothing here has to be pushed across a level boundary.
  */
-export function useOAuthCards(props: { query?: string }) {
+export function useOAuthCards(props: {
+  query?: string;
+  connections: readonly LlmConnection[];
+}) {
   const host = useRuntimeHostSettingsTarget();
   const generationKey = useRuntimeHostSettingsGenerationKey();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const cards = modelOAuthCards(copy);
-  const mountedRef = useMountedRef();
-  const refreshTicketRef = useRef(0);
-  // PR-OAUTH-CARD-LIVE-STATE-0 (WAWQAQ msg d79fd115 follow-up): before this
-  // lift the cards stayed at their static catalog copy even after the user
-  // finished the OAuth flow — there was no parent re-fetch. Each service now
-  // carries a runtimeState + email so its row can show the account email inline,
-  // re-fetched whenever a login step closes (success OR
-  // cancel — the user may have signed out from inside it).
-  const [cardStates, setCardStates] = useState(emptyOAuthCardStates);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
   const normalizedQuery = props.query?.trim().toLocaleLowerCase() ?? '';
 
   function matchesQuery(card: { id: string; name: string; description: string }): boolean {
@@ -100,78 +89,23 @@ export function useOAuthCards(props: { query?: string }) {
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   }
 
-  async function refreshAllCards() {
-    const ticket = refreshTicketRef.current + 1;
-    refreshTicketRef.current = ticket;
-    const results = await Promise.all(
-      cards.map(async (card) => {
-        try {
-          const snapshot = await getSubscriptionSnapshot(card.id, host);
-          return { id: card.id, snapshot } as const;
-        } catch (error) {
-          return { id: card.id, error } as const;
-        }
-      }),
-    );
-    if (!mountedRef.current || refreshTicketRef.current !== ticket) return false;
-    const failures = results.filter((result) => 'error' in result);
-    setCardStates((prev) => {
-      const next = { ...prev };
-      for (const result of results) {
-        if ('snapshot' in result && result.snapshot !== undefined) next[result.id] = result.snapshot;
-      }
-      return next;
-    });
-    if (failures.length > 0) {
-      const firstFailure = failures[0];
-      const error = firstFailure && 'error' in firstFailure ? firstFailure.error : undefined;
-      const message = error
-        ? subscriptionActionErrorMessage(error, locale)
-        : copy.serviceUnavailable;
-      // Reported once, in the Banner above the rows. This refresh runs on
-      // mount, before the user has done anything, so a toast for it would be a
-      // second report of a failure they did not ask for.
-      setRefreshError(message);
-      return false;
-    }
-    setRefreshError(null);
-    return true;
-  }
-
-  useEffect(() => {
-    // A same-key Host replacement keeps the catalog mounted to preserve its
-    // route, query, scroll, and focus. Retire only the account snapshots: the
-    // outer Settings fence may lift before these independent OAuth reads do,
-    // so the previous generation must never remain visible as current state.
-    setCardStates(emptyOAuthCardStates());
-    setRefreshError(null);
-    void refreshAllCards();
-    return () => {
-      refreshTicketRef.current += 1;
-    };
-  }, [generationKey]);
-
   const visibleCards: OAuthCard[] = cards
-    .filter(matchesQuery)
     .map((card) => {
-      const snapshot = cardStates[card.id];
-      const runtimeState = snapshot?.runtimeState ?? 'unknown';
-      const isLoggedIn =
-        runtimeState === 'authenticated' ||
-        runtimeState === 'refreshing' ||
-        runtimeState === 'quota_unavailable' ||
-        runtimeState === 'provider_rejected';
+      const connectionCount = props.connections.filter(
+        (connection) => connection.providerType === card.providerType,
+      ).length;
+      const isLoggedIn = connectionCount > 0;
       return {
         id: card.id,
         providerType: card.providerType,
         name: card.name,
-        description: isLoggedIn && snapshot?.email ? snapshot.email : card.description,
-        ...(isLoggedIn ? { status: copy.signedIn } : {}),
+        description: isLoggedIn ? copy.configuredConnections(connectionCount) : card.description,
         isLoggedIn,
       };
-    });
+    })
+    .filter(matchesQuery);
 
-  return { cards: visibleCards, refreshError };
+  return { cards: visibleCards, refreshError: null as string | null };
 }
 
 /**
@@ -179,7 +113,10 @@ export function useOAuthCards(props: { query?: string }) {
  * this as its setup level; the header and the back affordance belong to that
  * level, the same ones the catalog and the connection detail use.
  */
-export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): void | Promise<void> }) {
+export function OAuthLoginPanel(props: {
+  cardId: OAuthCardId;
+  onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
+}) {
   return (
     <RuntimeHostSettingsGenerationBoundary>
       <OAuthLoginPanelForCurrentGeneration {...props} />
@@ -189,7 +126,7 @@ export function OAuthLoginPanel(props: { cardId: OAuthCardId; onLoginSuccess(): 
 
 function OAuthLoginPanelForCurrentGeneration(props: {
   cardId: OAuthCardId;
-  onLoginSuccess(): void | Promise<void>;
+  onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
 }) {
   if (props.cardId === 'github-copilot') {
     return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
@@ -219,11 +156,10 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
 
 function SubscriptionLoginPanel(props: {
   service: 'codex' | 'xai';
-  onLoginSuccess(): void | Promise<void>;
+  onLoginSuccess(connection: OAuthConnectionIdentity): void | Promise<void>;
 }) {
   const host = useRuntimeHostSettingsTarget();
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).oauthSection;
+  const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   const isXai = props.service === 'xai';
   const display: SubscriptionDisplay = isXai
     ? { name: 'xAI Grok', shortName: 'SuperGrok / X Premium', detail: copy.xaiDetail }
@@ -234,9 +170,11 @@ function SubscriptionLoginPanel(props: {
   // localized toast copy) lives in useOAuthLoginFlow so the connection detail
   // page can drive the exact same flow behind its relogin button.
   const flow = useOAuthLoginFlow({
-    bridge: runtimeHostOAuthLoginBridge(
+    mode: 'create',
+    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
       isXai ? window.maka.xaiOAuth : window.maka.openAiCodex,
       host,
+      { kind: 'create' },
     ),
     display: { name: display.name, shortName: display.shortName },
     onLoginSuccess: props.onLoginSuccess,
@@ -244,72 +182,59 @@ function SubscriptionLoginPanel(props: {
 
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
-      <Text type="body">{presentSnapshotDetail(flow.state, display, locale)}</Text>
-      {!isXai && flow.stateHint && (
-        <Text type="supporting" color="secondary">
-          {copy.deviceCode} {flow.stateHint}
+      <Text type="body">{display.detail}</Text>
+      {flow.authRequestId && (
+        <Text type="supporting" color="secondary" role="status" aria-live="polite">
+          {!isXai && flow.stateHint
+            ? <>{copy.deviceCode} {flow.stateHint}</>
+            : copy.waitingAuthorization}
         </Text>
       )}
       {flow.errorMessage && (
         <Banner status="error" role="alert" title={flow.errorMessage} />
       )}
       <HStack gap={2} hAlign="end">
-        {!flow.isLoggedIn ? (
-          <Button
-            variant="primary"
-            onClick={() => void flow.startLogin()}
-            isDisabled={flow.actionBusy}
-            label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.login(display.shortName)}
-          />
-        ) : (
-          <Button
-            variant="ghost"
-            onClick={() => void flow.logout()}
-            isDisabled={flow.actionBusy}
-            label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-          />
-        )}
+        <Button
+          variant="primary"
+          onClick={() => void flow.startLogin()}
+          isDisabled={flow.actionBusy}
+          label={flow.pendingAction === 'login'
+            ? flow.authRequestId ? copy.waitingAuthorization : copy.openingBrowser
+            : copy.loginAndAdd}
+        />
       </HStack>
     </VStack>
   );
 }
 
-function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void> }) {
+function GitHubCopilotLoginPanel(props: {
+  onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
+}) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
-  // The Host owns the device grant, so the panel drives the same browser-
-  // assisted controller as Codex and xAI: one attempt at a time, superseded
-  // and cancelled by the Host, with the user code arriving as the state hint.
-  // Sign-in is always offered, exactly as Codex and xAI are: the Host owns the
-  // enrollment gate and refuses the start with `experimental_disabled`, so the
-  // renderer must not carry a second copy of that decision.
+  // Copilot now enrolls through the same Host-owned device grant as Codex and
+  // xAI, so it drives the shared browser-assisted controller rather than a
+  // Desktop-owned state machine. Importing a credential this machine already
+  // holds stays available beside it as the secondary route to the same account.
   const flow = useOAuthLoginFlow({
-    bridge: runtimeHostOAuthLoginBridge(window.maka.githubCopilotSubscription, host),
+    mode: 'create',
+    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
+      window.maka.githubCopilotSubscription,
+      host,
+      { kind: 'create' },
+    ),
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
     onLoginSuccess: props.onLoginSuccess,
   });
-  // Importing a credential this machine already holds is one main-process call
-  // with no browser handoff, so it runs beside the controller rather than
-  // through its authRequestId lifecycle. It is the secondary route to the same
-  // Connection: the device grant is the primary one.
   const [importing, setImporting] = useState(false);
-  const loggedIn = flow.isLoggedIn;
   const actionBusy = flow.actionBusy || importing;
   // The Host answers whether Copilot may enrol on this install. Until it does
-  // (undefined), sign-in stays offered; once it says no, the primary action is
-  // Import — a disabled sign-in with a tooltip is not a working primary button.
+  // (undefined) sign-in stays offered; once it says no, Import becomes the
+  // primary action — a disabled sign-in is not a working primary button.
   const enrollmentDisabled = flow.enrollmentEnabled === false;
-  // The Host keeps polling a device grant across a Settings remount, and this
-  // panel cannot rejoin that attempt: the snapshot reports that one is running
-  // but not which one. Importing meanwhile would commit over the login the user
-  // is still completing — `setRuntimeHostAccountCredential` re-reads before its
-  // CAS, so it adopts the newer revision and overwrites rather than failing.
-  // Sign-in stays offered: a fresh grant supersedes the stale attempt, which is
-  // the only way out when the earlier surface never got to cancel it.
-  const importBusy = actionBusy || flow.hostAttemptPending;
 
   const importLocalCredential = async () => {
     if (actionBusy) return;
@@ -320,11 +245,11 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
       if (!result.ok) {
         reportHostError(
           copy.copilotActionFailed,
-          subscriptionResultMessage(result.message, copy.copilotActionFailed, locale),
+          subscriptionResultMessage(result.message, copy.copilotActionFailed, locale, result.reason),
         );
+        return;
       }
-      await flow.refresh();
-      if (result.ok && mountedRef.current) await props.onLoginSuccess();
+      await props.onLoginSuccess();
     } catch (error) {
       if (mountedRef.current) {
         reportHostError(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
@@ -336,87 +261,36 @@ function GitHubCopilotLoginPanel(props: { onLoginSuccess(): void | Promise<void>
 
   return (
     <VStack gap={3} data-status={flow.runtimeState}>
-      <Text type="body">
-        {loggedIn ? copy.copilotImported : (flow.errorMessage ?? copy.copilotSetup)}
-      </Text>
-      {flow.stateHint && (
-        <Text type="supporting" color="secondary" data-testid="github-copilot-device-code">
-          {copy.deviceCode} {flow.stateHint}
+      <Text type="body">{copy.copilotSetup}</Text>
+      {flow.authRequestId && (
+        <Text type="supporting" color="secondary" role="status" aria-live="polite" data-testid="github-copilot-device-code">
+          {flow.stateHint ? <>{copy.deviceCode} {flow.stateHint}</> : copy.waitingAuthorization}
         </Text>
       )}
+      {flow.errorMessage && <Banner status="error" role="alert" title={flow.errorMessage} />}
       <HStack gap={2} hAlign="end">
-        {!loggedIn ? (
-          <>
-            <Button
-              variant={enrollmentDisabled ? 'secondary' : 'primary'}
-              onClick={() => void flow.startLogin()}
-              isDisabled={actionBusy || enrollmentDisabled}
-              tooltip={enrollmentDisabled ? copy.copilotSignInDisabledHint : undefined}
-              label={flow.pendingAction === 'login' ? copy.openingBrowser : copy.copilotSignIn}
-            />
-            <Button
-              variant={enrollmentDisabled ? 'primary' : 'secondary'}
-              onClick={() => void importLocalCredential()}
-              isDisabled={importBusy}
-              label={importing ? copy.importing : copy.importCredential}
-            />
-          </>
-        ) : (
-          <Button
-            variant="ghost"
-            onClick={() => void flow.logout()}
-            isDisabled={actionBusy}
-            label={flow.pendingAction === 'logout' ? copy.loggingOut : copy.logout}
-          />
-        )}
+        <Button
+          variant={enrollmentDisabled ? 'secondary' : 'primary'}
+          onClick={() => void flow.startLogin()}
+          isDisabled={actionBusy || enrollmentDisabled}
+          tooltip={enrollmentDisabled ? copy.copilotSignInDisabledHint : undefined}
+          label={flow.pendingAction === 'login'
+            ? flow.authRequestId ? copy.waitingAuthorization : copy.openingBrowser
+            : copy.copilotSignIn}
+        />
+        <Button
+          variant={enrollmentDisabled ? 'primary' : 'secondary'}
+          onClick={() => void importLocalCredential()}
+          isDisabled={actionBusy}
+          label={importing ? copy.importing : copy.importCredential}
+        />
       </HStack>
     </VStack>
   );
-}
-
-async function getSubscriptionSnapshot(
-  serviceId: OAuthCardId,
-  host: DesktopRuntimeHostRef,
-): Promise<SubscriptionSnapshot> {
-  if (serviceId === 'github-copilot') {
-    return window.maka.githubCopilotSubscription.getAccountState(host);
-  }
-  if (serviceId === 'xai') {
-    return window.maka.xaiOAuth.getAccountState(host);
-  }
-  return (await window.maka.openAiCodex.getAccountState(host)) as SubscriptionSnapshot;
 }
 
 interface SubscriptionDisplay {
   name: string;
   shortName: string;
   detail: string;
-}
-
-function presentSnapshotDetail(state: SubscriptionSnapshot | null, display: SubscriptionDisplay, locale: 'zh' | 'en'): string {
-  const copy = getProviderSettingsCopy(locale).oauthSection;
-  if (!state) return copy.loadingAccount;
-  switch (state.runtimeState) {
-    case 'not_logged_in':
-      return copy.signedOut(display.name);
-    case 'authorizing':
-      return copy.authorizing;
-    case 'authenticated': {
-      const parts = [copy.signedIn];
-      if (state.email) parts.push(state.email);
-      if (state.plan) parts.push(state.plan);
-      return parts.join(' · ');
-    }
-    case 'refreshing':
-      return copy.refreshing;
-    case 'refresh_failed':
-      return subscriptionResultMessage(state.errorMessage, copy.refreshTokenFailed, locale);
-    case 'storage_failed':
-      return subscriptionResultMessage(state.errorMessage, copy.storageFailed(display.name), locale);
-    case 'quota_unavailable':
-    case 'provider_rejected':
-      return subscriptionResultMessage(state.errorMessage, copy.providerUnavailable(display.name), locale);
-  }
-  const _exhaustive: never = state.runtimeState;
-  return _exhaustive;
 }

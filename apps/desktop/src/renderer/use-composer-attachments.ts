@@ -58,6 +58,26 @@ type ToastApi = {
   error(title: string, description?: string): void;
 };
 
+class ComposerAttachmentLifecycle {
+  stagedKeys = new Set<string>();
+  readonly #shownOwners = new Set<string>();
+
+  claimImageNotice(ownerKey: string): boolean {
+    if (this.#shownOwners.has(ownerKey)) return false;
+    this.#shownOwners.add(ownerKey);
+    return true;
+  }
+
+  reset(ownerKey: string): void {
+    this.#shownOwners.delete(ownerKey);
+  }
+
+  transfer(sourceOwnerKey: string, targetOwnerKey: string): void {
+    if (!this.#shownOwners.delete(sourceOwnerKey)) return;
+    this.#shownOwners.add(targetOwnerKey);
+  }
+}
+
 function approvalToPending(file: {
   approvalId: string;
   name: string;
@@ -121,6 +141,13 @@ export function useComposerAttachments(options: {
   draftKey: string;
   toastApi: ToastApi;
   service: ComposerAttachmentService;
+  imageNotice?:
+    | {
+        /** Undefined means there is no selected target yet. */
+        supportsVision(): boolean | undefined;
+        notify(title: string, description?: string): void;
+      }
+    | undefined;
 }) {
   const uiLocale = useUiLocale();
   const copy = getDesktopConversationCopy(uiLocale).actions;
@@ -132,13 +159,21 @@ export function useComposerAttachments(options: {
   const [previewByStagingKey, setPreviewByStagingKey] = useState<Record<string, string>>({});
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
-  const stagedKeysRef = useRef<Set<string>>(new Set());
+  const lifecycleRef = useRef(new ComposerAttachmentLifecycle());
   // The live staging key, for the one import that resolves long after it was
   // started: the native file dialog. See pickAttachments.
-  const draftKeyRef = useRef(options.draftKey);
+  const liveOptionsRef = useRef({
+    draftKey: options.draftKey,
+    imageNotice: options.imageNotice,
+    copy,
+  });
   useEffect(() => {
-    draftKeyRef.current = options.draftKey;
-  }, [options.draftKey]);
+    liveOptionsRef.current = {
+      draftKey: options.draftKey,
+      imageNotice: options.imageNotice,
+      copy,
+    };
+  }, [copy, options.draftKey, options.imageNotice]);
   const stagedAttachments = selectPending(pendingByKey, options.draftKey);
   const pendingAttachments = useMemo(
     () =>
@@ -158,7 +193,7 @@ export function useComposerAttachments(options: {
     for (const items of Object.values(pendingByKey)) {
       for (const item of items) liveKeys.add(item.stagingKey);
     }
-    stagedKeysRef.current = liveKeys;
+    lifecycleRef.current.stagedKeys = liveKeys;
     setPreviewByStagingKey((current) => {
       const deadKeys = Object.keys(current).filter((key) => !liveKeys.has(key));
       if (deadKeys.length === 0) return current;
@@ -172,12 +207,27 @@ export function useComposerAttachments(options: {
   }, [pendingByKey]);
 
   function commitPreview(stagingKey: string, url: string): void {
-    if (!stagedKeysRef.current.has(stagingKey)) {
+    if (!lifecycleRef.current.stagedKeys.has(stagingKey)) {
       // The item was removed or sent while the preview was in flight.
       releasePreviewUrl(url);
       return;
     }
     setPreviewByStagingKey((current) => ({ ...current, [stagingKey]: url }));
+  }
+
+  function notifyStagedImages(
+    ownerKey: string,
+    staged: readonly PendingAttachment[],
+  ): void {
+    if (!staged.some((attachment) => attachment.kind === 'image')) return;
+    const { copy: liveCopy, imageNotice: notice } = liveOptionsRef.current;
+    if (!notice) return;
+    if (notice.supportsVision() !== false) return;
+    if (!lifecycleRef.current.claimImageNotice(ownerKey)) return;
+    notice.notify(
+      liveCopy.imageAttachmentNotDirectTitle,
+      liveCopy.imageAttachmentNotDirectDescription,
+    );
   }
 
   /** SEQUENTIAL by design: each approval preview makes main read and decode
@@ -188,7 +238,7 @@ export function useComposerAttachments(options: {
   async function loadPreviewsSequentially(staged: readonly PendingAttachment[]): Promise<void> {
     for (const item of staged) {
       if (item.kind !== 'image') continue;
-      if (!stagedKeysRef.current.has(item.stagingKey)) continue;
+      if (!lifecycleRef.current.stagedKeys.has(item.stagingKey)) continue;
       try {
         if (item.source.type === 'file') {
           const url = URL.createObjectURL(item.source.file);
@@ -215,10 +265,11 @@ export function useComposerAttachments(options: {
       // surface can change while a native dialog is up, and files the user just
       // chose belong in the composer they are looking at — not in a bucket they
       // have since left, where the files would be invisible but still sendable.
-      const ownerKey = draftKeyRef.current;
+      const ownerKey = liveOptionsRef.current.draftKey;
       const staged = result.files.map(approvalToPending);
       setPendingByKey((map) => appendPending(map, ownerKey, staged));
-      for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+      for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
+      notifyStagedImages(ownerKey, staged);
       void loadPreviewsSequentially(staged);
     } catch (error) {
       options.toastApi.error(
@@ -233,7 +284,8 @@ export function useComposerAttachments(options: {
     const ownerKey = options.draftKey;
     const staged = files.map(fileToPending);
     setPendingByKey((map) => appendPending(map, ownerKey, staged));
-    for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+    for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
+    notifyStagedImages(ownerKey, staged);
     void loadPreviewsSequentially(staged);
   }
 
@@ -241,7 +293,7 @@ export function useComposerAttachments(options: {
     if (attachments.length === 0) return;
     const staged = attachments.map(retainedToPending);
     setPendingByKey((map) => appendPending(map, ownerKey, staged));
-    for (const item of staged) stagedKeysRef.current.add(item.stagingKey);
+    for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
   }
 
   function removeAttachment(index: number): void {
@@ -268,5 +320,6 @@ export function useComposerAttachments(options: {
     removeAttachment,
     clearSubmittedAttachments,
     clearAllAttachments,
+    imageNoticeLifecycle: lifecycleRef.current,
   };
 }

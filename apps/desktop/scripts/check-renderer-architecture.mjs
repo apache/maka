@@ -40,12 +40,6 @@ const STATEFUL_HOOKS = new Set([
   'useSyncExternalStore',
   'useTransition',
 ]);
-const HOOK_TRANSITION_SECTIONS = new Set([
-  'legacyAppShell',
-  'legacyAppShellClosure',
-  'rootDebt',
-  'rootDebtClosure',
-]);
 const REACT_LIFECYCLE_METHODS = new Set([
   'UNSAFE_componentWillMount',
   'UNSAFE_componentWillReceiveProps',
@@ -201,7 +195,6 @@ function validateArchitectureConfig(config, label, violations) {
   for (const field of ['legacyFeatureImports', 'legacyPlatformImports']) {
     if (!isSortedUniqueStrings(config[field])) reject(`${field} must be sorted unique strings`);
   }
-  if (!Array.isArray(config.hookTransitions)) reject('hookTransitions must be an array');
   if (
     !isRecord(config.legacyAppShell) ||
     !isRecord(config.legacyAppShell.files) ||
@@ -260,49 +253,6 @@ function validateArchitectureConfig(config, label, violations) {
     }
     if (!isSortedUniqueStrings(owner.legacyPaths)) {
       reject(`${owner.capability}: legacyPaths must be sorted unique strings`);
-    }
-  }
-  const transitionIds = new Set();
-  let previousTransitionId = '';
-  for (const transition of config.hookTransitions) {
-    if (!isRecord(transition)) {
-      reject('hookTransitions entries must be objects');
-      continue;
-    }
-    if (
-      typeof transition.id !== 'string' ||
-      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(transition.id)
-    ) {
-      reject('hookTransitions id must be lowercase kebab-case');
-    } else {
-      if (transitionIds.has(transition.id)) reject(`duplicate hook transition ${transition.id}`);
-      if (transition.id.localeCompare(previousTransitionId) < 0) {
-        reject('hookTransitions must be sorted by id');
-      }
-      transitionIds.add(transition.id);
-      previousTransitionId = transition.id;
-    }
-    if (!HOOK_TRANSITION_SECTIONS.has(transition.section)) {
-      reject(`${String(transition.id)}: unsupported hook transition section ${String(transition.section)}`);
-    }
-    if (
-      typeof transition.path !== 'string' ||
-      !transition.path.startsWith('src/') ||
-      transition.path.includes('..') ||
-      transition.path.includes('\\')
-    ) {
-      reject(`${String(transition.id)}: hook transition path must be a normalized Desktop source path`);
-    }
-    for (const field of ['from', 'to']) {
-      if (!isTrackedHookName(transition[field])) {
-        reject(`${String(transition.id)}: hook transition ${field} must be a tracked Hook name`);
-      }
-    }
-    if (transition.from === transition.to) {
-      reject(`${String(transition.id)}: hook transition must change the Hook name`);
-    }
-    if (!Number.isInteger(transition.count) || transition.count <= 0) {
-      reject(`${String(transition.id)}: hook transition count must be a positive integer`);
     }
   }
   return valid;
@@ -422,10 +372,6 @@ function addHookNames(aliases, key, names) {
     changed = true;
   }
   return changed;
-}
-
-function isTrackedHookName(name) {
-  return typeof name === 'string' && (name === 'use' || /^use[A-Z0-9]/u.test(name));
 }
 
 function staticString(node) {
@@ -2305,7 +2251,6 @@ export function generateArchitectureConfig(desktopRoot, config) {
     legacyGrowthDirectories: config.legacyGrowthDirectories ?? DEFAULT_LEGACY_GROWTH_DIRECTORIES,
     legacyFeatureImports: imports.feature,
     legacyPlatformImports: imports.platform,
-    hookTransitions: config.hookTransitions ?? [],
     legacyAppShell: {
       files: Object.fromEntries(appShellFiles.map((path) => [path, debtForPath(desktopRoot, path)])),
       closure: Object.fromEntries(closureFiles.map((path) => [path, capabilityDebtForPath(desktopRoot, path)])),
@@ -2320,21 +2265,6 @@ export function generateArchitectureConfig(desktopRoot, config) {
 
 function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
   if (!baseConfig) return;
-  const baseTransitions = new Map(
-    baseConfig.hookTransitions.map((transition) => [transition.id, transition]),
-  );
-  const newTransitions = config.hookTransitions.filter(
-    (transition) => !baseTransitions.has(transition.id),
-  );
-  for (const [id, baseTransition] of baseTransitions) {
-    const currentTransition = config.hookTransitions.find((transition) => transition.id === id);
-    if (!currentTransition) {
-      violations.push(`${id}: historical hook transition entries cannot be removed`);
-    } else if (JSON.stringify(currentTransition) !== JSON.stringify(baseTransition)) {
-      violations.push(`${id}: historical hook transition entries cannot be changed`);
-    }
-  }
-  const consumedTransitions = new Set();
   for (const section of ['legacyAppShell', 'legacyAppShellClosure', 'rootDebt', 'rootDebtClosure']) {
     const currentFiles =
       section === 'legacyAppShell'
@@ -2382,31 +2312,6 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
               .map(([key, count]) => [key, Math.max(0, count - (base[metric][key] ?? 0))])
               .filter(([, count]) => count > 0),
           );
-          if (metric === 'hookCalls') {
-            const decreases = Object.fromEntries(
-              Object.entries(base.hookCalls)
-                .map(([key, count]) => [key, Math.max(0, count - (current.hookCalls[key] ?? 0))])
-                .filter(([, count]) => count > 0),
-            );
-            for (const transition of newTransitions) {
-              if (transition.section !== section || transition.path !== path) continue;
-              const availableFrom = Object.hasOwn(decreases, transition.from)
-                ? decreases[transition.from]
-                : 0;
-              const requiredTo = Object.hasOwn(increases, transition.to)
-                ? increases[transition.to]
-                : 0;
-              if (availableFrom < transition.count || requiredTo < transition.count) {
-                violations.push(
-                  `${transition.id}: hook transition must be paid by ${transition.count} removed ${transition.from} and ${transition.count} added ${transition.to}`,
-                );
-                continue;
-              }
-              decreases[transition.from] = availableFrom - transition.count;
-              increases[transition.to] = requiredTo - transition.count;
-              consumedTransitions.add(transition.id);
-            }
-          }
           for (const [key, count] of Object.entries(increases)) {
             if (count > 0) {
               violations.push(`${path}: new or increased ${metric} debt ${key}`);
@@ -2431,12 +2336,6 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
       }
     }
   }
-  for (const transition of newTransitions) {
-    if (!consumedTransitions.has(transition.id)) {
-      violations.push(`${transition.id}: new hook transition was not consumed by this change`);
-    }
-  }
-
   const baseLegacyFiles = new Set(baseConfig.legacyRendererFiles);
   for (const path of config.legacyRendererFiles) {
     if (!baseLegacyFiles.has(path) && !isAllowedLegacyGrowthPath(config, path)) {

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -98,7 +99,8 @@ import { SessionContinuityCoordinator } from '../server/session-continuity-coord
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import { HostTurnControlCoordinator } from '../server/turn-control-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { PROCESS_TIMEOUT_MS, withTimeout } from './fixtures/execution-host-suite.js';
+import { PROCESS_TIMEOUT_MS } from './fixtures/execution-host-suite.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
@@ -980,6 +982,88 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   } finally {
     await connection.close();
     await capabilities.close();
+    await fixture.dispose();
+  }
+});
+
+test('queued Message preparation preserves partial and blocked Skill outcomes', async () => {
+  let blocked = false;
+  const readySkillInvocation = {
+    loaded: [{ id: 'writer', name: 'Writer' }],
+    failed: [{ request: 'typo', reason: 'not_found' as const }],
+    receipts: [
+      {
+        invocation: 'explicit' as const,
+        request: 'writer',
+        success: true as const,
+        ref: 'project:maka:writer',
+        id: 'writer',
+        name: 'Writer',
+        scope: 'project' as const,
+        source: 'maka' as const,
+        truncated: false,
+      },
+      {
+        invocation: 'explicit' as const,
+        request: 'typo',
+        success: false as const,
+        reason: 'not_found' as const,
+      },
+    ],
+  };
+  const blockedSkillInvocation = {
+    loaded: [],
+    failed: [{ request: 'missing', reason: 'not_found' as const }],
+    receipts: [],
+  };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async () =>
+      blocked
+        ? { disposition: 'blocked', skillInvocation: blockedSkillInvocation }
+        : {
+            disposition: 'ready',
+            sendText: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+            skillInvocation: readySkillInvocation,
+          },
+  });
+  try {
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:writer /skill:typo Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'ready',
+        content: {
+          text: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+          displayText: '/skill:writer /skill:typo Draft this.',
+          inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        },
+        skillInvocation: readySkillInvocation,
+      },
+    );
+
+    blocked = true;
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:missing Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'rejected',
+        error: 'Explicit Skill invocation could not be resolved',
+        skillInvocation: blockedSkillInvocation,
+      },
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
     await fixture.dispose();
   }
 });
@@ -5210,17 +5294,6 @@ function operationContext(
     acquireResidency,
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 class ObservableSessionAdmissionGate extends SessionAdmissionGate {
   #nextQueuedRun: ReturnType<typeof deferred<void>> | undefined;
 
@@ -5247,11 +5320,11 @@ async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 2_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for test condition');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 5,
+    message: 'Timed out waiting for test condition',
+  });
 }
 
 class LinkedChildAuthorityBackend implements AgentBackend {

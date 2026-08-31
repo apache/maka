@@ -251,8 +251,8 @@ const longIntentItems: ToolActivityItem[] = [
     activityKind: 'tool',
     status: 'completed',
     intent:
-      '审计提示词构筑与缓存路径：追踪 durable system prompt、turnTailPrompt、provider-visible messages 与 request shape',
-    args: { pattern: 'systemPrompt|turnTailPrompt', path: 'packages' },
+      '审计提示词构筑与缓存路径：追踪 durable system prompt、provider-visible messages 与 request shape',
+    args: { pattern: 'systemPrompt|requestShape', path: 'packages' },
   },
 ];
 

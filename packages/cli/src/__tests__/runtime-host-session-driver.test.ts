@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,6 +56,7 @@ import type {
   MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Host Maka Session driver', () => {
   test('maps authoritative Catalog activity into Session summaries', () => {
@@ -3088,28 +3090,11 @@ function sequenceIds(...ids: string[]): () => string {
   let index = 0;
   return () => ids[index++] ?? `id-${index}`;
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + WAIT_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for fake Host state');
+  await pollFor(predicate, {
+    timeoutMs: WAIT_BUDGET_MS,
+    message: 'Timed out waiting for fake Host state',
+  });
 }
 
 describe('turn consumer lag recovery (#3180)', () => {

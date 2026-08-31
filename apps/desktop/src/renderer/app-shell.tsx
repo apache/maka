@@ -116,6 +116,7 @@ import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
+  rebaseWorkspaceFileReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
 import {
@@ -180,10 +181,7 @@ import {
   createAppShellSessionEventHandlers,
 } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import {
-  createAppShellChatActions,
-  type WorkspaceFileReferencePosition,
-} from './app-shell-chat-actions';
+import { createAppShellChatActions } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   abandonTurnRevisionCopyAttempt,
@@ -223,22 +221,6 @@ import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
-
-function rebaseWorkspaceFileReferences(
-  sourceText: string,
-  projectedText: string,
-  references: readonly WorkspaceFileReferencePosition[],
-): WorkspaceFileReferencePosition[] {
-  const offset = sourceText.lastIndexOf(projectedText);
-  if (offset < 0) return [];
-  return references
-    .filter(
-      (reference) =>
-        reference.start >= offset &&
-        reference.start + reference.value.length <= offset + projectedText.length,
-    )
-    .map((reference) => ({ ...reference, start: reference.start - offset }));
-}
 
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
@@ -389,6 +371,23 @@ function AppShellContent({
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
 
+  const {
+    settingsOpen,
+    settingsRequest,
+    settingsProviderCatalogOpen,
+    settingsConnectionDetailSlug,
+    settingsCreateProviderType,
+    setSettingsOpen,
+    setSettingsProviderCatalogOpen,
+    setSettingsProfileId,
+    openSettings,
+    openSettingsSection,
+    openProjectSettings,
+    openProviderCatalog,
+    openConnectionDetail,
+    openProviderCreate,
+  } = useSettingsModal();
+
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const reportTaskEntryError = useCallback(
     ({ title, description, profileId }: TaskEntryError) => {
@@ -398,6 +397,7 @@ function AppShellContent({
   );
   const taskEntry = useTaskEntryController({
     reportError: reportTaskEntryError,
+    manageProjects: openProjectSettings,
   });
   // Named on its own because the rail depends on it: `taskEntry.commands` is a
   // fresh object every render, so depending on the bag rather than the command
@@ -415,10 +415,15 @@ function AppShellContent({
     restoreAttachments,
     removeAttachment,
     clearSubmittedAttachments,
+    imageNoticeLifecycle,
   } = useComposerAttachments({
     draftKey: attachmentDraftKey,
     toastApi,
     service: window.maka.attachments,
+    imageNotice: {
+      supportsVision: () => composerSupportsVision,
+      notify: toastApi.info,
+    },
   });
   const {
     pendingQuotes,
@@ -610,22 +615,6 @@ function AppShellContent({
     onboarding.snapshot,
     sessions.length > 0,
   );
-  const {
-    settingsOpen,
-    settingsRequestedSection,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    setSettingsProviderCatalogOpen,
-    openSettings,
-    openSettingsSection,
-    openProviderCatalog,
-    openConnectionDetail,
-    openProviderCreate,
-  } = useSettingsModal();
-  const [settingsDiagnosticProfileId, setSettingsDiagnosticProfileId] =
-    useState<string>();
   const {
     themePref,
     setThemePref,
@@ -906,6 +895,7 @@ function AppShellContent({
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    composerSupportsVision,
     setPendingNewChatModel,
     pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
@@ -1129,7 +1119,7 @@ function AppShellContent({
   //   1. `data-maka-reduced-motion="true"` — PR-IR-04 reduced variant
   //   2. `data-maka-e2e-fixture="true"` — PR-IR-02 any capture
   //   3. `prefers-reduced-motion: reduce` — OS-level user preference
-  function handleLineageBadgeClick(targetTurnId: string): void {
+  function handleLineageBadgeClick(targetTurnId: string) {
     requestAnimationFrame(() => {
       const el = document.querySelector(`[data-turn-id="${CSS.escape(targetTurnId)}"]`);
       if (!el || !('scrollIntoView' in el)) return;
@@ -1580,6 +1570,7 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
+    imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
@@ -1589,7 +1580,7 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
-  }, [setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1930,6 +1921,13 @@ function AppShellContent({
     }
   }
 
+  function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
+    const createdSessionId = activeIdRef.current;
+    if (!sourceSessionId && createdSessionId) {
+      imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
+    }
+  }
+
   async function enqueueFollowUp(
     sessionId: string,
     text: string,
@@ -2119,6 +2117,7 @@ function AppShellContent({
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) settleNewTaskImageNoticeOwner(sessionId);
       return ok;
     }
     if (slashCommand?.kind === 'graph') {
@@ -2164,6 +2163,7 @@ function AppShellContent({
       });
       if (ok !== false && pending) clearSubmittedAttachments(pending);
       if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) settleNewTaskImageNoticeOwner(sessionId);
       return ok;
     }
     const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
@@ -2179,6 +2179,7 @@ function AppShellContent({
     });
     if (ok !== false && pending) clearSubmittedAttachments(pending);
     if (ok !== false && quotes) clearQuotes();
+    if (ok !== false) settleNewTaskImageNoticeOwner(sessionId);
     if (ok !== false && sessionId) {
       delete retractedWorkspaceReferencesRef.current[sessionId];
     }
@@ -2350,14 +2351,14 @@ function AppShellContent({
   const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
   const activeEventSeedRef = useRef(activeEventSeed);
   activeEventSeedRef.current = activeEventSeed;
-  const beginObservationSeed = (sessionId: string): number => {
+  const beginObservationSeed = (sessionId: string) => {
     const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
     return next.generation;
   };
-  const completeObservationSeed = (sessionId: string, generation?: number): void => {
+  const completeObservationSeed = (sessionId: string, generation?: number) => {
     const current = activeEventSeedRef.current;
     const expected = generation ?? current.generation;
     if (current.sessionId !== sessionId || current.generation !== expected) return;
@@ -2377,6 +2378,7 @@ function AppShellContent({
   useActiveSessionEvents({
     uiLocale,
     activeId,
+    activeProfileId: activeSession?.profileId,
     activeIdRef,
     handleEvent,
     beginObservationSeed,
@@ -2670,7 +2672,7 @@ function AppShellContent({
     messages,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
-    settingsProfileId: settingsDiagnosticProfileId,
+    settingsProfileId: settingsRequest.profileId,
     sessions,
     themePref,
     visibleSessions,
@@ -3287,7 +3289,7 @@ function AppShellContent({
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}
-        settingsRequestedSection={settingsRequestedSection}
+        settingsRequest={settingsRequest}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
         settingsCreateProviderType={settingsCreateProviderType}
@@ -3319,7 +3321,7 @@ function AppShellContent({
           openNewTaskSurface();
           void taskEntry.commands.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
-        onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
+        onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
     </ComposerMentionsProvider>

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -49,7 +50,6 @@ import {
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
 import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
-import { createSandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   type ProxiedFetchProxy,
@@ -139,11 +139,6 @@ const HEADLESS_CODING_V1_PROMPT_HASH =
 const HEADLESS_CODING_V1_TOOLS_HASH =
   'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
-const TEST_SANDBOX_DIAGNOSTICS = createSandboxDiagnosticsProvider({
-  platform: 'darwin',
-  canonicalizePath: async (path) => path,
-});
-
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
   await createHostAiSdkBackend(
@@ -209,62 +204,7 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('sandbox diagnostics failure degrades to a traced prompt omission', async () => {
-  const provider = await startProvider();
-  try {
-    const traces: RunTraceEvent[] = [];
-    const backend = await createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
-        executionBoundary: createManagedExecutionBoundary(
-          createWorkspaceWritePermissionProfile(),
-          0,
-        ),
-        sandboxDiagnostics: {
-          resolve: async () => {
-            throw new Error('sandbox diagnostics unavailable');
-          },
-        },
-        recordRunTrace: (event) => traces.push(event),
-      }),
-    );
-
-    try {
-      const events = [];
-      for await (const event of backend.send({
-        turnId: 'sandbox-diagnostics-failure-turn',
-        text: 'Continue without optional sandbox diagnostics.',
-        context: [],
-      })) {
-        events.push(event);
-      }
-
-      const requests = provider.requests.filter((request) => request.body.stream === true);
-      assert.equal(requests.length, 1);
-      assert.doesNotMatch(JSON.stringify(requests[0]?.body), /<sandbox_context>/u);
-      assert.equal(
-        events.some((event) => event.type === 'error'),
-        false,
-      );
-      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-      assert.equal(
-        traces.some((event) => event.type === 'sandbox_context_resolved'),
-        false,
-      );
-      const failure = traces.find((event) => event.type === 'sandbox_context_failed');
-      assert.equal(failure?.phase, 'sandbox');
-      assert.equal(failure?.data?.stage, 'resolve');
-    } finally {
-      await backend.dispose();
-    }
-  } finally {
-    await provider.close();
-  }
-});
-
-test('production Host executes current-boundary Bash and refreshes live sandbox context', {
+test('production Host executes Bash against the current live sandbox boundary', {
   skip: process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
@@ -381,10 +321,6 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     );
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(mainRequests.length, 2);
-    const firstRequestText = JSON.stringify(mainRequests[0]?.body);
-    assert.match(firstRequestText, /<sandbox_context>/u);
-    assert.match(firstRequestText, /File system: workspace-write/u);
-    assert.match(firstRequestText, /Network: restricted/u);
     assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
       'current',
       'expand',
@@ -458,9 +394,9 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     assert.equal(secondTerminal.status, 'completed');
     const refreshedRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(refreshedRequests.length, 3);
-    const refreshedRequestText = JSON.stringify(refreshedRequests[2]?.body);
-    assert.match(refreshedRequestText, /<sandbox_context>/u);
-    assert.match(refreshedRequestText, /Network: enabled/u);
+    const refreshedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(refreshedBoundary.kind, 'managed');
+    assert.equal(refreshedBoundary.revision, 1);
 
     if (sandboxPaths) {
       const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
@@ -636,6 +572,178 @@ test('backend creation admits an enabled model a snapshot never listed', async (
   );
 
   await backend.dispose();
+});
+
+test('Host reopens one projected image from its ArtifactStore authority', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-host-projection-image-'));
+  const capability = await resolveStorageRoot({
+    path: join(base, 'interactive'),
+    kind: 'interactive',
+  });
+  const runtimePath = join(base, 'runtime.sqlite');
+  const pngBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const sessionId = 'backend-creation-session';
+  const runId = 'projection-image-run';
+  const turnId = 'projection-image-turn';
+  const head: RuntimeEvent = {
+    id: 'projection-image-head',
+    invocationId: runId,
+    runId,
+    sessionId,
+    turnId,
+    ts: 1,
+    partial: false,
+    role: 'user',
+    author: 'user',
+    content: { kind: 'text', text: 'Return the projected image.' },
+  };
+  let owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  const provider = await startProvider();
+  provider.configureProjectionImageFlow('ProjectedImage');
+  const assertProjectedImage = (body: Record<string, unknown> | undefined) => {
+    assert.ok(body);
+    assert.doesNotMatch(JSON.stringify(body), /raw execution fact/u);
+    assert.deepEqual(JSON.parse(latestToolResultText(body) ?? 'null'), [
+      {
+        type: 'file',
+        mediaType: 'image/png',
+        data: { type: 'data', data: pngBytes.toString('base64') },
+      },
+    ]);
+  };
+  let backend: Awaited<ReturnType<typeof createHostAiSdkBackend>> | undefined;
+  let artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>> | undefined;
+  let runtime = createSqliteRuntimeStore(runtimePath);
+  try {
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    await runtime.appendRuntimeEvent(sessionId, runId, head);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        executionBoundary: createBypassExecutionBoundary(0),
+        tools: [
+          {
+            name: 'ProjectedImage',
+            description: 'Return one inline image.',
+            parameters: z.object({}),
+            recoveryMode: 'replay_safe',
+            impl: async () => ({ private: 'raw execution fact' }),
+            toModelOutput: () => ({
+              type: 'content',
+              value: [
+                {
+                  type: 'file',
+                  data: { type: 'data', data: pngBytes.toString('base64') },
+                  mediaType: 'image/png',
+                },
+              ],
+            }),
+          },
+        ],
+        artifacts,
+        loadTurnRuntimeEvents: () => runtime.readImmutableRuntimeEvents(sessionId, runId),
+        runtimeCommitSink: runtime,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: runId,
+      runId,
+      turnId,
+      headAnchorRuntimeEvent: head,
+      text: 'Return the projected image.',
+      context: [],
+      runtimeContext: [head],
+    })) {
+      // Drain the complete live tool step.
+    }
+    const liveRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(liveRequests.length, 2);
+    assertProjectedImage(liveRequests[1]?.body);
+
+    const nextRunId = 'projection-image-next-run';
+    const nextText = 'Continue in the same process.';
+    const nextHead: RuntimeEvent = {
+      id: 'projection-image-next-head',
+      invocationId: nextRunId,
+      runId: nextRunId,
+      sessionId,
+      turnId: 'projection-image-next-turn',
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: nextText },
+    };
+    await runtime.appendRuntimeEvent(sessionId, nextRunId, nextHead);
+    const nextTurnContext = [...(await runtime.readRuntimeEvents(sessionId, runId)), nextHead];
+    for await (const _event of backend.send({
+      invocationId: nextRunId,
+      runId: nextRunId,
+      turnId: nextHead.turnId,
+      headAnchorRuntimeEvent: nextHead,
+      text: nextText,
+      context: [],
+      runtimeContext: nextTurnContext,
+    })) {
+      // Drain the next Turn built from the same committed projection.
+    }
+    const nextTurnRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(nextTurnRequests.length, 3);
+    assertProjectedImage(nextTurnRequests[2]?.body);
+
+    await backend.dispose();
+    backend = undefined;
+    artifacts.close();
+    artifacts = undefined;
+    runtime.close();
+    await owner.close();
+
+    owner = await tryAcquireInteractiveRootOwner(capability);
+    assert.ok(owner);
+    if (!owner) return;
+    artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
+    await artifacts.recover();
+    runtime = createSqliteRuntimeStore(runtimePath);
+    const recoveredEvents = await runtime.readRuntimeEvents(sessionId, runId);
+    backend = await createHostAiSdkBackend(
+      backendCreationFixture({
+        abortSignal: new AbortController().signal,
+        resolveExecutionConnection: async () =>
+          readyExecutionConnection(provider.baseUrl, { vision: true }),
+        readPricing: async () => ({ revision: 0, overrides: [] }),
+        artifacts,
+      }),
+    );
+    for await (const _event of backend.send({
+      invocationId: 'projection-image-replay-invocation',
+      runId: 'projection-image-replay-run',
+      turnId: 'projection-image-replay-turn',
+      text: 'Continue after restart.',
+      context: [],
+      runtimeContext: recoveredEvents,
+    })) {
+      // Drain the replay request built from the reopened authorities.
+    }
+    const streamRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(streamRequests.length, 4);
+    assertProjectedImage(streamRequests[3]?.body);
+  } finally {
+    await backend?.dispose();
+    artifacts?.close();
+    runtime.close();
+    await owner?.close();
+    await provider.close();
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('provider dispatch fails closed when the Run Composition commit fails', async () => {
@@ -892,7 +1000,10 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
       expires_at: 0,
       account_id: 'oauth-account-v1',
     };
-    const login = await policy.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    const login = await policy.operations.beginInteractiveOAuthLogin({
+      attemptId: 'execution-model-oauth',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
     assert.equal(login.kind, 'ready');
     if (login.kind !== 'ready') return;
     const storedToken = await policy.operations.completeInteractiveOAuthLogin(
@@ -1628,7 +1739,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_SKILL_DESCRIPTION_SENTINEL/);
     assert.doesNotMatch(requestText, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.match(requestText, /HOSTED_WORKSPACE_SENTINEL/);
-    assert.match(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
+    assert.doesNotMatch(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
@@ -2303,16 +2414,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
     // The persisted header is a configuration projection, not execution
-    // authority, and may be narrower than the inherited live boundary. Keep
-    // them deliberately different so this test proves the prompt follows it.
+    // authority, and may be narrower than the inherited live boundary.
     assert.notEqual(child.permissionMode, 'bypass');
     const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
     assert.equal(childBoundary.kind, 'bypass');
-    const childRequestText = JSON.stringify(childRequests[0]?.body);
-    assert.match(childRequestText, /<sandbox_context>/u);
-    assert.match(childRequestText, /File system: unrestricted/u);
-    assert.match(childRequestText, /Network: enabled/u);
-    assert.doesNotMatch(childRequestText, /File system: workspace-write/u);
     assert.ok(child.subagentWorkspace);
     assert.equal(child.cwd, child.subagentWorkspace?.worktreePath);
     assert.equal(await fileExists(join(project, 'implementation.txt')), false);
@@ -3236,7 +3341,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     sessionId: 'session',
     turnId: 'turn-1',
     cwd: '/workspace',
-    workspaceRoot: '/workspace',
   });
   assert.ok(prompt.sourceRevisions.length > 0);
 
@@ -3272,14 +3376,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
   const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
   assert.match(capturedBash?.description ?? '', /captured child shell/);
   assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
-  const childContext = {
-    sessionId: 'session',
-    turnId: 'turn-child',
-    cwd: '/workspace',
-    workspaceRoot: '/workspace',
-  } as const;
-  const childTail = await childComposer.turnTailPrompt(childContext);
-  assert.match(childTail, /captured child shell/);
 });
 
 test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
@@ -3428,7 +3524,6 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
         sessionId: 'profiled-session',
         turnId: 'profiled-turn',
         cwd: '/workspace',
-        workspaceRoot: '/workspace',
       })
     ).text,
     [
@@ -3628,7 +3723,6 @@ function backendCreationFixture(input: {
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
   executionBoundary?: ExecutionBoundary;
-  sandboxDiagnostics?: HostAiSdkBackendInput['sandboxDiagnostics'];
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
@@ -3637,6 +3731,7 @@ function backendCreationFixture(input: {
   recordModelCallAttempt?: BackendFactoryContext['recordModelCallAttempt'];
   createFetchTransport?: HostAiSdkBackendInput['createFetchTransport'];
   createRunComposer?: HostAiSdkBackendInput['createRunComposer'];
+  artifacts?: HostAiSdkBackendInput['artifacts'];
 }): HostAiSdkBackendInput {
   const runtimePolicy =
     input.runtimePolicy ??
@@ -3708,10 +3803,9 @@ function backendCreationFixture(input: {
       },
     } as unknown as BackendFactoryContext,
     runtimePolicy,
-    sandboxDiagnostics: input.sandboxDiagnostics ?? TEST_SANDBOX_DIAGNOSTICS,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     createRunComposer,
-    artifacts: {},
+    artifacts: input.artifacts ?? {},
     executionArtifacts: {
       recordToolArtifacts: async () => undefined,
       toolResultArchive: createToolResultArchiveCapability({
@@ -3747,6 +3841,7 @@ function readyExecutionConnection(
   customization: {
     readonly requestHeaders?: Readonly<Record<string, string>>;
     readonly requestBodyOverlay?: Readonly<Record<string, unknown>>;
+    readonly vision?: boolean;
   } = {},
 ) {
   return {
@@ -3762,7 +3857,11 @@ function readyExecutionConnection(
       models: [
         {
           id: MODEL_ID,
-          capabilities: { chat: true, functionCalling: true },
+          capabilities: {
+            chat: true,
+            functionCalling: true,
+            ...(customization.vision !== undefined ? { vision: customization.vision } : {}),
+          },
           contextWindow: 8_192,
           maxOutputTokens: 1_024,
         },
@@ -3819,17 +3918,6 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
 }
 
 const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledOAuthTransports(): {
   readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly refreshStarted: Promise<void>;
@@ -4039,6 +4127,7 @@ type ProviderFlow =
       readonly groupId: string;
       readonly toolName: string;
     }
+  | { readonly kind: 'projection_image'; readonly toolName: string }
   | { readonly kind: 'child_agent' }
   | {
       readonly kind: 'implementation_child_agent';
@@ -4052,6 +4141,7 @@ async function startProvider(): Promise<{
   readonly requests: ProviderRequest[];
   configureManagedBashFlow(sandboxPaths?: ManagedSandboxPaths): void;
   configureClientCapability(input: { groupId: string; toolName: string }): void;
+  configureProjectionImageFlow(toolName: string): void;
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
@@ -4080,6 +4170,10 @@ async function startProvider(): Promise<{
     configureClientCapability: (input) => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
       flow = { kind: 'client_capability', ...input };
+    },
+    configureProjectionImageFlow: (toolName) => {
+      if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
+      flow = { kind: 'projection_image', toolName };
     },
     configureChildAgentFlow: () => {
       if (flow.kind !== 'default') throw new Error('Provider flow is already configured');
@@ -4157,6 +4251,15 @@ async function handleProviderRequest(
     return;
   }
   const streamRequestIndex = requests.filter((candidate) => candidate.body.stream === true).length;
+  if (flow.kind === 'projection_image' && streamRequestIndex === 1) {
+    assert.ok(toolNames(body).includes(flow.toolName));
+    respondProviderToolCall(response, streamRequestIndex, flow.toolName, {});
+    return;
+  }
+  if (flow.kind === 'projection_image') {
+    respondProviderText(response, RESPONSE_TEXT);
+    return;
+  }
   if (flow.kind === 'managed_bash' && streamRequestIndex === 1) {
     assert.ok(toolNames(body).includes('Bash'));
     respondProviderToolCall(response, streamRequestIndex, 'Bash', {

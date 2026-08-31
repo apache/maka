@@ -240,9 +240,17 @@ export const Composer = forwardRef<
      * Send becomes Stop while the draft is empty. The ＋ menu and permission
      * control stay reachable (#1444); the model and thinking menus stay
      * mounted but lock with an explanatory tooltip, so the footer row never
-     * reflows mid-turn; import stays blocked mid-turn.
+     * reflows mid-turn. Attachment import remains blocked unless the host opts
+     * in via `allowAttachmentImportWhileStreaming`.
      */
     streaming?: boolean;
+    /**
+     * Keep attachment paste, drop, and picker imports available during a
+     * running turn. Only hosts whose running-turn submission carries staged
+     * attachments into a follow-up should opt in; text-only steering hosts
+     * must retain the default gate so text cannot leave its attachment behind.
+     */
+    allowAttachmentImportWhileStreaming?: boolean;
     /**
      * #646: retained for hosts that still track first-token wait vs mid-turn
      * lull. Quiet composer no longer surfaces long status copy from these;
@@ -1223,8 +1231,13 @@ export const Composer = forwardRef<
     void sendCurrent();
   }
 
+  const attachmentImportBlocked = Boolean(
+    props.disabled
+      || (props.streaming && !props.allowAttachmentImportWhileStreaming),
+  );
+
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
-    if (!action || props.disabled || props.streaming) return;
+    if (!action || attachmentImportBlocked) return;
     await importActionOwnerRef.current?.run(actionId, async () => {
       await action();
     });
@@ -1295,7 +1308,11 @@ export const Composer = forwardRef<
   }
 
   function canAcceptDroppedFiles(): boolean {
-    return Boolean(props.onAttachFilePaths && !props.disabled && !props.streaming && !importActionOwnerRef.current?.pending);
+    return Boolean(
+      props.onAttachFilePaths
+        && !attachmentImportBlocked
+        && !importActionOwnerRef.current?.pending,
+    );
   }
 
   function hasDraggedFiles(event: DragEvent<HTMLFormElement>): boolean {
@@ -1809,7 +1826,7 @@ export const Composer = forwardRef<
                       <DropdownMenuItem
                         label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
                         icon={<Upload size={ICON_SIZE.control} aria-hidden="true" />}
-                        isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                        isDisabled={attachmentImportBlocked || importActionBusy}
                         onClick={() => {
                           void runImportAction('pick', props.onPickAttachments);
                         }}

@@ -62,6 +62,8 @@ import type {
   DesktopNewTaskHostRef,
   DesktopNewTaskTarget,
   DesktopRuntimeHostRef,
+  DesktopOAuthLoginTarget,
+  DesktopOAuthAuthorizationResult,
   DesktopProjectSnapshot,
   DesktopAppInfo,
   DesktopSessionTracePage,
@@ -159,10 +161,7 @@ import type {
 } from '@maka/core/artifacts';
 import type { CapabilitySnapshotCollection, PermissionSnapshot } from '@maka/core/capabilities';
 import type { LocalMemoryState } from '@maka/core/local-memory';
-import type {
-  AuthorizationUrlPayload,
-  SubscriptionActionResult,
-} from '@maka/core/oauth-subscription';
+import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import type { CreateScheduledTaskInput, ScheduledTask, UpdateScheduledTaskInput } from '@maka/core/scheduled-task';
 import type { ProjectRecord } from '@maka/core/project';
 import type {
@@ -256,6 +255,7 @@ const runtimeHostMetadata = new Map<
     readonly profileId: string;
     readonly profileName: string;
     readonly profileKind: RuntimeHostProfileKind;
+    readonly profileAccess: 'owner' | 'session_guest';
   }
 >();
 const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
@@ -308,6 +308,7 @@ ipcRenderer.on(
         profileId: change.profileId,
         profileName: change.profileName,
         profileKind: change.profileKind,
+        profileAccess: change.profileAccess,
       });
       if (change.isDefault) activeRuntimeHost = nextScope;
     } else if (change.isDefault) {
@@ -334,12 +335,14 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileId?: unknown;
     profileName?: unknown;
     profileKind?: unknown;
+    profileAccess?: unknown;
     readiness?: unknown;
   };
   if (
     typeof metadata.profileId !== 'string' ||
     typeof metadata.profileName !== 'string' ||
     !isRuntimeHostProfileKind(metadata.profileKind) ||
+    (metadata.profileAccess !== 'owner' && metadata.profileAccess !== 'session_guest') ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
@@ -351,6 +354,7 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileId: metadata.profileId,
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
+    profileAccess: metadata.profileAccess,
   });
   return { scope, readiness: metadata.readiness };
 }
@@ -719,13 +723,32 @@ function projectSessionSummary(
   scope: DesktopTargetScope,
   session: SessionSummary,
 ): DesktopSessionSummary {
+  const projected = projectSessionCatalogSummary(scope, session);
+  runtimeHostSessionScopes.set(projected.id, runtimeHostScopeKey(scope));
+  return projected;
+}
+
+function projectSessionCatalogSummary(
+  scope: DesktopTargetScope,
+  session: SessionSummary,
+): DesktopSessionSummary {
   const metadata = runtimeHostMetadataFor(scope);
   if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
-  recordRuntimeHostSessionScope(scope, session.id);
   return projectDesktopSessionSummary(
     { ...scope, ...metadata },
     session,
   );
+}
+
+function recordSessionCatalogScopes(sessions: readonly DesktopSessionSummary[]): void {
+  for (const session of sessions) {
+    const scopeKey = runtimeHostProfiles.get(session.profileId);
+    const scope = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
+    if (!scopeKey || !scope || scope.hostId !== session.runtimeHostId) {
+      throw new Error('Desktop Runtime Host Session scope is unavailable');
+    }
+    runtimeHostSessionScopes.set(session.id, scopeKey);
+  }
 }
 
 function projectOnboardingSnapshot(
@@ -871,16 +894,18 @@ async function listDesktopSessions(
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  return collectRuntimeHostSessionCatalogs(
+  const sessions = await collectRuntimeHostSessionCatalogs(
     scopes.map(async (scope) => {
       const sessions = await ipcRenderer.invoke(
         'sessions:list',
         scope,
         filter,
       ) as SessionCatalogSummary[];
-      return sessions.map((session) => projectSessionSummary(scope, session));
+      return sessions.map((session) => projectSessionCatalogSummary(scope, session));
     }),
   );
+  recordSessionCatalogScopes(sessions);
+  return sessions;
 }
 
 async function listDesktopSessionsWithCoverage(): Promise<{
@@ -888,14 +913,21 @@ async function listDesktopSessionsWithCoverage(): Promise<{
   completeHostIds: string[];
 }> {
   const scopes = await runtimeHostScopeList();
-  return collectRuntimeHostSessionCatalogsWithCoverage(
-    scopes.map((scope) => ({
-      hostId: scope.hostId,
-      sessions: ipcRenderer.invoke('sessions:list', scope)
-        .then((sessions: SessionCatalogSummary[]) =>
-          sessions.map((session) => projectSessionSummary(scope, session))),
-    })),
+  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage(
+    scopes.map((scope) => {
+      const metadata = runtimeHostMetadataFor(scope);
+      if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
+      return {
+        hostId: scope.hostId,
+        access: metadata.profileAccess,
+        sessions: ipcRenderer.invoke('sessions:list', scope)
+          .then((sessions: SessionCatalogSummary[]) =>
+            sessions.map((session) => projectSessionCatalogSummary(scope, session))),
+      };
+    }),
   );
+  recordSessionCatalogScopes(catalog.sessions);
+  return catalog;
 }
 
 async function createDesktopSessionOnScope(
@@ -1249,8 +1281,34 @@ const makaBridge = {
         grantId,
       );
     },
-    importInvitation({ code, allowInsecure = false }) {
-      return ipcRenderer.invoke('session-collaboration:import', code, allowInsecure);
+    async importInvitation({ code, allowInsecure = false, operationId }, onProgress) {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        progressOperationId: string,
+        phase: Parameters<NonNullable<typeof onProgress>>[0],
+      ) => {
+        if (progressOperationId === operationId) onProgress?.(phase);
+      };
+      ipcRenderer.on('session-collaboration:import:progress', listener);
+      try {
+        return await ipcRenderer.invoke(
+          'session-collaboration:import',
+          code,
+          allowInsecure,
+          operationId,
+        );
+      } finally {
+        ipcRenderer.off('session-collaboration:import:progress', listener);
+      }
+    },
+    cancelImport(operationId) {
+      return ipcRenderer.invoke('session-collaboration:import:cancel', operationId);
+    },
+    listMounts() {
+      return ipcRenderer.invoke('session-collaboration:mount:list');
+    },
+    removeMount(mountId) {
+      return ipcRenderer.invoke('session-collaboration:mount:remove', mountId);
     },
     async requestTurn(sessionId, input) {
       const session = await runtimeHostSessionRef(sessionId);
@@ -1508,8 +1566,8 @@ const makaBridge = {
         readonly peerId?: string;
         readonly invitation?: string;
         readonly displayName?: string | null;
-        readonly operationId?: string;
-      } = {},
+        readonly operationId: string;
+      },
     ) {
       return ipcRenderer.invoke(
         'runtime-host-peer-mesh:execute',
@@ -2525,39 +2583,48 @@ const makaBridge = {
         ? invokeRuntimeHostForSession('connections:getSnapshot', sessionId)
         : invokeSelectedRuntimeHost(host, 'connections:getSnapshot');
     },
-    setDefault(slug: string | null, host?: DesktopRuntimeHostRef): Promise<void> {
-      return invokeSelectedRuntimeHost(host, 'connections:setDefault', slug);
+    setDefault(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void> {
+      return invokeSelectedRuntimeHost(
+        host,
+        typeof connection === 'string' ? 'connections:setDefaultBySlug' : 'connections:setDefault',
+        connection,
+      );
     },
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void> {
       return invokeSelectedRuntimeHost(host, 'connections:setDefaultModel', input);
     },
-    create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection> {
+    create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection> {
       return invokeSelectedRuntimeHost(host, 'connections:create', input);
     },
-    update(slug: string, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection> {
-      return invokeSelectedRuntimeHost(host, 'connections:update', slug, patch);
+    update(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection> {
+      return invokeSelectedRuntimeHost(host, 'connections:update', connection, patch);
     },
-    delete(slug: string, host?: DesktopRuntimeHostRef): Promise<void> {
-      return invokeSelectedRuntimeHost(host, 'connections:delete', slug);
+    delete(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void> {
+      return invokeSelectedRuntimeHost(host, 'connections:delete', connection);
     },
-    test(slug: string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult> {
-      return invokeSelectedRuntimeHost(host, 'connections:test', slug, opts);
+    test(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult> {
+      return invokeSelectedRuntimeHost(
+        host,
+        typeof connection === 'string' ? 'connections:testBySlug' : 'connections:test',
+        connection,
+        opts,
+      );
     },
-    fetchModels(slug: string, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult> {
-      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', slug);
+    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult> {
+      return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection);
     },
-    hasSecret(slug: string, host?: DesktopRuntimeHostRef): Promise<boolean> {
-      return invokeSelectedRuntimeHost(host, 'connections:hasSecret', slug);
+    hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'connections:hasSecret', connection);
     },
-    getRequestHeaders(slug: string, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
-      return invokeSelectedRuntimeHost(host, 'connections:getRequestHeaders', slug);
+    getRequestHeaders(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
+      return invokeSelectedRuntimeHost(host, 'connections:getRequestHeaders', connection);
     },
     setRequestHeaders(
-      slug: string,
+      connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity,
       headers: readonly import('@maka/core/llm-connections').RequestHeaderUpdate[],
       host?: DesktopRuntimeHostRef,
     ): Promise<import('@maka/core/llm-connections').SavedRequestHeaders> {
-      return invokeSelectedRuntimeHost(host, 'connections:setRequestHeaders', slug, headers);
+      return invokeSelectedRuntimeHost(host, 'connections:setRequestHeaders', connection, headers);
     },
     subscribeEvents(handler: (event: ConnectionEvent) => void, host?: DesktopRuntimeHostRef): () => void {
       return host
@@ -2760,19 +2827,22 @@ const makaBridge = {
   // `authRequestId`; the URL is held by main from the earlier `getAuthUrl`
   // call. Renderer can never hand `shell.openExternal` an arbitrary URL.
   openAiCodex: {
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url');
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');
+    },
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url', target);
     },
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:open-auth-url', authRequestId);
     },
-    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:complete-authorization', authRequestId);
     },
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:cancel-authorization', authRequestId);
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<{
       provider: 'openai-codex';
       runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed';
       accountId?: string;
@@ -2781,32 +2851,32 @@ const makaBridge = {
       picture?: string;
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state', connectionId);
     },
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:get-enrollment-state');
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens');
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens', connectionId);
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:logout');
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:logout', connectionId);
     },
   },
   xaiOAuth: {
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-auth-url');
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-auth-url', target);
     },
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:open-auth-url', authRequestId);
     },
-    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:complete-authorization', authRequestId);
     },
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:cancel-authorization', authRequestId);
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<{
       provider: 'xai-oauth';
       runtimeState:
         | 'not_logged_in'
@@ -2817,49 +2887,52 @@ const makaBridge = {
         | 'storage_failed';
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state', connectionId);
     },
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:get-enrollment-state');
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens');
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens', connectionId);
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'xai-oauth:logout');
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:logout', connectionId);
     },
   },
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:connect-existing-login');
     },
-    getAuthUrl(host?: DesktopRuntimeHostRef): Promise<AuthorizationUrlPayload | SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:get-auth-url');
+    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:is-experimental-enabled');
+    },
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-auth-url', target);
     },
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:open-auth-url', authRequestId);
     },
-    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:complete-authorization', authRequestId);
     },
     cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:cancel-authorization', authRequestId);
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<{
       provider: 'github-copilot';
       runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state', connectionId);
     },
     getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:get-enrollment-state');
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:refresh-tokens');
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:refresh-tokens', connectionId);
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:logout');
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:logout', connectionId);
     },
   },
   scheduledTasks: {

@@ -13,6 +13,7 @@
     "./shell-tools": "./dist/shell-tools.js",
     "./shell-run-manager": "./dist/shell-run-manager.js",
     "./deep-research-tools": "./dist/deep-research-tools.js",
+    "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
     "./tool-artifacts": "./dist/tool-artifacts.js",
     "./model-factory": "./dist/model-factory.js",
     "./model-runtime": "./dist/model-runtime.js",
@@ -100,7 +101,6 @@
     "./system-prompt/main-session-prompt": "./dist/system-prompt/main-session-prompt.js",
     "./system-prompt/personalization-prompt": "./dist/system-prompt/personalization-prompt.js",
     "./system-prompt/project-context": "./dist/system-prompt/project-context.js",
-    "./system-prompt/session-environment-prompt": "./dist/system-prompt/session-environment-prompt.js",
     "./system-prompt/workspace-instructions": "./dist/system-prompt/workspace-instructions.js",
     "./task-ledger-tools": "./dist/task-ledger-tools.js",
     "./tavily-search": "./dist/tavily-search.js",
@@ -121,7 +121,6 @@
     "build": "tsc -p tsconfig.json && node scripts/build-filesystem-worker.mjs",
     "pretypecheck": "npm --prefix ../.. run sync:model-metadata",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

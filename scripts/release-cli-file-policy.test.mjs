@@ -55,6 +55,7 @@ describe('CLI release file policy', () => {
   test('release manifests omit exports whose targets are excluded from Maka artifacts', () => {
     const repoRoot = resolve(import.meta.dirname, '..');
     for (const [directory, omitted] of Object.entries({
+      core: ['./test-only/async-primitives'],
       mcp: ['./test-only/stdio-server'],
       'runtime-host': [
         './test-only/client-capability-host',

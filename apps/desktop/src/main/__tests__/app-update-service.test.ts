@@ -187,6 +187,7 @@ describe('AppUpdateService', () => {
 
     assert.equal(releaseUpdater.allowPrerelease, false);
     assert.equal(nightlyUpdater.allowPrerelease, true);
+    assert.equal(Object.hasOwn(nightlyUpdater, 'channel'), false);
   });
 
   test('routes the feed to a loopback generic provider when the test override is set', () => {

@@ -58,6 +58,7 @@ import {
   isArchivedToolResultPlaceholder,
   type ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
+import { rewriteDurableToolResultProjectionArtifactRefs } from './durable-tool-result-projection.js';
 
 export interface ConversationCopySlice {
   readonly messages: readonly StoredMessage[];
@@ -640,6 +641,59 @@ export function collectConversationCopyLinkedChildReferences(input: {
   return references;
 }
 
+/**
+ * Collects the `relativePath` of every `session_file` StorageRef that the copied
+ * slice references and that belongs to the source Session. User-uploaded
+ * attachments carry `turnId === uploadId` (a sentinel, not a conversation turn),
+ * so the turn-scoped artifact copy never selects them; the coordinator feeds this
+ * set to `copyConversationArtifacts` as an explicit same-Session include list so
+ * their refs resolve in `rewriteStorageRef`. Walks exactly the ref sites reached
+ * by `rewriteStorageRef`: user-message attachments, tool_result image refs, text
+ * runtime-event attachments, and function_response / archived tool-result images.
+ */
+export function collectConversationCopySessionFileRefs(input: {
+  readonly sourceSessionId: string;
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
+}): ReadonlySet<string> {
+  const refs = new Set<string>();
+  const addRef = (ref: StorageRef): void => {
+    if (ref.kind === 'session_file' && ref.sessionId === input.sourceSessionId) {
+      refs.add(ref.relativePath);
+    }
+  };
+  const addContent = (content: ToolResultContent): void => {
+    if (content.kind === 'image') addRef(content.ref);
+  };
+  const addSerialized = (value: unknown): void => {
+    if (isArchivedToolResultPlaceholder(value)) return;
+    try {
+      addContent(decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)));
+    } catch {
+      // Opaque tool results carry no typed Session file reference.
+    }
+  };
+  for (const message of input.messages) {
+    if (message.type === 'user' && message.attachments) {
+      for (const attachment of message.attachments) addRef(attachment.ref);
+    } else if (message.type === 'tool_result') {
+      addContent(message.content);
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'text' && event.content.attachments) {
+      for (const attachment of event.content.attachments) addRef(attachment.ref);
+    } else if (event.content?.kind === 'function_response') {
+      addSerialized(event.content.result);
+    }
+  }
+  for (const serializedResult of input.archivedResults) {
+    addSerialized(deserializeToolResultArchive(serializedResult));
+  }
+  return refs;
+}
+
 function cloneAgentRunEvent(
   event: AgentRunEvent,
   ids: {
@@ -684,17 +738,18 @@ function cloneAgentRunEvent(
     );
   } else if (event.type === 'history_compact_checkpoint_recorded') {
     const sourceCheckpoint = event.data?.checkpoint;
-    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) {
-      throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
-    }
     // Conversation copies carry the canonical raw RuntimeEvents and can create
-    // a fresh checkpoint on demand. Do not export opaque provider state into a
-    // new session or degrade it into user-visible placeholder text.
+    // a fresh checkpoint on demand, so a checkpoint this Runtime can no longer
+    // hold to its own contract is DROPPED, never fatal: the copy is complete
+    // without it. That covers opaque provider state (do not export it into a
+    // new session or degrade it into user-visible placeholder text), a
+    // superseded source policy, and a prefix that no longer matches. A ledger
+    // keeps every checkpoint it ever recorded, so a session that compacted
+    // under an older policy would otherwise be permanently uncopyable.
+    if (!validateHistoryCompactCheckpointShape(sourceCheckpoint, event.sessionId)) return null;
     if (sourceCheckpoint.version === 3) return null;
     const match = matchHistoryCompactCheckpointPrefix(sourceCheckpoint, sourceCompactableEvents);
-    if (match.reason) {
-      throw new Error(`Cannot copy unmatched history compact checkpoint ${event.id}`);
-    }
+    if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
     // including the size floor, re-runnable here because the matched covered
@@ -1108,6 +1163,14 @@ function rewriteRuntimeEventReferences(
         ? {
             ...event.content,
             result: rewriteRuntimeToolResult(event.content.result, references),
+            ...(event.content.modelProjection
+              ? {
+                  modelProjection: rewriteDurableToolResultProjectionArtifactRefs(
+                    event.content.modelProjection,
+                    (ref) => rewriteProjectionArtifactRef(ref, references),
+                  ),
+                }
+              : {}),
           }
         : event.content;
   const refs = event.refs
@@ -1533,6 +1596,17 @@ function rewriteStorageRef(
     sessionId: references.targetSessionId,
     relativePath,
   };
+}
+
+function rewriteProjectionArtifactRef(
+  ref: Extract<StorageRef, { kind: 'session_context' | 'session_file' }>,
+  references: ConversationCopyArtifactReferenceMap,
+): Extract<StorageRef, { kind: 'session_context' | 'session_file' }> {
+  const rewritten = rewriteStorageRef(ref, references);
+  if (rewritten.kind !== 'session_context' && rewritten.kind !== 'session_file') {
+    throw new Error('Conversation copy produced an invalid projection Artifact reference');
+  }
+  return rewritten;
 }
 
 function rewriteArchivedToolResult(

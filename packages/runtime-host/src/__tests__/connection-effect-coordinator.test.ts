@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1198,7 +1199,10 @@ test('OAuth connection effects resolve the canonical access token instead of sen
       refresh_token: 'oauth-refresh-token-must-not-escape',
       expires_at: Date.now() + 60 * 60_000,
     });
-    const enrollment = await stores.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    const enrollment = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'connection-effect-oauth',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
     assert.equal(enrollment.kind, 'ready');
     if (enrollment.kind !== 'ready') throw new Error('OAuth enrollment did not start');
     const credential = await stores.operations.completeInteractiveOAuthLogin(
@@ -1532,18 +1536,6 @@ function recordingTransport(onClose: () => void): ConnectionEffectFetchTransport
     },
   };
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function assertRedacted(value: unknown, forbidden: readonly string[]): void {
   const serialized = JSON.stringify(value);
   for (const text of forbidden) assert.equal(serialized.includes(text), false);

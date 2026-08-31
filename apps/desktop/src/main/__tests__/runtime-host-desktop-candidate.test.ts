@@ -52,6 +52,7 @@ import {
 } from '../runtime-host-desktop-candidate.js';
 import { RuntimeHostSessionObservationRegistry } from '../runtime-host-session-observation-registry.js';
 import { desktopSessionResourceKey } from '../../shared/runtime-host-identity.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const TEST_HOST_ID = 'a'.repeat(64);
 const TEST_TARGET_EPOCH = 'test-target-epoch';
@@ -1365,11 +1366,7 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for candidate state');
+  await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for candidate state' });
 }
 
 function capabilityFrame(sessionId: string): ClientCapabilityCallFrame {

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -93,6 +94,7 @@ import {
   waitFor,
   waitForTuiPaint,
 } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 // Deadline for `Promise.race([run, …])` close watchdogs. A passing race
 // resolves the moment `run` settles, so this only bounds how long a FAILING
@@ -137,15 +139,6 @@ function createTestTurnActivity(
 ): MakaPiTuiTurnActivitySurface {
   return { activities };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
   return {
     schemaVersion: 1,
@@ -6045,6 +6038,44 @@ describe('Maka Pi TUI runner', () => {
     }
   });
 
+  test('shows partial Skill feedback when the Host queues the Message', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HostSkillDriver(
+      {
+        loaded: [{ id: 'alpha', name: 'Alpha' }],
+        failed: [{ request: 'typo', reason: 'not_found' }],
+        receipts: [],
+      },
+      'steering',
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      listSkills: async () => [],
+    });
+
+    terminal.input('/skill:alpha /skill:typo 帮我整理');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.output());
+      return output.includes('已加载技能：Alpha') && output.includes('/skill:typo（未找到）');
+    });
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('does not create a turn when every skill token fails to resolve', async () => {
     {
       const terminal = new FakeTerminal();
@@ -7998,12 +8029,7 @@ function editorInputText(terminal: FakeTerminal): string | undefined {
 
 /** Like waitFor, but with a caller-chosen deadline for slower convergence. */
 async function waitForUpTo(predicate: () => boolean, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await delay(10);
-  }
-  assert.equal(predicate(), true);
+  await pollFor(predicate, { timeoutMs: ms, pollMs: 10 });
 }
 
 function exitMaka(_terminal: FakeTerminal): void {
@@ -9085,7 +9111,10 @@ class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
 }
 
 class HostSkillDriver extends SlashCommandDriver {
-  constructor(private readonly skillInvocation: SkillInvocationResult) {
+  constructor(
+    private readonly skillInvocation: SkillInvocationResult,
+    private readonly admittedDisposition: 'turn_started' | 'steering' = 'turn_started',
+  ) {
     super();
   }
 
@@ -9106,6 +9135,9 @@ class HostSkillDriver extends SlashCommandDriver {
     // Admitted: the receipt for what was resolved rides the answer, which is
     // the client's only sight of it.
     const admitted = await super.submitMessage(text, options);
+    if (this.admittedDisposition === 'steering') {
+      return { disposition: 'steering', queueRevision: 1, skillInvocation: this.skillInvocation };
+    }
     return admitted?.disposition === 'turn_started'
       ? { ...admitted, skillInvocation: this.skillInvocation }
       : admitted;
@@ -9904,7 +9936,11 @@ async function admitMessageAsTurn(
       summary: { ...fakeSessionSummary(turn.sessionId), ...driver.hostSummary },
     }),
   );
-  return { disposition: 'turn_started', turnId: turn.turnId };
+  return {
+    disposition: 'turn_started',
+    turnId: turn.turnId,
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  };
 }
 
 function fakeSessionSummary(

@@ -19,7 +19,8 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetExhaustedDetail } from '@maka/core/events';
-import { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+import { estimateTokens } from './context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 
 // The single authority on what a history-compact checkpoint summary must look
 // like (#3029). The summarization prompt is built from the same constants and

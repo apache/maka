@@ -289,7 +289,7 @@ describe('task ledger tools', () => {
 
   test('tool results scrub secret-like subjects before they persist into history', async () => {
     // Same samples the core redactSecrets tests use. Tool results replay to
-    // the provider every turn, so redacting only the turn tail is not enough.
+    // the provider, so redaction must happen before they persist into history.
     const store = new FakeTaskLedgerStore();
     const tools = buildTaskLedgerTools({ store });
     const create = findTool(tools, TASK_CREATE_TOOL_NAME);

@@ -39,6 +39,8 @@ export interface RuntimeHostPeerConnectInput {
   readonly directDeadlineMs: number;
 }
 
+export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
+
 export interface RuntimeHostPeerRouteResolver {
   resolveRoutes(peerId: string):
     | {
@@ -61,11 +63,13 @@ export interface RuntimeHostPeerClient {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream>;
   connectMeshControl(
     input: RuntimeHostPeerConnectInput,
@@ -190,6 +194,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void> {
     return this.#requireEndpoint()
@@ -202,8 +207,11 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
+    notifyPhase(onPhase, 'discovering');
     await this.#prepareRoutes(input, signal);
+    notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
   }
 
@@ -469,6 +477,17 @@ interface InboundConsumer {
   readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
+}
+
+function notifyPhase(
+  observer: ((phase: RuntimeHostPeerConnectionPhase) => void) | undefined,
+  phase: RuntimeHostPeerConnectionPhase,
+): void {
+  try {
+    observer?.(phase);
+  } catch {
+    // Connection progress is diagnostic state and cannot control the connection.
+  }
 }
 
 function waitForPeerConnectTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {

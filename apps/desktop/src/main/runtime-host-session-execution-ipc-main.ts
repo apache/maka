@@ -385,7 +385,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: submitted.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: submitted.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: submitted.skillInvocation,
         };
       }
       // The sending surface believed this Session idle; nudge it to refresh so
@@ -398,7 +398,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(sideConversation ? { messageId } : {}),
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: submitted.skillInvocation,
       };
     },
   );
@@ -500,7 +500,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: result.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: result.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: result.skillInvocation,
         };
       }
       // The submitting surface believed this Session idle when it steered;
@@ -511,7 +511,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         disposition: result.disposition,
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: result.skillInvocation,
       };
     },
   );

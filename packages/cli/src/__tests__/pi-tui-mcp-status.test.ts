@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { TUI } from '@earendil-works/pi-tui';
 import { McpManagementOverlay } from '../pi-tui-mcp-status.js';
 import type { TuiMcpAction, TuiMcpManagement, TuiMcpSnapshot } from '../tui-mcp-control.js';
 import { stripAnsi } from '../tui-ansi.js';
@@ -66,6 +67,65 @@ describe('MCP management overlay', () => {
     assert.match(text, /未连接本地 MCP 控制面/u);
     assert.match(text, /远程 Runtime Host/u);
     assert.doesNotMatch(text, /尚未配置/u);
+  });
+
+  test('masks remote provider credentials while typing and clears them after submission', async () => {
+    const actions: TuiMcpAction[] = [];
+    const mcp = surface({
+      initialization: 'ready',
+      configuration: 'ready',
+      publication: 'credential_rejected',
+      canManagePublicationCredential: true,
+      toolCount: 0,
+      servers: [],
+    });
+    mcp.execute = async (action) => {
+      actions.push(action);
+      return { status: 'applied', effect: 'published' };
+    };
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      tui: {} as TUI,
+      surface: mcp,
+      viewportRows: () => 8,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    let text = overlay.render(160).map(stripAnsi).join('\n');
+    assert.match(text, /provider credential rejected/u);
+    assert.match(text, /p Set provider credential/u);
+    overlay.handleInput('p');
+    overlay.handleInput('maka_rh_secret-marker');
+    text = overlay.render(160).map(stripAnsi).join('\n');
+    assert.match(text, /•••••••••••••••••••••/u);
+    assert.doesNotMatch(text, /maka_rh_secret-marker/u);
+
+    overlay.handleInput('\n');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(actions, [
+      { kind: 'set_publication_credential', credential: 'maka_rh_secret-marker' },
+    ]);
+    assert.doesNotMatch(overlay.render(160).map(stripAnsi).join('\n'), /maka_rh_secret-marker/u);
+  });
+
+  test('renders a competing remote provider as a visible conflict', () => {
+    const overlay = new McpManagementOverlay({
+      locale: 'en',
+      surface: surface({
+        initialization: 'ready',
+        configuration: 'ready',
+        publication: 'provider_conflict',
+        toolCount: 0,
+        servers: [],
+      }),
+      viewportRows: () => 6,
+      onClose: () => undefined,
+      onChange: () => undefined,
+    });
+
+    assert.match(overlay.render(100).map(stripAnsi).join('\n'), /provider active in another TUI/u);
   });
 
   test('localizes manager states without changing their source values', () => {

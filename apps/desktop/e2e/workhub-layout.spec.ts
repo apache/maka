@@ -77,7 +77,7 @@ test('WorkHub explains Coordination startup failure and recovers after a default
     });
   });
 
-  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   await expect(page.locator('.workhub-empty')).toContainText('从这里继续所有工作');
   await expect(page.locator('.workhub-surface .maka-composer-editor')).toBeVisible();
 });

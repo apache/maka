@@ -25,7 +25,7 @@ import {
   validateSlug,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import type { CreateConnectionInput, LlmConnection } from '@maka/core/llm-connections';
+import type { CreateConnectionInput, IdentifiedLlmConnection } from '@maka/core/llm-connections';
 
 /**
  * The two decisions 添加连接 makes that are not layout: which fields a provider
@@ -93,7 +93,7 @@ export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIs
 }
 
 export interface CreatedProvider {
-  readonly connection: LlmConnection;
+  readonly connection: IdentifiedLlmConnection;
   /**
    * Present when the catalog fetch that follows creation threw. The connection
    * exists either way — discovery is a convenience on top of a successful
@@ -104,8 +104,8 @@ export interface CreatedProvider {
 }
 
 export interface ProviderCreationBridge {
-  create(input: CreateConnectionInput): Promise<LlmConnection>;
-  fetchModels(slug: string): Promise<unknown>;
+  create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;
+  fetchModels(connection: { readonly connectionId: string; readonly slug: string }): Promise<unknown>;
 }
 
 /**
@@ -123,7 +123,7 @@ export async function createProviderWithDiscovery(
   const connection = await bridge.create(input);
   if (!providerSupportsModelDiscovery(input.providerType)) return { connection };
   try {
-    await bridge.fetchModels(connection.slug);
+    await bridge.fetchModels({ connectionId: connection.connectionId, slug: connection.slug });
   } catch (modelDiscoveryError) {
     return { connection, modelDiscoveryError };
   }

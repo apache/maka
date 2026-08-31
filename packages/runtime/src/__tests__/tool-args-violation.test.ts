@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
@@ -365,12 +366,6 @@ describe('unrepairable tool calls', () => {
     assert.equal((input.error ?? '').includes('sk-live-secret-token-value'), false);
   });
 });
-
-function nextId(): () => string {
-  let sequence = 0;
-  return () => `id-${++sequence}`;
-}
-
 function header(): SessionHeader {
   return {
     id: 'session-1',

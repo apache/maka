@@ -1029,7 +1029,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   startFromMessage(
     input: HostMessageStartInput,
     admissionLease: SessionAdmissionLease,
-    commitAdmission: (canonicalContent: MessageContent) => Promise<void>,
+    commitAdmission: (
+      canonicalContent: MessageContent,
+      skillInvocation: SkillInvocationResult,
+    ) => Promise<void>,
   ): Promise<HostMessageStartOutcome> {
     if (isWorkHubCoordinationSessionId(input.sessionId)) {
       return Promise.resolve({ error: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON });
@@ -1038,7 +1041,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       const content = normalizeMessageContent(input.content);
       if (
         input.sourceMessage.disposition !== 'turn_started' ||
-        !messageContentsEqual(input.sourceMessage.content, content)
+        (!input.preparedSkillInvocation &&
+          !messageContentsEqual(input.sourceMessage.content, content))
       ) {
         throw new RuntimeMessageAuthorityInvariantError(
           'Idle Message start lost its canonical turn_started source',
@@ -1060,15 +1064,25 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const skillIds = input.skillIds ?? [];
         const hasSkillInvocation =
           skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0;
-        const prepared = hasSkillInvocation
-          ? await this.prepareHostedSkillInvocationContent(
-              input.sessionId,
-              turnId,
+        const prepared = input.preparedSkillInvocation
+          ? ({
+              kind: 'ready',
               content,
-              skillIds,
-              input.initiatingConnectionId,
-            )
-          : ({ kind: 'ready', content } as const);
+              skillInvocation: input.preparedSkillInvocation,
+            } as const)
+          : hasSkillInvocation
+            ? await this.prepareHostedSkillInvocationContent(
+                input.sessionId,
+                turnId,
+                content,
+                skillIds,
+                input.initiatingConnectionId,
+              )
+            : ({
+                kind: 'ready',
+                content,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              } as const);
         if (prepared.kind === 'rejected') {
           // Skill resolution is the only rejection a client can act on, so it
           // travels back as structured feedback instead of an opaque error.
@@ -1079,6 +1093,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               : prepared.outcome.error.message,
           };
         }
+        const skillInvocation = prepared.skillInvocation ?? {
+          loaded: [],
+          failed: [],
+          receipts: [],
+        };
         const canonicalContent = preflightRootMessageContent(prepared.content);
         if (!canonicalContent.ok)
           return { error: 'Prepared message content exceeds durable limits' };
@@ -1094,7 +1113,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         }
 
         await this.prepareFreshAgentGraphEpoch(header, input.turnOrchestration);
-        await commitAdmission(canonicalContent.content);
+        await commitAdmission(canonicalContent.content, skillInvocation);
 
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
@@ -1103,15 +1122,17 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           proposedUserMessageId: input.sourceMessage.messageId,
           execution: {
             kind: 'external_message',
-            inputDigest: messageContentDigest(content),
+            inputDigest:
+              input.sourceMessage.submittedContentDigest ?? messageContentDigest(content),
           },
           normalizedInput: canonicalContent.content,
           ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
-          ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
+          skillInvocation,
           sourceMessages: [
             {
               ...input.sourceMessage,
               content: normalizeMessageContent(canonicalContent.content),
+              skillInvocation,
             },
           ],
           admittedAt: Date.now(),
@@ -1148,7 +1169,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         }
         return {
           turnId,
-          ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
+          skillInvocation,
         };
       } finally {
         this.releaseRootReservation(reservation);
@@ -1218,16 +1239,26 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
-  prepareMessage(
-    input: HostMessagePreparationInput,
-  ): Promise<
-    | { readonly kind: 'ready'; readonly content: MessageContent }
-    | { readonly kind: 'rejected'; readonly error: string }
+  prepareMessage(input: HostMessagePreparationInput): Promise<
+    | {
+        readonly kind: 'ready';
+        readonly content: MessageContent;
+        readonly skillInvocation: SkillInvocationResult;
+      }
+    | {
+        readonly kind: 'rejected';
+        readonly error: string;
+        readonly skillInvocation?: SkillInvocationResult;
+      }
   > {
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (parseSkillInvocationTokens(content.text).length === 0) {
-        return { kind: 'ready', content };
+        return {
+          kind: 'ready',
+          content,
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        };
       }
       const prepare = () =>
         this.prepareSkillInvocationContent(input.sessionId, input.turnId, content, []);

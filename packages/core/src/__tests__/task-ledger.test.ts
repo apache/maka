@@ -26,7 +26,6 @@ import {
   isSafeTaskId,
   renderSafeTaskLedgerText,
   sanitizeTaskLedgerTask,
-  renderTaskLedgerPromptText,
   renderTaskLedgerDebugText,
   validateTaskEvidence,
   validateTaskUpdate,
@@ -601,47 +600,6 @@ describe('task ledger events', () => {
     assert.deepEqual(projection.diagnostics, []);
     assert.equal(projection.tasks[0]?.status, 'pending');
     assert.equal(projection.tasks[0]?.failureReason, undefined);
-  });
-});
-
-describe('task ledger prompt budget', () => {
-  test('keeps active ancestors, uses short keys, and reports bounded omissions', () => {
-    const root: Task = {
-      id: 'root-uuid',
-      key: 'T1',
-      subject: 'root',
-      status: 'completed',
-      completionEvidence: 'done',
-      createdAt: 1,
-      updatedAt: 2,
-      endedAt: 2,
-    };
-    const child: Task = {
-      id: 'child-uuid',
-      key: 'T1.1',
-      parentId: root.id,
-      subject: 'active child',
-      status: 'in_progress',
-      createdAt: 2,
-      updatedAt: 3,
-    };
-    const extras = Array.from(
-      { length: 198 },
-      (_, index): Task => ({
-        id: `extra-${index}`,
-        key: `T${index + 2}`,
-        subject: `pending ${index} ${'x'.repeat(80)}`,
-        status: 'pending',
-        createdAt: index + 3,
-        updatedAt: index + 3,
-      }),
-    );
-    const rendered = renderTaskLedgerPromptText([root, child, ...extras], 800);
-    assert.equal(rendered.text.length <= 800, true);
-    assert.match(rendered.text, /key=T1 .*subject="root"/);
-    assert.match(rendered.text, /key=T1\.1 .*subject="active child"/);
-    assert.equal(rendered.text.includes('root-uuid'), false);
-    assert.equal(rendered.omittedCount > 0, true);
   });
 });
 

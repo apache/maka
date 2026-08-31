@@ -38,6 +38,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
   rewriteConversationCopyMessage,
@@ -229,6 +230,101 @@ test('conversation copy discovers linked children in persisted retired tool resu
       },
     ],
   );
+});
+
+test('collectConversationCopySessionFileRefs gathers source-Session refs across sites', () => {
+  const sourceRef = (relativePath: string, sessionId = 'session-source') => ({
+    kind: 'session_file' as const,
+    sessionId,
+    relativePath,
+  });
+  const messages: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'user-1',
+      turnId: 'turn-1',
+      ts: 1,
+      text: 'attached',
+      attachments: [
+        {
+          kind: 'image',
+          name: 'upload.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: sourceRef('attachment-upload'),
+        },
+        {
+          kind: 'image',
+          name: 'child.png',
+          mimeType: 'image/png',
+          bytes: 10,
+          ref: sourceRef('attachment-child', 'child-session'),
+        },
+      ],
+    },
+    {
+      type: 'tool_result',
+      id: 'result-1',
+      turnId: 'turn-1',
+      ts: 2,
+      toolUseId: 'tool-1',
+      content: { kind: 'image', mimeType: 'image/png', ref: sourceRef('attachment-tool-result') },
+    } as StoredMessage,
+  ];
+  const runtimeEvents: RuntimeEvent[] = [
+    {
+      author: 'user',
+      content: {
+        kind: 'text',
+        text: 'evt',
+        attachments: [
+          {
+            kind: 'image',
+            name: 'event.png',
+            mimeType: 'image/png',
+            bytes: 10,
+            ref: sourceRef('attachment-event'),
+          },
+        ],
+      },
+    } as RuntimeEvent,
+    {
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'fn-1',
+        name: 'Read',
+        result: { kind: 'image', mimeType: 'image/png', ref: sourceRef('attachment-fn') },
+      },
+    } as RuntimeEvent,
+  ];
+
+  const refs = collectConversationCopySessionFileRefs({
+    sourceSessionId: 'session-source',
+    messages,
+    runtimeEvents,
+    archivedResults: [
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived'),
+      }),
+      // A child-Session archived image must be ignored.
+      JSON.stringify({
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: sourceRef('attachment-archived-child', 'child-session'),
+      }),
+    ],
+  });
+
+  assert.deepEqual([...refs].sort(), [
+    'attachment-archived',
+    'attachment-event',
+    'attachment-fn',
+    'attachment-tool-result',
+    'attachment-upload',
+  ]);
 });
 
 test('Side Conversation preflight identifies linked-child archive bodies', () => {
@@ -2301,6 +2397,119 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
       ).reason,
       undefined,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy drops a checkpoint from a superseded source policy instead of failing', async () => {
+  // A ledger keeps every checkpoint it ever recorded, so a session that
+  // compacted under an older source policy still carries that record forever.
+  // Copy must treat it as absent — the copy carries the canonical raw
+  // RuntimeEvents and can compact again — or those sessions become permanently
+  // unbranchable (apache/maka#4283).
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-legacy-policy-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const run = agentRunHeader({
+      runId: 'run-source',
+      invocationId: 'invocation-1',
+      turnId: 'turn-1',
+      cwd: root,
+      completedAt: 3,
+    });
+    await runStore.createRun(run);
+    const sourceEvents = [
+      runtimeEvent({
+        id: 'event-user',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        invocationId: 'invocation-1',
+        runId: 'run-source',
+        turnId: 'turn-1',
+        ts: 2,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      }),
+    ];
+    for (const event of sourceEvents) {
+      await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+    }
+    const current = buildHistoryCompactCheckpoint({
+      sessionId: 'session-source',
+      coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
+      summary: 'Everything so far is complete.',
+      summaryFormat: 'legacy_freeform',
+      highWaterSeq: 5,
+    });
+    const legacyPolicyCheckpoint = {
+      ...current,
+      source: {
+        ...current.source,
+        policyVersion: 'maka.compactable_runtime_event_projection.v1',
+      },
+    };
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'checkpoint-legacy-policy',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.5,
+      data: {
+        checkpointId: legacyPolicyCheckpoint.checkpointId,
+        highWaterName: legacyPolicyCheckpoint.highWaterName,
+        highWaterSeq: legacyPolicyCheckpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint: legacyPolicyCheckpoint,
+      },
+    });
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    let sequence = 0;
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => `target-${++sequence}`,
+    });
+
+    const targetRuns = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRuns.length > 0);
+    const targetOperationalEvents = (
+      await Promise.all(targetRuns.map((run) => runStore.readEvents('session-target', run.runId)))
+    ).flat();
+    assert.equal(
+      targetOperationalEvents.some((event) => event.type === 'history_compact_checkpoint_recorded'),
+      false,
+    );
+    const targetEvents = (
+      await Promise.all(
+        targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
+      )
+    ).flat();
+    assert.equal(targetEvents.length, sourceEvents.length);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -30,6 +30,7 @@ import type {
   RootTurnAdmissionStore,
   RootTurnSourceMessage,
 } from '@maka/storage/execution-stores';
+import { submittedTurnIntentsEqual } from '@maka/storage/execution-stores';
 
 type OwnedAdmitRootTurnInput = Omit<AdmitRootTurnInput, 'previousRootTurnId'>;
 type Immutable<T> = T extends (...args: never[]) => unknown
@@ -134,6 +135,10 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
         messageContentsEqual(source.content, other.content)
       );
     }) &&

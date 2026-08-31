@@ -76,7 +76,14 @@ test('drives Desktop Session operations through a real Runtime Host connection',
                 },
           'turn.message.submit': async (input) => {
             assert.equal(input.originHostEpoch, hostEpoch);
-            return { ok: true, result: { disposition: 'steering', queueRevision: 1 } };
+            return {
+              ok: true,
+              result: {
+                disposition: 'steering',
+                queueRevision: 1,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              },
+            };
           },
         }),
         beginDrain() {},
@@ -107,7 +114,11 @@ test('drives Desktop Session operations through a real Runtime Host connection',
         content: { text: 'Continue with the new constraints.' },
         placement: 'current_turn',
       }),
-      { disposition: 'steering', queueRevision: 1 },
+      {
+        disposition: 'steering',
+        queueRevision: 1,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
     );
 
     await client.close();

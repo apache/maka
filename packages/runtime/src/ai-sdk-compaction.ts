@@ -177,10 +177,6 @@ export interface AiSdkCompactionDeps {
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
 }
 
 export class AiSdkCompaction {
@@ -201,10 +197,6 @@ export class AiSdkCompaction {
     checkpoint?: HistoryCompactCheckpoint,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  private readonly appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
   private historyCompactAbortController: AbortController | null = null;
   /**
    * Session-scoped circuit for exact malformed compaction inputs. A retry or
@@ -224,7 +216,6 @@ export class AiSdkCompaction {
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
-    this.appendTurnTailPrompt = deps.appendTurnTailPrompt;
   }
 
   /** Abort an in-flight manual history compaction (called by AiSdkBackend.stop). */
@@ -666,7 +657,7 @@ export class AiSdkCompaction {
    * usage + a signed char/4 payload delta, tool schemas included) against
    * `contextWindow - reserve`; over the high-water, fold a safe completed
    * prefix into a durable mid_turn checkpoint and continue the same turn on
-   * `[compact block, verbatim head anchor, preserved tail]`.
+   * `[compact block, verbatim head anchor]`.
    *
    * This hook never terminates the turn: every failure fails open with a
    * diagnostic and records itself for the final-request estimate owner, which
@@ -683,7 +674,6 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     fallbackActiveTools: () => readonly string[],
-    turnTailPrompt: string | undefined,
     systemPromptChars: number,
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
     origin: ProviderRequestOrigin,
@@ -822,7 +812,6 @@ export class AiSdkCompaction {
         providerTools,
         activeToolsForStep,
         systemPromptChars,
-        turnTailPrompt,
         memoryCompactionDecision,
         onMemoryCompaction,
         abortSignal,
@@ -869,7 +858,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeToolsForStep: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
     phase?: 'pre_turn' | 'mid_turn';
@@ -882,7 +870,6 @@ export class AiSdkCompaction {
       providerTools,
       activeToolsForStep,
       systemPromptChars,
-      turnTailPrompt,
       abortSignal,
     } = input;
     if (state.malformedSummaryFailure) {
@@ -1049,20 +1036,8 @@ export class AiSdkCompaction {
         diagnosticReason: 'replacement_unmaterializable',
       };
     }
-    // The head anchor must render exactly like the raw projection's current
-    // user message: the initial request decorates it with the volatile turn
-    // tail (cwd, shell context, task state — see send()), which is not part
-    // of the durable anchor bytes. Reuse the same decoration owner
-    // (appendTurnTailPrompt) on the anchor's replay item so a replacement
-    // never silently drops that context — and never counts the drop as
-    // shrinkage in the guard below.
-    const replayItemsWithAnchorTail = replayPlan.items.map((item) =>
-      item.kind === 'text' && item.role === 'user' && item.eventId === state.headAnchor.id
-        ? { ...item, content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string }
-        : item,
-    );
     const replacementMessages = await this.materializeRuntimeReplayPlan(
-      { ...replayPlan, items: replayItemsWithAnchorTail },
+      replayPlan,
       input.origin.imageBudget,
       plan.checkpoint,
     );
@@ -1156,7 +1131,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeTools: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     queue: AsyncEventQueue<SessionEvent>;
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void;
     origin: ProviderRequestOrigin;
@@ -1212,7 +1186,6 @@ export class AiSdkCompaction {
       providerTools: input.providerTools,
       activeToolsForStep: input.activeTools,
       systemPromptChars: input.systemPromptChars,
-      turnTailPrompt: input.turnTailPrompt,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
       abortSignal: input.abortSignal,

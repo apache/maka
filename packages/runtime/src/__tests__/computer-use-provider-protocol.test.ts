@@ -150,6 +150,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         provider.expectedWireOutputLimit,
       );
       const runtime = createTestAiSdkBackend({
+        testProjectionArtifacts: true,
         sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
@@ -275,6 +276,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       });
       const events: SessionEvent[] = [];
       const runtime = createTestAiSdkBackend({
+        testProjectionArtifacts: true,
         sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
@@ -378,6 +380,7 @@ describe('OpenAI-compatible product loops', () => {
         'openai-chat',
       );
       const runtime = createTestAiSdkBackend({
+        testProjectionArtifacts: true,
         sessionId,
         header: header(provider.providerType, provider.modelId),
         appendMessage: async () => {},
@@ -494,6 +497,7 @@ describe('OpenAI-compatible product loops', () => {
       now: monotonicClock(),
     });
     const runtime = createTestAiSdkBackend({
+      testProjectionArtifacts: true,
       sessionId,
       header: header('kimi-coding-plan', 'k3'),
       appendMessage: async () => {},
@@ -576,6 +580,7 @@ describe('OpenAI-compatible product loops', () => {
     );
     const createRuntime = () =>
       createTestAiSdkBackend({
+        testProjectionArtifacts: true,
         sessionId,
         header: header('kimi-coding-plan', 'k3'),
         appendMessage: async (message) => {
@@ -695,6 +700,7 @@ describe('OpenAI-compatible product loops', () => {
     );
     const events: SessionEvent[] = [];
     const runtime = createTestAiSdkBackend({
+      testProjectionArtifacts: true,
       sessionId,
       header: header('kimi-coding-plan', 'k3'),
       appendMessage: async () => {},

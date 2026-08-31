@@ -194,20 +194,16 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
+import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
-import {
-  toSandboxRunTraceProjection,
-  type SandboxDiagnosticsProvider,
-  type SandboxDiagnosticsSnapshot,
-} from './sandbox/diagnostics.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
   SANDBOX_BOUNDARY_DENIED_FOR_TURN,
   SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
 } from './sandbox-boundary-tool.js';
-import { renderSandboxTurnTailPrompt } from './system-prompt/sandbox-context-prompt.js';
 import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
@@ -714,8 +710,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
-  /** Optional model guidance derived fresh from the live boundary each Turn. */
-  sandboxDiagnostics?: SandboxDiagnosticsProvider;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -746,12 +740,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   systemPrompt?:
     | string
     | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional provider-visible current-turn tail kept out of the durable system prefix. */
-  turnTailPrompt?:
-    | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional volatile ShellRun summary. Not persisted; appended to the current user turn tail only. */
-  shellRunContextSummary?: () => string | undefined | Promise<string | undefined>;
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -815,9 +803,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Caller wires this to the session ArtifactStore; runtime never imports storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
+  /** Host-owned exact ref plan for inline images, persisted only after projection validation. */
+  prepareDurableProjectionArtifact?: ToolRuntimeInput['prepareDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
-   * image parts; false/unknown stay as text refs with a fallback note.
+   * image parts; false/unknown keep the attachment's model-facing Read reference.
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
@@ -828,15 +818,9 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
-  runId?: string;
   cwd: string;
-  workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
-}
-
-function appendNonVisionImageFallbackNotice(textContent: string): string {
-  return `${textContent}\n\n[image attachments omitted: the selected model does not support image input. Tell the user you cannot view the attached image(s) and ask them to describe the image or switch to a vision-capable model.]`;
 }
 
 function isImageToolResult(
@@ -873,6 +857,37 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
     type: 'json',
     value: { status: 'failed', ...(message ? { output: message } : {}) },
   };
+}
+
+function durableApplyPatchReplayFactText(
+  input: unknown,
+  projection: DurableToolResultProjection,
+  isError: boolean,
+): string | null {
+  if (projection.kind === 'json') {
+    const fact = applyPatchReplayFactText(input, projection, isError);
+    if (fact) return fact;
+  }
+  const output = durableProjectionToToolResultOutput(projection);
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value;
+    case 'json':
+    case 'error-json':
+      return JSON.stringify(output.value);
+    case 'content': {
+      const text = output.value
+        .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n');
+      return text || null;
+    }
+    case 'execution-denied':
+      return output.reason
+        ? `ApplyPatch execution denied: ${output.reason}`
+        : 'ApplyPatch execution denied.';
+  }
 }
 
 /**
@@ -1122,10 +1137,8 @@ export class AiSdkBackend implements AgentBackend {
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
       materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
+        this.materializeRuntimeReplayPlan(plan, imageBudget, checkpoint),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
-      appendTurnTailPrompt: (content, turnTailPrompt) =>
-        this.appendTurnTailPrompt(content, turnTailPrompt),
     });
     if (
       input.tools.some(
@@ -1341,8 +1354,7 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
+      prepareDurableProjectionArtifact: input.prepareDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
@@ -1605,47 +1617,6 @@ export class AiSdkBackend implements AgentBackend {
         });
       }
     }
-    let sandboxDiagnosticsSnapshot: SandboxDiagnosticsSnapshot | undefined;
-    let sandboxPrompt: string | undefined;
-    let sandboxContextStage: 'resolve' | 'render' = 'resolve';
-    try {
-      sandboxDiagnosticsSnapshot = this.input.sandboxDiagnostics
-        ? await raceWithTurnAbort(this.resolveTurnSandboxDiagnostics(), turnAbortController.signal)
-        : undefined;
-      sandboxContextStage = 'render';
-      sandboxPrompt = sandboxDiagnosticsSnapshot
-        ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
-        : undefined;
-    } catch (err) {
-      if (scope.aborted || turnAbortController.signal.aborted) {
-        queue.push({
-          type: 'abort',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          reason: 'user_stop',
-        } satisfies AbortEvent);
-        queue.push({
-          type: 'complete',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          stopReason: 'user_stop',
-        } satisfies CompleteEvent);
-        queue.close();
-        yield* this.drain(queue);
-        return;
-      }
-      trace.sandboxContextFailed(sandboxContextStage, err);
-      // This context is model guidance, not execution authority. Never fall
-      // back to a stale snapshot; continue without the prompt while the live
-      // ExecutionBoundary remains authoritative for every tool invocation.
-      sandboxDiagnosticsSnapshot = undefined;
-      sandboxPrompt = undefined;
-    }
-    if (sandboxDiagnosticsSnapshot) {
-      trace.sandboxContextResolved(toSandboxRunTraceProjection(sandboxDiagnosticsSnapshot));
-    }
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
       callKind: 'main',
@@ -1747,11 +1718,6 @@ export class AiSdkBackend implements AgentBackend {
         await this.resolveSystemPrompt(scope),
         scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
         scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-        // A safe continuation deliberately has no new user message. Keep its
-        // replay byte-for-byte intact and carry only the current authority fact
-        // in the effective system envelope; ordinary volatile turn-tail facts
-        // remain excluded from continuation.
-        input.continuation ? sandboxPrompt : undefined,
       ]);
     } catch (err) {
       trace.modelStreamFailed(this.modelAdapter.classifyError(err), err);
@@ -1899,13 +1865,6 @@ export class AiSdkBackend implements AgentBackend {
           next.start();
         };
         const activeTools = plan.activeTools;
-        const turnTailPrompt = input.continuation
-          ? undefined
-          : joinPromptFragments([
-              await this.resolveTurnTailPrompt(turnId),
-              await this.resolveShellRunContextSummary(),
-              sandboxPrompt,
-            ]);
         const currentUserContent = input.continuation
           ? undefined
           : await this.buildCurrentUserContent(
@@ -1922,10 +1881,9 @@ export class AiSdkBackend implements AgentBackend {
                 ...priorReplay.messages,
                 {
                   role: 'user' as const,
-                  content: this.appendTurnTailPrompt(currentUserContent, turnTailPrompt),
+                  content: currentUserContent,
                 } as ModelMessage,
               ];
-        const settledModelOutputs = new Map<string, ToolResultOutput>();
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1974,27 +1932,9 @@ export class AiSdkBackend implements AgentBackend {
           ) {
             throw new Error('durable current-run projection is not replayable');
           }
-          const anchorEventId = input.headAnchorRuntimeEvent?.id;
-          let decoratedCurrentUser = false;
-          const replayItems = replayPlan.items.map((item) => {
-            if (item.kind !== 'text' || item.role !== 'user') {
-              return item;
-            }
-            if (
-              anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser
-            ) {
-              return item;
-            }
-            decoratedCurrentUser = true;
-            return {
-              ...item,
-              content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string,
-            };
-          });
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
-            { ...replayPlan, items: replayItems },
+            replayPlan,
             scope.imageBudget,
-            settledModelOutputs,
             projectionCheckpoint,
           );
           return projectionCheckpoint
@@ -2025,7 +1965,6 @@ export class AiSdkBackend implements AgentBackend {
                     ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
                     ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
                   }),
-              turnTailPrompt,
             }),
             requestShape: computeRequestShapeDiagnostic(
               {
@@ -2090,7 +2029,6 @@ export class AiSdkBackend implements AgentBackend {
           queue,
           providerTools,
           () => currentRepairToolNames(),
-          turnTailPrompt,
           midTurnSystemPromptChars,
           onMidTurnDiagnosticPatch,
           scope,
@@ -2542,7 +2480,6 @@ export class AiSdkBackend implements AgentBackend {
                       providerTools,
                       activeTools: activeToolsForRequest,
                       systemPromptChars: midTurnSystemPromptChars,
-                      turnTailPrompt,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
                       origin: scope,
@@ -2766,13 +2703,6 @@ export class AiSdkBackend implements AgentBackend {
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
-            for (let index = 0; index < returnedToolCalls.length; index += 1) {
-              const toolCall = returnedToolCalls[index];
-              const settlement = settlements[index];
-              if (toolCall && settlement) {
-                settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
-              }
-            }
 
             const continuationWillRun =
               (maxSteps === undefined || runtimeSteps < maxSteps) &&
@@ -3195,7 +3125,7 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
-          const settlement = await scope.toolRuntime.settleToolCallRaw({
+          const settlement = await scope.toolRuntime.settleToolCall({
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
@@ -3706,7 +3636,6 @@ export class AiSdkBackend implements AgentBackend {
         messages: await this.materializeRuntimeReplayPlan(
           plan,
           scope.imageBudget,
-          undefined,
           projectedHistoryCompactCheckpoint,
         ),
         gate: 'runtime_replay_text_only',
@@ -3730,7 +3659,6 @@ export class AiSdkBackend implements AgentBackend {
             ? await this.materializeRuntimeReplayPlan(
                 degradedPlan,
                 scope.imageBudget,
-                undefined,
                 projectedHistoryCompactCheckpoint,
               )
             : await materializeReplayFallback(),
@@ -3749,7 +3677,6 @@ export class AiSdkBackend implements AgentBackend {
       messages: await this.materializeRuntimeReplayPlan(
         plan,
         scope.imageBudget,
-        undefined,
         projectedHistoryCompactCheckpoint,
       ),
       gate: 'runtime_replay_provider_native',
@@ -3821,7 +3748,6 @@ export class AiSdkBackend implements AgentBackend {
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
     budget: ProviderImageBudget,
-    settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
     historyCompactCheckpoint?: HistoryCompactCheckpoint,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
@@ -3945,14 +3871,18 @@ export class AiSdkBackend implements AgentBackend {
       result: ToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
-      const output =
-        settledModelOutputs?.get(result.toolCallId) ??
-        (await this.materializeToolResultOutput(
-          budget,
-          result.output,
-          result.isError,
-          `runtime-event:${result.eventId}:tool-result`,
-        ));
+      const output = result.modelProjection
+        ? await this.materializeDurableToolResultProjection(
+            budget,
+            result.modelProjection,
+            `runtime-event:${result.eventId}:tool-result`,
+          )
+        : await this.materializeToolResultOutput(
+            budget,
+            result.output,
+            result.isError,
+            `runtime-event:${result.eventId}:tool-result`,
+          );
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
@@ -4144,11 +4074,13 @@ export class AiSdkBackend implements AgentBackend {
             break;
           }
           downgradedApplyPatchCalls.delete(item.toolCallId);
-          const replayFact = applyPatchReplayFactText(
-            downgradedCall.input,
-            item.output,
-            item.isError,
-          );
+          const replayFact = item.modelProjection
+            ? durableApplyPatchReplayFactText(
+                downgradedCall.input,
+                item.modelProjection,
+                item.isError,
+              )
+            : applyPatchReplayFactText(downgradedCall.input, item.output, item.isError);
           if (!replayFact) break;
           if (downgradedCall.stepId) {
             const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
@@ -4380,19 +4312,6 @@ export class AiSdkBackend implements AgentBackend {
     return out;
   }
 
-  /** Append provider-visible volatile turn facts after the durable user content. */
-  private appendTurnTailPrompt(
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ): ModelMessage['content'] {
-    if (!turnTailPrompt) return content;
-    if (typeof content === 'string') return `${content}\n\n${turnTailPrompt}`;
-    return [
-      ...(content as unknown[]),
-      { type: 'text', text: turnTailPrompt },
-    ] as ModelMessage['content'];
-  }
-
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
   private chargeImageBudget(
     budget: ProviderImageBudget,
@@ -4429,7 +4348,10 @@ export class AiSdkBackend implements AgentBackend {
       return textContent;
     }
     if (this.input.supportsVision !== true) {
-      return appendNonVisionImageFallbackNotice(textContent);
+      // `textContent` already carries each attachment's stable Read argument.
+      // Native provider image delivery is unavailable here, but that does not
+      // establish whether the model can process the image through a tool.
+      return textContent;
     }
     if (!this.input.readAttachmentBytes) {
       return textContent;
@@ -4517,6 +4439,62 @@ export class AiSdkBackend implements AgentBackend {
     };
   }
 
+  private async materializeDurableToolResultProjection(
+    budget: ProviderImageBudget,
+    projection: DurableToolResultProjection,
+    decisionKey: string,
+  ): Promise<ToolResultOutput> {
+    if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
+    const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
+    for (const [index, part] of projection.parts.entries()) {
+      if (part.kind === 'text') {
+        value.push({ type: 'text', text: part.text });
+        continue;
+      }
+      if (this.input.supportsVision !== true) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but the selected model does not support image input.',
+        });
+        continue;
+      }
+      if (!this.input.readAttachmentBytes) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but its stored bytes are unavailable.',
+        });
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(part.ref);
+      } catch {
+        value.push({
+          type: 'text',
+          text: 'Image could not be loaded from artifact storage: read_failed.',
+        });
+        continue;
+      }
+      if (!read.ok) {
+        value.push({
+          type: 'text',
+          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
+        });
+        continue;
+      }
+      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
+        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
+        continue;
+      }
+      value.push({
+        type: 'file',
+        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+        mediaType: part.mediaType,
+      });
+    }
+    return { type: 'content', value };
+  }
+
   private async buildCurrentUserContent(
     budget: ProviderImageBudget,
     text: string,
@@ -4541,42 +4519,12 @@ export class AiSdkBackend implements AgentBackend {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
-        ...(scope.runId ? { runId: scope.runId } : {}),
         cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
           scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
     }
     return this.input.systemPrompt;
-  }
-
-  private async resolveTurnSandboxDiagnostics(): Promise<SandboxDiagnosticsSnapshot | undefined> {
-    const provider = this.input.sandboxDiagnostics;
-    if (!provider) return undefined;
-    const boundary = await this.input.readExecutionBoundary();
-    if (boundary.kind === 'external') return undefined;
-    return await provider.resolve(
-      boundary.kind === 'managed'
-        ? { cwd: this.input.header.cwd, permissionProfile: boundary.profile }
-        : { cwd: this.input.header.cwd, mode: 'bypass' },
-    );
-  }
-
-  private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
-    if (typeof this.input.turnTailPrompt === 'function') {
-      return await this.input.turnTailPrompt({
-        sessionId: this.sessionId,
-        turnId,
-        cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
-      });
-    }
-    return this.input.turnTailPrompt;
-  }
-
-  private async resolveShellRunContextSummary(): Promise<string | undefined> {
-    return await this.input.shellRunContextSummary?.();
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {

@@ -154,6 +154,8 @@ export interface RuntimeExecutionConnection {
 }
 
 export interface LlmConnection extends RuntimeExecutionConnection {
+  /** Immutable Runtime Host entity identity. Legacy non-Host projections may omit it. */
+  connectionId?: string;
   name: string;
   enabled: boolean;
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
@@ -555,6 +557,40 @@ export function deriveConnectionSlug(
   const base = providerType.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!existingSlugs.includes(base)) return base;
 
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!existingSlugs.includes(candidate)) return candidate;
+  }
+}
+
+export type InteractiveOAuthProviderType = Extract<
+  ProviderType,
+  'openai-codex' | 'xai-oauth' | 'github-copilot'
+>;
+
+/** Stable human-facing slug base for one interactive OAuth Connection. */
+export function interactiveOAuthConnectionSlugBase(
+  providerType: InteractiveOAuthProviderType,
+): string {
+  switch (providerType) {
+    case 'openai-codex':
+      return 'codex-subscription';
+    case 'xai-oauth':
+      return 'xai-oauth';
+    // Shared with the local `gh` credential import so both routes to a Copilot
+    // account land on one Connection instead of two.
+    case 'github-copilot':
+      return 'github-copilot';
+  }
+}
+
+/** Derive an unused OAuth Connection slug without moving allocation into a surface. */
+export function deriveInteractiveOAuthConnectionSlug(
+  providerType: InteractiveOAuthProviderType,
+  existingSlugs: readonly string[] = [],
+): string {
+  const base = interactiveOAuthConnectionSlugBase(providerType);
+  if (!existingSlugs.includes(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base}-${suffix}`;
     if (!existingSlugs.includes(candidate)) return candidate;

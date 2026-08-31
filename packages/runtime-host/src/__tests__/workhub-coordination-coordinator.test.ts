@@ -772,6 +772,7 @@ async function persistTestAssignment(
       submittedPlacement: 'current_turn',
       placement: 'current_turn',
       disposition: 'steering',
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
       admittedAt: Date.now(),
     },
   });

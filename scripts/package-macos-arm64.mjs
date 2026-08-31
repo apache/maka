@@ -85,7 +85,10 @@ export async function packageMacosArm64({
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
   const dmgPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.dmg`);
   const zipPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.zip`);
-  const updateMetadataPath = join(releaseDirectory, 'latest-mac.yml');
+  const updateMetadataPath = join(
+    releaseDirectory,
+    buildVersion === manifest.version ? 'latest-mac.yml' : 'dev-mac.yml',
+  );
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);

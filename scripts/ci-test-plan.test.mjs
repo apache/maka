@@ -352,6 +352,35 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.match(workflow, /run: npm run release:cli:smoke/u);
 });
 
+test('Rust build caches publish immutable source generations only from the default branch', () => {
+  const workflows = readdirSync(WORKFLOW_DIR)
+    .filter((name) => name.endsWith('.yml'))
+    .map((name) => [name, readWorkflow(name)])
+    .filter(([, workflow]) => workflow.includes('tool: kache@0.16.0'));
+
+  assert.equal(workflows.length, 5);
+  for (const [name, workflow] of workflows) {
+    assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
+    const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);
+    assert.ok(primaryKeys.length > 0, name);
+    const restoreKeys = [...workflow.matchAll(/^\s+(kache-[^\n]+-)$/gmu)].map(([, key]) => key);
+    assert.equal(restoreKeys.length, primaryKeys.length, name);
+    primaryKeys.forEach((key) => {
+      assert.match(key, /\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, name);
+      assert.ok(
+        restoreKeys.includes(key.replace(/\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, '')),
+        name,
+      );
+    });
+    assert.match(
+      workflow,
+      /name: Save [^\n]*Rust build cache\n\s+if: [^\n]*github\.event\.repository\.default_branch/u,
+      name,
+    );
+    assert.doesNotMatch(workflow, /kache report [^\n]*--since/u, name);
+  }
+});
+
 test('release contracts run against built CLI outputs', () => {
   const workflow = readWorkflow('ci.yml');
   const buildIndex = workflow.indexOf('      - name: Build\n');

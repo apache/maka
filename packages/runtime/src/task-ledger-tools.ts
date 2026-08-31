@@ -55,8 +55,8 @@ function buildTaskCreateTool(
     name,
     displayName: 'Task Create',
     description:
-      'Add one or more tasks to the session task ledger. The full updated ledger is re-shown each turn, ' +
-      `so use this to record work you plan to do; update status with ${updateToolName} as you progress.`,
+      'Add one or more tasks to the session task ledger. ' +
+      `Use task_list or task_get to read it later, and update status with ${updateToolName} as you progress.`,
     parameters: z.object({
       tasks: z
         .array(

@@ -300,7 +300,7 @@ jobs:
 
       - name: Build the CLI production workspace closure
         run: |
-          npm --workspace maka-agent run pretest
+          npm --workspace maka-agent run build:workspace-deps
           npm --workspace maka-agent run build
           npm run check:cli-third-party-notices
 
