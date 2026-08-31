@@ -159,19 +159,47 @@ function isContextDiagnosticsComposition(value: unknown): value is ContextDiagno
   if (
     !composition ||
     !Array.isArray(composition.segments) ||
+    composition.segments.length === 0 ||
     composition.segments.length > 4 ||
     !composition.segments.every(isContextDiagnosticsSegment) ||
     (composition.tools !== undefined &&
       (!Array.isArray(composition.tools) ||
-        composition.tools.length > 256 ||
+        composition.tools.length === 0 ||
+        composition.tools.length > 64 ||
         !composition.tools.every(isContextDiagnosticsTool))) ||
     (composition.remainingTools !== undefined &&
       !isContextDiagnosticsRemainder(composition.remainingTools)) ||
-    !isOptionalCount(composition.unlabelledToolBytes)
+    !isOptionalCount(composition.unlabelledToolBytes) ||
+    (composition.unlabelledToolBytes !== undefined && composition.unlabelledToolBytes === 0)
   ) {
     return false;
   }
-  return true;
+  const valid = composition as unknown as ContextDiagnosticsComposition;
+  const segmentOrder = ['system_instructions', 'tool_definitions', 'messages', 'other'];
+  const order = valid.segments.map((segment) => segmentOrder.indexOf(segment.kind));
+  if (order.some((value, index) => index > 0 && value <= order[index - 1]!)) return false;
+
+  const toolDefinitions = valid.segments.find((segment) => segment.kind === 'tool_definitions');
+  const tools = valid.tools ?? [];
+  if (
+    tools.some(
+      (tool, index) =>
+        index > 0 &&
+        (tools[index - 1]!.bytes < tool.bytes ||
+          (tools[index - 1]!.bytes === tool.bytes &&
+            tools[index - 1]!.name.localeCompare(tool.name) >= 0)),
+    ) ||
+    new Set(tools.map((tool) => tool.name)).size !== tools.length
+  ) {
+    return false;
+  }
+  const describedToolBytes =
+    tools.reduce((total, tool) => total + tool.bytes, 0) +
+    (valid.remainingTools?.bytes ?? 0) +
+    (valid.unlabelledToolBytes ?? 0);
+  return toolDefinitions
+    ? describedToolBytes === toolDefinitions.bytes
+    : describedToolBytes === 0 && valid.remainingTools === undefined;
 }
 
 function isContextDiagnosticsSegment(value: unknown): boolean {
@@ -182,18 +210,25 @@ function isContextDiagnosticsSegment(value: unknown): boolean {
         segment.kind === 'tool_definitions' ||
         segment.kind === 'messages' ||
         segment.kind === 'other') &&
-      isCount(segment.bytes),
+      isCount(segment.bytes) &&
+      segment.bytes > 0,
   );
 }
 
 function isContextDiagnosticsTool(value: unknown): boolean {
   const tool = shapedRecord(value, ['name', 'bytes'], []);
-  return Boolean(tool && isBoundedString(tool.name, 512) && isCount(tool.bytes));
+  return Boolean(tool && isBoundedString(tool.name, 512) && isCount(tool.bytes) && tool.bytes > 0);
 }
 
 function isContextDiagnosticsRemainder(value: unknown): boolean {
   const remainder = shapedRecord(value, ['count', 'bytes'], []);
-  return Boolean(remainder && isCount(remainder.count) && isCount(remainder.bytes));
+  return Boolean(
+    remainder &&
+      isCount(remainder.count) &&
+      remainder.count > 0 &&
+      isCount(remainder.bytes) &&
+      remainder.bytes > 0,
+  );
 }
 
 function isContextDiagnosticsCompaction(value: unknown): value is ContextDiagnosticsCompaction {
@@ -207,7 +242,9 @@ function isContextDiagnosticsCompaction(value: unknown): value is ContextDiagnos
       compaction.kind === 'history' &&
       (compaction.phase === 'pre_turn' || compaction.phase === 'mid_turn') &&
       isCount(compaction.eventCount) &&
+      compaction.eventCount > 0 &&
       isCount(compaction.turnCount) &&
+      compaction.turnCount > 0 &&
       isCount(compaction.estimatedTokens),
   );
 }

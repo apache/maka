@@ -31,6 +31,49 @@ import type {
 } from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
+import { readLatestContextSnapshot } from '../latest-context-snapshot.js';
+
+test('rejects v2 snapshots that the canonical writer cannot produce', () => {
+  const base = {
+    schemaVersion: 2,
+    attemptId: 'attempt-1',
+    providerId: 'anthropic',
+    modelId: 'model',
+    completedAt: 10,
+  };
+  const impossible = [
+    { ...base, composition: { segments: [] } },
+    { ...base, composition: { segments: [{ kind: 'messages', bytes: 0 }] } },
+    {
+      ...base,
+      composition: {
+        segments: [{ kind: 'messages', bytes: 10 }],
+        tools: [{ name: 'Bash', bytes: 10 }],
+      },
+    },
+    {
+      ...base,
+      composition: {
+        segments: [{ kind: 'tool_definitions', bytes: 10 }],
+        remainingTools: { count: 0, bytes: 0 },
+      },
+    },
+    {
+      ...base,
+      compaction: {
+        kind: 'history',
+        phase: 'pre_turn',
+        eventCount: 0,
+        turnCount: 0,
+        estimatedTokens: 10,
+      },
+    },
+  ];
+
+  for (const snapshot of impossible) {
+    assert.equal(readLatestContextSnapshot({ type: 'latest_context', data: snapshot }), undefined);
+  }
+});
 
 test('serves the sealed snapshot without reading a single run', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
