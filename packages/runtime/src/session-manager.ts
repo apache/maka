@@ -61,9 +61,7 @@ import type {
 } from '@maka/core/session';
 import type {
   CreateSessionInput,
-  BranchFromTurnInput,
   RegenerateTurnInput,
-  ReviseBeforeTurnInput,
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
@@ -91,7 +89,6 @@ import {
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
-import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -144,12 +141,6 @@ import {
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
-import {
-  cloneConversationRuntimeLedger as cloneConversationLedger,
-  createConversationCopySlice,
-  prepareConversationRuntimeLedgerCopy,
-  type ConversationRuntimeLedgerCopyPlan,
-} from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
@@ -257,15 +248,6 @@ function runtimeCommitSinkFromEventStore(
     typeof candidate.commitToolOutcome === 'function'
     ? (candidate as RuntimeCommitSink)
     : undefined;
-}
-
-function runtimeEventHasProjectionArtifact(event: RuntimeEvent): boolean {
-  const content = event.content;
-  return (
-    content?.kind === 'function_response' &&
-    content.modelProjection?.kind === 'content' &&
-    content.modelProjection.parts.some((part) => part.kind === 'artifact')
-  );
 }
 
 export interface StopSessionInput {
@@ -3884,13 +3866,6 @@ export class SessionManager {
     };
   }
 
-  async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'through');
-    if (!slice) throw new Error(`Cannot branch from unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */
   async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
     const readMessagesSnapshot = this.deps.store.readMessagesSnapshot;
@@ -3907,148 +3882,6 @@ export class SessionManager {
       messages,
       turns: deriveTurnRecords(messages),
     };
-  }
-
-  async branchBeforeTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
-    if (!slice) throw new Error(`Cannot branch before unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
-  /**
-   * Create a non-destructive edit-and-resend version. Unlike branchBeforeTurn,
-   * this is not a new sidebar conversation: revision lineage lets hosts fold
-   * every version into one conversation slot while keeping old transcripts.
-   */
-  async reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
-    if (!slice) throw new Error(`Cannot revise before unknown turn ${input.sourceTurnId}`);
-    return this.createRevisionSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
-  private async createRevisionSession(
-    sessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copied: StoredMessage[],
-    input: ReviseBeforeTurnInput,
-  ): Promise<SessionSummary> {
-    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
-    const [header, boundary] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.store.readExecutionBoundary(sessionId),
-    ]);
-    const revisionRootSessionId = header.revisionRootSessionId ?? sessionId;
-    const family = (await this.deps.store.list()).filter(
-      (candidate) =>
-        candidate.id === revisionRootSessionId ||
-        candidate.revisionRootSessionId === revisionRootSessionId,
-    );
-    const revisionIndex =
-      Math.max(1, ...family.map((candidate) => candidate.revisionIndex ?? 1)) + 1;
-    const next = await this.deps.store.create(
-      {
-        cwd: header.cwd,
-        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        ...(header.llmConnectionId === undefined
-          ? {}
-          : { llmConnectionId: header.llmConnectionId }),
-        llmConnectionSlug: header.llmConnectionSlug,
-        model: header.model,
-        thinkingLevel: header.thinkingLevel,
-        permissionMode: header.permissionMode,
-        collaborationMode: header.collaborationMode,
-        orchestrationMode: header.orchestrationMode ?? 'default',
-        name: header.name,
-        labels: header.labels,
-        // A revision of a real branch remains in that branch's conversation
-        // slot; revision lineage itself must not create a branch banner.
-        parentSessionId: header.parentSessionId,
-        branchOfTurnId: header.branchOfTurnId,
-        revisionRootSessionId,
-        revisionParentSessionId: sessionId,
-        revisionOfTurnId: input.sourceTurnId,
-        revisionIndex,
-        revisionState: 'preparing',
-        status: 'active',
-      },
-      boundary,
-    );
-    try {
-      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
-      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
-      await this.deps.store.appendMessage(next.id, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'session_start',
-        data: {
-          revisionRootSessionId,
-          revisionParentSessionId: sessionId,
-          revisionOfTurnId: input.sourceTurnId,
-          revisionIndex,
-          revisionState: 'preparing',
-        },
-      });
-      await this.deps.store.updateHeader(next.id, {
-        isFlagged: header.isFlagged,
-        titleIsManual: header.titleIsManual,
-      });
-      return headerToSummary(await this.deps.store.readHeader(next.id));
-    } catch (error) {
-      return this.rollbackLegacyConversationCopy(next.id, error);
-    }
-  }
-
-  private async createBranchSession(
-    sessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copied: StoredMessage[],
-    input: BranchFromTurnInput,
-  ): Promise<SessionSummary> {
-    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
-    const [header, boundary] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.store.readExecutionBoundary(sessionId),
-    ]);
-    const next = await this.deps.store.create(
-      {
-        cwd: header.cwd,
-        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        ...(header.llmConnectionId === undefined
-          ? {}
-          : { llmConnectionId: header.llmConnectionId }),
-        llmConnectionSlug: header.llmConnectionSlug,
-        model: header.model,
-        thinkingLevel: header.thinkingLevel,
-        permissionMode: header.permissionMode,
-        collaborationMode: header.collaborationMode,
-        orchestrationMode: header.orchestrationMode ?? 'default',
-        name: input.name ?? `${header.name} · 分支`,
-        labels: input.sideConversation
-          ? [...new Set([...header.labels, SIDE_CONVERSATION_SESSION_LABEL])]
-          : header.labels,
-        parentSessionId: sessionId,
-        branchOfTurnId: input.sourceTurnId,
-        status: 'active',
-      },
-      boundary,
-    );
-    try {
-      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
-      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
-      await this.deps.store.appendMessage(next.id, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'session_start',
-        data: { parentSessionId: sessionId, branchOfTurnId: input.sourceTurnId },
-      });
-      return headerToSummary(await this.deps.store.readHeader(next.id));
-    } catch (error) {
-      return this.rollbackLegacyConversationCopy(next.id, error);
-    }
   }
 
   async respondToSandboxBoundary(
@@ -4478,66 +4311,6 @@ export class SessionManager {
       await this.updateHeader(sessionId, { transcriptLedgerVersion: 1 });
     }
     this.preparedTranscriptLedgers.add(sessionId);
-  }
-
-  private async prepareConversationRuntimeLedgerClone(
-    sourceSessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copiedMessages: readonly StoredMessage[],
-  ): Promise<ConversationRuntimeLedgerCopyPlan | undefined> {
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) return undefined;
-    const plan = await prepareConversationRuntimeLedgerCopy({
-      sourceSessionId,
-      sourceEvents: sourceView.events,
-      copiedMessages,
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-    });
-    const events = [
-      ...plan.inlineRuntimeEvents,
-      ...plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
-    ];
-    if (events.some(runtimeEventHasProjectionArtifact)) {
-      const error = new Error(
-        'Conversation copy requires artifact ownership transfer for durable Tool Result projections',
-      ) as Error & { code: string };
-      error.code = 'conversation_copy_projection_artifact_transfer_required';
-      throw error;
-    }
-    return plan;
-  }
-
-  private async cloneConversationRuntimeLedger(
-    childSessionId: string,
-    copiedMessages: readonly StoredMessage[],
-    plan: ConversationRuntimeLedgerCopyPlan | undefined,
-  ): Promise<readonly StoredMessage[]> {
-    if (!plan || !this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
-    const copied = await cloneConversationLedger({
-      plan,
-      copiedMessages,
-      referenceMap: {
-        mode: 'preserve_external',
-        sourceSessionId: plan.sourceSessionId,
-        targetSessionId: childSessionId,
-      },
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-      newId: this.deps.newId,
-    });
-    return copied.copiedMessages;
-  }
-
-  private async rollbackLegacyConversationCopy(sessionId: string, error: unknown): Promise<never> {
-    try {
-      await this.deps.store.remove(sessionId);
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        `Conversation copy ${sessionId} failed and could not be removed`,
-      );
-    }
-    throw error;
   }
 
   /**
