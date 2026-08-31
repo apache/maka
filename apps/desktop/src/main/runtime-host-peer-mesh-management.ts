@@ -18,8 +18,13 @@
  */
 
 import type { IpcMain } from 'electron';
-import { LOCAL_RUNTIME_HOST_PROFILE } from '@maka/runtime-host/client';
-import type { PeerMeshNode } from '@maka/runtime-host/peer-mesh';
+import {
+  abortable,
+  LOCAL_RUNTIME_HOST_PROFILE,
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
+import { PeerMeshPostCommitError, type PeerMeshNode } from '@maka/runtime-host/peer-mesh';
 import {
   decodePeerMeshInvitation,
   type PeerMeshInvitationV1,
@@ -46,6 +51,7 @@ type SshTerminal = ReturnType<typeof createDesktopRuntimeHostSshTerminal>;
 type LocalOperator = ReturnType<typeof createDesktopRuntimeHostLocalOperator>;
 type PeerMeshAction = DesktopRuntimeHostSshPeerMeshManagementInput['action'];
 type PeerMeshResult = PeerMeshQueryResult | PeerMeshInvitationResult;
+type PeerMeshManagementResultFrame = Awaited<ReturnType<LocalOperator['runPeerMesh']>>;
 
 interface ManagedPeerMeshCommand {
   readonly action: PeerMeshAction;
@@ -59,9 +65,17 @@ interface ManagedPeerMeshCommand {
 interface ActivePeerMeshOperation {
   readonly controller: AbortController;
   readonly cancellable: boolean;
+  readonly abortOnClose: boolean;
 }
 
 type RunManagedPeerMeshCommand = (command: ManagedPeerMeshCommand) => Promise<PeerMeshResult>;
+
+class PeerMeshMutationOutcomeUnknownError extends Error {
+  constructor(options: ErrorOptions = {}) {
+    super('Peer Mesh mutation outcome is unknown', options);
+    this.name = 'PeerMeshMutationOutcomeUnknownError';
+  }
+}
 
 export function createDesktopRuntimeHostPeerMeshManagement(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
@@ -135,15 +149,14 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       return input.localHost.inspectManaged(async (managed) => {
         const run: RunManagedPeerMeshCommand = async (command) => {
           const { invitation, ...rest } = command;
-          const response = await input.runLocal({
-            operatorPath: managed.operatorPath,
-            target: managedTarget(managed),
-            ...rest,
-            ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
-            signal: command.signal,
-          });
-          if (response.kind === 'error') throw new Error(response.error.message);
-          return response.result;
+          return runFramedPeerMeshCommand(command.action, () =>
+            input.runLocal({
+              operatorPath: managed.operatorPath,
+              target: managedTarget(managed),
+              ...rest,
+              ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
+              signal: command.signal,
+            }));
         };
         return executeManagedTarget(
           input.localMesh?.(),
@@ -182,25 +195,21 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     const transport = managed.profile.transport;
     const run: RunManagedPeerMeshCommand = async (command) => {
       const { invitation, ...rest } = command;
-      const response = await input.runRemote({
-        destination: transport.destination,
-        ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
-        operatorPath: managed.control.operatorPath,
-        expectedTarget: {
-          serviceId: managed.deployment.id,
-          rootPath: managed.deployment.rootPath,
-          rootId: managed.profile.rootId,
-          deploymentId: managed.deployment.deploymentId,
-        },
-        ...rest,
-        ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
-        signal: command.signal,
-      });
-      if (response.kind === 'error') throw new Error(response.error.message);
-      if (response.action !== command.action) {
-        throw new Error('Runtime Host returned an unrelated Mesh result');
-      }
-      return response.result;
+      return runFramedPeerMeshCommand(command.action, () =>
+        input.runRemote({
+          destination: transport.destination,
+          ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
+          operatorPath: managed.control.operatorPath,
+          expectedTarget: {
+            serviceId: managed.deployment.id,
+            rootPath: managed.deployment.rootPath,
+            rootId: managed.profile.rootId,
+            deploymentId: managed.deployment.deploymentId,
+          },
+          ...rest,
+          ...(invitation ? { invitation: JSON.stringify(invitation) } : {}),
+          signal: command.signal,
+        }));
     };
     return executeManagedTarget(
       input.localMesh?.(),
@@ -226,17 +235,26 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       activeOperations.set(operationId, {
         controller,
         cancellable: canCancelOperation(parsedTarget, parsedAction),
+        abortOnClose: parsedAction === 'status',
       });
       try {
-        return await execute(
-          parsedTarget,
-          parsedAction,
-          meshId,
-          peerId,
-          invitation,
-          displayName,
-          controller.signal,
-        );
+        try {
+          return {
+            kind: 'completed' as const,
+            result: await execute(
+              parsedTarget,
+              parsedAction,
+              meshId,
+              peerId,
+              invitation,
+              displayName,
+              controller.signal,
+            ),
+          };
+        } catch (error) {
+          if (mutationOutcomeIsUnknown(error)) return { kind: 'outcome_unknown' as const };
+          throw error;
+        }
       } finally {
         activeOperations.delete(operationId);
       }
@@ -252,8 +270,8 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   });
   return {
     close: () => {
-      for (const { controller } of activeOperations.values()) {
-        controller.abort(new Error('Peer Mesh management closed'));
+      for (const { abortOnClose, controller } of activeOperations.values()) {
+        if (abortOnClose) controller.abort(new Error('Peer Mesh management closed'));
       }
       activeOperations.clear();
       input.ipcMain.removeHandler(channel);
@@ -289,7 +307,10 @@ function runLivePeerMeshCommand(
 ): Promise<PeerMeshResult> {
   switch (command.action) {
     case 'status':
-      return client.request('peer.mesh.query', {});
+      return abortable(
+        () => client.request('peer.mesh.query', {}, LIVE_HOST_QUERY_TIMEOUT_MS),
+        command.signal,
+      );
     case 'create':
       return client.request('peer.mesh.create', {});
     case 'invite':
@@ -328,6 +349,45 @@ function runLivePeerMeshCommand(
       });
   }
 }
+
+async function runFramedPeerMeshCommand(
+  action: PeerMeshAction,
+  run: () => Promise<PeerMeshManagementResultFrame>,
+): Promise<PeerMeshResult> {
+  let response: PeerMeshManagementResultFrame;
+  try {
+    response = await run();
+  } catch (error) {
+    if (action !== 'status') throw new PeerMeshMutationOutcomeUnknownError({ cause: error });
+    throw error;
+  }
+  if (response.action !== action) {
+    throw new Error('Runtime Host returned an unrelated Mesh result');
+  }
+  if (response.kind === 'error') {
+    if (response.error.code === 'commit_outcome_unknown') {
+      throw new PeerMeshMutationOutcomeUnknownError({ cause: new Error(response.error.message) });
+    }
+    throw new Error(response.error.message);
+  }
+  return response.result;
+}
+
+function mutationOutcomeIsUnknown(error: unknown): boolean {
+  if (
+    error instanceof PeerMeshMutationOutcomeUnknownError ||
+    error instanceof PeerMeshPostCommitError ||
+    (error instanceof RuntimeHostOperationError && error.code === 'commit_outcome_unknown') ||
+    (error instanceof RuntimeHostRequestInterruptedError &&
+      error.mode === 'command' &&
+      error.dispatch === 'dispatched')
+  ) {
+    return true;
+  }
+  return error instanceof AggregateError && error.errors.some(mutationOutcomeIsUnknown);
+}
+
+const LIVE_HOST_QUERY_TIMEOUT_MS = 10_000;
 
 function canCancelOperation(
   target: DesktopRuntimeHostPeerMeshTarget,

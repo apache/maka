@@ -29,6 +29,17 @@ export type SessionCollaborationImportResult =
       readonly message?: string;
     };
 
+export type SessionCollaborationImportPhase =
+  | 'validating_invitation'
+  | 'discovering_host'
+  | 'preparing_route'
+  | 'connecting'
+  | 'authenticating'
+  | 'finalizing_access'
+  | 'loading_session';
+
+export type SessionCollaborationCancelResult = 'cancelled' | 'settling';
+
 export interface SessionCollaborationMountSummary {
   readonly mountId: string;
   readonly name: string;

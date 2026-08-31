@@ -169,11 +169,11 @@ export function SessionCollaborationJoinDialog(props: {
       finishClose();
       return;
     }
+    closeAfterSettlement.current = true;
     try {
       const result = await services.cancelImport(operationId);
       if (!open.current || activeOperationId.current !== operationId) return;
-      if (result === 'settling' || result === 'idle') {
-        closeAfterSettlement.current = true;
+      if (result === 'settling') {
         setJoinState({ kind: 'working', phase: 'finalizing_access' });
         return;
       }

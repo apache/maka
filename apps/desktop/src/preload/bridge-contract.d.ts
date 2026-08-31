@@ -136,6 +136,8 @@ import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
 import type {
+  SessionCollaborationCancelResult,
+  SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../shared/session-collaboration.js';
@@ -334,16 +336,9 @@ export type DesktopSessionCollaborationImportResult = SessionCollaborationImport
 
 export type DesktopGuestSessionMountSummary = SessionCollaborationMountSummary;
 
-export type DesktopSessionCollaborationImportPhase =
-  | 'validating_invitation'
-  | 'discovering_host'
-  | 'preparing_route'
-  | 'connecting'
-  | 'authenticating'
-  | 'finalizing_access'
-  | 'loading_session';
+export type DesktopSessionCollaborationImportPhase = SessionCollaborationImportPhase;
 
-export type DesktopSessionCollaborationCancelResult = 'cancelled' | 'settling' | 'idle';
+export type DesktopSessionCollaborationCancelResult = SessionCollaborationCancelResult;
 
 export type DesktopSessionCollaborationPrepareResult =
   | {
@@ -584,6 +579,10 @@ export type DesktopRuntimeHostPeerMeshAction =
 export type DesktopRuntimeHostPeerMeshResult =
   | import('@maka/runtime-host/protocol').PeerMeshQueryResult
   | import('@maka/runtime-host/protocol').PeerMeshInvitationResult;
+
+export type DesktopRuntimeHostPeerMeshExecutionOutcome =
+  | { readonly kind: 'completed'; readonly result: DesktopRuntimeHostPeerMeshResult }
+  | { readonly kind: 'outcome_unknown' };
 
 type RuntimeHostUpdatePolicyResult = Extract<
   RuntimeHostServiceManagementFrame,
@@ -844,7 +843,7 @@ export interface MakaBridge {
         readonly displayName?: string | null;
         readonly operationId: string;
       },
-    ): Promise<DesktopRuntimeHostPeerMeshResult>;
+    ): Promise<DesktopRuntimeHostPeerMeshExecutionOutcome>;
     cancel(operationId: string): Promise<void>;
   };
 

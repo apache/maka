@@ -18,25 +18,18 @@
  */
 
 import type {
+  SessionCollaborationCancelResult,
+  SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../../../shared/session-collaboration.js';
 
 export type {
+  SessionCollaborationCancelResult,
+  SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../../../shared/session-collaboration.js';
-
-export type SessionCollaborationImportPhase =
-  | 'validating_invitation'
-  | 'discovering_host'
-  | 'preparing_route'
-  | 'connecting'
-  | 'authenticating'
-  | 'finalizing_access'
-  | 'loading_session';
-
-export type SessionCollaborationCancelResult = 'cancelled' | 'settling' | 'idle';
 
 export interface SessionCollaborationServices {
   importInvitation(input: {

@@ -51,9 +51,10 @@ import {
   Workflow,
 } from '@maka/ui/icons';
 import { useRuntimeHostManagementServices } from '../services-context.js';
-import type {
-  PeerMeshDirectPeerSnapshot,
-  PeerMeshTarget,
+import {
+  PeerMeshOperationOutcomeUnknownError,
+  type PeerMeshDirectPeerSnapshot,
+  type PeerMeshTarget,
 } from '../ports.js';
 
 type PeerMeshDialogView =
@@ -213,8 +214,6 @@ export function RuntimeHostPeerMeshDialog(props: {
       closed.current = true;
       refreshSequence.current += 1;
       cancelStatusOperations();
-      const operation = activeOperation.current;
-      if (operation?.cancellable) void services.cancel(operation.operationId);
     };
   }, [cancelStatusOperations, copy.unknownError, offerLocalHost, refresh]);
 
@@ -271,11 +270,32 @@ export function RuntimeHostPeerMeshDialog(props: {
     setWorkingAction(action);
     setError(undefined);
     let completed = false;
+    let unknownOutcome = false;
+    let unknownOutcomeReconciled = false;
     try {
       await operation(operationId);
       completed = true;
     } catch (failure) {
-      if (!closed.current && cancelRequestedOperationId.current !== operationId) {
+      if (
+        failure instanceof PeerMeshOperationOutcomeUnknownError &&
+        !closed.current &&
+        cancelRequestedOperationId.current !== operationId
+      ) {
+        unknownOutcome = true;
+        setSettling(true);
+        setOperationCancellable(false);
+        try {
+          await refresh();
+          unknownOutcomeReconciled = true;
+          setError(
+            failure.action === 'invite'
+              ? copy.invitationOutcomeUnknown
+              : copy.outcomeUnknown,
+          );
+        } catch {
+          if (!closed.current) setError(copy.outcomeUnknownRefreshFailed);
+        }
+      } else if (!closed.current && cancelRequestedOperationId.current !== operationId) {
         setError(peerMeshErrorMessage(failure, copy.unknownError));
       }
     } finally {
@@ -298,7 +318,8 @@ export function RuntimeHostPeerMeshDialog(props: {
         setOperationCancellable(false);
       }
       if (!closed.current && closeRequested.current) {
-        if (completed && policy.preserveResultOnClose) closeRequested.current = false;
+        if (unknownOutcome && !unknownOutcomeReconciled) closeRequested.current = false;
+        else if (completed && policy.preserveResultOnClose) closeRequested.current = false;
         else finishClose();
       }
     }
@@ -1452,6 +1473,11 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh 操作失败',
         invalidResult: 'Peer Mesh 返回了无效结果',
         unknownError: 'Peer Mesh 操作失败',
+        outcomeUnknown: 'Host 可能已完成此操作。已刷新当前状态，请确认后再重试。',
+        invitationOutcomeUnknown:
+          'Host 可能已创建邀请码，但代码未能返回且无法恢复。它会自动过期；创建新邀请前请先检查待使用邀请数量。',
+        outcomeUnknownRefreshFailed:
+          'Host 可能已完成此操作，但当前状态也未能刷新。请恢复连接并刷新后再重试。',
         unavailable: '当前 endpoint 不支持 Peer Mesh',
         loading: '正在读取 Mesh 状态…',
         checkingPeerConnection: '正在检查此 Runtime Host 的 Peer 连接…',
@@ -1570,6 +1596,12 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh operation failed',
         invalidResult: 'Peer Mesh returned an invalid result',
         unknownError: 'Peer Mesh operation failed',
+        outcomeUnknown:
+          'The Host may have completed this operation. Its current state was refreshed; review it before trying again.',
+        invitationOutcomeUnknown:
+          'The Host may have created an invitation, but its one-time code was not returned and cannot be recovered. It will expire automatically; review the pending invitation count before creating another.',
+        outcomeUnknownRefreshFailed:
+          'The Host may have completed this operation, but its current state could not be refreshed. Reconnect and refresh before trying again.',
         unavailable: 'Peer Mesh is unavailable for this endpoint',
         loading: 'Loading Mesh status…',
         checkingPeerConnection: "Checking this Runtime Host's peer connection…",

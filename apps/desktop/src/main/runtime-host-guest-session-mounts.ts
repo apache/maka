@@ -28,13 +28,11 @@ import {
 import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from '@maka/storage/credential-store';
 import type {
+  SessionCollaborationCancelResult,
+  SessionCollaborationImportPhase,
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../shared/session-collaboration.js';
-import type {
-  DesktopSessionCollaborationCancelResult,
-  DesktopSessionCollaborationImportPhase,
-} from '../preload/bridge-contract.js';
 import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
 
@@ -66,7 +64,7 @@ interface LiveGuestActivationBase {
 interface LiveGuestImportActivation extends LiveGuestActivationBase {
   readonly kind: 'import';
   readonly operationId: string;
-  readonly onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void;
+  readonly onProgress?: (phase: SessionCollaborationImportPhase) => void;
   mountId?: string;
 }
 
@@ -89,9 +87,9 @@ export interface DesktopGuestSessionMountService {
     code: string,
     allowInsecure: boolean,
     operationId: string,
-    onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void,
+    onProgress?: (phase: SessionCollaborationImportPhase) => void,
   ): Promise<SessionCollaborationImportResult>;
-  cancelImport(operationId: string): DesktopSessionCollaborationCancelResult;
+  cancelImport(operationId: string): SessionCollaborationCancelResult;
   remove(mountId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -350,7 +348,7 @@ export function createDesktopGuestSessionMountService(input: {
     code: string,
     allowInsecure: boolean,
     operationId: string,
-    onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void,
+    onProgress?: (phase: SessionCollaborationImportPhase) => void,
   ): Promise<SessionCollaborationImportResult> => {
     if (closed) return Promise.reject(new Error('Shared Session mount service is closed'));
     if (
@@ -396,7 +394,7 @@ export function createDesktopGuestSessionMountService(input: {
         (activation): activation is LiveGuestImportActivation =>
           activation.kind === 'import' && activation.operationId === operationId,
       );
-      if (!operation) return 'idle';
+      if (!operation) return 'settling';
       if (operation.stage === 'finalizing') return 'settling';
       operation.controller.abort(new Error('Shared Session import was cancelled'));
       return 'cancelled';
@@ -514,7 +512,7 @@ function isPeerPathUnavailable(error: unknown): boolean {
 
 function collaborationProgressForConnectionPhase(
   phase: RuntimeHostConnectionPhase,
-): DesktopSessionCollaborationImportPhase {
+): SessionCollaborationImportPhase {
   switch (phase) {
     case 'discovering':
       return 'preparing_route';
@@ -529,8 +527,8 @@ function collaborationProgressForConnectionPhase(
 }
 
 function reportImportProgress(
-  observer: ((phase: DesktopSessionCollaborationImportPhase) => void) | undefined,
-  phase: DesktopSessionCollaborationImportPhase,
+  observer: ((phase: SessionCollaborationImportPhase) => void) | undefined,
+  phase: SessionCollaborationImportPhase,
 ): void {
   try {
     observer?.(phase);

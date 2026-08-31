@@ -48,6 +48,13 @@ export interface PeerMeshDirectPeerSnapshot {
   readonly managementAvailable: boolean;
 }
 
+export class PeerMeshOperationOutcomeUnknownError extends Error {
+  constructor(readonly action: RuntimeHostPeerMeshManagementAction) {
+    super('Peer Mesh operation outcome is unknown');
+    this.name = 'PeerMeshOperationOutcomeUnknownError';
+  }
+}
+
 export interface PeerMeshServices {
   execute(
     target: PeerMeshTarget,
