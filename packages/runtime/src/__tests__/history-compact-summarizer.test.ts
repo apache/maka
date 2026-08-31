@@ -22,7 +22,7 @@ import type { ModelCallCommit } from '@maka/core/agent-run';
  * Tests for buildLlmHistorySummarizer — the AI-SDK-backed LLM summary that
  * replaces the deterministic excerpt draft when wiring injects it.
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, test } from 'node:test';
