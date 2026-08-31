@@ -133,9 +133,10 @@ test("a subagent's run never becomes the session's context", async () => {
   }
 });
 
-test('rebuilds a legacy ledger, then repairs it so the next read scans nothing', async () => {
-  // A session written before canonical metering sealed anything. The scan is
-  // the compatibility path; proving it happens ONCE needs two reads.
+test('rebuilds a canonical observation, then repairs it so the next read scans nothing', async () => {
+  // The event is durable but predates a sealed projection. The first read
+  // rebuilds from its canonical observation; proving that happens once needs
+  // two reads.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
     const writer = createSqliteAgentRunStore(root);
@@ -143,7 +144,19 @@ test('rebuilds a legacy ledger, then repairs it so the next read scans nothing',
     await writer.appendEvent(
       'session-1',
       'run-1',
-      meteringEvent('run-1', 'attempt-1', 20, 'model-new', 40, 200),
+      meteringEvent('run-1', 'attempt-1', 20, 'model-new', 40, 200, {
+        requestObservation: requestObservation([
+          {
+            kind: 'tool_schema',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'a'.repeat(64)}`,
+            bytes: 800,
+            label: 'Bash',
+          },
+        ]),
+      }),
     );
     await writer.appendEvent(
       'session-1',
@@ -217,6 +230,45 @@ test('a canonical record on the ledger keeps the legacy path out of it', async (
   assert.equal(diagnostics.status, 'available');
   if (diagnostics.status !== 'available') return;
   assert.equal(diagnostics.modelId, 'model-canonical');
+});
+
+test('cold rebuild takes composition from the canonical attempt observation', async () => {
+  const store = runStore([
+    {
+      header: runHeader('run-1', 1),
+      events: [
+        meteringEvent('run-1', 'attempt-1', 10, 'model-canonical', 40, 200, {
+          requestObservation: requestObservation([
+            {
+              kind: 'tool_schema',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'a'.repeat(64)}`,
+              bytes: 800,
+              label: 'CanonicalTool',
+            },
+          ]),
+        }),
+        attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model-canonical', 40, 200, [
+          {
+            kind: 'tool_schema',
+            index: 0,
+            cacheable: true,
+            hash: 'legacy',
+            bytes: 999,
+            label: 'BestEffortTool',
+          },
+        ]),
+      ],
+    },
+  ]);
+
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+
+  assert.equal(diagnostics.status, 'available');
+  if (diagnostics.status !== 'available') return;
+  assert.deepEqual(diagnostics.composition?.tools, [{ name: 'CanonicalTool', bytes: 800 }]);
 });
 
 test('a legacy request whose capture is missing reports no composition, not an older one', async () => {
@@ -408,8 +460,8 @@ test('a session confirmed to have nothing is answered from the projection, not r
 });
 
 test('names at most the bounded number of tools, and accounts for the rest', async () => {
-  // The 257th tool used to fail the whole query at the wire decoder. The fold
-  // bounds it instead, so a large registry summarises rather than breaks.
+  // Historical provider-only ledgers can contain unbounded segment arrays.
+  // Their reader still bounds the diagnostic instead of rejecting the row.
   const segments = Array.from({ length: 300 }, (_, index) => ({
     kind: 'tool_schema',
     index,
@@ -421,10 +473,7 @@ test('names at most the bounded number of tools, and accounts for the rest', asy
   const store = runStore([
     {
       header: runHeader('run-1', 1),
-      events: [
-        meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200),
-        attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model', 40, 200, segments),
-      ],
+      events: [attemptEvent('run-1', 'attempt-1', 10, 'completed', 'model', 40, 200, segments)],
     },
   ]);
 
@@ -684,6 +733,18 @@ function meteringEvent(
       ...(contextWindow === undefined ? {} : { contextWindow }),
       ...overrides,
     },
+  };
+}
+
+function requestObservation(segments: Array<Record<string, unknown>>) {
+  return {
+    schemaVersion: 1,
+    digest: `sha256:${'f'.repeat(64)}`,
+    bytes: segments.reduce(
+      (total, segment) => total + (typeof segment.bytes === 'number' ? segment.bytes : 0),
+      0,
+    ),
+    segments,
   };
 }
 

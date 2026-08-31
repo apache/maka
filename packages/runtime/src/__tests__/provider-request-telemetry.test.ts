@@ -962,6 +962,48 @@ describe('canonical model-call accounting', () => {
     });
   }
 
+  test('a capture abandoned before dispatch never enters the canonical sent sequence', async () => {
+    const recorded: ModelCallAttempt[] = [];
+    let providerCalls = 0;
+    const abort = new AbortController();
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'trace-abandoned-capture',
+      turnId: 'turn-abandoned-capture',
+      now: () => 1_000,
+      newId: () => 'capture-abandoned',
+      persistCapture: async () => {
+        abort.abort();
+        return { artifactId: 'artifact-abandoned' };
+      },
+      recordAttempt: () => {},
+      accounting: {
+        sessionId: 'session-1',
+        resolveRunId: () => 'run-1',
+        callKind: 'main',
+        record: ({ attempt }) => {
+          recorded.push(attempt);
+        },
+      },
+    });
+
+    await assert.rejects(
+      tracker.trackGenerate({
+        providerId: 'anthropic',
+        modelId: 'claude-test',
+        params: preparedParams('hello'),
+        abortSignal: abort.signal,
+        doGenerate: async () => {
+          providerCalls += 1;
+          return { finishReason: 'stop' };
+        },
+      }),
+      { name: 'AbortError' },
+    );
+
+    assert.equal(providerCalls, 0);
+    assert.deepEqual(recorded, []);
+  });
+
   test('emits a decodable priced record for a completed call', async () => {
     const recorded: ModelCallAttempt[] = [];
     const tracker = accountingTracker({

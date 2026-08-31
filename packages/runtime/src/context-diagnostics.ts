@@ -25,6 +25,7 @@ import {
 } from '@maka/core/agent-run';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
+  foldPromptComposition,
   PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE,
   readPromptCompositionEvent,
 } from './prompt-composition.js';
@@ -191,7 +192,6 @@ async function rebuildContextFromLedger(
   // legacy provider rows answer for it would resurrect the very request the
   // canonical rule declined to report.
   let sawCanonicalRecord = false;
-  const captures = new Map<string, AgentRunEvent>();
   const checkpoints: CheckpointCandidate[] = [];
 
   for (const run of runs) {
@@ -203,8 +203,6 @@ async function rebuildContextFromLedger(
         continue;
       }
       if (event.type === PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE) {
-        const attemptId = event.data?.attemptId;
-        if (typeof attemptId === 'string') captures.set(attemptId, event);
         const candidate = legacyProviderAnchor(event);
         if (candidate && supersedesLatestContext(candidate, legacy)) legacy = candidate;
         continue;
@@ -225,8 +223,6 @@ async function rebuildContextFromLedger(
     await repairLatestContext(runStore, sessionId, null);
     return { status: 'unavailable', reason: 'no_completed_request' };
   }
-  const capture = captures.get(resolved.attemptId);
-  const read = capture ? readPromptCompositionEvent(capture) : undefined;
   const boundary = latestCheckpointBefore(checkpoints, resolved);
   const snapshot: LatestContextSnapshot = {
     schemaVersion: LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
@@ -239,7 +235,7 @@ async function rebuildContextFromLedger(
       ? { cacheReadInputTokens: resolved.cacheReadInputTokens }
       : {}),
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
-    ...(read?.attemptId === resolved.attemptId ? { composition: read.composition } : {}),
+    ...(resolved.composition ? { composition: resolved.composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
@@ -301,6 +297,7 @@ function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined 
   ) {
     return undefined;
   }
+  const composition = readPromptCompositionEvent(event)?.composition;
   return {
     attemptId,
     providerId,
@@ -309,6 +306,7 @@ function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined 
     completedAt,
     ...(typeof data.inputTokens === 'number' ? { inputTokens: data.inputTokens } : {}),
     ...(typeof data.contextWindow === 'number' ? { contextWindow: data.contextWindow } : {}),
+    ...(composition ? { composition } : {}),
   };
 }
 
@@ -342,6 +340,7 @@ interface MeteringAnchor {
   inputTokens?: number;
   cacheReadInputTokens?: number;
   contextWindow?: number;
+  composition?: ContextDiagnosticsComposition;
 }
 
 interface CheckpointCandidate {
@@ -359,6 +358,9 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     return undefined;
   }
   if (attempt.callKind !== 'main' || attempt.status !== 'completed') return undefined;
+  const composition = attempt.requestObservation
+    ? foldPromptComposition(attempt.requestObservation.segments)
+    : undefined;
   return {
     attemptId: attempt.attemptId,
     providerId: attempt.providerId,
@@ -370,6 +372,7 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
       : {}),
     ...(attempt.contextWindow !== undefined ? { contextWindow: attempt.contextWindow } : {}),
+    ...(composition ? { composition } : {}),
   };
 }
 
