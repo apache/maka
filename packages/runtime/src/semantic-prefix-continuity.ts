@@ -209,7 +209,11 @@ async function predecessorAttempt(
   ) {
     return undefined;
   }
-  if (admission.previousRootTurnId === null) return null;
+  if (admission.previousRootTurnId === null) {
+    return runs.some((run) => run.runId !== current.runId && isSessionInlineRun(run))
+      ? undefined
+      : null;
+  }
   const previousRuns = runs.filter(
     (run) => run.turnId === admission.previousRootTurnId && isSessionInlineRun(run),
   );
@@ -249,6 +253,8 @@ async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<Mod
         attempt.callKind === 'main' &&
         attempt.sessionId === run.sessionId &&
         attempt.runId === run.runId &&
+        attempt.turnId === run.turnId &&
+        event.turnId === run.turnId &&
         attempt.attemptId === event.id
       ) {
         attempts.push(attempt);

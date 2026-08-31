@@ -149,6 +149,28 @@ test('does not compare attempts whose connection identity is missing', async () 
   );
 });
 
+test('does not use an attempt whose durable turn disagrees with its run', async () => {
+  const previous = attempt({ attemptId: 'previous', runId: 'run-1', turnId: 'wrong-turn' });
+  const current = attempt({ attemptId: 'current', runId: 'run-2', turnId: 'turn-2' });
+
+  assert.equal(
+    (
+      await deriveAttemptSemanticPrefixContinuity({
+        current,
+        currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
+        lineage: {},
+        store: prefixStore(
+          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+          [previous],
+          { runId: 'run-2', previousRootTurnId: 'turn-1' },
+        ),
+      })
+    ).status,
+    'unavailable',
+  );
+});
+
 test('does not choose between overlapping durable predecessor runs', async () => {
   const current = attempt({ attemptId: 'current', runId: 'run-3', turnId: 'turn-2' });
   const headers = [
@@ -210,6 +232,24 @@ test('uses the unique continuation tip for the previous root turn', async () => 
 test('compares later local turns without inheriting a copied session baseline', async () => {
   const previous = attempt({ attemptId: 'local-1', runId: 'run-1', turnId: 'turn-1' });
   const current = attempt({ attemptId: 'local-2', runId: 'run-2', turnId: 'turn-2' });
+  const runs = [
+    run('copied-run', 'copied-turn', PROVIDER_STATE),
+    run('run-1', 'turn-1', PROVIDER_STATE),
+    run('run-2', 'turn-2', PROVIDER_STATE),
+  ];
+
+  assert.equal(
+    (
+      await deriveAttemptSemanticPrefixContinuity({
+        current: previous,
+        currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
+        lineage: {},
+        store: prefixStore(runs, [], { runId: 'run-1', previousRootTurnId: null }),
+      })
+    ).status,
+    'unavailable',
+  );
 
   assert.equal(
     (
@@ -218,11 +258,10 @@ test('compares later local turns without inheriting a copied session baseline', 
         currentProviderStateIdentity: PROVIDER_STATE,
         currentSessionInline: true,
         lineage: {},
-        store: prefixStore(
-          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
-          [previous],
-          { runId: 'run-2', previousRootTurnId: 'turn-1' },
-        ),
+        store: prefixStore(runs, [previous], {
+          runId: 'run-2',
+          previousRootTurnId: 'turn-1',
+        }),
       })
     ).status,
     'preserved',
