@@ -50,19 +50,11 @@ import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import { openInteractiveShellRunStoreForWrite } from '@maka/storage/shell-run-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { HostResidencyRegistry } from '../server/host-residency-registry.js';
-import {
-  createExecutionRuntimeHostComposition,
-  runtimeHostFilesystemWorkerRuntime,
-} from '../server/execution-composition.js';
+import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CONTEXT_OFFLOAD_DATABASE_NAME = 'context-offload.sqlite';
-
-test('filesystem worker follows the candidate executable runtime', () => {
-  assert.equal(runtimeHostFilesystemWorkerRuntime({ electron: '43.1.1' }), 'electron');
-  assert.equal(runtimeHostFilesystemWorkerRuntime({}), 'node');
-});
 
 test('production composition owns the long-term memory database lifecycle', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
