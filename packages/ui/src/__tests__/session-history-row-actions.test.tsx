@@ -302,3 +302,38 @@ test('renders collapsible project navigation and row actions as sibling controls
   assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
 });
+
+test('keeps project running totals aligned with renderer-local task streaming', () => {
+  const locallyStreaming = {
+    ...session,
+    status: 'active' as const,
+    runningTurnIds: [] as string[],
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[locallyStreaming]}
+        groups={[
+          {
+            id: project.id,
+            label: project.name,
+            project,
+            sessions: [locallyStreaming],
+          },
+        ]}
+        groupVariant="project"
+        streamingSessionIds={new Set([locallyStreaming.id])}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const projectNavigation = document.querySelector<HTMLButtonElement>(
+    '.maka-project-row > div > .astryx-side-nav-item',
+  );
+  const descriptionId = projectNavigation?.getAttribute('aria-describedby');
+  const description = descriptionId ? document.getElementById(descriptionId) : null;
+
+  assert.match(markup, /aria-label="Responding"/);
+  assert.ok(description);
+  assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
+});

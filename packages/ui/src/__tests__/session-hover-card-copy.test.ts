@@ -27,9 +27,11 @@ test('localizes task and project hover card summaries', () => {
 
   assert.equal(zh.sessionDetailsLabel('发布说明'), '发布说明 任务详情');
   assert.equal(zh.projectDetailsLabel('Maka'), 'Maka 项目详情');
+  assert.equal(zh.groupDetailsLabel('未归属项目'), '未归属项目 分组详情');
   assert.equal(zh.taskCount(3), '3 个任务');
   assert.equal(en.sessionDetailsLabel('Release notes'), 'Release notes task details');
   assert.equal(en.projectDetailsLabel('Maka'), 'Maka project details');
+  assert.equal(en.groupDetailsLabel('No project'), 'No project group details');
   assert.equal(en.taskCount(1), '1 task');
   assert.equal(en.taskCount(2), '2 tasks');
 });

@@ -160,6 +160,9 @@ test('project and task rows show contextual hover details', async ({
   await expect(taskNavigation).toHaveAccessibleDescription(
     /已归档第 00 条研究记录。.*glm-5\.1/,
   );
+  // A new Electron window can open under the cursor left by the prior test;
+  // force a real leave → enter transition so the delayed hover trigger fires.
+  await page.mouse.move(800, 400);
   await taskNavigation.hover();
 
   const taskCard = page.locator('.maka-sidebar-hover-card[data-kind="session"]');
@@ -188,6 +191,12 @@ test('project and task rows show contextual hover details', async ({
   );
   await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('3 个任务');
   await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('目录可用');
+
+  const ungroupedRow = sidebar.locator('[data-project-id="__ungrouped__"]');
+  await ungroupedRow.locator(':scope > div > .astryx-side-nav-item').focus();
+  await expect(
+    page.getByRole('dialog', { name: '未归属项目 分组详情', exact: true }),
+  ).toBeVisible();
 });
 
 test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {

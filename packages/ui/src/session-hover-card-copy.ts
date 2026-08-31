@@ -22,6 +22,7 @@ import type { UiLocale } from '@maka/core/ui-locale';
 interface SessionHoverCardCopy {
   sessionDetailsLabel(name: string): string;
   projectDetailsLabel(name: string): string;
+  groupDetailsLabel(name: string): string;
   noMessages: string;
   updated: string;
   taskCount(count: number): string;
@@ -35,6 +36,7 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
   zh: {
     sessionDetailsLabel: (name) => `${name} 任务详情`,
     projectDetailsLabel: (name) => `${name} 项目详情`,
+    groupDetailsLabel: (name) => `${name} 分组详情`,
     noMessages: '尚无消息',
     updated: '更新于',
     taskCount: (count) => `${count} 个任务`,
@@ -46,6 +48,7 @@ const COPY: Record<UiLocale, SessionHoverCardCopy> = {
   en: {
     sessionDetailsLabel: (name) => `${name} task details`,
     projectDetailsLabel: (name) => `${name} project details`,
+    groupDetailsLabel: (name) => `${name} group details`,
     noMessages: 'No messages yet',
     updated: 'Updated',
     taskCount: (count) => `${count} ${count === 1 ? 'task' : 'tasks'}`,

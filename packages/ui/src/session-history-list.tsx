@@ -22,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -287,6 +288,7 @@ function SessionListGroups(props: {
           label={group.label}
           project={project}
           sessions={group.sessions}
+          streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
             if (project) {
@@ -347,12 +349,22 @@ function ProjectNavRow(props: {
   label: string;
   project?: ProjectRecord;
   sessions: SessionSummary[];
+  streamingSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
+  const hoverSummary = useMemo(
+    () =>
+      createProjectHoverCardSummary(
+        props.project,
+        props.sessions,
+        props.streamingSessionIds,
+      ),
+    [props.project, props.sessions, props.streamingSessionIds],
+  );
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
@@ -390,14 +402,13 @@ function ProjectNavRow(props: {
       </SideNavItem>
       <ProjectHoverCardDescription
         id={hoverDescriptionId}
-        project={props.project}
-        sessions={props.sessions}
+        summary={hoverSummary}
       />
       <ProjectHoverCardLayer
         containerRef={containerRef}
         label={props.label}
         project={props.project}
-        sessions={props.sessions}
+        summary={hoverSummary}
       />
     </div>
   );
@@ -407,7 +418,7 @@ const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
   label: string;
   project?: ProjectRecord;
-  sessions: SessionSummary[];
+  summary: ProjectHoverCardSummary;
 }) {
   const locale = useUiLocale();
   const copy = getSessionHoverCardCopy(locale);
@@ -417,15 +428,16 @@ const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
     delay: SIDEBAR_HOVER_CARD_DELAY_MS,
     hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
     focusTrigger: 'always',
-    label: copy.projectDetailsLabel(props.label),
+    label: props.project
+      ? copy.projectDetailsLabel(props.label)
+      : copy.groupDetailsLabel(props.label),
   });
   useSidebarHoverCardTrigger(props.containerRef, hoverCard);
 
   return hoverCard.renderHoverCard(
     <ProjectHoverCardContent
       label={props.label}
-      project={props.project}
-      sessions={props.sessions}
+      summary={props.summary}
       locale={locale}
     />,
   );
@@ -670,32 +682,25 @@ function SessionHoverCardContent(props: {
 
 function ProjectHoverCardDescription(props: {
   id: string;
-  project?: ProjectRecord;
-  sessions: readonly SessionSummary[];
+  summary: ProjectHoverCardSummary;
 }) {
   const locale = useUiLocale();
   const copy = getSessionHoverCardCopy(locale);
-  const runningCount = props.sessions.filter(
-    (session) => session.status === 'running' || (session.runningTurnIds?.length ?? 0) > 0,
-  ).length;
-  const latestActivity = props.sessions.reduce<number | undefined>(
-    (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
-    undefined,
-  );
+  const summary = props.summary;
   const description = [
-    preferredProjectPath(props.project),
-    copy.taskCount(props.sessions.length),
-    runningCount > 0 ? copy.runningTaskCount(runningCount) : undefined,
-    props.project
-      ? props.project.available
+    summary.path,
+    copy.taskCount(summary.taskCount),
+    summary.runningCount > 0 ? copy.runningTaskCount(summary.runningCount) : undefined,
+    summary.available !== undefined
+      ? summary.available
         ? copy.projectAvailable
         : copy.projectUnavailable
       : undefined,
-    (props.project?.locations.length ?? 0) > 1
-      ? copy.locationCount(props.project!.locations.length)
+    summary.locationCount > 1
+      ? copy.locationCount(summary.locationCount)
       : undefined,
-    latestActivity
-      ? `${copy.updated} ${formatAbsoluteTimestamp(latestActivity, locale)}`
+    summary.latestActivity
+      ? `${copy.updated} ${formatAbsoluteTimestamp(summary.latestActivity, locale)}`
       : undefined,
   ]
     .filter((value): value is string => Boolean(value))
@@ -706,62 +711,87 @@ function ProjectHoverCardDescription(props: {
 
 function ProjectHoverCardContent(props: {
   label: string;
-  project?: ProjectRecord;
-  sessions: readonly SessionSummary[];
+  summary: ProjectHoverCardSummary;
   locale: UiLocale;
 }) {
   const copy = getSessionHoverCardCopy(props.locale);
-  const path = preferredProjectPath(props.project);
-  const runningCount = props.sessions.filter(
-    (session) => session.status === 'running' || (session.runningTurnIds?.length ?? 0) > 0,
-  ).length;
-  const latestActivity = props.sessions.reduce<number | undefined>(
-    (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
-    undefined,
-  );
+  const summary = props.summary;
 
   return (
     <span className="maka-sidebar-hover-card" data-kind="project">
       <span className="maka-sidebar-hover-card-title">{props.label}</span>
-      {path ? (
-        <span className="maka-sidebar-hover-card-path" title={path}>
-          {path}
+      {summary.path ? (
+        <span className="maka-sidebar-hover-card-path" title={summary.path}>
+          {summary.path}
         </span>
       ) : null}
       <span className="maka-sidebar-hover-card-meta">
-        <span>{copy.taskCount(props.sessions.length)}</span>
-        {runningCount > 0 ? (
+        <span>{copy.taskCount(summary.taskCount)}</span>
+        {summary.runningCount > 0 ? (
           <>
             <span aria-hidden="true">·</span>
-            <span>{copy.runningTaskCount(runningCount)}</span>
+            <span>{copy.runningTaskCount(summary.runningCount)}</span>
           </>
         ) : null}
-        {props.project ? (
+        {summary.available !== undefined ? (
           <>
             <span aria-hidden="true">·</span>
             <span>
-              {props.project.available ? copy.projectAvailable : copy.projectUnavailable}
+              {summary.available ? copy.projectAvailable : copy.projectUnavailable}
             </span>
           </>
         ) : null}
-        {(props.project?.locations.length ?? 0) > 1 ? (
+        {summary.locationCount > 1 ? (
           <>
             <span aria-hidden="true">·</span>
-            <span>{copy.locationCount(props.project!.locations.length)}</span>
+            <span>{copy.locationCount(summary.locationCount)}</span>
           </>
         ) : null}
       </span>
-      {latestActivity ? (
+      {summary.latestActivity ? (
         <span className="maka-sidebar-hover-card-updated">
           {copy.updated}{' '}
-          <RelativeTime ts={latestActivity} />
+          <RelativeTime ts={summary.latestActivity} />
           <span className="maka-visually-hidden">
-            {formatAbsoluteTimestamp(latestActivity, props.locale)}
+            {formatAbsoluteTimestamp(summary.latestActivity, props.locale)}
           </span>
         </span>
       ) : null}
     </span>
   );
+}
+
+interface ProjectHoverCardSummary {
+  path?: string;
+  taskCount: number;
+  runningCount: number;
+  available?: boolean;
+  locationCount: number;
+  latestActivity?: number;
+}
+
+function createProjectHoverCardSummary(
+  project: ProjectRecord | undefined,
+  sessions: readonly SessionSummary[],
+  streamingSessionIds: ReadonlySet<string> | undefined,
+): ProjectHoverCardSummary {
+  return {
+    path: preferredProjectPath(project),
+    taskCount: sessions.length,
+    runningCount: sessions.filter(
+      (session) =>
+        resolveSessionRunningState(
+          session,
+          streamingSessionIds?.has(session.id) ?? false,
+        ).running,
+    ).length,
+    available: project?.available,
+    locationCount: project?.locations.length ?? 0,
+    latestActivity: sessions.reduce<number | undefined>(
+      (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+      undefined,
+    ),
+  };
 }
 
 function preferredProjectPath(project: ProjectRecord | undefined): string | undefined {
@@ -1049,17 +1079,13 @@ function sessionRowSignals(
 ): SessionRowSignal[] {
   const copy = getConversationCopy(locale).sessions;
   const signals: SessionRowSignal[] = [];
-  const requiresUserAttention =
-    session.status === 'waiting_for_user' || session.status === 'blocked';
+  const runningState = resolveSessionRunningState(session, options.streaming);
 
   // `active`, through the same vocabulary as everything else here: streaming is
   // the system working on it right now, which is what that semantic names.
   // Writing `accent` directly would resolve to the identical colour and reopen
   // the drift this change closed — half the row's dots deciding for themselves.
-  if (
-    !requiresUserAttention &&
-    (options.streaming || (session.runningTurnIds?.length ?? 0) > 0)
-  ) {
+  if (runningState.responding) {
     signals.push({
       variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
@@ -1069,9 +1095,7 @@ function sessionRowSignals(
   }
 
   const { label, variant } = presentSessionStatus(session.status, locale);
-  const liveStateOwnsRunningStatus =
-    session.status === 'running' && session.runningTurnIds !== undefined;
-  if (variant && !liveStateOwnsRunningStatus) {
+  if (variant && !runningState.liveStateOwnsRunningStatus) {
     const blockedDetail =
       session.status === 'blocked' && session.blockedReason
         ? describeBlockedReason(session.blockedReason, locale)
@@ -1109,6 +1133,41 @@ function sessionRowSignals(
   }
 
   return signals;
+}
+
+interface SessionRunningState {
+  responding: boolean;
+  running: boolean;
+  liveStateOwnsRunningStatus: boolean;
+}
+
+/**
+ * One live-state authority for both task rows and their project summary.
+ *
+ * Renderer-local streaming covers the send-to-catalog synchronization window;
+ * Runtime Host turn ids cover other windows and bot channels. A persisted
+ * `running` status remains the fallback only while Host live state is unknown.
+ */
+function resolveSessionRunningState(
+  session: SessionSummary,
+  rendererStreaming: boolean,
+): SessionRunningState {
+  const requiresUserAttention =
+    session.status === 'waiting_for_user' || session.status === 'blocked';
+  const liveStateOwnsRunningStatus =
+    session.status === 'running' && session.runningTurnIds !== undefined;
+  const responding =
+    !requiresUserAttention &&
+    (rendererStreaming || (session.runningTurnIds?.length ?? 0) > 0);
+  return {
+    responding,
+    running:
+      responding ||
+      (!requiresUserAttention &&
+        session.status === 'running' &&
+        !liveStateOwnsRunningStatus),
+    liveStateOwnsRunningStatus,
+  };
 }
 
 interface SessionGroup {
