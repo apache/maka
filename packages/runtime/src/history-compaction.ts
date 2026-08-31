@@ -19,11 +19,8 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
-import {
-  estimateRuntimeEventChars,
-  estimateRuntimeEventsTokens,
-  finitePositive,
-} from './context-budget-helpers.js';
+import { finitePositive } from './context-budget-helpers.js';
+import { estimateRuntimeEventChars, estimateRuntimeEventsTokens } from './model-history.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
   HistoryCompactSummarizerError,

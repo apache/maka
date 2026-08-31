@@ -35,7 +35,6 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run build:test && node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
     "test:dist": "node scripts/run-workspace-tests-parallel.mjs --concurrency=3",
-    "test:dist:serial": "node scripts/run-workspace-tests-parallel.mjs --serial",
     "test:gitoxide-helper": "cargo +1.98.0 test --locked --manifest-path native/gitoxide-helper/Cargo.toml",
     "build:runtime-host-peer": "node native/runtime-host-peer/build.mjs",
     "lint:runtime-host-peer": "cargo clippy --locked --all-targets --manifest-path native/runtime-host-peer/Cargo.toml -- -D warnings",

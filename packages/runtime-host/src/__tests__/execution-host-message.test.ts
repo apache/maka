@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -111,7 +112,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 test('subscribed Clients receive the durable steering echo as a session event', async () => {

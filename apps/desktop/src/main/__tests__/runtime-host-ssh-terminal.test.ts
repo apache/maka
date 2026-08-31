@@ -40,6 +40,7 @@ import {
   createDesktopRuntimeHostSshTerminal,
   runtimeHostDevelopmentPeerTargetFromUname,
 } from '../runtime-host-ssh-terminal.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('maps supported SSH uname identities to development peer targets', () => {
   assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
@@ -1051,9 +1052,5 @@ class FakePty {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail('Condition was not reached');
+  await pollFor(predicate, { attempts: 100, pollMs: 1, message: 'Condition was not reached' });
 }

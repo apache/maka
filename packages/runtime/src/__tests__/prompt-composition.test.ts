@@ -20,7 +20,7 @@
 /**
  * Prompt composition — what one request's prompt was made of (#2323).
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -43,6 +43,7 @@ import {
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { createTuiMcpController, type TuiMcpController } from '../tui-mcp-control.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -216,8 +217,5 @@ function capabilityIsMissing(
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 500 && !(await condition()); attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.ok(await condition());
+  await pollFor(condition, { attempts: 500, pollMs: 10 });
 }

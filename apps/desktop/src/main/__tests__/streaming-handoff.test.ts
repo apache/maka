@@ -34,6 +34,7 @@ import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
 } from '../../renderer/app-shell-session-events.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
@@ -58,11 +59,7 @@ function createStateSetter<T>(initial: T): {
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  const deadline = Date.now() + 3_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
+  await pollFor(predicate, { timeoutMs: 3_000, pollMs: 10, message });
 }
 
 function renderLiveTurn(liveTurn: LiveTurnProjection): string {

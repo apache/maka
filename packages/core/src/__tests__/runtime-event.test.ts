@@ -20,7 +20,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { expect } from './test-helpers.js';
 import {
   decodeMessageContent,
   isCanonicalStorageRef,
@@ -631,8 +630,8 @@ describe('RuntimeEvent actions', () => {
       permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
       userQuestionAnswerAccepted: { requestId: 'question-1' },
     };
-    expect(actions.permissionRequest?.category).toBe('shell_unsafe');
-    expect(actions.permissionDecision?.decision).toBe('deny');
+    assert.strictEqual(actions.permissionRequest?.category, 'shell_unsafe');
+    assert.strictEqual(actions.permissionDecision?.decision, 'deny');
     assert.deepEqual(decodeRuntimeEvent(baseEvent({ actions })).actions?.permissionDecision, {
       requestId: 'pr-1',
       decision: 'deny',
@@ -765,10 +764,16 @@ describe('RuntimeEvent actions', () => {
 
 describe('isTerminalRuntimeEvent', () => {
   test('classifies terminal status and explicit invocation completion', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'completed' }))).toBe(true);
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' }))).toBe(false);
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } }))).toBe(false);
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'completed' })), true);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' })), false);
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } })),
+      false,
+    );
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } })),
+      true,
+    );
   });
 });
 
@@ -810,7 +815,8 @@ describe('runtimeEventHasModelVisibleContent', () => {
         },
       }),
     ];
-    for (const event of visible) expect(runtimeEventHasModelVisibleContent(event)).toBe(true);
+    for (const event of visible)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), true);
 
     const hidden = [
       baseEvent({ content: { kind: 'text', text: '' } }),
@@ -818,7 +824,8 @@ describe('runtimeEventHasModelVisibleContent', () => {
       baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
       baseEvent({ refs: { toolCallId: 'tc-1' } }),
     ];
-    for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
+    for (const event of hidden)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), false);
   });
 });
 
@@ -826,7 +833,7 @@ describe('RuntimeEvent reference validation', () => {
   test('accepts only canonical source message digests', () => {
     const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;
     const event = baseEvent({ refs: { sourceMessageDigest: digest } });
-    expect(decodeRuntimeEvent(event).refs?.sourceMessageDigest).toBe(digest);
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.sourceMessageDigest, digest);
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,
@@ -837,7 +844,7 @@ describe('RuntimeEvent reference validation', () => {
 
   test('accepts a provider-request trace reference and rejects a non-string reference', () => {
     const event = baseEvent({ refs: { providerRequestTraceId: 'provider-trace-1' } });
-    expect(decodeRuntimeEvent(event).refs?.providerRequestTraceId).toBe('provider-trace-1');
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.providerRequestTraceId, 'provider-trace-1');
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,

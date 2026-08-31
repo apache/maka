@@ -35,7 +35,7 @@ import {
   type RuntimeEventModelReplayItem,
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
-import { toolResultOutput } from './tool-result-output.js';
+import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
 import { providerFailureDiagnostic } from './provider-error-classification.js';
 
 export { fitHistoryCompactMessages as fitOpenAiCodexCompactionMessages } from './history-compact-input-fit.js';
@@ -232,7 +232,7 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
           type: 'tool-result',
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: toolResultOutput(result.output, result.isError),
+          output: effectiveReplayToolResultOutput(result),
         },
       ],
     });

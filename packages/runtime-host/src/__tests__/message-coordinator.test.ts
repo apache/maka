@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -3927,15 +3928,6 @@ function operationContext(connectionId = 'connection-1') {
     acquireResidency: () => ({ release: () => undefined }),
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 test('a lone folded steering entry leaves the queue projection decodable', async () => {
   // A steer the run never pulls is folded into `followup` at the terminal
   // transition. It has to arrive there as a followup entry: the wire decoder

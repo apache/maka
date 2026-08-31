@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -1238,15 +1239,6 @@ async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
     ],
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function pendingQuestion(turnId: string): InteractionPendingSnapshot {
   return {
     schemaVersion: 1,

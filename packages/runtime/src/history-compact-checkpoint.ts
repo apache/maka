@@ -29,8 +29,13 @@ import {
   type SectionedSummaryFormat,
 } from './history-compact-summary-validation.js';
 
+// v2: coverage and source digest are taken over EFFECTIVE model history (the
+// durable Tool Result projection), not raw RuntimeEvent evidence. A v1
+// checkpoint's digest was computed over a different source, so it fails the
+// shape check and its session re-summarizes rather than replaying a
+// coverage claim this policy never made.
 export const HISTORY_COMPACT_SOURCE_POLICY_VERSION =
-  'maka.compactable_runtime_event_projection.v1' as const;
+  'maka.compactable_runtime_event_projection.v2' as const;
 export interface HistoryCompactCheckpointSource {
   schemaVersion: 1;
   kind: 'runtime_event_projection';
@@ -505,6 +510,23 @@ export function validateHistoryCompactCheckpointShape(
 }
 
 /** Accept forward progress, or a compare-and-swap rewrite of the exact same source coverage. */
+/**
+ * A recorded checkpoint that this Runtime no longer holds to its own contract
+ * because it was minted under an older source policy — not a corrupt record.
+ * Every consumer already fails open on it (compaction re-summarizes, copy
+ * drops it); diagnostics use this to say so instead of crying corruption.
+ */
+export function isSupersededHistoryCompactCheckpoint(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const checkpoint = value as Partial<HistoryCompactCheckpoint>;
+  const policyVersion = checkpoint.source?.policyVersion as unknown;
+  return (
+    checkpoint.kind === 'maka.history_compact_checkpoint' &&
+    typeof policyVersion === 'string' &&
+    policyVersion !== HISTORY_COMPACT_SOURCE_POLICY_VERSION
+  );
+}
+
 export function canReplaceHistoryCompactCheckpoint(
   current: HistoryCompactCheckpoint | undefined,
   candidate: HistoryCompactCheckpoint,
@@ -725,16 +747,46 @@ function sameHistoryCompactSourceCoverage(
   );
 }
 
+/**
+ * A checkpoint replaces a contiguous prefix of EFFECTIVE model history, so its
+ * source digest must pin exactly that: raw execution evidence a durable
+ * projection already bounded or redacted is not part of what was folded, and
+ * changing it must not invalidate a valid checkpoint. Conversely, replacing a
+ * response's effective projection does change the digest, so a checkpoint can
+ * never be replayed over content it never covered.
+ */
 function historyCompactSourceDigest(events: readonly RuntimeEvent[]): string {
   const hash = createHash('sha256');
   for (const event of events) {
-    const serialized = stableStringify(event);
+    const serialized = stableStringify(effectiveDigestEvent(event));
     hash.update(String(Buffer.byteLength(serialized, 'utf8')));
     hash.update(':');
     hash.update(serialized);
     hash.update(';');
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+/**
+ * Selects the persisted field that carries a response's model-visible content,
+ * dropping the others. This is a structural choice over durable data only —
+ * never a code-derived materialization — so the digest of an already-persisted
+ * checkpoint cannot drift when a projector, a codec bound, or a placeholder
+ * string changes. A response with no durable projection (legacy, or
+ * provider-native) keeps the raw field its effective content is still derived
+ * from, which is what the pre-projection digest already hashed.
+ */
+function effectiveDigestEvent(event: RuntimeEvent): unknown {
+  const content = event.content;
+  if (content?.kind !== 'function_response') return event;
+  const { result, providerOutput, modelProjection, ...identity } = content;
+  if (content.providerExecuted && providerOutput !== undefined) {
+    return { ...event, content: { ...identity, providerOutput } };
+  }
+  if (modelProjection !== undefined) {
+    return { ...event, content: { ...identity, modelProjection } };
+  }
+  return { ...event, content: { ...identity, result } };
 }
 
 function sha256(value: string): string {

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { access, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -31,6 +32,7 @@ import { createSessionStore } from '@maka/storage/session-store';
 import { AgentRun } from '../agent-run.js';
 import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-tool-mode-'));
@@ -743,22 +745,10 @@ function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentR
     updatedAt: 1,
   };
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value?: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value?: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve as (value?: T | PromiseLike<T>) => void;
-  });
-  return { promise, resolve };
-}
-
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error('Timed out waiting for asynchronous test condition');
+  await pollFor(predicate, {
+    attempts: 100,
+    pollMs: 5,
+    message: 'Timed out waiting for asynchronous test condition',
+  });
 }
