@@ -20,6 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   mkdirSync,
   mkdtempSync,
@@ -360,6 +361,7 @@ export function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
 }
 
 function runQualificationSandbox({ innerInputPath, sandbox, scope, useSudo }) {
+  if (useSudo) chmodSync(scope, 0o711);
   const invocation = qualificationSandboxInvocation({
     args: qualificationSandboxArgs({ innerInputPath, sandbox, scope }),
     account: sandbox.account,
