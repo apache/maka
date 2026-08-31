@@ -30,7 +30,6 @@ import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
-import { createSafeRendererSender } from './safe-renderer-send.js';
 import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
@@ -106,7 +105,12 @@ let browserViews: BrowserViewManager<BrowserViewController> | undefined;
  * window teardown. No-op when the window is gone — callers that need
  * delivery confirmation should observe their own state.
  */
-export const safeSendToRenderer = createSafeRendererSender(() => mainWindow);
+export function safeSendToRenderer(channel: string, ...args: unknown[]): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const wc = mainWindow.webContents;
+  if (wc.isDestroyed()) return;
+  wc.send(channel, ...args);
+}
 
 // The close button's centre sits on the same vertical line as the sidebar's
 // icon column, so the window's top-left reads as one column rather than two
