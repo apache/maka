@@ -388,9 +388,13 @@ function ProjectNavRow(props: {
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}
       </SideNavItem>
+      <ProjectHoverCardDescription
+        id={hoverDescriptionId}
+        project={props.project}
+        sessions={props.sessions}
+      />
       <ProjectHoverCardLayer
         containerRef={containerRef}
-        descriptionId={hoverDescriptionId}
         label={props.label}
         project={props.project}
         sessions={props.sessions}
@@ -401,7 +405,6 @@ function ProjectNavRow(props: {
 
 const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
-  descriptionId: string;
   label: string;
   project?: ProjectRecord;
   sessions: SessionSummary[];
@@ -420,7 +423,6 @@ const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
 
   return hoverCard.renderHoverCard(
     <ProjectHoverCardContent
-      descriptionId={props.descriptionId}
       label={props.label}
       project={props.project}
       sessions={props.sessions}
@@ -547,9 +549,14 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           </span>
         }
       />
+      <SessionHoverCardDescription
+        id={hoverDescriptionId}
+        session={props.session}
+        status={previewStatus}
+        locale={locale}
+      />
       <SessionHoverCardLayer
         containerRef={containerRef}
-        descriptionId={hoverDescriptionId}
         session={props.session}
         status={previewStatus}
         locale={locale}
@@ -567,7 +574,6 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 
 const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   containerRef: RefObject<HTMLElement | null>;
-  descriptionId: string;
   session: SessionSummary;
   status: string;
   locale: UiLocale;
@@ -585,7 +591,6 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
 
   return hoverCard.renderHoverCard(
     <SessionHoverCardContent
-      descriptionId={props.descriptionId}
       session={props.session}
       status={props.status}
       locale={props.locale}
@@ -593,8 +598,37 @@ const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
   );
 });
 
+function SessionHoverCardDescription(props: {
+  id: string;
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const conversationCopy = getConversationCopy(props.locale);
+  const copy = getSessionHoverCardCopy(props.locale);
+  const session = props.session;
+  const permission = conversationCopy.permissions.mode[session.permissionMode].label;
+  const description = [
+    props.status,
+    session.lastMessagePreview || copy.noMessages,
+    session.model,
+    permission,
+    session.cwd,
+    session.lastMessageAt
+      ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
+      : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+
+  return (
+    <span id={props.id} className="maka-visually-hidden">
+      {description}
+    </span>
+  );
+}
+
 function SessionHoverCardContent(props: {
-  descriptionId: string;
   session: SessionSummary;
   status: string;
   locale: UiLocale;
@@ -605,7 +639,7 @@ function SessionHoverCardContent(props: {
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
 
   return (
-    <span id={props.descriptionId} className="maka-sidebar-hover-card" data-kind="session">
+    <span className="maka-sidebar-hover-card" data-kind="session">
       <span className="maka-sidebar-hover-card-title">{session.name}</span>
       <span
         className="maka-sidebar-hover-card-preview"
@@ -638,8 +672,47 @@ function SessionHoverCardContent(props: {
   );
 }
 
+function ProjectHoverCardDescription(props: {
+  id: string;
+  project?: ProjectRecord;
+  sessions: readonly SessionSummary[];
+}) {
+  const locale = useUiLocale();
+  const copy = getSessionHoverCardCopy(locale);
+  const runningCount = props.sessions.filter(
+    (session) => session.status === 'running' || (session.runningTurnIds?.length ?? 0) > 0,
+  ).length;
+  const latestActivity = props.sessions.reduce<number | undefined>(
+    (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+    undefined,
+  );
+  const description = [
+    preferredProjectPath(props.project),
+    copy.taskCount(props.sessions.length),
+    runningCount > 0 ? copy.runningTaskCount(runningCount) : undefined,
+    props.project
+      ? props.project.available
+        ? copy.projectAvailable
+        : copy.projectUnavailable
+      : undefined,
+    (props.project?.locations.length ?? 0) > 1
+      ? copy.locationCount(props.project!.locations.length)
+      : undefined,
+    latestActivity
+      ? `${copy.updated} ${formatAbsoluteTimestamp(latestActivity, locale)}`
+      : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+
+  return (
+    <span id={props.id} className="maka-visually-hidden">
+      {description}
+    </span>
+  );
+}
+
 function ProjectHoverCardContent(props: {
-  descriptionId: string;
   label: string;
   project?: ProjectRecord;
   sessions: readonly SessionSummary[];
@@ -656,7 +729,7 @@ function ProjectHoverCardContent(props: {
   );
 
   return (
-    <span id={props.descriptionId} className="maka-sidebar-hover-card" data-kind="project">
+    <span className="maka-sidebar-hover-card" data-kind="project">
       <span className="maka-sidebar-hover-card-title">{props.label}</span>
       {path ? (
         <span className="maka-sidebar-hover-card-path" title={path}>

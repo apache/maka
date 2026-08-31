@@ -108,6 +108,22 @@ function assertNoNestedButtons(markup: string): void {
   }
 }
 
+function assertDescriptionReferencesResolve(markup: string): void {
+  const { document } = parseHTML(markup);
+  for (const element of document.querySelectorAll<HTMLElement>(
+    'button.astryx-side-nav-item[aria-describedby]',
+  )) {
+    const describedBy = element.getAttribute('aria-describedby');
+    assert.ok(describedBy);
+    for (const id of describedBy.split(/\s+/)) {
+      assert.ok(
+        document.getElementById(id),
+        `aria-describedby token ${JSON.stringify(id)} must resolve while the card is closed`,
+      );
+    }
+  }
+}
+
 test('renders session navigation and row actions as sibling controls', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
@@ -161,6 +177,7 @@ test('wires the session navigation control to its hover card description', () =>
 
   assert.ok(navigation);
   assert.ok(navigation.getAttribute('aria-describedby'));
+  assertDescriptionReferencesResolve(markup);
 });
 
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
@@ -272,5 +289,6 @@ test('renders collapsible project navigation and row actions as sibling controls
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
   assert.ok(navigation.getAttribute('aria-describedby'));
+  assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
 });
