@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 10;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 11;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -52,6 +52,11 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
       record_json TEXT NOT NULL,
       PRIMARY KEY (session_id, sequence),
       UNIQUE (session_id, event_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_session_todo_documents (
+      session_id TEXT PRIMARY KEY,
+      record_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS workflow_plan_events (
