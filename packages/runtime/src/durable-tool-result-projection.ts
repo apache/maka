@@ -388,8 +388,14 @@ function decodeBoundedImageData(data: unknown): Uint8Array {
       throw new Error('Inline image is not canonical base64');
     bytes = decoded;
   } else if (data instanceof ArrayBuffer) {
+    if (data.byteLength > MAX_READ_IMAGE_BYTES) {
+      throw new Error('Inline image exceeds the artifact byte limit');
+    }
     bytes = new Uint8Array(data.slice(0));
   } else if (ArrayBuffer.isView(data)) {
+    if (data.byteLength > MAX_READ_IMAGE_BYTES) {
+      throw new Error('Inline image exceeds the artifact byte limit');
+    }
     bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice();
   } else {
     throw new Error('Inline image data is not representable');

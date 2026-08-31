@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
 import { serializedByteLength } from '@maka/core/serialized-byte-length';
 
@@ -149,6 +150,37 @@ describe('durable Tool Result projection codec', () => {
 
     assert.equal(projection.kind, 'failure');
     assert.equal(writes, 0);
+  });
+
+  it('rejects an oversized ArrayBuffer before copying its bytes', async () => {
+    class ObservableArrayBuffer extends ArrayBuffer {
+      copies = 0;
+
+      override slice(begin?: number, end?: number): ArrayBuffer {
+        this.copies += 1;
+        return super.slice(begin, end);
+      }
+    }
+    const data = new ObservableArrayBuffer(MAX_READ_IMAGE_BYTES + 1);
+    const projection = await encodeDurableToolResultOutputWithArtifacts(
+      {
+        type: 'content',
+        value: [
+          {
+            type: 'file',
+            data: { type: 'data', data },
+            mediaType: 'image/png',
+          },
+        ],
+      },
+      'session-1',
+      () => {
+        throw new Error('oversized bytes must not reach artifact planning');
+      },
+    );
+
+    assert.equal(projection.kind, 'failure');
+    assert.equal(data.copies, 0);
   });
 
   it('validates the complete projection before persisting any artifact', async () => {
