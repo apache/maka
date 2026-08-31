@@ -19,6 +19,7 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
 import { canonicalizeToolSet, toolSchemaCharsForDiagnostics } from '../request-shape.js';
 import * as requestShape from '../request-shape.js';
@@ -229,6 +230,10 @@ describe('prepared provider request capture', () => {
       ],
     );
     assert.match(result.requestHash, /^sha256:[a-f0-9]{64}$/);
+    assert.equal(
+      result.requestHash,
+      `sha256:${createHash('sha256').update(result.serializedRequest).digest('hex')}`,
+    );
     assert.equal(result.requestBytes, Buffer.byteLength(result.serializedRequest, 'utf8'));
     assert.ok(result.segments.every((segment) => segment.bytes > 0));
     assert.ok(result.segments.every((segment) => /^sha256:[a-f0-9]{64}$/.test(segment.hash)));

@@ -134,7 +134,7 @@ export interface ModelCallAttempt {
   logicalCallId: string;
   /** Idempotency key: appending the same `attemptId` twice records once. */
   attemptId: string;
-  /** Tracker instance id, retained to join request-shape capture artifacts. */
+  /** Tracker instance id, retained to join private prepared-request artifacts. */
   traceId: string;
 
   /**
@@ -159,7 +159,7 @@ export interface ModelCallAttempt {
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  /** Join key for request-shape diagnostics; absent when capture is disabled. */
+  /** Join key for the private prepared-request artifact; absent when capture is disabled. */
   captureArtifactId?: string;
   /** Semantic request actually prepared for this dispatched physical attempt. */
   requestObservation?: PreparedRequestObservation;

@@ -123,12 +123,12 @@ export function toolSchemaCharsForDiagnostics(
 }
 
 /**
- * Capture the standardized request immediately before the provider call.
+ * Observe the standardized request at the AI SDK model-call seam.
  *
- * Segment order follows the stable Maka request-prefix model used for cache
- * diagnostics: tools, system instructions, then conversation messages.
- * Provider options are retained for exact replay evidence, but are not claimed
- * to be a provider-cacheable prefix segment.
+ * Segment order follows Maka's semantic request-prefix model: tools, system
+ * instructions, then conversation messages. Provider options are retained for
+ * exact request evidence, but are not claimed to be a provider-cacheable prefix
+ * segment. None of this is presented as the provider's final wire body.
  */
 export function capturePreparedProviderRequest(
   input: PreparedProviderRequestInput,
@@ -166,14 +166,7 @@ export function capturePreparedProviderRequest(
 
   return {
     schemaVersion: 2,
-    requestHash: hashSerialized(
-      JSON.stringify([
-        'prepared-request',
-        input.providerId,
-        input.modelId,
-        normalizedPayload.value,
-      ]),
-    ),
+    requestHash: hashSerialized(serializedRequest),
     requestPayloadWithoutProviderOptionsHash: stableHash(
       normalizePreparedValue(protocolIndependentRequestPayload(payload)).value,
     ),
@@ -489,9 +482,9 @@ function preparedSegment(
 /**
  * The tool's own name as the payload carries it.
  *
- * Read off the serialized tool rather than the registry: this capture describes
- * what crossed the wire, so a name that is not in the payload is not a name this
- * segment can claim.
+ * Read off the prepared payload rather than the registry: this observation
+ * describes what Maka handed to the model-call seam, so a name absent there is
+ * not a name this segment can claim.
  */
 function toolLabel(tool: unknown): string | undefined {
   if (!isObjectLike(tool)) return undefined;

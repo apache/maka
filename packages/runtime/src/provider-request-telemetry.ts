@@ -696,7 +696,7 @@ export class ProviderRequestTracker {
     input: TrackProviderStreamInput | TrackProviderGenerateInput,
   ): Promise<StoredCapture> {
     const prepared = preparedCapture(input.providerId, input.modelId, input.params);
-    const key = `${step}:${prepared.requestHash}`;
+    const key = `${step}:${input.providerId}:${input.modelId}:${prepared.requestHash}`;
     const existing = this.captures.get(key);
     if (existing) return await existing;
 
@@ -712,9 +712,9 @@ export class ProviderRequestTracker {
         providerId: input.providerId,
         modelId: input.modelId,
       };
-      // The request shape on `capture` is computed here and needs no sink. Only
-      // the artifact join keys depend on one, so without it the attempt still
-      // carries hash, bytes, and segments — it just points at nothing.
+      // The observation is computed here and needs no sink. Only the private
+      // artifact join depends on one, so without it the canonical attempt still
+      // carries the bounded digest, bytes, and segments.
       if (!persistCapture) return { capture };
       const persisted = await persistCapture(capture);
       return { capture, ref: { captureId, artifactId: persisted.artifactId } };
