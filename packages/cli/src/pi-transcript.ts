@@ -21,6 +21,7 @@ import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
 import type {
   ProviderRetryEvent,
   ProviderRetryScheduledEvent,
+  FormRequestEvent,
   SandboxBoundaryRequestEvent,
   UserQuestionRequestEvent,
   SessionEvent,
@@ -122,7 +123,10 @@ export interface MakaPiTranscriptState {
   providerRetry?: ProviderRetryCountdown;
 }
 
-export type MakaPiPendingInteraction = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type MakaPiPendingInteraction =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent;
 
 /**
  * A provider retry event plus the CLIENT-local time it was applied. Counting
@@ -936,6 +940,9 @@ export function applyMakaSessionEventToTranscript(
     case 'user_question_request':
       enqueuePendingInteraction(state, event);
       break;
+    case 'form_request':
+      enqueuePendingInteraction(state, event);
+      break;
 
     case 'sandbox_boundary_decision_ack':
       {
@@ -952,6 +959,10 @@ export function applyMakaSessionEventToTranscript(
       break;
 
     case 'user_question_answer_ack':
+      completePendingInteraction(state, event.requestId);
+      break;
+
+    case 'form_answer_ack':
       completePendingInteraction(state, event.requestId);
       break;
 
@@ -1481,6 +1492,10 @@ export function activeUserQuestionRequest(
   return state.pendingInteraction?.type === 'user_question_request'
     ? state.pendingInteraction
     : undefined;
+}
+
+export function activeFormRequest(state: MakaPiTranscriptState): FormRequestEvent | undefined {
+  return state.pendingInteraction?.type === 'form_request' ? state.pendingInteraction : undefined;
 }
 
 function enqueuePendingInteraction(
