@@ -257,11 +257,16 @@ describe('SQLite core execution stores', () => {
       const store = createSqliteAgentRunStore(root);
       await store.createRun(runHeader());
       await store.appendEvent('session-1', 'run-1', runEvent());
-      await store.repairEventProjection('session-1', 'history_compact_checkpoint_recorded', {
-        ...runEvent(),
-        id: 'checkpoint-a',
-        type: 'history_compact_checkpoint_recorded',
-      });
+      await store.repairEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+        {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        },
+        { ifLedgerRevision: await store.readEventLedgerRevision('session-1') },
+      );
 
       const database = new DatabaseSync(join(root, 'runtime.sqlite'));
       try {
@@ -311,6 +316,34 @@ describe('SQLite core execution stores', () => {
         inspected.close();
         store.close?.();
       }
+    });
+  });
+
+  test('rejects a projection repair without a canonical ledger revision', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      const before = await store.readEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+      );
+
+      await assert.rejects(
+        // @ts-expect-error A repair must prove which canonical ledger revision it rebuilt.
+        store.repairEventProjection('session-1', 'history_compact_checkpoint_recorded', {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        }),
+        /ledger revision/i,
+      );
+
+      assert.equal(
+        await store.readEventProjection('session-1', 'history_compact_checkpoint_recorded'),
+        before,
+      );
+      store.close?.();
     });
   });
 

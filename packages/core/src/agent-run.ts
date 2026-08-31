@@ -801,7 +801,7 @@ export interface AgentRunStore {
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string; ifLedgerRevision?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
 }
 

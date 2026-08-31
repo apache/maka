@@ -161,7 +161,10 @@ export async function readLatestContextDiagnostics(
       if (snapshot) return availableFrom(snapshot);
       if (projected) replaceProjectionId = projected.id;
     }
-    const ledgerRevision = await runStore.readEventLedgerRevision?.(sessionId);
+    const ledgerRevision =
+      runStore.readEventLedgerRevision && runStore.repairEventProjection
+        ? await runStore.readEventLedgerRevision(sessionId)
+        : undefined;
     return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId, ledgerRevision);
   } catch {
     return { status: 'unavailable', reason: 'trace_unavailable' };
@@ -266,7 +269,7 @@ async function repairLatestContext(
   ledgerRevision?: string,
 ): Promise<void> {
   const repair = runStore.repairEventProjection;
-  if (!repair) return;
+  if (!repair || ledgerRevision === undefined) return;
   await repair
     .call(
       runStore,
@@ -283,12 +286,10 @@ async function repairLatestContext(
             data: snapshot as unknown as Record<string, unknown>,
           } as AgentRunEvent)
         : null,
-      replaceProjectionId || ledgerRevision
-        ? {
-            ...(replaceProjectionId ? { replaceEventId: replaceProjectionId } : {}),
-            ...(ledgerRevision ? { ifLedgerRevision: ledgerRevision } : {}),
-          }
-        : undefined,
+      {
+        ifLedgerRevision: ledgerRevision,
+        ...(replaceProjectionId ? { replaceEventId: replaceProjectionId } : {}),
+      },
     )
     .catch(() => {});
 }

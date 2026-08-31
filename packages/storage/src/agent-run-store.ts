@@ -241,7 +241,7 @@ export interface DurableAgentRunStore
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string; ifLedgerRevision?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
   ready?(): Promise<void>;
   close?(): void;
@@ -687,17 +687,19 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options: { replaceEventId?: string; ifLedgerRevision?: string } = {},
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
+    if (!options || typeof options.ifLedgerRevision !== 'string') {
+      throw new Error('AgentRun projection repair requires a canonical ledger revision');
+    }
     if (event !== null && !isProjectedAgentRunEvent(event, sessionId, type)) {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
       if (
-        options.ifLedgerRevision !== undefined &&
         readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId) !==
-          options.ifLedgerRevision
+        options.ifLedgerRevision
       ) {
         return;
       }

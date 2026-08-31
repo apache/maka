@@ -271,6 +271,27 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
   }
 });
 
+test('rebuilds without repairing when the store lacks a ledger revision capability', async () => {
+  const base = runStore([
+    {
+      header: runHeader('run-1', 1),
+      events: [meteringEvent('run-1', 'attempt-1', 20, 'model', 40, 200)],
+    },
+  ]);
+  let repaired = false;
+  const store: Parameters<typeof readLatestContextDiagnostics>[0] = {
+    ...base,
+    repairEventProjection: async () => {
+      repaired = true;
+    },
+  };
+
+  const diagnostics = await readLatestContextDiagnostics(store, 'session-1');
+
+  assert.equal(diagnostics.status, 'available');
+  assert.equal(repaired, false);
+});
+
 test('reads a provider-only ledger that predates canonical metering', async () => {
   // No `model_call_attempt_recorded` anywhere. The provider attempt is the
   // only record of the request, and returning "no completed request" would
@@ -640,7 +661,10 @@ test('a damaged projection is repaired, not preserved forever', async () => {
         ts: 10,
         data: { schemaVersion: 1, damaged: true },
       },
-      { replaceEventId: 'latest-context-attempt-1' },
+      {
+        ifLedgerRevision: await writer.readEventLedgerRevision('session-1'),
+        replaceEventId: 'latest-context-attempt-1',
+      },
     );
 
     let scanned = 0;
@@ -819,7 +843,10 @@ test('rebuilds a nested-malformed v2 projection from the canonical ledger', asyn
           composition: { segments: 'not-an-array' },
         },
       },
-      { replaceEventId: 'latest-context-attempt-1' },
+      {
+        ifLedgerRevision: await writer.readEventLedgerRevision('session-1'),
+        replaceEventId: 'latest-context-attempt-1',
+      },
     );
 
     let scanned = 0;
@@ -868,7 +895,10 @@ test('an old readable-order projection is upgraded after one cold rebuild', asyn
           composition: { segments: [{ kind: 'tool_definitions', bytes: 999 }] },
         },
       },
-      { replaceEventId: 'latest-context-attempt-1' },
+      {
+        ifLedgerRevision: await writer.readEventLedgerRevision('session-1'),
+        replaceEventId: 'latest-context-attempt-1',
+      },
     );
 
     let scanned = 0;
