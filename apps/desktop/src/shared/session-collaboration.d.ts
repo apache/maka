@@ -17,20 +17,30 @@
  * under the License.
  */
 
-export {
-  type PeerMeshAuthorityTarget,
-  type PeerMeshRosterV1,
-  type SignedPeerMeshRosterV1,
-} from './model.js';
-export { decodePeerMeshInvitation, type PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
-export {
-  openPeerMeshNode,
-  type PeerMeshNode,
-  type PeerMeshStatus,
-  type PeerMeshTransport,
-} from './node.js';
-export {
-  openRuntimeHostPeerMeshOwner,
-  type RuntimeHostPeerMeshOwner,
-} from './owner.js';
-export { hasPeerMeshIdentityObligations, PeerMeshPostCommitError } from './store.js';
+export type SessionCollaborationImportResult =
+  | { readonly kind: 'connected'; readonly mountId: string }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'insecure_confirmation_required'
+        | 'peer_path_unavailable'
+        | 'connection_failed';
+      readonly message?: string;
+    };
+
+export type SessionCollaborationImportPhase =
+  | 'validating_invitation'
+  | 'discovering_host'
+  | 'preparing_route'
+  | 'connecting'
+  | 'authenticating'
+  | 'finalizing_access'
+  | 'loading_session';
+
+export type SessionCollaborationCancelResult = 'cancelled' | 'settling';
+
+export interface SessionCollaborationMountSummary {
+  readonly mountId: string;
+  readonly name: string;
+}

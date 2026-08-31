@@ -17,20 +17,6 @@
  * under the License.
  */
 
-export {
-  type PeerMeshAuthorityTarget,
-  type PeerMeshRosterV1,
-  type SignedPeerMeshRosterV1,
-} from './model.js';
-export { decodePeerMeshInvitation, type PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
-export {
-  openPeerMeshNode,
-  type PeerMeshNode,
-  type PeerMeshStatus,
-  type PeerMeshTransport,
-} from './node.js';
-export {
-  openRuntimeHostPeerMeshOwner,
-  type RuntimeHostPeerMeshOwner,
-} from './owner.js';
-export { hasPeerMeshIdentityObligations, PeerMeshPostCommitError } from './store.js';
+export { SessionCollaborationServicesProvider } from './services-context';
+export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
+export type { SessionCollaborationServices } from './ports';

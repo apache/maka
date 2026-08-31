@@ -19,12 +19,14 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
+import { createDesktopRuntimeHostPeerMeshManagement } from '../runtime-host-peer-mesh-management.js';
 import type { DesktopRuntimeHostManagementProvider } from '../runtime-host-management-provider.js';
 import type {
   DesktopRuntimeHostSshAccessInput,
@@ -36,6 +38,92 @@ import type {
 } from '../runtime-host-ssh-terminal.js';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
+
+test('cancels a live Runtime Host Mesh status query', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const pending = new Promise<never>(() => undefined);
+  const management = createDesktopRuntimeHostPeerMeshManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    localHost: {
+      getSnapshot: async () => assert.fail('status must use the live Host'),
+      inspectManaged: async () => assert.fail('status must use the live Host'),
+    },
+    runLocal: async () => assert.fail('status must use the live Host'),
+    liveHost: () => ({
+      request: ((operation: string) => {
+        assert.equal(operation, 'peer.mesh.query');
+        markStarted();
+        return pending;
+      }) as never,
+    }),
+    profiles: {
+      resolveManagedService: async () => assert.fail('status must use the live Host'),
+    },
+    runRemote: async () => assert.fail('status must use the live Host'),
+  });
+  const execute = handlers.get('runtime-host-peer-mesh:execute');
+  const cancel = handlers.get('runtime-host-peer-mesh:cancel');
+  assert.ok(execute && cancel);
+
+  const status = execute(
+    {},
+    { kind: 'local_host' },
+    'status',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'status-1',
+  ) as Promise<unknown>;
+  await started;
+  cancel({}, 'status-1');
+  await assert.rejects(status, /cancelled/u);
+  management.close();
+});
+
+test('projects an unknown live Mesh mutation outcome across IPC', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const management = createDesktopRuntimeHostPeerMeshManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    localHost: {
+      getSnapshot: async () => assert.fail('mutation must use the live Host'),
+      inspectManaged: async () => assert.fail('mutation must use the live Host'),
+    },
+    runLocal: async () => assert.fail('mutation must use the live Host'),
+    liveHost: () => ({
+      request: (() =>
+        Promise.reject(
+          new RuntimeHostOperationError(
+            'peer.mesh.close',
+            'commit_outcome_unknown',
+            'Mesh close outcome is unknown',
+          ),
+        )) as never,
+    }),
+    profiles: {
+      resolveManagedService: async () => assert.fail('mutation must use the live Host'),
+    },
+    runRemote: async () => assert.fail('mutation must use the live Host'),
+  });
+  const execute = handlers.get('runtime-host-peer-mesh:execute');
+  assert.ok(execute);
+
+  assert.deepEqual(
+    await execute({}, { kind: 'local_host' }, 'close', 'mesh-1', undefined, undefined, undefined, 'close-1'),
+    { kind: 'outcome_unknown' },
+  );
+  management.close();
+});
 
 test('requires explicit interruption authority before a provider restarts active work', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();

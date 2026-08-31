@@ -41,12 +41,28 @@ test('keeps healthy Host catalogs when another Host rejects', async () => {
 
 test('reports exactly which Host catalogs are complete', async () => {
   const catalog = await collectRuntimeHostSessionCatalogsWithCoverage([
-    { hostId: 'local', sessions: Promise.resolve([session('local-session', 1)]) },
-    { hostId: 'remote', sessions: Promise.reject(new Error('remote unavailable')) },
+    { hostId: 'local', access: 'owner', sessions: Promise.resolve([session('local-session', 1)]) },
+    {
+      hostId: 'remote',
+      access: 'owner',
+      sessions: Promise.reject(new Error('remote unavailable')),
+    },
   ]);
 
   assert.deepEqual(catalog.sessions.map(({ id }) => id), ['local-session']);
   assert.deepEqual(catalog.completeHostIds, ['local']);
+});
+
+test('collapses overlapping Guest catalogs in favor of the Owner authority', async () => {
+  const owner = session('shared-session', 2);
+  const guest = { ...owner, shared: true as const };
+
+  const sessions = await collectRuntimeHostSessionCatalogs([
+    Promise.resolve([guest]),
+    Promise.resolve([owner]),
+  ]);
+
+  assert.deepEqual(sessions, [owner]);
 });
 
 test('fails when every Host catalog rejects', async () => {

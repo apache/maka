@@ -21,6 +21,7 @@ import type { DesktopSessionSummary } from './bridge-contract.js';
 
 export interface RuntimeHostSessionCatalogRequest {
   readonly hostId: string;
+  readonly access: 'owner' | 'session_guest';
   readonly sessions: Promise<DesktopSessionSummary[]>;
 }
 
@@ -34,17 +35,27 @@ export async function collectRuntimeHostSessionCatalogsWithCoverage(
 ): Promise<RuntimeHostSessionCatalogCoverage> {
   const results = await Promise.allSettled(requests.map((request) => request.sessions));
   const fulfilled = results.flatMap((result, index) => result.status === 'fulfilled'
-    ? [{ hostId: requests[index]!.hostId, sessions: result.value }]
+    ? [{ ...requests[index]!, sessions: result.value }]
     : []);
+  const fulfilledRequests = new Set(
+    results.flatMap((result, index) => result.status === 'fulfilled' ? [requests[index]!] : []),
+  );
   if (requests.length > 0 && fulfilled.length === 0) {
     throw new AggregateError(
       results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
       'Every Runtime Host Session Catalog request failed',
     );
   }
+  const hostIds = [...new Set(requests.map((request) => request.hostId))];
   return {
     sessions: sortSessionCatalogs(fulfilled.flatMap((entry) => entry.sessions)),
-    completeHostIds: fulfilled.map((entry) => entry.hostId),
+    completeHostIds: hostIds.filter((hostId) => {
+      const hostRequests = requests.filter((request) => request.hostId === hostId);
+      const ownerRequests = hostRequests.filter((request) => request.access === 'owner');
+      return ownerRequests.length > 0
+        ? ownerRequests.some((request) => fulfilledRequests.has(request))
+        : hostRequests.every((request) => fulfilledRequests.has(request));
+    }),
   };
 }
 
@@ -63,7 +74,14 @@ export async function collectRuntimeHostSessionCatalogs(
 }
 
 function sortSessionCatalogs(sessions: DesktopSessionSummary[]): DesktopSessionSummary[] {
-  return sessions.sort((left, right) => {
+  const unique = new Map<string, DesktopSessionSummary>();
+  for (const session of sessions) {
+    const current = unique.get(session.id);
+    if (!current || (current.shared === true && session.shared !== true)) {
+      unique.set(session.id, session);
+    }
+  }
+  return [...unique.values()].sort((left, right) => {
     if (left.activityAt === undefined || right.activityAt === undefined) {
       throw new Error('Runtime Host Session Catalog activity is unavailable');
     }

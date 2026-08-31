@@ -174,6 +174,22 @@ pub(super) struct Control {
 }
 
 impl Control {
+    pub(super) fn relays_with_active_streams(
+        &self,
+        active_streams: &HashMap<ConnectionId, usize>,
+    ) -> HashSet<PeerId> {
+        lock(&self.shared)
+            .connections
+            .iter()
+            .filter_map(|(connection_id, connection)| {
+                active_streams
+                    .contains_key(connection_id)
+                    .then_some(connection.relay_peer_id)
+                    .flatten()
+            })
+            .collect()
+    }
+
     pub(super) fn connections_via(&self, relays: &HashSet<PeerId>) -> Vec<ConnectionId> {
         lock(&self.shared)
             .connections
