@@ -44,6 +44,7 @@ import type {
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { Result } from '@maka/core/result';
 import type {
   ContextCompactResult,
@@ -268,6 +269,10 @@ export interface SideChatSessionPort {
   respondToUserQuestion(
     sessionId: string,
     response: UserQuestionResponse,
+  ): Promise<void>;
+  respondToUserForm(
+    sessionId: string,
+    response: InteractionFormResponse,
   ): Promise<void>;
   subscribeEvents(
     sessionId: string,

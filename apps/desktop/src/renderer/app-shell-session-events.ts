@@ -393,6 +393,7 @@ export function createAppShellSessionEventHandlers(options: {
       case 'sandbox_boundary_request':
       case 'client_capability_request':
       case 'user_question_request':
+      case 'form_request':
         onInteractionChanged?.(sessionId);
         break;
       // The runtime drops its owner on this ack, not on the tool result that
@@ -400,6 +401,7 @@ export function createAppShellSessionEventHandlers(options: {
       // same point its boundary sibling settles on, below.
       case 'user_question_answer_ack':
       case 'client_capability_decision_ack':
+      case 'form_answer_ack':
         onInteractionChanged?.(sessionId);
         break;
       case 'sandbox_boundary_decision_ack':

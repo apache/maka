@@ -30,6 +30,7 @@ import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { DesktopSessionSummary } from '../preload/bridge-contract.js';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import {
   armLiveTurn,
@@ -142,6 +143,7 @@ export interface AppShellChatActions {
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
+  respondToUserForm(response: InteractionFormResponse): Promise<void>;
   refreshMessages(sessionId: string, options?: RefreshMessagesOptions): Promise<boolean>;
   retryMessages(sessionId: string): Promise<void>;
 }
@@ -743,6 +745,28 @@ export function createAppShellChatActions(deps: {
     }
   }
 
+  async function respondToUserForm(response: InteractionFormResponse) {
+    const sessionId = activeIdRef.current;
+    if (!sessionId) return;
+    try {
+      await window.maka.sessions.respondToUserForm(sessionId, response);
+      onInteractionChanged?.(sessionId);
+      setInteractionBySession((current) => dequeueInteractionByRequestId(current, sessionId, response.requestId));
+    } catch (error) {
+      if (activeIdRef.current !== sessionId) return;
+      if (isSessionWorkspaceUnavailableError(error)) {
+        showSessionWorkspaceUnavailableToast(toastApi, uiLocale, { sessionId });
+      } else {
+        toastApi.error(
+          copy.responseFailedTitle,
+          localizedShellErrorMessage(error, copy.responseFailedFallback, uiLocale),
+          undefined,
+          { sessionId },
+        );
+      }
+    }
+  }
+
   async function refreshMessages(sessionId: string, options: RefreshMessagesOptions = {}): Promise<boolean> {
     try {
       if (activeIdRef.current !== sessionId) return false;
@@ -808,6 +832,7 @@ export function createAppShellChatActions(deps: {
     enqueueMessage,
     respondToSandboxBoundary,
     respondToUserQuestion,
+    respondToUserForm,
     refreshMessages,
     retryMessages,
   };

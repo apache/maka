@@ -188,6 +188,69 @@ test('answers a Client Capability approval through the existing Interaction auth
   await observer.close();
 });
 
+test("validates and forwards Desktop form responses to the pending Host interaction", async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: "form-1",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    runId: "run-1",
+    revision: 1 as const,
+    status: "pending" as const,
+    outcome: null,
+    request: {
+      kind: "form" as const,
+      toolUseId: "tool-1",
+      message: "Configure deployment",
+      requester: { name: "deploy" },
+      fields: [{ kind: "integer" as const, name: "replicas", label: "Replicas", required: true }],
+    },
+  };
+  const observer = observerWithSnapshot({ interactions: { pending: [pending] } });
+  const answers: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc({
+    observer,
+    client: executionClient({
+      answerInteraction: async (input) => {
+        answers.push(input);
+        return {
+          ...pending,
+          revision: 2,
+          status: "answered",
+          outcome: {
+            kind: "form_answer",
+            action: "accept",
+            values: { replicas: 3 },
+            committedAt: 2,
+          },
+        };
+      },
+    }),
+  }, ipc);
+
+  await ipc.invoke("sessions:respondToUserForm", "session-1", {
+    requestId: "form-1",
+    action: "accept",
+    values: { replicas: 3 },
+  });
+  assert.deepEqual(answers, [{
+    sessionId: "session-1",
+    interactionId: "form-1",
+    answer: { kind: "form", action: "accept", values: { replicas: 3 } },
+  }]);
+
+  await assert.rejects(
+    () => ipc.invoke("sessions:respondToUserForm", "session-1", {
+      requestId: "form-1",
+      action: "accept",
+      values: { replicas: Number.NaN },
+    }),
+  );
+  assert.equal(answers.length, 1);
+  await observer.close();
+});
+
 test("retries committed Branch and Revision copies with the renderer-owned identity", async () => {
   const committed = new Map<string, SessionCatalogProjection>();
   const lostResponses = new Set(["branch-copy-1", "revision-copy-1"]);

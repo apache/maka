@@ -58,6 +58,8 @@ export * from './model-picker.js';
 export * from './interaction-queue.js';
 export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
+export * from './form-interaction-prompt.js';
+export * from './form-interaction-prompt-state.js';
 export * from './redact.js';
 export * from './thinking-stream.js';
 export * from './session-todo-panel.js';
