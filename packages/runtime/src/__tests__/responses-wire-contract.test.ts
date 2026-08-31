@@ -238,6 +238,7 @@ describe('responses wire contract', () => {
 
   test('resolves only supported Responses adapter and replay pairings', () => {
     const deepseek = resolveModelRuntime({ providerType: 'deepseek' }, 'deepseek-v4-flash');
+    assert.equal(deepseek.assistantTextPhases, 'inferred');
     assert.deepEqual(deepseek.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
@@ -246,6 +247,7 @@ describe('responses wire contract', () => {
     assert.equal(deepseek.responsesReplayProfile, undefined);
 
     const alibaba = resolveModelRuntime({ providerType: 'alibaba-token-plan-cn' }, 'qwen3.8-max');
+    assert.equal(alibaba.assistantTextPhases, 'inferred');
     assert.deepEqual(alibaba.reasoningReplay, {
       kind: 'responses',
       contract: {
@@ -264,6 +266,7 @@ describe('responses wire contract', () => {
     assert.equal(accountScopedAlibaba.responsesReplayProfile, 'token-plan-account-a');
 
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
+    assert.equal(xai.assistantTextPhases, 'native');
     assert.deepEqual(xai.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
@@ -273,6 +276,7 @@ describe('responses wire contract', () => {
       { providerType: 'openai-responses-compatible' },
       'relay-model',
     );
+    assert.equal(relay.assistantTextPhases, 'native');
     assert.deepEqual(relay.reasoningReplay, {
       kind: 'responses',
       contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },

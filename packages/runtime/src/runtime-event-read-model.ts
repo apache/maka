@@ -1509,6 +1509,7 @@ function semanticMessage(message: StoredMessage): unknown {
         turnId: message.turnId,
         text: message.text,
         modelId: message.modelId,
+        phase: message.phase,
         thinking: message.thinking,
       };
     case 'tool_call':

@@ -1962,6 +1962,23 @@ describe('compareRuntimeReadModelMessages', () => {
     expect(compareRuntimeReadModelMessages(projected, legacy).compatible).toBe(false);
   });
 
+  test('rejects a mismatched assistant text phase', () => {
+    const assistant: Extract<StoredMessage, { type: 'assistant' }> = {
+      type: 'assistant',
+      id: 'assistant-phase',
+      turnId,
+      ts,
+      text: 'Checking the repository.',
+      modelId: 'gpt-5.6',
+      phase: 'commentary',
+    };
+
+    expect(
+      compareRuntimeReadModelMessages([assistant], [{ ...assistant, phase: 'final_answer' }])
+        .compatible,
+    ).toBe(false);
+  });
+
   test('rejects mismatched replay-critical token usage fields', () => {
     const usage: Extract<StoredMessage, { type: 'token_usage' }> = {
       type: 'token_usage',

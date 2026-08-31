@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import { ICON_SIZE, Ban, BookOpen, Check, ChevronRight, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
@@ -56,6 +56,7 @@ import type { TransientUserMessageProjection } from './chat-view.js';
 import { type LiveProviderRetry } from './live-turn-projection.js';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
+  assistantFinalAnswerIndex,
   finalAssistantReplyText,
   type TurnTimelineItem,
   type TurnViewModel,
@@ -624,15 +625,31 @@ export const TurnView = memo(function TurnView(props: {
           segment.repliesTo === undefined
             ? 'assistant-opening'
             : `assistant-after-${segment.repliesTo}`;
+        const segmentHasRunningWork = segment.items.some(
+          (item) =>
+            (item.kind === 'processing' && isProcessingRunning(item.children)) ||
+            (item.kind === 'thinking' && item.live === true),
+        );
         const segmentSettled =
-          !ownsTurnChrome ||
-          (!props.liveStreaming && turn.status !== 'running');
-        const finalAnswerIndex = segmentFinalAnswerIndex(segment.items, segmentSettled);
+          !segmentHasRunningWork &&
+          (!ownsTurnChrome || (!props.liveStreaming && turn.status !== 'running'));
+        const finalAnswerIndex = assistantFinalAnswerIndex(segment.items, segmentSettled);
         const workItems =
           finalAnswerIndex < 0 ? segment.items : segment.items.slice(0, finalAnswerIndex);
+        const explicitFinalAnswer =
+          finalAnswerIndex >= 0 &&
+          segment.items[finalAnswerIndex]?.kind === 'text' &&
+          segment.items[finalAnswerIndex]?.phase === 'final_answer';
         const answerItems =
-          finalAnswerIndex < 0 ? [] : segment.items.slice(finalAnswerIndex);
-        const workLogCollapsed = segmentSettled || finalAnswerIndex >= 0;
+          finalAnswerIndex < 0
+            ? []
+            : explicitFinalAnswer
+              ? segment.items
+                  .slice(finalAnswerIndex)
+                  .filter((item) => item.kind !== 'text' || item.phase !== undefined)
+              : segment.items.slice(finalAnswerIndex);
+        const workLogCollapsed =
+          !segmentHasRunningWork && (segmentSettled || finalAnswerIndex >= 0);
         const renderTimelineItem = (
           item: AssistantFoldedTimelineEntry,
           index: number,
@@ -685,8 +702,8 @@ export const TurnView = memo(function TurnView(props: {
               {workItems.length > 0 && (
                 <TurnWorkLog
                   collapsed={workLogCollapsed}
-                  durationMs={turn.durationMs}
-                  startedAt={turn.startedAt}
+                  durationMs={ownsTurnChrome ? turn.durationMs : undefined}
+                  startedAt={ownsTurnChrome ? turn.startedAt : undefined}
                 >
                   {workItems.map((item, index) =>
                     renderTimelineItem(item, index, workLogCollapsed)
@@ -852,22 +869,6 @@ function splitTimelineAtUserMessages(
     segments.push({ kind: 'assistant', items: [], repliesTo });
   }
   return segments;
-}
-
-function segmentFinalAnswerIndex(
-  items: readonly AssistantFoldedTimelineEntry[],
-  settled: boolean,
-): number {
-  const explicit = items.findIndex(
-    (item) => item.kind === 'text' && item.phase === 'final_answer',
-  );
-  if (explicit >= 0) return explicit;
-  if (!settled) return -1;
-  const hasPhasedText = items.some(
-    (item) => item.kind === 'text' && item.phase !== undefined,
-  );
-  if (hasPhasedText) return -1;
-  return items.findLastIndex((item) => item.kind === 'text');
 }
 
 export interface TurnFooterActionMeta {
@@ -1338,14 +1339,22 @@ function TurnWorkLog(props: {
   const [expanded, setExpanded] = useState(!props.collapsed);
   const [capturedDurationMs, setCapturedDurationMs] = useState<number | undefined>();
   const previousCollapsed = useRef(props.collapsed);
+  const headerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const contentId = useId();
-  const collapseNow = props.collapsed && !previousCollapsed.current;
-  const visibleExpanded = props.collapsed ? (collapseNow ? false : expanded) : true;
+  const visibleExpanded = props.collapsed ? expanded : true;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const shouldCollapse = props.collapsed && !previousCollapsed.current;
     previousCollapsed.current = props.collapsed;
     if (!shouldCollapse) return;
+    if (
+      contentRef.current &&
+      typeof document !== 'undefined' &&
+      contentRef.current.contains(document.activeElement)
+    ) {
+      headerRef.current?.focus();
+    }
     setExpanded(false);
     if (props.durationMs === undefined && props.startedAt !== undefined) {
       setCapturedDurationMs(Math.max(0, Date.now() - props.startedAt));
@@ -1366,6 +1375,7 @@ function TurnWorkLog(props: {
     >
       {props.collapsed && (
         <button
+          ref={headerRef}
           type="button"
           className="maka-work-log-header"
           aria-expanded={visibleExpanded}
@@ -1381,6 +1391,7 @@ function TurnWorkLog(props: {
         </button>
       )}
       <div
+        ref={contentRef}
         id={contentId}
         className="maka-work-log-content"
         hidden={props.collapsed && !visibleExpanded}

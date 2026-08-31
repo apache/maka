@@ -817,11 +817,18 @@ export function materializeTurns(
   // reaches exactly one timeline).
   for (const turnId of order) {
     const turn = byId.get(turnId)!;
+    const turnMessages = messagesByTurn.get(turnId) ?? [];
     turn.timeline = buildTurnTimeline(
-      messagesByTurn.get(turnId) ?? [],
+      turnMessages,
       toolItemByUseId,
     );
     turn.tools = timelineTools(turn.timeline);
+    const terminalState = turnMessages.findLast(
+      (message) => message.type === "turn_state" && message.status !== "running",
+    );
+    if (terminalState && terminalState.ts >= turn.startedAt) {
+      turn.durationMs = terminalState.ts - turn.startedAt;
+    }
   }
 
   return order.map((turnId) => byId.get(turnId)!);
@@ -834,17 +841,31 @@ export function materializeTurns(
  * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
  * turns with no timeline text entry.
  */
-export function finalAssistantReplyText(turn: TurnViewModel): string {
-  let legacyReply: string | undefined;
-  let sawPhasedText = false;
-  for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
-    const item = turn.timeline[index];
-    if (item?.kind !== "text" || item.text.length === 0) continue;
-    if (item.phase === "final_answer") return item.text;
-    if (item.phase !== undefined) sawPhasedText = true;
-    else legacyReply ??= item.text;
+export function assistantFinalAnswerIndex<
+  T extends { kind: string; text?: string; phase?: AssistantTextPhase },
+>(items: readonly T[], settled: boolean): number {
+  const explicit = items.findIndex(
+    (item) => item.kind === "text" && item.phase === "final_answer",
+  );
+  if (explicit >= 0) return explicit;
+  if (!settled) return -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.kind === "text" && item.text?.length === 0) continue;
+    return item?.kind === "text" && item.phase === undefined ? index : -1;
   }
-  return legacyReply ?? (sawPhasedText ? "" : (turn.assistant?.text ?? ""));
+  return -1;
+}
+
+export function finalAssistantReplyText(turn: TurnViewModel): string {
+  const lastSteeringIndex = turn.timeline.findLastIndex((item) => item.kind === "user");
+  const latestAnswer = turn.timeline.slice(lastSteeringIndex + 1);
+  const answerIndex = assistantFinalAnswerIndex(latestAnswer, turn.status !== "running");
+  const answer = latestAnswer[answerIndex];
+  if (answer?.kind === "text") return answer.text;
+  return turn.timeline.some((item) => item.kind === "text")
+    ? ""
+    : (turn.assistant?.text ?? "");
 }
 
 /**

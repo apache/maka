@@ -198,6 +198,88 @@ test('keeps live work expanded, then collapses it once when the final answer app
   );
 });
 
+test('keeps a steered segment expanded while its tool is still running', async () => {
+  const { container, root } = domRoot();
+  const runningRead: ToolActivityItem = {
+    toolUseId: 'read-running',
+    toolName: 'Read',
+    activityKind: 'read',
+    status: 'running',
+    args: {},
+  };
+  const turn = fixtureTurn([
+    {
+      kind: 'text',
+      text: '正在读取项目文件。',
+      messageId: 'commentary-running',
+      phase: 'commentary',
+    },
+    { kind: 'tools', items: [runningRead] },
+    {
+      kind: 'user',
+      messageId: 'steer-1',
+      message: { id: 'steer-1', role: 'user', text: '顺便检查测试。', ts: 3 },
+    },
+  ]);
+
+  await renderTurn(root, turn, true);
+
+  assert.equal(container.querySelector('.maka-work-log-header'), null);
+  assert.equal(
+    container.querySelector('.maka-processing-header')?.getAttribute('aria-expanded'),
+    'true',
+  );
+  assert.equal(container.textContent.includes('正在读取项目文件。'), true);
+});
+
+test('shows the turn duration only on the final assistant segment', () => {
+  const turn = {
+    ...fixtureTurn([
+      {
+        kind: 'text' as const,
+        text: '先检查第一部分。',
+        messageId: 'commentary-1',
+        phase: 'commentary' as const,
+      },
+      {
+        kind: 'text' as const,
+        text: '第一部分完成。',
+        messageId: 'final-1',
+        phase: 'final_answer' as const,
+      },
+      {
+        kind: 'user' as const,
+        messageId: 'steer-1',
+        message: { id: 'steer-1', role: 'user' as const, text: '继续检查。', ts: 3 },
+      },
+      {
+        kind: 'text' as const,
+        text: '正在检查第二部分。',
+        messageId: 'commentary-2',
+        phase: 'commentary' as const,
+      },
+      {
+        kind: 'text' as const,
+        text: '第二部分完成。',
+        messageId: 'final-2',
+        phase: 'final_answer' as const,
+      },
+    ]),
+    status: 'completed' as const,
+    durationMs: 10_000,
+  };
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+
+  assert.equal(markup.match(/用时 10 秒/g)?.length, 1);
+  assert.match(markup, />工作记录</);
+});
+
 test('does not create a work log for a direct final answer', () => {
   const turn = {
     ...fixtureTurn([
@@ -220,6 +302,111 @@ test('does not create a work log for a direct final answer', () => {
 
   assert.doesNotMatch(markup, /data-work-log="true"/);
   assert.match(markup, /直接答案/);
+});
+
+test('keeps an unphased legacy final answer outside phased imported work', () => {
+  const turn = {
+    ...fixtureTurn([
+      {
+        kind: 'text' as const,
+        text: '正在检查导入的旧会话。',
+        messageId: 'commentary-1',
+        phase: 'commentary' as const,
+      },
+      {
+        kind: 'text' as const,
+        text: '旧版最终答案。',
+        messageId: 'legacy-final',
+      },
+    ]),
+    status: 'completed' as const,
+  };
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+  const { document } = parseHTML(markup);
+  const workLogContent = document.querySelector('.maka-work-log-content');
+  const finalAnswer = [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
+    .find((element) => element.textContent.includes('旧版最终答案'));
+  assert.ok(workLogContent);
+  assert.ok(finalAnswer);
+  assert.equal(workLogContent.textContent.includes('正在检查导入的旧会话'), true);
+  assert.equal(workLogContent.textContent.includes('旧版最终答案'), false);
+  assert.equal(workLogContent.contains(finalAnswer), false);
+});
+
+test('keeps legacy text inside work when later processing proves it was not terminal', () => {
+  const turn = {
+    ...fixtureTurn([
+      {
+        kind: 'text' as const,
+        text: '先检查一下。',
+        messageId: 'legacy-progress',
+      },
+      {
+        kind: 'tools' as const,
+        items: [
+          {
+            toolUseId: 'read-after-text',
+            toolName: 'Read',
+            activityKind: 'read',
+            status: 'completed',
+            args: {},
+          },
+        ],
+      },
+    ]),
+    status: 'completed' as const,
+  };
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+  const { document } = parseHTML(markup);
+  const workLogContent = document.querySelector('.maka-work-log-content');
+  assert.ok(workLogContent);
+  assert.equal(workLogContent.textContent.includes('先检查一下。'), true);
+  assert.equal(
+    [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
+      .some((element) => !workLogContent.contains(element)),
+    false,
+  );
+});
+
+test('does not render unphased compatibility text after an explicit final answer', () => {
+  const turn = {
+    ...fixtureTurn([
+      {
+        kind: 'text' as const,
+        text: '明确最终答案。',
+        messageId: 'final-1',
+        phase: 'final_answer' as const,
+      },
+      {
+        kind: 'text' as const,
+        text: '旧版兼容副本。',
+        messageId: 'legacy-copy',
+      },
+    ]),
+    status: 'completed' as const,
+  };
+
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'zh',
+      children: createElement(TurnView, { turn }),
+    }),
+  );
+
+  assert.match(markup, /明确最终答案/);
+  assert.doesNotMatch(markup, /旧版兼容副本/);
 });
 
 test('collapses commentary-only failed work while leaving the failure outcome outside', () => {

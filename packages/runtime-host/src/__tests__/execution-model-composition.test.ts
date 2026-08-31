@@ -136,7 +136,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
+  'sha256:85aa5e05046cb94b3588e2900120da85032c65b7be111b653e2186ebb2d55475';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -1308,6 +1308,7 @@ test('hosted execution freezes the headless coding provider wire contract', asyn
       'Edit',
       'Glob',
       'Grep',
+      'ProgressUpdate',
       'Read',
       'Write',
     ]);
@@ -1580,6 +1581,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       'Edit',
       'Glob',
       'Grep',
+      'ProgressUpdate',
       'Read',
       'Skill',
       'SkillSearch',

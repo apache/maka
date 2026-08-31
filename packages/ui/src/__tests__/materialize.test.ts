@@ -148,6 +148,81 @@ describe("assistant text phases", () => {
 
     assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "Explicit final answer");
   });
+
+  test("does not treat unphased text as final when processing follows it", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "legacy-progress",
+        turnId: "t1",
+        ts: 2,
+        text: "I will inspect it.",
+        modelId: "fixture",
+      },
+      {
+        type: "tool_call",
+        id: "read-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "Read",
+        args: { path: "README.md" },
+      },
+      {
+        type: "tool_result",
+        id: "read-result-1",
+        turnId: "t1",
+        ts: 4,
+        toolUseId: "read-1",
+        isError: false,
+        content: { kind: "text", text: "README" },
+      },
+    ]);
+
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "");
+  });
+
+  test("measures terminal duration to the recorded turn state after tool work", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "commentary",
+        turnId: "t1",
+        ts: 2,
+        text: "I am checking it.",
+        phase: "commentary",
+        modelId: "fixture",
+      },
+      {
+        type: "tool_call",
+        id: "read-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "Read",
+        args: { path: "README.md" },
+      },
+      {
+        type: "tool_result",
+        id: "read-result-1",
+        turnId: "t1",
+        ts: 120_000,
+        toolUseId: "read-1",
+        isError: true,
+        content: { kind: "text", text: "failed" },
+      },
+      {
+        type: "turn_state",
+        id: "state-failed",
+        turnId: "t1",
+        ts: 120_001,
+        status: "failed",
+        partialOutputRetained: true,
+      },
+    ]);
+
+    assert.equal(turn?.durationMs, 120_000);
+  });
 });
 
 describe("steering timeline", () => {

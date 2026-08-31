@@ -62,6 +62,8 @@ export interface ResolvedModelRuntime {
   reasoningReplay: ReasoningReplayContract;
   /** Effective parallel-tool-call support after model facts and wire defaults are resolved. */
   parallelToolCalls?: boolean;
+  /** Whether the selected adapter preserves Responses `message.phase` metadata. */
+  assistantTextPhases: 'native' | 'inferred';
   /** Provider-options namespace used by durable plaintext-summary replay. */
   responsesProviderOptionsKey?: string;
   /** Stable connection identity that issued a durable plaintext-summary item. */
@@ -139,6 +141,12 @@ export function resolveModelRuntime(
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
     reasoningReplay: replay,
+    assistantTextPhases:
+      wire === 'openai-responses' &&
+      replay.kind === 'responses' &&
+      replay.contract.adapter === 'openai'
+        ? 'native'
+        : 'inferred',
     ...(parallelToolCalls === undefined ? {} : { parallelToolCalls }),
     ...(replay.kind === 'responses' &&
     replay.contract.adapter === 'open-responses' &&

@@ -1167,11 +1167,12 @@ export class AiSdkBackend implements AgentBackend {
         })
       : [];
     const progressTools =
-      runtime.wire !== 'openai-responses' && input.header.subagentParent === undefined
+      runtime.assistantTextPhases !== 'native' &&
+      input.header.subagentParent === undefined &&
+      input.tools.length > 0
         ? [buildAssistantProgressTool()]
         : [];
-    this.forceInitialProgressUpdate =
-      progressTools.length > 0 && runtime.parallelToolCalls !== true;
+    this.forceInitialProgressUpdate = progressTools.length > 0;
     this.applyPatchProfile = runtime.applyPatchProfile;
     const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
@@ -1620,6 +1621,7 @@ export class AiSdkBackend implements AgentBackend {
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
+    let budgetSteps = 0;
     let requestShapeForTelemetry: RequestShapeDiagnostic | undefined;
     let promptSegmentsForTelemetry: PromptSegmentEstimate[] = [];
     let contextBudgetForTelemetry: ContextBudgetDiagnostic | undefined;
@@ -2155,13 +2157,13 @@ export class AiSdkBackend implements AgentBackend {
             this.input.header.collaborationMode === 'agent' &&
             maxSteps !== undefined &&
             maxSteps > 1 &&
-            runtimeSteps === maxSteps - 1 &&
+            budgetSteps === maxSteps - 1 &&
             completedProviderSteps.length > 0;
           const sandboxBoundaryFinalizationStep =
             toolRuntime.shouldFinalizeSandboxBoundary() ||
             (toolRuntime.hasSandboxBoundaryDenial() &&
               maxSteps !== undefined &&
-              runtimeSteps === maxSteps - 1);
+              budgetSteps === maxSteps - 1);
           if (sandboxBoundaryFinalizationStep) {
             toolRuntime.forceSandboxBoundaryFinalization();
           }
@@ -2169,6 +2171,9 @@ export class AiSdkBackend implements AgentBackend {
             finalChildSummaryStep || sandboxBoundaryFinalizationStep
               ? []
               : boundaryAwareToolNames(shaped?.activeTools ?? plan.currentRepairToolNames());
+          const forcedProgressPrelude =
+            initialProgressUpdatePending &&
+            activeToolsForRequest.includes(ASSISTANT_PROGRESS_TOOL_NAME);
           const requestSystemPrompt = joinPromptFragments([
             systemPrompt,
             commentaryContinuationPending ? COMMENTARY_CONTINUATION_PROMPT : undefined,
@@ -2240,8 +2245,7 @@ export class AiSdkBackend implements AgentBackend {
               messages: attemptMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
-              ...(initialProgressUpdatePending &&
-              activeToolsForRequest.includes(ASSISTANT_PROGRESS_TOOL_NAME)
+              ...(forcedProgressPrelude
                 ? {
                     toolChoice: {
                       type: 'tool' as const,
@@ -2302,6 +2306,14 @@ export class AiSdkBackend implements AgentBackend {
                   // the second flush no-ops (accumulators already cleared) and one
                   // extra id rotation just discards an unused id.
                   runtimeSteps += 1;
+                  if (
+                    !forcedProgressPrelude ||
+                    returnedToolCalls.some(
+                      (toolCall) => toolCall.toolName !== ASSISTANT_PROGRESS_TOOL_NAME,
+                    )
+                  ) {
+                    budgetSteps += 1;
+                  }
                   const stepUsage = event.usage;
                   providerStepUsage = stepUsage;
                   if (!stepUsage) sawUnusableStepUsage = true;
@@ -2550,7 +2562,7 @@ export class AiSdkBackend implements AgentBackend {
               // A retry is a fresh provider request that would run at least one
               // more step; with the send-level budget already spent there is
               // nothing left to grant it, so the error is terminal.
-              const stepBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
+              const stepBudgetRemains = maxSteps === undefined || budgetSteps < maxSteps;
               const recovered =
                 stepBudgetRemains && attemptHasNoObservableOutput()
                   ? await this.compaction.recoverFromOverflowError({
@@ -2696,7 +2708,7 @@ export class AiSdkBackend implements AgentBackend {
           await queue.waitUntilConsumedThroughCurrent();
 
           if (returnedToolCalls.length > 0) {
-            const continuationBudgetRemains = maxSteps === undefined || runtimeSteps < maxSteps;
+            const continuationBudgetRemains = maxSteps === undefined || budgetSteps < maxSteps;
             if (continuationBudgetRemains && !this.input.loadTurnRuntimeEvents) {
               throw new Error('durable current-run reader is required for tool continuation');
             }
@@ -2795,7 +2807,7 @@ export class AiSdkBackend implements AgentBackend {
             }
 
             const continuationWillRun =
-              (maxSteps === undefined || runtimeSteps < maxSteps) &&
+              (maxSteps === undefined || budgetSteps < maxSteps) &&
               !scope.loopStopRequested &&
               !scope.aborted;
             if (continuationWillRun && providerOutcome.continuation === 'pending') {
@@ -2818,7 +2830,7 @@ export class AiSdkBackend implements AgentBackend {
             ...(providerStepUsage ? { usage: providerStepUsage } : {}),
           });
           lastCompletedStepHadToolResult = returnedToolCalls.length > 0;
-          const stepLimitReached = maxSteps !== undefined && runtimeSteps >= maxSteps;
+          const stepLimitReached = maxSteps !== undefined && budgetSteps >= maxSteps;
           if (
             sandboxBoundaryFinalizationStep ||
             (stepLimitReached &&

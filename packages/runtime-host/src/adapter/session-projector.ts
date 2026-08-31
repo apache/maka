@@ -281,6 +281,7 @@ export class RuntimeHostSessionProjector {
           messageId: message.id,
           ts: terminal.ts,
           text: message.text,
+          ...(message.phase === undefined ? {} : { phase: message.phase }),
         });
       }
     }

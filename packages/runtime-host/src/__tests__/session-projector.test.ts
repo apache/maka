@@ -125,6 +125,46 @@ test('preserves commentary phase across active stream seeding and completion', (
   );
 });
 
+test('preserves commentary phase when seeding a stored terminal turn', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  assert.deepEqual(
+    projector.seedStoredTerminal('turn-1', [
+      { ...assistant('message-1', 'checked'), phase: 'commentary' },
+      {
+        type: 'turn_state',
+        id: 'terminal-1',
+        turnId: 'turn-1',
+        ts: 11,
+        status: 'completed',
+        partialOutputRetained: true,
+      },
+    ]),
+    [
+      {
+        type: 'text_complete',
+        id: 'terminal-1:text:message-1',
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        ts: 11,
+        text: 'checked',
+        phase: 'commentary',
+      },
+      {
+        type: 'complete',
+        id: 'terminal-1',
+        turnId: 'turn-1',
+        ts: 11,
+        stopReason: 'end_turn',
+      },
+    ],
+  );
+});
+
 test('keeps a revocable in-flight lease pending', () => {
   const previous = snapshot({
     queue: {

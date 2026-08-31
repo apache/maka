@@ -71,6 +71,7 @@ export function projectSharedSessionTranscriptMessage(
         ts: message.ts,
         text: message.text,
         modelId: message.modelId,
+        ...(message.phase === undefined ? {} : { phase: message.phase }),
         ...(message.thinking === undefined ? {} : { thinking: projectThinking(message.thinking) }),
         ...(message.contentOrder === undefined ? {} : { contentOrder: message.contentOrder }),
       };

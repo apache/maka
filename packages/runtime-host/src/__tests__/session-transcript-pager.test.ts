@@ -82,6 +82,7 @@ test('projects durable and active transcript records before sharing them', async
   const durable: StoredMessage[] = [
     {
       ...assistantMessage(0),
+      phase: 'commentary',
       providerOptions: { replay: 'private' },
       thinking: {
         text: 'visible thought',
@@ -187,6 +188,7 @@ test('projects durable and active transcript records before sharing them', async
   assert.equal(sharedDurable[0]?.steeringEventId, 'steering-event-1');
   assert.equal('providerOutput' in sharedDurable[1]!, false);
   assert.equal('providerOptions' in sharedDurable[2]!, false);
+  assert.equal(sharedDurable[2]!.phase, 'commentary');
   assert.deepEqual(sharedDurable[2]!.thinking, { text: 'visible thought' });
   assert.equal('providerOptions' in decodeBootstrap(shared.bootstrap.overlay)[0]!, false);
   const projectedState = projectSharedSessionTranscriptMessage(
@@ -221,6 +223,40 @@ test('projects durable and active transcript records before sharing them', async
   if (projectedInput?.type === 'tool_call') {
     assert.equal(JSON.stringify(projectedInput.args).includes('sk-example-value'), false);
   }
+});
+
+test('preserves the active assistant phase while reconciling transcript text', async () => {
+  const durable = [
+    {
+      ...assistantMessage(0),
+      text: 'checking',
+      phase: 'final_answer' as const,
+    },
+  ];
+  const overlay = [{ ...assistantMessage(0), text: 'checking the repository' }];
+  const reader = transcriptReader(durable, overlay);
+
+  const prepared = await prepareSessionTranscriptOverlay({
+    reader,
+    sessionId: 'session-1',
+    throughSequence: 0,
+    rootTurn: null,
+    activeAssistantStreams: [
+      {
+        turnId: 'turn-0',
+        messageId: 'message-0',
+        kind: 'text',
+        text: 'checking the repository now',
+        phase: 'commentary',
+      },
+    ],
+  });
+
+  assert.deepEqual(JSON.parse(prepared[0]!.toString('utf8')), {
+    ...overlay[0],
+    text: 'checking the repository now',
+    phase: 'commentary',
+  });
 });
 
 test('rejects cursor tampering and cross-subscription replay', async () => {

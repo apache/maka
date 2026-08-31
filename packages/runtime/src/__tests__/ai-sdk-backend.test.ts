@@ -6140,7 +6140,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('projects ProgressUpdate tool calls as commentary for phase-less providers', async () => {
+  test('projects a forced ProgressUpdate as commentary before tool-capable phase-less work', async () => {
     let calls = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
@@ -6199,7 +6199,7 @@ describe('AiSdkBackend model history', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [testTool('Read', z.object({ path: z.string() }))],
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -6241,6 +6241,188 @@ describe('AiSdkBackend model history', () => {
           phase: 'final_answer',
         },
       ],
+    );
+  });
+
+  test('does not add or force ProgressUpdate when the turn has no work tools', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'text-start', id: 'text-final' },
+            { type: 'text-delta', id: 'text-final', delta: '4' },
+            { type: 'text-end', id: 'text-final' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'stop' },
+              usage: emptyUsage(),
+            },
+          ],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'What is 2+2?');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.equal(modelToolNames(model).includes(ASSISTANT_PROGRESS_TOOL_NAME), false);
+    assert.deepEqual(model.doStreamCalls[0]?.toolChoice, { type: 'none' });
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [{ text: '4', phase: 'final_answer' }],
+    );
+  });
+
+  test('forces ProgressUpdate even when a phase-less provider supports parallel tools', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'progress-1',
+                  toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+                  input: JSON.stringify({ text: 'I will inspect README.md.' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                { type: 'text-delta', id: 'text-final', delta: 'Done.' },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'inspect README');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        models: [{ id: 'mock-model-id', capabilities: { parallelToolCalls: true } }],
+      },
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(model.doStreamCalls[0]?.toolChoice, {
+      type: 'tool',
+      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+    });
+  });
+
+  test('does not charge a forced ProgressUpdate prelude against maxSteps', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'progress-1',
+                  toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+                  input: JSON.stringify({ text: 'I am checking the answer.' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                { type: 'text-delta', id: 'text-final', delta: 'Done.' },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'check the answer');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      maxSteps: 1,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'complete' && event.stopReason === 'end_turn'),
+      true,
     );
   });
 
@@ -6306,7 +6488,7 @@ describe('AiSdkBackend model history', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [testTool('Read', z.object({ path: z.string() }))],
       appendMessage: async () => {},
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
