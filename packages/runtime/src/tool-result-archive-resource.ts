@@ -186,7 +186,7 @@ function resolveArchiveText(parsed: unknown, serializedResult: string): string {
 }
 
 export const TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS =
-  'This result is archived but still readable. Call ArchiveRead with the provided ref and operation "inspect"; use operation "query" with itemId for one structured item, operation "search" with a pattern to locate text, or operation "read" with offset/limit (unit "char" or "line") for a bounded page. Do not use Glob to find the archive.';
+  'This result is archived but still readable. Call ArchiveRead with the provided ref and operation "inspect"; use operation "query" with itemId for one structured item, or operation "read" with offset/limit for a bounded page. Do not use Glob to find the archive.';
 
 function inspectArchive(
   ref: string,
