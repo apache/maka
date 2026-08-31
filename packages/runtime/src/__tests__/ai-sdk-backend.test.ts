@@ -20,8 +20,6 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
@@ -36,7 +34,6 @@ import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
@@ -95,7 +92,6 @@ import { buildLlmHistorySummarizer } from '../history-compact-summarizer.js';
 import { createToolResultArchiveCapability } from '../tool-result-archive-capability.js';
 import {
   createTestAiSdkBackend,
-  createTestToolRuntime,
   readExternalExecutionBoundary,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
@@ -3778,127 +3774,6 @@ describe('AiSdkBackend model history', () => {
     assert.ok(
       result.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
     );
-  });
-
-  test('replays a persisted image projection after reopening its RuntimeEvent store', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-durable-projection-restart-'));
-    const databasePath = join(root, 'runtime.sqlite');
-    const pngBytes = Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
-      'base64',
-    );
-    const artifacts = new Map<string, Uint8Array>();
-    const source = createSqliteRuntimeStore(databasePath);
-    try {
-      const runtime = createTestToolRuntime({
-        sessionId: 'session-1',
-        header: header(),
-        connection: connection(),
-        modelId: 'mock-model-id',
-        appendMessage: async () => {},
-        newId: idGenerator(),
-        now: monotonicClock(),
-        getPermissionPauseTarget: () => null,
-        turnId: 'turn-prev',
-        runId: 'run-prev',
-        invocationId: 'invocation-prev',
-        runtimeCommitSink: source,
-        prepareDurableProjectionArtifact: ({ bytes, mediaType }) => {
-          assert.equal(mediaType, 'image/png');
-          const accepted = bytes.slice();
-          return {
-            ref: {
-              kind: 'session_file',
-              sessionId: 'session-1',
-              relativePath: 'artifact-1',
-            },
-            persist: async () => {
-              artifacts.set('artifact-1', accepted);
-            },
-          };
-        },
-      });
-      await runtime.settleToolCall({
-        tool: {
-          name: 'PrivateTool',
-          description: 'returns a private execution fact',
-          parameters: z.object({}),
-          recoveryMode: 'replay_safe',
-          impl: async () => ({ secretExecutionFact: 'raw-secret-must-not-replay' }),
-          toModelOutput: () => ({
-            type: 'content',
-            value: [
-              {
-                type: 'file',
-                data: { type: 'data', data: pngBytes.toString('base64') },
-                mediaType: 'image/png',
-              },
-            ],
-          }),
-        },
-        turnId: 'turn-prev',
-        toolCallId: 'restart-tool-call',
-        input: {},
-        abortSignal: new AbortController().signal,
-        eventSink: {
-          push: () => {},
-          pushAndWaitUntilConsumed: async () => {},
-        },
-      });
-    } finally {
-      source.close();
-    }
-
-    const reopened = createSqliteRuntimeStore(databasePath);
-    try {
-      const recoveredEvents = await reopened.readRuntimeEvents('session-1', 'run-prev');
-      const model = completionModel();
-      const backend = createTestAiSdkBackend({
-        sessionId: 'session-1',
-        header: header(),
-        appendMessage: async () => {},
-        connection: connection(),
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => model,
-        tools: [],
-        supportsVision: true,
-        maxProviderImageRequestBytes: pngBytes.byteLength,
-        readAttachmentBytes: async (ref) => {
-          const bytes = ref.kind === 'session_file' ? artifacts.get(ref.relativePath) : undefined;
-          return bytes
-            ? { ok: true, bytes: bytes.slice() }
-            : { ok: false, reason: 'not_found' as const };
-        },
-        newId: idGenerator(),
-        now: monotonicClock(),
-      });
-
-      await drain(
-        backend.send({
-          turnId: 'turn-current',
-          text: 'continue after restart',
-          context: [],
-          runtimeContext: recoveredEvents,
-        }),
-      );
-
-      const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
-      const result = prompt.find((message) => message.role === 'tool')?.content[0]?.output;
-      assert.ok(
-        result.value.some(
-          (part: any) =>
-            part.type === 'file' &&
-            part.mediaType === 'image/png' &&
-            part.data.data === pngBytes.toString('base64'),
-        ),
-      );
-      const wire = JSON.stringify(prompt);
-      assert.doesNotMatch(wire, /raw-secret-must-not-replay/u);
-    } finally {
-      reopened.close();
-      await rm(root, { recursive: true, force: true });
-    }
   });
 
   test('sends a live image tool result to the next provider step', async () => {

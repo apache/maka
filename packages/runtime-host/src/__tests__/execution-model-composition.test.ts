@@ -667,6 +667,38 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
     const liveRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(liveRequests.length, 2);
     assertProjectedImage(liveRequests[1]?.body);
+
+    const nextRunId = 'projection-image-next-run';
+    const nextText = 'Continue in the same process.';
+    const nextHead: RuntimeEvent = {
+      id: 'projection-image-next-head',
+      invocationId: nextRunId,
+      runId: nextRunId,
+      sessionId,
+      turnId: 'projection-image-next-turn',
+      ts: 2,
+      partial: false,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: nextText },
+    };
+    await runtime.appendRuntimeEvent(sessionId, nextRunId, nextHead);
+    const nextTurnContext = [...(await runtime.readRuntimeEvents(sessionId, runId)), nextHead];
+    for await (const _event of backend.send({
+      invocationId: nextRunId,
+      runId: nextRunId,
+      turnId: nextHead.turnId,
+      headAnchorRuntimeEvent: nextHead,
+      text: nextText,
+      context: [],
+      runtimeContext: nextTurnContext,
+    })) {
+      // Drain the next Turn built from the same committed projection.
+    }
+    const nextTurnRequests = provider.requests.filter((request) => request.body.stream === true);
+    assert.equal(nextTurnRequests.length, 3);
+    assertProjectedImage(nextTurnRequests[2]?.body);
+
     await backend.dispose();
     backend = undefined;
     artifacts.close();
@@ -701,8 +733,8 @@ test('Host reopens one projected image from its ArtifactStore authority', async 
       // Drain the replay request built from the reopened authorities.
     }
     const streamRequests = provider.requests.filter((request) => request.body.stream === true);
-    assert.equal(streamRequests.length, 3);
-    assertProjectedImage(streamRequests[2]?.body);
+    assert.equal(streamRequests.length, 4);
+    assertProjectedImage(streamRequests[3]?.body);
   } finally {
     await backend?.dispose();
     artifacts?.close();
