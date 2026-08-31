@@ -91,6 +91,7 @@ import {
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
+import { deriveAttemptSemanticPrefixContinuity } from './semantic-prefix-continuity.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -474,7 +475,29 @@ export class AgentRun {
     const { attempt, latestContext } = commit;
     if (!this.input.runStore) return Promise.resolve();
     return this.enqueueRequiredRunStoreWrite('append model call attempt', async () => {
-      await this.input.runStore?.appendEvent(
+      const runStore = this.input.runStore;
+      if (!runStore) return;
+      let projected = latestContext;
+      if (projected && attempt.callKind === 'main') {
+        const requestPrefix = await deriveAttemptSemanticPrefixContinuity({
+          current: attempt,
+          currentProviderStateIdentity: this.providerStateIdentity,
+          lineage: {
+            ...this.lineage,
+            ...(this.header.conversationCopy ? { conversationCopy: true } : {}),
+          },
+          store: runStore,
+        }).catch(() => ({
+          status: 'unavailable' as const,
+          previousSegmentCount: 0 as const,
+          preservedSegmentCount: 0 as const,
+        }));
+        projected = {
+          ...projected,
+          snapshot: { ...projected.snapshot, requestPrefix },
+        };
+      }
+      await runStore.appendEvent(
         this.sessionId,
         this.runId,
         {
@@ -489,7 +512,7 @@ export class AgentRun {
         // The latest-context projection rides this durable append rather than
         // racing it: one commit for the request, and derived state that cannot
         // survive a metering write that failed (#2323).
-        { durable: true, ...(latestContext ? { latestContext } : {}) },
+        { durable: true, ...(projected ? { latestContext: projected } : {}) },
       );
     });
   }

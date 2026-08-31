@@ -48,7 +48,7 @@ import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
-test('a real send seals its observation into SQLite and reconstructs it after restart', async () => {
+test('real consecutive sends seal a preserved prefix verdict that survives restart', async () => {
   // Tracker → backend → the kernel seam a backend is actually built with →
   // AgentRun → the storage transaction. Every layer in that list once had a
   // signature that compiled while dropping the row, and no test crossed all of
@@ -64,30 +64,32 @@ test('a real send seals its observation into SQLite and reconstructs it after re
     let clock = 1_000;
     const now = () => (clock += 1);
 
-    backends.register('ai-sdk', (ctx) =>
-      createTestAiSdkBackend({
-        sessionId: ctx.sessionId,
-        header: ctx.header,
-        appendMessage: async () => {},
-        connection: {
-          slug: 'mock-main',
-          providerType: 'anthropic',
-          defaultModel: 'mock-model-id',
-          models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
-        },
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => answeringModel(),
-        tools: [],
-        // The seams the kernel hands a real backend, forwarded exactly as the
-        // production composition forwards them — this is the hop that broke.
-        ...(ctx.recordModelCallAttempt
-          ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
-          : {}),
-        newId,
-        now,
+    backends.register('ai-sdk', {
+      prepare: async () => ({
+        providerStateIdentity: `sha256:${'1'.repeat(64)}`,
+        build: (ctx) =>
+          createTestAiSdkBackend({
+            sessionId: ctx.sessionId,
+            header: ctx.header,
+            appendMessage: ctx.appendMessage ?? (async () => {}),
+            connection: {
+              slug: 'mock-main',
+              providerType: 'anthropic',
+              defaultModel: 'mock-model-id',
+              models: [{ id: 'mock-model-id', contextWindow: 200_000 }],
+            },
+            apiKey: 'sk-test',
+            modelId: 'mock-model-id',
+            modelFactory: () => answeringModel(),
+            tools: [],
+            ...(ctx.recordModelCallAttempt
+              ? { recordModelCallAttempt: ctx.recordModelCallAttempt }
+              : {}),
+            newId,
+            now,
+          }),
       }),
-    );
+    });
 
     const manager = new SessionManager({
       store: sessionStore,
@@ -102,10 +104,12 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       llmConnectionSlug: 'mock-main',
       permissionMode: 'bypass',
     });
-    for await (const _event of manager.sendMessage(session.id, {
-      turnId: 'turn-1',
-      text: 'what is my context made of?',
-    })) {
+    await admitTurn(runStore, session.id, 'turn-1', 'run-1', null, now());
+    for await (const _event of manager.sendMessage(
+      session.id,
+      { turnId: 'turn-1', text: 'what is my context made of?' },
+      { runId: 'run-1', userMessageId: 'message-turn-1', durability: 'required' },
+    )) {
       // Drain the turn so its run reaches the durable ledger.
     }
 
@@ -133,7 +137,29 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       diagnostics.composition?.segments.some((segment) => segment.kind === 'messages'),
       'and the request describes what it was made of',
     );
+    assert.deepEqual(diagnostics.requestPrefix, {
+      status: 'no_predecessor',
+      previousSegmentCount: 0,
+      preservedSegmentCount: 0,
+    });
     assert.equal(scanned, 0, 'the row was committed by the send, not rebuilt by the read');
+
+    await admitTurn(runStore, session.id, 'turn-2', 'run-2', 'turn-1', now());
+    for await (const _event of manager.sendMessage(
+      session.id,
+      { turnId: 'turn-2', text: 'what changed?' },
+      { runId: 'run-2', userMessageId: 'message-turn-2', durability: 'required' },
+    )) {
+      // Drain the successor through the same public Runtime boundary.
+    }
+    const successor = await readLatestContextDiagnostics(runStore, session.id);
+    assert.equal(successor.status, 'available');
+    if (successor.status !== 'available') return;
+    assert.equal(successor.requestPrefix.status, 'preserved');
+    assert.equal(
+      successor.requestPrefix.preservedSegmentCount,
+      successor.requestPrefix.previousSegmentCount,
+    );
 
     await manager.stopSession(session.id, { source: 'stop_button' });
     runStore.close?.();
@@ -151,12 +177,17 @@ test('a real send seals its observation into SQLite and reconstructs it after re
           }),
         )
       ).flat();
-      assert.equal(canonicalAttempts.length, 1);
-      const observation = canonicalAttempts[0]?.requestObservation;
+      assert.equal(canonicalAttempts.length, 2);
+      const observation = canonicalAttempts[1]?.requestObservation;
       assert.ok(observation);
       assert.ok(observation.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS);
       assert.ok(observation.segments.length > 0);
       assert.ok(observation.segments.every((segment) => segment.comparison === 'exact'));
+
+      const restarted = await readLatestContextDiagnostics(reopened, session.id);
+      assert.equal(restarted.status, 'available');
+      if (restarted.status !== 'available') return;
+      assert.deepEqual(restarted.requestPrefix, successor.requestPrefix);
 
       let coldScans = 0;
       const cold = await readLatestContextDiagnostics(
@@ -175,7 +206,8 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       assert.ok(coldScans > 0, 'omitting the projection reader forces a restart-safe ledger fold');
       assert.equal(cold.status, 'available');
       if (cold.status !== 'available') return;
-      assert.deepEqual(cold.composition, diagnostics.composition);
+      assert.deepEqual(cold.composition, successor.composition);
+      assert.equal(cold.requestPrefix, undefined);
     } finally {
       reopened.close?.();
     }
@@ -291,5 +323,26 @@ function answeringModel(): MockLanguageModelV4 {
         chunkDelayInMs: null,
       }),
     }),
+  });
+}
+
+async function admitTurn(
+  runStore: ReturnType<typeof createSqliteAgentRunStore>,
+  sessionId: string,
+  turnId: string,
+  runId: string,
+  previousRootTurnId: string | null,
+  admittedAt: number,
+): Promise<void> {
+  await runStore.admitRootTurn({
+    sessionId,
+    turnId,
+    proposedRunId: runId,
+    proposedUserMessageId: `message-${turnId}`,
+    execution: { kind: 'external_message' },
+    previousRootTurnId,
+    normalizedInput: { text: turnId },
+    sourceMessages: [],
+    admittedAt,
   });
 }

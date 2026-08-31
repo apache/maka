@@ -795,6 +795,11 @@ export interface AgentRunStore {
     options?: AgentRunAppendOptions,
   ): Promise<void>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
+  /** Durable causal predecessor for a root Turn, when this store owns root admission. */
+  readRootTurnAdmission?(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ runId: string; previousRootTurnId?: string | null } | undefined>;
   /**
    * `undefined` means uninitialized; `null` is an initialized empty projection.
    *

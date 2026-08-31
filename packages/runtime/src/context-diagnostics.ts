@@ -39,6 +39,7 @@ import {
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
+import type { SemanticPrefixContinuity } from './semantic-prefix-continuity.js';
 
 export type ContextDiagnosticsUnavailableReason = 'no_completed_request' | 'trace_unavailable';
 
@@ -98,6 +99,8 @@ export type ContextDiagnostics =
        */
       composition?: ContextDiagnosticsComposition;
       compaction?: ContextDiagnosticsCompaction;
+      /** Absent only for historical projections written before this diagnostic existed. */
+      requestPrefix?: SemanticPrefixContinuity;
     };
 
 export interface ContextDiagnosticsComposition {
@@ -357,6 +360,7 @@ function availableFrom(snapshot: LatestContextSnapshot): ContextDiagnostics {
     ...(snapshot.contextWindow !== undefined ? { contextWindow: snapshot.contextWindow } : {}),
     ...(snapshot.composition ? { composition: snapshot.composition } : {}),
     ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}),
+    ...(snapshot.requestPrefix ? { requestPrefix: snapshot.requestPrefix } : {}),
   };
 }
 

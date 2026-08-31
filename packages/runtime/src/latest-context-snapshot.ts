@@ -29,6 +29,10 @@ import type {
   ContextDiagnosticsComposition,
 } from './context-diagnostics.js';
 import { foldPromptComposition, type SizedRequestSegment } from './prompt-composition.js';
+import {
+  isSemanticPrefixContinuity,
+  type SemanticPrefixContinuity,
+} from './semantic-prefix-continuity.js';
 
 /**
  * One request's context, frozen by the transaction that committed it (#2323).
@@ -67,6 +71,8 @@ export interface LatestContextSnapshot {
   composition?: ContextDiagnosticsComposition;
   /** The boundary that applied when this request was built, if any. */
   compaction?: ContextDiagnosticsCompaction;
+  /** Runtime-owned conclusion; consumers must not select or compare observations. */
+  requestPrefix?: SemanticPrefixContinuity;
 }
 
 /**
@@ -129,7 +135,14 @@ export function readLatestContextSnapshot(
   const record = shapedRecord(
     event.data,
     ['schemaVersion', 'attemptId', 'providerId', 'modelId', 'completedAt'],
-    ['inputTokens', 'cacheReadInputTokens', 'contextWindow', 'composition', 'compaction'],
+    [
+      'inputTokens',
+      'cacheReadInputTokens',
+      'contextWindow',
+      'composition',
+      'compaction',
+      'requestPrefix',
+    ],
   );
   if (!record) return undefined;
   if (
@@ -143,7 +156,8 @@ export function readLatestContextSnapshot(
     (record.contextWindow !== undefined &&
       (!isCount(record.contextWindow) || record.contextWindow === 0)) ||
     (record.composition !== undefined && !isContextDiagnosticsComposition(record.composition)) ||
-    (record.compaction !== undefined && !isContextDiagnosticsCompaction(record.compaction))
+    (record.compaction !== undefined && !isContextDiagnosticsCompaction(record.compaction)) ||
+    (record.requestPrefix !== undefined && !isSemanticPrefixContinuity(record.requestPrefix))
   ) {
     return undefined;
   }

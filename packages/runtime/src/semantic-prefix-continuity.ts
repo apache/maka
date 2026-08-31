@@ -18,9 +18,12 @@
  */
 
 import type {
+  ModelCallAttempt,
   PreparedRequestObservation,
   PreparedRequestObservationSegment,
 } from '@maka/core/model-call-attempt';
+import { decodeModelCallAttempt } from '@maka/core/model-call-attempt';
+import { isSessionInlineRun, type AgentRunHeader, type AgentRunStore } from '@maka/core/agent-run';
 
 export type SemanticPrefixContinuity =
   | {
@@ -44,6 +47,36 @@ export type SemanticPrefixSegmentRef = Pick<
   PreparedRequestObservationSegment,
   'kind' | 'index' | 'role' | 'label'
 >;
+
+type PrefixStore = Pick<AgentRunStore, 'listSessionRuns' | 'readEvents' | 'readRootTurnAdmission'>;
+
+export async function deriveAttemptSemanticPrefixContinuity(input: {
+  current: ModelCallAttempt;
+  currentProviderStateIdentity?: `sha256:${string}`;
+  lineage: {
+    conversationCopy?: boolean;
+    parentRunId?: string;
+    parentTurnId?: string;
+    retriedFromTurnId?: string;
+    regeneratedFromTurnId?: string;
+    branchOfTurnId?: string;
+    parentSessionId?: string;
+  };
+  store: PrefixStore;
+}): Promise<SemanticPrefixContinuity> {
+  const { current } = input;
+  if (current.callKind !== 'main' || !current.requestObservation) return unavailable();
+
+  const predecessor = await predecessorAttempt(input);
+  if (predecessor === null) {
+    return { status: 'no_predecessor', previousSegmentCount: 0, preservedSegmentCount: 0 };
+  }
+  if (!predecessor || !sameDomain(input, predecessor)) return unavailable();
+  return deriveSemanticPrefixContinuity(
+    current.requestObservation,
+    predecessor.attempt.requestObservation!,
+  );
+}
 
 export function deriveSemanticPrefixContinuity(
   currentObservation: PreparedRequestObservation,
@@ -111,4 +144,178 @@ function segmentRef(segment: PreparedRequestObservationSegment): SemanticPrefixS
     ...(segment.role === undefined ? {} : { role: segment.role }),
     ...(segment.label === undefined ? {} : { label: segment.label }),
   };
+}
+
+async function predecessorAttempt(input: {
+  current: ModelCallAttempt;
+  currentProviderStateIdentity?: `sha256:${string}`;
+  lineage: {
+    conversationCopy?: boolean;
+    parentRunId?: string;
+    parentTurnId?: string;
+    retriedFromTurnId?: string;
+    regeneratedFromTurnId?: string;
+    branchOfTurnId?: string;
+    parentSessionId?: string;
+  };
+  store: PrefixStore;
+}): Promise<{ attempt: ModelCallAttempt; run: AgentRunHeader } | null | undefined> {
+  const { current, lineage, store } = input;
+  const runs = await store.listSessionRuns(current.sessionId);
+  const currentRun = runs.find((run) => run.runId === current.runId);
+  if (!currentRun) return undefined;
+
+  if (current.attempt > 0) {
+    return uniqueAttempt(
+      currentRun,
+      await attemptsFor(store, currentRun),
+      (candidate) =>
+        candidate.logicalCallId === current.logicalCallId &&
+        candidate.attempt === current.attempt - 1,
+    );
+  }
+  if (current.step > 0) {
+    return latestAttempt(
+      currentRun,
+      (await attemptsFor(store, currentRun)).filter(
+        (candidate) => candidate.turnId === current.turnId && candidate.step === current.step - 1,
+      ),
+    );
+  }
+  if (lineage.parentRunId) {
+    const parent = runs.find((run) => run.runId === lineage.parentRunId);
+    return parent ? latestAttempt(parent, await attemptsFor(store, parent)) : undefined;
+  }
+  if (
+    lineage.conversationCopy ||
+    lineage.parentSessionId ||
+    lineage.parentTurnId ||
+    lineage.retriedFromTurnId ||
+    lineage.regeneratedFromTurnId ||
+    lineage.branchOfTurnId
+  ) {
+    return undefined;
+  }
+
+  const admission = await store.readRootTurnAdmission?.(current.sessionId, current.turnId);
+  if (
+    !admission ||
+    admission.runId !== current.runId ||
+    admission.previousRootTurnId === undefined
+  ) {
+    return undefined;
+  }
+  if (admission.previousRootTurnId === null) return null;
+  const previousRuns = runs.filter(
+    (run) => run.turnId === admission.previousRootTurnId && isSessionInlineRun(run),
+  );
+  if (previousRuns.length !== 1) return undefined;
+  return latestAttempt(previousRuns[0]!, await attemptsFor(store, previousRuns[0]!));
+}
+
+async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<ModelCallAttempt[]> {
+  const attempts: ModelCallAttempt[] = [];
+  for (const event of await store.readEvents(run.sessionId, run.runId)) {
+    if (event.type !== 'model_call_attempt_recorded') continue;
+    try {
+      const attempt = decodeModelCallAttempt(event.data);
+      if (
+        attempt.callKind === 'main' &&
+        attempt.sessionId === run.sessionId &&
+        attempt.runId === run.runId &&
+        attempt.attemptId === event.id
+      ) {
+        attempts.push(attempt);
+      }
+    } catch {
+      // An unreadable attempt cannot become a guessed baseline.
+    }
+  }
+  return attempts;
+}
+
+function latestAttempt(
+  run: AgentRunHeader,
+  attempts: readonly ModelCallAttempt[],
+): { attempt: ModelCallAttempt; run: AgentRunHeader } | undefined {
+  if (attempts.length === 0) return undefined;
+  const step = Math.max(...attempts.map((attempt) => attempt.step));
+  const onStep = attempts.filter((attempt) => attempt.step === step);
+  const physical = Math.max(...onStep.map((attempt) => attempt.attempt));
+  return uniqueAttempt(run, onStep, (attempt) => attempt.attempt === physical);
+}
+
+function uniqueAttempt(
+  run: AgentRunHeader,
+  attempts: readonly ModelCallAttempt[],
+  predicate: (attempt: ModelCallAttempt) => boolean,
+): { attempt: ModelCallAttempt; run: AgentRunHeader } | undefined {
+  const matches = attempts.filter(predicate);
+  return matches.length === 1 ? { attempt: matches[0]!, run } : undefined;
+}
+
+function sameDomain(
+  input: {
+    current: ModelCallAttempt;
+    currentProviderStateIdentity?: `sha256:${string}`;
+  },
+  previous: { attempt: ModelCallAttempt; run: AgentRunHeader },
+): boolean {
+  const current = input.current;
+  const before = previous.attempt;
+  if (!before.requestObservation) return false;
+  const currentPartition = exactProviderPartition(current.requestObservation!);
+  const previousPartition = exactProviderPartition(before.requestObservation);
+  return (
+    input.currentProviderStateIdentity !== undefined &&
+    input.currentProviderStateIdentity === previous.run.providerStateIdentity &&
+    current.sessionId === before.sessionId &&
+    current.connectionSlug === before.connectionSlug &&
+    current.providerId === before.providerId &&
+    current.modelId === before.modelId &&
+    currentPartition !== undefined &&
+    currentPartition === previousPartition
+  );
+}
+
+function exactProviderPartition(observation: PreparedRequestObservation): string | undefined {
+  const segments = observation.segments.filter((segment) => segment.kind === 'provider_options');
+  if (segments.some((segment) => segment.comparison === 'opaque')) return undefined;
+  return segments.map((segment) => `${segment.index}:${segment.digest}`).join('|');
+}
+
+function unavailable(): SemanticPrefixContinuity {
+  return { status: 'unavailable', previousSegmentCount: 0, preservedSegmentCount: 0 };
+}
+
+export function isSemanticPrefixContinuity(value: unknown): value is SemanticPrefixContinuity {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<SemanticPrefixContinuity>;
+  if (
+    !Number.isSafeInteger(candidate.previousSegmentCount) ||
+    !Number.isSafeInteger(candidate.preservedSegmentCount) ||
+    candidate.previousSegmentCount! < 0 ||
+    candidate.preservedSegmentCount! < 0 ||
+    candidate.preservedSegmentCount! > candidate.previousSegmentCount!
+  ) {
+    return false;
+  }
+  if (candidate.status === 'no_predecessor' || candidate.status === 'unavailable') {
+    return candidate.previousSegmentCount === 0 && candidate.preservedSegmentCount === 0;
+  }
+  if (candidate.status === 'preserved') {
+    return candidate.preservedSegmentCount === candidate.previousSegmentCount;
+  }
+  if (candidate.status === 'unknown') return true;
+  if (candidate.status !== 'diverged') return false;
+  const segment = candidate.firstDivergentSegment;
+  return Boolean(
+    segment &&
+      (segment.kind === 'tool_schema' ||
+        segment.kind === 'system_prompt' ||
+        segment.kind === 'message' ||
+        segment.kind === 'provider_options') &&
+      Number.isSafeInteger(segment.index) &&
+      segment.index >= 0,
+  );
 }
