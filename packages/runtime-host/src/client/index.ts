@@ -31,6 +31,7 @@ export {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
   type DirectRequestOperationKey,
 } from './connection.js';
 export {

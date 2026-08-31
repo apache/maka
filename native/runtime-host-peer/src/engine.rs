@@ -58,7 +58,7 @@ use address::{address_with_expected_peer, address_with_peer, is_relayed_address}
 pub(crate) use address::{coordination_relay_peer_id, transit_relay_peer_id};
 use identity_store::load_or_create_key;
 use peer_stream::spawn_stream;
-pub use peer_stream::{PeerStream, StreamCommand};
+pub use peer_stream::{DirectTransport, PeerConnectionPath, PeerStream, StreamCommand};
 
 const APPLICATION_PROTOCOL: &str = "/maka/runtime-host/peer/1";
 const MESH_CONTROL_PROTOCOL: &str = "/maka/runtime-host/mesh-control/1";
@@ -872,6 +872,7 @@ async fn run_endpoint_async(
                 *direct.active.entry(stream.connection_id).or_default() += 1;
                 let peer_stream = spawn_stream(
                     stream.peer_id,
+                    stream.path,
                     stream.stream,
                     Some((
                         StreamCompletion::Application {
@@ -888,6 +889,7 @@ async fn run_endpoint_async(
                 *direct.active.entry(stream.connection_id).or_default() += 1;
                 let peer_stream = spawn_stream(
                     stream.peer_id,
+                    stream.path,
                     stream.stream,
                     Some((
                         StreamCompletion::MeshControl {
@@ -1063,7 +1065,7 @@ async fn run_endpoint_async(
                     match opened.result {
                         Ok(opened) => {
                             if waiter.stream_kind == StreamKind::Application
-                                && opened.relay_peer_id.is_some_and(|relay_peer| {
+                                && opened.path.relay_peer_id().is_some_and(|relay_peer| {
                                     !waiter.transit_relay_peers.contains(&relay_peer)
                                 })
                             {
@@ -1111,6 +1113,7 @@ async fn run_endpoint_async(
                                 );
                                 Ok(spawn_stream(
                                     waiter.peer_id,
+                                    opened.path,
                                     opened.stream,
                                     Some((
                                         StreamCompletion::Application { connection_id },
@@ -1129,6 +1132,7 @@ async fn run_endpoint_async(
                                 *direct.active.entry(connection_id).or_default() += 1;
                                 Ok(spawn_stream(
                                     waiter.peer_id,
+                                    opened.path,
                                     opened.stream,
                                     Some((
                                         StreamCompletion::MeshControl {

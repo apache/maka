@@ -49,11 +49,22 @@ export class RuntimeHostPeerError extends Error {
 
 export interface RuntimeHostPeerNativeStream {
   readonly peerId: string;
+  readonly path?: RuntimeHostPeerConnectionPath;
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
   close(): Promise<void>;
   abort(): void;
 }
+
+export type RuntimeHostPeerConnectionPath =
+  | {
+      readonly kind: 'direct';
+      readonly transport: 'quic' | 'tcp' | 'webrtc' | 'other';
+    }
+  | {
+      readonly kind: 'transit';
+      readonly relayPeerId: string;
+    };
 
 export interface RuntimeHostPeerIdentityProof {
   readonly publicKey: Buffer;

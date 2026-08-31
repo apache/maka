@@ -29,7 +29,9 @@ use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
-use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
+use crate::engine::{
+    self, DirectTransport, EngineCommand, PeerConnectionPath, PeerError, StreamCommand,
+};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
@@ -310,9 +312,18 @@ impl Drop for PeerEndpoint {
 #[napi]
 pub struct PeerStream {
     peer_id: String,
+    path: PeerStreamPath,
     incoming: Arc<AsyncMutex<IncomingStreamReceiver>>,
     commands: mpsc::Sender<StreamCommand>,
     abort: watch::Sender<bool>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct PeerStreamPath {
+    pub kind: String,
+    pub transport: Option<String>,
+    pub relay_peer_id: Option<String>,
 }
 
 #[napi]
@@ -320,6 +331,11 @@ impl PeerStream {
     #[napi(getter)]
     pub fn peer_id(&self) -> String {
         self.peer_id.clone()
+    }
+
+    #[napi(getter)]
+    pub fn path(&self) -> PeerStreamPath {
+        self.path.clone()
     }
 
     #[napi]
@@ -450,10 +466,34 @@ pub fn verify_peer_identity(
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
         peer_id: stream.peer_id.to_string(),
+        path: peer_stream_path(stream.path),
         incoming: Arc::new(AsyncMutex::new(stream.incoming)),
         commands: stream.commands,
         abort: stream.abort,
     })
+}
+
+fn peer_stream_path(path: PeerConnectionPath) -> PeerStreamPath {
+    match path {
+        PeerConnectionPath::Direct(transport) => PeerStreamPath {
+            kind: "direct".to_owned(),
+            transport: Some(
+                match transport {
+                    DirectTransport::Quic => "quic",
+                    DirectTransport::Tcp => "tcp",
+                    DirectTransport::WebRtc => "webrtc",
+                    DirectTransport::Other => "other",
+                }
+                .to_owned(),
+            ),
+            relay_peer_id: None,
+        },
+        PeerConnectionPath::Transit { relay_peer_id } => PeerStreamPath {
+            kind: "transit".to_owned(),
+            transport: None,
+            relay_peer_id: Some(relay_peer_id.to_string()),
+        },
+    }
 }
 
 fn parse_peer_id(value: &str) -> Result<PeerId> {

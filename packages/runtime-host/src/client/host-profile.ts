@@ -631,6 +631,7 @@ export async function connectPeerRuntimeHost(input: {
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      ...(stream.path ? { peerPath: stream.path } : {}),
     });
     input.signal?.throwIfAborted();
     if (result.kind === 'incompatible') {
