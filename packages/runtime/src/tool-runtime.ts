@@ -919,7 +919,7 @@ export class ToolRuntime {
     this.lastFailedToolCallBoundaryDetails = boundaryDetails;
   }
 
-  async writeSyntheticToolResult(
+  private async writeSyntheticToolResult(
     toolUseId: string,
     turnId: string,
     toolName: string,

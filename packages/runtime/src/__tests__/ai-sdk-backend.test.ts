@@ -6985,7 +6985,7 @@ describe('AiSdkBackend error surfaces', () => {
     assert.equal(text.endsWith('…'), true);
   });
 
-  test('writeSyntheticToolResult never persists raw secret-shaped errors', async () => {
+  test('tool settlement never persists raw secret-shaped synthetic errors', async () => {
     const messages: ToolResultMessage[] = [];
     const events: SessionEvent[] = [];
     const backend = createTestAiSdkBackend({
@@ -7003,20 +7003,18 @@ describe('AiSdkBackend error surfaces', () => {
       now: () => 1,
     });
 
-    await turnScope(backend, 'turn-1').toolRuntime.writeSyntheticToolResult(
-      'tool-1',
-      'turn-1',
-      'Bash',
-      'failed with api_key=sk-live-secret-token-value',
-      {
-        push: (event) => {
-          events.push(event);
-        },
-        pushAndWaitUntilConsumed: async (event) => {
-          events.push(event);
-        },
+    const tool: MakaTool = {
+      name: 'FailingTool',
+      description: 'fails with a provider secret',
+      parameters: {},
+      impl: async () => {
+        throw new Error('failed with api_key=sk-live-secret-token-value');
       },
-    );
+    };
+
+    await runtimeExecute(backend, tool, 'turn-1', {
+      push: (event) => events.push(event),
+    })({}, { toolCallId: 'tool-1', abortSignal: new AbortController().signal });
 
     assert.equal(JSON.stringify(messages).includes('sk-live-secret-token-value'), false);
     assert.equal(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
