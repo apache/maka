@@ -54,6 +54,7 @@ import {
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
   runtimeHostProfileAccess,
+  type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
@@ -102,6 +103,7 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
+import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -1574,37 +1576,40 @@ function registerPersistentClientIpc(): void {
       );
     },
   );
+  const projectRuntimeHostIdentity = (
+    epoch: string,
+    target: ResolvedRuntimeHostProfile,
+    readiness: 'ready' | 'reconnecting',
+    hostId: string,
+  ): DesktopRuntimeHostIdentity => ({
+    hostId,
+    targetEpoch: epoch,
+    profileId: target.profile.id,
+    profileName: target.profile.name,
+    profileKind: target.profile.kind,
+    profileAccess: runtimeHostProfileAccess(target.profile),
+    readiness,
+  });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const current = runtimeHostManager?.current();
     if (!current?.hostId) {
       throw new Error("Desktop Runtime Host identity is unavailable");
     }
-    return {
-      hostId: current.hostId,
-      targetEpoch: current.epoch,
-      profileId: current.target.profile.id,
-      profileName: current.target.profile.name,
-      profileKind: current.target.profile.kind,
-      readiness: current.readiness,
-    };
+    return projectRuntimeHostIdentity(
+      current.epoch,
+      current.target,
+      current.readiness,
+      current.hostId,
+    );
   });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
-      const hostId = state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : state.readiness === "reconnecting"
-          ? state.hostId
-          : undefined;
+      if (state.readiness !== "ready" && state.readiness !== "reconnecting") return [];
+      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId;
       if (!hostId) return [];
-      return [{
-        hostId,
-        targetEpoch: state.epoch,
-        profileId: state.target.profile.id,
-        profileName: state.target.profile.name,
-        profileKind: state.target.profile.kind,
-        profileAccess: runtimeHostProfileAccess(state.target.profile),
-        readiness: state.readiness,
-      }];
+      return [
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness, hostId),
+      ];
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });

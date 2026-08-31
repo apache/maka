@@ -421,6 +421,14 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly removed?: boolean;
 }
 
+export interface DesktopRuntimeHostIdentity extends DesktopRuntimeHostRef {
+  readonly targetEpoch: string;
+  readonly profileName: string;
+  readonly profileKind: RuntimeHostProfileKind;
+  readonly profileAccess: RuntimeHostProfileAccess;
+  readonly readiness: 'ready' | 'reconnecting';
+}
+
 export type DesktopLocalRuntimeHostRemoteAccessSnapshot =
   | { readonly state: 'unsupported'; readonly message: string; readonly managedService?: true }
   | { readonly state: 'off'; readonly managedService?: true; readonly sharedAccess?: true }
