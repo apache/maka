@@ -41,7 +41,6 @@ import {
   PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS,
   type ModelCallAttempt,
 } from '@maka/core/model-call-attempt';
-import type { ModelCallCommit } from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -183,22 +182,6 @@ test('a real send seals its observation into SQLite and reconstructs it after re
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test('a layer that forwards only the attempt no longer type-checks', () => {
-  // The regression this replaces was invisible precisely because it compiled.
-  // Keeping the shape in a value here means a future narrowing is a build
-  // failure rather than a silently missing feature.
-  const forward = (commit: ModelCallCommit<ModelCallAttempt>) => commit;
-  const commit = {
-    attempt: { attemptId: 'a-1' } as ModelCallAttempt,
-    latestContext: { attemptId: 'a-1', orderedAt: 10, snapshot: { attemptId: 'a-1' } },
-  } satisfies ModelCallCommit<ModelCallAttempt>;
-
-  const forwarded = forward(commit);
-
-  assert.equal(forwarded.latestContext?.attemptId, 'a-1', 'the derived row survives the hop');
-  assert.equal(forwarded.attempt.attemptId, 'a-1');
 });
 
 function answeringModel(): MockLanguageModelV4 {

@@ -666,9 +666,8 @@ export interface BackendFactoryContext {
   turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
   /**
-   * Durable AgentRun row carrying the canonical accounting record for one
-   * physical provider call. Distinct from the diagnostic row above: this one is
-   * the metering source of truth (#1679).
+   * Durable AgentRun row carrying the canonical record for one physical
+   * provider call, including metering and its prepared-request observation.
    */
   recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */

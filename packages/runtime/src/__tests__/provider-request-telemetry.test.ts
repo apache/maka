@@ -297,22 +297,13 @@ describe('provider request tracker', () => {
       serializedRequest: string;
     }> = [];
     const attempts: ModelCallAttempt[] = [];
-    const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as
-      | (new (
-          input: Record<string, unknown>,
-        ) => {
-          setStep(step: number): void;
-          trackStream(input: Record<string, unknown>): Promise<{ stream: ReadableStream<unknown> }>;
-        })
-      | undefined;
-    assert.equal(typeof Tracker, 'function');
     let id = 0;
-    const tracker = new Tracker!({
+    const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-1',
       turnId: 'turn-1',
       now: () => Date.now(),
       newId: () => `id-${++id}`,
-      persistArtifact: async (capture: { captureId: string; serializedRequest: string }) => {
+      persistArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: `artifact-${captures.length}` };
       },
@@ -582,19 +573,13 @@ describe('provider request tracker', () => {
 
   test('dispatches with its observation when private artifact persistence fails', async () => {
     const captures: string[] = [];
-    const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as new (
-      input: Record<string, unknown>,
-    ) => {
-      setStep(step: number): void;
-      trackStream(input: Record<string, unknown>): Promise<{ stream: ReadableStream<unknown> }>;
-    };
     let providerCalls = 0;
-    const tracker = new Tracker({
+    const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-2',
       turnId: 'turn-2',
       now: () => Date.now(),
       newId: () => `capture-${captures.length + 1}`,
-      persistArtifact: async (capture: { observation: { digest: string } }) => {
+      persistArtifact: async (capture) => {
         captures.push(capture.observation.digest);
         if (captures.length === 2) throw new Error('capture unavailable');
         return { artifactId: 'artifact-1' };
@@ -677,13 +662,7 @@ describe('provider request tracker', () => {
 
   test('records an errored stream after output as interrupted', async () => {
     const attempts: ModelCallAttempt[] = [];
-    const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as new (
-      input: Record<string, unknown>,
-    ) => {
-      setStep(step: number): void;
-      trackStream(input: Record<string, unknown>): Promise<{ stream: ReadableStream<unknown> }>;
-    };
-    const tracker = new Tracker({
+    const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-3',
       turnId: 'turn-3',
       now: () => Date.now(),

@@ -26,11 +26,8 @@ import type { PreparedRequestObservationSegmentKind } from '@maka/core/model-cal
 /**
  * The three fields a fold needs, and no more.
  *
- * `PreparedRequestSegment` satisfies this structurally, so a live capture folds
- * without conversion — but a decoder reading one back off the ledger does not
- * have to invent an `index` or a `hash` it never uses just to produce the wider
- * type. A fabricated field is a silent wrong answer waiting for the first
- * caller that reads it.
+ * A current observation segment satisfies this structurally, while the legacy
+ * event decoder does not have to invent fields the fold never reads.
  */
 export interface SizedRequestSegment {
   kind: PreparedRequestObservationSegmentKind;
@@ -40,16 +37,16 @@ export interface SizedRequestSegment {
 }
 
 /**
- * Folds one request's captured segments into "what was this prompt made of"
+ * Folds one request's observed segments into "what was this prompt made of"
  * (#2323).
  *
  * The bar above this in the Inspector answers how full the context is, from
  * provider-reported tokens. This answers what filled it, and the two are not
- * views of one number: composition is measured in **bytes of serialized
- * request**, sums to `requestBytes`, and never sums to the reported
- * `inputTokens`. Nothing here estimates tokens — a byte count is the fact this
- * layer holds, and turning it into a token figure is a display decision that
- * has to be labelled as an estimate where it is made (#1679).
+ * views of one number: composition is measured in **bytes of the observed
+ * semantic segments** and never sums to the reported `inputTokens`. Nothing
+ * here estimates tokens — a byte count is the fact this layer holds, and
+ * turning it into a token figure is a display decision that has to be labelled
+ * as an estimate where it is made (#1679).
  *
  * `tool_schema` folds per tool rather than into one total, because that is the
  * only breakdown a reader can act on: "tool definitions are 40%" names nothing
