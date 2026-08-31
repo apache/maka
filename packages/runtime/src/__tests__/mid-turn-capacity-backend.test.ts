@@ -19,6 +19,7 @@
 
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
@@ -137,6 +138,12 @@ interface MidTurnFixtureOptions {
   priorShape?: 'text' | 'tool_heavy' | 'image_tool';
   /** Put one image attachment on the durable current-turn user anchor. */
   currentImage?: boolean;
+  /**
+   * Return attachment bytes as a Node `Buffer` (the production session-file
+   * reader) rather than a `Uint8Array`, so the estimate sees what ships
+   * (apache/maka#4290).
+   */
+  attachmentBytesAsBuffer?: boolean;
   /** First tool result is huge (finding C: prune must be able to rescue it). */
   hugeFirstResult?: boolean;
   /** Exact first Read result for capacity-ordering regressions. */
@@ -428,7 +435,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           supportsVision: true,
           readAttachmentBytes: async () => ({
             ok: true as const,
-            bytes: new Uint8Array(imageBytes),
+            bytes: options.attachmentBytesAsBuffer
+              ? Buffer.from(new Uint8Array(imageBytes))
+              : new Uint8Array(imageBytes),
           }),
         }
       : {}),
@@ -1472,6 +1481,35 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     // The raw span is never folded away, proving no compaction ran.
     assert.equal(promptJson(fixture, 2).includes('RAW_SPAN_ONE_'), true);
+  });
+
+  test('a first-turn image upload reaches the provider on an unknown-window model (apache/maka#4290)', async () => {
+    // The reported failure end to end: an unknown-window model runs the
+    // capacity verdict on step 0 against the 48,384-token policy_fallback
+    // bound. The current turn's only message is a ~200 KB image upload, read as
+    // a Node Buffer. Before the fix its serialized bytes alone exceeded the
+    // bound and the turn died with context_budget_exhausted before any request.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      withoutPriorTurns: true,
+      currentImage: true,
+      imageBytes: 200_000,
+      attachmentBytesAsBuffer: true,
+    });
+    await runFixtureTurn(fixture);
+
+    // The provider actually received the request — the turn was not killed on
+    // step 0 — and the image was materialized into it.
+    assert.ok(fixture.model.doStreamCalls.length >= 1, 'the first request must reach the provider');
+    assert.match(promptJson(fixture, 0), /"mediaType":"image\/png"/);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.notEqual(
+      complete?.type === 'complete' ? complete.stopReason : undefined,
+      'context_budget_exhausted',
+    );
+    // Nothing was foldable (first turn), so no compaction should have run.
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.equal(fixture.recorded.length, 0);
   });
 
   test('compacts one oversized prior turn before an unknown-model request', async () => {

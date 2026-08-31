@@ -70,6 +70,7 @@ import {
   type MalformedHistoryCompactSummaryReason,
 } from './history-compact-error.js';
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import type { ModelMessage } from './model-protocol.js';
 import type { ModelAdapter } from './model-adapter.js';
 import type {
@@ -778,6 +779,7 @@ export class AiSdkCompaction {
         providerTools,
         activeToolsForStep,
         systemPromptChars,
+        charsPerToken,
       );
       const forcedEstimate = state.forcedTriggerEstimate;
       state.forcedTriggerEstimate = undefined;
@@ -1051,6 +1053,7 @@ export class AiSdkCompaction {
       providerTools,
       activeToolsForStep,
       systemPromptChars,
+      charsPerToken,
     );
     if (replacedPayloadChars >= input.referencePayloadChars) {
       return {
@@ -1171,6 +1174,7 @@ export class AiSdkCompaction {
         input.providerTools,
         input.activeTools,
         input.systemPromptChars,
+        this.input.contextBudget?.charsPerToken ?? 4,
       );
     const phase = input.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
     const outcome = await this.compactActiveRequestHistory({
@@ -1294,6 +1298,7 @@ export class AiSdkCompaction {
           providerTools,
           result?.activeTools ?? options.activeTools ?? fallbackActiveTools(),
           systemPromptChars,
+          charsPerToken,
         );
       let payloadChars = finalPayloadChars();
       if (
@@ -1581,15 +1586,247 @@ export class MidTurnCapacityCompactState {
  * usage sample) is the whole payload, so omitting it would under-estimate by
  * exactly the system prompt and let an over-window request stream.
  */
-function midTurnRequestPayloadChars(
+/**
+ * Vision models bill an image by its rendered dimensions, not its transported
+ * bytes: one image is bounded at roughly this many tokens (the Anthropic
+ * per-image ceiling; other providers are lower). Counted linearly per part.
+ */
+const IMAGE_PART_ESTIMATED_TOKENS = 1_600;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** The inline binary of an image payload slot, elided before serialization. */
+const ELIDED_IMAGE_BINARY = '';
+
+/**
+ * Image magic-byte prefixes, mirroring `@ai-sdk/provider-utils`'
+ * `detectMediaType({ topLevelType: 'image' })`. The AI SDK runs this over every
+ * inline file payload and OVERRIDES the declared mediaType when the bytes are a
+ * known image, so the provider bills such a part as an image whatever its
+ * declared type. We classify the same way, or a generic-MIME image (or the
+ * SDK's recommended bare `image` type) would be measured at full byte size and
+ * trip the pre-send verdict (apache/maka#4290). `null` matches any byte.
+ */
+const IMAGE_BYTE_SIGNATURES: readonly (readonly (number | null)[])[] = [
+  [0x47, 0x49, 0x46], // GIF
+  [0x89, 0x50, 0x4e, 0x47], // PNG
+  [0xff, 0xd8], // JPEG
+  [0x52, 0x49, 0x46, 0x46, null, null, null, null, 0x57, 0x45, 0x42, 0x50], // WEBP (RIFF…WEBP)
+  [0x42, 0x4d], // BMP
+  [0x49, 0x49, 0x2a, 0x00], // TIFF (little-endian)
+  [0x4d, 0x4d, 0x00, 0x2a], // TIFF (big-endian)
+  [0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66], // AVIF
+  [0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63], // HEIC
+];
+
+function bytesAreKnownImage(bytes: Uint8Array): boolean {
+  return IMAGE_BYTE_SIGNATURES.some(
+    (signature) =>
+      bytes.length >= signature.length &&
+      signature.every((byte, index) => byte === null || bytes[index] === byte),
+  );
+}
+
+function topLevelMediaType(mediaType: unknown): string | undefined {
+  if (typeof mediaType !== 'string') return undefined;
+  const slash = mediaType.indexOf('/');
+  return (slash === -1 ? mediaType : mediaType.slice(0, slash)).toLowerCase();
+}
+
+function isDataUrl(value: unknown): boolean {
+  if (value instanceof URL) return value.protocol === 'data:';
+  return typeof value === 'string' && value.slice(0, 5).toLowerCase() === 'data:';
+}
+
+function isRemoteUrlString(value: unknown): boolean {
+  return typeof value === 'string' && /^https?:\/\//i.test(value);
+}
+
+/** The mediaType named by a `data:<mediaType>;base64,…` payload, if any. */
+function dataUrlMediaType(value: unknown): string | undefined {
+  const text = value instanceof URL ? value.toString() : typeof value === 'string' ? value : '';
+  if (!isDataUrl(text)) return undefined;
+  const comma = text.indexOf(',');
+  const header = text.slice('data:'.length, comma === -1 ? text.length : comma);
+  const mediaType = header.split(';')[0]?.trim();
+  return mediaType && mediaType.length > 0 ? mediaType : undefined;
+}
+
+/**
+ * The body of a `data:<mediaType>[;base64],<body>` payload (string or URL
+ * instance), if any. The AI SDK treats this body as base64 and re-sniffs its
+ * bytes to override the declared mediaType, so we decode it the same way.
+ */
+function dataUrlBody(value: unknown): string | undefined {
+  const text = value instanceof URL ? value.toString() : typeof value === 'string' ? value : '';
+  if (!isDataUrl(text)) return undefined;
+  const comma = text.indexOf(',');
+  return comma === -1 ? undefined : text.slice(comma + 1);
+}
+
+/** Decode a leading window of a base64 string into raw bytes for sniffing. */
+function base64BytePrefix(base64: string): Uint8Array | undefined {
+  try {
+    // 24 base64 chars → 18 bytes, past the longest image signature (12 bytes).
+    return new Uint8Array(Buffer.from(base64.slice(0, 24), 'base64'));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A small leading byte window of an inline payload, for image-signature
+ * sniffing: raw bytes, a bare base64 string, or the (base64) body of a `data:`
+ * URL carried as a string or `URL` instance. The AI SDK decodes a `data:` URL
+ * and re-sniffs its bytes to override the declared type, so we must sniff it
+ * too — otherwise a generic-MIME image transported as a `data:` URL measures
+ * at full byte size and trips the pre-send verdict (apache/maka#4290). A remote
+ * `http(s)` URL carries no inline bytes.
+ */
+function inlineBytePrefix(payload: unknown): Uint8Array | undefined {
+  if (payload instanceof Uint8Array) return payload.subarray(0, 16);
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload).subarray(0, 16);
+  const body = dataUrlBody(payload);
+  if (body !== undefined) return base64BytePrefix(body);
+  if (typeof payload === 'string' && !isRemoteUrlString(payload)) {
+    return base64BytePrefix(payload);
+  }
+  return undefined;
+}
+
+/** The inline payload of a `FilePart.data`, unwrapping a `{ type: 'data'|'url' }`. */
+function fileDataPayload(data: unknown): unknown {
+  if (isRecord(data)) {
+    if (data.type === 'data') return data.data;
+    if (data.type === 'url') return data.url;
+  }
+  return data;
+}
+
+/**
+ * Whether the provider will bill a `file` part as an image, mirroring the AI
+ * SDK's normalization: an `image` top-level mediaType (bare `image` or
+ * `image/*`, incl. a `data:` URL's own type), or inline bytes whose signature
+ * is a known image (which the SDK uses to override the declared type).
+ */
+function fileBillsAsImage(part: Record<string, unknown>): boolean {
+  const payload = fileDataPayload(part.data);
+  const declared = dataUrlMediaType(payload) ?? part.mediaType;
+  if (topLevelMediaType(declared) === 'image') return true;
+  const prefix = inlineBytePrefix(payload);
+  return prefix !== undefined && bytesAreKnownImage(prefix);
+}
+
+/**
+ * Return an image payload with its INLINE bytes elided: raw bytes (Uint8Array —
+ * a Node Buffer is one, before `JSON.stringify` applies its toJSON — or an
+ * ArrayBuffer), a base64 string, and the `{ type: 'data' }` / `data:`-URL
+ * wrappers all carry bytes and are elided. A remote `http(s)` URL or provider
+ * reference carries none and stays verbatim; the caller still adds the
+ * per-image token cost.
+ */
+function elideInlineImageBytes(payload: unknown): unknown {
+  if (payload instanceof Uint8Array || payload instanceof ArrayBuffer) return ELIDED_IMAGE_BINARY;
+  if (payload instanceof URL) return isDataUrl(payload) ? ELIDED_IMAGE_BINARY : payload;
+  if (typeof payload === 'string')
+    return isRemoteUrlString(payload) ? payload : ELIDED_IMAGE_BINARY;
+  if (isRecord(payload)) {
+    if (payload.type === 'data') return { ...payload, data: ELIDED_IMAGE_BINARY };
+    if (payload.type === 'url') {
+      return isDataUrl(payload.url) ? { ...payload, url: ELIDED_IMAGE_BINARY } : payload;
+    }
+  }
+  return payload;
+}
+
+/**
+ * Discount a single content part when it is an IMAGE — an `image` part, or a
+ * `file` part the provider bills as an image (see fileBillsAsImage) — including
+ * one nested in a tool-result's content output. Every image contributes the
+ * per-image token cost regardless of how it is carried (inline bytes, a `data:`
+ * URL, or a remote reference); only inline bytes are stripped from the
+ * serialized size. Non-image files (PDF, text, audio, …) and look-alike content
+ * (e.g. a `{ type: 'data' }` tool-call input) are left to serialize at full
+ * size — the budget must not silently under-count them (apache/maka#4290).
+ */
+function elideImageBinaryInPart(part: unknown): { part: unknown; imageParts: number } {
+  if (!isRecord(part)) return { part, imageParts: 0 };
+  if (part.type === 'image') {
+    return { part: { ...part, image: elideInlineImageBytes(part.image) }, imageParts: 1 };
+  }
+  if (part.type === 'file') {
+    if (!fileBillsAsImage(part)) return { part, imageParts: 0 };
+    return { part: { ...part, data: elideInlineImageBytes(part.data) }, imageParts: 1 };
+  }
+  if (
+    part.type === 'tool-result' &&
+    isRecord(part.output) &&
+    part.output.type === 'content' &&
+    Array.isArray(part.output.value)
+  ) {
+    let imageParts = 0;
+    let changed = false;
+    const value = part.output.value.map((inner) => {
+      const result = elideImageBinaryInPart(inner);
+      if (result.part !== inner) changed = true;
+      imageParts += result.imageParts;
+      return result.part;
+    });
+    return changed
+      ? { part: { ...part, output: { ...part.output, value } }, imageParts }
+      : { part, imageParts };
+  }
+  return { part, imageParts: 0 };
+}
+
+/**
+ * Serialized char size of the outgoing messages, with inline image/file BINARY
+ * payloads discounted to a bounded per-image estimate instead of their raw
+ * transported size.
+ *
+ * `JSON.stringify(messages).length` counts an image at the size of its bytes: a
+ * `Uint8Array`/`Buffer` serializes to a `{"0":..}` (or `{"type":"Buffer",…}`)
+ * digit map (~10 chars/byte) and an inline base64 string at its full length —
+ * hundreds of KB to megabytes for one screenshot. Divided by `charsPerToken`
+ * that reads as hundreds of thousands of tokens, so a single attached image can
+ * trip `context_budget_exhausted` before any request is sent (apache/maka#4290),
+ * most visibly on an unknown-window model whose `policy_fallback` capacity puts
+ * the verdict on step 0. We walk the message content and discount only genuine
+ * image/file payloads: every other byte of structural overhead is preserved,
+ * and the opposite (image = 0) under-count of #3372 is avoided.
+ */
+function imageAwareMessagesPayloadChars(
+  messages: readonly ModelMessage[],
+  charsPerToken: number,
+): number {
+  let imageParts = 0;
+  const sanitized = messages.map((message) => {
+    if (!isRecord(message) || !Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = message.content.map((part) => {
+      const result = elideImageBinaryInPart(part);
+      if (result.part !== part) changed = true;
+      imageParts += result.imageParts;
+      return result.part;
+    });
+    return changed ? { ...message, content } : message;
+  });
+  const perImageChars = IMAGE_PART_ESTIMATED_TOKENS * Math.max(1, charsPerToken);
+  return JSON.stringify(sanitized).length + imageParts * perImageChars;
+}
+
+export function midTurnRequestPayloadChars(
   messages: readonly ModelMessage[],
   providerTools: readonly MakaTool[],
   activeTools: readonly string[],
   systemPromptChars: number,
+  charsPerToken = 4,
 ): number {
   return (
     Math.max(0, Math.floor(systemPromptChars)) +
-    JSON.stringify(messages).length +
+    imageAwareMessagesPayloadChars(messages, charsPerToken) +
     toolSchemaCharsForDiagnostics(providerTools, activeTools)
   );
 }
