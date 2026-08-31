@@ -347,9 +347,13 @@ export function RuntimeHostPeerMeshDialog(props: {
 
   function requestClose(): void {
     if (workingAction && workingAction !== 'refresh') {
+      if (activeOperation.current?.cancellable) {
+        cancelOperation();
+        finishClose();
+        return;
+      }
       closeRequested.current = true;
       setSettling(true);
-      if (activeOperation.current?.cancellable) cancelOperation();
       return;
     }
     finishClose();

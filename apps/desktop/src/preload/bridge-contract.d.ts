@@ -837,12 +837,12 @@ export interface MakaBridge {
     execute(
       target: DesktopRuntimeHostPeerMeshTarget,
       action: DesktopRuntimeHostPeerMeshAction,
-      input?: {
+      input: {
         readonly meshId?: string | null;
         readonly peerId?: string;
         readonly invitation?: string;
         readonly displayName?: string | null;
-        readonly operationId?: string;
+        readonly operationId: string;
       },
     ): Promise<DesktopRuntimeHostPeerMeshResult>;
     cancel(operationId: string): Promise<void>;

@@ -1567,8 +1567,8 @@ const makaBridge = {
         readonly peerId?: string;
         readonly invitation?: string;
         readonly displayName?: string | null;
-        readonly operationId?: string;
-      } = {},
+        readonly operationId: string;
+      },
     ) {
       return ipcRenderer.invoke(
         'runtime-host-peer-mesh:execute',

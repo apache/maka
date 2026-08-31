@@ -219,9 +219,6 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
     channel,
     async (_event, target, action, meshId, peerId, invitation, displayName, operationIdValue) => {
       const operationId = requireOperationId(operationIdValue);
-      if (!operationId) {
-        return execute(target, action, meshId, peerId, invitation, displayName);
-      }
       const parsedTarget = requireTarget(target);
       const parsedAction = requireAction(action);
       const controller = new AbortController();
@@ -247,8 +244,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   );
   const cancelChannel = 'runtime-host-peer-mesh:cancel';
   input.ipcMain.handle(cancelChannel, (_event, operationIdValue) => {
-    const operationId = requireOperationId(operationIdValue, true);
-    if (!operationId) throw new Error('Peer Mesh operation ID is required');
+    const operationId = requireOperationId(operationIdValue);
     const operation = activeOperations.get(operationId);
     if (operation?.cancellable) {
       operation.controller.abort(new Error('Peer Mesh operation was cancelled'));
@@ -570,8 +566,7 @@ function requireIdentifier(value: unknown, label: string): string {
   return value;
 }
 
-function requireOperationId(value: unknown, required = false): string | undefined {
-  if (value === undefined && !required) return undefined;
+function requireOperationId(value: unknown): string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||

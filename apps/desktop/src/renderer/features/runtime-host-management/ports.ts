@@ -33,7 +33,7 @@ export interface PeerMeshOperationInput {
   readonly peerId?: string;
   readonly invitation?: string;
   readonly displayName?: string | null;
-  readonly operationId?: string;
+  readonly operationId: string;
 }
 
 export interface PeerMeshDirectPeerSnapshot {
@@ -52,7 +52,7 @@ export interface PeerMeshServices {
   execute(
     target: PeerMeshTarget,
     action: RuntimeHostPeerMeshManagementAction,
-    input?: PeerMeshOperationInput,
+    input: PeerMeshOperationInput,
   ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult>;
   cancel(operationId: string): Promise<void>;
   getDirectPeer(profileId: string): Promise<PeerMeshDirectPeerSnapshot>;
