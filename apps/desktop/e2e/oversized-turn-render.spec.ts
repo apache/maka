@@ -170,7 +170,6 @@ test('keyboard focus into a skipped card releases the live tail', async ({
     return {
       target: active?.dataset.focusBoundaryTarget === 'true',
       distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-      top: element.scrollTop,
       activeTop: activeRect?.top ?? Number.NaN,
       withinViewport: activeRect != null
         && activeRect.bottom > rootRect.top
@@ -197,13 +196,14 @@ test('keyboard focus into a skipped card releases the live tail', async ({
     return {
       target: active?.dataset.focusBoundaryTarget === 'true',
       distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-      top: element.scrollTop,
       activeTop: active?.getBoundingClientRect().top ?? Number.NaN,
     };
   });
   expect(afterGrowth.target).toBe(true);
   expect(afterGrowth.distance).toBeGreaterThan(focused.distance);
-  expect(Math.abs(afterGrowth.top - focused.top)).toBeLessThanOrEqual(4);
+  // Skipped intrinsic geometry may change the internal scroll offset while
+  // native anchoring keeps the reader on the same pixels. The focused card's
+  // screen position is the user-facing invariant; raw scrollTop is not.
   expect(Math.abs(afterGrowth.activeTop - focused.activeTop)).toBeLessThanOrEqual(4);
 });
 
