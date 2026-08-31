@@ -90,12 +90,14 @@ test('priority sorting promotes actionable work without mistaking stale running 
     { ...session, id: 'host-running', runningTurnIds: ['turn-1'], lastMessageAt: 40 },
     { ...session, id: 'legacy-running', status: 'running', lastMessageAt: 30 },
     { ...session, id: 'auth', status: 'blocked', blockedReason: 'auth', lastMessageAt: 20 },
+    { ...session, id: 'connection', status: 'blocked', blockedReason: 'NO_REAL_CONNECTION', lastMessageAt: 19 },
+    { ...session, id: 'permission', status: 'blocked', blockedReason: 'permission_required', lastMessageAt: 18 },
     { ...session, id: 'waiting', status: 'waiting_for_user', lastMessageAt: 10 },
   ];
   const original = structuredClone(rows);
   assert.deepEqual(renderedSessionIds({
     sessions: rows, sortMode: 'priority', streamingSessionIds: new Set(['streaming']),
-  }), ['waiting', 'auth', 'streaming', 'host-running', 'legacy-running', 'unread',
+  }), ['waiting', 'auth', 'connection', 'permission', 'streaming', 'host-running', 'legacy-running', 'unread',
     'ordinary', 'old-running', 'old-error', 'unknown-error']);
   assert.deepEqual(renderedSessionIds({ sessions: rows }), rows.map((row) => row.id));
   assert.deepEqual(rows, original, 'sorting must not mutate the Session catalog');

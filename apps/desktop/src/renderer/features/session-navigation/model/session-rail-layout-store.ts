@@ -114,8 +114,7 @@ export type SessionRailLayoutStore = ReturnType<typeof createSessionRailLayoutSt
 export const sessionRailLayoutStore: SessionRailLayoutStore = createSessionRailLayoutStore();
 
 /**
- * The whole geometry. Both readers use more than one field of it, and the store
- * replaces its state only when a field actually moved, so the identity is
- * already the comparison — a per-field selector would buy no granularity.
+ * The rail consumes both geometry and display preferences. The shell selects
+ * only collapsed/width so changing a rail preference stays within the rail.
  */
 export const selectRailLayout = (state: SessionRailLayoutState): SessionRailLayoutState => state;

@@ -73,6 +73,17 @@ export const SESSION_BLOCKED_REASONS = [
 
 export type SessionBlockedReason = (typeof SESSION_BLOCKED_REASONS)[number];
 
+/**
+ * Shared by rail priority and Desktop's display normalization. Only these
+ * blocked states have a current repair action outside the failed turn:
+ * configure a connection, re-login, or confirm a permission. Other failures
+ * remain retryable and surface on the failed turn. This display-only rule
+ * does not change the runtime's authoritative session status.
+ */
+export function isActionableBlocked(reason: SessionBlockedReason | undefined): boolean {
+  return reason === 'NO_REAL_CONNECTION' || reason === 'auth' || reason === 'permission_required';
+}
+
 /** Reserved durable role for the one WorkHub coordination conversation owned by a Runtime Host. */
 export const WORKHUB_COORDINATION_SESSION_ROLE = 'workhub_coordination' as const;
 export const WORKHUB_COORDINATION_SESSION_ID = 'maka_workhub_coordination' as const;
