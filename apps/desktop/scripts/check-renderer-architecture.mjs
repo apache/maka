@@ -2225,10 +2225,29 @@ function metricTotal(value) {
   return Object.values(value).reduce((total, count) => total + count, 0);
 }
 
+function dependencyScope(dependency) {
+  const slash = dependency.indexOf('/');
+  return slash === -1 ? dependency : dependency.slice(0, slash);
+}
+
+function allowsDependencyRename({ base, current, dependency }) {
+  // An external package dependency may enter a legacy file only when the same
+  // file removes equal-count dependency debt from the same package scope: a
+  // count-neutral re-export/package migration does not grow the legacy surface.
+  const scope = dependencyScope(dependency);
+  const increase = (current[dependency] ?? 0) - (base[dependency] ?? 0);
+  let removed = 0;
+  for (const [key, baseCount] of Object.entries(base)) {
+    if (dependencyScope(key) !== scope) continue;
+    removed += Math.max(0, (baseCount ?? 0) - (current[key] ?? 0));
+  }
+  return increase > 0 && increase <= removed;
+}
+
 function allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section }) {
   if (metricTotal(current.dependencyPaths) > metricTotal(base.dependencyPaths)) return false;
   const target = resolveDependency(desktopRoot, resolve(desktopRoot, path), dependency);
-  if (!target) return false;
+  if (!target) return allowsDependencyRename({ base: base.dependencyPaths, current: current.dependencyPaths, dependency });
   const targetRelative = normalizePath(relative(desktopRoot, target));
   const targetZone = zoneFor(targetRelative);
   if (section === 'legacyAppShell' || section === 'legacyAppShellClosure') {
