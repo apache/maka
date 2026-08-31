@@ -53,6 +53,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
+  runtimeHostProfileAccess,
 } from "@maka/runtime-host/client";
 import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
@@ -979,6 +980,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
@@ -1018,6 +1020,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: "unavailable",
         isDefault:
@@ -1041,6 +1044,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId,
         profileName: state?.target.profile.name ?? profileId,
         profileKind: state?.target.profile.kind ?? "remote",
+        profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
         ...(state?.readiness === "ready"
           ? { hostId: state.candidate.client.hostId }
           : state?.readiness !== "unavailable" && state && "hostId" in state && state.hostId
@@ -1598,6 +1602,7 @@ function registerPersistentClientIpc(): void {
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         readiness: state.readiness,
       }];
     }),
@@ -1750,12 +1755,19 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
+  const guestMountShutdown = Promise.resolve().then(() => guestSessionMountService.close());
+  const runtimeHostManagerShutdown = guestMountShutdown
+    .catch(() => undefined)
+    .then(() => runtimeHostManager?.close());
+  const runtimeHostPeerShutdown = runtimeHostManagerShutdown
+    .catch(() => undefined)
+    .then(() => runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close());
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
-    Promise.resolve().then(() => guestSessionMountService.close()),
-    runtimeHostManager?.close(),
-    runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
+    guestMountShutdown,
+    runtimeHostManagerShutdown,
+    runtimeHostPeerShutdown,
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),

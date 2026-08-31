@@ -26,6 +26,7 @@ import {
   type GuestSessionMount,
   type GuestSessionMountStore,
 } from '../runtime-host-guest-session-mounts.js';
+import { RuntimeHostPairingFinalizationInterruptedError } from '../runtime-host-desktop-manager.js';
 
 const ROOT_ID = 'a'.repeat(64);
 
@@ -73,43 +74,91 @@ test('removes failed activation desire instead of creating recoverable profile s
   assert.equal(unmounted.length, 1);
 });
 
-test('commits unmount desire before best-effort connection cleanup', async () => {
+test('settles admitted finalization before committing unmount desire', async () => {
   const store = memoryStore();
+  let started!: () => void;
+  let finish!: () => void;
+  const finalizing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const finalized = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
   const mounts = service(store, {
+    finalizeAccess: async () => {
+      started();
+      await finalized;
+    },
     unmount: async () => {
       assert.deepEqual(await store.read(), []);
       throw new Error('connection shutdown failed');
     },
   });
-  const result = await mounts.importInvitation(invitation('guest-three'), false);
+  const importing = mounts.importInvitation(invitation('guest-three'), false);
+  await finalizing;
+  const [retained] = await store.read();
+  assert.ok(retained);
+  const removing = mounts.remove(retained.mountId);
+  await Promise.resolve();
+  assert.equal((await store.read()).length, 1);
+  finish();
+  const result = await importing;
   assert.equal(result.kind, 'connected');
-  if (result.kind !== 'connected') return;
-
-  await mounts.remove(result.mountId);
+  await removing;
   assert.deepEqual(await store.read(), []);
 });
 
-test('awaits durable import rollback when closing during finalization', async () => {
+test('settles admitted finalization before closing and retains the mount', async () => {
   const store = memoryStore();
   let started!: () => void;
+  let finish!: () => void;
   const finalizing = new Promise<void>((resolve) => {
     started = resolve;
   });
+  const finalized = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
   const mounts = service(store, {
-    finalizeAccess: async (_mountId, signal) => {
+    finalizeAccess: async () => {
       started();
-      await new Promise<void>((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-      });
+      await finalized;
     },
   });
 
   const importing = mounts.importInvitation(invitation('guest-closing'), false);
   await finalizing;
-  await mounts.close();
+  const closing = mounts.close();
+  await Promise.resolve();
+  assert.deepEqual(await store.read().then((retained) => retained.length), 1);
+  finish();
+  await closing;
 
-  assert.equal((await importing).kind, 'error');
-  assert.deepEqual(await store.read(), []);
+  assert.equal((await importing).kind, 'connected');
+  assert.equal((await store.read()).length, 1);
+});
+
+test('retains and reconciles a mount when finalization outcome is unknown', async () => {
+  const store = memoryStore();
+  let attempts = 0;
+  let resolveReconciled!: () => void;
+  const reconciled = new Promise<void>((resolve) => {
+    resolveReconciled = resolve;
+  });
+  const mounts = service(store, {
+    finalizeAccess: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new RuntimeHostPairingFinalizationInterruptedError();
+      resolveReconciled();
+    },
+  });
+
+  const result = await mounts.importInvitation(invitation('guest-unknown'), false);
+  assert.equal(result.kind, 'error');
+  assert.equal((await store.read()).length, 1);
+  await reconciled;
+  assert.equal(attempts, 2);
+  assert.equal((await store.read()).length, 1);
+  await mounts.close();
 });
 
 function service(

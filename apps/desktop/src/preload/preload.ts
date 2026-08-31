@@ -256,6 +256,7 @@ const runtimeHostMetadata = new Map<
     readonly profileId: string;
     readonly profileName: string;
     readonly profileKind: RuntimeHostProfileKind;
+    readonly profileAccess: 'owner' | 'session_guest';
   }
 >();
 const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
@@ -308,6 +309,7 @@ ipcRenderer.on(
         profileId: change.profileId,
         profileName: change.profileName,
         profileKind: change.profileKind,
+        profileAccess: change.profileAccess,
       });
       if (change.isDefault) activeRuntimeHost = nextScope;
     } else if (change.isDefault) {
@@ -334,12 +336,14 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileId?: unknown;
     profileName?: unknown;
     profileKind?: unknown;
+    profileAccess?: unknown;
     readiness?: unknown;
   };
   if (
     typeof metadata.profileId !== 'string' ||
     typeof metadata.profileName !== 'string' ||
     !isRuntimeHostProfileKind(metadata.profileKind) ||
+    (metadata.profileAccess !== 'owner' && metadata.profileAccess !== 'session_guest') ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
@@ -351,6 +355,7 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileId: metadata.profileId,
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
+    profileAccess: metadata.profileAccess,
   });
   return { scope, readiness: metadata.readiness };
 }
@@ -719,13 +724,32 @@ function projectSessionSummary(
   scope: DesktopTargetScope,
   session: SessionSummary,
 ): DesktopSessionSummary {
+  const projected = projectSessionCatalogSummary(scope, session);
+  runtimeHostSessionScopes.set(projected.id, runtimeHostScopeKey(scope));
+  return projected;
+}
+
+function projectSessionCatalogSummary(
+  scope: DesktopTargetScope,
+  session: SessionSummary,
+): DesktopSessionSummary {
   const metadata = runtimeHostMetadataFor(scope);
   if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
-  recordRuntimeHostSessionScope(scope, session.id);
   return projectDesktopSessionSummary(
     { ...scope, ...metadata },
     session,
   );
+}
+
+function recordSessionCatalogScopes(sessions: readonly DesktopSessionSummary[]): void {
+  for (const session of sessions) {
+    const scopeKey = runtimeHostProfiles.get(session.profileId);
+    const scope = scopeKey ? runtimeHostScopes.get(scopeKey) : undefined;
+    if (!scopeKey || !scope || scope.hostId !== session.runtimeHostId) {
+      throw new Error('Desktop Runtime Host Session scope is unavailable');
+    }
+    runtimeHostSessionScopes.set(session.id, scopeKey);
+  }
 }
 
 function projectOnboardingSnapshot(
@@ -871,16 +895,18 @@ async function listDesktopSessions(
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   const scopes = await runtimeHostScopeList();
-  return collectRuntimeHostSessionCatalogs(
+  const sessions = await collectRuntimeHostSessionCatalogs(
     scopes.map(async (scope) => {
       const sessions = await ipcRenderer.invoke(
         'sessions:list',
         scope,
         filter,
       ) as SessionCatalogSummary[];
-      return sessions.map((session) => projectSessionSummary(scope, session));
+      return sessions.map((session) => projectSessionCatalogSummary(scope, session));
     }),
   );
+  recordSessionCatalogScopes(sessions);
+  return sessions;
 }
 
 async function listDesktopSessionsWithCoverage(): Promise<{
@@ -888,14 +914,21 @@ async function listDesktopSessionsWithCoverage(): Promise<{
   completeHostIds: string[];
 }> {
   const scopes = await runtimeHostScopeList();
-  return collectRuntimeHostSessionCatalogsWithCoverage(
-    scopes.map((scope) => ({
-      hostId: scope.hostId,
-      sessions: ipcRenderer.invoke('sessions:list', scope)
-        .then((sessions: SessionCatalogSummary[]) =>
-          sessions.map((session) => projectSessionSummary(scope, session))),
-    })),
+  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage(
+    scopes.map((scope) => {
+      const metadata = runtimeHostMetadataFor(scope);
+      if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
+      return {
+        hostId: scope.hostId,
+        access: metadata.profileAccess,
+        sessions: ipcRenderer.invoke('sessions:list', scope)
+          .then((sessions: SessionCatalogSummary[]) =>
+            sessions.map((session) => projectSessionCatalogSummary(scope, session))),
+      };
+    }),
   );
+  recordSessionCatalogScopes(catalog.sessions);
+  return catalog;
 }
 
 async function createDesktopSessionOnScope(

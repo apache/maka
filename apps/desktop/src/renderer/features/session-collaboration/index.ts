@@ -19,8 +19,4 @@
 
 export { SessionCollaborationServicesProvider } from './services-context';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
-export type {
-  SessionCollaborationImportResult,
-  SessionCollaborationMountSummary,
-  SessionCollaborationServices,
-} from './ports';
+export type { SessionCollaborationServices } from './ports';

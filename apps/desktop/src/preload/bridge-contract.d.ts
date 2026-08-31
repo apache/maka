@@ -200,6 +200,7 @@ import type { OnboardingMilestone, OnboardingMilestoneId, OnboardingState } from
 import type {
   PersistedRuntimeHostProfile,
   RuntimeHostProfile,
+  RuntimeHostProfileAccess,
 } from '@maka/runtime-host/client';
 export interface OnboardingSnapshot {
   state: OnboardingState;
@@ -413,6 +414,7 @@ export interface DesktopRuntimeHostProfileChangedEvent {
   readonly profileId: string;
   readonly profileName: string;
   readonly profileKind: RuntimeHostProfileKind;
+  readonly profileAccess: RuntimeHostProfileAccess;
   readonly readiness: 'connecting' | 'ready' | 'reconnecting' | 'unavailable';
   readonly hostId?: string;
   readonly isDefault: boolean;

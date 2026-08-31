@@ -28,6 +28,7 @@ import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from '@maka/storage/credential-store';
 import type { DesktopSessionCollaborationImportResult } from '../preload/bridge-contract.js';
 import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
+import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
 
 const STORE_SCHEMA_VERSION = 1;
 const STORE_SLOT = 'desktop-guest-session-mounts';
@@ -50,6 +51,14 @@ export interface GuestSessionMountSummary {
 interface GuestSessionMountDocument {
   readonly schemaVersion: typeof STORE_SCHEMA_VERSION;
   readonly mounts: readonly GuestSessionMount[];
+}
+
+interface LiveGuestActivation {
+  readonly kind: 'import' | 'startup';
+  readonly controller: AbortController;
+  mountId?: string;
+  stage: 'connecting' | 'finalizing';
+  task: Promise<unknown>;
 }
 
 export interface GuestSessionMountStore {
@@ -107,10 +116,8 @@ export function createDesktopGuestSessionMountService(input: {
   const onError = input.onError ?? ((error, mount) => {
     console.warn(`[runtime-host] shared Session ${mount.mountId} is unavailable:`, error);
   });
-  const controllers = new Map<string, AbortController>();
-  const importControllers = new Set<AbortController>();
-  const importTasks = new Set<Promise<DesktopSessionCollaborationImportResult>>();
-  const tasks = new Map<string, Promise<void>>();
+  const activations = new Set<LiveGuestActivation>();
+  const removingMounts = new Set<string>();
   let mounts: Map<string, GuestSessionMount> | undefined;
   let mutationTail = Promise.resolve();
   let closed = false;
@@ -134,62 +141,88 @@ export function createDesktopGuestSessionMountService(input: {
     mounts = next;
   };
 
-  const activate = async (mount: GuestSessionMount, signal: AbortSignal): Promise<void> => {
-    await input.mount(resolveMountTarget(mount), signal);
-    signal.throwIfAborted();
-    await input.finalizeAccess(mount.mountId, signal);
-    signal.throwIfAborted();
+  const activate = async (
+    activation: LiveGuestActivation,
+    mount: GuestSessionMount,
+  ): Promise<void> => {
+    activation.stage = 'connecting';
+    await input.mount(resolveMountTarget(mount), activation.controller.signal);
+    activation.controller.signal.throwIfAborted();
+    activation.stage = 'finalizing';
+    await input.finalizeAccess(mount.mountId, activation.controller.signal);
+    activation.controller.signal.throwIfAborted();
   };
 
   const beginStartupReconciliation = (mount: GuestSessionMount): void => {
-    if (closed || tasks.has(mount.mountId)) return;
-    const controller = new AbortController();
-    controllers.set(mount.mountId, controller);
-    const task = (async () => {
+    if (
+      closed ||
+      removingMounts.has(mount.mountId) ||
+      [...activations].some((activation) => activation.mountId === mount.mountId)
+    ) return;
+    const activation: LiveGuestActivation = {
+      kind: 'startup',
+      controller: new AbortController(),
+      mountId: mount.mountId,
+      stage: 'connecting',
+      task: Promise.resolve(),
+    };
+    activations.add(activation);
+    activation.task = (async () => {
       let delayMs = 1_000;
-      while (!controller.signal.aborted) {
+      while (!closed && !activation.controller.signal.aborted) {
         if (!(await load()).has(mount.mountId)) return;
         try {
-          await activate(mount, controller.signal);
+          await activate(activation, mount);
           return;
         } catch (error) {
-          if (controller.signal.aborted) return;
+          if (closed || activation.controller.signal.aborted) return;
           onError(asError(error), mount);
-          await wait(delayMs, controller.signal);
+          await wait(delayMs, activation.controller.signal);
           delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
         }
       }
     })().finally(() => {
-      if (controllers.get(mount.mountId) === controller) controllers.delete(mount.mountId);
-      if (tasks.get(mount.mountId) === task) tasks.delete(mount.mountId);
+      activations.delete(activation);
     });
-    tasks.set(mount.mountId, task);
-    void task.catch((error) => {
-      if (!controller.signal.aborted) onError(asError(error), mount);
+    void activation.task.catch((error) => {
+      if (!activation.controller.signal.aborted) onError(asError(error), mount);
     });
   };
 
   const remove = async (mountId: string): Promise<void> => {
-    const removed = await mutate(async () => {
-      const current = await load();
-      const mount = current.get(mountId);
-      if (!mount) return undefined;
-      const next = new Map(current);
-      next.delete(mountId);
-      await persist(next);
-      return mount;
-    });
-    if (!removed) return;
-    controllers.get(mountId)?.abort(new Error('Shared Session mount was removed'));
-    void input.unmount(mountId).catch((error) => onError(asError(error), removed));
+    removingMounts.add(mountId);
+    try {
+      const finalizing = [...activations].find(
+        (activation) => activation.mountId === mountId && activation.stage === 'finalizing',
+      );
+      if (finalizing) await finalizing.task.catch(() => undefined);
+      const removed = await mutate(async () => {
+        const current = await load();
+        const mount = current.get(mountId);
+        if (!mount) return undefined;
+        const next = new Map(current);
+        next.delete(mountId);
+        await persist(next);
+        return mount;
+      });
+      if (!removed) return;
+      for (const activation of activations) {
+        if (activation.mountId === mountId) {
+          activation.controller.abort(new Error('Shared Session mount was removed'));
+        }
+      }
+      void input.unmount(mountId).catch((error) => onError(asError(error), removed));
+    } finally {
+      removingMounts.delete(mountId);
+    }
   };
 
   const runImport = async (
     code: string,
     allowInsecure: boolean,
-    controller: AbortController,
+    activation: LiveGuestActivation,
   ): Promise<DesktopSessionCollaborationImportResult> => {
-    controller.signal.throwIfAborted();
+    activation.controller.signal.throwIfAborted();
     let bundle;
     let invitation;
     try {
@@ -208,8 +241,9 @@ export function createDesktopGuestSessionMountService(input: {
       transport: bundle.target.transport,
       credential: invitation.credential,
     });
+    activation.mountId = mount.mountId;
     const retained = await mutate(async () => {
-      controller.signal.throwIfAborted();
+      activation.controller.signal.throwIfAborted();
       const current = await load();
       if (current.size >= MAX_MOUNTS) return false;
       await persist(new Map(current).set(mount.mountId, mount));
@@ -222,29 +256,37 @@ export function createDesktopGuestSessionMountService(input: {
         message: `At most ${MAX_MOUNTS} shared Sessions can be retained`,
       };
     }
-    controllers.set(mount.mountId, controller);
+    let reconcile = false;
     try {
-      await activate(mount, controller.signal);
-      controller.signal.throwIfAborted();
+      await activate(activation, mount);
+      activation.controller.signal.throwIfAborted();
       if (!(await load()).has(mount.mountId)) {
         throw new Error('Shared Session mount was removed while connecting');
       }
       return { kind: 'connected', mountId: mount.mountId };
     } catch (error) {
-      await mutate(async () => {
-        const next = new Map(await load());
-        next.delete(mount.mountId);
-        await persist(next);
-      });
-      controller.abort(new Error('Shared Session mount activation failed'));
-      await input.unmount(mount.mountId).catch(() => undefined);
+      if (
+        activation.stage === 'finalizing' &&
+        error instanceof RuntimeHostPairingFinalizationInterruptedError
+      ) {
+        reconcile = true;
+      } else {
+        await mutate(async () => {
+          const next = new Map(await load());
+          next.delete(mount.mountId);
+          await persist(next);
+        });
+        activation.controller.abort(new Error('Shared Session mount activation failed'));
+        await input.unmount(mount.mountId).catch(() => undefined);
+      }
       return {
         kind: 'error',
         reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
         message: asError(error).message,
       };
     } finally {
-      if (controllers.get(mount.mountId) === controller) controllers.delete(mount.mountId);
+      activations.delete(activation);
+      if (reconcile) beginStartupReconciliation(mount);
     }
   };
 
@@ -253,14 +295,17 @@ export function createDesktopGuestSessionMountService(input: {
     allowInsecure: boolean,
   ): Promise<DesktopSessionCollaborationImportResult> => {
     if (closed) return Promise.reject(new Error('Shared Session mount service is closed'));
-    const controller = new AbortController();
-    importControllers.add(controller);
-    let task!: Promise<DesktopSessionCollaborationImportResult>;
-    task = runImport(code, allowInsecure, controller).finally(() => {
-      importControllers.delete(controller);
-      importTasks.delete(task);
+    const activation: LiveGuestActivation = {
+      kind: 'import',
+      controller: new AbortController(),
+      stage: 'connecting',
+      task: Promise.resolve(),
+    };
+    activations.add(activation);
+    const task = runImport(code, allowInsecure, activation).finally(() => {
+      activations.delete(activation);
     });
-    importTasks.add(task);
+    activation.task = task;
     return task;
   };
 
@@ -283,16 +328,14 @@ export function createDesktopGuestSessionMountService(input: {
 
     async close() {
       closed = true;
-      for (const controller of controllers.values()) {
-        controller.abort(new Error('Shared Session mount service is closed'));
+      for (const activation of activations) {
+        if (activation.stage === 'connecting') {
+          activation.controller.abort(new Error('Shared Session mount service is closed'));
+        }
       }
-      for (const controller of importControllers) {
-        controller.abort(new Error('Shared Session mount service is closed'));
-      }
-      await Promise.allSettled([...importTasks, ...tasks.values()]);
+      await Promise.allSettled([...activations].map((activation) => activation.task));
       await mutationTail;
-      controllers.clear();
-      importControllers.clear();
+      activations.clear();
     },
   };
 }
