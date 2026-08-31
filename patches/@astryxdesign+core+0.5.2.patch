@@ -256,7 +256,6 @@ index 8753b5f..1fa8325 100644
    });
  }
 -List.displayName = 'List';
-\ No newline at end of file
 +List.displayName = 'List';
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 index 2ea4f3e..be99f2d 100644
@@ -283,7 +282,6 @@ index 2ea4f3e..be99f2d 100644
      var displayName: string;
  }
 -//# sourceMappingURL=Markdown.d.ts.map
-\ No newline at end of file
 +//# sourceMappingURL=Markdown.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 index 36ed303..745ba77 100644
@@ -405,7 +403,6 @@ index 36ed303..745ba77 100644
    return rendered;
  }
 -Markdown.displayName = 'Markdown';
-\ No newline at end of file
 +Markdown.displayName = 'Markdown';
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 index 158ada1..b891fb9 100644
@@ -434,7 +431,6 @@ index 158ada1..b891fb9 100644
      var displayName: string;
  }
 -//# sourceMappingURL=SideNavItem.d.ts.map
-\ No newline at end of file
 +//# sourceMappingURL=SideNavItem.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 index 3d2cf00..e527e9d 100644
@@ -462,7 +458,6 @@ index 3d2cf00..e527e9d 100644
    return item;
  }
 -SideNavItem.displayName = 'SideNavItem';
-\ No newline at end of file
 +SideNavItem.displayName = 'SideNavItem';
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 index 7a35d1c..50ee70b 100644
@@ -632,7 +627,6 @@ index 693d728..7d5724e 100644
 -  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
 +  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
  }
-\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -1187,4 +1181,3 @@ index 55b441e..7aa4174 100644
 +    snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen),
 +  );
  }
-
