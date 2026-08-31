@@ -30,6 +30,7 @@ import { ChatSurfaceLayout, Composer } from '@maka/ui';
 import type {
   WorkHubController,
   WorkHubCoordinationTurn,
+  WorkHubDelegationLinkState,
   WorkHubProjection,
   WorkHubSessionSummary,
   WorkHubSubmission,
@@ -604,6 +605,7 @@ export function workHubCoordinationSummary(
   copy: ReturnType<typeof workHubCopy>,
 ): string {
   if (result.kind === 'clarification') {
+    if (result.reason === 'ambiguous_command') return copy.confirmCommand;
     return `${copy.chooseWork} ${result.options.map(({ sessionName }) => sessionName).join('、')}`;
   }
   if (result.kind === 'waiting') {
@@ -645,23 +647,27 @@ function WorkHubTurnView(props: {
             </p>
           ) : turn.outcome?.kind === 'clarification' ? (
             <>
-              <p>{copy.chooseWork}</p>
-              <div className="workhub-clarification" aria-label={copy.clarification}>
-                {turn.outcome.options.map((option) => (
-                  <Button
-                    key={option.target.sessionId}
-                    label={`${option.sessionName}, ${option.projectName}`}
-                    variant="ghost"
-                    width="100%"
-                    isDisabled={props.pending}
-                    onClick={() => props.onChoose(option.target)}
-                    endContent={
-                      <small className="workhub-option-project">{option.projectName}</small>
-                    }>
-                    <strong>{option.sessionName}</strong>
-                  </Button>
-                ))}
-              </div>
+              <p>{turn.outcome.reason === 'ambiguous_command'
+                ? copy.confirmCommand
+                : copy.chooseWork}</p>
+              {turn.outcome.options.length > 0 ? (
+                <div className="workhub-clarification" aria-label={copy.clarification}>
+                  {turn.outcome.options.map((option) => (
+                    <Button
+                      key={option.target.sessionId}
+                      label={`${option.sessionName}, ${option.projectName}`}
+                      variant="ghost"
+                      width="100%"
+                      isDisabled={props.pending}
+                      onClick={() => props.onChoose(option.target)}
+                      endContent={
+                        <small className="workhub-option-project">{option.projectName}</small>
+                      }>
+                      <strong>{option.sessionName}</strong>
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : turn.outcome?.kind === 'discussion' ? (
             <>
@@ -693,7 +699,7 @@ function WorkHubTurnView(props: {
 function WorkHubMessageFrame(props: {
   text: string;
   state: string;
-  linkState?: 'active' | 'superseded' | 'aborted';
+  linkState?: WorkHubDelegationLinkState;
   projected?: boolean;
   children: ReactNode;
 }) {
@@ -752,6 +758,12 @@ function SubmittedWorkView(props: {
   );
 }
 
+export function workHubAmbiguousCommandPrompt(locale: UiLocale): string {
+  return locale === 'zh'
+    ? '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。'
+    : 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
+}
+
 function workHubCopy(locale: UiLocale) {
   if (locale === 'zh') {
     return {
@@ -763,6 +775,7 @@ function workHubCopy(locale: UiLocale) {
         : '提出一个明确目标，WorkHub 会创建普通 Session 并把结果带回这里。',
       workCount: (count: number) => `${count} 项工作`, clarification: '选择工作',
       chooseWork: '这条输入可能与多项工作有关，请选择目标：',
+      confirmCommand: workHubAmbiguousCommandPrompt(locale),
       discussionStayed: '这条内容暂时保留在 WorkHub，没有创建或改动 Session。',
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
@@ -810,6 +823,7 @@ function workHubCopy(locale: UiLocale) {
       : 'State a clear goal and WorkHub will create an ordinary Session and bring its result back here.',
     workCount: (count: number) => `${count} work item${count === 1 ? '' : 's'}`, clarification: 'Choose work',
     chooseWork: 'This input may relate to more than one task. Choose a target:',
+    confirmCommand: workHubAmbiguousCommandPrompt(locale),
     discussionStayed: 'This stayed in WorkHub without creating or changing a Session.',
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',

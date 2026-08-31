@@ -33,12 +33,9 @@ import {
   isWorkHubCoordinationSessionTarget,
 } from '@maka/core/session';
 import {
-  affirmativeWorkHubNamedCreationTitle,
-  hasWorkHubCorrectionCue,
-  hasWorkHubNamedCreationClause,
-  isAffirmativeWorkHubExistingTargetCorrectionRequest,
-  isAffirmativeWorkHubNewTopicRequest,
-  isExplicitWorkHubCreationRequest,
+  readWorkHubRequestIntent,
+  workHubCorrectionTargetsSession,
+  workHubCreationAuthorizesTitle,
 } from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
@@ -243,6 +240,17 @@ export class WorkHubCoordinationActionGate {
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
     const proposal = input.proposal;
+    const requestIntent = readWorkHubRequestIntent(input.userText);
+    if (
+      requestIntent.execution === 'ambiguous' &&
+      proposal.disposition !== 'answer_here' &&
+      proposal.disposition !== 'clarify'
+    ) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub cannot write from an ambiguous instruction',
+      );
+    }
     const durable = await this.#effects.readAssignment(input.actionId);
     if (durable) {
       const replayFingerprint = durable.replacesActionId
@@ -274,14 +282,10 @@ export class WorkHubCoordinationActionGate {
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
     if (proposal.disposition === 'create_new') {
-      if (
-        !input.create ||
-        !isAffirmativeWorkHubNewTopicRequest(input.userText) ||
-        !workHubCreationTitleMatches(input.userText, proposal.title)
-      ) {
+      if (!input.create || !workHubCreationAuthorizesTitle(requestIntent, proposal.title)) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub creation requires explicit affirmative intent and creation context',
+          'WorkHub creation requires an unambiguous instruction and creation context',
         );
       }
       const sessionId = workHubCreatedSessionId(input.actionId);
@@ -292,10 +296,7 @@ export class WorkHubCoordinationActionGate {
     }
 
     if (proposal.disposition === 'replace') {
-      if (
-        input.confirmation?.kind !== 'user_correction' ||
-        !hasWorkHubCorrectionCue(input.userText)
-      ) {
+      if (input.confirmation?.kind !== 'user_correction' || !requestIntent.correction.cue) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub replacement requires explicit correction in trusted user text',
@@ -847,26 +848,18 @@ export function isExplicitWorkHubCorrectionText(
   targetDisposition: WorkHubDelegationDisposition,
   targetSessionName?: string,
 ): boolean {
+  const intent = readWorkHubRequestIntent(value);
   if (targetDisposition === 'create_new') {
-    if (!hasWorkHubCorrectionCue(value) || !isExplicitWorkHubCreationRequest(value)) return false;
-    return workHubCreationTitleMatches(value, targetSessionName);
+    return Boolean(
+      intent.correction.cue &&
+        intent.creation.explicit &&
+        targetSessionName &&
+        workHubCreationAuthorizesTitle(intent, targetSessionName),
+    );
   }
   return Boolean(
     targetSessionName &&
-      isAffirmativeWorkHubExistingTargetCorrectionRequest(value, targetSessionName),
+      intent.correction.cue &&
+      workHubCorrectionTargetsSession(intent, targetSessionName),
   );
-}
-
-function workHubCreationTitleMatches(value: string, targetSessionName?: string): boolean {
-  if (!hasWorkHubNamedCreationClause(value)) return true;
-  const namedTitle = affirmativeWorkHubNamedCreationTitle(value);
-  return Boolean(
-    namedTitle &&
-      targetSessionName &&
-      normalizeCorrectionIdentity(namedTitle) === normalizeCorrectionIdentity(targetSessionName),
-  );
-}
-
-function normalizeCorrectionIdentity(value: string): string {
-  return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
 }

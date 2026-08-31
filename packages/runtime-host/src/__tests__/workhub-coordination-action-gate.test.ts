@@ -379,6 +379,29 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.assignments[0]!.userText, 'Continue payments');
   });
 
+  test('rejects ambiguous advisory text before delegating to an existing Session', async () => {
+    const effects = fakeEffects([session('login', { name: 'Login' })]);
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+
+    await assert.rejects(
+      gate.act(
+        {
+          actionId: 'ambiguous-delegate',
+          userText: 'Explain how to diagnose Login, then fix it.',
+          candidateSetId: snapshot.candidateSetId,
+          proposal: {
+            disposition: 'delegate_existing',
+            candidateRef: snapshot.candidates[0]!.candidateRef,
+          },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.assignments.length, 0);
+  });
+
   test('create_new carries creation context into the same assignment', async () => {
     const effects = fakeEffects([]);
     const gate = new WorkHubCoordinationActionGate(effects);
@@ -730,6 +753,13 @@ describe('WorkHub Coordination Action Gate', () => {
       'Audit findings and fix recommendations matter.',
       'Review notes and fix status matters.',
       'Research findings and fix recommendations changed.',
+      'Explain how to diagnose login; then test results matter.',
+      'Explain how to diagnose login; then test coverage improved.',
+      'Explain how to diagnose login; then update metrics increased.',
+      'Explain how to diagnose the text "login, then fix it.',
+      'Explain how to diagnose the text `login, then fix it.',
+      'Explain how to diagnose the sequence (login (primary), then fix it).',
+      'Explain how to diagnose the sequence [login, then fix it].',
     ];
     for (const [index, userText] of negatedCreationCases.entries()) {
       const effects = fakeEffects([]);
@@ -784,21 +814,17 @@ describe('WorkHub Coordination Action Gate', () => {
       'Examine and fix login',
       '调查并修复登录',
       '先分析，然后修复登录',
-      'Explain how to fix login, then update the docs.',
-      'Tell me how to diagnose login, and fix the bug.',
-      '解释如何修复登录，然后更新文档。',
-      'Explain how to diagnose login, then fix and test it.',
-      'Explain how to diagnose login; then fix it.',
-      'Explain how to diagnose and reproduce login, then fix it.',
-      'Tell me how to diagnose and test login, then update docs.',
-      'Explain how to diagnose, reproduce, and test login; then fix it.',
-      'Explain how to diagnose the text "login, fix it"; then update docs.',
-      'Explain how to diagnose login; then update the prompt to "How can I help?"',
-      "Explain how to diagnose what's wrong, then fix what's broken.",
       'Investigate the issue and fix both login and logout.',
       'Review the failure and fix the affected user accounts.',
       'Analyze the suite and update the generated docs.',
       '先分析，然后修复已经失败的测试。',
+      'Investigate and fix login stability.',
+      'Review and update API docs.',
+      'Analyze and fix payment retry logic.',
+      'Audit and update generated API docs.',
+      'Investigate issue and fix login for mobile.',
+      'Assess logs and update docs for operators.',
+      'Review issue and fix login in production.',
       'If tests fail, fix login.',
       'If needed fix login.',
       'If necessary implement retries.',
@@ -858,6 +884,34 @@ describe('WorkHub Coordination Action Gate', () => {
       );
       assert.equal(result.disposition, 'create_new', userText);
       assert.equal(effects.assignments.length, 1, userText);
+    }
+  });
+
+  test('initial creation rejects advisory how-to ambiguity at the host gate', async () => {
+    for (const [index, userText] of [
+      'Explain how to fix login, then update the docs.',
+      'Tell me how to diagnose login, and fix the bug.',
+      '解释如何修复登录，然后更新文档。',
+      'Explain how to diagnose login; then fix it.',
+      'Explain how to diagnose and reproduce login, then fix it.',
+      'Explain how to diagnose the text "do not fix", then update docs.',
+      'Explain how to diagnose the text `do not fix`, then update docs.',
+      'Explain how to diagnose the text (do not fix), then update docs.',
+    ].entries()) {
+      const effects = fakeEffects([]);
+      await assert.rejects(
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: `ambiguous-initial-create-${index}`,
+            userText,
+            proposal: { disposition: 'create_new', title: 'New Work' },
+            create: { workspace: { kind: 'host_path', path: '/workspace' } },
+          },
+          CONTEXT,
+        ),
+        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+      );
+      assert.equal(effects.assignments.length, 0, userText);
     }
   });
 

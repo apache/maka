@@ -31,6 +31,7 @@ import {
   submitLeasedWorkHubSurfaceInput,
   submitWorkHubSurfaceInput,
   visibleWorkHubConversation,
+  workHubAmbiguousCommandPrompt,
   workHubSurfaceFailure,
   workHubSubmissionClearsDraft,
 } from '../../renderer/workhub-surface.js';
@@ -403,6 +404,93 @@ test('surface keeps clarification and successful routing in WorkHub', async () =
   });
   assert.equal(submitted.kind, 'submitted');
   assert.deepEqual(submissions[1]?.explicitTarget, { sessionId: 'payment' });
+});
+
+test('ambiguous creation is durably clarified before a fresh imperative creates work', async () => {
+  const actions: Array<{ disposition: string; userText: string; assistantText?: string }> = [];
+  const controller = createWorkHubController({
+    sessions: {
+      list: async () => [],
+      recentTurns: async () => [],
+      delegationFeedback: async () => [],
+      routingEvidence: async () => [],
+      subscribe: () => () => {},
+    },
+    coordination: {
+      open: async () => ({ close: async () => undefined }),
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'a'.repeat(64)}`,
+        candidates: [],
+      }),
+      act: async (input) => {
+        actions.push({
+          disposition: input.proposal.disposition,
+          userText: input.userText,
+          ...(input.proposal.disposition === 'clarify'
+            ? { assistantText: input.proposal.assistantText }
+            : {}),
+        });
+        if (input.proposal.disposition === 'clarify') {
+          return { disposition: 'clarify', coordinationTurnId: input.actionId };
+        }
+        if (input.proposal.disposition === 'create_new') {
+          return {
+            disposition: 'create_new',
+            targetSessionId: 'created-login',
+            targetTurnId: input.actionId,
+          };
+        }
+        throw new Error(`Unexpected disposition: ${input.proposal.disposition}`);
+      },
+    },
+  });
+
+  const ambiguousTexts = [
+    'Explain how to diagnose login, then fix it.',
+    'Show me how to diagnose login, then fix it.',
+    'Walk me through how to diagnose login, then fix it.',
+    '教我如何诊断登录，然后修复它。',
+  ];
+  for (const [index, text] of ambiguousTexts.entries()) {
+    const ambiguous = await submitAndRecordWorkHubSurfaceInput({
+      controller,
+      request: { requestId: `ambiguous-request-${index}`, text },
+      recordedUserText: text,
+      summary: () => workHubAmbiguousCommandPrompt('en'),
+      onSummaryError: () => assert.fail('clarification should be durable'),
+    });
+    assert.equal(ambiguous.kind, 'clarification', text);
+    assert.equal(
+      ambiguous.kind === 'clarification' ? ambiguous.reason : undefined,
+      'ambiguous_command',
+      text,
+    );
+  }
+  assert.deepEqual(
+    actions,
+    ambiguousTexts.map((userText) => ({
+      disposition: 'clarify',
+      userText,
+      assistantText: workHubAmbiguousCommandPrompt('en'),
+    })),
+  );
+
+  const submitted = await submitAndRecordWorkHubSurfaceInput({
+    controller,
+    request: { requestId: 'direct-request', text: 'Fix login.' },
+    recordedUserText: 'Fix login.',
+    summary: () => 'unused',
+    onSummaryError: () => assert.fail('submitted work is projected from its assignment'),
+  });
+  assert.equal(submitted.kind, 'submitted');
+  assert.equal(
+    submitted.kind === 'submitted' ? submitted.evidence : undefined,
+    'new_session',
+  );
+  assert.equal(actions.at(-1)?.disposition, 'create_new');
+  assert.equal(actions.at(-1)?.userText, 'Fix login.');
+  assert.notEqual(actions[0]?.userText, actions[1]?.userText);
 });
 
 test('surface leaves discussion in WorkHub instead of creating a task view', async () => {

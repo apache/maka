@@ -1913,7 +1913,7 @@ test('Chinese explicit creation strips Session naming introducers', () => {
       '不对，请创建一个新的 Session 标题为登录稳定性',
       '错了，新建一个会话名称为支付任务',
       '不对，不要创建一个新会话叫登录；而是创建一个新会话叫支付。',
-    ].map(workHubNewSessionName),
+    ].map((text) => workHubNewSessionName(text)),
     ['登录稳定性', '支付回调幂等性', '消息恢复', '登录稳定性', '支付任务', '支付'],
   );
   assert.equal(
@@ -2118,21 +2118,17 @@ test('polite executable questions and file-level constraints still create new wo
     'Examine and fix login',
     '调查并修复登录',
     '先分析，然后修复登录',
-    'Explain how to fix login, then update the docs.',
-    'Tell me how to diagnose login, and fix the bug.',
-    '解释如何修复登录，然后更新文档。',
-    'Explain how to diagnose login, then fix and test it.',
-    'Explain how to diagnose login; then fix it.',
-    'Explain how to diagnose and reproduce login, then fix it.',
-    'Tell me how to diagnose and test login, then update docs.',
-    'Explain how to diagnose, reproduce, and test login; then fix it.',
-    'Explain how to diagnose the text "login, fix it"; then update docs.',
-    'Explain how to diagnose login; then update the prompt to "How can I help?"',
-    "Explain how to diagnose what's wrong, then fix what's broken.",
     'Investigate the issue and fix both login and logout.',
     'Review the failure and fix the affected user accounts.',
     'Analyze the suite and update the generated docs.',
     '先分析，然后修复已经失败的测试。',
+    'Investigate and fix login stability.',
+    'Review and update API docs.',
+    'Analyze and fix payment retry logic.',
+    'Audit and update generated API docs.',
+    'Investigate issue and fix login for mobile.',
+    'Assess logs and update docs for operators.',
+    'Review issue and fix login in production.',
     'Discuss the approach, then implement retry',
     'Consider the options, but fix login now',
     '请修复支付回调重复投递？',
@@ -2180,6 +2176,67 @@ test('polite executable questions and file-level constraints still create new wo
       text,
     );
   }
+});
+
+test('advisory how-to ambiguity asks for a direct instruction', () => {
+  for (const text of [
+    'Explain how to fix login, then update the docs.',
+    'Tell me how to diagnose login, and fix the bug.',
+    '解释如何修复登录，然后更新文档。',
+    'Explain how to diagnose login; then fix it.',
+    'Explain how to diagnose and reproduce login, then fix it.',
+    'Explain how to diagnose the text "do not fix", then update docs.',
+    'Explain how to diagnose the text `do not fix`, then update docs.',
+    'Explain how to diagnose the text (do not fix), then update docs.',
+    'Show me how to diagnose login, then fix it.',
+    'Walk me through how to diagnose login, then fix it.',
+    '教我如何诊断登录，然后修复它。',
+  ]) {
+    assert.deepEqual(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }),
+      { kind: 'clarification', options: [], reason: 'ambiguous_command' },
+      text,
+    );
+  }
+});
+
+test('advisory ambiguity overrides explicit, exact-name, and recent-focus routing', () => {
+  const login = session('login', { sessionName: 'Login' });
+  const text = 'Explain how to diagnose Login, then fix it.';
+  const expected = { kind: 'clarification', options: [], reason: 'ambiguous_command' };
+
+  assert.deepEqual(
+    createWorkHubRoutePolicy().resolve({
+      text,
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+      explicitTarget: login.target,
+    }),
+    expected,
+  );
+  assert.deepEqual(
+    createWorkHubRoutePolicy().resolve({
+      text,
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+    }),
+    expected,
+  );
+
+  const focusedPolicy = createWorkHubRoutePolicy();
+  focusedPolicy.rememberTarget(login.target);
+  assert.deepEqual(
+    focusedPolicy.resolve({
+      text: 'Explain how to diagnose this, then fix it.',
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+    }),
+    expected,
+  );
 });
 
 test('literal negator targets still create new work', () => {
@@ -2689,6 +2746,13 @@ test('indirect questions containing action words stay in WorkHub', () => {
     'Audit findings and fix recommendations matter.',
     'Review notes and fix status matters.',
     'Research findings and fix recommendations changed.',
+    'Explain how to diagnose login; then test results matter.',
+    'Explain how to diagnose login; then test coverage improved.',
+    'Explain how to diagnose login; then update metrics increased.',
+    'Explain how to diagnose the text "login, then fix it.',
+    'Explain how to diagnose the text `login, then fix it.',
+    'Explain how to diagnose the sequence (login (primary), then fix it).',
+    'Explain how to diagnose the sequence [login, then fix it].',
   ]) {
     assert.equal(
       createWorkHubRoutePolicy().resolve({

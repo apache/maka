@@ -20,15 +20,43 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  affirmativeWorkHubExistingCorrectionTarget,
-  affirmativeWorkHubNamedCreationTitle,
-  hasNegatedWorkHubCreationRequest,
-  hasWorkHubNamedCreationClause,
-  isAffirmativeWorkHubCorrectionRequest,
-  isAffirmativeWorkHubExistingTargetCorrectionRequest,
-  isAffirmativeWorkHubNewTopicRequest,
-  isExplicitWorkHubCreationRequest,
+  readWorkHubRequestIntent,
+  workHubCorrectionTargetsSession,
+  workHubCreationAuthorizesTitle,
 } from '../workhub-creation-intent.js';
+
+const intentFor = readWorkHubRequestIntent;
+const affirmativeWorkHubExistingCorrectionTarget = (value: string) =>
+  intentFor(value).correction.existingTarget;
+const affirmativeWorkHubNamedCreationTitle = (value: string) => {
+  const naming = intentFor(value).creation.naming;
+  return naming.kind === 'named' ? naming.title : undefined;
+};
+const hasNegatedWorkHubCreationRequest = (value: string) => !intentFor(value).creation.explicit;
+const hasWorkHubNamedCreationClause = (value: string) =>
+  intentFor(value).creation.naming.kind !== 'none';
+const isAffirmativeWorkHubCorrectionRequest = (value: string) => {
+  const intent = intentFor(value);
+  return (
+    intent.correction.cue &&
+    Boolean(
+      intent.correction.existingTarget ||
+        (intent.creation.explicit && intent.execution === 'imperative'),
+    )
+  );
+};
+const isAffirmativeWorkHubExistingTargetCorrectionRequest = (
+  value: string,
+  expectedTargetName?: string,
+) => {
+  const intent = intentFor(value);
+  return expectedTargetName
+    ? workHubCorrectionTargetsSession(intent, expectedTargetName)
+    : Boolean(intent.correction.existingTarget);
+};
+const isAffirmativeWorkHubNewTopicRequest = (value: string) =>
+  intentFor(value).execution === 'imperative';
+const isExplicitWorkHubCreationRequest = (value: string) => intentFor(value).creation.explicit;
 
 test('requires an affirmative target action for destructive corrections', () => {
   for (const text of [
@@ -564,6 +592,13 @@ test('recognizes affirmative executable topics without trusting negated work', (
     'Audit findings and fix recommendations matter.',
     'Review notes and fix status matters.',
     'Research findings and fix recommendations changed.',
+    'Explain how to diagnose login; then test results matter.',
+    'Explain how to diagnose login; then test coverage improved.',
+    'Explain how to diagnose login; then update metrics increased.',
+    'Explain how to diagnose the text "login, then fix it.',
+    'Explain how to diagnose the text `login, then fix it.',
+    'Explain how to diagnose the sequence (login (primary), then fix it).',
+    'Explain how to diagnose the sequence [login, then fix it].',
   ]) {
     assert.equal(isAffirmativeWorkHubNewTopicRequest(text), false, text);
   }
@@ -634,6 +669,21 @@ test('recognizes affirmative executable topics without trusting negated work', (
     'Examine and fix login',
     '调查并修复登录',
     '先分析，然后修复登录',
+    'Investigate the issue and fix both login and logout.',
+    'Review the failure and fix the affected user accounts.',
+    'Analyze the suite and update the generated docs.',
+    '先分析，然后修复已经失败的测试。',
+    'Investigate and fix login stability.',
+    'Review and update API docs.',
+    'Analyze and fix payment retry logic.',
+    'Audit and update generated API docs.',
+    'Investigate issue and fix login for mobile.',
+    'Assess logs and update docs for operators.',
+    'Review issue and fix login in production.',
+  ]) {
+    assert.equal(isAffirmativeWorkHubNewTopicRequest(text), true, text);
+  }
+  for (const text of [
     'Explain how to fix login, then update the docs.',
     'Tell me how to diagnose login, and fix the bug.',
     '解释如何修复登录，然后更新文档。',
@@ -645,12 +695,15 @@ test('recognizes affirmative executable topics without trusting negated work', (
     'Explain how to diagnose the text "login, fix it"; then update docs.',
     'Explain how to diagnose login; then update the prompt to "How can I help?"',
     "Explain how to diagnose what's wrong, then fix what's broken.",
-    'Investigate the issue and fix both login and logout.',
-    'Review the failure and fix the affected user accounts.',
-    'Analyze the suite and update the generated docs.',
-    '先分析，然后修复已经失败的测试。',
+    'Explain how to diagnose the text "do not fix", then update docs.',
+    'Explain how to diagnose the text `do not fix`, then update docs.',
+    'Explain how to diagnose the text (do not fix), then update docs.',
+    'Explain how to diagnose the text "do not update", then fix login.',
+    'Show me how to diagnose login, then fix it.',
+    'Walk me through how to diagnose login, then fix it.',
+    '教我如何诊断登录，然后修复它。',
   ]) {
-    assert.equal(isAffirmativeWorkHubNewTopicRequest(text), true, text);
+    assert.equal(intentFor(text).execution, 'ambiguous', text);
   }
   assert.equal(isAffirmativeWorkHubNewTopicRequest('如果重试失败就请修复登录？'), true);
   assert.equal(
@@ -913,4 +966,34 @@ test('recognizes affirmative executable topics without trusting negated work', (
     true,
   );
   assert.equal(isAffirmativeWorkHubNewTopicRequest('修复登录稳定性，不过不要修复它'), false);
+});
+
+test('returns one bounded intent record for routing and admission', () => {
+  const named = readWorkHubRequestIntent('Create a new Session called Login');
+  assert.equal(named.execution, 'imperative');
+  assert.deepEqual(named.creation, {
+    explicit: true,
+    naming: { kind: 'named', title: 'Login' },
+  });
+  assert.equal(workHubCreationAuthorizesTitle(named, 'Login'), true);
+  assert.equal(workHubCreationAuthorizesTitle(named, 'Payments'), false);
+
+  const direct = readWorkHubRequestIntent('Fix login, then update docs.');
+  const quotedNegation = readWorkHubRequestIntent('Fix the text "do not fix", then update docs.');
+  assert.equal(direct.execution, 'imperative');
+  assert.equal(quotedNegation.execution, direct.execution);
+
+  assert.equal(
+    readWorkHubRequestIntent("Explain how to diagnose what's wrong, then fix what's broken.")
+      .execution,
+    'ambiguous',
+  );
+  for (const text of [
+    'Explain how to diagnose the text "login, then fix it.',
+    'Explain how to diagnose the sequence (login (primary), then fix it).',
+    'Explain how to diagnose the sequence [login, then fix it].',
+    'Fix login] then update docs.',
+  ]) {
+    assert.equal(readWorkHubRequestIntent(text).execution, 'non_executable', text);
+  }
 });

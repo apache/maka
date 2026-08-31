@@ -26,7 +26,6 @@
 import {
   createWorkHubRoutePolicy,
   type WorkHubRouteEvidence,
-  workHubNewSessionName,
 } from './workhub-route-policy.js';
 import type {
   WorkHubCoordinationActInput,
@@ -108,11 +107,13 @@ export interface WorkHubCoordinationTurn {
     readonly targetMessageId: string;
     readonly targetTurnId: string;
     readonly feedbackState: WorkHubDelegationExecutionState;
-    readonly linkState: 'active' | 'superseded' | 'aborted';
+    readonly linkState: WorkHubDelegationLinkState;
     readonly createdNew?: true;
   };
   updatedAt: number;
 }
+
+export type WorkHubDelegationLinkState = 'active' | 'superseded' | 'aborted';
 
 /** Unbounded, rebuildable linkage state kept separate from the bounded timeline. */
 export interface WorkHubActiveDelegation {
@@ -171,6 +172,7 @@ export type WorkHubSubmission = (
       requestId: string;
       text: string;
       options: Array<Pick<WorkHubSessionSummary, 'target' | 'projectName' | 'sessionName'>>;
+      reason?: 'ambiguous_command';
       correction?: WorkHubCorrectionContext;
     }
   | {
@@ -283,6 +285,36 @@ export function createWorkHubController(deps: {
       .filter((session) => session.kind === 'ordinary' && !session.archived)
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map((session) => session.target));
+  };
+  const completeSubmission = (
+    input: WorkHubSubmitInput,
+    policy: ReturnType<typeof createWorkHubRoutePolicy>,
+    admitted: Extract<
+      WorkHubCoordinationActResult,
+      { disposition: 'delegate_existing' | 'create_new' | 'replace' }
+    >,
+    evidence: WorkHubRouteEvidence | 'new_session',
+    correction: WorkHubCorrectionContext | undefined,
+  ): Extract<WorkHubSubmission, { kind: 'submitted' }> => {
+    const target = { sessionId: admitted.targetSessionId };
+    if (
+      correction &&
+      activeActionIdBySessionId.get(correction.from.sessionId) === correction.sourceActionId
+    ) {
+      activeActionIdBySessionId.delete(correction.from.sessionId);
+    }
+    activeActionIdBySessionId.set(target.sessionId, input.requestId);
+    policy.rememberTarget(target);
+    return {
+      kind: 'submitted',
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: input.requestId,
+      target,
+      turnId: admitted.targetTurnId,
+      ...(admitted.steered ? { steered: true as const } : {}),
+      evidence,
+      ...(correction ? { correctedFrom: correction.from } : {}),
+    };
   };
   return {
     async openConversation(handler, onError) {
@@ -453,6 +485,7 @@ export function createWorkHubController(deps: {
             projectName: session.projectName,
             sessionName: session.sessionName,
           })),
+          ...(decision.reason ? { reason: decision.reason } : {}),
           ...(correction ? { correction } : {}),
         };
       }
@@ -472,7 +505,7 @@ export function createWorkHubController(deps: {
       const correction = input.correction ??
         (decision.correctedFrom ? correctionFor(decision.correctedFrom) : undefined);
       if (decision.kind === 'new_session') {
-        const title = workHubNewSessionName(input.text);
+        const { title } = decision;
         const admitted = await coordination.act(correction
           ? {
               actionId: input.requestId,
@@ -500,25 +533,13 @@ export function createWorkHubController(deps: {
         if (admitted.disposition !== 'create_new' && admitted.disposition !== 'replace') {
           throw new Error('WorkHub Action Gate returned an unexpected disposition');
         }
-        const target = { sessionId: admitted.targetSessionId };
-        if (
-          correction &&
-          activeActionIdBySessionId.get(correction.from.sessionId) === correction.sourceActionId
-        ) {
-          activeActionIdBySessionId.delete(correction.from.sessionId);
-        }
-        activeActionIdBySessionId.set(target.sessionId, input.requestId);
-        submissionPolicy.rememberTarget(target);
-        return {
-          kind: 'submitted',
-          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-          requestId: input.requestId,
-          target,
-          turnId: admitted.targetTurnId,
-          ...(admitted.steered ? { steered: true as const } : {}),
-          evidence: 'new_session',
-          ...(correction ? { correctedFrom: correction.from } : {}),
-        };
+        return completeSubmission(
+          input,
+          submissionPolicy,
+          admitted,
+          'new_session',
+          correction,
+        );
       }
       const target = decision.target;
       const targetSession = routable.find(
@@ -576,25 +597,13 @@ export function createWorkHubController(deps: {
       if (admitted.disposition !== 'delegate_existing' && admitted.disposition !== 'replace') {
         throw new Error('WorkHub Action Gate returned an unexpected disposition');
       }
-      const admittedTarget = { sessionId: admitted.targetSessionId };
-      if (
-        correction &&
-        activeActionIdBySessionId.get(correction.from.sessionId) === correction.sourceActionId
-      ) {
-        activeActionIdBySessionId.delete(correction.from.sessionId);
-      }
-      activeActionIdBySessionId.set(admittedTarget.sessionId, input.requestId);
-      submissionPolicy.rememberTarget(admittedTarget);
-      return {
-        kind: 'submitted',
-        strategyId: WORKHUB_ROUTING_STRATEGY_ID,
-        requestId: input.requestId,
-        target: admittedTarget,
-        turnId: admitted.targetTurnId,
-        ...(admitted.steered ? { steered: true as const } : {}),
-        evidence: decision.evidence,
-        ...(correction ? { correctedFrom: correction.from } : {}),
-      };
+      return completeSubmission(
+        input,
+        submissionPolicy,
+        admitted,
+        decision.evidence,
+        correction,
+      );
     },
     resetVisitContext() {
       focusReadVersion += 1;

@@ -17,20 +17,23 @@
  * under the License.
  */
 
-import type {
-  WorkHubSessionFacts,
-  WorkHubSessionTarget,
-} from './workhub-controller.js';
 import {
-  affirmativeWorkHubExistingCorrectionTarget,
-  affirmativeWorkHubNamedCreationTitle,
-  hasWorkHubCorrectionCue,
-  hasWorkHubNamedCreationClause,
-  isAffirmativeWorkHubCorrectionRequest,
-  isAffirmativeWorkHubExistingTargetCorrectionRequest,
-  isAffirmativeWorkHubNewTopicRequest,
-  isExplicitWorkHubCreationRequest,
-} from '@maka/core/workhub-creation-intent';
+  readWorkHubRequestIntent,
+  workHubCorrectionTargetsSession,
+  type WorkHubRequestIntent,
+} from './application/contracts/workhub-request-intent.js';
+
+interface WorkHubRouteTarget {
+  sessionId: string;
+}
+
+interface WorkHubRoutableSession {
+  target: WorkHubRouteTarget;
+  projectName: string;
+  sessionName: string;
+  latestResult?: string;
+  updatedAt: number;
+}
 
 export type WorkHubRouteEvidence =
   | 'explicit_target'
@@ -42,33 +45,39 @@ export type WorkHubRouteEvidence =
 export type WorkHubRouteDecision =
   | {
       kind: 'target';
-      target: WorkHubSessionTarget;
+      target: WorkHubRouteTarget;
       evidence: WorkHubRouteEvidence;
-      correctedFrom?: WorkHubSessionTarget;
+      correctedFrom?: WorkHubRouteTarget;
     }
   | {
       kind: 'clarification';
-      options: WorkHubSessionFacts[];
-      correctedFrom?: WorkHubSessionTarget;
+      options: WorkHubRoutableSession[];
+      reason?: 'ambiguous_command';
+      correctedFrom?: WorkHubRouteTarget;
     }
   | { kind: 'discussion' }
-  | { kind: 'new_session'; correctedFrom?: WorkHubSessionTarget };
+  | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
 export interface WorkHubRoutePolicy {
   resolve(input: {
     text: string;
-    sessions: WorkHubSessionFacts[];
+    sessions: WorkHubRoutableSession[];
     originPromptBySessionId: ReadonlyMap<string, string | undefined>;
-    explicitTarget?: WorkHubSessionTarget;
+    explicitTarget?: WorkHubRouteTarget;
   }): WorkHubRouteDecision;
-  initializeFocus(targets: readonly WorkHubSessionTarget[]): void;
+  initializeFocus(targets: readonly WorkHubRouteTarget[]): void;
   newVisit(): WorkHubRoutePolicy;
-  rememberTarget(target: WorkHubSessionTarget): void;
+  rememberTarget(target: WorkHubRouteTarget): void;
 }
 
-export function workHubNewSessionName(text: string): string {
-  const explicit = affirmativeWorkHubNamedCreationTitle(text);
-  if (explicit) return explicit;
+export function workHubNewSessionName(
+  text: string,
+  parsedIntent?: WorkHubRequestIntent,
+): string {
+  const intent = typeof parsedIntent === 'object'
+    ? parsedIntent
+    : readWorkHubRequestIntent(text);
+  if (intent.creation.naming.kind === 'named') return intent.creation.naming.title;
   const withoutCreationPrefix = text.trim().replace(
     /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:叫做?|名为|命名为|标题为|名称为|名字为|called|named|titled))?[，,:：\s-]*/iu,
     '',
@@ -97,20 +106,24 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
 }
 
 function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
-  let currentFocus: WorkHubSessionTarget | undefined;
-  let previousFocus: WorkHubSessionTarget | undefined;
+  let currentFocus: WorkHubRouteTarget | undefined;
+  let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
+      const intent = readWorkHubRequestIntent(text);
+      if (intent.execution === 'ambiguous') {
+        return { kind: 'clarification', options: [], reason: 'ambiguous_command' };
+      }
       if (explicitTarget) {
         return { kind: 'target', target: explicitTarget, evidence: 'explicit_target' };
       }
 
-      if (hasWorkHubCorrectionCue(text) && !isAffirmativeWorkHubCorrectionRequest(text)) {
+      if (intent.correction.cue && !isAffirmativeCorrection(intent)) {
         return { kind: 'discussion' };
       }
 
-      const correctionText = naturalCorrectionTargetText(text);
+      const correctionText = naturalCorrectionTargetText(text, intent);
       const correctedFrom = currentFocus && sessions.some((session) =>
         session.target.sessionId === currentFocus?.sessionId)
         ? currentFocus
@@ -124,13 +137,13 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         return { kind: 'target', target: correctedFrom, evidence: 'recent_focus' };
       }
       if (correctionText && correctedFrom) {
-        if (looksLikeCorrectionCreation(text)) {
-          return { kind: 'new_session', correctedFrom };
+        if (looksLikeCorrectionCreation(intent)) {
+          return { kind: 'new_session', title: workHubNewSessionName(text, intent), correctedFrom };
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
         const affirmedCorrections = alternatives.filter((session) =>
-          isAffirmativeWorkHubExistingTargetCorrectionRequest(text, session.sessionName));
+          workHubCorrectionTargetsSession(intent, session.sessionName));
         if (affirmedCorrections.length === 1) {
           return {
             kind: 'target',
@@ -149,8 +162,8 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         };
       }
 
-      if (looksLikeExplicitNewSession(text)) {
-        return { kind: 'new_session' };
+      if (looksLikeExplicitNewSession(intent)) {
+        return { kind: 'new_session', title: workHubNewSessionName(text, intent) };
       }
 
       const exact = rankExactSessions(text, sessions);
@@ -221,7 +234,7 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
 
       const weakNewTopic = related.length === 1 &&
         !related[0]!.strongEvidence &&
-        looksExecutable(text) &&
+        looksExecutable(intent) &&
         !currentReference;
       if (related.length > 0 && !weakNewTopic) {
         return {
@@ -230,7 +243,9 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
             .map(({ session }) => session),
         };
       }
-      return looksExecutable(text) ? { kind: 'new_session' } : { kind: 'discussion' };
+      return looksExecutable(intent)
+        ? { kind: 'new_session', title: workHubNewSessionName(text, intent) }
+        : { kind: 'discussion' };
     },
     initializeFocus(targets) {
       const ordered = targets.filter((target, index) =>
@@ -265,8 +280,8 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
 
 function rankExactSessions(
   text: string,
-  sessions: WorkHubSessionFacts[],
-): Array<{ session: WorkHubSessionFacts; matchLength: number }> {
+  sessions: WorkHubRoutableSession[],
+): Array<{ session: WorkHubRoutableSession; matchLength: number }> {
   return sessions.map((session) => {
     const qualifiedName = `${session.projectName}/${session.sessionName}`;
     return {
@@ -346,8 +361,18 @@ function looksLikePreviousFocus(value: string): boolean {
   );
 }
 
-function naturalCorrectionTargetText(value: string): string | undefined {
-  if (!isAffirmativeWorkHubCorrectionRequest(value)) return undefined;
+function isAffirmativeCorrection(intent: WorkHubRequestIntent): boolean {
+  return intent.correction.cue && Boolean(
+    intent.correction.existingTarget ||
+      (intent.creation.explicit && intent.execution === 'imperative'),
+  );
+}
+
+function naturalCorrectionTargetText(
+  value: string,
+  intent: WorkHubRequestIntent,
+): string | undefined {
+  if (!isAffirmativeCorrection(intent)) return undefined;
   const chineseCreation = value.match(
     /^\s*(?:(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|不对|错了|搞错了|弄错了)(?:[\s\p{P}\p{S}]+|$)(?:(?:请|麻烦|帮我)\s*)?(?:(?:创建|新建|新开)(?:一个)?|开一个)(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)(?:叫|名为|命名为)?\s*(.{2,})$/iu,
   )?.[1]?.trim();
@@ -356,11 +381,11 @@ function naturalCorrectionTargetText(value: string): string | undefined {
     /^\s*(?:no|not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?)|wrong\s+(?:one|session|work|task))\b(?:[\s\p{P}\p{S}]+|$)(?:(?:please|kindly)\s+)?(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)(?:\s+(?:called|named))?\s+(.{2,}?)(?:\s+instead)?[.!]?$/iu,
   )?.[1]?.trim();
   if (englishCreation) return englishCreation;
-  return affirmativeWorkHubExistingCorrectionTarget(value);
+  return intent.correction.existingTarget;
 }
 
-function looksLikeCorrectionCreation(value: string): boolean {
-  return isExplicitWorkHubCreationRequest(value);
+function looksLikeCorrectionCreation(intent: WorkHubRequestIntent): boolean {
+  return intent.creation.explicit && intent.execution === 'imperative';
 }
 
 function looksLikeContentReplacement(value: string): boolean {
@@ -373,13 +398,12 @@ function looksLikeTargetUncertainty(value: string): boolean {
   );
 }
 
-function looksLikeExplicitNewSession(value: string): boolean {
-  return isExplicitWorkHubCreationRequest(value) &&
-    (!hasWorkHubNamedCreationClause(value) || Boolean(affirmativeWorkHubNamedCreationTitle(value)));
+function looksLikeExplicitNewSession(intent: WorkHubRequestIntent): boolean {
+  return intent.creation.explicit && intent.execution === 'imperative';
 }
 
-function looksExecutable(value: string): boolean {
-  return isAffirmativeWorkHubNewTopicRequest(value);
+function looksExecutable(intent: WorkHubRequestIntent): boolean {
+  return intent.execution === 'imperative';
 }
 
 const ROUTING_STOP_TERMS = new Set([
@@ -392,7 +416,7 @@ const ROUTING_STOP_TERMS = new Set([
 ]);
 
 interface RelatedSession {
-  session: WorkHubSessionFacts;
+  session: WorkHubRoutableSession;
   score: number;
   longestMatch: number;
   strongEvidence: boolean;
@@ -400,7 +424,7 @@ interface RelatedSession {
 
 function rankRelatedSessions(
   value: string,
-  sessions: WorkHubSessionFacts[],
+  sessions: WorkHubRoutableSession[],
   originPromptBySessionId: ReadonlyMap<string, string | undefined>,
 ): RelatedSession[] {
   const terms = routingTerms(value);

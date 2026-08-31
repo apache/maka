@@ -5351,8 +5351,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./workhub-controller.js": 1,
-          "@maka/core/workhub-creation-intent": 1
+          "./application/contracts/workhub-request-intent.js": 1
         }
       },
       "src/renderer/workhub-send-lease.ts": {

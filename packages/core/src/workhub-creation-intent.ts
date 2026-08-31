@@ -35,15 +35,17 @@ const STRUCTURED_LITERAL_LINE =
   /^\s*(?:(?:[-*+]|\d+[.)])\s*)?(?:(?:do\s+not|don't)|(?:还是)?(?:别|不要)了)\s*[.!?。！？]?\s*$/iu;
 const PRIOR_STRUCTURED_LITERAL_ITEM = /^(?:\t| {4}|\s*(?:[-*+]|\d+[.)])\s+\S)/u;
 const EXECUTION_ACTION =
-  /(?:修复|修改|更新|实现|创建|新增|删除|移除|处理|完成|运行|测试|提交|推送|检查|优化|补充|整理)|\b(?:fix|modify|implement|update|create|add|remove|delete|handle|finish|run|test|commit|push|check|optimize|try|reproduce|diagnose|work)\b/iu;
+  /(?:修复|修改|更新|实现|创建|新增|删除|移除|处理|完成|运行|测试|提交|推送|检查|诊断|复现|优化|补充|整理)|\b(?:fix|modify|implement|update|create|add|remove|delete|handle|finish|run|test|commit|push|check|optimize|try|reproduce|diagnose|work)\b/iu;
 const CREATION_ACTION = /(?:创建|新建|新开|开一个)|\b(?:create|start|open)\b/iu;
 const ANAPHORIC_OBJECT = /^\s*(?:(?:it|one|that|this)\b|(?:它|这个|这项工作|这项任务))/iu;
 const DELIBERATIVE_REQUEST =
   /^\s*(?:(?:(?:我们|我)\s*)?(?:是否|要不要|该不该|应不应该|能不能|可不可以|为什么|如何|怎么|想知道(?:是否|为什么|如何|怎么)|应该(?:如何|怎么))|(?:should|whether|why|how|(?:can|could|would)\s+(?:we|i)|what\s+(?:is|are|was|were|should|would|could|do|does|did|can))\b|(?:i|we)\s+(?:(?:want|would\s+like)\s+to\s+(?:know|understand)|wonder)\s+(?:whether|why|how)\b|(?:(?:(?:can|could|would)\s+you\s+)?(?:(?:please|kindly)\s+)?(?:explain|discuss|consider|tell\s+me|help\s+me\s+understand)\s+(?:whether|why|how|when|if|in\s+which\s+cases?)\b)|(?:(?:请|帮我|请帮我|麻烦(?:你)?)\s*)?(?:解释|讨论|考虑|告诉我|帮我理解).{0,18}(?:是否|为什么|如何|怎么|何时|什么时候|在什么情况))/iu;
 const ADVISORY_SPEECH_ACT =
-  /^\s*(?:(?:can|could|would)\s+you(?:\s+(?:please|kindly))?|please|kindly)?\s*(?:recommend|suggest|advise|explain|discuss|consider|tell\s+me|help\s+me\s+understand)\b|^\s*(?:(?:请|帮我|请帮我|麻烦(?:你)?)\s*)?(?:建议|解释|讨论|考虑|告诉我|帮我理解)/iu;
+  /^\s*(?:(?:can|could|would)\s+you(?:\s+(?:please|kindly))?|please|kindly)?\s*(?:recommend|suggest|advise|explain|discuss|consider|tell\s+me|help\s+me\s+understand|show\s+me|teach\s+me|walk\s+me\s+through)\b|^\s*(?:(?:请|帮我|请帮我|麻烦(?:你)?)\s*)?(?:建议|解释|讨论|考虑|告诉我|帮我理解|教我|讲讲)/iu;
 const COORDINATED_DIRECT_ACTION_PREFIX =
   /(?:(?:[,.;]\s*)(?:(?:and|but)\s*)?|(?:and\s+then|then)\s*|(?:[，。；]\s*)(?:(?:并且|并|但|不过)\s*)?|然后\s*)$/iu;
+const ADVISORY_MATRIX_ACTION_BOUNDARY =
+  /(?:,\s*(?:and|but|then)|[.;]\s*(?:(?:and|but|then)\s*)?|，\s*(?:然后|并且|并|但|不过)|[。；]\s*(?:(?:然后|并且|并|但|不过)\s*)?)\s*$/iu;
 const BARE_COORDINATED_ACTION_PREFIX = /(?:\band\s*|并且\s*|并\s*)$/iu;
 const ADVISORY_COMPLEMENT_NOUN =
   /\b(?:ways?|methods?|techniques?|approaches?|circumstances?|cases?|steps?|options?|strategies?|solutions?|patterns?|process(?:es)?|procedures?|frameworks?|workflows?|proposals?|tools?)\b|(?:方法|方式|技巧|方案|步骤|流程|框架|工作流|提案|工具|选项|策略|模式|情形|情况)/iu;
@@ -98,6 +100,27 @@ const NAMED_CREATION_TITLE_INTRODUCER =
   /\b(?:new|brand[- ]new)\s+(?:session|work|task)[\s,，:：-]+(?:(?:called|named|titled)|with\s+(?:the\s+)?title)\s+|(?:新的?|全新的?)?\s*(?:Session|会话|工作|任务)[\s,，:：-]*(?:叫做?|名叫|名为|命名为|标题为|名称为|名字为)\s*/iu;
 const LEADING_CORRECTION_SEPARATOR = /^[\s,.;:!?，。；：！？—–-]+/u;
 
+/** How much authority trusted user text carries for starting work. */
+export type WorkHubExecutionIntent = 'imperative' | 'ambiguous' | 'non_executable';
+
+/** Naming syntax is total: absent, parsed, or present but unsafe to use. */
+export type WorkHubCreationNaming =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unusable' }
+  | { readonly kind: 'named'; readonly title: string };
+
+export interface WorkHubRequestIntent {
+  readonly execution: WorkHubExecutionIntent;
+  readonly creation: {
+    readonly explicit: boolean;
+    readonly naming: WorkHubCreationNaming;
+  };
+  readonly correction: {
+    readonly cue: boolean;
+    readonly existingTarget?: string;
+  };
+}
+
 /**
  * Whether trusted user text affirmatively asks WorkHub to create a new Session.
  *
@@ -106,7 +129,7 @@ const LEADING_CORRECTION_SEPARATOR = /^[\s,.;:!?，。；：！？—–-]+/u;
  * its creation verb; only an explicit contrast can introduce a later positive
  * creation clause.
  */
-export function isExplicitWorkHubCreationRequest(value: string): boolean {
+function isExplicitWorkHubCreationRequest(value: string): boolean {
   const normalized = value.replace(/[’‘]/gu, "'");
   const creations = allMatches(normalized, EXPLICIT_CREATION);
   if (
@@ -122,7 +145,7 @@ export function isExplicitWorkHubCreationRequest(value: string): boolean {
 }
 
 /** The explicit title when an affirmative creation request names its new Session. */
-export function affirmativeWorkHubNamedCreationTitle(value: string): string | undefined {
+function affirmativeWorkHubNamedCreationTitle(value: string): string | undefined {
   if (!isExplicitWorkHubCreationRequest(value)) return undefined;
   const normalized = value.replace(/[’‘]/gu, "'");
   const lastIntroducer = affirmativeNamedCreationIntroducer(normalized);
@@ -131,7 +154,7 @@ export function affirmativeWorkHubNamedCreationTitle(value: string): string | un
 }
 
 /** Whether the request contains syntax that explicitly names its new Session. */
-export function hasWorkHubNamedCreationClause(value: string): boolean {
+function hasWorkHubNamedCreationClause(value: string): boolean {
   return NAMED_CREATION_TITLE_INTRODUCER.test(value.replace(/[’‘]/gu, "'"));
 }
 
@@ -175,7 +198,7 @@ function hasAffirmativeCreationGrammar(value: string, creation: RegExpMatchArray
 }
 
 /** Whether trusted user text negates creation rather than authorizing it. */
-export function hasNegatedWorkHubCreationRequest(value: string): boolean {
+function hasNegatedWorkHubCreationRequest(value: string): boolean {
   const normalized = value.replace(/[’‘]/gu, "'");
   const lastCreation = lastMatch(normalized, EXPLICIT_CREATION);
   const trailing =
@@ -199,15 +222,10 @@ export function hasNegatedWorkHubCreationRequest(value: string): boolean {
   return lastDecision ?? false;
 }
 
-/** Whether trusted user text affirmatively requests executable new work. */
-export function isAffirmativeWorkHubNewTopicRequest(value: string): boolean {
-  const normalized = value.replace(/[’‘]/gu, "'");
+/** Whether already-normalized, literal-masked text is an executable instruction. */
+function isImperativeWorkHubNewTopicRequest(normalized: string): boolean {
   const actions = allMatches(normalized, EXECUTION_ACTION);
-  const hasAdvisoryThenDirectAction = hasAdvisoryComplementExit(normalized, actions);
-  if (
-    (isDeliberative(normalized) && !hasAdvisoryThenDirectAction) ||
-    hasUnquotedTerminalWithdrawal(normalized)
-  ) {
+  if (isDeliberative(normalized) || hasUnquotedTerminalWithdrawal(normalized)) {
     return false;
   }
   if (
@@ -238,8 +256,71 @@ export function isAffirmativeWorkHubNewTopicRequest(value: string): boolean {
   );
 }
 
+/**
+ * Read trusted user text once at the WorkHub intent boundary.
+ *
+ * Heuristics may demote toward doing nothing; they must never promote an
+ * advisory or malformed phrase into authority to create work.
+ */
+export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
+  const literalMask = maskLiteralSpans(value);
+  const source = value.replace(/[’‘]/gu, "'");
+  const masked = literalMask.value.replace(/[’‘]/gu, "'");
+  const explicit = isExplicitWorkHubCreationRequest(masked);
+  const hasNamingClause = hasWorkHubNamedCreationClause(source);
+  const namedTitle = explicit ? affirmativeWorkHubNamedCreationTitle(source) : undefined;
+  const naming: WorkHubCreationNaming = !hasNamingClause
+    ? { kind: 'none' }
+    : namedTitle
+      ? { kind: 'named', title: namedTitle }
+      : { kind: 'unusable' };
+  const correctionCue = hasWorkHubCorrectionCue(source);
+  const existingTarget = affirmativeWorkHubExistingCorrectionTarget(source);
+  const actions = allMatches(masked, EXECUTION_ACTION);
+  const execution: WorkHubExecutionIntent =
+    literalMask.malformed || naming.kind === 'unusable' || hasDominatingDeliberation(masked)
+      ? 'non_executable'
+      : hasAmbiguousAdvisoryCommand(masked, actions)
+        ? 'ambiguous'
+        : isImperativeWorkHubNewTopicRequest(masked)
+          ? 'imperative'
+          : 'non_executable';
+  return {
+    execution,
+    creation: { explicit, naming },
+    correction: {
+      cue: correctionCue,
+      ...(existingTarget ? { existingTarget } : {}),
+    },
+  };
+}
+
+/** Whether a parsed correction names exactly this Session. */
+export function workHubCorrectionTargetsSession(
+  intent: WorkHubRequestIntent,
+  sessionName: string,
+): boolean {
+  return Boolean(
+    intent.correction.existingTarget &&
+      correctionTargetMatchesSession(intent.correction.existingTarget, sessionName),
+  );
+}
+
+/** Whether parsed trusted text authorizes the title proposed for new work. */
+export function workHubCreationAuthorizesTitle(
+  intent: WorkHubRequestIntent,
+  title: string,
+): boolean {
+  if (intent.execution !== 'imperative') return false;
+  if (intent.creation.naming.kind === 'unusable') return false;
+  if (intent.creation.naming.kind === 'none') return true;
+  return (
+    normalizeCorrectionIdentity(intent.creation.naming.title) === normalizeCorrectionIdentity(title)
+  );
+}
+
 /** Whether trusted user text affirmatively redirects an existing WorkHub delegation. */
-export function isAffirmativeWorkHubExistingTargetCorrectionRequest(
+function isAffirmativeWorkHubExistingTargetCorrectionRequest(
   value: string,
   expectedTargetName?: string,
 ): boolean {
@@ -250,7 +331,7 @@ export function isAffirmativeWorkHubExistingTargetCorrectionRequest(
 }
 
 /** The bounded target phrase from an affirmative existing-Session correction. */
-export function affirmativeWorkHubExistingCorrectionTarget(value: string): string | undefined {
+function affirmativeWorkHubExistingCorrectionTarget(value: string): string | undefined {
   const normalized = value.replace(/[’‘]/gu, "'");
   if (!hasWorkHubCorrectionCue(normalized) || isDeliberative(normalized)) return undefined;
   const actions = allMatches(normalized, CORRECTION_RETARGET_ACTION);
@@ -312,7 +393,7 @@ function correctionTargetMatchesSession(target: string, sessionName: string): bo
       !/[\r\n,.!?;，。！？；—–]|\b(?:and|then|but|however|actually)\b|(?:然后|随后|但|不过|其实)/iu.test(
         supplementalBody,
       ) &&
-      isAffirmativeWorkHubNewTopicRequest(supplementalBody),
+      readWorkHubRequestIntent(supplementalBody).execution === 'imperative',
   );
 }
 
@@ -321,13 +402,13 @@ function normalizeCorrectionIdentity(value: string): string {
 }
 
 function hasUnquotedTerminalWithdrawal(value: string): boolean {
+  const masked = maskLiteralSpans(value).value;
   const withdrawal =
-    TERMINAL_WITHDRAWAL_CLAUSE.exec(value) ??
-    TERMINAL_QUALIFIED_WITHDRAWAL_COMMAND.exec(value) ??
-    TERMINAL_NEGATED_CONTINUATION.exec(value) ??
-    TERMINAL_CHINESE_WITHDRAWAL.exec(value);
-  if (withdrawal?.index === undefined) return false;
-  return !isInsideClosedQuote(value, withdrawal.index);
+    TERMINAL_WITHDRAWAL_CLAUSE.exec(masked) ??
+    TERMINAL_QUALIFIED_WITHDRAWAL_COMMAND.exec(masked) ??
+    TERMINAL_NEGATED_CONTINUATION.exec(masked) ??
+    TERMINAL_CHINESE_WITHDRAWAL.exec(masked);
+  return withdrawal?.index !== undefined;
 }
 
 function hasUnsafeUnquotedNamedCreationTail(value: string): boolean {
@@ -375,26 +456,6 @@ function stripExecutionScaffolding(value: string): string {
     current = next;
   }
   return current;
-}
-
-function isInsideClosedQuote(value: string, index: number): boolean {
-  for (const [opening, closing] of [
-    ['"', '"'],
-    ["'", "'"],
-    ['“', '”'],
-    ['‘', '’'],
-  ] as const) {
-    let cursor = 0;
-    while (cursor < value.length) {
-      const start = value.indexOf(opening, cursor);
-      if (start < 0 || start >= index) break;
-      const end = value.indexOf(closing, start + 1);
-      if (end < 0) break;
-      if (index > start && index < end) return true;
-      cursor = end + 1;
-    }
-  }
-  return false;
 }
 
 function parseNamedCreationTitle(value: string): string | undefined {
@@ -460,7 +521,7 @@ function isTitleAbbreviation(prefix: string, after: string): boolean {
 }
 
 /** Whether trusted user text affirmatively corrects to an existing or new target. */
-export function isAffirmativeWorkHubCorrectionRequest(value: string): boolean {
+function isAffirmativeWorkHubCorrectionRequest(value: string): boolean {
   const normalized = value.replace(/[’‘]/gu, "'");
   if (!hasWorkHubCorrectionCue(normalized)) return false;
   const affirmativeCreation =
@@ -471,7 +532,7 @@ export function isAffirmativeWorkHubCorrectionRequest(value: string): boolean {
 }
 
 /** Whether trusted user text contains an explicit WorkHub route-correction cue. */
-export function hasWorkHubCorrectionCue(value: string): boolean {
+function hasWorkHubCorrectionCue(value: string): boolean {
   return CORRECTION_CUE.test(value.replace(/[’‘]/gu, "'"));
 }
 
@@ -511,50 +572,47 @@ function hasLaterCoordinatedDirectExecutableAction(
   });
 }
 
-function hasAdvisoryComplementExit(value: string, actions: readonly RegExpMatchArray[]): boolean {
-  const scopedActions = actions.filter(
-    (action) => action.index !== undefined && !isInsideLiteralSpan(value, action.index),
-  );
-  if (!ADVISORY_SPEECH_ACT.test(value) || scopedActions.length < 2) return false;
-  const complementAction = scopedActions[0];
+function hasDominatingDeliberation(value: string): boolean {
+  if (hasUnquotedTerminalWithdrawal(value)) return true;
+  const firstAction = EXECUTION_ACTION.exec(value);
+  if (firstAction?.index === undefined) return false;
+  const actionTail = value.slice(firstAction.index + firstAction[0].length);
+  return POST_ACTION_DELIBERATIVE.test(actionTail) || hasPostActionDeliberativeQuestion(actionTail);
+}
+
+/**
+ * Advisory `how to` complements have an attachment ambiguity at a later
+ * coordinator. This check can only demote to clarification; it never grants
+ * execution authority.
+ */
+function hasAmbiguousAdvisoryCommand(value: string, actions: readonly RegExpMatchArray[]): boolean {
+  if (!ADVISORY_SPEECH_ACT.test(value) || actions.length < 2) return false;
+  const complementAction = actions[0];
   if (complementAction?.index === undefined) return false;
   const complementPrefix = value.slice(0, complementAction.index);
   if (!/(?:\bhow\s+to\s*|(?:如何|怎么)\s*)$/iu.test(complementPrefix)) return false;
   const decisions = executionActionDecisions(value);
   let sawBareComma = false;
-  for (let index = 1; index < scopedActions.length; index += 1) {
-    const previous = scopedActions[index - 1];
-    const directAction = scopedActions[index];
+  for (let index = 1; index < actions.length; index += 1) {
+    const previous = actions[index - 1];
+    const directAction = actions[index];
     if (previous?.index === undefined || directAction?.index === undefined) continue;
-    const betweenStart = previous.index + previous[0].length;
-    const between = value.slice(betweenStart, directAction.index);
-    const boundary =
-      /(?:,\s*(?:and|but|then)|[.;]\s*(?:(?:and|but|then)\s*)?|，\s*(?:然后|并且|并|但|不过)|[。；]\s*(?:(?:然后|并且|并|但|不过)\s*)?)\s*$/iu.exec(
-        between,
-      );
-    if (boundary?.index) {
-      const boundaryIndex = betweenStart + boundary.index;
-      const complementTarget = between.slice(0, boundary.index).trim();
-      const directTail = value.slice(directAction.index + directAction[0].length);
-      const hardExit = /[.;。；]/u.test(boundary[0]);
-      const originalIndex = actions.indexOf(directAction);
-      if (
-        (!sawBareComma || hardExit) &&
-        complementTarget &&
-        !isInsideLiteralSpan(value, boundaryIndex) &&
-        decisions.get(String(originalIndex)) === true &&
-        !isLikelyDeclarativeActionTail(directTail) &&
-        !hasTrailingDeliberativeQuestion(directTail)
-      ) {
-        return true;
-      }
-      if (!hardExit) sawBareComma = true;
+    if (decisions.get(String(index)) !== true) continue;
+    const between = value.slice(previous.index + previous[0].length, directAction.index);
+    const boundary = ADVISORY_MATRIX_ACTION_BOUNDARY.exec(between);
+    if (!boundary) {
+      sawBareComma ||= /[,，]/u.test(between);
       continue;
     }
-    const comma = /[,，]/u.exec(between);
-    if (comma?.index !== undefined && !isInsideLiteralSpan(value, betweenStart + comma.index)) {
+    const hardBoundary = /[.;。；]/u.test(boundary[0]);
+    const priorBareComma = sawBareComma || /[,，]/u.test(between.slice(0, boundary.index));
+    if (priorBareComma && !hardBoundary) {
       sawBareComma = true;
+      continue;
     }
+    const directTail = value.slice(directAction.index + directAction[0].length);
+    if (isLikelyDeclarativeActionTail(directTail)) continue;
+    return true;
   }
   return false;
 }
@@ -568,7 +626,7 @@ function hasImperativeCoordinatedLead(value: string, actionTail: string): boolea
 }
 
 function isLikelyDeclarativeActionTail(value: string): boolean {
-  const unquoted = stripLiteralSpans(value);
+  const unquoted = maskLiteralSpans(value).value;
   const words = unquoted
     .replace(/[.!?。！？]+\s*$/u, '')
     .trim()
@@ -581,6 +639,9 @@ function isLikelyDeclarativeActionTail(value: string): boolean {
     return true;
   }
   if (words.length < 2) return false;
+  const startsWithDeterminer = /^(?:the|a|an|both|this|that|these|those|my|our|your)\b/iu.test(
+    words[0] ?? '',
+  );
   if (
     words
       .slice(1)
@@ -592,13 +653,11 @@ function isLikelyDeclarativeActionTail(value: string): boolean {
   ) {
     return true;
   }
-  return false;
-}
-
-function hasTrailingDeliberativeQuestion(value: string): boolean {
   return (
-    hasPostActionDeliberativeQuestion(value) ||
-    /(?:[.;!?—–]|\bbut\b)\s*[^?？\r\n]{1,80}[?？]\s*$/iu.test(value)
+    /^(?:matter|matters|changed|changes|improved|improves|increased|increases|failed|fails|succeeded|succeeds|exists|exist)$/iu.test(
+      words.at(-1) ?? '',
+    ) ||
+    (!startsWithDeterminer && words.slice(1).some((word) => /ed$/iu.test(word)))
   );
 }
 
@@ -611,38 +670,80 @@ function isBoundedPreparatoryActionTail(value: string): boolean {
   if (/^[\p{Script=Han}][\p{Script=Han}\p{L}\p{N}_-]{0,48}$/u.test(normalized)) {
     return !isLikelyDeclarativeActionTail(normalized);
   }
-  return /^(?:(?:the|a|an|both|this|that|these|those|my|our|your)\s+[\p{L}\p{N}_.:/-]+(?:\s+[\p{L}\p{N}_.:/-]+){0,5}|[\p{L}\p{N}_.:/-]+(?:\s+(?:and|or)\s+[\p{L}\p{N}_.:/-]+)?)$/iu.test(
+  if (isLikelyDeclarativeActionTail(normalized)) return false;
+  return /^(?:(?:the|a|an|both|this|that|these|those|my|our|your)\s+)?[\p{L}\p{N}_.:/-]+(?:\s+[\p{L}\p{N}_.:/-]+){0,5}(?:\s+(?:for|in|on|with|without|before|after|under)\s+[\p{L}\p{N}_.:/-]+(?:\s+[\p{L}\p{N}_.:/-]+){0,3})?$/iu.test(
     normalized,
   );
 }
 
-function isInsideLiteralSpan(value: string, index: number): boolean {
-  for (const [opening, closing] of [
+function maskLiteralSpans(value: string): { readonly value: string; readonly malformed: boolean } {
+  const scope = buildLiteralScope(value);
+  return {
+    value: value
+      .split('')
+      .map((character, index) => (scope.contains(index) ? ' ' : character))
+      .join(''),
+    malformed: scope.malformed,
+  };
+}
+
+function buildLiteralScope(value: string): {
+  readonly contains: (index: number) => boolean;
+  readonly malformed: boolean;
+} {
+  const covered = new Uint8Array(value.length);
+  const bracketClosers = new Map([
+    ['(', ')'],
+    ['（', '）'],
+    ['[', ']'],
+    ['【', '】'],
+  ]);
+  const quoteClosers = new Map([
     ['"', '"'],
     ['“', '”'],
     ['‘', '’'],
     ['`', '`'],
-    ['(', ')'],
-    ['（', '）'],
-  ] as const) {
-    let cursor = 0;
-    while (cursor < value.length) {
-      const start = value.indexOf(opening, cursor);
-      if (start < 0 || start >= index) break;
-      const end = value.indexOf(closing, start + opening.length);
-      if (end < 0) break;
-      if (index > start && index < end) return true;
-      cursor = end + closing.length;
+  ]);
+  const bracketClosingCharacters = new Set(bracketClosers.values());
+  const brackets: string[] = [];
+  let quote: string | undefined;
+  let malformed = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? '';
+    if (quote) {
+      covered[index] = 1;
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (brackets.length > 0) {
+      covered[index] = 1;
+      const nested = bracketClosers.get(character);
+      if (nested) brackets.push(nested);
+      else if (character === brackets.at(-1)) brackets.pop();
+      else if (bracketClosingCharacters.has(character)) malformed = true;
+      continue;
+    }
+    const quoteCloser = quoteClosers.get(character);
+    if (quoteCloser) {
+      covered[index] = 1;
+      quote = quoteCloser;
+      continue;
+    }
+    const bracketCloser = bracketClosers.get(character);
+    if (bracketCloser) {
+      covered[index] = 1;
+      brackets.push(bracketCloser);
+      continue;
+    }
+    if (bracketClosingCharacters.has(character) || character === '”') {
+      malformed = true;
     }
   }
-  return false;
-}
-
-function stripLiteralSpans(value: string): string {
-  return value.replace(
-    /"[^"\r\n]*"|“[^”\r\n]*”|‘[^’\r\n]*’|`[^`\r\n]*`|\([^()\r\n]*\)|（[^（）\r\n]*）/gu,
-    '',
-  );
+  malformed ||= Boolean(quote || brackets.length > 0);
+  return {
+    contains: (index) => covered[index] === 1,
+    malformed,
+  };
 }
 
 function isDeliberative(value: string): boolean {
