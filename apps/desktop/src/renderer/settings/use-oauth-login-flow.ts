@@ -85,8 +85,6 @@ export interface OAuthAccountFlowBridge {
   logout(): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
 }
 
-export type OAuthLoginFlowBridge = OAuthAuthorizationFlowBridge & OAuthAccountFlowBridge;
-
 export interface OAuthLoginFlowDisplay {
   name: string;
   shortName: string;
