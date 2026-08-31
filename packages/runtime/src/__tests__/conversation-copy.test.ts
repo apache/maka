@@ -2968,6 +2968,185 @@ test('conversation copy carries a transition recorded by a later, uncopied run',
   }
 });
 
+test('conversation copy reproduces the source fold rather than re-deciding it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-transition-rival-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    for (const [runId, turnId] of [
+      ['run-first', 'turn-1'],
+      ['run-second', 'turn-2'],
+    ]) {
+      await runStore.createRun(
+        agentRunHeader({ runId, invocationId: `invocation-${runId}`, turnId, cwd: root }),
+      );
+    }
+    const resultEvent = runtimeEvent({
+      id: 'event-result',
+      runId: 'run-first',
+      invocationId: 'invocation-run-first',
+      ts: 2,
+      role: 'tool',
+      author: 'tool',
+      content: {
+        kind: 'function_response',
+        id: 'tool-1',
+        name: 'Read',
+        result: { kind: 'text', text: TRANSITION_SECRET_BODY },
+      },
+    });
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'first turn' },
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 1.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'function_call', id: 'tool-1', name: 'Read', args: { path: 'notes.txt' } },
+      }),
+      resultEvent,
+      runtimeEvent({
+        id: 'event-terminal',
+        runId: 'run-first',
+        invocationId: 'invocation-run-first',
+        ts: 3,
+        status: 'completed',
+      }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-first', event);
+    }
+    for (const event of [
+      runtimeEvent({
+        id: 'event-user-2',
+        runId: 'run-second',
+        invocationId: 'invocation-run-second',
+        turnId: 'turn-2',
+        ts: 4,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'second turn' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal-2',
+        runId: 'run-second',
+        invocationId: 'invocation-run-second',
+        turnId: 'turn-2',
+        ts: 5,
+        status: 'completed',
+      }),
+    ]) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-second', event);
+    }
+    // Two rival roots against the same source. The source fold accepts exactly
+    // one of them — by content-derived id, not by which run or which timestamp.
+    const rivals = ['artifact-source-a', 'artifact-source-b'].map((artifactId, index) =>
+      sourceProjectionTransition({
+        event: resultEvent,
+        sourceProjection: baseToolResultProjection(resultEvent)!,
+        artifactId,
+        createdAt: 401 + index,
+      }),
+    );
+    const [inCopiedRun, inLaterRun] = [...rivals].sort((left, right) =>
+      left.transitionId < right.transitionId ? 1 : -1,
+    );
+    assert.ok(inCopiedRun && inLaterRun);
+    for (const [transition, runId, turnId] of [
+      [inCopiedRun, 'run-first', 'turn-1'],
+      [inLaterRun, 'run-second', 'turn-2'],
+    ] as const) {
+      await runStore.appendEvent('session-source', runId, {
+        type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+        id: transition.transitionId,
+        runId,
+        sessionId: 'session-source',
+        turnId,
+        ts: transition.createdAt,
+        data: {
+          runtimeEventId: transition.target.runtimeEventId,
+          part: transition.target.part,
+          transition,
+        },
+      });
+    }
+    for (const [runId, turnId, id] of [
+      ['run-first', 'turn-1', 'completed-first'],
+      ['run-second', 'turn-2', 'completed-second'],
+    ]) {
+      await runStore.appendEvent('session-source', runId, {
+        type: 'run_completed',
+        id,
+        runId,
+        sessionId: 'session-source',
+        turnId,
+        ts: 6,
+      });
+    }
+    const source = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView('session-source');
+    const firstTurnMessages = source.messages.filter(
+      (message) => 'turnId' in message && message.turnId === 'turn-1',
+    );
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, firstTurnMessages, runStore, runtimeEventStore),
+      copiedMessages: firstTurnMessages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map([
+          ['artifact-source-a', 'artifact-target-a'],
+          ['artifact-source-b', 'artifact-target-b'],
+        ]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRun.runId,
+    );
+    const copied = await loadModelProjectionTransitionsFromRunLedger(runStore, 'session-target');
+    // Only the transition the source fold applied is rebuilt. Carrying the
+    // rejected rival would let the copy re-decide and show a placeholder the
+    // source never showed.
+    assert.equal(copied.transitions.length, 1);
+    const reduced = reduceEffectiveModelProjections(targetEvents, copied.transitions);
+    assert.equal(reduced.applied.length, 1);
+    const effective = reduced.events.find((event) => event.content?.kind === 'function_response');
+    assert.ok(effective?.content?.kind === 'function_response');
+    assert.ok(isArchivedToolResultPlaceholder(effective.content.result));
+    const sourceWinner = reduceEffectiveModelProjections([resultEvent], rivals).applied[0]!;
+    assert.equal(
+      effective.content.result.artifactId,
+      sourceWinner.transitionId === inCopiedRun.transitionId
+        ? 'artifact-target-a'
+        : 'artifact-target-b',
+    );
+    assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function prepareTestCopyPlan(
   source: RuntimeReadModelSessionView,
   copiedMessages: readonly StoredMessage[],

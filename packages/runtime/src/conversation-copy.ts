@@ -69,6 +69,7 @@ import {
 import {
   baseToolResultProjection,
   decodeLedgerTransition,
+  reduceEffectiveModelProjections,
 } from './model-projection-transition-ledger.js';
 import { archivedToolResultProjection } from './tool-result-archive-transition.js';
 
@@ -288,12 +289,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
-  await attachOutOfRunProjectionTransitions(
-    input.sourceSessionId,
-    sourceRuns,
-    runs,
-    input.runStore,
-  );
+  await rebuildCopiedProjectionTransitions(input.sourceSessionId, sourceRuns, runs, input.runStore);
   const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
@@ -305,17 +301,21 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
 }
 
 /**
- * Carry in transitions written by runs outside the copied slice.
+ * Rebuild the copied slice's transition records from the source fold.
  *
- * A transition is recorded by the run that decided it, which for a prior-Turn
- * archive is a LATER run than the one holding its target. Copying by run alone
- * would therefore keep the target and drop the record that replaced it, and the
- * archived body would reappear in the copy — the one outcome this protocol
- * exists to prevent. Each such record is attached to the run that owns its
- * target; ledger append time orders a chain, because a successor can only be
- * written after the predecessor it names.
+ * Two things make "copy the records you happen to hold" wrong. A transition is
+ * recorded by the run that decided it, which for a prior-Turn archive is a
+ * LATER run than the one holding its target — so copying by run keeps the
+ * target and drops the record that replaced it. And a ledger holds records the
+ * source fold refused: rival roots resolved by content-derived id, stale
+ * writers. Carrying those lets the copy re-decide and make a source-rejected
+ * transition model-visible.
+ *
+ * So the source reduction is the authority here too: every record for a copied
+ * target is gathered, folded, and only the applied chain is kept, in the order
+ * the fold applied it.
  */
-async function attachOutOfRunProjectionTransitions(
+async function rebuildCopiedProjectionTransitions(
   sessionId: string,
   sourceRuns: readonly AgentRunHeader[],
   runs: readonly {
@@ -326,21 +326,63 @@ async function attachOutOfRunProjectionTransitions(
   runStore: Pick<AgentRunStore, 'readEvents'>,
 ): Promise<void> {
   const owningRun = new Map<string, { run: AgentRunHeader; operationalEvents: AgentRunEvent[] }>();
+  const copiedRuntimeEvents: RuntimeEvent[] = [];
   for (const { run, runtimeEvents, operationalEvents } of runs) {
-    for (const event of runtimeEvents) owningRun.set(event.id, { run, operationalEvents });
-  }
-  const copiedRunIds = new Set(runs.map(({ run }) => run.runId));
-  const carried: AgentRunEvent[] = [];
-  for (const run of sourceRuns) {
-    if (copiedRunIds.has(run.runId)) continue;
-    for (const event of await runStore.readEvents(sessionId, run.runId)) {
-      const transition = decodeLedgerTransition(event, sessionId);
-      if (transition && owningRun.has(transition.target.runtimeEventId)) carried.push(event);
+    for (const event of runtimeEvents) {
+      owningRun.set(event.id, { run, operationalEvents });
+      copiedRuntimeEvents.push(event);
     }
   }
-  for (const event of carried.sort((left, right) => left.ts - right.ts)) {
-    const transition = decodeLedgerTransition(event, sessionId)!;
+
+  const ledgerEvents = new Map<string, AgentRunEvent>();
+  const transitions: ModelProjectionTransition[] = [];
+  const collect = (events: readonly AgentRunEvent[]): void => {
+    for (const event of events) {
+      const transition = decodeLedgerTransition(event, sessionId);
+      if (!transition || !owningRun.has(transition.target.runtimeEventId)) continue;
+      if (ledgerEvents.has(transition.transitionId)) continue;
+      ledgerEvents.set(transition.transitionId, event);
+      transitions.push(transition);
+    }
+  };
+  const copiedRunIds = new Set(runs.map(({ run }) => run.runId));
+  for (const { operationalEvents } of runs) collect(operationalEvents);
+  for (const run of sourceRuns) {
+    if (copiedRunIds.has(run.runId)) continue;
+    collect(await runStore.readEvents(sessionId, run.runId));
+  }
+  if (transitions.length === 0) return;
+
+  // Records this build cannot decode are not gathered above, so the copy would
+  // silently lose whatever they removed. Refuse instead.
+  for (const run of sourceRuns) {
+    for (const event of copiedRunIds.has(run.runId)
+      ? runs.find(({ run: copied }) => copied.runId === run.runId)!.operationalEvents
+      : await runStore.readEvents(sessionId, run.runId)) {
+      if (
+        event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+        !decodeLedgerTransition(event, sessionId) &&
+        typeof event.data?.runtimeEventId === 'string' &&
+        owningRun.has(event.data.runtimeEventId)
+      ) {
+        throw new Error(
+          `Cannot copy a conversation whose projection transition ${event.id} is unreadable`,
+        );
+      }
+    }
+  }
+
+  for (const { operationalEvents } of runs) {
+    for (let index = operationalEvents.length - 1; index >= 0; index -= 1) {
+      if (operationalEvents[index]!.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE) {
+        operationalEvents.splice(index, 1);
+      }
+    }
+  }
+  for (const transition of reduceEffectiveModelProjections(copiedRuntimeEvents, transitions)
+    .applied) {
     const owner = owningRun.get(transition.target.runtimeEventId)!;
+    const event = ledgerEvents.get(transition.transitionId)!;
     // The record moves to the run that owns its target, so the copy keeps one
     // rule for every operational event: an event belongs to the run it is in.
     owner.operationalEvents.push({ ...event, runId: owner.run.runId, turnId: owner.run.turnId });
@@ -947,8 +989,17 @@ function cloneModelProjectionTransition(
     },
     sourceProjection,
     replacement: archivedToolResultProjection(rewritten),
-    ...(source.previousTransitionId && transitionIds.has(source.previousTransitionId)
-      ? { previousTransitionId: transitionIds.get(source.previousTransitionId)! }
+    // The applied chain is copied in fold order, so a predecessor is always
+    // rebuilt before its successor. An unmapped one means the chain broke, and
+    // rooting the successor instead would change what the fold decides.
+    ...(source.previousTransitionId
+      ? {
+          previousTransitionId: requiredMappedId(
+            transitionIds,
+            source.previousTransitionId,
+            'model projection transition',
+          ),
+        }
       : {}),
     now: source.createdAt,
   });
