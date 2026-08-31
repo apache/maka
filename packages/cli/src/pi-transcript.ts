@@ -1922,10 +1922,14 @@ function firstLinePreview(text: string): string {
  * `/Users/alice/workspace/project` → `~/workspace/project`.
  * Falls back to the original path if it is not under the home directory.
  */
-function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(cwd: string, homeDir?: string): string {
   const home = homeDir ?? homedir();
-  if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
-  if (home && cwd === home) return '~';
+  const normalizedHome = home.replace(/\\/g, '/');
+  const normalizedCwd = cwd.replace(/\\/g, '/');
+  if (home && normalizedCwd.startsWith(normalizedHome + '/')) {
+    return `~${cwd.slice(home.length)}`;
+  }
+  if (home && normalizedCwd === normalizedHome) return '~';
   return cwd;
 }
 

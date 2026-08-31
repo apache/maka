@@ -42,6 +42,7 @@ import {
   makaPiToolPresentationStatus,
   retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
+  shortenCwd,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -381,6 +382,22 @@ describe('Maka Pi TUI transcript', () => {
     // leaving an empty segment dangling after the separator.
     assert.doesNotMatch(line, /C:\\/);
     assert.doesNotMatch(line, /·\s*$/);
+  });
+
+  test('shortens cwd under home with either path separator', () => {
+    assert.equal(
+      shortenCwd('/Users/alice/workspace/project', '/Users/alice'),
+      '~/workspace/project',
+    );
+    assert.equal(
+      shortenCwd('C:\\Users\\alice\\Videos\\project', 'C:\\Users\\alice'),
+      '~\\Videos\\project',
+    );
+    assert.equal(shortenCwd('C:\\Users\\alice', 'C:\\Users\\alice'), '~');
+    assert.equal(
+      shortenCwd('C:\\Users\\alice2\\project', 'C:\\Users\\alice'),
+      'C:\\Users\\alice2\\project',
+    );
   });
 
   test('status line never drops mode, model, goal, or ctx at narrow widths (#3421)', () => {
