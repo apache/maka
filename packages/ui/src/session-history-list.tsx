@@ -21,10 +21,12 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
@@ -46,7 +48,7 @@ import {
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
-import { useHoverCard } from '@astryxdesign/core/HoverCard';
+import { useHoverCard, type HoverCardReturn } from '@astryxdesign/core/HoverCard';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
   SideNavItem,
@@ -68,6 +70,43 @@ type SessionHistoryGroupVariant = 'conversation' | 'project';
 
 const SIDEBAR_HOVER_CARD_DELAY_MS = 300;
 const SIDEBAR_HOVER_CARD_HIDE_DELAY_MS = 120;
+
+/**
+ * Attach a hover card without feeding its positioning ref through SideNavItem.
+ *
+ * SideNavItem merges the consumer ref with an internal popover ref. The latter
+ * changes on selection renders, which makes React detach and reattach every
+ * merged ref and churns the CSS anchor name. Positioning is immutable for a
+ * mounted row, while interaction listeners may follow the hook's latest
+ * callbacks, so keep those two lifecycles separate here.
+ */
+function useSidebarHoverCardTrigger(
+  containerRef: RefObject<HTMLElement | null>,
+  hoverCard: Pick<HoverCardReturn, 'positionRef' | 'interactionRef'>,
+): void {
+  const positionRef = useRef(hoverCard.positionRef).current;
+  const interactionRef = hoverCard.interactionRef;
+
+  useEffect(() => {
+    const trigger = containerRef.current?.querySelector<HTMLElement>(
+      'button.astryx-side-nav-item',
+    ) ?? null;
+    positionRef(trigger);
+    return () => {
+      positionRef(null);
+    };
+  }, [containerRef, positionRef]);
+
+  useEffect(() => {
+    const trigger = containerRef.current?.querySelector<HTMLElement>(
+      'button.astryx-side-nav-item',
+    ) ?? null;
+    interactionRef(trigger);
+    return () => {
+      interactionRef(null);
+    };
+  }, [containerRef, interactionRef]);
+}
 
 export interface SessionRowActions {
   onToggleFlag(sessionId: string, next: boolean): void | Promise<void>;
@@ -312,27 +351,18 @@ function ProjectNavRow(props: {
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
-  const locale = useUiLocale();
-  const previewCopy = getSessionHoverCardCopy(locale);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const hoverDescriptionId = useId();
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
-  const hoverCard = useHoverCard({
-    placement: 'end',
-    alignment: 'start',
-    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
-    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
-    focusTrigger: 'always',
-    label: previewCopy.projectDetailsLabel(props.label),
-  });
   return (
-    <div data-project-id={props.groupKey} className="maka-project-row">
+    <div ref={containerRef} data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
-        ref={hoverCard.ref}
         key="navigation"
         label={props.label}
-        aria-describedby={hoverCard.describedBy}
+        aria-describedby={hoverDescriptionId}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
         endContent={
@@ -358,17 +388,46 @@ function ProjectNavRow(props: {
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}
       </SideNavItem>
-      {hoverCard.renderHoverCard(
-        <ProjectHoverCardContent
-          label={props.label}
-          project={props.project}
-          sessions={props.sessions}
-          locale={locale}
-        />,
-      )}
+      <ProjectHoverCardLayer
+        containerRef={containerRef}
+        descriptionId={hoverDescriptionId}
+        label={props.label}
+        project={props.project}
+        sessions={props.sessions}
+      />
     </div>
   );
 }
+
+const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
+  containerRef: RefObject<HTMLElement | null>;
+  descriptionId: string;
+  label: string;
+  project?: ProjectRecord;
+  sessions: SessionSummary[];
+}) {
+  const locale = useUiLocale();
+  const copy = getSessionHoverCardCopy(locale);
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: copy.projectDetailsLabel(props.label),
+  });
+  useSidebarHoverCardTrigger(props.containerRef, hoverCard);
+
+  return hoverCard.renderHoverCard(
+    <ProjectHoverCardContent
+      descriptionId={props.descriptionId}
+      label={props.label}
+      project={props.project}
+      sessions={props.sessions}
+      locale={locale}
+    />,
+  );
+});
 
 const SessionNavRow = memo(function SessionNavRow(props: {
   session: SessionSummary;
@@ -381,9 +440,10 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const hoverDescriptionId = useId();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
-  const previewCopy = getSessionHoverCardCopy(locale);
   const signals = sessionRowSignals(
     props.session,
     { streaming: props.streaming, stale: props.stale, active: props.active },
@@ -396,14 +456,6 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       : props.session.status,
     locale,
   ).label;
-  const hoverCard = useHoverCard({
-    placement: 'end',
-    alignment: 'start',
-    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
-    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
-    focusTrigger: 'always',
-    label: previewCopy.sessionDetailsLabel(props.session.name),
-  });
   // What the row communicates without text and the dot does NOT already say,
   // inside the button so it lands in the accessible name. `signals[0]` is
   // skipped because `StatusDot` carries it; the rest of the list, the worktree
@@ -424,6 +476,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 
   return (
     <div
+      ref={containerRef}
       className="maka-session-row"
       data-maka-contract="session-row"
       data-session-id={props.session.id}
@@ -431,9 +484,8 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-worktree={props.worktree ? 'true' : undefined}
     >
       <SideNavItem
-        ref={hoverCard.ref}
         label={props.session.name}
-        aria-describedby={hoverCard.describedBy}
+        aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
         // Slot 1, the row's leading edge. A fixed gutter every row pays for,
@@ -495,13 +547,13 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           </span>
         }
       />
-      {hoverCard.renderHoverCard(
-        <SessionHoverCardContent
-          session={props.session}
-          status={previewStatus}
-          locale={locale}
-        />,
-      )}
+      <SessionHoverCardLayer
+        containerRef={containerRef}
+        descriptionId={hoverDescriptionId}
+        session={props.session}
+        status={previewStatus}
+        locale={locale}
+      />
       {props.actions && (
         <SessionItemActions
           session={props.session}
@@ -513,7 +565,36 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   );
 });
 
+const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
+  containerRef: RefObject<HTMLElement | null>;
+  descriptionId: string;
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const copy = getSessionHoverCardCopy(props.locale);
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: copy.sessionDetailsLabel(props.session.name),
+  });
+  useSidebarHoverCardTrigger(props.containerRef, hoverCard);
+
+  return hoverCard.renderHoverCard(
+    <SessionHoverCardContent
+      descriptionId={props.descriptionId}
+      session={props.session}
+      status={props.status}
+      locale={props.locale}
+    />,
+  );
+});
+
 function SessionHoverCardContent(props: {
+  descriptionId: string;
   session: SessionSummary;
   status: string;
   locale: UiLocale;
@@ -524,7 +605,7 @@ function SessionHoverCardContent(props: {
   const permission = conversationCopy.permissions.mode[session.permissionMode].label;
 
   return (
-    <span className="maka-sidebar-hover-card" data-kind="session">
+    <span id={props.descriptionId} className="maka-sidebar-hover-card" data-kind="session">
       <span className="maka-sidebar-hover-card-title">{session.name}</span>
       <span
         className="maka-sidebar-hover-card-preview"
@@ -558,6 +639,7 @@ function SessionHoverCardContent(props: {
 }
 
 function ProjectHoverCardContent(props: {
+  descriptionId: string;
   label: string;
   project?: ProjectRecord;
   sessions: readonly SessionSummary[];
@@ -574,7 +656,7 @@ function ProjectHoverCardContent(props: {
   );
 
   return (
-    <span className="maka-sidebar-hover-card" data-kind="project">
+    <span id={props.descriptionId} className="maka-sidebar-hover-card" data-kind="project">
       <span className="maka-sidebar-hover-card-title">{props.label}</span>
       {path ? (
         <span className="maka-sidebar-hover-card-path" title={path}>
