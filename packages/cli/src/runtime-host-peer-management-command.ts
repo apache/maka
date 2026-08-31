@@ -30,7 +30,7 @@ import {
   type RuntimeHostPeerStatus,
 } from '@maka/runtime-host/operator';
 import { ensureRuntimeHostPeerIdentity } from '@maka/runtime-host/client';
-import { hasActivePeerMeshMembership } from '@maka/runtime-host/peer-mesh';
+import { hasPeerMeshIdentityObligations } from '@maka/runtime-host/peer-mesh';
 import {
   allocateRuntimeHostPeerPort,
   RuntimeHostServiceManagerError,
@@ -142,6 +142,7 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
   let desired = config;
   let stagedKeyPath: string | undefined;
   let previousPeerId: string | undefined;
+  let validateRetiredState: (() => Promise<void>) | undefined;
   let restarted: boolean | undefined;
   if (options.action === 'enable') {
     const peer = await prepareCanonicalPeer(options, config, config.listeners.directPeer);
@@ -169,17 +170,21 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
         'Direct peer is not enabled for the managed Runtime Host deployment',
       );
     }
-    if (
-      await hasActivePeerMeshMembership(
-        join(config.deploymentRoot, 'peer-mesh', current.peerId),
-        current.peerId,
-      )
-    ) {
+    validateRetiredState = async () => {
+      if (
+        !(await hasPeerMeshIdentityObligations(
+          join(config.deploymentRoot, 'peer-mesh', current.peerId),
+          current.peerId,
+        ))
+      ) {
+        return;
+      }
       throw new RuntimeHostServiceManagerError(
         'invalid_config',
-        'Close or leave every active Peer Mesh before rotating the Direct peer identity',
+        'Close or finish leaving every Peer Mesh before rotating the Direct peer identity',
       );
-    }
+    };
+    await validateRetiredState();
     previousPeerId = current.peerId;
     stagedKeyPath = join(dirname(current.keyPath), `runtime-host-peer.${randomUUID()}.key`);
     const layout = resolveRuntimeHostNpmDeploymentLayout(
@@ -207,6 +212,7 @@ async function runCanonicalRuntimeHostPeerManagementLocked(
       desired,
       allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
       deps: lifecycleDeps,
+      ...(validateRetiredState ? { validateRetiredState } : {}),
     }).catch(async (error: unknown) => {
       if (stagedKeyPath && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
         await rm(stagedKeyPath, { force: true }).catch(() => undefined);

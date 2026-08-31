@@ -228,6 +228,7 @@ function helpText(cliCommand: string): string {
     '  --preset <name>               Grant the desktop-client or terminal-client operation set',
     '  --publish-client-capabilities Allow Client Capability publication',
     '  --allow-host-paths            Allow operations that submit Host paths',
+    '  --capability-owner-credential <id>  Bind a provider to one Client-bound owner credential',
     '',
     'Runtime Host capability provider options:',
     '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
@@ -402,6 +403,19 @@ export async function runMakaCli(
         ...(command.awaitCoordinatorCommit ? { inheritableAuthorityLeaseFd: 4 } : {}),
       });
     }
+    case 'runtime-host-local-source-retire': {
+      const { runRuntimeHostLocalSourceRetirement } = await import(
+        './runtime-host-local-source-retirement.js'
+      );
+      return runRuntimeHostLocalSourceRetirement({
+        rootPath: command.rootPath,
+        expectedRootId: command.expectedRootId,
+        expectedHostEpoch: command.expectedHostEpoch,
+        activeWorkPolicy: command.allowInterruptActiveTasks
+          ? 'interrupt_active_work'
+          : 'refuse_active_work',
+      });
+    }
     case 'runtime-host-setup': {
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
       const { RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV } = await import(
@@ -505,6 +519,7 @@ export async function runMakaCli(
         expectedTarget: command.expectedTarget,
         ...(command.meshId !== undefined ? { meshId: command.meshId } : {}),
         ...(command.peerId ? { peerId: command.peerId } : {}),
+        ...(command.displayName !== undefined ? { displayName: command.displayName } : {}),
       });
     }
     case 'runtime-host-service-update': {
@@ -631,6 +646,9 @@ export async function runMakaCli(
         operationGrants: command.operationGrants,
         canPublishClientCapabilities: command.canPublishClientCapabilities,
         canUseHostPaths: command.canUseHostPaths,
+        ...(command.capabilityOwnerCredentialId
+          ? { capabilityOwnerCredentialId: command.capabilityOwnerCredentialId }
+          : {}),
         ...(command.preset ? { preset: command.preset } : {}),
       });
     }

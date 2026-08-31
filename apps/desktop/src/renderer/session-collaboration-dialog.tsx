@@ -23,6 +23,7 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import {
   Button,
+  Banner,
   FormLayout,
   Text,
   TextArea,
@@ -38,20 +39,14 @@ import type {
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
 import { turnRequestStateLabel } from './session-turn-request-composer.js';
 
-type Props =
-  | {
-      readonly mode: 'share';
-      readonly sessionId: string;
-      readonly sessionName: string;
-      readonly requiresRemoteAccess: boolean;
-      readonly onEnableRemoteAccess: () => void;
-      readonly onClose: () => void;
-    }
-  | {
-      readonly mode: 'join';
-      readonly onImported: () => void;
-      readonly onClose: () => void;
-    };
+type Props = {
+  readonly mode: 'share';
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly requiresRemoteAccess: boolean;
+  readonly onEnableRemoteAccess: () => void;
+  readonly onClose: () => void;
+};
 
 type CollaborationAuthorityState =
   | 'loading'
@@ -60,12 +55,10 @@ type CollaborationAuthorityState =
   | 'unavailable';
 
 export function SessionCollaborationDialog(props: Props) {
-  return props.mode === 'share'
-    ? <ShareSessionDialog {...props} />
-    : <JoinSharedSessionDialog {...props} />;
+  return <ShareSessionDialog {...props} />;
 }
 
-function ShareSessionDialog(props: Extract<Props, { readonly mode: 'share' }>) {
+function ShareSessionDialog(props: Props) {
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
@@ -384,85 +377,6 @@ function guestIdentityLabel(principalId: string, label: string): string {
   return `${label} ${identity.slice(0, 8)}`;
 }
 
-function JoinSharedSessionDialog(props: Extract<Props, { readonly mode: 'join' }>) {
-  const copy = getSessionCollaborationCopy(useUiLocale());
-  const toast = useToast();
-  const [code, setCode] = useState('');
-  const [working, setWorking] = useState(false);
-
-  async function join(allowInsecure = false): Promise<void> {
-    setWorking(true);
-    try {
-      const result = await window.maka.sessionCollaboration.importInvitation({
-        code: code.trim(),
-        allowInsecure,
-      });
-      if (result.kind === 'error' && result.reason === 'insecure_confirmation_required') {
-        const confirmed = await toast.confirm({
-          title: copy.insecureTitle,
-          description: copy.insecureBody,
-          confirmLabel: copy.joinInsecure,
-          cancelLabel: copy.close,
-          destructive: true,
-        });
-        if (confirmed) await join(true);
-        return;
-      }
-      if (result.kind === 'error') {
-        toast.error(copy.joinTitle, importError(copy, result.reason, result.message));
-        return;
-      }
-      props.onImported();
-      props.onClose();
-    } catch (error) {
-      toast.error(copy.joinTitle, errorMessage(error));
-    } finally {
-      setWorking(false);
-    }
-  }
-
-  return (
-    <Dialog isOpen onOpenChange={(open) => !open && !working && props.onClose()} purpose="form" width={560}>
-      <Layout
-        header={<DialogHeader title={copy.joinTitle} subtitle={copy.joinDescription} onOpenChange={(open) => !open && !working && props.onClose()} />}
-        content={(
-          <LayoutContent padding={4}>
-            <FormLayout>
-              <TextArea
-                label={copy.code}
-                value={code}
-                rows={6}
-                hasSpellCheck={false}
-                isDisabled={working}
-                onChange={setCode}
-              />
-            </FormLayout>
-          </LayoutContent>
-        )}
-        footer={(
-          <LayoutFooter>
-            <Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} />
-            <Button variant="primary" label={copy.join} isDisabled={working || !code.trim()} onClick={() => void join()} />
-          </LayoutFooter>
-        )}
-      />
-    </Dialog>
-  );
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function importError(
-  copy: ReturnType<typeof getSessionCollaborationCopy>,
-  reason:
-    | 'invalid_code'
-    | 'insecure_confirmation_required'
-    | 'connection_failed',
-  message?: string,
-): string {
-  if (reason === 'invalid_code') return copy.invalidCode;
-  if (reason === 'insecure_confirmation_required') return copy.insecureBody;
-  return message ?? copy.connectionFailed;
 }

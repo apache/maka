@@ -562,6 +562,66 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
   await manager.close();
 });
 
+test('keeps independent shared-session credentials active for the same Host', async () => {
+  const candidates = [
+    candidateHarness({ hostId: 'host-local' }).candidate,
+    candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' }).candidate,
+    candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' }).candidate,
+    candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' }).candidate,
+  ];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    { startCandidate: async () => ready(candidates.shift()!) },
+  );
+
+  await manager.mountGuest(remoteTarget('shared-one', 'shared', 'session_guest'));
+  await manager.mountGuest(remoteTarget('shared-two', 'shared', 'session_guest'));
+  await manager.enable(remoteTarget('owner', 'shared'));
+
+  assert.deepEqual(manager.entries().map(({ target }) => target.profile.id), [
+    'local',
+    'shared-one',
+    'shared-two',
+    'owner',
+  ]);
+  assert.notEqual(manager.current('shared-one')?.epoch, manager.current('shared-two')?.epoch);
+  await manager.close();
+});
+
+test('aborts an in-flight Guest mount without publishing a late target', async () => {
+  const local = candidateHarness({ hostId: 'host-local' }).candidate;
+  let guestStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    guestStarted = resolve;
+  });
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        if (!input.profileTarget) return ready(local);
+        guestStarted();
+        const signal = input.signal;
+        assert.ok(signal);
+        return new Promise<DesktopRuntimeHostCandidateStartResult>((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+  );
+  const abort = new AbortController();
+  const mounting = manager.mountGuest(
+    remoteTarget('shared-cancelled', 'shared', 'session_guest'),
+    abort.signal,
+  );
+  await started;
+  abort.abort(new Error('cancelled'));
+  await assert.rejects(mounting, /cancelled/u);
+  await manager.unmountGuest('shared-cancelled');
+
+  assert.deepEqual(manager.entries().map(({ target }) => target.profile.id), ['local']);
+  await manager.close();
+});
+
 test('replays pairing finalization after an unknown commit and reconnect', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);
@@ -1442,6 +1502,7 @@ function ready(candidate: DesktopRuntimeHostCandidate): DesktopRuntimeHostCandid
 function remoteTarget(
   id: string,
   target = 'default',
+  access?: 'session_guest',
 ): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
@@ -1450,6 +1511,7 @@ function remoteTarget(
       kind: 'remote',
       transport: { kind: 'tls', url: `wss://${target}.example.com/` },
       rootId: 'a'.repeat(64),
+      ...(access ? { access } : {}),
     },
     credential: `credential-${target}`,
   };

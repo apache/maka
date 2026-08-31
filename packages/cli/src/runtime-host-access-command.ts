@@ -63,6 +63,7 @@ export interface RuntimeHostAccessIssueOptions {
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
   readonly preset?: RuntimeHostAccessPreset;
   readonly bindClientInstance?: boolean;
 }
@@ -228,6 +229,9 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation !== 'access.credential.prepare' && options.capabilityOwnerCredentialId
+        ? { capabilityOwnerCredentialId: options.capabilityOwnerCredentialId }
+        : {}),
       ...(operation === 'access.credential.prepare' && options.bindClientInstance
         ? { bindClientInstance: true }
         : {}),
@@ -366,7 +370,9 @@ async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
     },
   );
   if (result.kind !== 'connected') {
-    throw new RuntimeHostAccessUnavailableError(result.kind);
+    throw new RuntimeHostAccessUnavailableError(
+      result.kind === 'unavailable' ? result.reason : result.kind,
+    );
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

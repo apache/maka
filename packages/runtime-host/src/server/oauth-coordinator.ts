@@ -44,6 +44,7 @@ import {
   type OAuthLoginFailureCode,
   type OAuthLoginProjection,
   type OAuthLoginProvider,
+  type OAuthLoginTarget,
   type OAuthPresentationRequest,
   type OAuthPresentationResult,
   type OperationOutcome,
@@ -96,7 +97,8 @@ type OAuthLoginAdmission = Extract<
 interface ActiveLoginAttempt {
   readonly kind: 'active';
   readonly attemptId: string;
-  readonly connectionId: string;
+  readonly target: OAuthLoginTarget;
+  readonly connection: OAuthLoginProjection['connection'];
   readonly initiatingConnectionId: string;
   readonly provider: OAuthLoginProvider;
   readonly ticket: OAuthLoginAdmission;
@@ -111,6 +113,7 @@ interface ActiveLoginAttempt {
 
 interface TerminalLoginAttempt {
   readonly kind: 'terminal';
+  readonly target: OAuthLoginTarget;
   readonly projection: OAuthLoginProjection;
 }
 
@@ -143,7 +146,7 @@ export class HostOAuthCoordinator {
   #activeAttempt: ActiveLoginAttempt | undefined;
   /**
    * Serializes oauth.login.start admissions so concurrent starts cannot dual-open
-   * interactive logins after supersede replaced operation_conflict.
+   * interactive logins around the active-attempt conflict check.
    */
   #startGate: Promise<void> = Promise.resolve();
   #admissionClosed = false;
@@ -185,12 +188,12 @@ export class HostOAuthCoordinator {
   }
 
   async #start(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly target: OAuthLoginTarget },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     const existing = this.#attempts.get(input.attemptId);
     if (existing) {
-      if (projection(existing).connectionId !== input.connectionId) {
+      if (!sameOAuthLoginTarget(existing.target, input.target)) {
         return invalidRequest('OAuth attemptId is already bound to another connection');
       }
       return { ok: true, result: projection(existing) };
@@ -206,14 +209,34 @@ export class HostOAuthCoordinator {
     try {
       const again = this.#attempts.get(input.attemptId);
       if (again) {
-        if (projection(again).connectionId !== input.connectionId) {
+        if (!sameOAuthLoginTarget(again.target, input.target)) {
           return invalidRequest('OAuth attemptId is already bound to another connection');
         }
         return { ok: true, result: projection(again) };
       }
-      // User re-clicked 登录 after the browser already authorized (or abandoned)
-      // an earlier attempt. Supersede instead of blocking until process restart.
-      if (this.#activeAttempt) await this.#supersedeActiveLogin();
+      let durable: Awaited<
+        ReturnType<RuntimePolicyStoresWriter['operations']['queryInteractiveOAuthLogin']>
+      >;
+      try {
+        durable = await this.#runtimePolicy.operations.queryInteractiveOAuthLogin(input.attemptId);
+      } catch (error) {
+        if (error instanceof RuntimePolicyStoreError) {
+          return persistenceFailure('OAuth login receipt query failed');
+        }
+        throw error;
+      }
+      if (durable.kind === 'authenticated') {
+        if (!sameOAuthLoginTarget(durable.target, input.target)) {
+          return invalidRequest('OAuth attemptId is already bound to another connection');
+        }
+        const terminal = authenticatedAttempt(input.target, input.attemptId, durable.connection);
+        this.#attempts.set(input.attemptId, terminal);
+        this.#pruneTerminalAttempts();
+        return { ok: true, result: terminal.projection };
+      }
+      if (this.#activeAttempt) {
+        return operationConflict('Another OAuth login is already in progress');
+      }
       if (this.#admissionClosed) return hostDraining();
       return await this.#prepareStart(input, initiatingConnectionId);
     } finally {
@@ -221,39 +244,15 @@ export class HostOAuthCoordinator {
     }
   }
 
-  /**
-   * Cancel the active interactive login and wait until its residency is released.
-   * Used when the user starts a new login while a prior device-code poll is still open.
-   */
-  async #supersedeActiveLogin(): Promise<void> {
-    const previous = this.#activeAttempt;
-    if (!previous) return;
-    // Align with cancel: once a token poll is admitted or credentials are
-    // committing, finish that path instead of aborting a browser-approved grant.
-    if (previous.phase === 'committing' || previous.cancellationDeferred) {
-      await previous.settlement.catch(() => undefined);
-      return;
-    }
-    const reason = new DOMException('OAuth login superseded by a new attempt', 'AbortError');
-    previous.cancelRequested = true;
-    if (previous.phase !== 'authenticated' && previous.phase !== 'failed') {
-      previous.phase = 'cancelled';
-    }
-    if (!previous.abort.signal.aborted) previous.abort.abort(reason);
-    await previous.settlement.catch(() => undefined);
-  }
-
   async #prepareStart(
-    input: { readonly attemptId: string; readonly connectionId: string },
+    input: { readonly attemptId: string; readonly target: OAuthLoginTarget },
     initiatingConnectionId: string,
   ): Promise<OperationOutcome<'oauth.login.start'>> {
     let admitted: Awaited<
       ReturnType<RuntimePolicyStoresWriter['operations']['beginInteractiveOAuthLogin']>
     >;
     try {
-      admitted = await this.#runtimePolicy.operations.beginInteractiveOAuthLogin(
-        input.connectionId,
-      );
+      admitted = await this.#runtimePolicy.operations.beginInteractiveOAuthLogin(input);
     } catch (error) {
       if (error instanceof RuntimePolicyStoreError) {
         return persistenceFailure('OAuth login admission failed');
@@ -262,6 +261,18 @@ export class HostOAuthCoordinator {
     }
     if (admitted.kind === 'connection_not_found') {
       return notFound('OAuth connection was not found');
+    }
+    if (admitted.kind === 'catalog_full') {
+      return operationConflict('OAuth Connection capacity is exhausted');
+    }
+    if (admitted.kind === 'attempt_conflict') {
+      return invalidRequest('OAuth attemptId is already bound to another connection');
+    }
+    if (admitted.kind === 'authenticated') {
+      const terminal = authenticatedAttempt(input.target, input.attemptId, admitted.connection);
+      this.#attempts.set(input.attemptId, terminal);
+      this.#pruneTerminalAttempts();
+      return { ok: true, result: terminal.projection };
     }
     if (admitted.kind !== 'ready') {
       return invalidRequest('Connection cannot start an interactive OAuth login');
@@ -288,7 +299,8 @@ export class HostOAuthCoordinator {
     const attempt: ActiveLoginAttempt = {
       kind: 'active',
       attemptId: input.attemptId,
-      connectionId: input.connectionId,
+      target: input.target,
+      connection: admitted.identity,
       initiatingConnectionId,
       provider: admitted.connection.providerType,
       ticket: admitted,
@@ -306,20 +318,34 @@ export class HostOAuthCoordinator {
     return { ok: true, result: projection(attempt) };
   }
 
-  #query(attemptId: string): Promise<OperationOutcome<'oauth.login.query'>> {
+  async #query(attemptId: string): Promise<OperationOutcome<'oauth.login.query'>> {
     const attempt = this.#attempts.get(attemptId);
-    return Promise.resolve(
-      attempt ? { ok: true, result: projection(attempt) } : notFound('OAuth login was not found'),
-    );
+    if (attempt) return { ok: true, result: projection(attempt) };
+    let durable: Awaited<
+      ReturnType<RuntimePolicyStoresWriter['operations']['queryInteractiveOAuthLogin']>
+    >;
+    try {
+      durable = await this.#runtimePolicy.operations.queryInteractiveOAuthLogin(attemptId);
+    } catch (error) {
+      if (error instanceof RuntimePolicyStoreError) {
+        return persistenceFailure('OAuth login receipt query failed');
+      }
+      throw error;
+    }
+    if (durable.kind === 'not_found') return notFound('OAuth login was not found');
+    const terminal = authenticatedAttempt(durable.target, attemptId, durable.connection);
+    this.#attempts.set(attemptId, terminal);
+    this.#pruneTerminalAttempts();
+    return { ok: true, result: terminal.projection };
   }
 
-  #cancel(attemptId: string): Promise<OperationOutcome<'oauth.login.cancel'>> {
+  async #cancel(attemptId: string): Promise<OperationOutcome<'oauth.login.cancel'>> {
     const attempt = this.#attempts.get(attemptId);
-    if (!attempt) return Promise.resolve(notFound('OAuth login was not found'));
+    if (!attempt) return this.#query(attemptId);
     if (attempt.kind === 'active') {
       this.#requestCancellation(attempt, new DOMException('OAuth login cancelled', 'AbortError'));
     }
-    return Promise.resolve({ ok: true, result: projection(attempt) });
+    return { ok: true, result: projection(attempt) };
   }
 
   #requestCancellation(attempt: ActiveLoginAttempt, reason: Error): void {
@@ -350,7 +376,11 @@ export class HostOAuthCoordinator {
           attempt.ticket.ticket,
           serializeOAuthSubscriptionTokens(tokens),
         );
-        if (completion.kind !== 'committed') throw new LoginFailure('credential_changed');
+        if (completion.kind !== 'committed') {
+          throw new LoginFailure(
+            completion.changed.includes('connection') ? 'connection_changed' : 'credential_changed',
+          );
+        }
         await this.#invalidateAfterCredentialMutation();
       });
       attempt.phase = 'authenticated';
@@ -524,15 +554,43 @@ function projection(attempt: LoginAttemptRecord): OAuthLoginProjection {
   if (attempt.kind === 'terminal') return attempt.projection;
   return {
     attemptId: attempt.attemptId,
-    connectionId: attempt.connectionId,
-    provider: attempt.provider,
+    connection: attempt.connection,
     phase: attempt.phase,
     ...(attempt.phase === 'failed' ? { failure: attempt.failure ?? 'internal_failure' } : {}),
   };
 }
 
 function terminalAttempt(attempt: ActiveLoginAttempt): TerminalLoginAttempt {
-  return Object.freeze({ kind: 'terminal', projection: Object.freeze(projection(attempt)) });
+  return Object.freeze({
+    kind: 'terminal',
+    target: attempt.target,
+    projection: Object.freeze(projection(attempt)),
+  });
+}
+
+function authenticatedAttempt(
+  target: OAuthLoginTarget,
+  attemptId: string,
+  connection: OAuthLoginProjection['connection'],
+): TerminalLoginAttempt {
+  return Object.freeze({
+    kind: 'terminal',
+    target: structuredClone(target),
+    projection: Object.freeze({
+      attemptId,
+      connection: structuredClone(connection),
+      phase: 'authenticated',
+    }),
+  });
+}
+
+function sameOAuthLoginTarget(actual: OAuthLoginTarget, expected: OAuthLoginTarget): boolean {
+  return (
+    actual.kind === expected.kind &&
+    (actual.kind === 'create'
+      ? expected.kind === 'create' && actual.providerType === expected.providerType
+      : expected.kind === 'existing' && actual.connectionId === expected.connectionId)
+  );
 }
 
 function loginFailureCode(error: unknown): OAuthLoginFailureCode {
@@ -567,6 +625,10 @@ function persistenceFailure(message: string) {
 
 function operationUnavailable(message: string) {
   return { ok: false, error: { code: 'operation_unavailable', message } } as const;
+}
+
+function operationConflict(message: string) {
+  return { ok: false, error: { code: 'operation_conflict', message } } as const;
 }
 
 function hostDraining(): OperationOutcome<'oauth.login.start'> {

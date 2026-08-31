@@ -151,7 +151,6 @@ function packageCli(publishable) {
   copyCliRuntime();
   copyRuntimeHostPeerPrebuilds(publishable);
   const expectedDependencyManifests = copyDependencyClosure(cli);
-  copyEvalMirror();
   copyReleaseDocuments();
   writeReleaseManifest(cli, publishable);
   validateStaging(publishable);
@@ -430,7 +429,7 @@ function copyInternalPackage(source, destination) {
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(releaseManifest, null, 2)}\n`);
   for (const releaseFile of resolveWorkspaceReleaseFiles(source, manifest)) {
     if (releaseFile === 'dist') copyRuntimeDist(source, destination, manifest.name);
-    else copyDeclaredFile(source, destination, releaseFile);
+    else copyDeclaredReleaseFile(source, destination, releaseFile);
   }
 }
 
@@ -498,17 +497,6 @@ function pruneNodePtyBuildInputs(destination) {
   for (const path of walkFiles(destination)) {
     if (lstatSync(path).isFile() && /\.(?:map|pdb)$/.test(path)) rmSync(path, { force: true });
   }
-}
-
-function copyEvalMirror() {
-  const stagedEval = join(stageRoot, 'node_modules/@maka/eval');
-  const mirror = join(stageRoot, 'packages/eval');
-  cpSync(stagedEval, mirror, {
-    recursive: true,
-    preserveTimestamps: true,
-    filter: (path) =>
-      path === stagedEval || !relative(stagedEval, path).split(sep).includes('node_modules'),
-  });
 }
 
 function copyReleaseDocuments() {
@@ -684,7 +672,6 @@ function writeReleaseManifest(cli, publishable) {
     files: [
       'dist',
       'native',
-      'packages/eval',
       'README.md',
       'README.zh-CN.md',
       'LICENSE',
@@ -730,9 +717,9 @@ function validateStaging(publishable) {
     'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
-    'packages/eval/dist/harbor-external-subject.js',
-    'packages/eval/harbor/relay_agent.py',
-    'packages/eval/harbor/docker-compose-egress-proxy.yaml',
+    'node_modules/@maka/eval/dist/harbor-external-subject.js',
+    'node_modules/@maka/eval/harbor/relay_agent.py',
+    'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
     'node_modules/node-pty/prebuilds/linux-x64/pty.node',
     'node_modules/node-pty/prebuilds/darwin-arm64/pty.node',
     'node_modules/node-pty/prebuilds/win32-x64/conpty.node',
@@ -811,7 +798,6 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
     const segments = path.split('/');
     const makaOwned =
       path.startsWith('dist/') ||
-      path.startsWith('packages/eval/') ||
       (segments[0] === 'node_modules' && segments[1] === '@maka' && segments[3] !== 'node_modules');
     if (makaOwned && isMakaDevelopmentArtifact(path)) {
       throw new Error(`Development artifact escaped into the tarball: ${path}`);
@@ -835,7 +821,7 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
     'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
-    'packages/eval/harbor/relay_agent.py',
+    'node_modules/@maka/eval/harbor/relay_agent.py',
     ...(publishable || privatePeerTarget !== 'none' ? ['native/runtime-host-peer/prebuilds/'] : []),
   ];
   for (const suffix of requiredPacked) {
@@ -877,14 +863,24 @@ function findDependency(root, name, version) {
   return result;
 }
 
-function copyDeclaredFile(source, destination, relativePath) {
+function copyDeclaredReleaseFile(source, destination, relativePath) {
   const from = join(source, relativePath);
-  if (!existsSync(from) || !statSync(from).isFile()) {
-    throw new Error(`Declared Eval runtime asset is missing: ${from}`);
+  if (!existsSync(from)) throw new Error(`Declared release asset is missing: ${from}`);
+  const entry = statSync(from);
+  if (entry.isDirectory()) {
+    for (const child of readdirSync(from, { withFileTypes: true })) {
+      if (child.isSymbolicLink()) {
+        throw new Error(`Declared release directory contains a symlink: ${join(from, child.name)}`);
+      }
+      copyDeclaredReleaseFile(source, destination, join(relativePath, child.name));
+    }
+  } else if (entry.isFile()) {
+    const to = join(destination, relativePath);
+    mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
+    copyFileSync(from, to);
+  } else {
+    throw new Error(`Declared release asset is not a regular file or directory: ${from}`);
   }
-  const to = join(destination, relativePath);
-  mkdirSync(dirname(to), { recursive: true, mode: 0o755 });
-  copyFileSync(from, to);
 }
 
 function copyTreeFiles(source, destination, allow) {

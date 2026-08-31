@@ -25,6 +25,7 @@ import type { RootExecutionDescriptor } from '@maka/core/agent-run';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
 import {
   type ClientCapabilityOffer,
+  type ClientCapabilityOwnerIdentity,
   type ClientCapabilityReplaceInput,
   type ClientCapabilityServiceOffer,
   type ClientCapabilityToolDescriptor,
@@ -65,7 +66,10 @@ interface ClientProviderState {
   readonly providerId: string;
   readonly principalId: string;
   readonly clientInstanceId: string;
+  readonly credentialBoundClientInstanceId?: string;
+  readonly principalKind: ClientCapabilityConnectionIdentity['principalKind'];
   readonly trustedProvider: boolean;
+  readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
   activeConnectionId?: string;
   current?: CapabilityRegistration;
   readonly registrations: Map<string, CapabilityRegistration>;
@@ -333,14 +337,43 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     initiatingConnectionId: string,
     mode: SessionBindingMode,
   ): SessionBindingSelection {
-    const initiatingProviderId = this.#connections.get(initiatingConnectionId)?.provider.providerId;
-    const initiatingProvider = initiatingProviderId
-      ? this.#providers.get(initiatingProviderId)
-      : undefined;
+    const initiatingProvider = this.#connections.get(initiatingConnectionId)?.provider;
+    const directProvider =
+      initiatingProvider?.current && this.#activeConnection(initiatingProvider)
+        ? initiatingProvider
+        : undefined;
+    const associatedProviders =
+      initiatingProvider &&
+      initiatingProvider.credentialBoundClientInstanceId === initiatingProvider.clientInstanceId
+        ? [...this.#providers.values()].filter(
+            (provider) =>
+              provider.trustedProvider &&
+              provider.current !== undefined &&
+              this.#activeConnection(provider) !== undefined &&
+              provider.capabilityOwner?.principalId === initiatingProvider.principalId &&
+              provider.capabilityOwner.clientInstanceId === initiatingProvider.clientInstanceId,
+          )
+        : [];
+    if (!directProvider && associatedProviders.length > 1) {
+      return {
+        ok: false,
+        message: 'Multiple Client Capability providers are bound to the initiating Client',
+      };
+    }
+    const selectedInitiatingProvider = directProvider ?? associatedProviders[0];
+    // A remote Client must never inherit an unrelated provider merely because
+    // it is the only candidate. Local-owner and recovery flows retain their
+    // existing provider-independent fallback when no provider was selected.
+    const initiatingProviderId =
+      selectedInitiatingProvider?.providerId ??
+      (initiatingProvider?.principalKind === 'remote_owner'
+        ? initiatingProvider.providerId
+        : undefined);
     const previousState = this.#sessions.get(sessionId);
     const serviceProviderId =
       previousState?.serviceProviderId ??
-      (initiatingProvider?.current && initiatingProvider.current.servicesByContract.size > 0
+      (selectedInitiatingProvider?.current &&
+      selectedInitiatingProvider.current.servicesByContract.size > 0
         ? initiatingProviderId
         : undefined);
     const previous = previousState?.sessionBindings ?? new Map();
@@ -388,10 +421,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           };
         }
       } else {
-        candidate =
-          candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-          (candidates.length === 1 ? candidates[0] : undefined);
-        if (!candidate && candidates.length > 1) {
+        candidate = selectProviderCandidate(candidates, initiatingProviderId);
+        if (!candidate && initiatingProviderId === undefined && candidates.length > 1) {
           if (mode === 'degrade') continue;
           return {
             ok: false,
@@ -436,9 +467,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       left.localeCompare(right),
     )) {
       if (candidates[0]?.offer.offer.affinity !== 'turn') continue;
-      const candidate =
-        candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-        (candidates.length === 1 ? candidates[0] : undefined);
+      const candidate = selectProviderCandidate(candidates, initiatingProviderId);
       if (!candidate || offerConflictsWithProxyNames(candidate.offer, proxyNames)) continue;
       nextTurn.set(contractId, {
         kind: 'bound',
@@ -510,7 +539,13 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     for (const [contractId, candidates] of [...eligible].sort(([left], [right]) =>
       left.localeCompare(right),
     )) {
-      const offer = candidates[0]?.offer;
+      // A provider-independent snapshot keeps one representative descriptor so
+      // a dynamic call can report ambiguity. A remote Client's explicit
+      // selector must instead hide every unrelated provider.
+      const offer =
+        state?.initiatingProviderId === undefined
+          ? candidates[0]?.offer
+          : selectProviderCandidate(candidates, state.initiatingProviderId)?.offer;
       if (
         !offer ||
         offer.offer.affinity !== 'call' ||
@@ -987,18 +1022,36 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   #provider(identity: ClientCapabilityConnectionIdentity): ClientProviderState {
     const providerId = clientProviderId(identity.principalId, identity.clientInstanceId);
     const trustedProvider = identity.principalKind === 'capability_provider';
+    if (identity.capabilityOwner && !trustedProvider) {
+      throw new Error('Only a capability provider may declare a Client Capability owner');
+    }
     let provider = this.#providers.get(providerId);
     if (!provider) {
       provider = {
         providerId,
         principalId: identity.principalId,
         clientInstanceId: identity.clientInstanceId,
+        ...(identity.credentialBoundClientInstanceId
+          ? { credentialBoundClientInstanceId: identity.credentialBoundClientInstanceId }
+          : {}),
+        principalKind: identity.principalKind,
         trustedProvider,
+        ...(identity.capabilityOwner
+          ? { capabilityOwner: Object.freeze({ ...identity.capabilityOwner }) }
+          : {}),
         registrations: new Map(),
       };
       this.#providers.set(providerId, provider);
-    } else if (provider.trustedProvider !== trustedProvider) {
+    } else if (
+      provider.principalKind !== identity.principalKind ||
+      provider.trustedProvider !== trustedProvider ||
+      provider.credentialBoundClientInstanceId !== identity.credentialBoundClientInstanceId
+    ) {
       throw new Error('Client Capability provider authority changed across connections');
+    } else if (
+      !clientCapabilityOwnerIdentitiesEqual(provider.capabilityOwner, identity.capabilityOwner)
+    ) {
+      throw new Error('Client Capability provider owner changed across connections');
     }
     return provider;
   }
@@ -1033,13 +1086,13 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     readonly tool: FrozenToolBinding;
   } {
     const candidates = this.#eligibleOffersByContract().get(contractId) ?? [];
-    const candidate =
-      candidates.find((entry) => entry.registration.providerId === initiatingProviderId) ??
-      (candidates.length === 1 ? candidates[0] : undefined);
+    const candidate = selectProviderCandidate(candidates, initiatingProviderId);
     if (!candidate) {
       throw new ClientCapabilityInvocationError(
-        candidates.length > 1 ? 'capability_ambiguous' : 'capability_lost',
-        candidates.length > 1
+        initiatingProviderId === undefined && candidates.length > 1
+          ? 'capability_ambiguous'
+          : 'capability_lost',
+        initiatingProviderId === undefined && candidates.length > 1
           ? 'Multiple Client Capability providers offer this call-affine contract'
           : 'Client Capability provider is unavailable',
       );
@@ -1368,6 +1421,30 @@ function rememberOfferProxyNames(offer: FrozenOfferBinding, proxyNames: Map<stri
   for (const descriptor of offer.offer.tools) {
     proxyNames.set(mcpProxyToolName(descriptor.serverId, descriptor.name), offer.contractId);
   }
+}
+
+function selectProviderCandidate(
+  candidates: readonly SelectedOfferBinding[],
+  initiatingProviderId: string | undefined,
+): SelectedOfferBinding | undefined {
+  return initiatingProviderId === undefined
+    ? candidates.length === 1
+      ? candidates[0]
+      : undefined
+    : candidates.find((candidate) => candidate.registration.providerId === initiatingProviderId);
+}
+
+function clientCapabilityOwnerIdentitiesEqual(
+  left: ClientProviderState['capabilityOwner'],
+  right: ClientCapabilityConnectionIdentity['capabilityOwner'],
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.principalId === right.principalId &&
+      left.clientInstanceId === right.clientInstanceId)
+  );
 }
 
 function canonicalJson(value: unknown): string {

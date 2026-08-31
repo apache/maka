@@ -640,6 +640,59 @@ export function collectConversationCopyLinkedChildReferences(input: {
   return references;
 }
 
+/**
+ * Collects the `relativePath` of every `session_file` StorageRef that the copied
+ * slice references and that belongs to the source Session. User-uploaded
+ * attachments carry `turnId === uploadId` (a sentinel, not a conversation turn),
+ * so the turn-scoped artifact copy never selects them; the coordinator feeds this
+ * set to `copyConversationArtifacts` as an explicit same-Session include list so
+ * their refs resolve in `rewriteStorageRef`. Walks exactly the ref sites reached
+ * by `rewriteStorageRef`: user-message attachments, tool_result image refs, text
+ * runtime-event attachments, and function_response / archived tool-result images.
+ */
+export function collectConversationCopySessionFileRefs(input: {
+  readonly sourceSessionId: string;
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
+}): ReadonlySet<string> {
+  const refs = new Set<string>();
+  const addRef = (ref: StorageRef): void => {
+    if (ref.kind === 'session_file' && ref.sessionId === input.sourceSessionId) {
+      refs.add(ref.relativePath);
+    }
+  };
+  const addContent = (content: ToolResultContent): void => {
+    if (content.kind === 'image') addRef(content.ref);
+  };
+  const addSerialized = (value: unknown): void => {
+    if (isArchivedToolResultPlaceholder(value)) return;
+    try {
+      addContent(decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)));
+    } catch {
+      // Opaque tool results carry no typed Session file reference.
+    }
+  };
+  for (const message of input.messages) {
+    if (message.type === 'user' && message.attachments) {
+      for (const attachment of message.attachments) addRef(attachment.ref);
+    } else if (message.type === 'tool_result') {
+      addContent(message.content);
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'text' && event.content.attachments) {
+      for (const attachment of event.content.attachments) addRef(attachment.ref);
+    } else if (event.content?.kind === 'function_response') {
+      addSerialized(event.content.result);
+    }
+  }
+  for (const serializedResult of input.archivedResults) {
+    addSerialized(deserializeToolResultArchive(serializedResult));
+  }
+  return refs;
+}
+
 function cloneAgentRunEvent(
   event: AgentRunEvent,
   ids: {

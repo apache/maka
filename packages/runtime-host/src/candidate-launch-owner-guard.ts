@@ -20,27 +20,50 @@
 import { closeSync } from 'node:fs';
 
 export const RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD';
+export const RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_GUARD';
+export const RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV = 'MAKA_RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID';
 export const RUNTIME_HOST_LAUNCH_OWNER_RELEASE_KIND = 'runtime-host-launch-owner-release';
 
 export interface RuntimeHostLaunchOwnerGuard {
+  readonly admission?: RuntimeHostLaunchOwnerAdmission;
   bind(closeHost: () => Promise<unknown>): void;
   dispose(): Promise<void>;
 }
 
+export interface RuntimeHostLaunchOwnerAdmission {
+  isClientAdmitted(clientInstanceId: string): boolean;
+}
+
 /**
- * Keeps the updater's authority lease inside a Candidate until its launcher
- * explicitly releases it. Launcher loss closes the Host before the lease, so
- * no second owner can enter while the uncommitted target remains a writer.
+ * Closes a launcher-owned Host if its launcher disappears. An optional updater
+ * authority lease stays inside the Candidate until the launcher explicitly
+ * releases it, so launcher loss closes the Host before releasing that lease.
  */
 export function createRuntimeHostLaunchOwnerGuard(
   env: NodeJS.ProcessEnv = process.env,
 ): RuntimeHostLaunchOwnerGuard | undefined {
   const rawFd = env[RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV];
-  if (rawFd === undefined) return undefined;
-  const leaseFd = Number(rawFd);
-  if (!Number.isSafeInteger(leaseFd) || leaseFd < 3) {
-    throw new Error('Runtime Host launch-owner authority descriptor is invalid');
+  const guardRequested = env[RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV] === '1';
+  if (rawFd === undefined && !guardRequested) return undefined;
+  let leaseFd: number | undefined;
+  if (rawFd !== undefined) {
+    leaseFd = Number(rawFd);
+    if (!Number.isSafeInteger(leaseFd) || leaseFd < 3) {
+      throw new Error('Runtime Host launch-owner authority descriptor is invalid');
+    }
   }
+  const clientInstanceId = env[RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV];
+  if (leaseFd !== undefined && !clientInstanceId) {
+    throw new Error('Runtime Host launch-owner Client identity is missing');
+  }
+  const admission =
+    leaseFd === undefined
+      ? undefined
+      : {
+          isClientAdmitted(candidateClientInstanceId: string) {
+            return state === 'released' || candidateClientInstanceId === clientInstanceId;
+          },
+        };
 
   let state: 'owned' | 'released' | 'lost' = process.connected ? 'owned' : 'lost';
   let closeHost: (() => Promise<unknown>) | undefined;
@@ -50,7 +73,7 @@ export function createRuntimeHostLaunchOwnerGuard(
   const closeLease = () => {
     if (leaseClosed) return;
     leaseClosed = true;
-    closeSync(leaseFd);
+    if (leaseFd !== undefined) closeSync(leaseFd);
   };
   const settleLoss = () => {
     if (state !== 'lost' || !closeHost || lossSettlement) return;
@@ -83,6 +106,7 @@ export function createRuntimeHostLaunchOwnerGuard(
   process.once('disconnect', onDisconnect);
 
   return {
+    ...(admission ? { admission } : {}),
     bind(close) {
       closeHost = close;
       settleLoss();

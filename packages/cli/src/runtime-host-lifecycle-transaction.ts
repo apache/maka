@@ -28,6 +28,7 @@ import {
 import {
   connectExistingRuntimeHost,
   prepareConnectedRuntimeHostRetirement,
+  waitForRuntimeHostReady,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
 import {
@@ -53,6 +54,9 @@ import type {
   RuntimeHostProviderDefinition,
 } from './runtime-host-lifecycle-provider.js';
 
+/** The budget a managed Runtime Host has to become reachable after its lifecycle is activated. */
+export const RUNTIME_HOST_READY_TIMEOUT_MS = 45_000;
+
 export interface RuntimeHostLifecycleTransactionDeps {
   readonly resolveProvider: (
     provider: RuntimeHostSupervisorProvider,
@@ -62,6 +66,7 @@ export interface RuntimeHostLifecycleTransactionDeps {
     desired: RuntimeHostManagedDeploymentConfig | undefined,
   ) => Promise<void>;
   readonly verifyOperator: (config: RuntimeHostManagedDeploymentConfig) => Promise<void>;
+  readonly connectExisting?: typeof connectExistingRuntimeHost;
   /** Legacy migration keeps the validated old config until commit as its deterministic receipt. */
   readonly uninstallLegacy?: (
     transition: RuntimeHostManagedDeploymentTransition | RuntimeHostManagedDeploymentBlocked,
@@ -123,6 +128,8 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   readonly desired?: RuntimeHostManagedDeploymentConfig;
   readonly deps: RuntimeHostLifecycleTransactionDeps;
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
 }): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
   const current = input.current
     ? decodeRuntimeHostManagedDeploymentConfig(input.current)
@@ -134,6 +141,7 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   let transitionError: unknown;
   let previousAuthorityRestored = false;
   try {
+    await input.validateRetiredState?.();
     result = await applyRuntimeHostLifecycleTransition(
       input.owner,
       {
@@ -473,6 +481,8 @@ export async function replaceRuntimeHostLifecycle(input: {
     retire(): Promise<void>;
   };
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
   /** Product-level activation for lifecycles whose readiness is not owned by an OS supervisor. */
   readonly activateDesired?: () => Promise<void>;
 }): Promise<RuntimeHostLifecycleReplacement> {
@@ -503,6 +513,7 @@ export async function replaceRuntimeHostLifecycle(input: {
     desired,
     deps: input.deps,
     ...(input.activatePrevious ? { activatePrevious: input.activatePrevious } : {}),
+    ...(input.validateRetiredState ? { validateRetiredState: input.validateRetiredState } : {}),
   });
   try {
     if (input.activateDesired) {
@@ -720,7 +731,7 @@ export async function activateRuntimeHostLifecycle(
 export async function verifyRuntimeHostLifecycleReady(
   config: RuntimeHostManagedDeploymentConfig,
   deps: RuntimeHostLifecycleTransactionDeps,
-  timeoutMs = 45_000,
+  timeoutMs = RUNTIME_HOST_READY_TIMEOUT_MS,
 ): Promise<void> {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await verifyRuntimeHostLifecycleProjection(canonical, deps);
@@ -731,7 +742,7 @@ export async function verifyRuntimeHostLifecycleReady(
   while (Date.now() < deadline) {
     const status = await provider.supervisor.status();
     if (status.pid !== null && status.active) {
-      const connected = await connectExistingRuntimeHost({
+      const connected = await (deps.connectExisting ?? connectExistingRuntimeHost)({
         rootPath: canonical.root.path,
         protocol: {
           min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -745,9 +756,12 @@ export async function verifyRuntimeHostLifecycleReady(
         try {
           const diagnostics = await connected.connection.request('host.diagnostics.query', {});
           if (diagnostics.pid === status.pid && connected.connection.rootId === canonical.root.id) {
+            await waitForRuntimeHostReady(connected.connection, Math.max(1, deadline - Date.now()));
             return;
           }
           lastFailure = new Error('Runtime Host process or Root identity did not match');
+        } catch (error) {
+          lastFailure = error;
         } finally {
           await connected.connection.close().catch(() => undefined);
         }

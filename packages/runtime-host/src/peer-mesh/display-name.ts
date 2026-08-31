@@ -17,10 +17,17 @@
  * under the License.
  */
 
-import type { OAuthLoginProvider } from '@maka/runtime-host/protocol';
+export const PEER_MESH_DISPLAY_NAME_MAX_LENGTH = 80;
 
-/** Stable Desktop connection identities for Host-supported interactive OAuth providers. */
-export const INTERACTIVE_OAUTH_CONNECTION_SLUGS = {
-  'openai-codex': 'codex-subscription',
-  'xai-oauth': 'xai-oauth',
-} as const satisfies Readonly<Record<OAuthLoginProvider, string>>;
+export function canonicalPeerMeshDisplayName(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('Invalid Peer Mesh display name');
+  const displayName = value.trim();
+  if (
+    displayName.length === 0 ||
+    displayName.length > PEER_MESH_DISPLAY_NAME_MAX_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(displayName)
+  ) {
+    throw new Error('Invalid Peer Mesh display name');
+  }
+  return displayName;
+}

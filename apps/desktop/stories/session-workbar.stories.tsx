@@ -22,7 +22,7 @@ import type { Decorator, Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
-import type { GitReviewSnapshot } from '@maka/core/git-review';
+import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
 import type { Task } from '@maka/core/task-ledger';
 import type { SessionTrace } from '@maka/core/session-trace';
@@ -119,6 +119,31 @@ const SIDE_CHAT_SESSION: SessionSummary = {
 };
 const TERMINAL_REF = 'shell-run:storybook-terminal';
 const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
+
+// A terminal whose scrollback runs long — the "very many rows" state a fresh
+// shell never shows.
+const LONG_TERMINAL_BUFFER = [
+  '$ npm run build --workspaces',
+  ...Array.from(
+    { length: 600 },
+    (_, index) => `\x1b[2m[${String(index + 1).padStart(4, '0')}]\x1b[0m compiled module ${index + 1}/600`,
+  ),
+  '$ ',
+].join('\r\n');
+
+// Colours, bold, and a carriage-return progress redraw — the control sequences
+// a plain "npm test" line never exercises.
+const RICH_TERMINAL_BUFFER = [
+  '$ npm test',
+  '\x1b[1m\x1b[34mRUNS\x1b[0m packages/ui/src/toast.test.ts',
+  '\x1b[32m✓\x1b[0m renders every variant \x1b[2m(12 ms)\x1b[0m',
+  '\x1b[33m●\x1b[0m skipped: flaky under load',
+  '\x1b[31m✗\x1b[0m confirm queue focus \x1b[2m(3 ms)\x1b[0m',
+  '\x1b[31m  Expected the cancel button to hold focus\x1b[0m',
+  'Progress: [\x1b[32m##########\x1b[0m----------] 50%\rProgress: [\x1b[32m####################\x1b[0m] 100%',
+  '\x1b[1mTests:\x1b[0m \x1b[32m41 passed\x1b[0m, \x1b[31m1 failed\x1b[0m, \x1b[33m1 skipped\x1b[0m',
+  '$ ',
+].join('\r\n');
 
 // ---- ledgers -------------------------------------------------------------
 
@@ -287,6 +312,169 @@ const gitReviewSnapshot: GitReviewSnapshot = {
   deletions: gitReviewFiles.reduce((total, file) => total + file.deletions, 0),
   truncated: false,
   files: gitReviewFiles,
+};
+
+// A session whose branch matches its base — the panel's own empty state, not an
+// error and not a spinner.
+const emptyGitReviewSnapshot: GitReviewSnapshot = {
+  ...gitReviewSnapshot,
+  revision: 'storybook-git-review-empty',
+  additions: 0,
+  deletions: 0,
+  truncated: false,
+  files: [],
+};
+
+// Two independent truncation authorities, kept in separate stories: the
+// snapshot-level `truncated` flag (the source dropped files from a huge
+// changeset) and the per-file 500-line `boundedDiff` cap (one file's body is
+// clipped). A single large file only trips the latter, so they are not merged.
+const largeAddedFilePath = 'src/generated/catalog.ts';
+const largeGitReviewFile: GitReviewSnapshot['files'][number] = {
+  path: largeAddedFilePath,
+  status: 'added',
+  additions: 620,
+  deletions: 0,
+  diff: [
+    `diff --git a/${largeAddedFilePath} b/${largeAddedFilePath}`,
+    'new file mode 100644',
+    'index 0000000..a1b2c3d',
+    '--- /dev/null',
+    `+++ b/${largeAddedFilePath}`,
+    '@@ -0,0 +1,620 @@',
+    ...Array.from({ length: 620 }, (_, index) => `+  export const ENTRY_${index} = ${index};`),
+  ].join('\n'),
+};
+// Per-file cap only: one 620-line file, snapshot NOT truncated.
+const fileLineCapGitReviewSnapshot: GitReviewSnapshot = {
+  ...gitReviewSnapshot,
+  revision: 'storybook-git-review-file-cap',
+  additions: largeGitReviewFile.additions,
+  deletions: 0,
+  truncated: false,
+  files: [largeGitReviewFile],
+};
+// Source-level truncation: a large changeset whose file list the source capped,
+// so `truncated` is set and the panel shows its 变化过多 banner. Each file is
+// ordinary — no single file trips the per-file cap here.
+const sourceTruncatedFiles: GitReviewSnapshot['files'] = Array.from({ length: 24 }, (_, index) => {
+  const path = `src/feature-${String(index).padStart(2, '0')}.ts`;
+  return {
+    path,
+    status: 'modified',
+    additions: 3,
+    deletions: 1,
+    diff: [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -1,2 +1,4 @@',
+      ' import { register } from "./registry";',
+      `+export const FLAG_${index} = true;`,
+      `-const legacy${index} = null;`,
+    ].join('\n'),
+  };
+});
+const sourceTruncatedGitReviewSnapshot: GitReviewSnapshot = {
+  ...gitReviewSnapshot,
+  revision: 'storybook-git-review-truncated',
+  additions: sourceTruncatedFiles.reduce((total, file) => total + file.additions, 0),
+  deletions: sourceTruncatedFiles.reduce((total, file) => total + file.deletions, 0),
+  truncated: true,
+  files: sourceTruncatedFiles,
+};
+
+// The diff shapes that never appear in a routine "a few lines changed" review:
+// a binary blob, a rename with no body, a deletion, a no-newline-at-EOF marker,
+// and a single pathologically long minified line. Each is just a different
+// unified-diff string handed to the same DiffCodePreview.
+const edgeGitReviewFiles: GitReviewSnapshot['files'] = [
+  {
+    path: 'assets/logo.png',
+    status: 'modified',
+    additions: 0,
+    deletions: 0,
+    diff: [
+      'diff --git a/assets/logo.png b/assets/logo.png',
+      'index e69de29..d95f3ad 100644',
+      'Binary files a/assets/logo.png and b/assets/logo.png differ',
+    ].join('\n'),
+  },
+  {
+    path: 'src/renamed-module.ts',
+    previousPath: 'src/old-module.ts',
+    status: 'renamed',
+    additions: 1,
+    deletions: 1,
+    diff: [
+      'diff --git a/src/old-module.ts b/src/renamed-module.ts',
+      'similarity index 92%',
+      'rename from src/old-module.ts',
+      'rename to src/renamed-module.ts',
+      '--- a/src/old-module.ts',
+      '+++ b/src/renamed-module.ts',
+      '@@ -1,3 +1,3 @@',
+      ' import { foo } from "./foo";',
+      '-export const NAME = "old";',
+      '+export const NAME = "renamed";',
+      ' export default NAME;',
+    ].join('\n'),
+  },
+  {
+    path: 'src/deprecated.ts',
+    status: 'deleted',
+    additions: 0,
+    deletions: 3,
+    diff: [
+      'diff --git a/src/deprecated.ts b/src/deprecated.ts',
+      'deleted file mode 100644',
+      'index 1a2b3c4..0000000',
+      '--- a/src/deprecated.ts',
+      '+++ /dev/null',
+      '@@ -1,3 +0,0 @@',
+      '-export function legacy() {',
+      '-  return true;',
+      '-}',
+    ].join('\n'),
+  },
+  {
+    path: 'config/version',
+    status: 'modified',
+    additions: 1,
+    deletions: 1,
+    diff: [
+      'diff --git a/config/version b/config/version',
+      '--- a/config/version',
+      '+++ b/config/version',
+      '@@ -1 +1 @@',
+      '-1.2.3',
+      '\\ No newline at end of file',
+      '+1.2.4',
+      '\\ No newline at end of file',
+    ].join('\n'),
+  },
+  {
+    path: 'src/minified.bundle.js',
+    status: 'modified',
+    additions: 1,
+    deletions: 0,
+    diff: [
+      'diff --git a/src/minified.bundle.js b/src/minified.bundle.js',
+      '--- a/src/minified.bundle.js',
+      '+++ b/src/minified.bundle.js',
+      '@@ -1,1 +1,2 @@',
+      ' /* build output */',
+      `+const PAYLOAD="${'a'.repeat(1800)}";`,
+    ].join('\n'),
+  },
+];
+const edgeGitReviewSnapshot: GitReviewSnapshot = {
+  ...gitReviewSnapshot,
+  revision: 'storybook-git-review-edge',
+  additions: edgeGitReviewFiles.reduce((total, file) => total + file.additions, 0),
+  deletions: edgeGitReviewFiles.reduce((total, file) => total + file.deletions, 0),
+  truncated: false,
+  files: edgeGitReviewFiles,
 };
 
 const populatedTrace: SessionTrace = {
@@ -634,6 +822,16 @@ function bridge(options: {
   browserState?: BrowserState;
   /** Make `browser.navigate` reject, so a valid address surfaces the navigation-failed toast. */
   browserNavigateFails?: boolean;
+  /** The git-review read result the 变更 panel receives (empty / source error / truncated / edge diffs). */
+  review?: GitReviewReadResult;
+  /** Make `review.read` reject, so the panel shows its load-error banner. */
+  reviewFail?: boolean;
+  /** Make `terminal.attach` resolve to null, so the panel shows its load-failed Banner. */
+  terminalAttach?: 'missing';
+  /** The scrollback buffer the attached terminal hydrates with. */
+  terminalBuffer?: string;
+  /** Make `terminal.write` reject, so typing into the terminal shows the write-failed Banner. */
+  terminalWriteFails?: boolean;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
@@ -684,10 +882,10 @@ function bridge(options: {
       subscribeSessionEvents: unsubscribe,
     },
     review: {
-      read: async () => ({
-        ok: true,
-        snapshot: gitReviewSnapshot,
-      }),
+      read: async () => {
+        if (options.reviewFail) throw new Error('读取变更失败：无法运行 git diff');
+        return options.review ?? { ok: true, snapshot: gitReviewSnapshot };
+      },
       subscribeSessionEvents: unsubscribe,
     },
     terminal: {
@@ -695,15 +893,21 @@ function bridge(options: {
         throw new Error('Terminal stories mount an existing resource');
       },
       stop: async () => null,
-      attach: async () => ({
-        sessionId: SESSION_ID,
-        ref: TERMINAL_REF,
-        sequence: 1,
-        buffer: '$ npm test\r\n✓ workbar controller\r\n',
-        size: { cols: 80, rows: 24 },
-      }),
+      attach: async () => {
+        if (options.terminalAttach === 'missing') return null;
+        return {
+          sessionId: SESSION_ID,
+          ref: TERMINAL_REF,
+          sequence: 1,
+          buffer: options.terminalBuffer ?? '$ npm test\r\n✓ workbar controller\r\n',
+          size: { cols: 80, rows: 24 },
+        };
+      },
       detach: async () => undefined,
-      write: async () => null,
+      write: async () => {
+        if (options.terminalWriteFails) throw new Error('write failed');
+        return null;
+      },
       subscribePtyData: unsubscribe,
       subscribeResync: unsubscribe,
     },
@@ -862,11 +1066,146 @@ export const Changes: Story = {
   render: () => <Workbar tab="review" />,
 };
 
+// Real path: 任务工作栏 → 变更 on a session whose branch matches its base. The
+// panel's own empty state (icon + help), not a spinner and not an error.
+export const ChangesEmpty: Story = {
+  decorators: [bridge({ review: { ok: true, snapshot: emptyGitReviewSnapshot } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText('当前 Git 工作区没有变化');
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when `review.read` rejects (the git command
+// failed); the error takes a Banner with 重试, the same shape as
+// TasksLoadFailed — not an empty state.
+export const ChangesLoadFailed: Story = {
+  decorators: [bridge({ reviewFail: true })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole('button', { name: '重试' });
+  },
+};
+
+// Real path: 任务工作栏 → 变更 when the session cwd is not a Git repository. A
+// source that cannot be read is a failure (error Banner + 重试), not an
+// absence — the other read reasons (workspace unavailable, unborn repo,
+// invalid base branch, git failed) share this branch.
+export const ChangesSourceNotGit: Story = {
+  decorators: [bridge({ review: { ok: false, reason: 'not_git_repository' } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText('当前任务目录不是 Git 仓库');
+    await canvas.findByRole('button', { name: '重试' });
+  },
+};
+
+// Real path: 任务工作栏 → 变更 on a changeset so large the source capped its
+// file list — the snapshot-level 变化过多 banner. The per-file line cap is a
+// separate authority (see ChangesFileLineCap), not combined here.
+export const ChangesTruncated: Story = {
+  decorators: [bridge({ review: { ok: true, snapshot: sourceTruncatedGitReviewSnapshot } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText('变化过多，仅显示前一部分文件');
+  },
+};
+
+// Real path: 任务工作栏 → 变更 with one file whose body runs past the 500-line
+// cap — expanding it clips the body and notes the hidden remainder. The
+// snapshot is NOT truncated, so only the per-file authority fires (no 变化过多
+// banner).
+export const ChangesFileLineCap: Story = {
+  decorators: [bridge({ review: { ok: true, snapshot: fileLineCapGitReviewSnapshot } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const file = await canvas.findByText('src/generated/catalog.ts');
+    expect(canvas.queryByText('变化过多，仅显示前一部分文件')).toBeNull();
+    await userEvent.click(file);
+    await canvas.findByText(/另有 \d+ 行未显示/);
+  },
+};
+
+// Real path: 任务工作栏 → 变更 across the diff shapes a routine review never
+// shows — binary, rename, deletion, no-newline-at-EOF, and a very long minified
+// line — each rendered by the same DiffCodePreview.
+export const ChangesEdgeContent: Story = {
+  decorators: [bridge({ review: { ok: true, snapshot: edgeGitReviewSnapshot } })],
+  render: () => <Workbar tab="review" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Expand each edge file in turn (the group is single-open) and confirm its
+    // OWN body renders through the diff surface — scoped to that file's row,
+    // since collapsed rows keep their diff mounted.
+    const expectDiffBody = async (path: string, marker: string) => {
+      await userEvent.click(await canvas.findByText(path));
+      await waitFor(() => {
+        const row = Array.from(
+          canvasElement.querySelectorAll<HTMLElement>('.maka-session-review-file'),
+        ).find((el) => el.textContent?.includes(path));
+        expect(row?.querySelector('.maka-session-review-diff')?.textContent ?? '').toContain(marker);
+      });
+    };
+    await expectDiffBody('assets/logo.png', 'Binary files a/assets/logo.png and b/assets/logo.png differ');
+    await expectDiffBody('src/renamed-module.ts', 'rename from src/old-module.ts');
+    await expectDiffBody('src/deprecated.ts', 'export function legacy');
+    await expectDiffBody('config/version', 'No newline at end of file');
+    await expectDiffBody('src/minified.bundle.js', 'PAYLOAD');
+  },
+};
+
 // Real path: 任务工作栏 → 终端 after Desktop has created a PTY resource. The
 // service fake hydrates the real xterm surface without an Electron bridge.
 export const Terminal: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 when `terminal.attach` finds no live resource
+// (it resolves to null); the panel raises its load-failed Banner over the
+// terminal surface instead of a silently blank pane.
+export const TerminalLoadFailed: Story = {
+  decorators: [bridge({ terminalAttach: 'missing' })],
+  render: () => <Workbar tab="terminal" />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.textContent).toContain('无法读取终端运行'));
+  },
+};
+
+// Real path: 任务工作栏 → 终端 after a long-running build — hundreds of lines of
+// scrollback the fresh-shell story never shows.
+export const TerminalLongScrollback: Story = {
+  decorators: [bridge({ terminalBuffer: LONG_TERMINAL_BUFFER })],
+  render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 rendering coloured, bold, and carriage-return
+// progress output — the ANSI control sequences a plain command line omits.
+export const TerminalRichOutput: Story = {
+  decorators: [bridge({ terminalBuffer: RICH_TERMINAL_BUFFER })],
+  render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 when a keystroke cannot reach the PTY
+// (`terminal.write` rejects). Typing surfaces the panel's write-failed Banner.
+// Input is driven through xterm's own helper textarea — the same handle the
+// accessibility-runtime story uses — so this is genuinely reachable from a
+// mounted story.
+export const TerminalWriteFailed: Story = {
+  decorators: [bridge({ terminalWriteFails: true })],
+  render: () => <Workbar tab="terminal" />,
+  play: async ({ canvasElement }) => {
+    const textarea = await waitFor(() => {
+      const el = canvasElement.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+      if (!el) throw new Error('xterm helper textarea not ready');
+      return el;
+    });
+    textarea.focus();
+    await userEvent.keyboard('echo hi');
+    await waitFor(() => expect(canvasElement.textContent).toContain('无法发送终端输入'));
+  },
 };
 
 // Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app

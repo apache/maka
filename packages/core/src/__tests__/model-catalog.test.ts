@@ -82,6 +82,62 @@ test('chat-default validation blocks image-only models but accepts merged partia
   assert.deepEqual(verdict(partial), { ok: true });
 });
 
+test('a declared output modality without text rules a model out of chat', () => {
+  // The shape this exists for: `gpt-image-2` on a relay. Bundled metadata
+  // records `modalities.output: ["image"]` and has never set
+  // `capabilities.imageGeneration` for any model, so before this the guard
+  // could not fire and an image model was selectable as a chat model.
+  const imageOnly = {
+    providerType: 'openai' as const,
+    defaultModel: 'gpt-image-2',
+    models: [{ id: 'gpt-image-2' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(imageOnly), { ok: false, reason: 'unsupported_for_chat' });
+
+  // Audio-only too, and a stray `reasoning: true` on a TTS model does not
+  // rescue it: reasoning describes how it composes speech, not that it can
+  // answer in text.
+  const audioOnly = {
+    providerType: 'google' as const,
+    defaultModel: 'gemini-3.1-flash-tts-preview',
+    models: [{ id: 'gemini-3.1-flash-tts-preview' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(audioOnly), { ok: false, reason: 'unsupported_for_chat' });
+});
+
+test('an empty output modality list is not evidence against chat', () => {
+  // `modalities.output` is typed to text, image, and audio, so a video model's
+  // real output has no representation and serializes as `[]` — the same shape
+  // a generator bug would produce. Blocking on it would be guessing.
+  const video = {
+    providerType: 'google' as const,
+    defaultModel: 'gemini-omni-flash-preview',
+    models: [{ id: 'gemini-omni-flash-preview' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(video), { ok: true });
+});
+
+test('an explicit chat capability outranks the declared output modality', () => {
+  // A provider that says both is contradicting itself, and the direct claim
+  // about chat is the more specific one.
+  const contradictory = {
+    providerType: 'openai-compatible' as const,
+    defaultModel: 'relay-omni',
+    models: [
+      {
+        id: 'relay-omni',
+        capabilities: { chat: true },
+        modalities: { input: ['text' as const], output: ['image' as const] },
+      },
+    ],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(contradictory), { ok: true });
+});
+
 test('catalog entries preserve advertised parallel tool-call support', () => {
   const [entry] = buildModelCatalogEntries({
     providerType: 'openai-compatible',

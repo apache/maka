@@ -95,9 +95,23 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 73 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 78 as const;
+// 78: OAuth login targets explicit create/existing Connection entities and
+// returns their canonical identity. Older peers reject both closed wire shapes.
+// 77: LLM and tool usage-log projections carry an optional `sessionTitle` (the
+// Host-resolved session name for the usage Task column). Older Clients reject
+// the unknown field, so a newer Host's usage logs are unreadable to them.
+// 76: Peer Mesh endpoint and Mesh display names are signed, persisted facts
+// managed through Host operations rather than local-only Client labels.
+// 75: Peer Mesh routes identify whether a peer is a Client or Runtime Host so
+// management surfaces can present the endpoint authority boundary accurately.
+// 74: Capability-provider credentials may carry one Host-authenticated owner
+// identity. Older peers cannot preserve the association and could select an
+// unrelated provider for an interactive Session.
 // 73: Transcript pages carry a Host-owned Turn range boundary. Older peers
 // cannot preserve both the complete edge Turn and the bounded projection.
+// 72: Collaboration Turn request query results require `canRequestTurns`.
+// Older peers reject the new closed result shape.
 // 71: Session Guests can submit durable exact Turn access requests and Owners
 // can decide them. Older peers do not understand this execution-authority flow.
 // 70: Session Guest connections receive resource-scoped shared catalog and

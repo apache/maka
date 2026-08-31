@@ -389,6 +389,23 @@ function AppShellContent({
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
 
+  const {
+    settingsOpen,
+    settingsRequest,
+    settingsProviderCatalogOpen,
+    settingsConnectionDetailSlug,
+    settingsCreateProviderType,
+    setSettingsOpen,
+    setSettingsProviderCatalogOpen,
+    setSettingsProfileId,
+    openSettings,
+    openSettingsSection,
+    openProjectSettings,
+    openProviderCatalog,
+    openConnectionDetail,
+    openProviderCreate,
+  } = useSettingsModal();
+
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const reportTaskEntryError = useCallback(
     ({ title, description, profileId }: TaskEntryError) => {
@@ -398,6 +415,7 @@ function AppShellContent({
   );
   const taskEntry = useTaskEntryController({
     reportError: reportTaskEntryError,
+    manageProjects: openProjectSettings,
   });
   // Named on its own because the rail depends on it: `taskEntry.commands` is a
   // fresh object every render, so depending on the bag rather than the command
@@ -610,22 +628,6 @@ function AppShellContent({
     onboarding.snapshot,
     sessions.length > 0,
   );
-  const {
-    settingsOpen,
-    settingsRequestedSection,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    setSettingsProviderCatalogOpen,
-    openSettings,
-    openSettingsSection,
-    openProviderCatalog,
-    openConnectionDetail,
-    openProviderCreate,
-  } = useSettingsModal();
-  const [settingsDiagnosticProfileId, setSettingsDiagnosticProfileId] =
-    useState<string>();
   const {
     themePref,
     setThemePref,
@@ -1129,7 +1131,7 @@ function AppShellContent({
   //   1. `data-maka-reduced-motion="true"` — PR-IR-04 reduced variant
   //   2. `data-maka-e2e-fixture="true"` — PR-IR-02 any capture
   //   3. `prefers-reduced-motion: reduce` — OS-level user preference
-  function handleLineageBadgeClick(targetTurnId: string): void {
+  function handleLineageBadgeClick(targetTurnId: string) {
     requestAnimationFrame(() => {
       const el = document.querySelector(`[data-turn-id="${CSS.escape(targetTurnId)}"]`);
       if (!el || !('scrollIntoView' in el)) return;
@@ -2350,14 +2352,14 @@ function AppShellContent({
   const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
   const activeEventSeedRef = useRef(activeEventSeed);
   activeEventSeedRef.current = activeEventSeed;
-  const beginObservationSeed = (sessionId: string): number => {
+  const beginObservationSeed = (sessionId: string) => {
     const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
     return next.generation;
   };
-  const completeObservationSeed = (sessionId: string, generation?: number): void => {
+  const completeObservationSeed = (sessionId: string, generation?: number) => {
     const current = activeEventSeedRef.current;
     const expected = generation ?? current.generation;
     if (current.sessionId !== sessionId || current.generation !== expected) return;
@@ -2377,6 +2379,7 @@ function AppShellContent({
   useActiveSessionEvents({
     uiLocale,
     activeId,
+    activeProfileId: activeSession?.profileId,
     activeIdRef,
     handleEvent,
     beginObservationSeed,
@@ -2670,7 +2673,7 @@ function AppShellContent({
     messages,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
-    settingsProfileId: settingsDiagnosticProfileId,
+    settingsProfileId: settingsRequest.profileId,
     sessions,
     themePref,
     visibleSessions,
@@ -3287,7 +3290,7 @@ function AppShellContent({
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}
-        settingsRequestedSection={settingsRequestedSection}
+        settingsRequest={settingsRequest}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
         settingsCreateProviderType={settingsCreateProviderType}
@@ -3319,7 +3322,7 @@ function AppShellContent({
           openNewTaskSurface();
           void taskEntry.commands.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
-        onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
+        onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
     </ComposerMentionsProvider>

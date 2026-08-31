@@ -392,8 +392,21 @@ export function claudeToolFilePaths(record: Record<string, unknown>): string[] {
  * content.
  * ------------------------------------------------------------------ */
 
-/** Codex thread sources eligible for import (per issue #1057). */
-export const CODEX_SUPPORTED_THREAD_SOURCES = ['cli', 'vscode', 'atlas', 'chatgpt'] as const;
+/**
+ * Codex thread sources eligible for import — the single authority for both the
+ * foreign-session scanner below and the Codex Session adapter in `@maka/storage`.
+ * #1057 defined the original list; `exec` covers headless `codex exec` runs,
+ * which #2502 listed as root Sessions from the adapter's first commit. The two
+ * gates drifted apart while each owned its own token set, so the same thread was
+ * visible through one surface and invisible through the other.
+ */
+export const CODEX_SUPPORTED_THREAD_SOURCES = [
+  'cli',
+  'exec',
+  'vscode',
+  'atlas',
+  'chatgpt',
+] as const;
 
 /**
  * Timestamps below this (2020-01-01 UTC in ms) are treated as seconds and
@@ -421,32 +434,49 @@ function normalizeEpochMs(value: unknown): number | undefined {
 }
 
 /**
- * Codex persists `source` either as a bare token (`cli`, `vscode`) or as a
- * JSON object string (`{"custom":"atlas"}`, `{"custom":"chatgpt"}`). Return
- * the canonical token, or undefined when it isn't a supported source — a
- * bare-string equality check would silently drop every atlas/chatgpt thread.
+ * Codex persists `source` as a bare token (`cli`, `exec`, `vscode`), as a JSON
+ * object string (`{"custom":"atlas"}`), or — in rollout `session_meta` payloads,
+ * which arrive already parsed — as the object itself. Return the canonical
+ * token, or undefined when it isn't a supported source: a bare-string equality
+ * check would silently drop every atlas/chatgpt thread, and a token set that
+ * only knows the wrapped form would drop the bare one.
+ *
+ * Unsupported shapes (notably `{"subagent":{…}}`) resolve to undefined, which is
+ * what keeps internal subagent threads out of both surfaces.
  */
 export function codexSourceToken(value: unknown): string | undefined {
-  if (typeof value !== 'string' || value.length === 0) return undefined;
-  if ((CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value)) return value;
-  if (value.startsWith('{')) {
+  if (typeof value === 'string') {
+    if (value.length === 0) return undefined;
+    if (isSupportedCodexSourceToken(value)) return value;
+    // Only an object string can carry a `custom` token; anything else is a
+    // plain unsupported source and must not reach JSON.parse.
+    if (!value.startsWith('{')) return undefined;
     try {
-      const parsed = JSON.parse(value) as unknown;
-      const custom =
-        typeof parsed === 'object' && parsed !== null
-          ? (parsed as Record<string, unknown>).custom
-          : undefined;
-      if (
-        typeof custom === 'string' &&
-        (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(custom)
-      ) {
-        return custom;
-      }
+      return codexSourceToken(JSON.parse(value) as unknown);
     } catch {
       return undefined;
     }
   }
+  if (typeof value === 'object' && value !== null) {
+    const custom = (value as Record<string, unknown>).custom;
+    return typeof custom === 'string' && isSupportedCodexSourceToken(custom) ? custom : undefined;
+  }
   return undefined;
+}
+
+/**
+ * Whether a recorded `source` makes a Codex thread eligible. An absent source is
+ * eligible: older Codex schemas have no `source` column and older rollout
+ * `session_meta` payloads omit the field, so dropping those would hide every
+ * legacy thread. A present-but-unsupported source is a hard drop.
+ */
+export function isSupportedCodexThreadSource(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  return codexSourceToken(value) !== undefined;
+}
+
+function isSupportedCodexSourceToken(value: string): boolean {
+  return (CODEX_SUPPORTED_THREAD_SOURCES as readonly string[]).includes(value);
 }
 
 export interface CodexThreadRow {
@@ -476,7 +506,7 @@ export function normalizeCodexThreadRow(
   if (row.archived === 1 || row.archived === true) return undefined;
   // A present-but-unsupported source is a hard drop; an absent source column
   // (older schema) is allowed through — the SELECT simply didn't project it.
-  if (row.source !== undefined && codexSourceToken(row.source) === undefined) return undefined;
+  if (!isSupportedCodexThreadSource(row.source)) return undefined;
   const updatedAtMs = normalizeEpochMs(row.updated_at_ms) ?? normalizeEpochMs(row.updated_at) ?? 0;
   const title =
     sanitizeForeignTitle(row.title) || sanitizeForeignTitle(row.first_user_message) || row.id;
@@ -614,7 +644,7 @@ export function stripEnvelopeTags(text: string): string {
 
 /**
  * Render a digest as an explicitly-untrusted data block for the handoff
- * prompt. The envelope wording mirrors the memory/turn-tail discipline:
+ * prompt. The envelope wording mirrors the untrusted-context discipline:
  * contents are reference data, never instructions. `safe()` is the
  * authoritative gate every foreign-authored scalar passes through here —
  * regardless of how the digest was built — sanitizing (NFC, control/bidi/

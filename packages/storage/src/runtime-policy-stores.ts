@@ -67,7 +67,11 @@ export type {
   ConnectionTestTicket,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
+  InteractiveOAuthLoginInput,
+  InteractiveOAuthLoginTarget,
+  InteractiveOAuthConnectionIdentity,
   InteractiveOAuthLoginTicket,
+  QueryInteractiveOAuthLoginResult,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
@@ -244,8 +248,8 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
-      beginInteractiveOAuthLogin: (connectionId) =>
-        coordinator.beginInteractiveOAuthLogin(connectionId),
+      beginInteractiveOAuthLogin: (input) => coordinator.beginInteractiveOAuthLogin(input),
+      queryInteractiveOAuthLogin: (attemptId) => coordinator.queryInteractiveOAuthLogin(attemptId),
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),

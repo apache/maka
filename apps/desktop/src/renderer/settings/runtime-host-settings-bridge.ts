@@ -49,16 +49,17 @@ export function runtimeHostConnectionsBridge(
 export function runtimeHostOAuthLoginBridge(
   bridge: typeof window.maka.openAiCodex | typeof window.maka.xaiOAuth,
   host: DesktopRuntimeHostRef,
+  connectionId?: string,
 ): OAuthLoginFlowBridge {
   return {
     getAuthUrl: () =>
-      bridge.getAuthUrl(host) as ReturnType<OAuthLoginFlowBridge['getAuthUrl']>,
+      bridge.getAuthUrl(host, connectionId) as ReturnType<OAuthLoginFlowBridge['getAuthUrl']>,
     openAuthUrl: (authRequestId) => bridge.openAuthUrl(authRequestId, host),
     completeAuthorization: (authRequestId) =>
       bridge.completeAuthorization(authRequestId, host),
     cancelAuthorization: (authRequestId) =>
       bridge.cancelAuthorization(authRequestId, host),
-    getAccountState: () => bridge.getAccountState(host),
-    logout: () => bridge.logout(host),
+    getAccountState: () => bridge.getAccountState(host, connectionId),
+    logout: () => bridge.logout(host, connectionId),
   };
 }

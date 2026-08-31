@@ -23,6 +23,7 @@ import { runtimeHostAccessCredentialHash } from '../access-credential-identity.j
 import {
   type AccessCredentialIssueInput,
   type AccessCredentialIssueResult,
+  type ClientCapabilityOwnerIdentity,
   type AccessCredentialFinalizeResult,
   type AccessCredentialPrepareInput,
   type AccessCredentialPrepareResult,
@@ -110,7 +111,11 @@ export interface RuntimeHostAccessAuthority {
   revokeRotation(
     input: AccessCredentialRotationRevokeInput,
   ): Promise<AccessCredentialRotationRevokeResult>;
-  finalize(credentialId: string, clientInstanceId: string): Promise<AccessCredentialFinalizeResult>;
+  finalize(
+    credentialId: string,
+    clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
+  ): Promise<AccessCredentialFinalizeResult>;
   prepareCollaborationInvitation(
     rootId: string,
     input: CollaborationInvitationPrepareInput,
@@ -150,6 +155,7 @@ export interface RuntimeHostAccessAuthority {
     principalId: string,
     kind: SessionCollaborationGrantKind,
   ): SessionCollaborationGrant | undefined;
+  hasActiveBoundClientIdentity(principalId: string, clientInstanceId: string): boolean;
   subscribeRevocations(listener: (credentialId: string) => void): () => void;
   subscribeGrantRevocations(listener: (grant: SessionCollaborationGrant) => void): () => void;
   subscribeApprovedTurnAccessRequests(
@@ -224,11 +230,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           credentialId: match.credentialId,
           operationGrants: match.bindClientInstanceOnFinalize
             ? ['host.status', 'access.credential.finalize']
-            : match.operationGrants,
+            : match.clientInstanceId
+              ? [...match.operationGrants, 'access.credential.finalize']
+              : match.operationGrants,
           canPublishClientCapabilities:
             !match.bindClientInstanceOnFinalize && match.canPublishClientCapabilities,
           canUseHostPaths: !match.bindClientInstanceOnFinalize && match.canUseHostPaths,
           ...(match.clientInstanceId ? { clientInstanceId: match.clientInstanceId } : {}),
+          ...(match.capabilityOwner ? { capabilityOwner: match.capabilityOwner } : {}),
         })
       : undefined;
   }
@@ -579,6 +588,16 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     );
   }
 
+  hasActiveBoundClientIdentity(principalId: string, clientInstanceId: string): boolean {
+    return this.#file.credentials.some(
+      (credential) =>
+        credential.status === 'active' &&
+        credential.principalKind === 'remote_owner' &&
+        credential.principalId === principalId &&
+        credential.clientInstanceId === clientInstanceId,
+    );
+  }
+
   prepareRotation(
     input: AccessCredentialRotationPrepareInput,
   ): Promise<AccessCredentialRotationPrepareResult> {
@@ -601,7 +620,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           operationGrants: current.operationGrants,
           canPublishClientCapabilities: current.canPublishClientCapabilities,
           canUseHostPaths: current.canUseHostPaths,
-          bindClientInstance: current.bindClientInstanceOnFinalize === true,
+          bindClientInstance: current.clientInstanceId !== undefined,
         },
         'prepare',
         current.operationGrants,
@@ -622,6 +641,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     operationGrants = issuedAccessGrants(input.operationGrants),
   ): Promise<AccessCredentialIssueResult> {
     assertCredentialAuthority(input, operationGrants);
+    const capabilityOwner = this.#resolveCapabilityOwner(
+      'capabilityOwnerCredentialId' in input ? input.capabilityOwnerCredentialId : undefined,
+    );
     if (
       mode === 'prepare' &&
       (input.principalKind !== 'remote_owner' ||
@@ -639,6 +661,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: input.canPublishClientCapabilities,
       canUseHostPaths: input.canUseHostPaths,
+      ...(capabilityOwner ? { capabilityOwner } : {}),
     });
     const credential = `${ACCESS_CREDENTIAL_PREFIX}${randomBytes(32).toString('base64url')}`;
     const createdAt = new Date();
@@ -651,6 +674,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: input.canPublishClientCapabilities,
       canUseHostPaths: input.canUseHostPaths,
+      ...(capabilityOwner ? { capabilityOwner } : {}),
       createdAt: createdAt.toISOString(),
       ...(mode === 'prepare'
         ? {
@@ -700,7 +724,31 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       operationGrants,
       canPublishClientCapabilities: stored.canPublishClientCapabilities,
       canUseHostPaths: stored.canUseHostPaths,
+      ...(stored.capabilityOwner ? { capabilityOwner: stored.capabilityOwner } : {}),
     };
+  }
+
+  #resolveCapabilityOwner(
+    credentialId: string | undefined,
+  ): ClientCapabilityOwnerIdentity | undefined {
+    if (!credentialId) return undefined;
+    const owner = this.#file.credentials.find(
+      (credential) => credential.credentialId === credentialId && credential.status === 'active',
+    );
+    if (!owner || owner.principalKind !== 'remote_owner') {
+      throw new RuntimeHostAccessInputError(
+        'A capability provider owner must be one active remote-owner credential',
+      );
+    }
+    if (!owner.clientInstanceId) {
+      throw new RuntimeHostAccessInputError(
+        'A capability provider owner credential must be bound to one Client identity',
+      );
+    }
+    return Object.freeze({
+      principalId: owner.principalId,
+      clientInstanceId: owner.clientInstanceId,
+    });
   }
 
   revoke(input: AccessCredentialRevokeInput): Promise<AccessCredentialRevokeResult> {
@@ -807,6 +855,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   finalize(
     credentialId: string,
     clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
   ): Promise<AccessCredentialFinalizeResult> {
     return this.#mutate(async () => {
       const retained = this.#file.credentials.find(
@@ -815,13 +864,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (!retained || retained.status === 'revoked') {
         throw new RuntimeHostAccessInputError('The current access credential is no longer active');
       }
-      return this.#finalize(retained, clientInstanceId);
+      return this.#finalize(retained, clientInstanceId, connectionAlreadyFinalized);
     });
   }
 
   async #finalize(
     retained: StoredAccessCredential,
     clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
   ): Promise<AccessCredentialFinalizeResult> {
     if (retained.status === 'active') {
       if (retained.clientInstanceId && retained.clientInstanceId !== clientInstanceId) {
@@ -829,7 +879,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           'The pairing candidate was claimed by another Client',
         );
       }
-      return { reconnectRequired: retained.clientInstanceId !== undefined };
+      return {
+        reconnectRequired: retained.clientInstanceId !== undefined && !connectionAlreadyFinalized,
+      };
     }
     if (Date.parse(retained.expiresAt!) <= Date.now()) {
       await this.#expirePending();
@@ -1056,7 +1108,14 @@ function assertCredentialAuthority(
   input: AccessCredentialIssueInput,
   operationGrants: readonly string[],
 ): void {
-  if (input.principalKind !== 'capability_provider') return;
+  if (input.principalKind !== 'capability_provider') {
+    if (input.capabilityOwnerCredentialId) {
+      throw new RuntimeHostAccessInputError(
+        'Only a capability provider credential may declare a Client owner',
+      );
+    }
+    return;
+  }
   if (!input.canPublishClientCapabilities || input.canUseHostPaths) {
     throw new RuntimeHostAccessInputError(
       'A capability provider must publish Client Capabilities without Host path authority',
@@ -1224,6 +1283,7 @@ export async function finalizeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   credentialId: string | undefined,
   clientInstanceId: string | undefined,
+  credentialClientInstanceId: string | undefined,
 ): Promise<OperationOutcome<'access.credential.finalize'>> {
   if (!authority) return unavailable('finalize');
   if (!credentialId) {
@@ -1247,7 +1307,11 @@ export async function finalizeAccessCredential(
   try {
     return {
       ok: true,
-      result: await authority.finalize(credentialId, clientInstanceId),
+      result: await authority.finalize(
+        credentialId,
+        clientInstanceId,
+        credentialClientInstanceId === clientInstanceId,
+      ),
     };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {

@@ -160,6 +160,10 @@ interface RuntimeHostKernelCommonOptions {
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
   peerMesh?: PeerMeshNode;
+  /** Ephemeral launch gate used until a supervised Candidate durably commits. */
+  initialClientAdmission?: {
+    isClientAdmitted(clientInstanceId: string): boolean;
+  };
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
@@ -477,8 +481,30 @@ export class RuntimeHostKernel {
         compositionRevision: this.compositionDescriptor.revision,
       };
     }
+    const initialClientAdmission = this.#options.initialClientAdmission;
+    if (
+      initialClientAdmission &&
+      !initialClientAdmission.isClientAdmitted(hello.clientInstanceId)
+    ) {
+      return {
+        kind: 'draining',
+        hostEpoch: this.hostEpoch,
+        compositionId: this.compositionDescriptor.id,
+        compositionRevision: this.compositionDescriptor.revision,
+      };
+    }
     if (authority.clientInstanceId && authority.clientInstanceId !== hello.clientInstanceId) {
       throw new Error('Runtime Host access credential belongs to another Client');
+    }
+    if (
+      authority.principalKind === 'remote_owner' &&
+      authority.clientInstanceId === undefined &&
+      this.#options.accessAuthority?.hasActiveBoundClientIdentity(
+        authority.principalId,
+        hello.clientInstanceId,
+      )
+    ) {
+      throw new Error('Runtime Host Client identity is bound to another access credential');
     }
     const selectedProtocol = negotiateProtocol(
       { min: hello.protocolMin, max: hello.protocolMax },
@@ -724,6 +750,7 @@ export class RuntimeHostKernel {
               this.#options.accessAuthority,
               context.credentialId,
               context.clientInstanceId,
+              context.credentialClientInstanceId,
             ),
           ),
         'collaboration.invitation.prepare': async (input) =>

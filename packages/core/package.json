@@ -148,5 +148,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "intl-messageformat": "11.2.12"
   }
 }

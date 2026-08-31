@@ -76,6 +76,7 @@ import {
   writeRuntimeHostManagedUpdatePolicy,
 } from '../runtime-host-update-policy-store.js';
 import {
+  createSystemdUserRuntimeHostLifecycleProvider,
   createSystemdUserRuntimeHostService,
   renderSystemdUnit,
   renderSystemdUpdateService,
@@ -3034,6 +3035,30 @@ describe('managed Runtime Host service', () => {
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError &&
         error.code === 'service_manager_operation_failed',
+    );
+  });
+
+  it('treats an absent systemd supervisor as already retired', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-systemd-retire-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const serviceId = resolveRuntimeHostManagedServiceId(join(base, 'config'));
+    const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, {
+      XDG_CONFIG_HOME: base,
+    });
+    const systemd = createFakeSystemd(unitPath);
+    const provider = createSystemdUserRuntimeHostLifecycleProvider(serviceId, {
+      env: { XDG_CONFIG_HOME: base },
+      homeDir: base,
+      uid: 1000,
+      runSystemctl: systemd.run,
+      runLoginctl: async () => success('yes\n'),
+    });
+
+    await provider.supervisor.retire();
+
+    assert.equal(
+      systemd.calls.some(([command]) => command === 'stop'),
+      false,
     );
   });
 

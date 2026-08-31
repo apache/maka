@@ -25,6 +25,7 @@ import {
 } from '@maka/runtime-host/client';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
+  ConnectionIdentity,
   MakaOnboardingSurface,
   ModelChoice,
   OnboardingProviderEntry,
@@ -44,15 +45,9 @@ export function createRuntimeHostOnboardingSurface(
           baseUrl: trimmedOrNull(input.baseUrl),
         });
         if (result.kind === 'verified') return { kind: 'ok', models: [...result.models] };
-        return {
-          kind: 'error',
-          text: onboardingFailureText(result),
-          ...(result.kind === 'rejected' && result.reason === 'connection_not_found'
-            ? { stale: true }
-            : {}),
-        };
-      } catch (error) {
-        return { kind: 'error', text: errorText(error) };
+        return result;
+      } catch {
+        return { kind: 'unavailable' };
       }
     },
     save: async (input) => {
@@ -64,17 +59,17 @@ export function createRuntimeHostOnboardingSurface(
           enabledModelIds: [...input.enabledModelIds],
         });
         if (result.kind !== 'saved') {
-          return { kind: 'error', text: onboardingFailureText(result) };
+          return result;
         }
         try {
+          const catalog = await readRuntimeHostConnectionCatalog(connection);
           return {
             kind: 'ok',
             connection: result.connection,
             refresh: {
               kind: 'ok',
-              modelChoices: projectRuntimeHostModelChoices(
-                await readRuntimeHostConnectionCatalog(connection),
-              ),
+              modelChoices: projectRuntimeHostModelChoices(catalog),
+              connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
             },
           };
         } catch {
@@ -86,12 +81,12 @@ export function createRuntimeHostOnboardingSurface(
             connection: result.connection,
             refresh: {
               kind: 'failed',
-              warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+              reason: 'catalog_unavailable',
             },
           };
         }
-      } catch (error) {
-        return { kind: 'error', text: errorText(error) };
+      } catch {
+        return { kind: 'unavailable' };
       }
     },
   };
@@ -126,6 +121,16 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
   return choices;
 }
 
+export function projectRuntimeHostConnectionIdentities(
+  catalog: ConnectionCatalogSnapshot,
+): ConnectionIdentity[] {
+  return catalog.connections.map((connection) => ({
+    connectionId: connection.connectionId,
+    connectionSlug: connection.slug,
+    enabled: connection.enabled,
+  }));
+}
+
 export function projectProviders(catalog: ConnectionCatalogSnapshot): OnboardingProviderEntry[] {
   const entries: OnboardingProviderEntry[] = [];
   for (const provider of listApiKeyOnboardableProviders()) {
@@ -142,7 +147,7 @@ export function projectProviders(catalog: ConnectionCatalogSnapshot): Onboarding
     entries.push({
       ...provider,
       target: { kind: 'create', providerType: provider.providerType },
-      label: `${provider.label} · 添加账号`,
+      label: provider.label,
       enabledModelIds: [],
     });
   }
@@ -152,34 +157,4 @@ export function projectProviders(catalog: ConnectionCatalogSnapshot): Onboarding
 function trimmedOrNull(value: string | undefined): string | null {
   const secret = value?.trim() ?? '';
   return secret.length === 0 ? null : secret;
-}
-
-function onboardingFailureText(input: {
-  readonly kind: 'rejected' | 'failed';
-  readonly reason?: string;
-  readonly errorClass?: string;
-}): string {
-  if (input.kind === 'failed') return `Connection verification failed: ${input.errorClass}`;
-  switch (input.reason) {
-    case 'credential_not_configured':
-      return 'API key is required';
-    case 'base_url_not_configured':
-      return 'A base URL is required for this provider';
-    case 'connection_not_found':
-      return 'The existing connection is gone — reopen /setup and try again';
-    case 'superseded':
-      return 'The connection changed while onboarding — reopen /setup and try again';
-    case 'provider_unsupported':
-      return 'This provider does not support API-key onboarding';
-    case 'catalog_full':
-      return 'The connection catalog is full';
-    case 'model_unavailable':
-      return 'The selected model is no longer available';
-    default:
-      return 'Connection onboarding was rejected';
-  }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

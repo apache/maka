@@ -18,19 +18,22 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import {
+  decodeRuntimePolicyEntityId,
+  type ConnectionCatalogEntry,
+} from '@maka/core/runtime-policy';
 import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import {
   OAUTH_LOGIN_PROVIDERS,
+  type OAuthConnectionIdentity,
   type OAuthLoginProjection,
   type OAuthLoginProvider,
 } from '@maka/runtime-host/protocol';
-import { INTERACTIVE_OAUTH_CONNECTION_SLUGS } from './oauth-connection-identities.js';
 import {
-  disableRuntimeHostAccountConnection,
-  ensureRuntimeHostAccountConnection,
-  findRuntimeHostAccountConnection,
+  disableRuntimeHostAccountConnectionById,
+  findRuntimeHostAccountConnectionById,
   runtimeHostAccountCredential,
-  synchronizeRuntimeHostAccountConnection,
+  synchronizeRuntimeHostAccountConnectionById,
   type RuntimeHostAccountConnectionClient,
 } from './runtime-host-account-connection.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
@@ -40,6 +43,7 @@ import {
 } from './ipc-reconnect-policy.js';
 import type {
   OAuthExternalPresentation,
+  OAuthPresentationExpectation,
   RuntimeHostOAuthPresentation,
 } from './runtime-host-oauth-presentation.js';
 
@@ -77,6 +81,7 @@ export interface RuntimeHostOAuthIpcDeps {
 
 interface ActiveOAuthAttempt {
   readonly provider: OAuthLoginProvider;
+  readonly connection: OAuthConnectionIdentity;
 }
 
 /** Adapts the existing Desktop OAuth UI to the Host's provider-neutral OAuth operations. */
@@ -89,28 +94,47 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     if (provider !== 'xai-oauth') {
       deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
     }
-    deps.ipcMain.handle(channel('get-auth-url'), async () => {
+    deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawConnectionId: unknown) => {
       if (!providerEnabled(provider)) return providerDisabled();
-      // Drop any Desktop-tracked attempt for this provider so a re-click does
-      // not race a stale completeAuthorization waiter against a new start.
-      await cancelProviderAttempts(deps, activeAttempts, provider);
-      const connection = await ensureRuntimeHostAccountConnection(deps.client, {
-        providerType: provider,
-        slug: INTERACTIVE_OAUTH_CONNECTION_SLUGS[provider],
-      });
+      const selection = decodeOAuthConnectionSelection(rawConnectionId);
+      if (selection.kind === 'invalid') return invalidConnectionIdentity();
+      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      if (connectionId) {
+        const existing = findRuntimeHostAccountConnectionById(
+          await deps.client.loadConnectionCatalog(),
+          connectionId,
+        );
+        if (existing?.providerType !== provider) {
+          return actionFailure('OAuth account does not match this provider');
+        }
+      }
       const attemptId = randomUUID();
-      const expectation = deps.presentation.expect(attemptId);
+      let expectation: OAuthPresentationExpectation | undefined;
+      let startedOnHost = false;
       try {
-        const started = await deps.client.startOAuthLogin(attemptId, connection.connectionId);
+        expectation = deps.presentation.expect(attemptId);
+        const started = await deps.client.startOAuthLogin(
+          attemptId,
+          connectionId
+            ? { kind: 'existing', connectionId }
+            : { kind: 'create', providerType: provider },
+        );
+        startedOnHost = true;
+        if (started.connection.providerType !== provider) {
+          throw new Error('OAuth Connection does not match this provider');
+        }
         if (isTerminal(started)) throw new Error(describeTerminal(started));
         const presented = await waitForPresentation(deps.client, attemptId, expectation.presented);
         activeAttempts.set(attemptId, {
           provider,
+          connection: started.connection,
         });
         return { authRequestId: attemptId, stateHint: presented.stateHint };
       } catch (error) {
-        expectation.cancel(error);
-        await deps.client.cancelOAuthLogin(attemptId).catch(() => undefined);
+        expectation?.cancel(error);
+        if (startedOnHost) {
+          await deps.client.cancelOAuthLogin(attemptId).catch(() => undefined);
+        }
         // Prefer the host's message when present so "already in progress" is not
         // flattened into a generic 鉴权失败 for the toast classifier.
         const detail =
@@ -131,7 +155,8 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         if (typeof attemptId !== 'string') {
           return actionFailure('OAuth authorization is not active', 'authorization_pending');
         }
-        if (!providerAttempt(activeAttempts, attemptId, provider)) {
+        const activeAttempt = providerAttempt(activeAttempts, attemptId, provider);
+        if (!activeAttempt) {
           return actionFailure('OAuth authorization is not active', 'authorization_pending');
         }
         try {
@@ -140,12 +165,16 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           if (terminal.phase !== 'authenticated') {
             return actionFailure(describeTerminal(terminal), terminalFailureReason(terminal));
           }
+          if (!sameOAuthConnectionIdentity(activeAttempt.connection, terminal.connection)) {
+            return actionFailure('OAuth authorization changed Connection identity');
+          }
           // Authentication is authoritative once the Host commits the credential.
           // Catalog discovery is useful follow-up work, but a transient discovery
           // failure must not turn a committed login into a false UI failure.
-          await synchronizeRuntimeHostAccountConnection(deps.client, provider).catch(
-            () => undefined,
-          );
+          await synchronizeRuntimeHostAccountConnectionById(
+            deps.client,
+            terminal.connection.connectionId,
+          ).catch(() => undefined);
           deps.emitConnectionListChanged();
           return { ok: true as const };
         } catch {
@@ -162,44 +191,81 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       }
       return { ok: true as const };
     });
-    handleReconnectableRead(deps.ipcMain, channel('get-account-state'), async () => {
-      const connection = findRuntimeHostAccountConnection(
+    handleReconnectableRead(deps.ipcMain, channel('get-account-state'), async (_event, rawConnectionId: unknown) => {
+      const selection = decodeOAuthConnectionSelection(rawConnectionId);
+      if (selection.kind === 'invalid') return invalidConnectionIdentity();
+      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      const candidates = oauthAccountCandidates(
         await deps.client.loadConnectionCatalog(),
         provider,
+        connectionId,
       );
-      if (!connection) return accountState(provider, 'not_logged_in');
-      const credential = await deps.client.queryCredential(
-        runtimeHostAccountCredential(connection),
+      const authorizing = [...activeAttempts.values()].some(
+        (attempt) =>
+          attempt.provider === provider &&
+          (connectionId === undefined || attempt.connection.connectionId === connectionId),
       );
-      if (credential?.configured) {
+      if (candidates.length === 0) {
+        return accountState(provider, authorizing ? 'authorizing' : 'not_logged_in');
+      }
+      if ((await configuredOAuthAccountConnections(deps.client, candidates)).length > 0) {
         return accountState(provider, 'authenticated');
       }
-      const authorizing = [...activeAttempts.values()].some(
-        (attempt) => attempt.provider === provider,
-      );
       return accountState(provider, authorizing ? 'authorizing' : 'not_logged_in');
     });
-    deps.ipcMain.handle(channel('refresh-tokens'), async () => {
-      const connection = findRuntimeHostAccountConnection(
-        await deps.client.loadConnectionCatalog(),
-        provider,
+    deps.ipcMain.handle(channel('refresh-tokens'), async (_event, rawConnectionId: unknown) => {
+      const selection = decodeOAuthConnectionSelection(rawConnectionId);
+      if (selection.kind === 'invalid') return invalidConnectionIdentity('refresh_failed');
+      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      const connections = await configuredOAuthAccountConnections(
+        deps.client,
+        oauthAccountCandidates(
+          await deps.client.loadConnectionCatalog(),
+          provider,
+          connectionId,
+        ),
       );
-      if (!connection) return actionFailure('OAuth account is not connected', 'refresh_failed');
-      const credential = await deps.client.queryCredential(
-        runtimeHostAccountCredential(connection),
-      );
-      if (!credential?.configured) {
+      if (connections.length === 0) {
         return actionFailure('OAuth account is not connected', 'refresh_failed');
       }
+      if (connectionId === undefined && connections.length > 1) {
+        return actionFailure('Select a specific OAuth account to refresh', 'refresh_failed');
+      }
+      const connection = connections[0]!;
       const refreshed = await deps.client.fetchConnectionModels(connection.connectionId);
       return refreshed.kind === 'committed'
         ? { ok: true as const }
         : actionFailure('Unable to refresh OAuth account', 'refresh_failed');
     });
-    deps.ipcMain.handle(channel('logout'), async () => {
-      await cancelProviderAttempts(deps, activeAttempts, provider);
+    deps.ipcMain.handle(channel('logout'), async (_event, rawConnectionId: unknown) => {
+      const selection = decodeOAuthConnectionSelection(rawConnectionId);
+      if (selection.kind === 'invalid') return invalidConnectionIdentity();
+      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
       try {
-        await disableRuntimeHostAccountConnection(deps.client, provider);
+        const candidates = oauthAccountCandidates(
+          await deps.client.loadConnectionCatalog(),
+          provider,
+          connectionId,
+        );
+        if (connectionId !== undefined && candidates.length === 0) {
+          return actionFailure('OAuth account does not match this provider');
+        }
+        const connections =
+          connectionId !== undefined
+            ? candidates
+            : await configuredOAuthAccountConnections(deps.client, candidates);
+        if (connectionId === undefined && connections.length > 1) {
+          return actionFailure('Select a specific OAuth account to log out');
+        }
+        const connection = connections[0];
+        await cancelProviderAttempts(
+          deps,
+          activeAttempts,
+          provider,
+          connection?.connectionId,
+        );
+        if (connection)
+          await disableRuntimeHostAccountConnectionById(deps.client, connection.connectionId);
       } catch {
         return actionFailure('Unable to remove OAuth account');
       }
@@ -237,9 +303,14 @@ async function cancelProviderAttempts(
   deps: RuntimeHostOAuthIpcDeps,
   activeAttempts: Map<string, ActiveOAuthAttempt>,
   provider: OAuthLoginProvider,
+  connectionId: string | undefined,
 ): Promise<void> {
   const attemptIds = [...activeAttempts]
-    .filter(([, attempt]) => attempt.provider === provider)
+    .filter(
+      ([, attempt]) =>
+        attempt.provider === provider &&
+        (connectionId === undefined || attempt.connection.connectionId === connectionId),
+    )
     .map(([attemptId]) => attemptId);
   await Promise.all(
     attemptIds.map(async (attemptId) => {
@@ -294,6 +365,61 @@ function accountState(
   runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated',
 ) {
   return { provider, runtimeState };
+}
+
+function oauthAccountCandidates(
+  catalog: Awaited<ReturnType<OAuthClient['loadConnectionCatalog']>>,
+  provider: OAuthLoginProvider,
+  connectionId: string | undefined,
+): ConnectionCatalogEntry[] {
+  if (connectionId !== undefined) {
+    const connection = findRuntimeHostAccountConnectionById(catalog, connectionId);
+    return connection?.providerType === provider ? [connection] : [];
+  }
+  return catalog.connections.filter((connection) => connection.providerType === provider);
+}
+
+type OAuthConnectionSelection =
+  | { readonly kind: 'aggregate' }
+  | { readonly kind: 'exact'; readonly connectionId: string }
+  | { readonly kind: 'invalid' };
+
+function decodeOAuthConnectionSelection(value: unknown): OAuthConnectionSelection {
+  if (value === undefined) return { kind: 'aggregate' };
+  if (typeof value !== 'string') return { kind: 'invalid' };
+  try {
+    return { kind: 'exact', connectionId: decodeRuntimePolicyEntityId(value) };
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
+
+function sameOAuthConnectionIdentity(
+  left: OAuthConnectionIdentity,
+  right: OAuthConnectionIdentity,
+): boolean {
+  return (
+    left.connectionId === right.connectionId &&
+    left.slug === right.slug &&
+    left.providerType === right.providerType
+  );
+}
+
+function invalidConnectionIdentity(reason: 'refresh_failed' | 'unknown' = 'unknown') {
+  return actionFailure('Invalid OAuth Connection identity', reason);
+}
+
+async function configuredOAuthAccountConnections(
+  client: OAuthClient,
+  candidates: readonly ConnectionCatalogEntry[],
+): Promise<ConnectionCatalogEntry[]> {
+  const configured = await Promise.all(
+    candidates.map(async (connection) => ({
+      connection,
+      status: await client.queryCredential(runtimeHostAccountCredential(connection)),
+    })),
+  );
+  return configured.filter(({ status }) => status?.configured).map(({ connection }) => connection);
 }
 
 function providerDisabled() {

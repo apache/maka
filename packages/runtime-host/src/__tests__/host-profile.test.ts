@@ -151,6 +151,21 @@ describe('Runtime Host profiles', () => {
         },
       ],
     });
+    assert.throws(
+      () =>
+        catalog.create(
+          {
+            id: 'shared-obsolete',
+            name: 'Shared',
+            kind: 'remote',
+            transport: { kind: 'tls', url: 'wss://runtime.example.com' },
+            rootId: ROOT_A,
+            access: 'session_guest',
+          },
+          'guest-token',
+        ),
+      /shared Session mount/u,
+    );
   });
 
   test('keeps connect-only catalogs on disk as schema 1 until activation is persisted', async () => {

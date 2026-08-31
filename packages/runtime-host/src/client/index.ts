@@ -62,6 +62,7 @@ export {
   type RuntimeHostProfile,
   type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostConnectionPhase,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {
@@ -131,7 +132,7 @@ export {
   type RuntimeHostElectionDiagnostic,
   type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
-export { waitForRuntimeHostReady } from './wait-for-ready.js';
+export { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,

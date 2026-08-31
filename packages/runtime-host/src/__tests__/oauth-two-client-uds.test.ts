@@ -43,7 +43,7 @@ import {
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 
-test('OAuth enrollment presents only on the initiating Client over the real endpoint', {
+test('two OAuth creates bind distinct entities and present only on their initiating Clients', {
   timeout: 30_000,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-oauth-two-client-'));
@@ -146,28 +146,43 @@ test('OAuth enrollment presents only on the initiating Client over the real endp
       }),
     );
 
-    const started = await second.request('oauth.login.start', {
-      attemptId: 'uds-attempt',
-      connectionId: connection.connectionId,
-    });
-    assert.equal(started.phase, 'awaiting_authorization');
-    const terminal = await waitForTerminal(second, 'uds-attempt');
-    assert.equal(terminal.phase, 'authenticated');
-    assert.deepEqual(presentations, ['tui']);
-    const resolved = await stores.operations.resolveExecutionConnection({
-      kind: 'catalog_slug',
-      connectionSlug: connection.slug,
-    });
-    assert.equal(resolved.kind, 'ready');
-    if (resolved.kind === 'ready') {
-      assert.deepEqual(
-        parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
-        {
-          access_token: 'host-access-token',
-          refresh_token: 'host-refresh-token',
-          expires_at: 1_900_000_000_000,
-        },
-      );
+    const firstStarted = await first.request(
+      'oauth.login.start',
+      oauthCreateStart('uds-create-first', 'openai-codex'),
+    );
+    assert.equal(firstStarted.phase, 'awaiting_authorization');
+    const firstTerminal = await waitForTerminal(first, 'uds-create-first');
+    assert.equal(firstTerminal.phase, 'authenticated');
+    const secondStarted = await second.request(
+      'oauth.login.start',
+      oauthCreateStart('uds-create-second', 'openai-codex'),
+    );
+    assert.equal(secondStarted.phase, 'awaiting_authorization');
+    const secondTerminal = await waitForTerminal(second, 'uds-create-second');
+    assert.equal(secondTerminal.phase, 'authenticated');
+    assert.deepEqual(presentations, ['desktop', 'tui']);
+    assert.notEqual(firstTerminal.connection.connectionId, secondTerminal.connection.connectionId);
+    assert.equal(firstTerminal.connection.slug, 'codex-subscription');
+    assert.equal(secondTerminal.connection.slug, 'codex-subscription-2');
+    const snapshot = await stores.connectionCatalog.getSnapshot();
+    assert.equal(snapshot.connections.length, 3);
+    for (const terminal of [firstTerminal, secondTerminal]) {
+      const resolved = await stores.operations.resolveExecutionConnection({
+        kind: 'bound',
+        connectionId: terminal.connection.connectionId,
+        connectionSlug: terminal.connection.slug,
+      });
+      assert.equal(resolved.kind, 'ready');
+      if (resolved.kind === 'ready') {
+        assert.deepEqual(
+          parseOAuthSubscriptionTokens(resolved.secretMaterial.connection?.secret ?? ''),
+          {
+            access_token: 'host-access-token',
+            refresh_token: 'host-refresh-token',
+            expires_at: 1_900_000_000_000,
+          },
+        );
+      }
     }
   } finally {
     await first?.close().catch(() => undefined);
@@ -265,10 +280,10 @@ async function assertProviderDisabledOverUds(
     );
 
     await assert.rejects(
-      client.request('oauth.login.start', {
-        attemptId: `uds-disabled-${provider}`,
-        connectionId: connection.connectionId,
-      }),
+      client.request(
+        'oauth.login.start',
+        oauthStart(`uds-disabled-${provider}`, connection.connectionId),
+      ),
       (error: unknown) =>
         error instanceof RuntimeHostOperationError && error.code === 'operation_unavailable',
     );
@@ -301,4 +316,12 @@ async function waitForTerminal(client: RuntimeHostConnection, attemptId: string)
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('OAuth login did not settle');
+}
+
+function oauthStart(attemptId: string, connectionId: string) {
+  return { attemptId, target: { kind: 'existing' as const, connectionId } };
+}
+
+function oauthCreateStart(attemptId: string, providerType: 'openai-codex' | 'xai-oauth') {
+  return { attemptId, target: { kind: 'create' as const, providerType } };
 }

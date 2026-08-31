@@ -439,6 +439,99 @@ test("settings usage stats truncate the activity log at the cap instead of error
   assert.equal(stats.logs.filter((row) => row.kind === "model").length, 50_000);
 });
 
+test("settings usage stats name each row from the Host-resolved session title", async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostUsageIpc({
+    ipcMain: {
+      handle: (channel, listener) => handlers.set(channel, listener),
+      handleReconnectableRead: (channel, listener) => handlers.set(channel, listener),
+    },
+    client: {
+      queryUsage: async (input: UsageQueryInput) => {
+        if (input.kind === "summary") {
+          return {
+            kind: "summary",
+            summary: {
+              range: { from: 1, to: 2 },
+              totalRequests: 2,
+              totalCostUsd: 0,
+              totalTokens: {
+                input: 0,
+                output: 0,
+                cacheMiss: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                reasoning: 0,
+                total: 0,
+              },
+              cacheHitRequests: 0,
+              cacheCreateRequests: 0,
+              errorRequests: 0,
+            },
+            provenance: provenance(),
+          } satisfies UsageQueryResult;
+        }
+        if (input.kind !== "logs") throw new Error("unexpected usage query");
+        // The Host carries `sessionTitle` on the projection (or omits it for
+        // untitled/unreadable sessions). The desktop layer just surfaces it.
+        return input.source === "llm"
+          ? ({
+              kind: "logs",
+              source: "llm",
+              rows: [
+                {
+                  ...llmRow(0),
+                  sessionId: "session-named",
+                  sessionTitle: "重构使用统计页请求日志的任务列",
+                },
+                { ...llmRow(1), sessionId: "session-untitled" },
+              ],
+              offset: 0,
+              total: 2,
+              nextOffset: null,
+              provenance: provenance(),
+            } satisfies UsageQueryResult)
+          : ({
+              kind: "logs",
+              source: "tool",
+              rows: [
+                {
+                  ...toolRow(0),
+                  sessionId: "session-named",
+                  sessionTitle: "重构使用统计页请求日志的任务列",
+                },
+              ],
+              offset: 0,
+              total: 1,
+              nextOffset: null,
+            } satisfies UsageQueryResult);
+      },
+      loadPricingSnapshot: async () => ({
+        hostEpoch: "host-epoch",
+        connectionId: "connection-id",
+        revision: 0,
+        entries: [],
+      }),
+    } as unknown as DesktopRuntimeHostClient,
+    sendToRenderer: () => undefined,
+  });
+
+  const handler = handlers.get("settings:usageStats");
+  assert.ok(handler);
+  const stats = await handler({} as never, "all") as UsageStats;
+  // A model row and a tool row carrying the title both surface it as sessionName.
+  assert.equal(
+    stats.logs.find((row) => row.id === "llm-0")?.sessionName,
+    "重构使用统计页请求日志的任务列",
+  );
+  assert.equal(
+    stats.logs.find((row) => row.id === "tool-0")?.sessionName,
+    "重构使用统计页请求日志的任务列",
+  );
+  // A row the Host left untitled stays nameless so the UI falls back.
+  assert.equal(stats.logs.find((row) => row.id === "llm-1")?.sessionName, undefined);
+});
+
 function llmRow(index: number) {
   return {
     source: "llm" as const,

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { CDPSession, Page } from '@playwright/test';
+import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
+import type { CDPSession, Locator, Page } from '@playwright/test';
 import { expect, test, COMPOSER_INPUT } from './fixtures';
 import { auditAxTree } from '../../../scripts/ax-tree-audit.mjs';
 import { groupedNav } from '../src/renderer/settings/settings-nav';
@@ -38,6 +39,29 @@ async function openSettings(page: Page): Promise<void> {
   if (await sidebarToggle.isVisible()) await sidebarToggle.click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByRole('main', { name: '设置内容' })).toBeVisible();
+}
+
+async function tabTo(page: Page, target: Locator, label: string, limit = 30): Promise<void> {
+  for (let index = 0; index < limit; index += 1) {
+    if (await target.evaluate((element) => element === document.activeElement)) return;
+    await page.keyboard.press('Tab');
+  }
+  expect(
+    await target.evaluate((element) => element === document.activeElement),
+    `${label} is not reachable within ${limit} Tab presses`,
+  ).toBe(true);
+}
+
+async function enterMainFromSkipLink(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.body.tabIndex = -1;
+    document.body.focus();
+  });
+  const skipLink = page.getByRole('link', { name: '跳到主要内容' });
+  await tabTo(page, skipLink, 'skip link', 10);
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
+  await page.evaluate(() => document.body.removeAttribute('tabindex'));
 }
 
 test('every settings page exposes named actionable controls', async ({ window: page }) => {
@@ -118,6 +142,104 @@ test('module pages and global overlays expose named actionable controls', async 
   await page.keyboard.press('Escape');
 });
 
+test('data-backed conversation supports keyboard access to tools, models, tasks, and Graph', async ({
+  accessibilityNarrativeWindow: page,
+}) => {
+  const cdp = await page.context().newCDPSession(page);
+  await expect(page.getByRole('region', { name: /对话：/ })).toBeVisible();
+  await expect(page.getByRole('region', { name: '任务待办' })).toBeVisible();
+  await expect(page.getByText('补齐桌面端无障碍覆盖', { exact: true })).toBeVisible();
+  await assertAxHealth(cdp, 'conversation/data-backed');
+
+  await expect(page.getByRole('main')).toHaveCount(1);
+  await enterMainFromSkipLink(page);
+
+  const toolCall = page.getByRole('button', { name: /^检查测试状态/ });
+  await tabTo(page, toolCall, 'tool result');
+  await page.keyboard.press('Enter');
+  await expect(toolCall).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('[data-slot="tool-output"]')).toContainText('core 41 passing');
+  await assertAxHealth(cdp, 'conversation/tool-result-expanded');
+  await page.keyboard.press('Enter');
+  await expect(toolCall).toHaveAttribute('aria-expanded', 'false');
+
+  const modelSwitcher = page.getByRole('button', { name: '切换当前任务模型' });
+  await tabTo(page, modelSwitcher, 'model picker');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('menuitem', { name: /glm-5\.1/ })).toBeVisible();
+  await assertAxHealth(cdp, 'conversation/model-picker');
+  const availableModel = page.getByRole('menuitem', { name: 'glm-4.5', exact: true });
+  await expect(availableModel).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(modelSwitcher).toContainText('glm-4.5');
+
+  const composer = page.locator(COMPOSER_INPUT);
+  await tabTo(page, composer, 'composer', 60);
+  await page.keyboard.insertText('/graph on');
+  const send = page.getByRole('button', { name: '发送' });
+  await tabTo(page, send, 'Send button', 20);
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('Graph Mode 已开启', { exact: true })).toBeVisible();
+  await assertAxHealth(cdp, 'overlay/graph-mode-toast');
+
+  const graphPanel = page.getByRole('region', { name: 'Agent Graph' });
+  await expect(graphPanel).toBeVisible();
+  await expect(graphPanel).toContainText('等待主 Agent 创建 operator…');
+  const collapseGraph = graphPanel.getByRole('button', { name: '收起 Agent Graph' });
+  await tabTo(page, collapseGraph, 'Graph collapse', 60);
+  await page.keyboard.press('Enter');
+  await expect(
+    graphPanel.getByRole('button', { name: '展开 Agent Graph' }),
+  ).toHaveAttribute('aria-expanded', 'false');
+  await assertAxHealth(cdp, 'conversation/agent-graph-empty');
+
+  const recentTasks = page.getByRole('button', { name: /最近结束/ });
+  await tabTo(page, recentTasks, 'recent tasks', 80);
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('确认工具结果可以展开阅读', { exact: true })).toBeVisible();
+});
+
+test('toast and error states expose healthy live regions', async ({ window: page }) => {
+  const cdp = await page.context().newCDPSession(page);
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('/graph history');
+  await composer.press('Enter');
+  await expect(page.getByText('Graph 历史', { exact: true })).toBeVisible();
+  await assertAxHealth(cdp, 'overlay/graph-history-toast');
+
+  await page.evaluate(async () => {
+    await window.maka.connections.setDefaultModel(null);
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+  const failure = page.getByRole('alert');
+  await expect(failure).toContainText('WorkHub 暂时无法启动');
+  await expect(failure).toContainText('请检查当前 Runtime Host 的默认模型配置');
+  await assertAxHealth(cdp, 'workhub/startup-error');
+});
+
+test('a streaming answer exposes a healthy live conversation state', async ({ window: page }) => {
+  const cdp = await page.context().newCDPSession(page);
+  await enterMainFromSkipLink(page);
+  const composer = page.locator(COMPOSER_INPUT);
+  await tabTo(page, composer, 'streaming composer', 60);
+  await page.keyboard.insertText(FAKE_HOLD_OPEN_PROMPT);
+  const send = page.getByRole('button', { name: '发送' });
+  await tabTo(page, send, 'streaming Send button', 20);
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await expect(page.getByRole('button', { name: '停止' })).toBeEnabled();
+  await assertAxHealth(cdp, 'conversation/streaming');
+
+  const stop = page.getByRole('button', { name: '停止' });
+  await tabTo(page, stop, 'streaming Stop button', 20);
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await assertAxHealth(cdp, 'conversation/stopped');
+});
+
 test('composer and workbar entry points expose named actionable controls', async ({
   window: page,
 }) => {
@@ -126,11 +248,15 @@ test('composer and workbar entry points expose named actionable controls', async
   await expect(page.getByRole('region', { name: '新任务对话' })).toBeVisible();
   await assertAxHealth(cdp, 'conversation/new-task');
 
+  await enterMainFromSkipLink(page);
   const composer = page.locator(COMPOSER_INPUT);
   const prompt = 'create a session for accessibility coverage';
-  await composer.fill(prompt);
-  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled();
-  await composer.press('Enter');
+  await tabTo(page, composer, 'new-task composer', 60);
+  await page.keyboard.insertText(prompt);
+  const send = page.getByRole('button', { name: '发送' });
+  await expect(send).toBeEnabled();
+  await tabTo(page, send, 'new-task Send button', 20);
+  await page.keyboard.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible({
     timeout: 30_000,
   });
@@ -159,6 +285,13 @@ test('composer and workbar entry points expose named actionable controls', async
     const activeTab = page.getByRole('tab', { name: new RegExp(panel) });
     await expect(activeTab).toBeVisible();
     await expect(activeTab).toHaveAttribute('aria-selected', 'true');
+    if (panel === '终端') {
+      await expect(page.getByRole('region', { name: '任务终端' })).toBeVisible();
+    } else if (panel === '浏览器') {
+      await expect(page.getByRole('region', { name: '嵌入式浏览器' })).toBeVisible();
+    } else if (panel === '待办') {
+      await expect(page.getByRole('region', { name: '任务待办' })).toBeVisible();
+    }
     await assertAxHealth(cdp, `workbar/${panel}`);
     if (panel !== workbarPanels.at(-1)) {
       await page.getByRole('button', { name: '打开工作栏标签' }).first().click();

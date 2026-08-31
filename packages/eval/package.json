@@ -7,9 +7,7 @@
   "releaseFiles": [
     "dist",
     "harbor/deepseek-codex-models.json",
-    "harbor/deepseek-harness-profile/cordis.patch.yml",
-    "harbor/deepseek-harness-profile/cordis.yml",
-    "harbor/deepseek-harness-profile/package.json",
+    "harbor/deepseek-harness-profile",
     "harbor/docker-compose-egress-proxy.yaml",
     "harbor/egress-proxy/Dockerfile",
     "harbor/egress-proxy/entrypoint.sh",

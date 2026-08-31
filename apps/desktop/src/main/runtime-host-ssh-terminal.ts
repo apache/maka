@@ -191,6 +191,7 @@ export interface DesktopRuntimeHostSshPeerMeshManagementInput {
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly meshId?: string | null;
   readonly peerId?: string;
+  readonly displayName?: string | null;
   readonly invitation?: string;
   readonly signal?: AbortSignal;
 }
@@ -1179,6 +1180,10 @@ function runtimeHostSetupRemoteCommand(
     'desktop-client',
     '--lifecycle',
     input.lifecycle === 'on_demand' ? 'on-demand' : 'supervised',
+    // Development archives identify every source revision as a distinct exact
+    // package. Re-running Add computer is the explicit replacement gesture in
+    // that environment; released packages keep using the normal update UI.
+    ...(setupPackage.kind === 'development_archive' ? ['--update-existing'] : []),
     '--defer-pairing-commit',
     ...(input.projectDirectoryRoots === undefined
       ? []
@@ -1371,6 +1376,11 @@ function runtimeHostPeerMeshManagementRemoteCommand(
         ? ['--off']
         : []),
     ...(input.peerId ? ['--peer', input.peerId] : []),
+    ...(input.displayName === null
+      ? ['--clear-name']
+      : input.displayName
+        ? ['--name', input.displayName]
+        : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;

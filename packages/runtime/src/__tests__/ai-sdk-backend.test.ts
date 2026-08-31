@@ -30,10 +30,7 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import {
-  createManagedExecutionBoundary,
-  type ExecutionBoundary,
-} from '@maka/core/sandbox-boundary';
+import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
@@ -78,10 +75,6 @@ import {
 import { buildDefaultContextBudgetPolicy } from '../context-budget-policy.js';
 import { buildRuntimeEventModelReplayPlan, buildSteeringEnvelope } from '../model-history.js';
 import { HistoryCompactSummarizerError } from '../history-compact-summarizer.js';
-import type {
-  SandboxDiagnosticsProvider,
-  SandboxDiagnosticsSnapshot,
-} from '../sandbox/diagnostics.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { buildRequestSandboxBoundaryTool } from '../sandbox-boundary-tool.js';
 import {
@@ -1568,204 +1561,6 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
 });
 
 describe('AiSdkBackend model history', () => {
-  test('exposes one active sandbox snapshot to the model and durable run trace', async () => {
-    const model = completionModel();
-    const traces: RunTraceEvent[] = [];
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readExecutionBoundary: readManagedSandboxBoundary,
-      sandboxDiagnostics: fixedSandboxDiagnostics(),
-      recordRunTrace: (event) => traces.push(event),
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(backend.send({ turnId: 'turn-current', text: 'current user', context: [] }));
-
-    assert.match(JSON.stringify(compactPrompt(model)), /Maka runtime sandbox context/);
-    assert.match(JSON.stringify(compactPrompt(model)), /Working directory: \/tmp\/maka/);
-    const contextEvent = traces.find((event) => event.type === 'sandbox_context_resolved');
-    const traceSnapshot = contextEvent?.data?.snapshot as
-      | { profile?: { name?: string } }
-      | undefined;
-    assert.equal(traceSnapshot?.profile?.name, 'workspace-write');
-    assert.equal(JSON.stringify(contextEvent).includes('/tmp/maka'), false);
-  });
-
-  test('refreshes same-revision capability facts per Turn and omits external context', async () => {
-    const model = completionModel();
-    let boundary: ExecutionBoundary = createManagedExecutionBoundary(
-      createWorkspaceWritePermissionProfile(),
-      7,
-    );
-    let resolutions = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readExecutionBoundary: async () => boundary,
-      sandboxDiagnostics: {
-        resolve: async () => {
-          const snapshot = sandboxSnapshot();
-          resolutions += 1;
-          return {
-            ...snapshot,
-            capabilities: {
-              ...snapshot.capabilities,
-              command: {
-                ...snapshot.capabilities.command,
-                status: resolutions === 1 ? 'available' : 'unavailable',
-              },
-            },
-          };
-        },
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(backend.send({ turnId: 'turn-fresh-1', text: 'first', context: [] }));
-    await drain(backend.send({ turnId: 'turn-fresh-2', text: 'second', context: [] }));
-    boundary = { kind: 'external', revision: 8 };
-    await drain(backend.send({ turnId: 'turn-external', text: 'third', context: [] }));
-
-    assert.equal(resolutions, 2);
-    assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /Command sandbox: available/u);
-    assert.match(JSON.stringify(model.doStreamCalls[1]?.prompt), /Command sandbox: unavailable/u);
-    assert.doesNotMatch(JSON.stringify(model.doStreamCalls[2]?.prompt), /<sandbox_context>/u);
-    await backend.dispose();
-  });
-
-  test('continues without sandbox prompt context when the snapshot cannot be rendered', async () => {
-    const model = completionModel();
-    const traces: RunTraceEvent[] = [];
-    const snapshot = sandboxSnapshot();
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readExecutionBoundary: readManagedSandboxBoundary,
-      sandboxDiagnostics: fixedSandboxDiagnostics({
-        ...snapshot,
-        profile: { ...snapshot.profile, cwd: '/tmp/invalid\nworkspace' },
-      }),
-      recordRunTrace: (event) => traces.push(event),
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const events: SessionEvent[] = [];
-
-    await collectEvents(
-      backend.send({ turnId: 'turn-invalid-sandbox-context', text: 'current user', context: [] }),
-      events,
-    );
-
-    assert.equal(model.doStreamCalls.length, 1);
-    assert.equal(
-      events.some((event) => event.type === 'error'),
-      false,
-    );
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-    assert.doesNotMatch(JSON.stringify(compactPrompt(model)), /<sandbox_context>/u);
-    assert.equal(
-      traces.some((event) => event.type === 'sandbox_context_resolved'),
-      false,
-    );
-    const failure = traces.find((event) => event.type === 'sandbox_context_failed');
-    assert.equal(failure?.phase, 'sandbox');
-    assert.equal(failure?.data?.stage, 'render');
-    assert.equal(
-      traces.some(
-        (event) =>
-          event.type === 'model_stream_failed' &&
-          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
-      ),
-      false,
-    );
-    await backend.dispose();
-  });
-
-  test('Stop interrupts a stalled per-turn sandbox diagnostics resolver', async () => {
-    const model = completionModel();
-    const traces: RunTraceEvent[] = [];
-    let markResolverEntered!: () => void;
-    const resolverEntered = new Promise<void>((resolve) => {
-      markResolverEntered = resolve;
-    });
-    let releaseResolver!: () => void;
-    const stalledResolver = new Promise<SandboxDiagnosticsSnapshot>((resolve) => {
-      releaseResolver = () => resolve(sandboxSnapshot());
-    });
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      tools: [],
-      readExecutionBoundary: readManagedSandboxBoundary,
-      sandboxDiagnostics: {
-        resolve: async () => {
-          markResolverEntered();
-          return await stalledResolver;
-        },
-      },
-      recordRunTrace: (event) => traces.push(event),
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const events: SessionEvent[] = [];
-    const consuming = collectEvents(
-      backend.send({ turnId: 'turn-stalled-sandbox', text: 'current user', context: [] }),
-      events,
-    );
-
-    await resolverEntered;
-    await backend.stop('user_stop');
-    await consuming;
-    releaseResolver();
-
-    assert.equal(model.doStreamCalls.length, 0);
-    assert.equal(
-      events.some((event) => event.type === 'error'),
-      false,
-    );
-    assert.equal(events.find((event) => event.type === 'abort')?.reason, 'user_stop');
-    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'user_stop');
-    assert.equal(
-      traces.some(
-        (event) =>
-          event.type === 'model_stream_failed' &&
-          event.data?.errorClass === 'SandboxDiagnosticsResolutionError',
-      ),
-      false,
-    );
-    assert.equal(
-      traces.some((event) => event.type === 'sandbox_context_failed'),
-      false,
-    );
-    await backend.dispose();
-  });
-
   test('records structured sandbox failure metadata on tool failure traces', async () => {
     const traces: RunTraceEvent[] = [];
     const messages: ToolResultMessage[] = [];
@@ -2102,8 +1897,6 @@ describe('AiSdkBackend model history', () => {
       modelId: 'mock-model-id',
       modelFactory: () => model,
       tools: [],
-      readExecutionBoundary: readManagedSandboxBoundary,
-      sandboxDiagnostics: fixedSandboxDiagnostics(),
       newId: idGenerator(),
       now: monotonicClock(),
     });
@@ -2132,9 +1925,7 @@ describe('AiSdkBackend model history', () => {
     );
 
     const prompt = compactPrompt(model) as Array<{ role: string; content: unknown }>;
-    assert.match(JSON.stringify(prompt[0]), /<sandbox_context>/u);
-    assert.match(JSON.stringify(prompt[0]), /Profile: workspace-write/u);
-    assert.deepEqual(prompt.slice(1), [
+    assert.deepEqual(prompt, [
       { role: 'user', content: [{ type: 'text', text: 'original user' }] },
     ]);
     assert.equal(JSON.stringify(prompt).match(/original user/gu)?.length, 1);
@@ -9136,10 +8927,52 @@ describe('AiSdkBackend request-shape diagnostics', () => {
     assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 2);
   });
 
-  test('volatile turn-tail facts do not churn the durable prefix hash', async () => {
-    const events: SessionEvent[] = [];
-    const models: MockLanguageModelV4[] = [];
-    let date = '2026-05-29';
+  test('preserves the tool-call provider prefix across user turns', async () => {
+    let streamCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        streamCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          streamCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: `text-${streamCalls}` },
+                { type: 'text-delta', id: `text-${streamCalls}`, delta: 'done' },
+                { type: 'text-end', id: `text-${streamCalls}` },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const firstTurn = durableTurnHarness('turn-1', 'inspect notes');
+    const secondTurn = durableTurnHarness('turn-2', 'continue');
+    const legacyVolatilePromptInput = {
+      turnTailPrompt: ({ turnId }: { turnId: string }) => `VOLATILE_CONTEXT_${turnId}`,
+    } as unknown as Partial<AiSdkBackendInput>;
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
@@ -9147,40 +8980,37 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       connection: connection(),
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
-      modelFactory: () => {
-        const model = completionModel();
-        models.push(model);
-        return model;
-      },
-      tools: [],
+      modelFactory: () => model,
+      tools: [testTool('Read', z.object({ path: z.string() }))],
+      loadTurnRuntimeEvents: async (turnId) =>
+        turnId === 'turn-1'
+          ? firstTurn.loadTurnRuntimeEvents(turnId)
+          : secondTurn.loadTurnRuntimeEvents(turnId),
       newId: idGenerator(),
       now: monotonicClock(),
-      systemPrompt: 'durable system prompt',
-      turnTailPrompt: () => `Maka session environment:\n<env>\n  Today's date: ${date}\n</env>`,
+      ...legacyVolatilePromptInput,
     });
 
-    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
-      events.push(event);
-    }
-    date = '2026-05-30';
-    for await (const event of backend.send({ turnId: 'turn-2', text: 'hi', context: [] })) {
-      events.push(event);
-    }
-
-    const usageEvents = events.filter(
-      (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
-        event.type === 'token_usage',
+    await drainDurably(backend.send(firstTurn.input()), firstTurn);
+    await drainDurably(
+      backend.send(secondTurn.input({ runtimeContext: firstTurn.ledger })),
+      secondTurn,
     );
-    assert.equal(usageEvents[0]?.prefixChangeReason, 'first_turn');
-    assert.equal(usageEvents[1]?.prefixChangeReason, 'stable');
-    assert.equal(usageEvents[1]?.prefixHash, usageEvents[0]?.prefixHash);
-    assert.equal(usageEvents[0]?.requestShapeChangeReason, 'first_turn');
-    assert.equal(usageEvents[1]?.requestShapeChangeReason, 'stable');
-    assert.equal(usageEvents[1]?.requestShapeHash, usageEvents[0]?.requestShapeHash);
-    assert.match(JSON.stringify(compactPrompt(models[0]!)), /2026-05-29/);
-    assert.match(JSON.stringify(compactPrompt(models[1]!)), /2026-05-30/);
-    assert.equal(JSON.stringify(modelCallSettings(models[0]!)).includes('2026-05-29'), false);
-    assert.equal(JSON.stringify(modelCallSettings(models[1]!)).includes('2026-05-30'), false);
+
+    assert.equal(streamCalls, 3);
+    const firstRequest = model.doStreamCalls[0]?.prompt;
+    const toolResultRequest = model.doStreamCalls[1]?.prompt;
+    const nextTurnRequest = model.doStreamCalls[2]?.prompt;
+    assert.ok(firstRequest);
+    assert.ok(toolResultRequest);
+    assert.ok(nextTurnRequest);
+    assert.equal(toolResultRequest.at(-1)?.role, 'tool');
+    const toolCallPrefix = toolResultRequest.slice(0, -1);
+    assert.equal(toolCallPrefix.at(-1)?.role, 'assistant');
+    assert.ok(toolCallPrefix.length > firstRequest.length);
+    assert.ok(nextTurnRequest.length > toolCallPrefix.length);
+    assert.deepEqual(nextTurnRequest.slice(0, firstRequest.length), firstRequest);
+    assert.deepEqual(nextTurnRequest.slice(0, toolCallPrefix.length), toolCallPrefix);
   });
 });
 
@@ -9246,7 +9076,6 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       newId: idGenerator(),
       now: monotonicClock(),
       systemPrompt: 'durable system',
-      turnTailPrompt: 'volatile tail',
       contextBudget: {
         name: 'test-budget',
         maxHistoryEstimatedTokens: 1_000,
@@ -9298,7 +9127,7 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'old assistant text' }] },
       { role: 'user', content: [{ type: 'text', text: 'new user text' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'new assistant text' }] },
-      { role: 'user', content: [{ type: 'text', text: 'current user\n\nvolatile tail' }] },
+      { role: 'user', content: [{ type: 'text', text: 'current user' }] },
     ]);
     const usage = events.find(
       (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
@@ -9316,8 +9145,12 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       true,
     );
     assert.equal(
-      usage.promptSegments?.some((segment) => segment.kind === 'turn_tail'),
+      usage.promptSegments?.some((segment) => segment.kind === 'current_user'),
       true,
+    );
+    assert.equal(
+      usage.promptSegments?.some((segment) => segment.kind === 'turn_tail'),
+      false,
     );
   });
 });
@@ -15820,13 +15653,6 @@ function compactPrompt(model: MockLanguageModelV4): unknown {
   }));
 }
 
-function modelCallSettings(model: MockLanguageModelV4): unknown {
-  const call = model.doStreamCalls[0] as unknown as Record<string, unknown> | undefined;
-  if (!call) return {};
-  const { prompt: _prompt, ...rest } = call;
-  return rest;
-}
-
 function modelToolNames(model: MockLanguageModelV4): string[] {
   return sortedModelToolNames(Object.keys(modelTools(model)));
 }
@@ -16048,43 +15874,6 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
     permissionMode,
     schemaVersion: 1,
   };
-}
-
-function sandboxSnapshot(): SandboxDiagnosticsSnapshot {
-  return {
-    schemaVersion: 1,
-    platform: 'darwin',
-    profile: {
-      name: 'workspace-write',
-      type: 'managed',
-      fileSystem: 'workspace-write',
-      network: 'restricted',
-      cwd: '/tmp/maka',
-      workspaceRoots: ['/tmp/maka'],
-      protectedMetadata: ['.git', '.agents', '.codex'],
-    },
-    capabilities: {
-      command: {
-        status: 'available',
-        backend: 'macos-seatbelt',
-        selectionReason: 'platform_sandbox_selected',
-      },
-      filesystem: {
-        status: 'available',
-        backend: 'macos-seatbelt',
-        selectionReason: 'platform_sandbox_selected',
-      },
-    },
-  };
-}
-
-const readManagedSandboxBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
-  createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 7);
-
-function fixedSandboxDiagnostics(
-  snapshot: SandboxDiagnosticsSnapshot = sandboxSnapshot(),
-): SandboxDiagnosticsProvider {
-  return { resolve: async () => snapshot };
 }
 
 function connection(): LlmConnection {

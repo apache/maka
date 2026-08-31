@@ -367,9 +367,21 @@ export function createAppShellSessionEventHandlers(options: {
         break;
       case 'steering_message':
         // The live Turn projection now renders this same messageId in place.
-        // Retire only the renderer-owned tail row; a later nack queue_update
-        // will project it again if the Host returns the message to the queue.
+        // Retire the renderer-owned tail row and its pending-queue card; a
+        // later nack queue_update will project both again if the Host returns
+        // the message to the queue.
         removeTransientMessage?.(sessionId, event.messageId);
+        setMessageQueueBySession?.((current) => {
+          const queue = current[sessionId];
+          if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
+          const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
+          if (entries.length > 0) {
+            return { ...current, [sessionId]: { ...queue, entries } };
+          }
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
         break;
       case 'text_complete':
         void refreshMessages(sessionId, { requiredAssistantMessageId: event.messageId }).catch(() => false);
