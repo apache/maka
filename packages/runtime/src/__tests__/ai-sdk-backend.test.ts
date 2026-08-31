@@ -3780,9 +3780,14 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('replays the durable projection after reopening its RuntimeEvent store', async () => {
+  test('replays a persisted image projection after reopening its RuntimeEvent store', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-durable-projection-restart-'));
     const databasePath = join(root, 'runtime.sqlite');
+    const pngBytes = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const artifacts = new Map<string, Uint8Array>();
     const source = createSqliteRuntimeStore(databasePath);
     try {
       const runtime = createTestToolRuntime({
@@ -3798,6 +3803,20 @@ describe('AiSdkBackend model history', () => {
         runId: 'run-prev',
         invocationId: 'invocation-prev',
         runtimeCommitSink: source,
+        prepareDurableProjectionArtifact: ({ bytes, mediaType }) => {
+          assert.equal(mediaType, 'image/png');
+          const accepted = bytes.slice();
+          return {
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: 'artifact-1',
+            },
+            persist: async () => {
+              artifacts.set('artifact-1', accepted);
+            },
+          };
+        },
       });
       await runtime.settleToolCall({
         tool: {
@@ -3806,7 +3825,16 @@ describe('AiSdkBackend model history', () => {
           parameters: z.object({}),
           recoveryMode: 'replay_safe',
           impl: async () => ({ secretExecutionFact: 'raw-secret-must-not-replay' }),
-          toModelOutput: () => ({ type: 'text', value: 'durable-safe-fact' }),
+          toModelOutput: () => ({
+            type: 'content',
+            value: [
+              {
+                type: 'file',
+                data: { type: 'data', data: pngBytes.toString('base64') },
+                mediaType: 'image/png',
+              },
+            ],
+          }),
         },
         turnId: 'turn-prev',
         toolCallId: 'restart-tool-call',
@@ -3834,6 +3862,14 @@ describe('AiSdkBackend model history', () => {
         modelId: 'mock-model-id',
         modelFactory: () => model,
         tools: [],
+        supportsVision: true,
+        maxProviderImageRequestBytes: pngBytes.byteLength,
+        readAttachmentBytes: async (ref) => {
+          const bytes = ref.kind === 'session_file' ? artifacts.get(ref.relativePath) : undefined;
+          return bytes
+            ? { ok: true, bytes: bytes.slice() }
+            : { ok: false, reason: 'not_found' as const };
+        },
         newId: idGenerator(),
         now: monotonicClock(),
       });
@@ -3847,8 +3883,17 @@ describe('AiSdkBackend model history', () => {
         }),
       );
 
-      const wire = JSON.stringify(compactPrompt(model));
-      assert.match(wire, /durable-safe-fact/u);
+      const prompt = compactPrompt(model) as Array<{ role: string; content: any[] }>;
+      const result = prompt.find((message) => message.role === 'tool')?.content[0]?.output;
+      assert.ok(
+        result.value.some(
+          (part: any) =>
+            part.type === 'file' &&
+            part.mediaType === 'image/png' &&
+            part.data.data === pngBytes.toString('base64'),
+        ),
+      );
+      const wire = JSON.stringify(prompt);
       assert.doesNotMatch(wire, /raw-secret-must-not-replay/u);
     } finally {
       reopened.close();
