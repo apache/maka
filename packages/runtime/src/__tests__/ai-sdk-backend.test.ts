@@ -6140,6 +6140,96 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('splits phase-less text around a provider-executed tool', async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: 'stream-start', warnings: [] },
+            { type: 'text-start', id: 'text-commentary' },
+            {
+              type: 'text-delta',
+              id: 'text-commentary',
+              delta: 'I will search the provider index.',
+            },
+            { type: 'text-end', id: 'text-commentary' },
+            {
+              type: 'tool-call',
+              toolCallId: 'search-1',
+              toolName: 'WebSearch',
+              input: JSON.stringify({ query: 'latest Maka' }),
+              providerExecuted: true,
+            },
+            {
+              type: 'tool-result',
+              toolCallId: 'search-1',
+              toolName: 'WebSearch',
+              result: {
+                action: { type: 'search', queries: ['latest Maka'] },
+                sources: [{ type: 'url', url: 'https://maka.example/' }],
+              },
+              providerExecuted: true,
+            },
+            { type: 'text-start', id: 'text-final' },
+            { type: 'text-delta', id: 'text-final', delta: 'Maka is current.' },
+            { type: 'text-end', id: 'text-final' },
+            {
+              type: 'finish',
+              finishReason: { unified: 'stop', raw: 'end_turn' },
+              usage: emptyUsage(),
+            },
+          ] as LanguageModelV4StreamPart[],
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
+      }),
+    });
+    const durable = durableTurnHarness('turn-1', 'search');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: {
+        ...header(),
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: 'parent-session',
+          spawnedBy: {
+            parentRunId: 'parent-run',
+            parentTurnId: 'parent-turn',
+            toolCallId: 'spawn-tool',
+          },
+          lifecycle: 'foreground',
+        },
+      },
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [buildNativeWebSearchTool({ adapter: 'anthropic-messages' })],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [
+        {
+          text: 'I will search the provider index.',
+          phase: 'commentary',
+        },
+        {
+          text: 'Maka is current.',
+          phase: 'final_answer',
+        },
+      ],
+    );
+  });
+
   test('projects a forced ProgressUpdate as commentary before tool-capable phase-less work', async () => {
     let calls = 0;
     const model = new MockLanguageModelV4({

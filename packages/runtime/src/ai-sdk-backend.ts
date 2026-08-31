@@ -508,13 +508,13 @@ function mergeTextProviderOptions(
 
 function normalizedAssistantTextPhase(input: {
   providerPhase: AssistantTextPhase | undefined;
-  hasClientToolCall: boolean;
+  hasFollowingToolActivity: boolean;
   completedStep: boolean;
 }): AssistantTextPhase | undefined {
   // Responses supplies phase directly. Chat Completions and Anthropic Messages
-  // do not, so their response topology is the portable signal: text before a
-  // client tool call is progress, and completed text-only output is terminal.
-  if (input.hasClientToolCall) return 'commentary';
+  // do not, so their response topology is the portable signal: text before
+  // tool activity is progress, and completed text-only output is terminal.
+  if (input.hasFollowingToolActivity) return 'commentary';
   return input.providerPhase ?? (input.completedStep ? 'final_answer' : undefined);
 }
 
@@ -1476,7 +1476,7 @@ export class AiSdkBackend implements AgentBackend {
     let stepTextPhase: AssistantTextPhase | undefined;
     let stepTextProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepTextPartStartOffset = 0;
-    let stepHasClientToolCall = false;
+    let stepHasFollowingToolActivity = false;
     let stepThinking = '';
     let sawStepThinking = false;
     let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
@@ -1500,7 +1500,7 @@ export class AiSdkBackend implements AgentBackend {
       const hasThinking = sawStepThinking || stepSignature !== undefined;
       if (stepText.length === 0 && !hasThinking) {
         stepTextPhase = undefined;
-        stepHasClientToolCall = false;
+        stepHasFollowingToolActivity = false;
         return;
       }
       const stepId = currentStepMessageId;
@@ -1508,7 +1508,7 @@ export class AiSdkBackend implements AgentBackend {
         stepText.length > 0
           ? normalizedAssistantTextPhase({
               providerPhase: stepTextPhase,
-              hasClientToolCall: stepHasClientToolCall,
+              hasFollowingToolActivity: stepHasFollowingToolActivity,
               completedStep,
             })
           : undefined;
@@ -1593,13 +1593,21 @@ export class AiSdkBackend implements AgentBackend {
       stepTextPhase = undefined;
       stepTextProviderOptions = undefined;
       stepTextPartStartOffset = 0;
-      stepHasClientToolCall = false;
+      stepHasFollowingToolActivity = false;
       stepThinking = '';
       sawStepThinking = false;
       stepThinkingProviderOptions = undefined;
       stepResponsesThinkingParts = [];
       stepResponsesThinkingPartsByItemId = new Map();
       stepSignature = undefined;
+    };
+    const flushBeforeProviderTool = async (): Promise<void> => {
+      const hasPendingAssistantContent =
+        stepText.length > 0 || sawStepThinking || stepSignature !== undefined;
+      if (!hasPendingAssistantContent) return;
+      stepHasFollowingToolActivity = true;
+      await flushStep();
+      currentStepMessageId = this.newId();
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
@@ -2443,9 +2451,11 @@ export class AiSdkBackend implements AgentBackend {
                 // final tool-call/result event, retrying can repeat external
                 // work that the Runtime cannot observe or reconcile.
                 attemptSawToolActivity = true;
+                await flushBeforeProviderTool();
               } else if (event.kind === 'tool-call') {
                 attemptSawToolActivity = true;
                 if (event.toolCall.providerExecuted) {
+                  await flushBeforeProviderTool();
                   providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);
                   queue.push({
@@ -2488,7 +2498,7 @@ export class AiSdkBackend implements AgentBackend {
                       } satisfies TextDeltaEvent);
                     }
                   }
-                  stepHasClientToolCall = true;
+                  stepHasFollowingToolActivity = true;
                   returnedToolCalls.push(event.toolCall);
                 }
               } else if (event.kind === 'provider-tool-result') {
