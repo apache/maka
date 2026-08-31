@@ -23,6 +23,7 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   type AttachmentByteReader,
 } from '@maka/core/attachments';
+import { createHash } from 'node:crypto';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import type {
@@ -130,7 +131,19 @@ export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'c
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
     }
+    const id = `image_${createHash('sha256')
+      .update(input.sessionId, 'utf8')
+      .update('\0', 'utf8')
+      .update(input.turnId, 'utf8')
+      .update('\0', 'utf8')
+      .update(input.name, 'utf8')
+      .update('\0', 'utf8')
+      .update(input.mimeType, 'utf8')
+      .update('\0', 'utf8')
+      .update(input.bytes)
+      .digest('hex')}`;
     const artifact = await artifactStore.create({
+      id,
       sessionId: input.sessionId,
       turnId: input.turnId,
       name: input.name,

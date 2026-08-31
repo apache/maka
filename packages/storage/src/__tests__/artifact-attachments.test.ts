@@ -220,6 +220,25 @@ describe('artifact attachment authority', () => {
       assert.deepEqual(await store.list('session-1'), []);
     });
   });
+
+  test('snapshotter reuses one content-addressed artifact for the same turn image', async () => {
+    await withStore(async (store) => {
+      const snapshot = createReadImageSnapshotter(store);
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: Uint8Array.from([1, 2, 3]),
+        mimeType: 'image/png',
+      };
+
+      const first = await snapshot(input);
+      const repeated = await snapshot(input);
+
+      assert.deepEqual(repeated, first);
+      assert.equal((await store.list('session-1')).length, 1);
+    });
+  });
 });
 
 function sessionFileRef(relativePath: string, sessionId = 'session-1'): StorageRef {
