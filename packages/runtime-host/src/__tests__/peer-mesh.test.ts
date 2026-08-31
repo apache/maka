@@ -613,6 +613,71 @@ test('cancels a redemption stalled after the control connection opens', async ()
   }
 });
 
+test('preserves an invitation when join is cancelled before redemption', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-pre-redeem-abort-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const cancelledPeer = network.create('peer-b');
+  const joiningPeer = network.create('peer-c');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const cancelled = await openPeerMeshNode({
+    dataRoot: join(root, 'cancelled'),
+    peer: cancelledPeer,
+  });
+  const joining = await openPeerMeshNode({ dataRoot: join(root, 'joining'), peer: joiningPeer });
+  const serving = authority.serve();
+  try {
+    const mesh = await authority.create();
+    const invitation = await authority.invite(mesh.roster.roster.meshId);
+    const abort = new AbortController();
+    const attempt = cancelled.join(invitation, abort.signal);
+    abort.abort();
+    await assert.rejects(
+      attempt,
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    );
+
+    await joining.join(invitation);
+    assert.deepEqual(authority.status()[0]?.roster.roster.members, ['peer-a', 'peer-c']);
+  } finally {
+    await Promise.allSettled([authority.close(), cancelled.close(), joining.close()]);
+    await Promise.allSettled([authorityPeer.close(), cancelledPeer.close(), joiningPeer.close()]);
+    await Promise.allSettled([serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejoins a Mesh after its completed leave', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-rejoin-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const serving = authority.serve();
+  try {
+    const mesh = await authority.create();
+    await member.join(await authority.invite(mesh.roster.roster.meshId));
+    await member.leave(mesh.roster.roster.meshId);
+    await member.reconcile();
+    assert.deepEqual(member.status(), []);
+
+    await member.join(await authority.invite(mesh.roster.roster.meshId));
+    assert.deepEqual(member.status()[0]?.roster.roster.members, ['peer-a', 'peer-b']);
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close()]);
+    await Promise.allSettled([serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('turns a committed join into leave when cancellation arrives during transit setup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-post-commit-abort-'));
   const network = new MemoryPeerNetwork();

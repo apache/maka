@@ -80,6 +80,7 @@ export type PeerMeshStateV1 = PeerMeshAuthorityStateV1 | PeerMeshReplicaStateV1;
 export interface PendingPeerMeshJoin {
   readonly invitation: PeerMeshInvitationV1;
   readonly desiredMembership: 'active' | 'left';
+  readonly redemptionState: 'prepared' | 'outcome_unknown';
 }
 
 export interface PeerMeshStoredStateV1 {
@@ -665,16 +666,23 @@ function decodePendingJoins(
       !entry ||
       typeof entry !== 'object' ||
       Array.isArray(entry) ||
-      Object.keys(entry).length !== 2 ||
+      Object.keys(entry).length !== 3 ||
       !Object.hasOwn(entry, 'invitation') ||
-      !Object.hasOwn(entry, 'desiredMembership')
+      !Object.hasOwn(entry, 'desiredMembership') ||
+      !Object.hasOwn(entry, 'redemptionState')
     ) {
       throw new Error('Invalid pending Peer Mesh join');
     }
     const record = entry as Record<string, unknown>;
+    const desiredMembership = decodeDesiredMembership(record.desiredMembership);
+    const redemptionState = decodeRedemptionState(record.redemptionState);
+    if (desiredMembership === 'left' && redemptionState === 'prepared') {
+      throw new Error('Invalid cancelled Peer Mesh join');
+    }
     return Object.freeze({
       invitation: validatePeerMeshInvitation(record.invitation),
-      desiredMembership: decodeDesiredMembership(record.desiredMembership),
+      desiredMembership,
+      redemptionState,
     });
   });
   const meshIds = joins.map(({ invitation }) => invitation.meshId);
@@ -692,6 +700,13 @@ function decodePendingJoins(
 function decodeDesiredMembership(value: unknown): PeerMeshReplicaStateV1['desiredMembership'] {
   if (value !== 'active' && value !== 'left') {
     throw new Error('Invalid Peer Mesh desired membership');
+  }
+  return value;
+}
+
+function decodeRedemptionState(value: unknown): PendingPeerMeshJoin['redemptionState'] {
+  if (value !== 'prepared' && value !== 'outcome_unknown') {
+    throw new Error('Invalid Peer Mesh join redemption state');
   }
   return value;
 }

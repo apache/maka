@@ -466,8 +466,8 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const current = this.#store.read();
       const existing = findMesh(current.meshes, invitation.meshId);
       const localPeerId = this.#peer.identity().peerId;
-      if (existing?.role === 'authority') {
-        throw new Error('This peer already belongs to that Peer Mesh');
+      if (existing && !isRetired(existing, localPeerId)) {
+        throw new Error('This peer already has an unresolved membership in that Peer Mesh');
       }
       if (
         !existing &&
@@ -492,22 +492,31 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       try {
         const localRoute = (await this.#refreshLocalRoute()) ?? (await this.#signLocalRoute());
         await this.#store.mutate((current) => {
+          const existing = findMesh(current.meshes, invitation.meshId);
+          if (existing && !isRetired(existing, localPeerId)) {
+            throw new Error('This peer already has an unresolved membership in that Peer Mesh');
+          }
           const pending = current.pendingJoins.find(
             ({ invitation: candidate }) => candidate.meshId === invitation.meshId,
           );
           if (pending && pending.invitation.secret !== invitation.secret) {
             throw new Error('This Peer Mesh already has an unresolved join attempt');
           }
+          const meshes = existing
+            ? current.meshes.filter(({ roster }) => roster.roster.meshId !== invitation.meshId)
+            : current.meshes;
           if (!pending) {
-            assertMeshCapacity(current.meshes, localPeerId, current.pendingJoins.length);
+            assertMeshCapacity(meshes, localPeerId, current.pendingJoins.length);
           }
           const next: PendingPeerMeshJoin = {
             invitation,
             desiredMembership: 'active',
+            redemptionState: 'prepared',
           };
           return {
             state: {
               ...current,
+              meshes,
               pendingJoins: pending
                 ? current.pendingJoins.map((candidate) =>
                     candidate === pending ? next : candidate,
@@ -539,6 +548,28 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     stream: RuntimeHostPeerNativeStream,
     signal: AbortSignal,
   ): Promise<PeerMeshStatus> {
+    signal.throwIfAborted();
+    await this.#store.mutate((current) => {
+      const pending = current.pendingJoins.find(
+        ({ invitation: candidate }) =>
+          candidate.meshId === invitation.meshId && candidate.secret === invitation.secret,
+      );
+      if (!pending || pending.redemptionState === 'outcome_unknown') {
+        return { state: current, result: undefined };
+      }
+      return {
+        state: {
+          ...current,
+          pendingJoins: current.pendingJoins.map((candidate) =>
+            candidate === pending
+              ? { ...candidate, redemptionState: 'outcome_unknown' }
+              : candidate,
+          ),
+        },
+        result: undefined,
+      };
+    });
+    signal.throwIfAborted();
     const response = await exchangeControl(
       stream,
       {
@@ -637,11 +668,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             existing?.role === 'replica'
               ? replaceMesh(current.meshes, { ...existing, desiredMembership: 'left' })
               : current.meshes,
-          pendingJoins: current.pendingJoins.map((pending) =>
-            pending.invitation.meshId === meshId
-              ? { ...pending, desiredMembership: 'left' }
-              : pending,
-          ),
+          pendingJoins: current.pendingJoins.flatMap((pending) => {
+            if (pending.invitation.meshId !== meshId) return [pending];
+            return pending.redemptionState === 'prepared'
+              ? []
+              : [{ ...pending, desiredMembership: 'left' as const }];
+          }),
         },
         result: undefined,
       };
