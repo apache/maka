@@ -18,7 +18,7 @@
  */
 
 import { isRetiredProvider } from '@maka/core/provider-registry';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
   readRuntimeHostConnectionCatalog,
   type RuntimeHostConnection,
@@ -100,21 +100,26 @@ export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapsho
     // its models here would only let the user pick something that fails on
     // selection.
     if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
-    const modelsById = new Map(connection.models.map((model) => [model.id, model]));
+    // Model facts come from the Host's resolved entry, not from the stored row
+    // merged against this build's bundled metadata: a TUI older or newer than
+    // the Host must describe a model the way the Host does.
+    const entriesById = new Map(connection.catalogEntries.map((entry) => [entry.id, entry]));
     const ids = new Set(connection.enabledModelIds);
     if (catalog.defaultTarget?.connectionId === connection.connectionId) {
       ids.add(catalog.defaultTarget.modelId);
     }
     for (const model of ids) {
+      const entry = entriesById.get(model);
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
         connectionName: connection.name,
         providerType: connection.providerType,
         model,
-        displayName: modelsById.get(model)?.displayName,
+        displayName: entry?.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
-        contextWindow: modelsById.get(model)?.contextWindow,
+        contextWindow: entry?.contextWindow,
+        thinkingLevels: entry?.thinkingLevels ?? [],
       });
     }
   }

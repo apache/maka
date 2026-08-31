@@ -20,7 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
-import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import {
   connectOrSpawnRuntimeHost,

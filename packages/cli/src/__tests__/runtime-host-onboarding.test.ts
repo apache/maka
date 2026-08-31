@@ -19,16 +19,35 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import {
   createRuntimeHostOnboardingSurface,
   projectProviders,
   projectRuntimeHostModelChoices,
 } from '../runtime-host-onboarding.js';
 
-function catalog(connections: ConnectionCatalogSnapshot['connections']): ConnectionCatalogSnapshot {
-  return { revision: 1, defaultTarget: null, connections };
+type StoredConnection = Omit<ConnectionCatalogSnapshot['connections'][number], 'catalogEntries'>;
+
+/**
+ * Fixtures describe what the Host stores; the Host resolves the catalog before
+ * projecting it, so these tests read the entries the same resolution produces.
+ */
+function catalog(connections: readonly StoredConnection[]): ConnectionCatalogSnapshot {
+  return {
+    revision: 1,
+    defaultTarget: null,
+    connections: connections.map((connection) => ({
+      ...connection,
+      catalogEntries: resolveConnectionModelCatalog({
+        ...connection,
+        defaultModel: '',
+        enabledModelIds: [...connection.enabledModelIds],
+        models: [...connection.models],
+      }),
+    })),
+  };
 }
 
 const live = {

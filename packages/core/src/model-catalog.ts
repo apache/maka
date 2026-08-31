@@ -18,6 +18,7 @@
  */
 
 import type {
+  IdentifiedLlmConnection,
   LlmConnection,
   ModelDiscoverySource,
   ModelInfo,
@@ -25,7 +26,9 @@ import type {
 } from './llm-connections.js';
 import {
   classifyConnectionModelInventory,
+  CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   PROVIDER_DEFAULTS,
+  providerDefaultsOf,
   providerSupportsModelDiscovery,
   type ConnectionModelInventory,
 } from './llm-connections.js';
@@ -142,6 +145,19 @@ export interface ModelCatalogEntry {
   };
 }
 
+/**
+ * What a client adds to a stored connection: the catalog the Host resolved for
+ * it. Clients render from this rather than calling `buildModelCatalogEntries`
+ * against their own bundled metadata, so a Desktop and a TUI attached to one
+ * Host describe the same model the same way even at different versions.
+ */
+export interface HostResolvedConnectionCatalog {
+  readonly catalogEntries: readonly ModelCatalogEntry[];
+}
+
+/** A connection as a client holds it: stored fields plus the Host's catalog. */
+export type ProjectedLlmConnection = IdentifiedLlmConnection & HostResolvedConnectionCatalog;
+
 export interface BuildConnectionModelCatalogInput {
   connection: Pick<
     LlmConnection,
@@ -247,7 +263,7 @@ export function buildConnectionModelCatalogEntries(
   input: BuildConnectionModelCatalogInput,
 ): ModelCatalogEntry[] {
   const { connection } = input;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = providerDefaultsOf(connection.providerType);
   // Unknown providerType (legacy seed, or a connection persisted on a branch
   // that registers a provider this build doesn't know) → no catalog entries.
   // Mirrors `isRealConnection` in connection-readiness.ts.
@@ -325,6 +341,50 @@ export function buildConnectionModelCatalogEntries(
     savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])].filter(
       (choice) => !broken.has(typeof choice === 'string' ? choice : (choice?.id ?? '')),
     ),
+  });
+}
+
+/**
+ * Pre-readiness normalization for ChatGPT-subscription (Codex)
+ * connections: models the subscription cannot serve are filtered out of
+ * the enabled list and the default falls back to the first servable
+ * model, so the readiness gate below judges the models that would
+ * actually be used. Pure; returns the input unchanged for non-Codex
+ * providers. Moved from the former desktop send gate (#1038) so onboarding
+ * and the session compatibility projection share one normalization.
+ */
+export function normalizeOpenAiCodexConnection<
+  T extends Pick<LlmConnection, 'providerType' | 'models' | 'defaultModel'>,
+>(connection: T): T {
+  if (connection.providerType !== 'openai-codex') return connection;
+  const fallbackModels = PROVIDER_DEFAULTS['openai-codex'].fallbackModels;
+  const safeModels = (connection.models ?? []).filter(
+    (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
+  );
+  const models = safeModels.length ? safeModels : fallbackModels.map((id) => ({ id }));
+  const enabledModelIds = new Set(models.map((entry) => entry.id));
+  const defaultModel =
+    connection.defaultModel &&
+    !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(connection.defaultModel) &&
+    enabledModelIds.has(connection.defaultModel)
+      ? connection.defaultModel
+      : (models[0]?.id ?? fallbackModels[0] ?? connection.defaultModel);
+  if (models === connection.models && defaultModel === connection.defaultModel) return connection;
+  return { ...connection, defaultModel, models };
+}
+
+/**
+ * A connection's catalog as the Host resolves it. The one entry point for
+ * "what models does this connection have, and what is true about them" —
+ * Host projection and its tests resolve through here so the provider rules
+ * that shape the list (the Codex subscription's servable set) cannot be
+ * applied in one place and forgotten in another.
+ */
+export function resolveConnectionModelCatalog(
+  connection: BuildConnectionModelCatalogInput['connection'],
+): ModelCatalogEntry[] {
+  return buildConnectionModelCatalogEntries({
+    connection: normalizeOpenAiCodexConnection(connection),
   });
 }
 

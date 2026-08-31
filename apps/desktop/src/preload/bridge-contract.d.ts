@@ -212,7 +212,7 @@ export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
   sessions: DesktopSessionSummary[];
-  connections: import('@maka/core/llm-connections').IdentifiedLlmConnection[];
+  connections: import('@maka/core/model-catalog').ProjectedLlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;

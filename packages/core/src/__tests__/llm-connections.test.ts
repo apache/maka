@@ -36,10 +36,28 @@ import {
   providerAuthSupportsApiKey,
   reconcileConnectionAfterModelFetch,
   validateConnectionBaseUrl,
+  type IdentifiedLlmConnection,
   type ProviderType,
 } from '../llm-connections.js';
 import { isRealConnection } from '../connection-readiness.js';
+import { resolveConnectionModelCatalog } from '../model-catalog.js';
 import { buildChatModelChoices } from '../chat-model-choice.js';
+
+/**
+ * The Host resolves a connection's catalog and projects it; the menu is built
+ * over that projection. Tests go through the same resolution so they exercise
+ * the path a client actually sees.
+ */
+function chatModelChoicesFor(
+  connections: readonly IdentifiedLlmConnection[],
+): ReturnType<typeof buildChatModelChoices> {
+  return buildChatModelChoices(
+    connections.map((connection) => ({
+      ...connection,
+      catalogEntries: resolveConnectionModelCatalog(connection),
+    })),
+  );
+}
 
 test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs', () => {
   assert.equal(validateConnectionBaseUrl(undefined), null);
@@ -240,7 +258,7 @@ test('the model picker lists an enabled model a snapshot provider never listed',
   // nothing to ask. Projecting the enabled ids as user choices is what keeps a
   // model the user picked — one their Ark plan serves but Maka's snapshot
   // predates — from vanishing out of every picker (#1584).
-  const choices = buildChatModelChoices([
+  const choices = chatModelChoicesFor([
     {
       connectionId: 'connection-1',
       slug: 'ark-plan',
@@ -263,7 +281,7 @@ test('the model picker lists an enabled model a snapshot provider never listed',
 });
 
 test('chat model choices project exact vision support for attachment composition', () => {
-  const choices = buildChatModelChoices([
+  const choices = chatModelChoicesFor([
     {
       connectionId: 'connection-vision',
       slug: 'openai-compatible',
@@ -302,7 +320,7 @@ test('provider recognition does not resolve inherited object members', () => {
     assert.equal(isRealConnection({ providerType }), false, inherited);
     assert.throws(() => backendKindOf({ providerType }), /Unknown providerType/, inherited);
     assert.deepEqual(
-      buildChatModelChoices([
+      chatModelChoicesFor([
         {
           slug: 'inherited',
           name: 'inherited',
@@ -351,7 +369,7 @@ test('a quarantined stored default is dropped from the picker, not re-added as a
     createdAt: 1,
     updatedAt: 1,
   };
-  const models = buildChatModelChoices([connection]).map(({ model }) => model);
+  const models = chatModelChoicesFor([connection]).map(({ model }) => model);
   assert.ok(!models.includes('x-preview-f-free'), 'quarantined default must not be offered');
   assert.ok(models.includes('nemotron-3-ultra-free'), 'live enabled model still renders');
   assert.equal(authorizeConnectionModel(connection, 'x-preview-f-free'), undefined);

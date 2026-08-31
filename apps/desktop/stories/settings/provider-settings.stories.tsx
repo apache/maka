@@ -18,6 +18,10 @@
  */
 
 import { useEffect, useRef, type ReactNode } from 'react';
+import {
+  resolveConnectionModelCatalog,
+  type ProjectedLlmConnection,
+} from '@maka/core/model-catalog';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
@@ -70,8 +74,8 @@ function makeConnection(input: {
   lastTestMessage?: string;
   models?: LlmConnection['models'];
   modelSource?: LlmConnection['modelSource'];
-}): IdentifiedLlmConnection {
-  return {
+}): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
@@ -88,6 +92,7 @@ function makeConnection(input: {
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60 * 1000,
   };
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 const configuredConnections = [
@@ -246,7 +251,7 @@ const oauthConnections = [
 ];
 
 function createBridge(input: {
-  connections?: IdentifiedLlmConnection[];
+  connections?: ProjectedLlmConnection[];
   defaultSlug?: string | null;
   failLoad?: boolean;
   loading?: boolean;
@@ -283,7 +288,7 @@ function createBridge(input: {
     async update(identity, patch) {
       const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
-      const updated: IdentifiedLlmConnection = {
+      const updated: ProjectedLlmConnection = {
         ...current,
         ...patch,
         // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);

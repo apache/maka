@@ -20,14 +20,18 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import {
+  resolveConnectionModelCatalog,
+  type HostResolvedConnectionCatalog,
+} from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
 
 function connection(
   overrides: Partial<IdentifiedLlmConnection> &
     Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
-): IdentifiedLlmConnection {
-  return {
+): IdentifiedLlmConnection & HostResolvedConnectionCatalog {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,
     defaultModel: '',
@@ -37,6 +41,9 @@ function connection(
     updatedAt: 1,
     ...overrides,
   };
+  // The Host resolves the catalog and projects it; tests build connections the
+  // same way so they exercise what a client actually receives.
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 describe('model catalog picker helpers', () => {

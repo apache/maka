@@ -41,13 +41,12 @@ export interface ModelChoice {
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
   /**
-   * Thinking levels this model exposes. `listReadyModelChoices` always
-   * computes this with the full connection (so an openai-compatible relay's
-   * declared `relayModelProfiles[model].thinkingLevels` are honoured);
-   * optional only so hand-written choice literals stay valid — consumers
-   * must tolerate its absence.
+   * Thinking levels this model exposes, as the Host resolved them — a relay's
+   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * model that offers none; never absent, so no caller has to guess from a
+   * bundled metadata copy of its own.
    */
-  thinkingLevels?: readonly ThinkingLevel[];
+  thinkingLevels: readonly ThinkingLevel[];
 }
 
 export type ConnectionIdentity = {

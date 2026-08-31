@@ -65,6 +65,13 @@ import {
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
+/**
+ * A resolved entry exists for every stored model, for every enabled id the
+ * inventory never listed, and for the connection default when it lists none —
+ * so the entry bound is the sum of the two lists it draws from, plus one.
+ */
+export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION + CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS + 1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 

@@ -42,8 +42,6 @@
  */
 
 import {
-  CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  PROVIDER_DEFAULTS,
   connectionEnabledModelIds,
   providerAuthRequiresSecret,
   providerDefaultsOf,
@@ -155,33 +153,6 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
     return { ready: false, reason: 'model_not_chat_capable' };
   }
   return { ready: true, model };
-}
-
-/**
- * Pre-readiness normalization for ChatGPT-subscription (Codex)
- * connections: models the subscription cannot serve are filtered out of
- * the enabled list and the default falls back to the first servable
- * model, so the readiness gate below judges the models that would
- * actually be used. Pure; returns the input unchanged for non-Codex
- * providers. Moved from the former desktop send gate (#1038) so onboarding
- * and the session compatibility projection share one normalization.
- */
-export function normalizeOpenAiCodexConnection(connection: LlmConnection): LlmConnection {
-  if (connection.providerType !== 'openai-codex') return connection;
-  const fallbackModels = PROVIDER_DEFAULTS['openai-codex'].fallbackModels;
-  const safeModels = (connection.models ?? []).filter(
-    (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
-  );
-  const models = safeModels.length ? safeModels : fallbackModels.map((id) => ({ id }));
-  const enabledModelIds = new Set(models.map((entry) => entry.id));
-  const defaultModel =
-    connection.defaultModel &&
-    !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(connection.defaultModel) &&
-    enabledModelIds.has(connection.defaultModel)
-      ? connection.defaultModel
-      : (models[0]?.id ?? fallbackModels[0] ?? connection.defaultModel);
-  if (models === connection.models && defaultModel === connection.defaultModel) return connection;
-  return { ...connection, defaultModel, models };
 }
 
 /**

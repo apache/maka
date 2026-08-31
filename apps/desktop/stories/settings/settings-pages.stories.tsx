@@ -43,6 +43,10 @@ import type { DesktopExternalSessionCatalogItem } from '../../src/preload/extern
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type { IdentifiedLlmConnection, LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import {
+  resolveConnectionModelCatalog,
+  type ProjectedLlmConnection,
+} from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
@@ -102,8 +106,8 @@ function makeConnection(input: {
   name: string;
   providerType: ProviderType;
   enabled?: boolean;
-}): IdentifiedLlmConnection {
-  return {
+}): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
@@ -116,9 +120,10 @@ function makeConnection(input: {
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
-const connections: IdentifiedLlmConnection[] = [
+const connections: ProjectedLlmConnection[] = [
   makeConnection({ slug: 'zai-live', name: 'Z.AI Live', providerType: 'zai-coding-plan' }),
   makeConnection({ slug: 'openai-review', name: 'OpenAI Review', providerType: 'openai' }),
   makeConnection({ slug: 'ollama-local', name: 'Ollama Local', providerType: 'ollama' }),

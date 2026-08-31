@@ -26,6 +26,7 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
@@ -33,11 +34,11 @@ import {
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogSnapshot,
-  CredentialLocator,
-} from '@maka/core/runtime-policy';
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
@@ -357,7 +358,7 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
 
 export function projectHostConnections(
   catalog: ConnectionCatalogSnapshot,
-): IdentifiedLlmConnection[] {
+): ProjectedLlmConnection[] {
   return catalog.connections.map((connection) => {
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
@@ -373,6 +374,7 @@ export function projectHostConnections(
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
+      catalogEntries: connection.catalogEntries,
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
@@ -504,7 +506,7 @@ function requireProjectedConnection(
 function requireProjectedConnectionIdentity(
   catalog: ConnectionCatalogSnapshot,
   identity: DesktopConnectionIdentity,
-): IdentifiedLlmConnection {
+): ProjectedLlmConnection {
   const connection = requireConnectionIdentity(catalog, identity);
   const projected = projectHostConnections(catalog).find(
     (candidate) => candidate.connectionId === connection.connectionId,

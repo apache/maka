@@ -17,8 +17,10 @@
  * under the License.
  */
 
-import { normalizeOpenAiCodexConnection } from './connection-readiness.js';
-import { buildConnectionModelCatalogEntries } from './model-catalog.js';
+import {
+  normalizeOpenAiCodexConnection,
+  type HostResolvedConnectionCatalog,
+} from './model-catalog.js';
 import { type ThinkingLevel } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
@@ -58,7 +60,7 @@ export interface ChatModelChoice {
 }
 
 export function buildChatModelChoices(
-  connections: readonly IdentifiedLlmConnection[],
+  connections: readonly (IdentifiedLlmConnection & HostResolvedConnectionCatalog)[],
 ): ChatModelChoice[] {
   const choices: ChatModelChoice[] = [];
   for (const rawConnection of connections) {
@@ -68,7 +70,7 @@ export function buildChatModelChoices(
       continue;
     }
     const enabledModelIds = new Set(connectionEnabledModelIds(connection));
-    for (const entry of buildConnectionModelCatalogEntries({ connection })) {
+    for (const entry of rawConnection.catalogEntries) {
       if (
         !entry.canUseAsChatDefault ||
         !enabledModelIds.has(entry.id) ||

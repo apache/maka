@@ -33,11 +33,7 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import {
-  isThinkingLevel,
-  thinkingVariantsForModel,
-  type ThinkingLevel,
-} from '@maka/core/model-thinking';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
@@ -394,14 +390,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  // The boot connection's declared capabilities win (an openai-compatible
-  // relay can declare relayModelProfiles[model].thinkingLevels). The
-  // providerType+model metadata variant is the fallback for modelChoices-free
-  // embeddings of the runner.
+  // The Host resolved these when it projected the choice — including a relay's
+  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // describes offers none rather than a locally guessed list.
   let thinkingLevels: readonly ThinkingLevel[] =
     input.modelChoices?.find(
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
-    )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
+    )?.thinkingLevels ?? [];
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let connectionIdentityNotice: string | undefined;
   let busy = false;
@@ -1495,12 +1490,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    // Choice-first: a relay model's user-declared levels live on the ModelChoice;
-    // the metadata fallback serves providers whose variants derive from the
-    // model id alone.
-    thinkingLevels =
-      contextWindowMatch?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, summary.model) : []);
+    thinkingLevels = contextWindowMatch?.thinkingLevels ?? [];
     refreshEditorCwd?.(cwd);
   };
 
@@ -1525,9 +1515,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
     if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      match?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
+    thinkingLevels = match?.thinkingLevels ?? [];
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1559,8 +1547,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     providerType = choice.providerType;
     modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
+    thinkingLevels = choice.thinkingLevels;
     state.entries.push({
       kind: 'notice',
       level: 'info',

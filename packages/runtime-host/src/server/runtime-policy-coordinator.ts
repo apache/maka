@@ -27,6 +27,7 @@ import type {
   MutateRuntimePolicyInput,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
@@ -450,12 +451,32 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
       ...header
     } = connection;
+    // The Host resolves the catalog because it owns the model metadata the
+    // resolution merges in. A client that merged its own bundled copy would
+    // describe a model by the version it happens to ship, so two clients on
+    // one Host could disagree about the same model.
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(connection.modelsFetchedAt === undefined
+        ? {}
+        : { modelsFetchedAt: connection.modelsFetchedAt }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -469,6 +490,9 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;

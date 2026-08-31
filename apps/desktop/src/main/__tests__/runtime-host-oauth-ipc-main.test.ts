@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMainInvokeEvent } from 'electron';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OAUTH_IPC_CHANNELS,
   registerRuntimeHostOAuthIpc,
@@ -72,6 +75,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         providerType: provider,
         enabled: true,
         enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+        catalogEntries: [],
         models: [],
       },
     ],
@@ -216,6 +220,7 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
     providerType: 'xai-oauth' as const,
     enabled: true,
     enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   let starts = 0;
@@ -335,6 +340,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       providerType: provider,
       enabled: true,
       enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      catalogEntries: [],
       models: [],
     },
     {
@@ -345,6 +351,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       providerType: provider,
       enabled: true,
       enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      catalogEntries: [],
       models: [],
     },
   ];
@@ -356,6 +363,7 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     providerType: 'xai-oauth' as const,
     enabled: true,
     enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
@@ -536,6 +544,7 @@ test('keeps a committed OAuth login successful when model discovery fails withou
     providerType: provider,
     enabled: true,
     enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   const created = {

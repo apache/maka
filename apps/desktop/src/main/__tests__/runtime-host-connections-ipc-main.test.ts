@@ -20,7 +20,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import {
   projectHostConnections,
   projectHostConnectionTest,
@@ -75,6 +78,7 @@ test('retries connection delete after a stale revision instead of failing perman
             providerType: 'openai-compatible',
             baseUrl: 'https://openrouter.ai/api/v1',
             enabled: true,
+            catalogEntries: [],
             enabledModelIds: ['model-1'],
             models: [{ id: 'model-1' }],
           },
@@ -285,6 +289,7 @@ test('preserves the provider default inventory beside the recommended model', as
                   providerType: 'opencode-free',
                   enabled: true,
                   enabledModelIds: createdModels,
+                  catalogEntries: [],
                   models: [],
                 },
               ],
@@ -328,6 +333,8 @@ test('projects the Host default target without inventing a second Connection aut
       defaultModel: 'model-1',
       enabledModelIds: ['model-1', 'model-2'],
       models: [{ id: 'model-1' }, { id: 'model-2' }],
+      // Carried through from the Host projection, not rebuilt here.
+      catalogEntries: [],
       createdAt: 0,
       updatedAt: 4,
     },
@@ -395,6 +402,7 @@ function catalog(): ConnectionCatalogSnapshot {
         baseUrl: 'https://openrouter.ai/api/v1',
         enabled: true,
         enabledModelIds: ['model-1', 'model-2'],
+        catalogEntries: [],
         models: [{ id: 'model-1' }, { id: 'model-2' }],
       },
     ],

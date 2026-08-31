@@ -25,6 +25,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
+import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import {
   Badge,
   Button,
@@ -1064,7 +1065,7 @@ function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
-  connections: IdentifiedLlmConnection[];
+  connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   defaultSlug: string | null;
   runtimeHost: DesktopRuntimeHostRef | undefined;

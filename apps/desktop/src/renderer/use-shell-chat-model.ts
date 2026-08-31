@@ -18,6 +18,7 @@
  */
 
 import { useMemo } from 'react';
+import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
@@ -65,7 +66,7 @@ export type SessionHealthNoticeView = {
  */
 export function useShellChatModel(options: {
   uiLocale: UiLocale;
-  connections: IdentifiedLlmConnection[];
+  connections: ProjectedLlmConnection[];
   chatModelChoices: ChatModelChoice[];
   sessionSendOutcome: SessionSendProjection | undefined;
   defaultConnection: string | null;

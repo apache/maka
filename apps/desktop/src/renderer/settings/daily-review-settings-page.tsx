@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import { Banner } from '@astryxdesign/core';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -36,7 +37,7 @@ import {
 const DAILY_REVIEW_DEFAULT_MODEL_VALUE = '__maka_daily_review_default_model__';
 
 function buildDailyReviewModelOptions(
-  connections: readonly LlmConnection[],
+  connections: readonly ProjectedLlmConnection[],
   currentModelKey: string,
   copy: DailyReviewSettingsCopy,
   locale: 'zh' | 'en',
@@ -50,7 +51,7 @@ function buildDailyReviewModelOptions(
   ];
 }
 
-export function DailyReviewSettingsPage(props: { connections: readonly LlmConnection[] }) {
+export function DailyReviewSettingsPage(props: { connections: readonly ProjectedLlmConnection[] }) {
   const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getDailyReviewSettingsCopy(locale);

@@ -306,8 +306,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(connectionEnabledModelIds(connection));
   }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
 
-  // Picker entries come from the same catalog merge path as Chat and Daily
-  // Review, but use the local unsaved editor draft for model/default changes.
+  // The one client-side resolution left on a saved connection: the editor
+  // shows the unsaved draft — model rows just fetched, ids just ticked — which
+  // the Host has not been told about and so cannot have resolved. Everything
+  // the user has committed is read from `connection.catalogEntries`; this
+  // resolves only what is still in the draft.
   const modelChoices = buildConnectionModelCatalogEntries({
     connection: {
       slug: connection.slug,

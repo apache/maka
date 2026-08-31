@@ -45,7 +45,6 @@ import { type AppSettings, type UpdateAppSettingsResult } from '@maka/core/setti
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { thinkingVariantsForConnection } from '@maka/core/model-thinking';
 import {
   Badge,
   Button,
@@ -79,6 +78,7 @@ import {
   subagentPresetAvailability,
   type SubagentPageRoute,
 } from './subagent-preset-presentation.js';
+import type { HostResolvedConnectionCatalog } from '@maka/core/model-catalog';
 import { statusBadgeVariant } from './settings-status-badge.js';
 import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
@@ -94,7 +94,7 @@ type SubagentEditorDraft = Omit<SubagentPreset, 'thinkingLevel'> & {
 
 export function SubagentSettingsPage(props: {
   settings: AppSettings;
-  connections: readonly LlmConnection[];
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
   onUpdate(
     patch: Parameters<typeof window.maka.settings.update>[0],
   ): Promise<UpdateAppSettingsResult>;
@@ -332,7 +332,7 @@ export function SubagentSettingsPage(props: {
 function SubagentPresetEditor(props: {
   preset: SubagentPreset | null;
   presets: readonly SubagentPreset[];
-  connections: readonly LlmConnection[];
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
   isSaving: boolean;
   onCancel(): void;
   onDelete?(): void;
@@ -374,9 +374,9 @@ function SubagentPresetEditor(props: {
   const enabledModels = selectedConnection && isSelectableSubagentConnection(selectedConnection)
     ? connectionEnabledModelIds(selectedConnection)
     : [];
-  const thinkingLevels = selectedConnection
-    ? thinkingVariantsForConnection(selectedConnection, draft.model)
-    : [];
+  const thinkingLevels =
+    selectedConnection?.catalogEntries.find((entry) => entry.id === draft.model)?.thinkingLevels ??
+    [];
   const profileCopy = copy.profiles[draft.profile];
   const validId = isSafeSubagentPresetId(draft.id.trim());
   const duplicateId = existingIds.has(draft.id.trim());

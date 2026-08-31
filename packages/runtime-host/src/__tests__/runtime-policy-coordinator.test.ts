@@ -30,6 +30,7 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { REQUEST_BODY_OVERLAY_MAX_BYTES } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { type MakaToolContext } from '@maka/runtime/tool-runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -1131,12 +1132,28 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     // item, never in one header table (a header item is atomic to the
     // paginator — a long declaration list would make it unsplittable).
     const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(connection.modelsFetchedAt === undefined
+        ? {}
+        : { modelsFetchedAt: connection.modelsFetchedAt }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -1150,6 +1167,9 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;

@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
   SettingsActions,
@@ -74,7 +75,7 @@ import { SettingsRowSkeleton } from './settings-skeleton.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
-  connections: readonly IdentifiedLlmConnection[];
+  connections: readonly ProjectedLlmConnection[];
   defaultSlug: string | null;
   connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
   runtimeHostAvailabilityStatus: 'loading' | 'ready' | 'unavailable' | 'error';
@@ -482,7 +483,7 @@ const FOLLOW_MODEL_DEFAULT = "__follow_model__";
 const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function GeneralDefaultsCard(props: {
-  connections: readonly IdentifiedLlmConnection[];
+  connections: readonly ProjectedLlmConnection[];
   defaultSlug: string | null;
   connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
   connectionsAvailable: boolean;
