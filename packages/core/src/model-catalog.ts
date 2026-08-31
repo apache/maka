@@ -382,32 +382,6 @@ export function resolveConnectionModelCatalog(
   });
 }
 
-export function validateChatDefaultModel(input: BuildModelCatalogInput):
-  | {
-      ok: true;
-      entry: ModelCatalogEntry;
-    }
-  | {
-      ok: false;
-      reason: Exclude<ModelUnavailableReason, 'none' | 'stale'>;
-      entry?: ModelCatalogEntry;
-    } {
-  const defaultModel = input.defaultModel?.trim();
-  if (!defaultModel) {
-    return { ok: false, reason: 'not_in_live_list' };
-  }
-  const entry = buildModelCatalogEntries(input).find((candidate) => candidate.id === defaultModel);
-  if (!entry) {
-    return { ok: false, reason: 'not_in_live_list' };
-  }
-  if (entry.canUseAsChatDefault) return { ok: true, entry };
-  const reason =
-    entry.unavailableReason === 'stale' || entry.unavailableReason === 'none'
-      ? 'unsupported_for_chat'
-      : entry.unavailableReason;
-  return { ok: false, reason, entry };
-}
-
 /**
  * The per-build facts every entry in one catalog shares. Threading them as one
  * value keeps the entry builders' remaining parameters to what actually varies

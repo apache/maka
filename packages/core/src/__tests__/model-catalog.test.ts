@@ -22,14 +22,28 @@ import { test } from 'node:test';
 import { isConnectionReady } from '../connection-readiness.js';
 import { PROVIDER_REGISTRY, type LlmConnection, type ProviderType } from '../llm-connections.js';
 import {
+  type BuildModelCatalogInput,
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
-  validateChatDefaultModel,
 } from '../model-catalog.js';
 
-function verdict(input: Parameters<typeof validateChatDefaultModel>[0]) {
-  const result = validateChatDefaultModel(input);
-  return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+/**
+ * Whether a build's default model is one the chat can send to. The catalog
+ * states this per entry; the tests below ask it of a whole build, so they
+ * read the entry the build produced for the model the input names.
+ */
+function verdict(input: BuildModelCatalogInput) {
+  const defaultModel = input.defaultModel?.trim();
+  const entry = defaultModel
+    ? buildModelCatalogEntries(input).find((candidate) => candidate.id === defaultModel)
+    : undefined;
+  if (!entry) return { ok: false, reason: 'not_in_live_list' };
+  if (entry.canUseAsChatDefault) return { ok: true };
+  const reason =
+    entry.unavailableReason === 'stale' || entry.unavailableReason === 'none'
+      ? 'unsupported_for_chat'
+      : entry.unavailableReason;
+  return { ok: false, reason };
 }
 
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
