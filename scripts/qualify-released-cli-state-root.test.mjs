@@ -120,7 +120,7 @@ test('uses a fixed privileged Bubblewrap launcher and drops back to the account'
   );
 });
 
-test('maps only the sandbox private temp directory onto the Host IPC temp root', () => {
+test('creates a private Host IPC temp root before mounting a scope that may live below it', () => {
   const args = qualificationSandboxArgs({
     innerInputPath: '/qualification/input.json',
     scope: '/qualification',
@@ -136,13 +136,16 @@ test('maps only the sandbox private temp directory onto the Host IPC temp root',
       },
     },
   });
-  assert.deepEqual(args.slice(args.indexOf('/qualification') + 1, args.indexOf('/etc/passwd')), [
-    '/qualification',
-    '--bind',
-    '/qualification/tmp',
+  const tmpfsIndex = args.indexOf('--tmpfs');
+  assert.deepEqual(args.slice(tmpfsIndex, tmpfsIndex + 8), [
+    '--tmpfs',
     '/tmp',
-    '--ro-bind',
-    '/qualification/etc/passwd',
+    '--chmod',
+    '1777',
+    '/tmp',
+    '--bind',
+    '/qualification',
+    '/qualification',
   ]);
 });
 
