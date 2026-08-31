@@ -21,6 +21,8 @@ import { spawn } from 'node:child_process';
 import type { RuntimeHostLocalStagedDeployment } from './runtime-host-local-handoff.js';
 import type { RuntimeHostUpdateCandidate } from './runtime-host-registry-update.js';
 
+const TARGET_ACTIVATOR_SETTLEMENT_TIMEOUT_MS = 15_000;
+
 export interface RuntimeHostTargetActivationInput {
   readonly rootPath: string;
   readonly rootId: string;
@@ -54,6 +56,7 @@ export class RuntimeHostTargetActivationError extends Error {
  */
 export function launchRuntimeHostTargetActivator(
   input: RuntimeHostTargetActivationInput,
+  options: { readonly settlementTimeoutMs?: number } = {},
 ): Promise<RuntimeHostTargetActivation> {
   const args = [
     input.staged.cliPath,
@@ -101,19 +104,39 @@ export function launchRuntimeHostTargetActivator(
     const settle = async (): Promise<void> => {
       if (settled) return;
       settled = true;
+      let settlementTimedOut = false;
+      // This parent owns the activator process and therefore the hard bound.
+      // Killing and then awaiting close releases its inherited lease even when
+      // an individual authority read in the child never settles.
+      const settlementTimer = setTimeout(() => {
+        settlementTimedOut = true;
+        child.kill('SIGKILL');
+      }, options.settlementTimeoutMs ?? TARGET_ACTIVATOR_SETTLEMENT_TIMEOUT_MS);
+      settlementTimer.unref();
       if (child.connected) {
-        await new Promise<void>((resolveSent, rejectSent) => {
-          child.send({ kind: 'settle' }, (error) => (error ? rejectSent(error) : resolveSent()));
-        });
+        try {
+          child.send({ kind: 'settle' });
+        } catch {
+          // The close result below remains the only settlement evidence.
+        }
       }
-      const exited = await closed;
-      if (exited.signal || exited.code !== 0) {
+      try {
+        const exited = await closed;
+        if (settlementTimedOut) {
+          throw new RuntimeHostTargetActivationError(
+            'recovery_required',
+            'The local Runtime Host update requires recovery because its target activator exceeded the durable settlement deadline',
+          );
+        }
+        if (!exited.signal && exited.code === 0) return;
         throw new RuntimeHostTargetActivationError(
           'recovery_required',
           exited.signal
             ? `The local Runtime Host update requires recovery because its target activator exited on ${exited.signal}`
             : 'The local Runtime Host update requires recovery because its target activator could not confirm durable ownership',
         );
+      } finally {
+        clearTimeout(settlementTimer);
       }
     };
     child.once('error', reject);
