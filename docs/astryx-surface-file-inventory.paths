@@ -135,6 +135,7 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
+apps/desktop/src/renderer/styles/session-todo-panel.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/about.css
 apps/desktop/src/renderer/styles/settings/bot.css
@@ -156,7 +157,6 @@ apps/desktop/src/renderer/styles/settings/web-search.css
 apps/desktop/src/renderer/styles/settings/wechat.css
 apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
-apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
 apps/desktop/src/renderer/styles/work-board.css
 apps/desktop/src/renderer/styles/workbar/artifacts.css
