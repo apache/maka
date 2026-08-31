@@ -60,14 +60,8 @@ describe('ToolRuntime durable boundary', () => {
     );
 
     assert.equal(implementationCalls, 0);
-    assert.equal(
-      harness.events.some((event) => event.type === 'tool_result'),
-      false,
-    );
-    assert.equal(
-      harness.messages.some((message) => message.type === 'tool_result'),
-      false,
-    );
+    assert.deepEqual(harness.events, []);
+    assert.deepEqual(harness.messages, []);
   });
 
   it('publishes no call side effects when another dispatcher owns the operation', async () => {
