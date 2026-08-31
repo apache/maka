@@ -140,6 +140,8 @@ export interface InspectorOverviewModel {
    * the run ledger; three statements of the same tokens is two too many.
    */
   cacheHitRate?: number;
+  /** Runtime-owned semantic prefix verdict; Desktop only presents it. */
+  requestPrefix?: Extract<ContextDiagnosticsResult, { status: 'available' }>['requestPrefix'];
 }
 
 export function estimatedSessionCost(
@@ -186,6 +188,9 @@ export function deriveInspectorOverviewModel(
     ...(context ? { context } : {}),
     ...(composition ? { composition } : {}),
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
+    ...(diagnostics?.status === 'available' && diagnostics.requestPrefix
+      ? { requestPrefix: diagnostics.requestPrefix }
+      : {}),
   };
 }
 

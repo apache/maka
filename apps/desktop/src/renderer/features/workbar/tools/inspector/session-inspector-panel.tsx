@@ -19,6 +19,7 @@
 
 import { type ReactNode, useMemo } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
+import { Badge } from '@astryxdesign/core/Badge';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
@@ -148,7 +149,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             {copy.summaryUnavailable}
           </Text>
         )}
-        {(snapshot.summary || overview.context || overview.composition) && (
+        {(snapshot.summary || overview.context || overview.composition || overview.requestPrefix) && (
           <InspectorOverview
             copy={copy}
             locale={locale}
@@ -272,6 +273,9 @@ function InspectorOverview(props: {
 
   return (
     <VStack gap={6} data-maka-contract="session-inspector-overview">
+      {overview.requestPrefix && (
+        <InspectorRequestPrefixBadge copy={copy} requestPrefix={overview.requestPrefix} />
+      )}
       {props.showTotals && (
         <VStack gap={2} data-maka-contract="session-inspector-stats">
           <InspectorOverviewStat
@@ -307,6 +311,45 @@ function InspectorOverview(props: {
         />
       )}
     </VStack>
+  );
+}
+
+export function InspectorRequestPrefixBadge(props: {
+  copy: InspectorCopy;
+  requestPrefix: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['requestPrefix']>;
+}) {
+  const { requestPrefix, copy } = props;
+  if (requestPrefix.status === 'no_predecessor') return null;
+  if (requestPrefix.status === 'preserved') {
+    return (
+      <Badge
+        variant="neutral"
+        label={copy.overview.requestPrefix.preserved(
+          requestPrefix.preservedSegmentCount,
+          requestPrefix.previousSegmentCount,
+        )}
+        data-maka-contract="request-prefix-continuity"
+      />
+    );
+  }
+  if (requestPrefix.status === 'diverged') {
+    return (
+      <Badge
+        variant="error"
+        label={copy.overview.requestPrefix.diverged(
+          copy.overview.requestPrefix.segment[requestPrefix.firstDivergentSegment.kind],
+          requestPrefix.firstDivergentSegment.index + 1,
+        )}
+        data-maka-contract="request-prefix-continuity"
+      />
+    );
+  }
+  return (
+    <Badge
+      variant={requestPrefix.status === 'unknown' ? 'warning' : 'neutral'}
+      label={copy.overview.requestPrefix.cannotJudge}
+      data-maka-contract="request-prefix-continuity"
+    />
   );
 }
 

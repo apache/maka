@@ -138,6 +138,25 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
 
   assert.equal(overview.cacheHitRate, undefined);
 });
+
+test('passes the Runtime request-prefix verdict through without recomputing it', () => {
+  const requestPrefix = {
+    status: 'diverged' as const,
+    previousSegmentCount: 8,
+    preservedSegmentCount: 2,
+    firstDivergentSegment: { kind: 'message' as const, index: 2, role: 'user' },
+  };
+  const overview = deriveInspectorOverviewModel({
+    status: 'available',
+    providerId: 'anthropic',
+    modelId: 'claude',
+    completedAt: 10,
+    requestPrefix,
+  });
+
+  assert.equal(overview.requestPrefix, requestPrefix);
+});
+
 test('derives per-turn cost only from priced model-call step totals', () => {
   const cases: readonly {
     name: string;

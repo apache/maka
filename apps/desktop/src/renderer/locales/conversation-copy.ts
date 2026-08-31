@@ -262,6 +262,15 @@ export interface DesktopConversationCopy {
       };
       /** The three figures a reader opens this tab for, as headline stats. */
       cacheHit: string;
+      requestPrefix: {
+        preserved: (preserved: number, previous: number) => string;
+        diverged: (segment: string, index: number) => string;
+        cannotJudge: string;
+        segment: Record<
+          'tool_schema' | 'system_prompt' | 'message' | 'provider_options',
+          string
+        >;
+      };
       /** Heading over the causal record. */
       timelineTab: string;
       /**
@@ -596,6 +605,17 @@ const COPY = {
           free: '剩余',
         },
         cacheHit: '缓存命中率',
+        requestPrefix: {
+          preserved: (preserved, previous) => `请求前缀 ${preserved}/${previous} 保持`,
+          diverged: (segment, index) => `请求前缀在${segment} ${index}处分叉`,
+          cannotJudge: '请求前缀无法判断',
+          segment: {
+            tool_schema: '工具',
+            system_prompt: '系统提示',
+            message: '消息',
+            provider_options: '模型选项',
+          },
+        },
         timelineTab: '时间轴',
         composition: {
           title: '构成估算',
@@ -831,6 +851,18 @@ const COPY = {
           free: 'Remaining',
         },
         cacheHit: 'Cache hit rate',
+        requestPrefix: {
+          preserved: (preserved, previous) =>
+            `Request prefix ${preserved}/${previous} preserved`,
+          diverged: (segment, index) => `Request prefix diverged at ${segment} ${index}`,
+          cannotJudge: 'Request prefix unavailable',
+          segment: {
+            tool_schema: 'tool',
+            system_prompt: 'system prompt',
+            message: 'message',
+            provider_options: 'model option',
+          },
+        },
         timelineTab: 'Timeline',
         composition: {
           title: 'Estimated composition',

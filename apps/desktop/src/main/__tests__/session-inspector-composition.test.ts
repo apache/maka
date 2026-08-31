@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InspectorCompositionSection } from '../../renderer/features/workbar/testing.js';
+import {
+  InspectorCompositionSection,
+  InspectorRequestPrefixBadge,
+} from '../../renderer/features/workbar/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 
 test('maps each request-composition category to the same colour in the chart and legend', () => {
@@ -59,4 +62,21 @@ test('maps each request-composition category to the same colour in the chart and
       new RegExp(`class="maka-inspector-composition-swatch"[^>]*data-segment="${kind}"`),
     );
   }
+});
+
+test('renders the Runtime divergence location as a compact badge', () => {
+  const markup = renderToStaticMarkup(
+    createElement(InspectorRequestPrefixBadge, {
+      copy: getDesktopConversationCopy('en').inspector,
+      requestPrefix: {
+        status: 'diverged',
+        previousSegmentCount: 8,
+        preservedSegmentCount: 2,
+        firstDivergentSegment: { kind: 'message', index: 2 },
+      },
+    }),
+  );
+
+  assert.match(markup, /Request prefix diverged at message 3/);
+  assert.match(markup, /data-maka-contract="request-prefix-continuity"/);
 });
