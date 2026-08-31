@@ -560,14 +560,13 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       const type = normalized.type as AgentRunEventType;
       const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
       const projection = projectsCheckpoint
-        ? readSqliteAgentRunProjection(this.#lease.database, sessionId, type, {
-            malformed: 'missing',
-          })
+        ? inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type)
         : undefined;
       insertAgentRunEvent(this.#lease.database, normalized);
-      if (projectsCheckpoint) {
-        const row = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
-          ? projection!
+      if (projection && projection.state !== 'malformed') {
+        const current = projectionValue(projection);
+        const row = shouldPreserveCheckpointProjectionDuringAppend(current, normalized)
+          ? current!
           : normalized;
         writeSqliteAgentRunProjection(this.#lease.database, sessionId, type, row);
       }
@@ -599,12 +598,16 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     event: AgentRunEvent,
     latest: LatestContextProjectionInput,
   ): void {
-    const existing = readSqliteAgentRunProjection(
+    const inspected = inspectSqliteAgentRunProjection(
       this.#lease.database,
       sessionId,
       LATEST_CONTEXT_PROJECTION_TYPE,
-      { malformed: 'missing' },
     );
+    // The canonical append must survive a damaged derived row, but the row's
+    // ordering is unknowable. Leave it untouched until a ledger rebuild can
+    // select the real latest attempt and repair it without guessing.
+    if (inspected.state === 'malformed') return;
+    const existing = projectionValue(inspected);
     // Compared against the stored row's own completion, which the snapshot
     // carries — not against an ordering field the row does not have, which is
     // how the first version of this guard silently never fired. The rule
@@ -685,10 +688,10 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type, {
-        malformed: 'missing',
-      });
+      const inspected = inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+      const current = projectionValue(inspected);
       if (
+        inspected.state !== 'malformed' &&
         current?.id !== options.replaceEventId &&
         shouldPreserveProjectionDuringRepair(current, event, type)
       ) {
@@ -1076,8 +1079,25 @@ function readSqliteAgentRunProjection(
   // A projection key, not necessarily an event type: `latest_context` names a
   // derived row nothing ever appends under (#2323).
   type: string,
-  options: { malformed?: 'throw' | 'missing' } = {},
 ): AgentRunEvent | null | undefined {
+  const inspected = inspectSqliteAgentRunProjection(db, sessionId, type);
+  if (inspected.state === 'malformed') {
+    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  }
+  return projectionValue(inspected);
+}
+
+type SqliteAgentRunProjectionInspection =
+  | { state: 'missing' }
+  | { state: 'empty' }
+  | { state: 'malformed' }
+  | { state: 'valid'; event: AgentRunEvent };
+
+function inspectSqliteAgentRunProjection(
+  db: DatabaseSync,
+  sessionId: string,
+  type: string,
+): SqliteAgentRunProjectionInspection {
   const row = db
     .prepare(`
       SELECT event_json
@@ -1085,24 +1105,26 @@ function readSqliteAgentRunProjection(
       WHERE session_id = ? AND event_type = ?
     `)
     .get(sessionId, type) as { event_json?: unknown } | undefined;
-  if (!row) return undefined;
-  if (row.event_json === null) return null;
-  if (typeof row.event_json !== 'string') {
-    if (options.malformed === 'missing') return undefined;
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
-  }
+  if (!row) return { state: 'missing' };
+  if (row.event_json === null) return { state: 'empty' };
+  if (typeof row.event_json !== 'string') return { state: 'malformed' };
   let event: unknown;
   try {
     event = JSON.parse(row.event_json);
-  } catch (error) {
-    if (options.malformed === 'missing') return undefined;
-    throw error;
+  } catch {
+    return { state: 'malformed' };
   }
   if (!isProjectedAgentRunEvent(event, sessionId, type)) {
-    if (options.malformed === 'missing') return undefined;
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
+    return { state: 'malformed' };
   }
-  return event;
+  return { state: 'valid', event };
+}
+
+function projectionValue(
+  inspected: SqliteAgentRunProjectionInspection,
+): AgentRunEvent | null | undefined {
+  if (inspected.state === 'valid') return inspected.event;
+  return inspected.state === 'empty' ? null : undefined;
 }
 
 function writeSqliteAgentRunProjection(

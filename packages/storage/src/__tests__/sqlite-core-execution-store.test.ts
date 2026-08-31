@@ -140,7 +140,7 @@ describe('SQLite core execution stores', () => {
     });
   });
 
-  test('treats a malformed latest-context projection as disposable during canonical append', async () => {
+  test('commits canonical authority without guessing a malformed projection order', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);
       await store.createRun(runHeader());
@@ -149,20 +149,27 @@ describe('SQLite core execution stores', () => {
         'run-1',
         {
           ...runEvent(),
-          id: 'model-call-1',
+          id: 'model-call-newer',
           type: 'model_call_attempt_recorded',
-          data: { ...modelCallAttempt({ attemptId: 'attempt-1', completedAt: 2 }) },
+          ts: 100,
+          data: {
+            ...modelCallAttempt({
+              attemptId: 'attempt-newer',
+              completedAt: 100,
+              latencyMs: 99,
+            }),
+          },
         },
         {
           latestContext: {
-            attemptId: 'attempt-1',
-            orderedAt: 2,
+            attemptId: 'attempt-newer',
+            orderedAt: 100,
             snapshot: {
               schemaVersion: 2,
-              attemptId: 'attempt-1',
+              attemptId: 'attempt-newer',
               providerId: 'openai',
               modelId: 'gpt-5',
-              completedAt: 2,
+              completedAt: 100,
             },
           },
         },
@@ -189,29 +196,29 @@ describe('SQLite core execution stores', () => {
           'run-1',
           {
             ...runEvent(),
-            id: 'model-call-2',
+            id: 'model-call-older',
             type: 'model_call_attempt_recorded',
-            ts: 3,
+            ts: 50,
             data: {
               ...modelCallAttempt({
-                logicalCallId: 'call-2',
-                attemptId: 'attempt-2',
-                traceId: 'trace-2',
-                completedAt: 3,
-                latencyMs: 2,
+                logicalCallId: 'call-older',
+                attemptId: 'attempt-older',
+                traceId: 'trace-older',
+                completedAt: 50,
+                latencyMs: 49,
               }),
             },
           },
           {
             latestContext: {
-              attemptId: 'attempt-2',
-              orderedAt: 3,
+              attemptId: 'attempt-older',
+              orderedAt: 50,
               snapshot: {
                 schemaVersion: 2,
-                attemptId: 'attempt-2',
+                attemptId: 'attempt-older',
                 providerId: 'openai',
                 modelId: 'gpt-5',
-                completedAt: 3,
+                completedAt: 50,
               },
             },
           },
@@ -219,15 +226,28 @@ describe('SQLite core execution stores', () => {
 
         assert.ok(
           (await reopened.readEvents('session-1', 'run-1')).some(
-            (event) => event.id === 'model-call-2',
+            (event) => event.id === 'model-call-older',
           ),
-        );
-        assert.equal(
-          (await reopened.readEventProjection('session-1', 'latest_context'))?.data?.attemptId,
-          'attempt-2',
         );
       } finally {
         reopened.close?.();
+      }
+
+      const inspected = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          inspected
+            .prepare(`
+              SELECT event_json AS eventJson
+              FROM core_agent_run_projections
+              WHERE session_id = 'session-1' AND event_type = 'latest_context'
+            `)
+            .get()?.eventJson,
+          '{malformed',
+          'unknown incumbent ordering stays untouched until a ledger rebuild can repair it',
+        );
+      } finally {
+        inspected.close();
       }
     });
   });

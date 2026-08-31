@@ -22,6 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type {
   AgentRunEvent,
   AgentRunHeader,
@@ -614,6 +615,63 @@ test('a damaged projection is repaired, not preserved forever', async () => {
     const second = await readLatestContextDiagnostics(counted, 'session-1');
     assert.equal(second.status, 'available');
     assert.equal(scanned, 0, 'and the rebuild replaced the damaged row');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('repairs malformed projection bytes from the canonical ledger', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model', 40, 200, {
+        requestObservation: requestObservation([
+          {
+            kind: 'tool_schema',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'a'.repeat(64)}`,
+            bytes: 800,
+            label: 'Bash',
+          },
+        ]),
+      }),
+      { durable: true, latestContext: latestContext('attempt-1', 10) },
+    );
+    writer.close?.();
+
+    const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+    try {
+      database
+        .prepare(`
+          UPDATE core_agent_run_projections
+          SET event_json = '{malformed'
+          WHERE session_id = 'session-1' AND event_type = 'latest_context'
+        `)
+        .run();
+    } finally {
+      database.close();
+    }
+
+    let scanned = 0;
+    const counted = countingStore(createSqliteAgentRunStore(root), () => {
+      scanned += 1;
+    });
+    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(first.status, 'available');
+    if (first.status !== 'available') return;
+    assert.deepEqual(first.composition?.tools, [{ name: 'Bash', bytes: 800 }]);
+    assert.ok(scanned > 0, 'the malformed bytes force a canonical rebuild');
+
+    scanned = 0;
+    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(second.status, 'available');
+    assert.equal(scanned, 0, 'the authority-derived candidate replaced the malformed row');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
