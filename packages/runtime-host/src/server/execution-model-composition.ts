@@ -48,7 +48,7 @@ import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type RuntimeCommitSink } from '@maka/runtime/runtime-commit-sink';
 import {
   createAttachmentByteReader,
-  createReadImageSnapshotter,
+  createReadImageSnapshotPlanner,
   persistProviderRequestCaptureArtifact,
   type InteractiveArtifactStoreWriter,
 } from '@maka/storage/artifact-stores';
@@ -333,7 +333,7 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
         );
       }
     : undefined;
-  const persistProjectionImage = createReadImageSnapshotter(input.artifacts);
+  const planProjectionImage = createReadImageSnapshotPlanner(input.artifacts);
 
   try {
     return new HostAiSdkBackend(
@@ -400,8 +400,8 @@ export async function createHostAiSdkBackend(input: HostAiSdkBackendInput): Prom
             ? { readImageSnapshotsUnavailable: true }
             : {}),
         }),
-        persistDurableProjectionArtifact: ({ turnId, bytes, mediaType }) =>
-          persistProjectionImage({
+        prepareDurableProjectionArtifact: ({ turnId, bytes, mediaType }) =>
+          planProjectionImage({
             sessionId: input.context.sessionId,
             turnId,
             name: 'Tool Result image',

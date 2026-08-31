@@ -354,11 +354,14 @@ export interface ToolRuntimeInput {
   runId?: string;
   orchestrationMode?: OrchestrationMode;
   invocationId?: string;
-  persistDurableProjectionArtifact?: (input: {
+  prepareDurableProjectionArtifact?: (input: {
     turnId: string;
     bytes: Uint8Array;
     mediaType: string;
-  }) => Promise<DurableProjectionArtifactRef>;
+  }) => {
+    ref: Extract<DurableProjectionArtifactRef, { kind: 'session_file' }>;
+    persist(): Promise<void>;
+  };
   spawnChildSession?: (input: {
     parentRunId: string;
     parentTurnId: string;
@@ -780,9 +783,9 @@ export class ToolRuntime {
         encodeDurableToolResultOutputWithArtifacts(
           resolved,
           this.input.sessionId,
-          this.input.persistDurableProjectionArtifact
+          this.input.prepareDurableProjectionArtifact
             ? ({ bytes, mediaType }) =>
-                this.input.persistDurableProjectionArtifact!({
+                this.input.prepareDurableProjectionArtifact!({
                   turnId,
                   bytes,
                   mediaType,

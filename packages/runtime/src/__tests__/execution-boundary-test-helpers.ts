@@ -44,13 +44,18 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
     ...backendInput,
     ...(testProjectionArtifacts
       ? {
-          persistDurableProjectionArtifact: async ({ bytes }: { bytes: Uint8Array }) => {
+          prepareDurableProjectionArtifact: ({ bytes }: { bytes: Uint8Array }) => {
             const relativePath = `artifact-${++nextArtifactId}`;
-            artifacts.set(relativePath, bytes.slice());
+            const accepted = bytes.slice();
             return {
-              kind: 'session_file' as const,
-              sessionId: input.sessionId,
-              relativePath,
+              ref: {
+                kind: 'session_file' as const,
+                sessionId: input.sessionId,
+                relativePath,
+              },
+              persist: async () => {
+                artifacts.set(relativePath, accepted);
+              },
             };
           },
           readAttachmentBytes:

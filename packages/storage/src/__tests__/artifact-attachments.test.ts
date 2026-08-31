@@ -28,6 +28,7 @@ import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
 } from '../artifact-attachments.js';
 import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
@@ -237,6 +238,34 @@ describe('artifact attachment authority', () => {
 
       assert.deepEqual(repeated, first);
       assert.equal((await store.list('session-1')).length, 1);
+    });
+  });
+
+  test('planner derives the final ref without publishing before commit', async () => {
+    await withStore(async (store) => {
+      const bytes = png.slice();
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes,
+        mimeType: 'image/png',
+      };
+      const plan = createReadImageSnapshotPlanner(store)(input);
+
+      assert.deepEqual(await store.list('session-1'), []);
+      bytes[0] = 0;
+      input.name = 'mutated after prepare';
+      await Promise.all([plan.persist(), plan.persist()]);
+      assert.deepEqual(
+        (await store.list('session-1')).map((artifact) => artifact.id),
+        [plan.ref.relativePath],
+      );
+      assert.deepEqual(await store.readBinary(plan.ref.relativePath), {
+        ok: true,
+        base64: Buffer.from(png).toString('base64'),
+        mimeType: 'image/png',
+      });
     });
   });
 });

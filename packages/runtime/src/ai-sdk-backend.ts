@@ -803,8 +803,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Caller wires this to the session ArtifactStore; runtime never imports storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
-  /** Host-owned persistence for inline image parts before their Tool Result T2 commit. */
-  persistDurableProjectionArtifact?: ToolRuntimeInput['persistDurableProjectionArtifact'];
+  /** Host-owned exact ref plan for inline images, persisted only after projection validation. */
+  prepareDurableProjectionArtifact?: ToolRuntimeInput['prepareDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
    * image parts; false/unknown stay as text refs with a fallback note.
@@ -1358,7 +1358,7 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      persistDurableProjectionArtifact: input.persistDurableProjectionArtifact,
+      prepareDurableProjectionArtifact: input.prepareDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,

@@ -41,8 +41,10 @@ import {
 export {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
   type ArtifactAttachmentResourceReader,
+  type ReadImageSnapshotPlan,
 } from './artifact-attachments.js';
 export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 

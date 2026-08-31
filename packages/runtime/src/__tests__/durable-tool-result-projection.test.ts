@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES } from '@maka/core/durable-tool-result-projection';
+import { serializedByteLength } from '@maka/core/serialized-byte-length';
 
 import {
   decodeEffectiveToolResultProjection,
@@ -140,14 +142,101 @@ describe('durable Tool Result projection codec', () => {
         ],
       },
       'session-1',
-      async () => {
+      artifactPlanner(() => {
         writes += 1;
-        return {
-          kind: 'session_file',
-          sessionId: 'session-1',
-          relativePath: 'artifact-1',
-        };
+      }),
+    );
+
+    assert.equal(projection.kind, 'failure');
+    assert.equal(writes, 0);
+  });
+
+  it('validates the complete projection before persisting any artifact', async () => {
+    let writes = 0;
+    const projection = await encodeDurableToolResultOutputWithArtifacts(
+      {
+        type: 'content',
+        value: [
+          ...Array.from({ length: 64 }, (_, index) => ({
+            type: 'text' as const,
+            text: `part-${index}`,
+          })),
+          {
+            type: 'file',
+            data: { type: 'data' as const, data: Buffer.from('valid').toString('base64') },
+            mediaType: 'image/png',
+          },
+        ],
       },
+      'session-1',
+      artifactPlanner(() => {
+        writes += 1;
+      }),
+    );
+
+    assert.equal(projection.kind, 'failure');
+    assert.equal(writes, 0);
+  });
+
+  it('uses the exact planned artifact ref as the projection size authority', async () => {
+    const ref = {
+      kind: 'session_file' as const,
+      sessionId: 'session-1',
+      relativePath: 'artifact-1',
+    };
+    const emptyProjection = {
+      version: 1 as const,
+      kind: 'content' as const,
+      parts: [
+        { kind: 'text' as const, text: '' },
+        { kind: 'artifact' as const, mediaType: 'image/png', ref },
+      ],
+    };
+    const textLength =
+      DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES - serializedByteLength(emptyProjection);
+    let writes = 0;
+    const projection = await encodeDurableToolResultOutputWithArtifacts(
+      {
+        type: 'content',
+        value: [
+          { type: 'text', text: 'x'.repeat(textLength) },
+          {
+            type: 'file',
+            data: { type: 'data', data: Buffer.from('valid').toString('base64') },
+            mediaType: 'image/png',
+          },
+        ],
+      },
+      'session-1',
+      () => ({
+        ref,
+        persist: async () => {
+          writes += 1;
+        },
+      }),
+    );
+
+    assert.equal(projection.kind, 'content');
+    assert.equal(writes, 1);
+  });
+
+  it('rejects unsafe image metadata before persisting it', async () => {
+    let writes = 0;
+    const projection = await encodeDurableToolResultOutputWithArtifacts(
+      {
+        type: 'content',
+        value: [
+          {
+            type: 'file',
+            data: { type: 'data', data: Buffer.from('valid').toString('base64') },
+            mediaType: 'image/png; token=sk-secret',
+          },
+        ],
+      },
+      'session-1',
+      artifactPlanner(() => {
+        writes += 1;
+      }),
     );
 
     assert.equal(projection.kind, 'failure');
@@ -179,3 +268,16 @@ describe('durable Tool Result projection codec', () => {
     );
   });
 });
+
+function artifactPlanner(onPersist: () => void) {
+  let nextId = 0;
+  return () => {
+    const relativePath = `artifact-${++nextId}`;
+    return {
+      ref: { kind: 'session_file' as const, sessionId: 'session-1', relativePath },
+      persist: async () => {
+        onPersist();
+      },
+    };
+  };
+}

@@ -543,12 +543,16 @@ describe('ToolRuntime with real SQLite boundary', () => {
         runId: 'run-1',
         invocationId: 'invocation-1',
         runtimeCommitSink: store,
-        persistDurableProjectionArtifact: async () => {
-          artifactWrites += 1;
+        prepareDurableProjectionArtifact: () => {
           return {
-            kind: 'session_file',
-            sessionId: 'session-1',
-            relativePath: 'projection-artifact',
+            ref: {
+              kind: 'session_file',
+              sessionId: 'session-1',
+              relativePath: 'projection-artifact',
+            },
+            persist: async () => {
+              artifactWrites += 1;
+            },
           };
         },
       });

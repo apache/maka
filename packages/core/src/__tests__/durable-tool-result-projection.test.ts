@@ -23,6 +23,8 @@ import { describe, it } from 'node:test';
 import {
   decodeDurableToolResultProjection,
   DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES,
+  DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH,
+  DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES,
 } from '../durable-tool-result-projection.js';
 
 describe('durable Tool Result projection', () => {
@@ -107,6 +109,50 @@ describe('durable Tool Result projection', () => {
               },
             },
           ],
+        }),
+      /Invalid durable Tool Result projection/,
+    );
+  });
+
+  it('admits only canonical safe image media types', () => {
+    const projection = (mediaType: string) => ({
+      version: 1,
+      kind: 'content',
+      parts: [
+        {
+          kind: 'artifact',
+          mediaType,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
+        },
+      ],
+    });
+
+    assert.equal(decodeDurableToolResultProjection(projection('image/png')).kind, 'content');
+    assert.throws(
+      () => decodeDurableToolResultProjection(projection('image/png; token=sk-secret')),
+      /Invalid durable Tool Result projection/,
+    );
+    assert.throws(
+      () => decodeDurableToolResultProjection(projection('image/svg+xml')),
+      /Invalid durable Tool Result projection/,
+    );
+  });
+
+  it('applies the same bounded JSON budget to persisted projections', () => {
+    let tooDeep: unknown = 'leaf';
+    for (let depth = 0; depth <= DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH; depth += 1) {
+      tooDeep = [tooDeep];
+    }
+    assert.throws(
+      () => decodeDurableToolResultProjection({ version: 1, kind: 'json', value: tooDeep }),
+      /Invalid durable Tool Result projection/,
+    );
+    assert.throws(
+      () =>
+        decodeDurableToolResultProjection({
+          version: 1,
+          kind: 'json',
+          value: Array.from({ length: DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES }, () => null),
         }),
       /Invalid durable Tool Result projection/,
     );

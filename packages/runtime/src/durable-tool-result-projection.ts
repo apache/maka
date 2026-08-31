@@ -20,6 +20,8 @@
 import {
   decodeDurableToolResultProjection,
   DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
+  DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH,
+  DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES,
   DURABLE_TOOL_RESULT_PROJECTION_MAX_PARTS,
   DURABLE_TOOL_RESULT_PROJECTION_VERSION,
   type DurableProjectionArtifactRef,
@@ -28,7 +30,10 @@ import {
   type DurableToolResultProjectionPart,
 } from '@maka/core/durable-tool-result-projection';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
-import { isCanonicalArtifactEntityId } from '@maka/core/artifacts';
+import {
+  isCanonicalArtifactEntityId,
+  normalizeArtifactImagePreviewMime,
+} from '@maka/core/artifacts';
 import { isCanonicalStorageRef } from '@maka/core/events';
 import type { ToolResultContent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
@@ -45,8 +50,6 @@ import { projectFileWriteToolResultForModel } from './file-tool-model-output.js'
 
 const OMITTED_BINARY_TEXT =
   '[Binary tool output omitted from the durable model projection; repeat the tool call if it is still needed.]';
-const MAX_JSON_DEPTH = 32;
-const MAX_JSON_NODES = 20_000;
 
 /**
  * The only new-write codec from Runtime's tool-output contract into the
@@ -65,39 +68,34 @@ export function encodeDurableToolResultOutput(
   }
 }
 
-type DurableProjectionArtifactPersister = (input: {
+interface DurableProjectionArtifactPlan {
+  ref: Extract<DurableProjectionArtifactRef, { kind: 'session_file' }>;
+  persist(): Promise<void>;
+}
+
+type DurableProjectionArtifactPlanner = (input: {
   bytes: Uint8Array;
   mediaType: string;
-}) => Promise<DurableProjectionArtifactRef>;
+}) => DurableProjectionArtifactPlan;
 
 export function encodeDurableToolResultOutputWithArtifacts(
   output: ToolResultOutput,
   sessionId: string,
-  persistArtifact: DurableProjectionArtifactPersister | undefined,
+  planArtifact: DurableProjectionArtifactPlanner | undefined,
 ): DurableToolResultProjection | PromiseLike<DurableToolResultProjection> {
-  if (!persistArtifact || output.type !== 'content' || !hasInlineImage(output)) {
+  if (!planArtifact || output.type !== 'content' || !hasInlineImage(output)) {
     return encodeDurableToolResultOutput(output, sessionId);
   }
   return (async () => {
     try {
-      const decodedImages = output.value.map((part) =>
-        part.type === 'file' &&
-        part.data.type === 'data' &&
-        part.mediaType.toLowerCase().startsWith('image/')
-          ? decodeBoundedImageData(part.data.data)
-          : undefined,
-      );
-      const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
-      for (const [index, part] of output.value.entries()) {
-        const bytes = decodedImages[index];
-        if (!bytes || part.type !== 'file') {
-          value.push(part);
-          continue;
-        }
-        const ref = await persistArtifact({ bytes, mediaType: part.mediaType });
-        value.push({ ...part, data: { ref } } as never);
+      const prepared = prepareContentProjection(output, sessionId, planArtifact);
+      const persisted = new Set<string>();
+      for (const artifact of prepared.artifacts) {
+        if (persisted.has(artifact.ref.relativePath)) continue;
+        await artifact.persist();
+        persisted.add(artifact.ref.relativePath);
       }
-      return encodeDurableToolResultOutput({ type: 'content', value }, sessionId);
+      return prepared.projection;
     } catch {
       return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
     }
@@ -111,10 +109,12 @@ export function encodeDefaultDurableToolResultOutput(
   const image = sessionImageResult(result, sessionId);
   if (image) {
     try {
+      const mediaType = normalizeArtifactImagePreviewMime(image.mimeType);
+      if (!mediaType) throw new Error('Image has an unsafe media type');
       return decodeDurableToolResultProjection({
         version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
         kind: 'content',
-        parts: [{ kind: 'artifact', mediaType: image.mimeType, ref: image.ref }],
+        parts: [{ kind: 'artifact', mediaType, ref: image.ref }],
       });
     } catch {
       return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
@@ -295,25 +295,63 @@ function encodeOutput(output: ToolResultOutput, sessionId: string): DurableToolR
         ...(output.reason !== undefined ? { reason: redactSecrets(output.reason) } : {}),
       };
     case 'content': {
-      if (output.value.length > DURABLE_TOOL_RESULT_PROJECTION_MAX_PARTS) {
-        throw new Error('Tool Result content exceeds the durable part limit');
-      }
-      const parts: DurableToolResultProjectionPart[] = [];
-      for (const part of output.value) {
-        if (part.type === 'text') {
-          parts.push({ kind: 'text', text: redactSecrets(part.text) });
-          continue;
-        }
-        if (part.type === 'file') {
-          const ref = readSessionArtifactRef(part, sessionId);
-          if (ref) parts.push({ kind: 'artifact', mediaType: part.mediaType, ref });
-          else parts.push({ kind: 'text', text: OMITTED_BINARY_TEXT });
-        }
-      }
-      if (parts.length === 0) parts.push({ kind: 'text', text: 'Tool completed with no content.' });
-      return { version: DURABLE_TOOL_RESULT_PROJECTION_VERSION, kind: 'content', parts };
+      return prepareContentProjection(output, sessionId).projection;
     }
   }
+}
+
+function prepareContentProjection(
+  output: Extract<ToolResultOutput, { type: 'content' }>,
+  sessionId: string,
+  planArtifact?: DurableProjectionArtifactPlanner,
+): {
+  projection: DurableToolResultProjection;
+  artifacts: DurableProjectionArtifactPlan[];
+} {
+  if (output.value.length > DURABLE_TOOL_RESULT_PROJECTION_MAX_PARTS) {
+    throw new Error('Tool Result content exceeds the durable part limit');
+  }
+  const parts: DurableToolResultProjectionPart[] = [];
+  const artifacts: DurableProjectionArtifactPlan[] = [];
+  for (const part of output.value) {
+    if (part.type === 'text') {
+      parts.push({ kind: 'text', text: redactSecrets(part.text) });
+      continue;
+    }
+    if (part.type !== 'file') continue;
+    const ref = readSessionArtifactRef(part, sessionId);
+    if (ref) {
+      const mediaType = normalizeArtifactImagePreviewMime(part.mediaType);
+      if (!mediaType) throw new Error('Artifact has an unsafe media type');
+      parts.push({ kind: 'artifact', mediaType, ref });
+      continue;
+    }
+    if (
+      planArtifact &&
+      part.data.type === 'data' &&
+      part.mediaType.toLowerCase().startsWith('image/')
+    ) {
+      const mediaType = normalizeArtifactImagePreviewMime(part.mediaType);
+      if (!mediaType) throw new Error('Inline image has an unsafe media type');
+      const artifact = planArtifact({
+        bytes: decodeBoundedImageData(part.data.data),
+        mediaType,
+      });
+      artifacts.push(artifact);
+      parts.push({ kind: 'artifact', mediaType, ref: artifact.ref });
+      continue;
+    }
+    parts.push({ kind: 'text', text: OMITTED_BINARY_TEXT });
+  }
+  if (parts.length === 0) parts.push({ kind: 'text', text: 'Tool completed with no content.' });
+  return {
+    projection: decodeDurableToolResultProjection({
+      version: DURABLE_TOOL_RESULT_PROJECTION_VERSION,
+      kind: 'content',
+      parts,
+    }),
+    artifacts,
+  };
 }
 
 function readSessionArtifactRef(
@@ -393,7 +431,12 @@ function sanitizeJsonValue(
   depth: number,
 ): DurableProjectionJson {
   state.nodes += 1;
-  if (state.nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) throw new Error('JSON exceeds limit');
+  if (
+    state.nodes > DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES ||
+    depth > DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH
+  ) {
+    throw new Error('JSON exceeds limit');
+  }
   if (value === null) return null;
   if (typeof value === 'string') return value;
   if (typeof value === 'boolean') return value;

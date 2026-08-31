@@ -18,13 +18,15 @@
  */
 
 import { isCanonicalStorageRef, type StorageRef } from './events.js';
-import { isCanonicalArtifactEntityId } from './artifacts.js';
+import { isCanonicalArtifactEntityId, normalizeArtifactImagePreviewMime } from './artifacts.js';
 import { hasExactShape, isRecord } from './record-schema.js';
 import { serializedByteLength } from './serialized-byte-length.js';
 
 export const DURABLE_TOOL_RESULT_PROJECTION_VERSION = 1 as const;
 export const DURABLE_TOOL_RESULT_PROJECTION_MAX_BYTES = 256 * 1024;
 export const DURABLE_TOOL_RESULT_PROJECTION_MAX_PARTS = 64;
+export const DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH = 32;
+export const DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES = 20_000;
 export const DURABLE_TOOL_RESULT_PROJECTION_FAILURE_MESSAGE =
   'The tool completed, but its model-visible result could not be projected safely.';
 
@@ -97,7 +99,7 @@ function isDurableToolResultProjection(value: unknown): value is DurableToolResu
           required: ['version', 'kind', 'value'],
           allowed: new Set(['version', 'kind', 'value', 'isError']),
         }) &&
-        isDurableProjectionJson(value.value) &&
+        isDurableProjectionJson(value.value, { nodes: 0 }, 0) &&
         (value.isError === undefined || value.isError === true)
       );
     case 'content':
@@ -150,14 +152,25 @@ function isProjectionPart(value: unknown): value is DurableToolResultProjectionP
       allowed: new Set(['kind', 'mediaType', 'ref']),
     }) &&
     typeof value.mediaType === 'string' &&
-    value.mediaType.length > 0 &&
+    normalizeArtifactImagePreviewMime(value.mediaType) === value.mediaType &&
     isCanonicalStorageRef(value.ref) &&
     (value.ref.kind === 'session_context' ||
       (value.ref.kind === 'session_file' && isCanonicalArtifactEntityId(value.ref.relativePath)))
   );
 }
 
-function isDurableProjectionJson(value: unknown): value is DurableProjectionJson {
+function isDurableProjectionJson(
+  value: unknown,
+  state: { nodes: number },
+  depth: number,
+): value is DurableProjectionJson {
+  state.nodes += 1;
+  if (
+    state.nodes > DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_NODES ||
+    depth > DURABLE_TOOL_RESULT_PROJECTION_MAX_JSON_DEPTH
+  ) {
+    return false;
+  }
   if (
     value === null ||
     typeof value === 'string' ||
@@ -166,6 +179,11 @@ function isDurableProjectionJson(value: unknown): value is DurableProjectionJson
   ) {
     return true;
   }
-  if (Array.isArray(value)) return value.every(isDurableProjectionJson);
-  return isRecord(value) && Object.values(value).every(isDurableProjectionJson);
+  if (Array.isArray(value)) {
+    return value.every((item) => isDurableProjectionJson(item, state, depth + 1));
+  }
+  return (
+    isRecord(value) &&
+    Object.values(value).every((item) => isDurableProjectionJson(item, state, depth + 1))
+  );
 }

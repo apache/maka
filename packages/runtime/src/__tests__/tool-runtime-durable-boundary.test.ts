@@ -294,12 +294,16 @@ describe('ToolRuntime durable boundary', () => {
       undefined,
       'run-1',
       {
-        persistDurableProjectionArtifact: async (input) => {
-          order.push('artifact');
+        prepareDurableProjectionArtifact: (input) => {
           assert.equal(input.turnId, 'turn-1');
           assert.equal(input.mediaType, 'image/png');
           assert.deepEqual([...input.bytes], [137, 80, 78, 71]);
-          return artifactRef;
+          return {
+            ref: artifactRef,
+            persist: async () => {
+              order.push('artifact');
+            },
+          };
         },
       },
     );

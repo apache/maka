@@ -23,6 +23,11 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   type AttachmentByteReader,
 } from '@maka/core/attachments';
+import {
+  isArtifactTurnKey,
+  isCanonicalArtifactEntityId,
+  normalizeArtifactImagePreviewMime,
+} from '@maka/core/artifacts';
 import { createHash } from 'node:crypto';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
@@ -31,6 +36,7 @@ import type {
   ArtifactStore,
   DurableArtifactAttachmentReader,
 } from './artifact-store.js';
+import { sanitizeArtifactName } from './artifact-store.js';
 
 export interface ArtifactAttachmentResourceReader {
   readAttachmentResource(
@@ -120,42 +126,87 @@ export function createAttachmentByteReader(input: {
   };
 }
 
-export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
-  return async (input: {
-    sessionId: string;
-    turnId: string;
-    name: string;
-    bytes: Uint8Array;
-    mimeType: string;
-  }): Promise<Extract<StorageRef, { kind: 'session_file' }>> => {
+interface ReadImageSnapshotInput {
+  sessionId: string;
+  turnId: string;
+  name: string;
+  bytes: Uint8Array;
+  mimeType: string;
+}
+
+export interface ReadImageSnapshotPlan {
+  ref: Extract<StorageRef, { kind: 'session_file' }>;
+  persist(): Promise<void>;
+}
+
+export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore, 'create'>) {
+  return (input: ReadImageSnapshotInput): ReadImageSnapshotPlan => {
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
     }
-    const id = `image_${createHash('sha256')
-      .update(input.sessionId, 'utf8')
-      .update('\0', 'utf8')
-      .update(input.turnId, 'utf8')
-      .update('\0', 'utf8')
-      .update(input.name, 'utf8')
-      .update('\0', 'utf8')
-      .update(input.mimeType, 'utf8')
-      .update('\0', 'utf8')
-      .update(input.bytes)
-      .digest('hex')}`;
-    const artifact = await artifactStore.create({
-      id,
+    if (normalizeArtifactImagePreviewMime(input.mimeType) !== input.mimeType) {
+      throw new Error('Image media type is not canonical or safe');
+    }
+    if (!isCanonicalArtifactEntityId(input.sessionId)) {
+      throw new Error('Image Session id is not canonical');
+    }
+    if (!isArtifactTurnKey(input.turnId)) {
+      throw new Error('Image turn id is not canonical');
+    }
+    const accepted = Object.freeze({
       sessionId: input.sessionId,
       turnId: input.turnId,
-      name: input.name,
-      kind: 'image',
-      content: input.bytes,
+      name: sanitizeArtifactName(input.name),
+      bytes: input.bytes.slice(),
       mimeType: input.mimeType,
-      source: 'tool_result',
     });
-    return {
-      kind: 'session_file',
-      sessionId: input.sessionId,
-      relativePath: artifact.id,
-    };
+    const id = `image_${createHash('sha256')
+      .update(accepted.sessionId, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.turnId, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.name, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.mimeType, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.bytes)
+      .digest('hex')}`;
+    let publication: Promise<void> | undefined;
+    const ref = Object.freeze({
+      kind: 'session_file' as const,
+      sessionId: accepted.sessionId,
+      relativePath: id,
+    });
+    return Object.freeze({
+      ref,
+      persist() {
+        publication ??= artifactStore
+          .create({
+            id,
+            sessionId: accepted.sessionId,
+            turnId: accepted.turnId,
+            name: accepted.name,
+            kind: 'image',
+            content: accepted.bytes,
+            mimeType: accepted.mimeType,
+            source: 'tool_result',
+          })
+          .then((artifact) => {
+            if (artifact.id !== id) throw new Error('Artifact publication changed its planned id');
+          });
+        return publication;
+      },
+    });
+  };
+}
+
+export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
+  const planSnapshot = createReadImageSnapshotPlanner(artifactStore);
+  return async (
+    input: ReadImageSnapshotInput,
+  ): Promise<Extract<StorageRef, { kind: 'session_file' }>> => {
+    const plan = planSnapshot(input);
+    await plan.persist();
+    return plan.ref;
   };
 }
