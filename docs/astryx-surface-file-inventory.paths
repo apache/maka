@@ -16,6 +16,7 @@ apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
+apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx

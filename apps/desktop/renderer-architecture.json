@@ -921,7 +921,6 @@
           "useCommandPalette": 1,
           "useComposerAttachments": 1,
           "useEffect": 14,
-          "useGoalController": 1,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useModuleHubController": 1,
@@ -1060,8 +1059,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 187,
-        "nonTriviaTokens": 15855
+        "importSpecifiers": 186,
+        "nonTriviaTokens": 15825
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
