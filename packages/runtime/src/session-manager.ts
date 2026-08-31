@@ -259,6 +259,15 @@ function runtimeCommitSinkFromEventStore(
     : undefined;
 }
 
+function runtimeEventHasProjectionArtifact(event: RuntimeEvent): boolean {
+  const content = event.content;
+  return (
+    content?.kind === 'function_response' &&
+    content.modelProjection?.kind === 'content' &&
+    content.modelProjection.parts.some((part) => part.kind === 'artifact')
+  );
+}
+
 export interface StopSessionInput {
   source?: 'stop_button' | 'graph_supervisor';
   mode?: BackendStopMode;
@@ -4477,13 +4486,25 @@ export class SessionManager {
     copiedMessages: readonly StoredMessage[],
   ): Promise<ConversationRuntimeLedgerCopyPlan | undefined> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return undefined;
-    return prepareConversationRuntimeLedgerCopy({
+    const plan = await prepareConversationRuntimeLedgerCopy({
       sourceSessionId,
       sourceEvents: sourceView.events,
       copiedMessages,
       runStore: this.deps.runStore,
       runtimeEventStore: this.deps.runtimeEventStore,
     });
+    const events = [
+      ...plan.inlineRuntimeEvents,
+      ...plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+    ];
+    if (events.some(runtimeEventHasProjectionArtifact)) {
+      const error = new Error(
+        'Conversation copy requires artifact ownership transfer for durable Tool Result projections',
+      ) as Error & { code: string };
+      error.code = 'conversation_copy_projection_artifact_transfer_required';
+      throw error;
+    }
+    return plan;
   }
 
   private async cloneConversationRuntimeLedger(

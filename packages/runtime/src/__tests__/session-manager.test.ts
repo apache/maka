@@ -8681,6 +8681,95 @@ describe('SessionManager permission mode updates', () => {
     });
   });
 
+  test('conversation copy without artifact transfer fails before cloning projected refs', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const manager = makeManagerForReadCutover(store, runStore);
+    const session = await manager.createSession(makeInput({ name: 'Parent' }));
+    const runId = 'source-run';
+    const turnId = 'source';
+    const artifactRef = {
+      kind: 'session_file' as const,
+      sessionId: session.id,
+      relativePath: 'artifact-source',
+    };
+    await seedRuntimeRun(
+      runStore,
+      makeRunHeader({
+        sessionId: session.id,
+        runId,
+        turnId,
+        status: 'completed',
+        createdAt: 100,
+        updatedAt: 104,
+        completedAt: 104,
+      }),
+      [
+        runtimeEvent({
+          id: 'source-user',
+          sessionId: session.id,
+          runId,
+          turnId,
+          ts: 101,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'read the image' },
+        }),
+        runtimeEvent({
+          id: 'source-call',
+          sessionId: session.id,
+          runId,
+          turnId,
+          ts: 102,
+          role: 'model',
+          author: 'agent',
+          content: {
+            kind: 'function_call',
+            id: 'read-1',
+            name: 'Read',
+            args: { path: 'image.png' },
+          },
+        }),
+        runtimeEvent({
+          id: 'source-result',
+          sessionId: session.id,
+          runId,
+          turnId,
+          ts: 103,
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'read-1',
+            name: 'Read',
+            result: { kind: 'image', mimeType: 'image/png', ref: artifactRef },
+            modelProjection: {
+              version: 1,
+              kind: 'content',
+              parts: [{ kind: 'artifact', mediaType: 'image/png', ref: artifactRef }],
+            },
+          },
+        }),
+        runtimeEvent({
+          id: 'source-terminal',
+          sessionId: session.id,
+          runId,
+          turnId,
+          ts: 104,
+          status: 'completed',
+          actions: { endInvocation: true },
+        }),
+      ],
+    );
+
+    await assert.rejects(
+      manager.branchFromTurn(session.id, { sourceTurnId: turnId, name: 'Child' }),
+      (error: Error & { code?: string }) =>
+        error.code === 'conversation_copy_projection_artifact_transfer_required',
+    );
+    assert.equal((await store.list()).length, 1);
+  });
+
   test('conversation copies materialize requestless hosted permission history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
