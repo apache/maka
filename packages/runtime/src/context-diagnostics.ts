@@ -45,6 +45,8 @@ import {
   type SemanticPrefixContinuity,
 } from './semantic-prefix-continuity.js';
 
+export type { SemanticPrefixContinuity } from './semantic-prefix-continuity.js';
+
 export type ContextDiagnosticsUnavailableReason = 'no_completed_request' | 'trace_unavailable';
 
 export type ContextDiagnosticsSegmentKind =

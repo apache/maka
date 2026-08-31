@@ -28,6 +28,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeContextCompactionOutcome, decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 import type { ContextCompactionOutcome } from '@maka/core/events';
+import type { SemanticPrefixContinuity } from '@maka/runtime/context-diagnostics';
 
 export interface ContextDiagnosticsQueryInput {
   readonly sessionId: string;
@@ -71,28 +72,7 @@ export interface ContextDiagnosticsComposition {
   readonly unlabelledToolBytes?: number;
 }
 
-export type ContextDiagnosticsRequestPrefix =
-  | {
-      readonly status: 'no_predecessor' | 'unavailable';
-      readonly previousSegmentCount: 0;
-      readonly preservedSegmentCount: 0;
-    }
-  | {
-      readonly status: 'preserved' | 'unknown';
-      readonly previousSegmentCount: number;
-      readonly preservedSegmentCount: number;
-    }
-  | {
-      readonly status: 'diverged';
-      readonly previousSegmentCount: number;
-      readonly preservedSegmentCount: number;
-      readonly firstDivergentSegment: {
-        readonly kind: 'tool_schema' | 'system_prompt' | 'message' | 'provider_options';
-        readonly index: number;
-        readonly role?: string;
-        readonly label?: string;
-      };
-    };
+export type ContextDiagnosticsRequestPrefix = SemanticPrefixContinuity;
 
 export type ContextDiagnosticsResult =
   | {
@@ -319,12 +299,18 @@ function decodeContextDiagnosticsRequestPrefix(value: unknown): ContextDiagnosti
       index: requireCount(segment.index, 'requestPrefixSegmentIndex'),
       ...(segment.role === undefined
         ? {}
-        : { role: requireString(segment.role, 'requestPrefixSegmentRole', 256) }),
+        : { role: requireOptionalSegmentText(segment.role, 'requestPrefixSegmentRole') }),
       ...(segment.label === undefined
         ? {}
-        : { label: requireString(segment.label, 'requestPrefixSegmentLabel', 256) }),
+        : { label: requireOptionalSegmentText(segment.label, 'requestPrefixSegmentLabel') }),
     },
   };
+}
+
+function requireOptionalSegmentText(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length > 256)
+    throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
 }
 
 /**
