@@ -29,6 +29,7 @@ import {
   InteractionPermissionProjectionError,
   decodeInteractionAnswer,
   decodeInteractionCanonicalOutcome,
+  decodeInteractionFormResponse,
   decodeInteractionRequest,
   interactionCanonicalOutcomesEquivalent,
   isInteractionAnswerValidForRequest,
@@ -1299,5 +1300,32 @@ describe('Interaction decoding and validity', () => {
       ),
       false,
     );
+  });
+
+  test('decodes form responses as a closed renderer-to-runtime shape', () => {
+    assert.deepEqual(
+      decodeInteractionFormResponse({
+        requestId: 'form-1',
+        action: 'accept',
+        values: { replicas: 3, regions: ['us', 'eu'] },
+      }),
+      {
+        requestId: 'form-1',
+        action: 'accept',
+        values: { replicas: 3, regions: ['us', 'eu'] },
+      },
+    );
+    assert.deepEqual(decodeInteractionFormResponse({ requestId: 'form-1', action: 'decline' }), {
+      requestId: 'form-1',
+      action: 'decline',
+    });
+    for (const invalid of [
+      { requestId: 'form-1', action: 'accept' },
+      { requestId: 'form-1', action: 'cancel', values: {} },
+      { requestId: 'form-1', action: 'accept', values: {}, extra: true },
+      { requestId: '', action: 'decline' },
+    ]) {
+      assert.throws(() => decodeInteractionFormResponse(invalid));
+    }
   });
 });

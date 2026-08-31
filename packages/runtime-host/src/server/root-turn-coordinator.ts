@@ -2412,7 +2412,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
         } else if (isInteractionAnswerAck(event)) {
           await this.continuity.refreshCanonical(input.sessionId);
-        } else if (event.type === 'user_question_request') {
+        } else if (event.type === 'user_question_request' || event.type === 'form_request') {
           this.continuity.enqueueCanonicalRefresh(input.sessionId);
         }
       }

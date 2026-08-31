@@ -330,6 +330,12 @@ const FORM_ACCEPT_ANSWER_SHAPE = defineObjectShape<
 const FORM_EMPTY_ANSWER_SHAPE = defineObjectShape<
   Extract<InteractionFormAnswer, { action: 'decline' | 'cancel' }>
 >()(['kind', 'action'], []);
+const FORM_ACCEPT_RESPONSE_SHAPE = defineObjectShape<
+  Extract<InteractionFormResponse, { action: 'accept' }>
+>()(['requestId', 'action', 'values'], []);
+const FORM_EMPTY_RESPONSE_SHAPE = defineObjectShape<
+  Extract<InteractionFormResponse, { action: 'decline' | 'cancel' }>
+>()(['requestId', 'action'], []);
 const SANDBOX_BOUNDARY_ANSWER_SHAPE = defineObjectShape<InteractionSandboxBoundaryAnswer>()(
   ['kind', 'decision'],
   [],
@@ -504,6 +510,26 @@ export function decodeInteractionAnswer(value: unknown): InteractionAnswer {
   }
   serializedLimit(answer, INTERACTION_ANSWER_SERIALIZED_MAX_BYTES, 'Interaction answer');
   return deepFreeze(answer);
+}
+
+export function decodeInteractionFormResponse(value: unknown): InteractionFormResponse {
+  const record = plainRecord(value, 'Interaction form response');
+  const requestId = boundedString(record.requestId, 'requestId', INTERACTION_ID_MAX_BYTES);
+  const action = oneOf(record.action, ['accept', 'decline', 'cancel'] as const, 'form action');
+  if (action === 'accept') {
+    exact(record, FORM_ACCEPT_RESPONSE_SHAPE, 'accepted form response');
+    const answer = decodeInteractionAnswer({
+      kind: 'form',
+      action,
+      values: record.values,
+    });
+    if (answer.kind !== 'form' || answer.action !== 'accept') {
+      throw new Error('Invalid accepted form response');
+    }
+    return deepFreeze({ requestId, action, values: answer.values });
+  }
+  exact(record, FORM_EMPTY_RESPONSE_SHAPE, 'empty form response');
+  return deepFreeze({ requestId, action });
 }
 
 export function decodeInteractionCanonicalOutcome(value: unknown): InteractionCanonicalOutcome {
