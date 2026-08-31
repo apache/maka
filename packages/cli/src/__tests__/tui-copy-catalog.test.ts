@@ -34,7 +34,8 @@ describe('TUI copy resources', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       assert.ok(catalog.en, `${domain}/en`);
       assert.ok(catalog.zh, `${domain}/zh`);
-      assert.ok((catalog as Record<string, unknown>).ko, `${domain}/ko`);
+      // TODO #3975: ko staged off enabled union — verified via raw as const, will become typed catalog.ko after UI_LOCALES adds 'ko'
+      assert.ok((catalog as unknown as { ko: unknown }).ko, `${domain}/ko`);
     }
   });
 
@@ -64,10 +65,11 @@ describe('TUI copy resources', () => {
     }
   });
 
+  // TODO #3975: remove as-unknown cast after UI_LOCALES includes 'ko' and catalog.ko is typed
   test('keeps Korean coverage and variables aligned with English', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       const enLeaves = new Map(leafEntries(catalog.en));
-      const koLeaves = new Map(leafEntries((catalog as Record<string, unknown>).ko as Record<string, unknown>));
+      const koLeaves = new Map(leafEntries((catalog as unknown as { ko: Record<string, unknown> }).ko));
       assert.deepEqual([...koLeaves.keys()].sort(), [...enLeaves.keys()].sort(), `${domain}/ko`);
       for (const [path, enTemplate] of enLeaves) {
         const koTemplate = koLeaves.get(path)!;

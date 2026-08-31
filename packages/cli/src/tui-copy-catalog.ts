@@ -17,6 +17,9 @@
  * under the License.
  */
 
+// TODO #3975: ko dictionaries staged off the enabled UiLocale union (['zh','en']).
+// They are intentionally added as `as const` entries without widening UiCatalog/UiLocale.
+// Will be wired when UI_LOCALES adds 'ko' via #3975 (atomic enable, see #3974).
 export const TUI_COPY_RESOURCES = {
   'mcp-status': {
     en: {
