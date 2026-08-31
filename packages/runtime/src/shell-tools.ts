@@ -392,7 +392,81 @@ export function buildStopBackgroundTaskTool(backgroundTasks: BackgroundTaskStopp
   };
 }
 
-export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
+/** A syntactically valid PTY ref used only in the documented WriteStdin examples. */
+export const WRITE_STDIN_EXAMPLE_REF = 'maka://runtime/background-tasks/sr_example';
+
+/**
+ * One minimal legal payload per WriteStdin action type (plus a resize-only
+ * call). Each entry is valid under the loose provider schema AND passes strict
+ * validation after normalization — the WriteStdin contract conformance test
+ * asserts both, so the documented shape can never drift from what the runtime
+ * actually accepts. The `key (chord)` entry shows the ctrl-modified printable
+ * form the description points at.
+ */
+export const WRITE_STDIN_MINIMAL_EXAMPLES: readonly {
+  readonly label: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}[] = [
+  {
+    label: 'text',
+    payload: { ref: WRITE_STDIN_EXAMPLE_REF, actions: [{ type: 'text', text: 'hello' }] },
+  },
+  {
+    label: 'key (named)',
+    payload: { ref: WRITE_STDIN_EXAMPLE_REF, actions: [{ type: 'key', key: 'enter' }] },
+  },
+  {
+    label: 'key (chord)',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'key', key: 'c', modifiers: ['ctrl'] }],
+    },
+  },
+  {
+    label: 'mouse click',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'mouse', event: 'click', x: 0, y: 0, button: 'left' }],
+    },
+  },
+  {
+    label: 'mouse move',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'mouse', event: 'move', x: 1, y: 1 }],
+    },
+  },
+  {
+    label: 'mouse scroll',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'mouse', event: 'scroll', x: 0, y: 0, direction: 'up' }],
+    },
+  },
+  { label: 'resize only', payload: { ref: WRITE_STDIN_EXAMPLE_REF, size: { cols: 80, rows: 24 } } },
+];
+
+/**
+ * Build the two-layer WriteStdin schema pair as a single unit so the
+ * provider-visible (loose) schema and the strict runtime validator can be
+ * exercised together by conformance tests. The loose provider schema exists so
+ * providers that inject `null`/`0`/`''` placeholders are tolerated; the strict
+ * validator (via {@link normalizeProviderWriteStdinInput}) normalizes those away
+ * and enforces the real contract. {@link WRITE_STDIN_MINIMAL_EXAMPLES} pins a
+ * minimal legal payload per action type that must pass BOTH layers.
+ */
+/** The validated shape the strict WriteStdin schema yields after normalization. */
+export interface WriteStdinInput {
+  ref: string;
+  input?: string;
+  actions?: TerminalInputAction[];
+  size?: { cols: number; rows: number };
+}
+
+export function createWriteStdinSchemas(): {
+  providerParameters: z.ZodTypeAny;
+  strictParameters: z.ZodType<WriteStdinInput, unknown>;
+} {
   const terminalAction = z.unknown().transform((value, context): TerminalInputAction => {
     try {
       return parseTerminalInputAction(value);
@@ -522,6 +596,11 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
     })
     .strict()
     .describe('Send ordered terminal actions and/or resize a background PTY');
+  return { providerParameters, strictParameters };
+}
+
+export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
+  const { providerParameters, strictParameters } = createWriteStdinSchemas();
   const providerSchema = zodSchema(providerParameters);
   const parameters = jsonSchema(async () => await providerSchema.jsonSchema, {
     validate: async (value) => {
@@ -540,6 +619,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
       `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +
       'Mouse coordinates are zero-based terminal cells and work only while the application has enabled SGR cell mouse reporting. ' +
       'Actions are written atomically in their listed order. Text is ordinary audited tool-call data, not a secure secret channel. ' +
+      'Minimal example: {"ref":"maka://runtime/background-tasks/<id>","actions":[{"type":"key","key":"enter"}]}. ' +
       'The returned output is the terminal state at that cut, not output attributed to this input; use Read on the ref to observe later output.',
     parameters,
     permissionArgs: (input) => parseInput(input),

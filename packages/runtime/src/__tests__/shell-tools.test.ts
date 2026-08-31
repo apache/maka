@@ -22,7 +22,11 @@ import { describe, test } from 'node:test';
 import {
   buildLocalForegroundBashTool,
   buildManagedBashTool,
+  buildWriteStdinTool,
+  createWriteStdinSchemas,
   shapeTerminalResult,
+  WRITE_STDIN_EXAMPLE_REF,
+  WRITE_STDIN_MINIMAL_EXAMPLES,
   type ShellRunLauncher,
 } from '../shell-tools.js';
 import type { ShellPlan } from '../shell-detect.js';
@@ -273,6 +277,107 @@ describe('shapeTerminalResult sandbox denial projection', () => {
       },
     });
     assert.equal(result.sandboxDenial, undefined);
+  });
+});
+
+describe('WriteStdin provider/strict contract conformance', () => {
+  const { providerParameters, strictParameters } = createWriteStdinSchemas();
+
+  test('every documented minimal example is accepted by BOTH the provider and strict layers', () => {
+    assert.ok(WRITE_STDIN_MINIMAL_EXAMPLES.length >= 7, 'expected one example per action shape');
+    for (const { label, payload } of WRITE_STDIN_MINIMAL_EXAMPLES) {
+      const provider = providerParameters.safeParse(payload);
+      assert.ok(
+        provider.success,
+        `provider schema rejected the documented "${label}" example: ${
+          provider.success ? '' : provider.error.message
+        }`,
+      );
+      const strict = strictParameters.safeParse(payload);
+      assert.ok(
+        strict.success,
+        `strict validator rejected the documented "${label}" example: ${
+          strict.success ? '' : strict.error.message
+        }`,
+      );
+    }
+  });
+
+  test('the description advertises a ref/actions example the schemas actually accept', () => {
+    const controls = {
+      writeStdin: () => Promise.reject(new Error('not used')),
+      resize: () => Promise.reject(new Error('not used')),
+    } as unknown as Parameters<typeof buildWriteStdinTool>[0];
+    const tool = buildWriteStdinTool(controls);
+    const match = tool.description.match(/\{"ref":"[^"]+","actions":\[[^\]]+\]\}/);
+    assert.ok(match, `description is missing a concrete minimal example: ${tool.description}`);
+    const advertised = JSON.parse(match[0].replace('<id>', 'sr_example'));
+    assert.ok(
+      providerParameters.safeParse(advertised).success,
+      'the advertised example must pass the provider schema',
+    );
+    assert.ok(
+      strictParameters.safeParse(advertised).success,
+      'the advertised example must pass the strict validator',
+    );
+  });
+
+  test('provider null/0/empty placeholders are tolerated and normalized away by the strict layer', () => {
+    // A provider that fills every optional field with a null/0/'' placeholder
+    // rather than omitting it must still round-trip to the minimal legal action.
+    const withPlaceholders = {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [
+        {
+          type: 'key',
+          key: 'enter',
+          text: '',
+          event: null,
+          x: 0,
+          y: 0,
+          button: null,
+          direction: null,
+          modifiers: [],
+        },
+      ],
+      size: null,
+    };
+    const strict = strictParameters.safeParse(withPlaceholders);
+    assert.ok(
+      strict.success,
+      `strict validator should normalize provider placeholders, got: ${
+        strict.success ? '' : strict.error.message
+      }`,
+    );
+    assert.deepEqual(strict.data.actions, [{ type: 'key', key: 'enter' }]);
+  });
+
+  test('strict validation is not vacuous: contract violations are rejected', () => {
+    // Mouse click without a button is structurally invalid.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: WRITE_STDIN_EXAMPLE_REF,
+        actions: [{ type: 'mouse', event: 'click', x: 0, y: 0 }],
+      }).success,
+      false,
+    );
+    // A non-canonical ref must be refused even when the actions are legal.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: 'not-a-runtime-ref',
+        actions: [{ type: 'key', key: 'enter' }],
+      }).success,
+      false,
+    );
+    // input and actions are mutually exclusive.
+    assert.equal(
+      strictParameters.safeParse({
+        ref: WRITE_STDIN_EXAMPLE_REF,
+        input: 'x',
+        actions: [{ type: 'key', key: 'enter' }],
+      }).success,
+      false,
+    );
   });
 });
 
