@@ -24,9 +24,7 @@ export {
   type RuntimeHostManagedActivationErrorCode,
 } from './managed-activation.js';
 export {
-  DEFAULT_RUNTIME_HOST_WEBRTC_STUN_URLS,
   decodeRuntimeHostWebRtcStunPolicy,
-  normalizeRuntimeHostWebRtcStunUrls,
   resolveRuntimeHostWebRtcStunUrls,
   type RuntimeHostWebRtcStunPolicy,
 } from '../webrtc-stun-policy.js';

@@ -25,7 +25,10 @@ import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { HStack } from '@astryxdesign/core/Stack';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
-import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/client';
+import {
+  decodeRuntimeHostWebRtcStunPolicy,
+  type RuntimeHostWebRtcStunPolicy,
+} from '@maka/runtime-host/webrtc-stun-policy';
 import {
   Badge,
   Button,
@@ -128,6 +131,7 @@ export function RuntimeHostPeerMeshDialog(props: {
     useState<RuntimeHostWebRtcStunPolicy['kind']>('default');
   const [customStunUrls, setCustomStunUrls] = useState('');
   const [savingConnectivityPolicy, setSavingConnectivityPolicy] = useState(false);
+  const [connectivityPolicyInputInvalid, setConnectivityPolicyInputInvalid] = useState(false);
   const [connectivityPolicyRestartRequired, setConnectivityPolicyRestartRequired] =
     useState(false);
   const [managedHostPeerSetup, setManagedHostPeerSetup] = useState<ManagedHostPeerSetup>(
@@ -512,22 +516,33 @@ export function RuntimeHostPeerMeshDialog(props: {
     }
   }
 
-  async function saveConnectivityPolicy(): Promise<void> {
-    if (savingConnectivityPolicy || connectivityPolicy.kind !== 'ready') return;
+  async function saveConnectivityPolicy(
+    override?: RuntimeHostWebRtcStunPolicy,
+  ): Promise<void> {
+    if (savingConnectivityPolicy || (!override && connectivityPolicy.kind !== 'ready')) return;
+    const candidate =
+      override ??
+      (connectivityPolicyKind === 'custom'
+        ? {
+            kind: 'custom' as const,
+            urls: customStunUrls
+              .split(',')
+              .map((url) => url.trim())
+              .filter(Boolean),
+          }
+        : { kind: connectivityPolicyKind });
+    let normalizedCandidate: RuntimeHostWebRtcStunPolicy;
+    try {
+      normalizedCandidate = decodeRuntimeHostWebRtcStunPolicy(candidate);
+    } catch {
+      setConnectivityPolicyInputInvalid(true);
+      return;
+    }
     setSavingConnectivityPolicy(true);
+    setConnectivityPolicyInputInvalid(false);
     setError(undefined);
     try {
-      const policy = await services.setConnectivityPolicy(
-        connectivityPolicyKind === 'custom'
-          ? {
-              kind: 'custom',
-              urls: customStunUrls
-                .split(',')
-                .map((url) => url.trim())
-                .filter(Boolean),
-            }
-          : { kind: connectivityPolicyKind },
-      );
+      const policy = await services.setConnectivityPolicy(normalizedCandidate);
       if (closed.current) return;
       setConnectivityPolicy({ kind: 'ready', policy });
       setConnectivityPolicyKind(policy.kind);
@@ -718,10 +733,18 @@ export function RuntimeHostPeerMeshDialog(props: {
                   customUrls={customStunUrls}
                   restartRequired={connectivityPolicyRestartRequired}
                   saving={savingConnectivityPolicy}
+                  inputInvalid={connectivityPolicyInputInvalid}
                   copy={copy}
-                  onKindChange={setConnectivityPolicyKind}
-                  onCustomUrlsChange={setCustomStunUrls}
+                  onKindChange={(kind) => {
+                    setConnectivityPolicyKind(kind);
+                    setConnectivityPolicyInputInvalid(false);
+                  }}
+                  onCustomUrlsChange={(value) => {
+                    setCustomStunUrls(value);
+                    setConnectivityPolicyInputInvalid(false);
+                  }}
                   onSave={() => void saveConnectivityPolicy()}
+                  onReset={() => void saveConnectivityPolicy({ kind: 'default' })}
                 />
               ) : null}
               {workingAction ? (
@@ -820,10 +843,12 @@ function DesktopConnectivityPolicy(props: {
   readonly customUrls: string;
   readonly restartRequired: boolean;
   readonly saving: boolean;
+  readonly inputInvalid: boolean;
   readonly copy: ReturnType<typeof peerMeshCopy>;
   readonly onKindChange: (kind: RuntimeHostWebRtcStunPolicy['kind']) => void;
   readonly onCustomUrlsChange: (value: string) => void;
   readonly onSave: () => void;
+  readonly onReset: () => void;
 }) {
   return (
     <details className="settingsPeerMeshConnectivity">
@@ -838,7 +863,18 @@ function DesktopConnectivityPolicy(props: {
       {props.state.kind === 'loading' ? (
         <Text type="supporting" color="secondary">{props.copy.connectivityPolicyLoading}</Text>
       ) : props.state.kind === 'failed' ? (
-        <Banner status="error" title={props.copy.connectivityPolicyLoadFailed} description={props.state.message} />
+        <div className="settingsPeerMeshConnectivityBody">
+          <Banner status="error" title={props.copy.connectivityPolicyLoadFailed} description={props.state.message} />
+          <HStack hAlign="end">
+            <Button
+              variant="secondary"
+              size="sm"
+              label={props.copy.restoreDefaultConnectivityPolicy}
+              isDisabled={props.saving}
+              onClick={props.onReset}
+            />
+          </HStack>
+        </div>
       ) : (
         <div className="settingsPeerMeshConnectivityBody">
           <Selector
@@ -858,6 +894,11 @@ function DesktopConnectivityPolicy(props: {
               value={props.customUrls}
               placeholder="stun:stun.example.com:3478"
               isDisabled={props.saving}
+              status={
+                props.inputInvalid
+                  ? { type: 'error', message: props.copy.customStunUrlsInvalid }
+                  : undefined
+              }
               onChange={props.onCustomUrlsChange}
             />
           ) : null}
@@ -1672,12 +1713,16 @@ function peerMeshCopy(locale: string) {
         connectivityPolicyLoading: '正在读取连接策略…',
         connectivityPolicyLoadFailed: '无法读取连接策略',
         connectivityPolicySaveFailed: '无法保存连接策略',
-        connectivityPolicyRestartRequired: '已保存。重启 Maka 后应用到新的连接。',
+        restoreDefaultConnectivityPolicy: '恢复默认设置',
+        connectivityPolicyRestartRequired:
+          '重启 Maka 后，已保存的连接策略变更会应用到新连接。',
         publicAddressDiscovery: '公网地址发现',
         publicStunDefault: '公共 STUN（推荐）',
         publicStunDisabled: '不使用公共 STUN',
         publicStunCustom: '自定义 STUN',
         customStunUrls: 'STUN 地址',
+        customStunUrlsInvalid:
+          '请输入以逗号分隔的 stun:主机[:端口] 地址，最多 8 个。',
         publicStunDefaultHelp:
           '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不承载 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
         publicStunDisabledHelp:
@@ -1815,12 +1860,16 @@ function peerMeshCopy(locale: string) {
         connectivityPolicyLoading: 'Loading connectivity policy…',
         connectivityPolicyLoadFailed: 'Could not load connectivity policy',
         connectivityPolicySaveFailed: 'Could not save connectivity policy',
-        connectivityPolicyRestartRequired: 'Saved. Restart Maka to apply it to new connections.',
+        restoreDefaultConnectivityPolicy: 'Restore defaults',
+        connectivityPolicyRestartRequired:
+          'Restart Maka to apply saved connectivity-policy changes to new connections.',
         publicAddressDiscovery: 'Public address discovery',
         publicStunDefault: 'Public STUN (recommended)',
         publicStunDisabled: 'No public STUN',
         publicStunCustom: 'Custom STUN',
         customStunUrls: 'STUN addresses',
+        customStunUrlsInvalid:
+          'Enter up to 8 comma-separated stun:host[:port] addresses.',
         publicStunDefaultHelp:
           'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
         publicStunDisabledHelp:

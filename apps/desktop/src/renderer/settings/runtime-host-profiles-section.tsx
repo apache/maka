@@ -26,13 +26,14 @@ import {
   SegmentedControl,
   SegmentedControlItem,
   Switch,
+  Tooltip,
 } from "@astryxdesign/core";
-import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostPeerMeshTarget,
 } from '../../preload/bridge-contract.js';
 import type {
+  RuntimeHostPeerConnectionPath,
   RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
@@ -833,7 +834,7 @@ export function RuntimeHostProfilesSection(props: {
 }
 
 function peerPathDetail(
-  path: import('@maka/runtime-host/client').RuntimeHostPeerConnectionPath,
+  path: RuntimeHostPeerConnectionPath,
   locale: string,
 ): string {
   if (path.kind === 'transit') {

@@ -39,12 +39,7 @@ export {
 } from './access-management-frame.js';
 export { runtimeHostAccessCredentialFingerprint } from '../access-credential-identity.js';
 export {
-  DEFAULT_RUNTIME_HOST_WEBRTC_STUN_URLS,
-  RUNTIME_HOST_WEBRTC_STUN_URL_MAX_BYTES,
-  RUNTIME_HOST_WEBRTC_STUN_URL_MAX_COUNT,
   decodeRuntimeHostWebRtcStunPolicy,
-  isRuntimeHostWebRtcStunUrl,
-  normalizeRuntimeHostWebRtcStunUrls,
   resolveRuntimeHostWebRtcStunUrls,
   type RuntimeHostWebRtcStunPolicy,
 } from '../webrtc-stun-policy.js';

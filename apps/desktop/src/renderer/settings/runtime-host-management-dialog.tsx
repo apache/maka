@@ -37,7 +37,6 @@ import {
 } from '@maka/ui';
 import { HelpCircle, ICON_SIZE } from '@maka/ui/icons';
 import { uiLocaleToIntlLocale, type UiLocale } from '@maka/core/ui-locale';
-import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostManagementAction,
   DesktopRuntimeHostDirectPeerSnapshot,
@@ -81,6 +80,38 @@ type DirectoryPolicyEdit = {
   readonly draft: readonly ProjectDirectoryRootDraft[];
   readonly conflict?: DirectoryPolicySnapshot;
 };
+type RuntimeHostWebRtcStunPolicy = NonNullable<
+  DesktopRuntimeHostDirectPeerSnapshot['webRtcStunPolicy']
+>;
+type DirectPeerRouteDraft = {
+  readonly coordinationRelays: string;
+  readonly automaticRelayDiscovery: boolean;
+};
+type WebRtcStunPolicyDraft = {
+  readonly webRtcStunPolicyKind: RuntimeHostWebRtcStunPolicy['kind'];
+  readonly webRtcStunUrls: string;
+};
+
+function createDirectPeerRouteDraft(
+  snapshot?: DesktopRuntimeHostDirectPeerSnapshot,
+): DirectPeerRouteDraft {
+  return {
+    coordinationRelays: snapshot?.coordinationRelays.join(', ') ?? '',
+    automaticRelayDiscovery: snapshot?.automaticRelayDiscovery ?? true,
+  };
+}
+
+function createWebRtcStunPolicyDraft(
+  snapshot?: DesktopRuntimeHostDirectPeerSnapshot,
+): WebRtcStunPolicyDraft {
+  return {
+    webRtcStunPolicyKind: snapshot?.webRtcStunPolicy?.kind ?? 'default',
+    webRtcStunUrls: snapshot?.webRtcStunPolicy?.kind === 'custom'
+      ? snapshot.webRtcStunPolicy.urls.join(', ')
+      : '',
+  };
+}
+
 export interface RuntimeHostManagementTarget {
   readonly id: string;
   readonly name: string;
@@ -114,11 +145,9 @@ export function RuntimeHostManagementDialog(props: {
   const [directoryPolicyEdit, setDirectoryPolicyEdit] = useState<DirectoryPolicyEdit>();
   const [directPeer, setDirectPeer] = useState<DesktopRuntimeHostDirectPeerSnapshot>();
   const [directPeerError, setDirectPeerError] = useState<string>();
-  const [coordinationRelays, setCoordinationRelays] = useState('');
-  const [automaticRelayDiscovery, setAutomaticRelayDiscovery] = useState(true);
-  const [webRtcStunPolicyKind, setWebRtcStunPolicyKind] =
-    useState<RuntimeHostWebRtcStunPolicy['kind']>('default');
-  const [webRtcStunUrls, setWebRtcStunUrls] = useState('');
+  const [directPeerRouteDraft, setDirectPeerRouteDraft] = useState(createDirectPeerRouteDraft);
+  const [webRtcStunPolicyDraft, setWebRtcStunPolicyDraft] =
+    useState(createWebRtcStunPolicyDraft);
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -141,9 +170,8 @@ export function RuntimeHostManagementDialog(props: {
     setDirectoryPolicyEdit(undefined);
     setDirectPeer(undefined);
     setDirectPeerError(undefined);
-    setCoordinationRelays('');
-    setWebRtcStunPolicyKind('default');
-    setWebRtcStunUrls('');
+    setDirectPeerRouteDraft(createDirectPeerRouteDraft());
+    setWebRtcStunPolicyDraft(createWebRtcStunPolicyDraft());
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -253,16 +281,8 @@ export function RuntimeHostManagementDialog(props: {
 
   function applyDirectPeer(snapshot: DesktopRuntimeHostDirectPeerSnapshot): void {
     setDirectPeer(snapshot);
-    setCoordinationRelays(snapshot.coordinationRelays.join(', '));
-    setAutomaticRelayDiscovery(snapshot.automaticRelayDiscovery);
-    if (snapshot.webRtcStunPolicy) {
-      setWebRtcStunPolicyKind(snapshot.webRtcStunPolicy.kind);
-      setWebRtcStunUrls(
-        snapshot.webRtcStunPolicy.kind === 'custom'
-          ? snapshot.webRtcStunPolicy.urls.join(', ')
-          : '',
-      );
-    }
+    setDirectPeerRouteDraft(createDirectPeerRouteDraft(snapshot));
+    setWebRtcStunPolicyDraft(createWebRtcStunPolicyDraft(snapshot));
     setDirectPeerError(undefined);
   }
 
@@ -284,7 +304,7 @@ export function RuntimeHostManagementDialog(props: {
     setLoading(true);
     setDirectPeerError(undefined);
     try {
-      const relays = coordinationRelays
+      const relays = directPeerRouteDraft.coordinationRelays
         .split(',')
         .map((relay) => relay.trim())
         .filter(Boolean);
@@ -293,17 +313,17 @@ export function RuntimeHostManagementDialog(props: {
           target.id,
           enabled,
           relays,
-          automaticRelayDiscovery,
+          directPeerRouteDraft.automaticRelayDiscovery,
           directPeer?.webRtcStunPolicy
-            ? webRtcStunPolicyKind === 'custom'
+            ? webRtcStunPolicyDraft.webRtcStunPolicyKind === 'custom'
               ? {
                   kind: 'custom',
-                  urls: webRtcStunUrls
+                  urls: webRtcStunPolicyDraft.webRtcStunUrls
                     .split(',')
                     .map((url) => url.trim())
                     .filter(Boolean),
                 }
-              : { kind: webRtcStunPolicyKind }
+              : { kind: webRtcStunPolicyDraft.webRtcStunPolicyKind }
             : undefined,
         ),
       );
@@ -819,27 +839,33 @@ export function RuntimeHostManagementDialog(props: {
                             <Switch
                               label={copy.directPeerAutomaticRelayDiscovery}
                               isLabelHidden
-                              value={automaticRelayDiscovery}
+                              value={directPeerRouteDraft.automaticRelayDiscovery}
                               isDisabled={
                                 loading ||
                                 directPeer.profileEnabled ||
                                 directPeer.state === 'enabled'
                               }
-                              onChange={setAutomaticRelayDiscovery}
+                              onChange={(value) => setDirectPeerRouteDraft((draft) => ({
+                                ...draft,
+                                automaticRelayDiscovery: value,
+                              }))}
                             />
                           </div>
                           <details className="settingsRuntimeHostDirectPeerAdvanced">
                             <summary>{copy.directPeerAdvancedCoordination}</summary>
                             <TextInput
                               label={copy.directPeerCoordinationRelays}
-                              value={coordinationRelays}
+                              value={directPeerRouteDraft.coordinationRelays}
                               placeholder={copy.directPeerCoordinationRelaysPlaceholder}
                               isDisabled={
                                 loading ||
                                 directPeer.profileEnabled ||
                                 directPeer.state === 'enabled'
                               }
-                              onChange={setCoordinationRelays}
+                              onChange={(value) => setDirectPeerRouteDraft((draft) => ({
+                                ...draft,
+                                coordinationRelays: value,
+                              }))}
                             />
                           </details>
                           {directPeer.webRtcStunPolicy ? (
@@ -848,7 +874,7 @@ export function RuntimeHostManagementDialog(props: {
                               <div className="settingsRuntimeHostDirectPeerStun">
                                 <Selector
                                   label={copy.directPeerStunPolicy}
-                                  value={webRtcStunPolicyKind}
+                                  value={webRtcStunPolicyDraft.webRtcStunPolicyKind}
                                   options={[
                                     {
                                       value: 'default',
@@ -868,27 +894,32 @@ export function RuntimeHostManagementDialog(props: {
                                     directPeer.profileEnabled ||
                                     directPeer.state === 'enabled'
                                   }
-                                  onChange={(value) => setWebRtcStunPolicyKind(
-                                    value as RuntimeHostWebRtcStunPolicy['kind'],
-                                  )}
+                                  onChange={(value) => setWebRtcStunPolicyDraft((draft) => ({
+                                    ...draft,
+                                    webRtcStunPolicyKind:
+                                      value as RuntimeHostWebRtcStunPolicy['kind'],
+                                  }))}
                                 />
-                                {webRtcStunPolicyKind === 'custom' ? (
+                                {webRtcStunPolicyDraft.webRtcStunPolicyKind === 'custom' ? (
                                   <TextInput
                                     label={copy.directPeerStunUrls}
-                                    value={webRtcStunUrls}
+                                    value={webRtcStunPolicyDraft.webRtcStunUrls}
                                     placeholder="stun:stun.example.com:3478"
                                     isDisabled={
                                       loading ||
                                       directPeer.profileEnabled ||
                                       directPeer.state === 'enabled'
                                     }
-                                    onChange={setWebRtcStunUrls}
+                                    onChange={(value) => setWebRtcStunPolicyDraft((draft) => ({
+                                      ...draft,
+                                      webRtcStunUrls: value,
+                                    }))}
                                   />
                                 ) : null}
                                 <Text type="supporting" color="secondary">
-                                  {webRtcStunPolicyKind === 'default'
+                                  {webRtcStunPolicyDraft.webRtcStunPolicyKind === 'default'
                                     ? copy.directPeerStunDefaultHelp
-                                    : webRtcStunPolicyKind === 'disabled'
+                                    : webRtcStunPolicyDraft.webRtcStunPolicyKind === 'disabled'
                                       ? copy.directPeerStunDisabledHelp
                                       : copy.directPeerStunCustomHelp}
                                 </Text>
