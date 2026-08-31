@@ -81,6 +81,58 @@ test('reports the first removed earlier segment', () => {
   });
 });
 
+test('reports the current segment at the first middle deletion', () => {
+  const previous = observation([
+    message(0, 'system'),
+    message(1, 'user-1'),
+    message(2, 'assistant-1'),
+  ]);
+  const current = observation([message(0, 'system'), message(2, 'assistant-1')]);
+
+  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+    status: 'diverged',
+    previousSegmentCount: 3,
+    preservedSegmentCount: 1,
+    firstDivergentSegment: { kind: 'message', index: 2 },
+  });
+});
+
+test('reports an inserted segment as the first divergence', () => {
+  const previous = observation([message(0, 'system'), message(2, 'assistant-1')]);
+  const current = observation([
+    message(0, 'system'),
+    message(1, 'inserted-user'),
+    message(2, 'assistant-1'),
+  ]);
+
+  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+    status: 'diverged',
+    previousSegmentCount: 2,
+    preservedSegmentCount: 1,
+    firstDivergentSegment: { kind: 'message', index: 1 },
+  });
+});
+
+test('reports the first moved segment after a reorder', () => {
+  const previous = observation([
+    message(0, 'system'),
+    message(1, 'user-1'),
+    message(2, 'assistant-1'),
+  ]);
+  const current = observation([
+    message(0, 'system'),
+    message(2, 'assistant-1'),
+    message(1, 'user-1'),
+  ]);
+
+  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+    status: 'diverged',
+    previousSegmentCount: 3,
+    preservedSegmentCount: 1,
+    firstDivergentSegment: { kind: 'message', index: 2 },
+  });
+});
+
 test('uses the preceding physical retry as its durable baseline', async () => {
   const previous = attempt({ attemptId: 'attempt-0', attempt: 0 });
   const current = attempt({ attemptId: 'attempt-1', attempt: 1 });

@@ -42,6 +42,7 @@ import {
 } from './history-compact-checkpoint.js';
 import {
   deriveAttemptSemanticPrefixContinuity,
+  isCanonicalAttemptForRun,
   type SemanticPrefixContinuity,
 } from './semantic-prefix-continuity.js';
 
@@ -419,7 +420,13 @@ function meteringAnchor(event: AgentRunEvent, run: AgentRunHeader): MeteringAnch
   } catch {
     return undefined;
   }
-  if (attempt.callKind !== 'main' || attempt.status !== 'completed') return undefined;
+  if (
+    attempt.callKind !== 'main' ||
+    attempt.status !== 'completed' ||
+    !isCanonicalAttemptForRun(event, attempt, run)
+  ) {
+    return undefined;
+  }
   const composition = attempt.requestObservation
     ? foldPromptComposition(attempt.requestObservation.segments)
     : undefined;

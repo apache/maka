@@ -23,7 +23,12 @@ import type {
   PreparedRequestObservationSegment,
 } from '@maka/core/model-call-attempt';
 import { decodeModelCallAttempt } from '@maka/core/model-call-attempt';
-import { isSessionInlineRun, type AgentRunHeader, type AgentRunStore } from '@maka/core/agent-run';
+import {
+  isSessionInlineRun,
+  type AgentRunEvent,
+  type AgentRunHeader,
+  type AgentRunStore,
+} from '@maka/core/agent-run';
 
 export type SemanticPrefixContinuity =
   | {
@@ -249,14 +254,7 @@ async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<Mod
     if (event.type !== 'model_call_attempt_recorded') continue;
     try {
       const attempt = decodeModelCallAttempt(event.data);
-      if (
-        attempt.callKind === 'main' &&
-        attempt.sessionId === run.sessionId &&
-        attempt.runId === run.runId &&
-        attempt.turnId === run.turnId &&
-        event.turnId === run.turnId &&
-        attempt.attemptId === event.id
-      ) {
+      if (attempt.callKind === 'main' && isCanonicalAttemptForRun(event, attempt, run)) {
         attempts.push(attempt);
       }
     } catch {
@@ -264,6 +262,22 @@ async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<Mod
     }
   }
   return attempts;
+}
+
+export function isCanonicalAttemptForRun(
+  event: AgentRunEvent,
+  attempt: ModelCallAttempt,
+  run: AgentRunHeader,
+): boolean {
+  return (
+    event.sessionId === run.sessionId &&
+    event.runId === run.runId &&
+    event.turnId === run.turnId &&
+    attempt.sessionId === run.sessionId &&
+    attempt.runId === run.runId &&
+    attempt.turnId === run.turnId &&
+    attempt.attemptId === event.id
+  );
 }
 
 function latestAttempt(

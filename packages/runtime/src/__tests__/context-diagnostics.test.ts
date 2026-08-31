@@ -247,6 +247,34 @@ test('a failed call does not replace the last good snapshot', async () => {
   }
 });
 
+test('an identity-mismatched canonical event cannot become the latest request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const writer = createSqliteAgentRunStore(root);
+    await writer.createRun(runHeader('run-1', 1));
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-1', 10, 'model-valid', 40, 200),
+    );
+    await writer.appendEvent(
+      'session-1',
+      'run-1',
+      meteringEvent('run-1', 'attempt-2', 20, 'model-mismatched', 40, 200, {
+        runId: 'another-run',
+      }),
+    );
+
+    const diagnostics = await readLatestContextDiagnostics(writer, 'session-1');
+
+    assert.equal(diagnostics.status, 'available');
+    if (diagnostics.status !== 'available') return;
+    assert.equal(diagnostics.modelId, 'model-valid');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a subagent's run never becomes the session's context", async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
@@ -1138,7 +1166,7 @@ function meteringEvent(
   const turnId = `turn-${runId}`;
   return {
     type: 'model_call_attempt_recorded',
-    id: `metering-${attemptId}`,
+    id: attemptId,
     runId,
     sessionId: 'session-1',
     turnId,
