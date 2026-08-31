@@ -965,8 +965,8 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
 let generationStoryConnectionsPending = false;
-let generationStoryCodexEmail = 'old-generation@example.com';
-let generationStoryCodexAccountReads = 0;
+let generationStoryCopilotEmail = 'old-generation@example.com';
+let generationStoryCopilotAccountReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
 let generationStoryCopilotImportAttempts = 0;
@@ -984,8 +984,8 @@ function resetGenerationStoryBridge(
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
   generationStoryConnectionsPending = false;
-  generationStoryCodexEmail = 'old-generation@example.com';
-  generationStoryCodexAccountReads = 0;
+  generationStoryCopilotEmail = 'old-generation@example.com';
+  generationStoryCopilotAccountReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
   generationStoryCopilotImportAttempts = 0;
@@ -1025,13 +1025,13 @@ const withGeneralHostGenerationRevalidationBridge = withScopedMakaBridge({
 const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
   ...makaBridge,
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
-  openAiCodex: {
-    ...makaBridge.openAiCodex,
+  githubCopilotSubscription: {
+    ...makaBridge.githubCopilotSubscription,
     getAccountState: async () => {
-      generationStoryCodexAccountReads += 1;
+      generationStoryCopilotAccountReads += 1;
       return {
         runtimeState: 'authenticated' as const,
-        email: generationStoryCodexEmail,
+        email: generationStoryCopilotEmail,
         plan: 'Plus',
       };
     },
@@ -1058,6 +1058,11 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
     getAuthUrl: async () => ({
       authRequestId: 'authorization-from-generation-1',
       stateHint: 'GEN1-CODE',
+      connection: {
+        connectionId: 'connection-openai-codex-generation-1',
+        slug: 'openai-codex-generation-1',
+        providerType: 'openai-codex' as const,
+      },
     }),
     openAuthUrl: async (authRequestId: string) => {
       generationStoryOpenedAuthIds.push(authRequestId);
@@ -2258,9 +2263,10 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
 };
 
 // A ready event can replace the Runtime Host without changing
-// profileId:hostId. The catalog route stays mounted, but its OAuth account
-// snapshot belongs to the Host generation and must be read again before the
-// previous account can be presented as current.
+// profileId:hostId. The catalog route stays mounted, but Copilot's singleton
+// import state belongs to the Host generation and must be read again before
+// the previous account can be presented as current. Codex and xAI instead
+// project their Connection counts from the connection catalog.
 export const ModelsOAuthHostGenerationRevalidation: Story = {
   decorators: [withModelsOAuthGenerationRevalidationBridge],
   render: () => {
@@ -2276,11 +2282,11 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText('old-generation@example.com');
-    const readsBeforeReplacement = generationStoryCodexAccountReads;
+    const readsBeforeReplacement = generationStoryCopilotAccountReads;
     const listener = generationStoryProfileListener;
     if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
 
-    generationStoryCodexEmail = 'new-generation@example.com';
+    generationStoryCopilotEmail = 'new-generation@example.com';
     listener({
       epoch: 'storybook-generation-2',
       profileId: 'local',
@@ -2293,7 +2299,7 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
 
     await canvas.findByText('new-generation@example.com');
     await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
-    await expect(generationStoryCodexAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await expect(generationStoryCopilotAccountReads).toBeGreaterThan(readsBeforeReplacement);
     await expect(
       canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
     ).toBeInTheDocument();
@@ -2318,9 +2324,9 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole('button', {
-      name: /打开 OAuth 登录：OpenAI Codex/,
+      name: /添加账号连接：OpenAI Codex/,
     }));
-    await userEvent.click(await canvas.findByRole('button', { name: '登录 Codex' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '登录并添加' }));
     await waitForStoryCondition(
       () => generationStoryOpenedAuthIds.includes('authorization-from-generation-1'),
       'OAuth authorization did not reach the browser handoff',
@@ -2345,7 +2351,7 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
     await expect(
       canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
     ).toBeInTheDocument();
-    await expect(await canvas.findByRole('button', { name: '登录 Codex' })).toBeEnabled();
+    await expect(await canvas.findByRole('button', { name: '登录并添加' })).toBeEnabled();
     await expect(generationStoryCancelledAuthIds).toEqual([
       'authorization-from-generation-1',
     ]);
