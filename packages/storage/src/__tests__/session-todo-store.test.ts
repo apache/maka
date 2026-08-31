@@ -65,6 +65,26 @@ describe('SQLite SessionTodo store', () => {
     });
   });
 
+  test('keeps a blocked legacy Task visible as pending without importing workflow metadata', async () => {
+    await withRoot(async (root) => {
+      const tasks = createSqliteTaskLedgerStore(root);
+      const created = await tasks.create(SESSION_ID, [{ subject: 'waiting for approval' }]);
+      const taskId = created.created[0]!.id;
+      await tasks.update(SESSION_ID, taskId, { status: 'in_progress' });
+      await tasks.update(SESSION_ID, taskId, {
+        status: 'blocked',
+        blockedReason: 'approval has not arrived',
+      });
+      tasks.close();
+
+      const todos = createSqliteSessionTodoStore(root);
+      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
+        items: [{ content: 'waiting for approval', status: 'pending' }],
+      });
+      todos.close();
+    });
+  });
+
   test('persists initialized-empty and never revives later legacy Tasks', async () => {
     await withRoot(async (root) => {
       const todos = createSqliteSessionTodoStore(root);

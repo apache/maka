@@ -46,7 +46,8 @@ interface StoredSessionTodoDocument {
 export interface SessionTodoStore {
   /**
    * Return the initialized current document. On the first read only, bootstrap
-   * pending/in-progress legacy Tasks and persist even an empty result.
+   * pending/in-progress legacy Tasks, map blocked Tasks to pending, and persist
+   * even an empty result.
    */
   readOrBootstrap(sessionId: string): Promise<SessionTodoSnapshot>;
   /** Replace the complete document without consulting legacy Task state. */
@@ -188,9 +189,21 @@ function bootstrapLegacyTasks(
   if (projected.diagnostics.length > 0) {
     throw new Error(`Legacy Task ledger is not projectable: ${projected.diagnostics.join('; ')}`);
   }
-  const items = projected.tasks
-    .filter((task) => task.status === 'pending' || task.status === 'in_progress')
-    .map((task) => ({ content: task.subject, status: task.status }));
+  const items = projected.tasks.flatMap((task) => {
+    switch (task.status) {
+      case 'pending':
+      case 'in_progress':
+        return [{ content: task.subject, status: task.status }];
+      case 'blocked':
+        // SessionTodo deliberately has no workflow-specific blocked state or
+        // reason field. Keep the unfinished subject visible for replanning.
+        return [{ content: task.subject, status: 'pending' as const }];
+      case 'completed':
+      case 'failed':
+      case 'cancelled':
+        return [];
+    }
+  });
   const normalized = normalizeSessionTodoItems(items);
   if (!normalized.ok) throw new Error(`Legacy Task bootstrap failed: ${normalized.message}`);
   return {

@@ -175,7 +175,13 @@ describe('SQLite workflow stores', () => {
   test('adds SessionTodo storage to workflow schema 10 without changing Task events', async () => {
     await withRoot(async (root) => {
       const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create(SESSION_ID, [{ subject: 'Preserve schema 10 Task' }]);
+      const created = await tasks.create(SESSION_ID, [{ subject: 'Preserve schema 10 Task' }]);
+      const taskId = created.created[0]!.id;
+      await tasks.update(SESSION_ID, taskId, { status: 'in_progress' });
+      await tasks.update(SESSION_ID, taskId, {
+        status: 'blocked',
+        blockedReason: 'waiting across the upgrade',
+      });
       tasks.close();
 
       const released = new DatabaseSync(join(root, 'runtime.sqlite'));
@@ -198,7 +204,7 @@ describe('SQLite workflow stores', () => {
       const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
       try {
         assert.equal(workflowSchemaVersion(verified), SQLITE_WORKFLOW_SCHEMA_VERSION);
-        assert.equal(rowCount(verified, 'workflow_task_ledger_events'), 1);
+        assert.equal(rowCount(verified, 'workflow_task_ledger_events'), 3);
         assert.equal(rowCount(verified, 'workflow_session_todo_documents'), 1);
       } finally {
         verified.close();
