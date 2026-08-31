@@ -147,6 +147,43 @@ test('task row action menu accepts pointer selection', async ({
   await expect(page.getByRole('dialog', { name: '重命名任务' })).toBeVisible();
 });
 
+test('project and task rows show contextual hover details', async ({
+  projectSidebarWindow: page,
+}) => {
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const taskSessionId = `${LONG_SIDEBAR_SESSION_PREFIX}00`;
+  const taskRow = sessionRow(sidebar, taskSessionId);
+  await taskRow.locator('.astryx-side-nav-item').hover();
+
+  const taskCard = page.locator('.maka-sidebar-hover-card[data-kind="session"]');
+  await expect(taskCard).toBeVisible();
+  await expect(taskCard.locator('.maka-sidebar-hover-card-title')).toHaveText('任务 00');
+  await expect(taskCard.locator('.maka-sidebar-hover-card-preview')).toHaveText(
+    '已归档第 00 条研究记录。',
+  );
+  await expect(taskCard.locator('.maka-sidebar-hover-card-path')).toContainText(
+    'e2e-fixture-sidebar-search-modal-open',
+  );
+  await expect(taskCard.locator('.maka-sidebar-hover-card-meta')).toContainText('glm-5.1');
+
+  await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
+  const projectRow = sidebar.locator(
+    `[data-project-id="project:${LONG_SIDEBAR_PROJECT_ID}"]`,
+  );
+  await projectRow.locator(':scope > div > .astryx-side-nav-item').hover();
+
+  const projectCard = page.locator('.maka-sidebar-hover-card[data-kind="project"]');
+  await expect(projectCard).toBeVisible();
+  await expect(projectCard.locator('.maka-sidebar-hover-card-title')).toHaveText(
+    LONG_SIDEBAR_PROJECT_NAME,
+  );
+  await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('3 个任务');
+  await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('目录可用');
+});
+
 test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();

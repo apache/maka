@@ -145,6 +145,24 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   }
 });
 
+test('wires the session navigation control to its hover card description', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session]}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const navigation = document.querySelector<HTMLButtonElement>(
+    '.maka-session-row .astryx-side-nav-item',
+  );
+
+  assert.ok(navigation);
+  assert.ok(navigation.getAttribute('aria-describedby'));
+});
+
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
   const hostRunning = { ...session, runningTurnIds: ['turn-live'] };
   const markup = renderToStaticMarkup(
@@ -253,5 +271,6 @@ test('renders collapsible project navigation and row actions as sibling controls
     'project navigation precedes its auxiliary action',
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
+  assert.ok(navigation.getAttribute('aria-describedby'));
   assertNoNestedButtons(markup);
 });

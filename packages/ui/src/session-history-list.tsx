@@ -46,6 +46,7 @@ import {
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
+import { useHoverCard } from '@astryxdesign/core/HoverCard';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
   SideNavItem,
@@ -59,10 +60,14 @@ import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-
 import { useSessionRailData } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
+
+const SIDEBAR_HOVER_CARD_DELAY_MS = 300;
+const SIDEBAR_HOVER_CARD_HIDE_DELAY_MS = 120;
 
 export interface SessionRowActions {
   onToggleFlag(sessionId: string, next: boolean): void | Promise<void>;
@@ -307,15 +312,27 @@ function ProjectNavRow(props: {
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
+  const locale = useUiLocale();
+  const previewCopy = getSessionHoverCardCopy(locale);
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: previewCopy.projectDetailsLabel(props.label),
+  });
   return (
     <div data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
+        ref={hoverCard.ref}
         key="navigation"
         label={props.label}
+        aria-describedby={hoverCard.describedBy}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
         endContent={
@@ -341,6 +358,14 @@ function ProjectNavRow(props: {
           <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
         ) : undefined}
       </SideNavItem>
+      {hoverCard.renderHoverCard(
+        <ProjectHoverCardContent
+          label={props.label}
+          project={props.project}
+          sessions={props.sessions}
+          locale={locale}
+        />,
+      )}
     </div>
   );
 }
@@ -358,12 +383,27 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 }) {
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
+  const previewCopy = getSessionHoverCardCopy(locale);
   const signals = sessionRowSignals(
     props.session,
     { streaming: props.streaming, stale: props.stale, active: props.active },
     locale,
   );
   const signal = signals[0];
+  const previewStatus = signal?.tooltip ?? signal?.label ?? presentSessionStatus(
+    props.session.status === 'running' && props.session.runningTurnIds !== undefined
+      ? 'active'
+      : props.session.status,
+    locale,
+  ).label;
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: previewCopy.sessionDetailsLabel(props.session.name),
+  });
   // What the row communicates without text and the dot does NOT already say,
   // inside the button so it lands in the accessible name. `signals[0]` is
   // skipped because `StatusDot` carries it; the rest of the list, the worktree
@@ -391,7 +431,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-worktree={props.worktree ? 'true' : undefined}
     >
       <SideNavItem
+        ref={hoverCard.ref}
         label={props.session.name}
+        aria-describedby={hoverCard.describedBy}
         size="md"
         isSelected={props.active}
         // Slot 1, the row's leading edge. A fixed gutter every row pays for,
@@ -453,6 +495,13 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           </span>
         }
       />
+      {hoverCard.renderHoverCard(
+        <SessionHoverCardContent
+          session={props.session}
+          status={previewStatus}
+          locale={locale}
+        />,
+      )}
       {props.actions && (
         <SessionItemActions
           session={props.session}
@@ -463,6 +512,119 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     </div>
   );
 });
+
+function SessionHoverCardContent(props: {
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const conversationCopy = getConversationCopy(props.locale);
+  const copy = getSessionHoverCardCopy(props.locale);
+  const session = props.session;
+  const permission = conversationCopy.permissions.mode[session.permissionMode].label;
+
+  return (
+    <span className="maka-sidebar-hover-card" data-kind="session">
+      <span className="maka-sidebar-hover-card-title">{session.name}</span>
+      <span
+        className="maka-sidebar-hover-card-preview"
+        data-empty={session.lastMessagePreview ? undefined : 'true'}
+      >
+        {session.lastMessagePreview || copy.noMessages}
+      </span>
+      <span className="maka-sidebar-hover-card-meta">
+        <span>{props.status}</span>
+        <span aria-hidden="true">·</span>
+        <span>{session.model}</span>
+        <span aria-hidden="true">·</span>
+        <span>{permission}</span>
+      </span>
+      {session.cwd ? (
+        <span className="maka-sidebar-hover-card-path" title={session.cwd}>
+          {session.cwd}
+        </span>
+      ) : null}
+      {session.lastMessageAt ? (
+        <span className="maka-sidebar-hover-card-updated">
+          {copy.updated}{' '}
+          <RelativeTime ts={session.lastMessageAt} />
+          <span className="maka-visually-hidden">
+            {formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function ProjectHoverCardContent(props: {
+  label: string;
+  project?: ProjectRecord;
+  sessions: readonly SessionSummary[];
+  locale: UiLocale;
+}) {
+  const copy = getSessionHoverCardCopy(props.locale);
+  const path = preferredProjectPath(props.project);
+  const runningCount = props.sessions.filter(
+    (session) => session.status === 'running' || (session.runningTurnIds?.length ?? 0) > 0,
+  ).length;
+  const latestActivity = props.sessions.reduce<number | undefined>(
+    (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+    undefined,
+  );
+
+  return (
+    <span className="maka-sidebar-hover-card" data-kind="project">
+      <span className="maka-sidebar-hover-card-title">{props.label}</span>
+      {path ? (
+        <span className="maka-sidebar-hover-card-path" title={path}>
+          {path}
+        </span>
+      ) : null}
+      <span className="maka-sidebar-hover-card-meta">
+        <span>{copy.taskCount(props.sessions.length)}</span>
+        {runningCount > 0 ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{copy.runningTaskCount(runningCount)}</span>
+          </>
+        ) : null}
+        {props.project ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>
+              {props.project.available ? copy.projectAvailable : copy.projectUnavailable}
+            </span>
+          </>
+        ) : null}
+        {(props.project?.locations.length ?? 0) > 1 ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{copy.locationCount(props.project!.locations.length)}</span>
+          </>
+        ) : null}
+      </span>
+      {latestActivity ? (
+        <span className="maka-sidebar-hover-card-updated">
+          {copy.updated}{' '}
+          <RelativeTime ts={latestActivity} />
+          <span className="maka-visually-hidden">
+            {formatAbsoluteTimestamp(latestActivity, props.locale)}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function preferredProjectPath(project: ProjectRecord | undefined): string | undefined {
+  if (!project) return undefined;
+  return (
+    project.preferredPath ??
+    project.locations.find((location) => !location.isWorktree)?.path ??
+    project.locations[0]?.path
+  );
+}
 
 function ProjectItemMeta(props: {
   project?: ProjectRecord;
