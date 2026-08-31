@@ -84,6 +84,82 @@
   min-width: 0;
 }
 
+.maka-session-group-header {
+  padding-inline: var(--space-2);
+}
+
+.maka-session-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--text-label-size);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--text-label-leading);
+  text-align: start;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .maka-session-group-toggle:hover {
+    color: var(--color-text-primary);
+  }
+}
+
+.maka-session-group-toggle:active {
+  opacity: 0.72;
+}
+
+.maka-session-group-toggle:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-session-group-toggle > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-session-group-chevron {
+  flex-shrink: 0;
+  transition: transform var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-session-group-toggle[aria-expanded="false"] .maka-session-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.maka-session-group-content {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--duration-quick) var(--ease-out-strong);
+}
+
+.maka-session-group-content[data-collapsed="true"] {
+  grid-template-rows: 0fr;
+}
+
+.maka-session-group-content-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-session-group-chevron,
+  .maka-session-group-content {
+    transition-duration: 0s;
+  }
+}
+
 /*
  * The rail's two hairlines: nav chrome above the history, footer below it. Both
  * are drawn the same way, on the sticky shell that owns the zone rather than as

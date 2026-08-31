@@ -426,6 +426,7 @@ export const ProjectGroups: Story = {
       makeSession({
         id: 'proj-docs',
         name: '文档站改版',
+        isFlagged: true,
         lastMessageAt: NOW - 30 * 60 * 1000,
       }),
     ];

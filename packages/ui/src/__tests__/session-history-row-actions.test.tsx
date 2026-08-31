@@ -19,6 +19,8 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ProjectRecord } from '@maka/core/project';
@@ -119,8 +121,11 @@ test('renders session navigation and row actions as sibling controls', () => {
     </LocaleProvider>,
   );
 
-  assert.equal((markup.match(/<button\b/g) ?? []).length, 2);
-  assert.match(markup, /class="maka-session-row-action"/);
+  const { document } = parseHTML(markup);
+  const sessionRow = document.querySelector('[data-session-id="session-1"]')?.parentElement;
+  assert.ok(sessionRow);
+  assert.equal(sessionRow.querySelectorAll('button').length, 2);
+  assert.ok(sessionRow.querySelector('.maka-session-row-action'));
   assertNoNestedButtons(markup);
 });
 
@@ -256,6 +261,100 @@ test('renders collapsible project navigation and row actions as sibling controls
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
   assertNoNestedButtons(markup);
+});
+
+test('project grouping renders pinned tasks under a Pinned heading', () => {
+  const pinned = { ...session, id: 'session-pinned', name: 'Pinned task', isFlagged: true };
+  const recent = { ...session, id: 'session-recent', name: 'Recent task' };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[pinned, recent]}
+        groups={[{ id: project.id, label: project.name, project, sessions: [pinned, recent] }]}
+        groupVariant="project"
+        projectActions={projectActions}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const pinnedSection = document.querySelector('.maka-session-group');
+  const projectRow = document.querySelector('.maka-project-row');
+
+  assert.ok(pinnedSection);
+  assert.equal(pinnedSection.querySelector(':scope > :first-child')?.textContent, 'Pinned');
+  assert.ok(pinnedSection.querySelector('[data-session-id="session-pinned"]'));
+  assert.ok(projectRow);
+  assert.equal(projectRow.querySelector('[data-session-id="session-pinned"]'), null);
+  assert.ok(projectRow.querySelector('[data-session-id="session-recent"]'));
+  assert.equal(projectRow.querySelector('.maka-project-item-end')?.textContent, '1');
+});
+
+test('section headings toggle their rows and expose disclosure state', async () => {
+  const original = {
+    document: globalThis.document,
+    window: globalThis.window,
+    IS_REACT_ACT_ENVIRONMENT: (globalThis as typeof globalThis & {
+      IS_REACT_ACT_ENVIRONMENT?: boolean;
+    }).IS_REACT_ACT_ENVIRONMENT,
+  };
+  const { document, window } = parseHTML('<div id="root"></div>');
+  window.getComputedStyle = () => ({
+    direction: 'ltr',
+    writingMode: 'horizontal-tb',
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  window.matchMedia = () => ({
+    matches: false,
+    media: '',
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  });
+  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  const pinned = { ...session, id: 'session-pinned', isFlagged: true };
+  const recent = { ...session, id: 'session-recent' };
+
+  try {
+    await act(() => root.render(
+      <LocaleProvider locale="en">
+        <Rail sessions={[pinned, recent]} rowActions={rowActions} />
+      </LocaleProvider>,
+    ));
+
+    const toggles = [
+      ...container.querySelectorAll<HTMLButtonElement>('.maka-session-group-toggle'),
+    ];
+    assert.deepEqual(toggles.map((toggle) => toggle.textContent), ['Pinned', 'Recent']);
+    const pinnedToggle = toggles[0];
+    assert.ok(pinnedToggle);
+    assert.equal(pinnedToggle.getAttribute('aria-expanded'), 'true');
+    assert.ok(pinnedToggle.querySelector('.maka-session-group-chevron'));
+    const contentId = pinnedToggle.getAttribute('aria-controls');
+    assert.ok(contentId);
+    const content = document.getElementById(contentId);
+    assert.ok(content);
+    assert.equal(content.getAttribute('aria-hidden'), 'false');
+
+    await act(() => {
+      pinnedToggle.dispatchEvent(new window.Event('click', { bubbles: true }));
+    });
+
+    assert.equal(pinnedToggle.getAttribute('aria-expanded'), 'false');
+    assert.equal(content.getAttribute('aria-hidden'), 'true');
+    assert.equal(content.hasAttribute('inert'), true);
+    assert.equal(content.getAttribute('data-collapsed'), 'true');
+  } finally {
+    await act(() => root.unmount());
+    Object.assign(globalThis, original);
+  }
 });
 
 test('omits a zero count on empty projects', () => {

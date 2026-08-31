@@ -36,6 +36,23 @@ test('project navigation and actions follow their visual keyboard order', async 
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const recentToggle = sidebar.getByRole('button', { name: '最近', exact: true });
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'true');
+  const [recentToggleBox, sidebarBox] = await Promise.all([
+    recentToggle.boundingBox(),
+    sidebar.boundingBox(),
+  ]);
+  expect(recentToggleBox).not.toBeNull();
+  expect(sidebarBox).not.toBeNull();
+  expect(recentToggleBox!.width).toBeGreaterThan(sidebarBox!.width * 0.8);
+  await page.mouse.click(
+    recentToggleBox!.x + recentToggleBox!.width - 8,
+    recentToggleBox!.y + recentToggleBox!.height / 2,
+  );
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'false');
+  await recentToggle.click();
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'true');
+
   await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
 
   const projectRow = sidebar.locator(
