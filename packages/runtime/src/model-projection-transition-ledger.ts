@@ -47,7 +47,10 @@ import {
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
-import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import {
+  DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
+  type DurableToolResultProjection,
+} from '@maka/core/durable-tool-result-projection';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import {
@@ -66,12 +69,13 @@ export interface EffectiveModelProjectionReduction {
    */
   rejected: ModelProjectionTransition[];
   /**
-   * Records in the ledger this build could not decode.
+   * Targets that carry a record this build could not decode.
    *
-   * A reader that cannot interpret the whole chain may still show what it did
-   * fold, but it must not commit a successor onto a state it only partly knows.
+   * The record may be the one that removed this content, so the fold withholds
+   * the target's projection rather than replaying the raw body — the same
+   * outcome the codec produces for anything it cannot represent safely.
    */
-  undecodable: number;
+  unreadableTargets: Set<string>;
 }
 
 /**
@@ -86,26 +90,46 @@ export async function loadModelProjectionTransitionsFromRunLedger(
   sessionId: string,
 ): Promise<LoadedModelProjectionTransitions> {
   const byId = new Map<string, ModelProjectionTransition>();
-  let undecodable = 0;
+  const unreadableTargets = new Set<string>();
+  let unscopedUnreadable = 0;
   for (const run of await runStore.listSessionRuns(sessionId)) {
     for (const event of await runStore.readEvents(sessionId, run.runId)) {
       if (event.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
       const transition = decodeLedgerTransition(event, sessionId);
       if (!transition) {
-        undecodable += 1;
+        // The envelope names the target outside the payload, so a record whose
+        // body this build cannot read can still be confined to the one event it
+        // concerns. A record that does not even name a target cannot be
+        // confined, and leaves this session's model history unreadable.
+        const target = unreadableTargetKey(event);
+        if (target) unreadableTargets.add(target);
+        else unscopedUnreadable += 1;
         continue;
       }
       // A content-derived id makes a duplicated concurrent append idempotent.
       if (!byId.has(transition.transitionId)) byId.set(transition.transitionId, transition);
     }
   }
-  return { transitions: [...byId.values()], undecodable };
+  return { transitions: [...byId.values()], unreadableTargets, unscopedUnreadable };
 }
 
 export interface LoadedModelProjectionTransitions {
   transitions: ModelProjectionTransition[];
-  /** Ledger records of the right type that this build could not decode. */
-  undecodable: number;
+  /** Target keys carrying a record of the right type this build cannot decode. */
+  unreadableTargets: Set<string>;
+  /** Undecodable records that do not name a target, so nothing can be confined. */
+  unscopedUnreadable: number;
+}
+
+function unreadableTargetKey(event: AgentRunEvent): string | undefined {
+  const runtimeEventId = event.data?.runtimeEventId;
+  const part = event.data?.part;
+  return typeof runtimeEventId === 'string' &&
+    runtimeEventId.length > 0 &&
+    typeof part === 'string' &&
+    part.length > 0
+    ? targetKey(runtimeEventId, part)
+    : undefined;
 }
 
 export function decodeLedgerTransition(
@@ -140,12 +164,12 @@ export function baseToolResultProjection(
 export function reduceEffectiveModelProjections(
   events: readonly RuntimeEvent[],
   transitions: readonly ModelProjectionTransition[],
-  undecodable = 0,
+  unreadableTargets: ReadonlySet<string> = new Set(),
 ): EffectiveModelProjectionReduction {
   const applied: ModelProjectionTransition[] = [];
   const rejected: ModelProjectionTransition[] = [];
-  if (transitions.length === 0) {
-    return { events: [...events], applied, rejected, undecodable };
+  if (transitions.length === 0 && unreadableTargets.size === 0) {
+    return { events: [...events], applied, rejected, unreadableTargets: new Set() };
   }
 
   const byTarget = new Map<string, ModelProjectionTransition[]>();
@@ -157,7 +181,24 @@ export function reduceEffectiveModelProjections(
   }
 
   const nextEvents = events.map((event) => {
-    const group = byTarget.get(targetKey(event.id, 'tool_result'));
+    const key = targetKey(event.id, 'tool_result');
+    const group = byTarget.get(key);
+    if (unreadableTargets.has(key)) {
+      // One of this target's records is unreadable, so its position in the
+      // chain is unknown and every record for it is untrustworthy. Withholding
+      // is the only answer that cannot show content a record removed.
+      if (group) for (const transition of group) rejected.push(transition);
+      const content = event.content;
+      if (content?.kind !== 'function_response') return event;
+      return {
+        ...event,
+        content: {
+          ...content,
+          result: legacyResultForProjection(DURABLE_TOOL_RESULT_PROJECTION_FAILURE),
+          modelProjection: DURABLE_TOOL_RESULT_PROJECTION_FAILURE,
+        },
+      } satisfies RuntimeEvent;
+    }
     if (!group) return event;
     const base = baseToolResultProjection(event);
     if (!base) {
@@ -199,7 +240,7 @@ export function reduceEffectiveModelProjections(
     } satisfies RuntimeEvent;
   });
 
-  return { events: nextEvents, applied, rejected, undecodable };
+  return { events: nextEvents, applied, rejected, unreadableTargets: new Set(unreadableTargets) };
 }
 
 /**

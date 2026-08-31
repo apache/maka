@@ -4497,7 +4497,8 @@ describe('AiSdkBackend model history', () => {
       }),
       loadModelProjectionTransitions: async () => ({
         transitions: [...transitions],
-        undecodable: 0,
+        unreadableTargets: new Set<string>(),
+        unscopedUnreadable: 0,
       }),
       recordModelProjectionTransition: async (transition) => {
         transitions.push(transition);

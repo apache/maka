@@ -238,15 +238,21 @@ export class AiSdkCompaction {
    * what it folded, but it may not append a successor onto a state it only
    * partly knows.
    */
-  private async loadModelProjectionTransitions(): Promise<
-    LoadedModelProjectionTransitions & { readable: boolean }
-  > {
-    try {
-      const loaded = await this.input.loadModelProjectionTransitions?.();
-      return { transitions: [], undecodable: 0, ...loaded, readable: true };
-    } catch {
-      return { transitions: [], undecodable: 0, readable: false };
+  private async loadModelProjectionTransitions(): Promise<LoadedModelProjectionTransitions> {
+    const loaded = await this.input.loadModelProjectionTransitions?.();
+    const resolved = {
+      transitions: [],
+      unreadableTargets: new Set<string>(),
+      unscopedUnreadable: 0,
+      ...loaded,
+    };
+    if (resolved.unscopedUnreadable > 0) {
+      // The record names no target, so nothing can be confined and nothing can
+      // be shown: replaying raw history here would show whatever that record
+      // removed. Failing is recoverable; showing it again is not.
+      throw new Error('model projection transition ledger contains an unscoped unreadable record');
     }
+    return resolved;
   }
 
   /**
@@ -564,7 +570,7 @@ export class AiSdkCompaction {
     let effective = reduceEffectiveModelProjections(
       runtimeContext,
       transitions,
-      loaded.undecodable,
+      loaded.unreadableTargets,
     );
     if (!policy) return { policy, events: effective.events };
     let nextPolicy = policy;
@@ -573,8 +579,10 @@ export class AiSdkCompaction {
     // A chain this reader cannot see in full is a chain it must not extend: a
     // successor built on a partly known state would name the wrong predecessor
     // and be permanently inert, losing the content it archived.
-    const chainKnown = loaded.readable && effective.undecodable === 0;
-    const services = chainKnown ? this.toolResultArchiveTransitionServices(turnId) : undefined;
+    const services =
+      loaded.unreadableTargets.size === 0
+        ? this.toolResultArchiveTransitionServices(turnId)
+        : undefined;
     if (policy.staleToolResultPrune?.enabled === true && services) {
       // The decision is taken over EFFECTIVE history, so a result an earlier
       // Turn already replaced is never re-measured — or re-archived — at the
@@ -617,7 +625,7 @@ export class AiSdkCompaction {
         effective = reduceEffectiveModelProjections(
           runtimeContext,
           transitions,
-          loaded.undecodable,
+          loaded.unreadableTargets,
         );
       }
       if (committed.length > 0 || archiveFailures > 0) {
@@ -685,7 +693,7 @@ export class AiSdkCompaction {
     const loadEffectiveTurnEvents = async (): Promise<typeof effective> => {
       if (effective) return effective;
       const loaded = await this.loadModelProjectionTransitions();
-      if (!loaded.readable || loaded.undecodable > 0) return undefined;
+      if (loaded.unreadableTargets.size > 0) return undefined;
       let turnEvents: RuntimeEvent[];
       try {
         turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);

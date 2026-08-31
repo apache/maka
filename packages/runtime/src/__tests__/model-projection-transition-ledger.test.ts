@@ -27,6 +27,7 @@ import {
   MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
   type ModelProjectionTransition,
 } from '@maka/core/model-projection-transition';
+import { DURABLE_TOOL_RESULT_PROJECTION_FAILURE } from '@maka/core/durable-tool-result-projection';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import {
@@ -179,6 +180,38 @@ describe('effective model projection reduction', () => {
     assert.deepEqual([...collectReachableArchiveArtifactIds(inOrder.events)], ['artifact-b']);
   });
 
+  test('withholds a target whose record this build cannot read', () => {
+    const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET });
+    // A record written by a newer version may be the one that removed this
+    // content. Replaying the raw body would undo whatever it decided.
+    const reduced = reduceEffectiveModelProjections([event], [], new Set(['rt-1::tool_result']));
+
+    assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
+    const [effective] = reduced.events;
+    assert.ok(effective?.content?.kind === 'function_response');
+    assert.deepEqual(effective.content.modelProjection, DURABLE_TOOL_RESULT_PROJECTION_FAILURE);
+  });
+
+  test('refuses the decodable records of an unreadable target too', () => {
+    const event = toolResultEvent('rt-1', 'turn-1', { body: SECRET });
+    const transition = archiveTransition(event);
+    // The unreadable record's place in the chain is unknown, so no record for
+    // this target can be trusted to describe the current projection.
+    const reduced = reduceEffectiveModelProjections(
+      [event],
+      [transition],
+      new Set(['rt-1::tool_result']),
+    );
+
+    assert.equal(reduced.applied.length, 0);
+    assert.deepEqual(
+      reduced.rejected.map((entry) => entry.transitionId),
+      [transition.transitionId],
+    );
+    assert.equal(serializedEffective(reduced.events).includes(SECRET), false);
+    assert.equal(collectReachableArchiveArtifactIds(reduced.events).size, 0);
+  });
+
   test('leaves provider-native opaque results alone', () => {
     const event = toolResultEvent('rt-1', 'turn-1', undefined, {
       content: {
@@ -325,7 +358,12 @@ describe('transition ledger reads', () => {
         runId === 'run-1'
           ? [
               ledgerEvent(transition.transitionId, { transition }),
-              ledgerEvent('broken', { transition: { kind: 'nonsense' } }),
+              ledgerEvent('broken', {
+                runtimeEventId: 'rt-1',
+                part: 'tool_result',
+                transition: { kind: 'nonsense' },
+              }),
+              ledgerEvent('broken-unscoped', { transition: { kind: 'nonsense' } }),
             ]
           : [ledgerEvent(`${transition.transitionId}-replay`, { transition })],
     };
@@ -336,9 +374,11 @@ describe('transition ledger reads', () => {
       loaded.transitions.map((entry) => entry.transitionId),
       [transition.transitionId],
     );
-    // A record of the right type this build cannot decode is reported, not
-    // silently treated as "no transition here".
-    assert.equal(loaded.undecodable, 1);
+    // A record of the right type this build cannot decode is confined to the
+    // target its envelope names, not silently treated as "no transition here".
+    assert.deepEqual([...loaded.unreadableTargets], ['rt-1::tool_result']);
+    // One that names no target cannot be confined to anything.
+    assert.equal(loaded.unscopedUnreadable, 1);
   });
 
   test('legacy retry: an event with no durable projection still folds through one codec', () => {
