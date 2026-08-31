@@ -23,7 +23,7 @@ import { getEventListeners } from 'node:events';
 import { createServer } from 'node:http';
 import net from 'node:net';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
-import { setActiveProxy } from '../../network/active-proxy-state.js';
+import { setActiveProxy } from '../active-proxy-state.js';
 import { proxiedFetch } from '../proxied-fetch.js';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {

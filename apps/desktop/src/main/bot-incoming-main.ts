@@ -29,7 +29,7 @@ import {
   plaintextHelpReply,
 } from '@maka/core/bot-events';
 import { generalizedErrorMessage } from '@maka/core/redaction';
-import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/runtime/bots';
+import type { BotIncomingMessage, BotRegistry, BotReplyStream } from '@maka/bots';
 import type { BotSessionAdapter, BotSessionTurnResult } from './bot-session-adapter.js';
 import { isBotSessionUnavailableError } from './bot-session-adapter.js';
 import { isSessionWorkspaceUnavailableError } from './project-context-root.js';

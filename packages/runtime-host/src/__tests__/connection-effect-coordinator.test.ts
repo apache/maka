@@ -29,7 +29,7 @@ import type {
 } from '@maka/core/runtime-policy';
 import { CONNECTION_CATALOG_MAX_CONNECTIONS } from '@maka/core/runtime-policy';
 import { serializeOAuthSubscriptionTokens } from '@maka/runtime/subscription-credentials';
-import { type ConnectionEffectFetchTransport } from '@maka/runtime/network/scoped-fetch-transport';
+import { type ConnectionEffectFetchTransport } from '@maka/network/scoped-fetch-transport';
 import { type ConnectionTestEffectOutcome } from '@maka/runtime/connection-effect-outcome';
 import {
   openInteractiveRuntimePolicyStoresForWrite,

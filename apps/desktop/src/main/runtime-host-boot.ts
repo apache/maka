@@ -39,7 +39,7 @@ import {
   PROVIDER_DEFAULTS,
   providerAuthRequiresSecret,
 } from "@maka/core/llm-connections";
-import { BotRegistry, type BotIncomingMessage } from '@maka/runtime/bots';
+import { BotRegistry, type BotIncomingMessage } from '@maka/bots';
 import {
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,

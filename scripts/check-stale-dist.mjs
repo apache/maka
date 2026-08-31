@@ -46,6 +46,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
 
 const pairs = [
+  { pkg: '@maka/network', src: 'packages/network/src', dist: 'packages/network/dist' },
+  { pkg: '@maka/bots', src: 'packages/bots/src', dist: 'packages/bots/dist' },
   { pkg: '@maka/core', src: 'packages/core/src', dist: 'packages/core/dist' },
   { pkg: '@maka/storage', src: 'packages/storage/src', dist: 'packages/storage/dist' },
   { pkg: '@maka/runtime', src: 'packages/runtime/src', dist: 'packages/runtime/dist' },

@@ -25,7 +25,7 @@ import {
   type AppSettings,
   type UpdateAppSettingsInput,
 } from '@maka/core/settings';
-import type { BotRegistry } from '@maka/runtime/bots';
+import type { BotRegistry } from '@maka/bots';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,

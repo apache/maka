@@ -2,6 +2,8 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/network" },
+    { "path": "packages/bots" },
     { "path": "packages/storage" },
     { "path": "packages/mcp" },
     { "path": "packages/runtime" },

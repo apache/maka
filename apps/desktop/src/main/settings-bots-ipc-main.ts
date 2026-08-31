@@ -26,7 +26,7 @@ import {
   getWechatBridgeQrCode,
   testBotChannel as testRuntimeBotChannel,
   type BotRegistry,
-} from '@maka/runtime/bots';
+} from '@maka/bots';
 import type { SettingsStore } from '@maka/storage/settings-store';
 import {
   BotOnboardingService,

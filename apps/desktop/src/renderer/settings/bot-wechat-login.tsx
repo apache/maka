@@ -19,7 +19,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { BotChannelSettings } from '@maka/core/bot-chat-settings';
-import type { WechatBridgeQrCodeResult } from '@maka/runtime/bots';
+import type { WechatBridgeQrCodeResult } from '@maka/bots';
 import { Button, EmptyState, FormLayout, Spinner, TextInput, useUiLocale, Banner } from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { Collapsible } from '@astryxdesign/core/Collapsible';

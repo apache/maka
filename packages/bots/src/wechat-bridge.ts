@@ -22,7 +22,7 @@ import { generalizedErrorMessage } from '@maka/core/redaction';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { BaseBotAdapter, botReadinessFromSettings } from './base-adapter.js';
-import { proxiedFetch } from './proxied-fetch.js';
+import { proxiedFetch } from '@maka/network/proxied-fetch';
 import type {
   BotIncomingMessage,
   BotSendOptions,

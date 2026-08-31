@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
+import type { BotIncomingMessage, BotRegistry } from '@maka/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { MakaTool } from '@maka/runtime/tool-runtime';

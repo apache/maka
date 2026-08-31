@@ -2780,7 +2780,7 @@
           "@maka/core/bot-chat-settings": 1,
           "@maka/core/bot-onboarding": 1,
           "@maka/core/settings": 1,
-          "@maka/runtime/bots": 1,
+          "@maka/bots": 1,
           "@maka/ui": 2,
           "@maka/ui/icons": 1,
           "react": 1
@@ -2803,7 +2803,7 @@
           "@astryxdesign/core": 1,
           "@maka/core/bot-chat-settings": 1,
           "@maka/core/settings": 1,
-          "@maka/runtime/bots": 1,
+          "@maka/bots": 1,
           "@maka/ui": 2,
           "@maka/ui/icons": 1,
           "react": 1
@@ -2841,7 +2841,7 @@
           "@maka/core/bot-chat-settings": 1,
           "@maka/core/bot-onboarding": 1,
           "@maka/core/settings": 1,
-          "@maka/runtime/bots": 1,
+          "@maka/bots": 1,
           "@maka/ui": 1,
           "react": 1
         }
@@ -2857,7 +2857,7 @@
           "../locales/settings-bot-copy": 1,
           "@maka/core/bot-chat-settings": 1,
           "@maka/core/ui-locale": 1,
-          "@maka/runtime/bots": 1,
+          "@maka/bots": 1,
           "@maka/ui": 1
         }
       },
@@ -2905,7 +2905,7 @@
         "dependencyPaths": {
           "@maka/core/bot-chat-settings": 1,
           "@maka/core/bot-events": 1,
-          "@maka/runtime/bots": 1
+          "@maka/bots": 1
         }
       },
       "src/renderer/settings/bot-wechat-login.tsx": {
@@ -2933,7 +2933,7 @@
           "@astryxdesign/core/Dialog": 1,
           "@astryxdesign/core/Layout": 1,
           "@maka/core/bot-chat-settings": 1,
-          "@maka/runtime/bots": 1,
+          "@maka/bots": 1,
           "@maka/ui": 1,
           "@maka/ui/icons": 1,
           "react": 1

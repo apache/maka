@@ -6,6 +6,5 @@
     "composite": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": [],
-  "references": [{ "path": "../core" }, { "path": "../network" }, { "path": "../storage" }]
+  "references": [{ "path": "../core" }, { "path": "../network" }]
 }

@@ -24,7 +24,7 @@ import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import { isSideConversationSession } from '@maka/core/side-conversation';
 import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
-import type { BotRegistry } from '@maka/runtime/bots';
+import type { BotRegistry } from '@maka/bots';
 import {
   type RuntimeHostSshOperatorActivationInput,
   connectOrSpawnRuntimeHost,

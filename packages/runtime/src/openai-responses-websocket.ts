@@ -23,9 +23,9 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import WebSocket from 'ws';
 
 import type { ModelMessage } from './model-protocol.js';
-import { matchesBypassList } from './network/bypass-matcher.js';
-import { FETCH_PROXY_SNAPSHOT, type ProxiedFetchProxy } from './network/scoped-fetch-transport.js';
-import { bracketIfIpv6, buildProxyUrl } from './network/proxy-parser.js';
+import { matchesBypassList } from '@maka/network/bypass-matcher';
+import { FETCH_PROXY_SNAPSHOT, type ProxiedFetchProxy } from '@maka/network/scoped-fetch-transport';
+import { bracketIfIpv6, buildProxyUrl } from '@maka/network/proxy-parser';
 import type { OpenAiResponsesSemanticBaseline } from './openai-responses-continuation.js';
 
 export const OPENAI_RESPONSES_LANE_HEADER = 'x-maka-openai-responses-lane';

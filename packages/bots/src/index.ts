@@ -24,7 +24,6 @@ export {
 } from './base-adapter.js';
 export { BotRegistry } from './bot-registry.js';
 export { testBotChannel } from './bot-test.js';
-export { proxiedFetch } from './proxied-fetch.js';
 export { FeishuBotBridge, feishuMessageToEvent } from './feishu-bridge.js';
 export {
   getWechatBridgeQrCode,

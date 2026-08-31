@@ -19,7 +19,7 @@
 
 import { humanizeBotStatusReason } from '@maka/core/bot-events';
 import { type BotChannelSettings, type BotReadinessState } from '@maka/core/bot-chat-settings';
-import type { BotStatus } from '@maka/runtime/bots';
+import type { BotStatus } from '@maka/bots';
 
 export function deriveBotChannelViewState(input: {
   channel: BotChannelSettings;

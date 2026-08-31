@@ -19,7 +19,7 @@
 
 import type { ProxySettings } from '@maka/core/settings/network-settings';
 import type { RuntimePolicy } from '@maka/core/runtime-policy';
-import { testProxyConnection } from '@maka/runtime/network/proxy-test';
+import { testProxyConnection } from '@maka/network/proxy-test';
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import type { NetworkProxyTestInput, OperationOutcome } from '../protocol/index.js';
 import type { NetworkProxyOperationHandlerMap } from './operation-dispatcher.js';

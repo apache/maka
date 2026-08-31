@@ -1,0 +1,28 @@
+{
+  "name": "@maka/bots",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "IM bot bridges and lifecycle management for Maka.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run clean && npm run build && npm run test:dist",
+    "test:dist": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.73.0",
+    "@maka/core": "0.1.0",
+    "@maka/network": "0.1.0",
+    "@slack/socket-mode": "^3.0.0",
+    "@slack/web-api": "^8.0.0",
+    "@wecom/aibot-node-sdk": "1.0.7",
+    "qrcode": "^1.5.4",
+    "undici": "^8.7.0"
+  }
+}

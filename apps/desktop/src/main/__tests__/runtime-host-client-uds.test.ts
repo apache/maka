@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { IpcMain } from 'electron';
-import type { BotRegistry } from '@maka/runtime/bots';
+import type { BotRegistry } from '@maka/bots';
 import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { connectRuntimeHost } from '@maka/runtime-host/client';
