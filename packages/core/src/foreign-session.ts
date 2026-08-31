@@ -644,7 +644,7 @@ export function stripEnvelopeTags(text: string): string {
 
 /**
  * Render a digest as an explicitly-untrusted data block for the handoff
- * prompt. The envelope wording mirrors the memory/turn-tail discipline:
+ * prompt. The envelope wording mirrors the untrusted-context discipline:
  * contents are reference data, never instructions. `safe()` is the
  * authoritative gate every foreign-authored scalar passes through here —
  * regardless of how the digest was built — sanitizing (NFC, control/bidi/

@@ -49,7 +49,6 @@ import {
 import { type BackendFactoryContext } from '@maka/runtime/session-manager';
 import { type AiSdkBackendInput, type RunTraceEvent } from '@maka/runtime/ai-sdk-backend';
 import { type FilesystemWorkerExecuteInput } from '@maka/runtime/filesystem-worker';
-import { createSandboxDiagnosticsProvider } from '@maka/runtime/sandbox';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
 import {
   type ProxiedFetchProxy,
@@ -139,11 +138,6 @@ const HEADLESS_CODING_V1_PROMPT_HASH =
 const HEADLESS_CODING_V1_TOOLS_HASH =
   'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
 const execFileAsync = promisify(execFile);
-const TEST_SANDBOX_DIAGNOSTICS = createSandboxDiagnosticsProvider({
-  platform: 'darwin',
-  canonicalizePath: async (path) => path,
-});
-
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
   await createHostAiSdkBackend(
@@ -209,62 +203,7 @@ test('backend creation aborts a stalled pricing snapshot read', async () => {
   });
 });
 
-test('sandbox diagnostics failure degrades to a traced prompt omission', async () => {
-  const provider = await startProvider();
-  try {
-    const traces: RunTraceEvent[] = [];
-    const backend = await createHostAiSdkBackend(
-      backendCreationFixture({
-        abortSignal: new AbortController().signal,
-        resolveExecutionConnection: async () => readyExecutionConnection(provider.baseUrl),
-        readPricing: async () => ({ revision: 0, overrides: [] }),
-        executionBoundary: createManagedExecutionBoundary(
-          createWorkspaceWritePermissionProfile(),
-          0,
-        ),
-        sandboxDiagnostics: {
-          resolve: async () => {
-            throw new Error('sandbox diagnostics unavailable');
-          },
-        },
-        recordRunTrace: (event) => traces.push(event),
-      }),
-    );
-
-    try {
-      const events = [];
-      for await (const event of backend.send({
-        turnId: 'sandbox-diagnostics-failure-turn',
-        text: 'Continue without optional sandbox diagnostics.',
-        context: [],
-      })) {
-        events.push(event);
-      }
-
-      const requests = provider.requests.filter((request) => request.body.stream === true);
-      assert.equal(requests.length, 1);
-      assert.doesNotMatch(JSON.stringify(requests[0]?.body), /<sandbox_context>/u);
-      assert.equal(
-        events.some((event) => event.type === 'error'),
-        false,
-      );
-      assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
-      assert.equal(
-        traces.some((event) => event.type === 'sandbox_context_resolved'),
-        false,
-      );
-      const failure = traces.find((event) => event.type === 'sandbox_context_failed');
-      assert.equal(failure?.phase, 'sandbox');
-      assert.equal(failure?.data?.stage, 'resolve');
-    } finally {
-      await backend.dispose();
-    }
-  } finally {
-    await provider.close();
-  }
-});
-
-test('production Host executes current-boundary Bash and refreshes live sandbox context', {
+test('production Host executes Bash against the current live sandbox boundary', {
   skip: process.platform === 'win32' ? 'Managed arbitrary-shell sandboxing is unavailable' : false,
 }, async () => {
   const base = await mkdtemp(join(tmpdir(), 'maka-host-managed-bash-'));
@@ -381,10 +320,6 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     );
     const mainRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(mainRequests.length, 2);
-    const firstRequestText = JSON.stringify(mainRequests[0]?.body);
-    assert.match(firstRequestText, /<sandbox_context>/u);
-    assert.match(firstRequestText, /File system: workspace-write/u);
-    assert.match(firstRequestText, /Network: restricted/u);
     assert.deepEqual(toolParameterEnum(mainRequests[0]?.body, 'Bash', 'boundary_intent'), [
       'current',
       'expand',
@@ -458,9 +393,9 @@ test('production Host executes current-boundary Bash and refreshes live sandbox 
     assert.equal(secondTerminal.status, 'completed');
     const refreshedRequests = provider.requests.filter((request) => request.body.stream === true);
     assert.equal(refreshedRequests.length, 3);
-    const refreshedRequestText = JSON.stringify(refreshedRequests[2]?.body);
-    assert.match(refreshedRequestText, /<sandbox_context>/u);
-    assert.match(refreshedRequestText, /Network: enabled/u);
+    const refreshedBoundary = await execution.sessionStore.readExecutionBoundary(session.id);
+    assert.equal(refreshedBoundary.kind, 'managed');
+    assert.equal(refreshedBoundary.revision, 1);
 
     if (sandboxPaths) {
       const sandboxTurnId = 'hosted-managed-sandbox-turn-3';
@@ -1628,7 +1563,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_SKILL_DESCRIPTION_SENTINEL/);
     assert.doesNotMatch(requestText, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.match(requestText, /HOSTED_WORKSPACE_SENTINEL/);
-    assert.match(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
+    assert.doesNotMatch(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
@@ -2303,16 +2238,10 @@ test('production Host publishes and retires an implementation child patch', asyn
     assert.equal(child?.subagentParent?.parentSessionId, parent.id);
     if (!child) return;
     // The persisted header is a configuration projection, not execution
-    // authority, and may be narrower than the inherited live boundary. Keep
-    // them deliberately different so this test proves the prompt follows it.
+    // authority, and may be narrower than the inherited live boundary.
     assert.notEqual(child.permissionMode, 'bypass');
     const childBoundary = await execution.sessionStore.readExecutionBoundary(child.id);
     assert.equal(childBoundary.kind, 'bypass');
-    const childRequestText = JSON.stringify(childRequests[0]?.body);
-    assert.match(childRequestText, /<sandbox_context>/u);
-    assert.match(childRequestText, /File system: unrestricted/u);
-    assert.match(childRequestText, /Network: enabled/u);
-    assert.doesNotMatch(childRequestText, /File system: workspace-write/u);
     assert.ok(child.subagentWorkspace);
     assert.equal(child.cwd, child.subagentWorkspace?.worktreePath);
     assert.equal(await fileExists(join(project, 'implementation.txt')), false);
@@ -3236,7 +3165,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     sessionId: 'session',
     turnId: 'turn-1',
     cwd: '/workspace',
-    workspaceRoot: '/workspace',
   });
   assert.ok(prompt.sourceRevisions.length > 0);
 
@@ -3272,14 +3200,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
   const capturedBash = childComposer.tools.find((tool) => tool.name === 'Bash');
   assert.match(capturedBash?.description ?? '', /captured child shell/);
   assert.doesNotMatch(capturedBash?.description ?? '', /unavailable this turn/);
-  const childContext = {
-    sessionId: 'session',
-    turnId: 'turn-child',
-    cwd: '/workspace',
-    workspaceRoot: '/workspace',
-  } as const;
-  const childTail = await childComposer.turnTailPrompt(childContext);
-  assert.match(childTail, /captured child shell/);
 });
 
 test('child execution Bash carries the configured shell guidance and spawn plan', async () => {
@@ -3428,7 +3348,6 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
         sessionId: 'profiled-session',
         turnId: 'profiled-turn',
         cwd: '/workspace',
-        workspaceRoot: '/workspace',
       })
     ).text,
     [
@@ -3628,7 +3547,6 @@ function backendCreationFixture(input: {
   modelId?: string;
   snapshotClientCapabilities?: () => unknown;
   executionBoundary?: ExecutionBoundary;
-  sandboxDiagnostics?: HostAiSdkBackendInput['sandboxDiagnostics'];
   loadTurnRuntimeEvents?: () => Promise<RuntimeEvent[]>;
   recordRunTrace?: (event: RunTraceEvent) => unknown;
   runtimeCommitSink?: HostAiSdkBackendInput['runtimeCommitSink'];
@@ -3708,7 +3626,6 @@ function backendCreationFixture(input: {
       },
     } as unknown as BackendFactoryContext,
     runtimePolicy,
-    sandboxDiagnostics: input.sandboxDiagnostics ?? TEST_SANDBOX_DIAGNOSTICS,
     ...(input.oauthCredentials ? { oauthCredentials: input.oauthCredentials } : {}),
     createRunComposer,
     artifacts: {},

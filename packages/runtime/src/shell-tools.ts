@@ -380,7 +380,7 @@ export function buildStopBackgroundTaskTool(backgroundTasks: BackgroundTaskStopp
     name: 'StopBackgroundTask',
     activityKind: 'command',
     description:
-      'Stop a background task by runtime ref. Currently supports background shell run refs returned by Bash and shown in the turn tail.',
+      'Stop a background task by runtime ref. Currently supports background shell run refs returned by Bash.',
     parameters: z.object({
       ref: z
         .string()

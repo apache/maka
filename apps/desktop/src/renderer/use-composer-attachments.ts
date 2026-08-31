@@ -351,16 +351,6 @@ export function useComposerAttachments(options: {
     );
   }
 
-  function clearSubmittedDirectories(submitted: readonly DirectoryReference[]): void {
-    updateDirectories((current) => {
-      const previous = current[directoryDraftKey] ?? [];
-      const next = previous.filter((reference) => !submitted.includes(reference));
-      return next.length === previous.length
-        ? current
-        : { ...current, [directoryDraftKey]: next };
-    });
-  }
-
   function clearAllAttachments(): void {
     updateAttachments(() => ({}));
   }
@@ -384,10 +374,8 @@ export function useComposerAttachments(options: {
     attachFilePaths,
     restoreAttachments,
     removeAttachment,
-    removeDirectory,
     clearSubmittedContext,
     clearSubmittedAttachments,
-    clearSubmittedDirectories,
     clearAllAttachments,
   };
 }

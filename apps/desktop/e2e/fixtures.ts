@@ -502,6 +502,7 @@ export const test = base.extend<{
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
+  accessibilityNarrativeWindow: Page;
 }>({
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
@@ -655,6 +656,18 @@ export const test = base.extend<{
       seed: false,
       readinessSelector: '.settingsSurface',
       e2eFixtureScenario: 'settings-models',
+      locale: 'zh',
+      showWindow: true,
+    }, use);
+  },
+  // A data-backed conversation with settled tool evidence and a populated
+  // task ledger. Shown because the accessibility journey follows real native
+  // focus order through the transcript into the composer controls.
+  accessibilityNarrativeWindow: async ({}, use) => {
+    await withE2eWindow({
+      seed: false,
+      readinessSelector: '[data-turn-id]',
+      e2eFixtureScenario: 'turn-narrative',
       locale: 'zh',
       showWindow: true,
     }, use);

@@ -24,7 +24,6 @@ import type { PermissionProfile } from '@maka/core/permission-profile';
 
 import type {
   SandboxBackend,
-  SandboxCapabilityProbeResult,
   SandboxPathContext,
   SandboxTransformRequest,
   SandboxTransformResult,
@@ -268,18 +267,6 @@ export function createSeatbeltExecArgs(input: CreateSeatbeltExecArgsInput): read
 
 export class MacosSeatbeltBackend implements SandboxBackend {
   readonly type = 'macos-seatbelt' as const;
-
-  probe(request: SandboxTransformRequest): SandboxCapabilityProbeResult {
-    const transformed = this.transform(request);
-    if (!transformed.ok) return transformed;
-    return {
-      ok: true,
-      executable: MACOS_SEATBELT_EXECUTABLE,
-      sandboxType: transformed.sandboxType,
-      requiresSandbox: transformed.requiresSandbox,
-      preference: transformed.preference,
-    };
-  }
 
   transform(request: SandboxTransformRequest): SandboxTransformResult {
     const { command } = request;

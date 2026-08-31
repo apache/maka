@@ -28,6 +28,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
@@ -227,6 +228,47 @@ export async function seedE2eFixture(input: {
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
+
+  if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the E2E fixture task-ledger root');
+    try {
+      const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+      try {
+        const created = await tasks.create(
+          TURN_SESSION_ID,
+          [
+            { subject: '补齐桌面端无障碍覆盖' },
+            { subject: '核对模型选择器的键盘路径' },
+            { subject: '确认工具结果可以展开阅读' },
+          ],
+          { source: 'import', actor: 'system' },
+        );
+        await tasks.update(
+          TURN_SESSION_ID,
+          created.created[0]!.id,
+          { status: 'in_progress' },
+          { source: 'import', actor: 'system' },
+        );
+        await tasks.update(
+          TURN_SESSION_ID,
+          created.created[2]!.id,
+          { status: 'in_progress' },
+          { source: 'import', actor: 'system' },
+        );
+        await tasks.update(
+          TURN_SESSION_ID,
+          created.created[2]!.id,
+          { status: 'completed', completionEvidence: '工具输出已成功显示。' },
+          { source: 'import', actor: 'system' },
+        );
+      } finally {
+        tasks.close();
+      }
+    } finally {
+      await owner.close();
+    }
+  }
 
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));

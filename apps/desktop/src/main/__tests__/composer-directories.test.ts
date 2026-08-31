@@ -74,7 +74,7 @@ test('directory picker cancellation, duplicates and removal leave the draft cons
   await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   assert.deepEqual(probe.state().pendingDirectories, [reference]);
-  await act(() => probe.state().removeDirectory(0));
+  await act(() => probe.state().directoryComposerProps.onRemoveDirectory(0));
   assert.deepEqual(probe.state().pendingDirectories, []);
   assert.deepEqual(probe.errors, []);
 });
@@ -115,13 +115,12 @@ test('caps concurrent picker results and clearing a submitted draft keeps newer 
   await act(() => Promise.all(Array.from({ length: 6 }, pick)).then(() => undefined));
   assert.equal(probe.state().pendingDirectories.length, 4);
   assert.equal(probe.state().directoryComposerProps.onPickDirectory, undefined);
-  const submitted = probe.state().pendingDirectories;
-  const clearSubmitted = probe.state().clearSubmittedDirectories;
-  await act(() => probe.state().removeDirectory(0));
+  const clearSubmitted = probe.state().clearSubmittedContext;
+  await act(() => probe.state().directoryComposerProps.onRemoveDirectory(0));
   await act(() => probe.state().directoryComposerProps.onPickDirectory!());
   await probe.render({ draftKey: 'draft-b' });
   await act(() => probe.state().directoryComposerProps.onPickDirectory!());
-  await act(() => clearSubmitted(submitted));
+  await act(() => clearSubmitted());
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a different draft');
   await probe.render({ draftKey: 'draft-a' });
   assert.equal(probe.state().pendingDirectories.length, 1, 'must not clear a reference added after send');

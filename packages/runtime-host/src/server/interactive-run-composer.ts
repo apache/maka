@@ -31,11 +31,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { SessionToolProfile } from '@maka/core/session';
-import {
-  filterModelVisibleTaskLedgerTasks,
-  renderTaskLedgerPromptText,
-  type TaskLedgerStore,
-} from '@maka/core/task-ledger';
+import { type TaskLedgerStore } from '@maka/core/task-ledger';
 import { assembleMainSessionSystemPrompt } from '@maka/runtime/system-prompt/main-session-prompt';
 import { buildAskUserQuestionTool } from '@maka/runtime/ask-user-question-tool';
 import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
@@ -47,7 +43,6 @@ import {
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { buildPersonalizationPromptFragment } from '@maka/runtime/system-prompt/personalization-prompt';
 import { buildRequestSandboxBoundaryTool } from '@maka/runtime/sandbox-boundary-tool';
-import { buildSessionEnvironmentPromptFragment } from '@maka/runtime/system-prompt/session-environment-prompt';
 import {
   buildHostCapabilitiesFromBinding,
   buildSkillAgentToolFromInventory,
@@ -61,22 +56,12 @@ import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import { buildWorkspaceInstructionsPromptFragment } from '@maka/runtime/system-prompt/workspace-instructions';
 import { isDeepResearchToolAllowed } from '@maka/runtime/deep-research-tools';
 import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
-import {
-  renderInterruptedPlanContext,
-  renderPlanExecutionPrompt,
-  renderPlanModePrompt,
-  selectCollaborationTools,
-} from '@maka/runtime/plan-mode';
-import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
+import { renderPlanModePrompt, selectCollaborationTools } from '@maka/runtime/plan-mode';
 import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
 import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
-import {
-  resolveTurnShellPlan,
-  type TurnShellPlan,
-  turnShellDisplayName,
-} from '@maka/runtime/shell-detect';
+import { resolveTurnShellPlan, type TurnShellPlan } from '@maka/runtime/shell-detect';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -115,7 +100,6 @@ export interface InteractiveRunComposerInput {
   readonly boundTools?: readonly MakaTool[];
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
-  readonly platform?: NodeJS.Platform;
   /**
    * Turn-scoped shell resolution captured at backend admission. One plan
    * drives guidance and every Bash execution for the turn; a broken saved
@@ -123,7 +107,6 @@ export interface InteractiveRunComposerInput {
    * while the Bash/PTY boundary fails closed.
    */
   readonly shell?: TurnShellPlan;
-  readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
@@ -277,34 +260,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     tools,
     toolAvailability,
     resolveSystemPrompt,
-    turnTailPrompt: async (context: HostModelPromptContext) => {
-      const environment = buildSessionEnvironmentPromptFragment({
-        cwd: context.cwd,
-        projectGit: await resolveProjectGitInfo(context.cwd),
-        ...(input.platform ? { platform: input.platform } : {}),
-        ...(input.shell ? { shell: turnShellDisplayName(input.shell) } : {}),
-        ...(input.now ? { now: input.now() } : {}),
-      });
-      const tasks = filterModelVisibleTaskLedgerTasks(
-        await input.taskLedger.list(context.sessionId, {
-          classifyResumeTrust: true,
-          includeArchived: false,
-        }),
-      );
-      return (
-        joinFragments([
-          environment,
-          renderTaskLedgerTail(tasks),
-          input.plan
-            ? renderPlanTail(
-                input.plan.state,
-                input.plan.mode,
-                input.plan.permissionMode === 'bypass',
-              )
-            : undefined,
-        ]) ?? environment
-      );
-    },
   });
 }
 
@@ -557,27 +512,6 @@ function requireDeepResearchTools(tools: readonly MakaTool[] | undefined): reado
   return tools;
 }
 
-function renderPlanTail(
-  state: PlanSessionState,
-  mode: 'agent' | 'plan',
-  fullAccess: boolean,
-): string | undefined {
-  const active = activePlanExecution(state);
-  const execution =
-    active ??
-    (mode === 'plan'
-      ? [...state.executions].reverse().find((candidate) => candidate.status === 'interrupted')
-      : undefined);
-  if (!execution) return undefined;
-  const proposal = state.proposals.find(
-    (candidate) => candidate.proposalId === execution.proposalId,
-  );
-  if (!proposal) return undefined;
-  return active
-    ? renderPlanExecutionPrompt({ proposal, execution: active })
-    : renderInterruptedPlanContext({ proposal, execution, fullAccess });
-}
-
 function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {
   const seenIds = new Set<string>();
   return groups.flatMap((group) => {
@@ -690,25 +624,6 @@ function renderMemoryPrompt(body: string): string {
     '<local-memory>',
     body,
     '</local-memory>',
-  ].join('\n');
-}
-
-function renderTaskLedgerTail(
-  tasks: Parameters<typeof renderTaskLedgerPromptText>[0],
-): string | undefined {
-  if (tasks.length === 0) return undefined;
-  const rendered = renderTaskLedgerPromptText(tasks);
-  if (!rendered.text) return undefined;
-  return [
-    'Current task ledger (current-turn context only; maintain it with task_create, task_update, task_list, and task_get — activate them via tool_search first when they are not already visible):',
-    '<task-ledger>',
-    rendered.text,
-    ...(rendered.omittedCount > 0
-      ? [
-          `omitted=${rendered.omittedCount} (use task_list/task_get via tool_search for the complete ledger)`,
-        ]
-      : []),
-    '</task-ledger>',
   ].join('\n');
 }
 

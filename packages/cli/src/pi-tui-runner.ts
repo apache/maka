@@ -65,6 +65,7 @@ import type { TurnOrchestration } from '@maka/core/runtime-inputs';
 import type { SessionActivityLease } from '@maka/runtime/goal-turn-lifecycle';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
+  ConnectionIdentity,
   MakaForeignSessionReader,
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
@@ -186,11 +187,7 @@ export interface MakaPiTuiInput {
    */
   modelChoices?: readonly ModelChoice[];
   connectionId?: string;
-  connectionIdentities?: readonly {
-    readonly connectionId: string;
-    readonly connectionSlug: string;
-    readonly enabled: boolean;
-  }[];
+  connectionIdentities?: readonly ConnectionIdentity[];
   connectionSlug: string;
   providerType?: ProviderType;
   permissionMode: PermissionMode;
@@ -1177,6 +1174,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // in place after `/setup` saves so newly configured models are immediately
   // available — the single source the picker and connection/model lookups read.
   let modelChoices = input.modelChoices;
+  let connectionIdentities = input.connectionIdentities;
   // Monotonic attempt id: each setup submit captures one, and any transition
   // that abandons the in-flight attempt (back, re-pick, close) increments it so
   // a late verify/save settlement cannot clobber a newer attempt.
@@ -1461,7 +1459,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     connectionSlug = summary.llmConnectionSlug;
     const identityNotice = sessionConnectionIdentityNotice(
       summary,
-      input.connectionIdentities,
+      connectionIdentities,
       input.locale ?? 'en',
     );
     if (announceIdentity && identityNotice && identityNotice !== connectionIdentityNotice) {
@@ -2194,6 +2192,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           // attempt must not overwrite choices refreshed by a newer save.
           if (result.refresh.kind === 'ok') {
             modelChoices = result.refresh.modelChoices;
+            connectionIdentities = result.refresh.connectionIdentities;
           }
           if (input.firstRun) {
             beginClose();
