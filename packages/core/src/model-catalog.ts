@@ -193,6 +193,13 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
           ...displayNameForKnownModel(input.providerType, id),
         }));
   const savedChoiceSources = savedChoiceSourcesById(input.savedModelIds);
+  const ctx: EntryContext = {
+    input,
+    modelSource,
+    savedChoiceSources,
+    normalizedDefaultModel,
+    recommendedRanks,
+  };
   const seen = new Set<string>();
   const entries = rawModels
     .filter((model) => {
@@ -201,47 +208,17 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
       seen.add(id);
       return true;
     })
-    .map((model) =>
-      makeEntry(
-        input,
-        model,
-        source,
-        modelSource,
-        savedChoiceSources,
-        normalizedDefaultModel,
-        recommendedRanks,
-      ),
-    );
+    .map((model) => makeEntry(ctx, model, source));
 
   if (normalizedDefaultModel && !seen.has(normalizedDefaultModel)) {
-    entries.unshift(
-      makeMissingDefaultEntry(
-        input,
-        normalizedDefaultModel,
-        modelSource,
-        inventory,
-        savedChoiceSources,
-        normalizedDefaultModel,
-        recommendedRanks,
-      ),
-    );
+    entries.unshift(makeMissingEntry(ctx, normalizedDefaultModel, inventory, { isDefault: true }));
     seen.add(normalizedDefaultModel);
   }
 
   for (const id of savedChoiceSources.keys()) {
     if (seen.has(id)) continue;
     seen.add(id);
-    entries.push(
-      makeMissingUserChoiceEntry(
-        input,
-        id,
-        modelSource,
-        inventory,
-        savedChoiceSources,
-        normalizedDefaultModel,
-        recommendedRanks,
-      ),
-    );
+    entries.push(makeMissingEntry(ctx, id, inventory, { userChoice: true }));
   }
 
   return entries;
@@ -357,15 +334,39 @@ export function validateChatDefaultModel(input: BuildModelCatalogInput):
   return { ok: false, reason, entry };
 }
 
+/**
+ * The per-build facts every entry in one catalog shares. Threading them as one
+ * value keeps the entry builders' remaining parameters to what actually varies
+ * between an entry and its neighbours.
+ */
+interface EntryContext {
+  readonly input: BuildModelCatalogInput;
+  readonly modelSource: ModelDiscoverySource;
+  readonly savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>;
+  readonly normalizedDefaultModel: string | undefined;
+  readonly recommendedRanks: ReadonlyMap<string, number>;
+}
+
+/**
+ * The facts an entry cannot derive from its model row. A model the catalog
+ * never listed has no row to derive them from: its unavailability is a
+ * property of the inventory rather than of the model, a missing default is
+ * default by construction, and a missing saved choice records that the user
+ * picked it.
+ */
+interface EntryOverrides {
+  readonly unavailableReason?: ModelUnavailableReason;
+  readonly isDefault?: boolean;
+  readonly userChoice?: true;
+}
+
 function makeEntry(
-  input: BuildModelCatalogInput,
+  ctx: EntryContext,
   model: ModelInfo,
   source: ModelCatalogEntry['source'],
-  modelSource: ModelDiscoverySource,
-  savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
-  normalizedDefaultModel: string | undefined,
-  recommendedRanks: ReadonlyMap<string, number>,
+  overrides: EntryOverrides = {},
 ): ModelCatalogEntry {
+  const { input, modelSource, savedChoiceSources, normalizedDefaultModel, recommendedRanks } = ctx;
   const normalizedModel = { ...model, id: model.id.trim() };
   const pricing = findPricing(input, normalizedModel.id);
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
@@ -384,11 +385,13 @@ function makeEntry(
   // reads the modality. Passing the unmerged `normalizedModel.modalities`
   // meant a bundled image-only model reached the guard with no output
   // declaration at all.
-  const unavailableReason = deriveModelUnavailableReason(input, {
-    ...normalizedModel,
-    capabilities,
-    ...(modalities !== undefined ? { modalities } : {}),
-  });
+  const unavailableReason =
+    overrides.unavailableReason ??
+    deriveModelUnavailableReason(input, {
+      ...normalizedModel,
+      capabilities,
+      ...(modalities !== undefined ? { modalities } : {}),
+    });
   return {
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
@@ -406,7 +409,7 @@ function makeEntry(
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
-    isDefault: normalizedModel.id === normalizedDefaultModel,
+    isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     capabilities: normalizeCapabilities(capabilities),
     lifecycle: metadata.lifecycle ?? 'unknown',
     ...(recommendedRank ? { recommendedRank } : {}),
@@ -425,6 +428,7 @@ function makeEntry(
       ...(pricing
         ? { pricingModelKey: pricingModelKey(input.providerType, normalizedModel.id) }
         : {}),
+      ...(overrides.userChoice ? { userChoice: overrides.userChoice } : {}),
       sources: provenanceSources(
         input,
         normalizedModel.id,
@@ -434,6 +438,23 @@ function makeEntry(
       ),
     },
   };
+}
+
+/**
+ * An entry for an id no catalog row describes. It is `makeEntry` over a bare
+ * model row: every field then resolves from the bundled metadata alone, which
+ * is exactly what these entries carried when they were built separately.
+ */
+function makeMissingEntry(
+  ctx: EntryContext,
+  id: string,
+  inventory: ConnectionModelInventory,
+  overrides: Omit<EntryOverrides, 'unavailableReason'>,
+): ModelCatalogEntry {
+  return makeEntry(ctx, { id }, 'unknown', {
+    unavailableReason: missingEntryUnavailableReason(ctx.input, inventory),
+    ...overrides,
+  });
 }
 
 function mergeCapabilities(
@@ -451,105 +472,6 @@ function mergeCapabilities(
       providerCapabilities.parallelToolCalls ?? metadataCapabilities.parallelToolCalls,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
     webSearch: providerCapabilities.webSearch ?? metadataCapabilities.webSearch,
-  };
-}
-
-function makeMissingDefaultEntry(
-  input: BuildModelCatalogInput,
-  id: string,
-  modelSource: ModelDiscoverySource,
-  inventory: ConnectionModelInventory,
-  savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
-  normalizedDefaultModel: string | undefined,
-  recommendedRanks: ReadonlyMap<string, number>,
-): ModelCatalogEntry {
-  const unavailableReason = missingEntryUnavailableReason(input, inventory);
-  const metadata = lookupModelMetadata(input.providerType, id);
-  const recommendedRank = recommendedRanks.get(id);
-  return {
-    id,
-    ...displayNameForKnownModel(input.providerType, id),
-    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
-    providerType: input.providerType,
-    ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
-    source: 'unknown',
-    capabilitySource: metadata.capabilities ? 'static_catalog' : 'unknown',
-    unavailableReason,
-    availability: availabilityOf(unavailableReason),
-    canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
-    isDefault: true,
-    capabilities: normalizeCapabilities(metadata.capabilities),
-    lifecycle: metadata.lifecycle ?? 'unknown',
-    ...(recommendedRank ? { recommendedRank } : {}),
-    ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
-    ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
-    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
-    ...(metadata.maxOutputTokens !== undefined
-      ? { maxOutputTokens: metadata.maxOutputTokens }
-      : {}),
-    ...(metadata.knowledgeCutoff !== undefined
-      ? { knowledgeCutoff: metadata.knowledgeCutoff }
-      : {}),
-    ...(metadata.structuredOutput !== undefined
-      ? { structuredOutput: metadata.structuredOutput }
-      : {}),
-    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
-    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
-    provenance: {
-      modelSource,
-      ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
-      sources: provenanceSources(input, id, 'unknown', savedChoiceSources, normalizedDefaultModel),
-    },
-  };
-}
-
-function makeMissingUserChoiceEntry(
-  input: BuildModelCatalogInput,
-  id: string,
-  modelSource: ModelDiscoverySource,
-  inventory: ConnectionModelInventory,
-  savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
-  normalizedDefaultModel: string | undefined,
-  recommendedRanks: ReadonlyMap<string, number>,
-): ModelCatalogEntry {
-  const unavailableReason = missingEntryUnavailableReason(input, inventory);
-  const metadata = lookupModelMetadata(input.providerType, id);
-  const recommendedRank = recommendedRanks.get(id);
-  return {
-    id,
-    ...displayNameForKnownModel(input.providerType, id),
-    ...(metadata.description !== undefined ? { description: metadata.description } : {}),
-    providerType: input.providerType,
-    ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
-    source: 'unknown',
-    capabilitySource: metadata.capabilities ? 'static_catalog' : 'unknown',
-    unavailableReason,
-    availability: availabilityOf(unavailableReason),
-    canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
-    isDefault: id === normalizedDefaultModel,
-    capabilities: normalizeCapabilities(metadata.capabilities),
-    lifecycle: metadata.lifecycle ?? 'unknown',
-    ...(recommendedRank ? { recommendedRank } : {}),
-    ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
-    ...(metadata.contextWindow !== undefined ? { contextWindow: metadata.contextWindow } : {}),
-    ...(metadata.inputLimit !== undefined ? { inputLimit: metadata.inputLimit } : {}),
-    ...(metadata.maxOutputTokens !== undefined
-      ? { maxOutputTokens: metadata.maxOutputTokens }
-      : {}),
-    ...(metadata.knowledgeCutoff !== undefined
-      ? { knowledgeCutoff: metadata.knowledgeCutoff }
-      : {}),
-    ...(metadata.structuredOutput !== undefined
-      ? { structuredOutput: metadata.structuredOutput }
-      : {}),
-    ...(metadata.lastUpdated !== undefined ? { lastUpdated: metadata.lastUpdated } : {}),
-    ...(metadata.modalities !== undefined ? { modalities: metadata.modalities } : {}),
-    provenance: {
-      modelSource,
-      ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
-      userChoice: true,
-      sources: provenanceSources(input, id, 'unknown', savedChoiceSources, normalizedDefaultModel),
-    },
   };
 }
 
