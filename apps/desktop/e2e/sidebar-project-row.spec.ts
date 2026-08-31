@@ -36,6 +36,23 @@ test('project navigation and actions follow their visual keyboard order', async 
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const recentToggle = sidebar.getByRole('button', { name: '最近', exact: true });
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'true');
+  const [recentToggleBox, sidebarBox] = await Promise.all([
+    recentToggle.boundingBox(),
+    sidebar.boundingBox(),
+  ]);
+  expect(recentToggleBox).not.toBeNull();
+  expect(sidebarBox).not.toBeNull();
+  expect(recentToggleBox!.width).toBeGreaterThan(sidebarBox!.width * 0.8);
+  await page.mouse.click(
+    recentToggleBox!.x + recentToggleBox!.width - 8,
+    recentToggleBox!.y + recentToggleBox!.height / 2,
+  );
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'false');
+  await recentToggle.click();
+  await expect(recentToggle).toHaveAttribute('aria-expanded', 'true');
+
   await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
 
   const projectRow = sidebar.locator(
@@ -59,26 +76,23 @@ test('project navigation and actions follow their visual keyboard order', async 
   const sessionTitle = firstSessionControl.getByText('任务 00', { exact: true });
   await expect(projectTitle).toBeVisible();
   await expect(sessionTitle).toBeVisible();
-  const [projectNavigationBox, firstSessionBox, projectTitleBox, sessionTitleBox] = await Promise.all([
+  const [projectNavigationBox, firstSessionBox] = await Promise.all([
     navigation.boundingBox(),
     firstSessionControl.boundingBox(),
-    projectTitle.boundingBox(),
-    sessionTitle.boundingBox(),
   ]);
   expect(projectNavigationBox).not.toBeNull();
   expect(firstSessionBox).not.toBeNull();
-  expect(projectTitleBox).not.toBeNull();
-  expect(sessionTitleBox).not.toBeNull();
-  // Hierarchy is the session button sitting inside the project button. Title
-  // alignment is the product contract: leading content widths differ, so the
-  // inset is not the same as the title column.
+  // Nested session buttons share the project header's inline box. Folder vs
+  // status-dot still mark the tree; the selected fill must not sit inset.
   const sessionInset = firstSessionBox!.x - projectNavigationBox!.x;
-  expect(sessionInset).toBeGreaterThanOrEqual(6);
-  expect(sessionInset).toBeLessThan(16);
-  expect(Math.abs(projectTitleBox!.x - sessionTitleBox!.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(sessionInset)).toBeLessThanOrEqual(2);
+  expect(Math.abs(firstSessionBox!.width - projectNavigationBox!.width)).toBeLessThanOrEqual(2);
 
   await expect(projectRow.locator('button button')).toHaveCount(0);
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigation.locator('.lucide-folder-open')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-closed')).toHaveCount(0);
+  await expect(navigation.locator(':scope > span').last()).toBeHidden();
 
   await navigation.focus();
   await page.keyboard.press('Tab');
@@ -89,10 +103,14 @@ test('project navigation and actions follow their visual keyboard order', async 
   await navigation.focus();
   await page.keyboard.press('Enter');
   await expect(navigation).toHaveAttribute('aria-expanded', 'false');
+  await expect(navigation.locator('.lucide-folder-closed')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-open')).toHaveCount(0);
   await expect(controlledGroup).toHaveAttribute('aria-hidden', 'true');
   expect(await controlledGroup.getAttribute('inert')).not.toBeNull();
   await page.keyboard.press('Enter');
   await expect(navigation).toHaveAttribute('aria-expanded', 'true');
+  await expect(navigation.locator('.lucide-folder-open')).toBeVisible();
+  await expect(navigation.locator('.lucide-folder-closed')).toHaveCount(0);
   await expect(controlledGroup).toHaveAttribute('aria-hidden', 'false');
   expect(await controlledGroup.getAttribute('inert')).toBeNull();
 

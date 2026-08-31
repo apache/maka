@@ -21,6 +21,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type KeyboardEvent,
@@ -35,6 +36,8 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  ChevronDown,
+  FolderClosed,
   FolderOpen,
   Pencil,
   Pin,
@@ -46,12 +49,9 @@ import {
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
+import { Button } from '@astryxdesign/core/Button';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
-import {
-  SideNavItem,
-  SideNavSection,
-} from '@astryxdesign/core/SideNav';
-import { VStack } from '@astryxdesign/core/Stack';
+import { SideNavItem } from '@astryxdesign/core/SideNav';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
@@ -161,7 +161,6 @@ function SessionListGroups(props: {
    * that renders the menu is the only one that can name it without racing.
    */
   const renameOpenerRef = useRef<HTMLElement | null>(null);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
@@ -229,11 +228,12 @@ function SessionListGroups(props: {
   ) : null;
 
   if (rail.groupVariant === 'project') {
-    const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
-    const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    const { pinned, groups } = splitPinnedProjectHistory(props.groups);
+    const activeGroups = groups.filter((group) => group.project?.archivedAt === undefined);
+    const archivedGroups = groups.filter((group) => group.project?.archivedAt !== undefined);
 
     function renderProjectGroup(
-      group: (typeof props.groups)[number],
+      group: (typeof groups)[number],
     ): ReactNode {
       const project = group.project;
       return (
@@ -257,21 +257,21 @@ function SessionListGroups(props: {
     return (
       <>
         {renameDialog}
-        {activeGroups.map(renderProjectGroup)}
-        {archivedGroups.length > 0 && (
-          <SideNavItem
-            label={copy.archivedProjects}
-            collapsible={{
-              isCollapsed: !archivedExpanded,
-              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
-            }}
-          >
-            {/* Always mount children: Astryx derives collapsible chrome from
-                !!children. Nulling on collapse removes the chevron and makes
-                the controlled isCollapsed prop a no-op. */}
+        {pinned.length > 0 ? (
+          <CollapsibleSessionSection title={copy.pinned}>
+            {pinned.map((session) => renderSessionRow(session))}
+          </CollapsibleSessionSection>
+        ) : null}
+        {activeGroups.length > 0 ? (
+          <CollapsibleSessionSection title={copy.projects}>
+            {activeGroups.map(renderProjectGroup)}
+          </CollapsibleSessionSection>
+        ) : null}
+        {archivedGroups.length > 0 ? (
+          <CollapsibleSessionSection title={copy.archivedProjects}>
             {archivedGroups.map(renderProjectGroup)}
-          </SideNavItem>
-        )}
+          </CollapsibleSessionSection>
+        ) : null}
       </>
     );
   }
@@ -289,12 +289,54 @@ function SessionListGroups(props: {
           );
         }
         return (
-          <SideNavSection key={group.key} title={group.label} className="maka-session-group">
+          <CollapsibleSessionSection key={group.key} title={group.label}>
             {items}
-          </SideNavSection>
+          </CollapsibleSessionSection>
         );
       })}
     </>
+  );
+}
+
+function CollapsibleSessionSection(props: { title: string; children: ReactNode }) {
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const titleId = useId();
+  const contentId = useId();
+
+  return (
+    <div
+      className="maka-session-group maka-collapsible-session-group"
+      role="group"
+      aria-labelledby={titleId}
+    >
+      <div className="maka-session-group-header">
+        <Button
+          id={titleId}
+          label={props.title}
+          variant="ghost"
+          size="sm"
+          width="100%"
+          className="maka-session-group-toggle"
+          aria-expanded={!isCollapsed}
+          aria-controls={contentId}
+          onClick={() => setIsCollapsed((collapsed) => !collapsed)}
+          endContent={<ChevronDown
+            size={ICON_SIZE.meta}
+            className="maka-session-group-chevron"
+            aria-hidden="true"
+          />}
+        />
+      </div>
+      <div
+        id={contentId}
+        className="maka-session-group-content"
+        aria-hidden={isCollapsed}
+        inert={isCollapsed}
+        data-collapsed={isCollapsed ? 'true' : 'false'}
+      >
+        <div className="maka-session-group-content-inner">{props.children}</div>
+      </div>
+    </div>
   );
 }
 
@@ -307,17 +349,21 @@ function ProjectNavRow(props: {
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
-  // Collapsible only when there is a real session subtree. An empty VStack is
+  // Collapsible only when there is a real session subtree. An empty wrapper is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
+  const [isCollapsed, setIsCollapsed] = useState(false);
   return (
     <div data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
         key="navigation"
         label={props.label}
-        icon={FolderOpen}
-        collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
+        icon={hasSessions && isCollapsed ? FolderClosed : FolderOpen}
+        collapsible={
+          hasSessions ? { isCollapsed, onCollapsedChange: setIsCollapsed } : undefined
+        }
+        data-maka-project-disclosure={hasSessions ? 'true' : undefined}
         endContent={
           <ProjectItemMeta
             project={props.project}
@@ -331,15 +377,14 @@ function ProjectNavRow(props: {
               project={props.project}
               actions={props.projectActions}
               onStartRename={props.onStartRename}
-              position={hasSessions ? 'before-disclosure' : 'trailing'}
+              position="trailing"
             />
           ) : undefined
         }
       >
-        {/* sidebar.css keeps an 8px nest so session titles share the project x. */}
-        {hasSessions ? (
-          <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
-        ) : undefined}
+        {/* sidebar.css zeroes the nest inset so session buttons match the
+            project header's inline length. */}
+        {hasSessions ? props.sessions.map((session) => props.renderSession(session)) : undefined}
       </SideNavItem>
     </div>
   );
@@ -475,7 +520,9 @@ function ProjectItemMeta(props: {
       {props.project && !props.project.available && (
         <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
       )}
-      <Badge variant="neutral" label={props.sessionCount} />
+      {props.sessionCount > 0 ? (
+        <Badge variant="neutral" label={props.sessionCount} />
+      ) : null}
       {props.reserveAction ? (
         <span className="maka-session-row-trailing" aria-hidden="true" />
       ) : null}
@@ -808,15 +855,34 @@ interface SessionGroup {
   sessions: SessionSummary[];
 }
 
+function sortSessionsByRecency(sessions: readonly SessionSummary[]): SessionSummary[] {
+  return [...sessions].sort((a, b) => {
+    const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
+    return timestampDelta || a.id.localeCompare(b.id);
+  });
+}
+
+function splitPinnedProjectHistory<T extends { sessions: SessionSummary[] }>(
+  groups: ReadonlyArray<T>,
+): { pinned: SessionSummary[]; groups: T[] } {
+  const pinned = sortSessionsByRecency(
+    groups.flatMap((group) => group.sessions).filter((session) => session.isFlagged),
+  );
+  return {
+    pinned,
+    groups: groups.map((group) => ({
+      ...group,
+      sessions: group.sessions.filter((session) => !session.isFlagged),
+    })),
+  };
+}
+
 function groupSessionsForHistory(
   sessions: readonly SessionSummary[],
   locale: UiLocale,
 ): SessionGroup[] {
   const copy = getConversationCopy(locale).sessions;
-  const ordered = [...sessions].sort((a, b) => {
-    const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
-    return timestampDelta || a.id.localeCompare(b.id);
-  });
+  const ordered = sortSessionsByRecency(sessions);
   const pinned = ordered.filter((session) => session.isFlagged);
   const unpinned = ordered.filter((session) => !session.isFlagged);
   const groups: SessionGroup[] = [];

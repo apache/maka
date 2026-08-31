@@ -206,6 +206,16 @@
   --maka-sidenav-width: 0px;
 }
 
+/* Expanded, the sidebar itself occupies the content plate's left edge, so the
+   plate only needs outer gaps on its other three sides. Once the sidebar closes
+   to zero there is no column left to provide that separation: give the plate
+   the missing inline-start gap and reduce its width by the same amount so both
+   inline gaps remain inside the window. */
+.appFrame[data-sidebar-state='collapsed'] .maka-panel-detail {
+  width: calc(100% - 2 * var(--agents-content-area-gap));
+  margin-left: var(--agents-content-area-gap);
+}
+
 /* `visibility`, rather than opacity, removes the hidden rail's buttons from
    focus navigation and accessibility hit testing. SideNav stays mounted so its
    imperative collapse handle can restore both the boolean and the resizable

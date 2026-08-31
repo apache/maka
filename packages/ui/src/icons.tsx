@@ -93,6 +93,7 @@ export {
   FileText,
   FileType,
   Flag,
+  FolderClosed,
   FolderOpen,
   FolderGit2,
   GitBranch,

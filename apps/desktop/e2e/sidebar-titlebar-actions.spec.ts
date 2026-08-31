@@ -53,6 +53,25 @@ test('collapsed sidebar removes its icon rail but keeps the titlebar restore act
   const expandSidebar = window.getByRole('button', { name: '展开侧边栏' });
   await expect(expandSidebar).toBeVisible();
 
+  const contentGaps = await window.locator('.maka-panel-detail').evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      top: rect.top,
+      right: window.innerWidth - rect.right,
+      bottom: window.innerHeight - rect.bottom,
+      left: rect.left,
+    };
+  });
+  expect(contentGaps.left, 'collapsed content keeps the same outer gap on every edge')
+    .toBe(contentGaps.right);
+  expect(contentGaps).toEqual({
+    top: contentGaps.right,
+    right: contentGaps.right,
+    bottom: contentGaps.right,
+    left: contentGaps.right,
+  });
+  expect(contentGaps.right).toBeGreaterThan(0);
+
   await expandSidebar.click();
   await expect(sidebar).toBeVisible();
   await expect(window.getByRole('button', { name: '收起侧边栏' })).toBeVisible();
