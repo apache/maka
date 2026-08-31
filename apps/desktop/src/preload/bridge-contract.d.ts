@@ -135,6 +135,10 @@ import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import type { TestProxyInput } from '@maka/core/settings/network-settings';
 import type { ExternalSessionImportIpcResult } from './external-session-import-result.js';
 import type { DesktopSessionSummary } from '../shared/desktop-session-projection.js';
+import type {
+  SessionCollaborationImportResult,
+  SessionCollaborationMountSummary,
+} from '../shared/session-collaboration.js';
 /**
  * Outcome of importing artwork. `cancelled` is the user closing the dialog and
  * is not an error; the rest name why the file could not become an icon, so the
@@ -326,22 +330,9 @@ export interface DesktopRuntimeHostProfileSnapshot {
   readonly pairingRecoveryPending?: true;
 }
 
-export type DesktopSessionCollaborationImportResult =
-  | { readonly kind: 'connected'; readonly mountId: string }
-  | {
-      readonly kind: 'error';
-      readonly reason:
-        | 'invalid_code'
-        | 'insecure_confirmation_required'
-        | 'peer_path_unavailable'
-        | 'connection_failed';
-      readonly message?: string;
-    };
+export type DesktopSessionCollaborationImportResult = SessionCollaborationImportResult;
 
-export interface DesktopGuestSessionMountSummary {
-  readonly mountId: string;
-  readonly name: string;
-}
+export type DesktopGuestSessionMountSummary = SessionCollaborationMountSummary;
 
 export type DesktopSessionCollaborationPrepareResult =
   | {

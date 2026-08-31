@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
+  abortable,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
@@ -378,7 +379,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         try {
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
-          const finalized = await abortableOperation(
+          const finalized = await abortable(
             () => candidate.client.finalizeAccessCredential(remainingMs),
             signal,
           );
@@ -1220,26 +1221,6 @@ function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
       reject(signal.reason);
     };
     signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-function abortableOperation<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  const running = operation();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (callback: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      callback();
-    };
-    const onAbort = () => settle(() => reject(signal.reason));
-    signal.addEventListener('abort', onAbort, { once: true });
-    void running.then(
-      (value) => settle(() => resolve(value)),
-      (error: unknown) => settle(() => reject(error)),
-    );
   });
 }
 

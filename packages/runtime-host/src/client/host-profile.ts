@@ -636,6 +636,11 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     if (!profile) {
       throw new RuntimeHostPermanentReconnectError(`Unknown Runtime Host profile: ${id}`);
     }
+    if (profile.kind === 'remote' && profile.access === 'session_guest') {
+      throw new RuntimeHostPermanentReconnectError(
+        'Session Guest access is retained only as a shared Session mount',
+      );
+    }
     if (profile.kind === 'environment') return { profile };
     const credential = await this.credentials.get(profile);
     if (!credential) {
@@ -666,6 +671,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     requireNew: boolean,
   ): Promise<RuntimeHostProfileDocument> {
     const profile = decodePersistedRuntimeHostProfile(value);
+    assertOwnerProfile(profile);
     return this.#exclusive(async () => {
       const current = await this.#readSnapshot();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
@@ -773,6 +779,8 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     const profile = decodeRemoteRuntimeHostProfile(value);
+    assertOwnerProfile(expectedProfile);
+    assertOwnerProfile(profile);
     if (
       profile.id !== expectedProfile.id ||
       !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile) ||
@@ -858,6 +866,12 @@ export function decodePersistedRuntimeHostProfile(value: unknown): PersistedRunt
   return requireRecord(value, 'Runtime Host profile').kind === 'environment'
     ? decodeEnvironmentRuntimeHostProfile(value)
     : decodeRemoteRuntimeHostProfile(value);
+}
+
+function assertOwnerProfile(profile: PersistedRuntimeHostProfile): void {
+  if (profile.kind === 'remote' && profile.access === 'session_guest') {
+    throw new Error('Session Guest access is retained only as a shared Session mount');
+  }
 }
 
 export function decodeEnvironmentRuntimeHostProfile(value: unknown): EnvironmentRuntimeHostProfile {

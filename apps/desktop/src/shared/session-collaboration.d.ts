@@ -17,21 +17,19 @@
  * under the License.
  */
 
-import type {
-  SessionCollaborationImportResult,
-  SessionCollaborationMountSummary,
-} from '../../../shared/session-collaboration.js';
+export type SessionCollaborationImportResult =
+  | { readonly kind: 'connected'; readonly mountId: string }
+  | {
+      readonly kind: 'error';
+      readonly reason:
+        | 'invalid_code'
+        | 'insecure_confirmation_required'
+        | 'peer_path_unavailable'
+        | 'connection_failed';
+      readonly message?: string;
+    };
 
-export type {
-  SessionCollaborationImportResult,
-  SessionCollaborationMountSummary,
-} from '../../../shared/session-collaboration.js';
-
-export interface SessionCollaborationServices {
-  importInvitation(input: {
-    readonly code: string;
-    readonly allowInsecure: boolean;
-  }): Promise<SessionCollaborationImportResult>;
-  listMounts(): Promise<readonly SessionCollaborationMountSummary[]>;
-  removeMount(mountId: string): Promise<void>;
+export interface SessionCollaborationMountSummary {
+  readonly mountId: string;
+  readonly name: string;
 }

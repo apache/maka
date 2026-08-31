@@ -363,11 +363,7 @@ export function RuntimeHostProfilesSection(props: {
     ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
     : undefined;
   const profileOptions = (snapshot?.entries ?? [])
-    .filter(
-      (entry) =>
-        entry.enabled &&
-        (entry.profile.kind !== 'remote' || entry.profile.access !== 'session_guest'),
-    )
+    .filter((entry) => entry.enabled)
     .map((entry) => ({
       value: entry.profile.id,
       label: entry.profile.name,
@@ -634,10 +630,7 @@ export function RuntimeHostProfilesSection(props: {
             {connectedEntries.map((entry) => {
               const profile = entry.profile;
               if (profile.kind === 'local') return null;
-              const isSharedAccess =
-                profile.kind === 'remote' && profile.access === 'session_guest';
               const managedSshDestination =
-                !isSharedAccess &&
                 profile.kind === 'remote' &&
                 profile.transport.kind === 'ssh' &&
                 entry.managedService
@@ -676,9 +669,6 @@ export function RuntimeHostProfilesSection(props: {
                       ) : null}
                       {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
                         <Badge variant="warning" label={copy.experimentalBadge} />
-                      ) : null}
-                      {isSharedAccess ? (
-                        <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
                       ) : null}
                       {entry.pairingPending ? (
                         <Badge variant="warning" label={copy.pairingPendingBadge} />

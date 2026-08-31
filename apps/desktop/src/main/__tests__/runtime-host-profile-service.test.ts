@@ -25,6 +25,7 @@ import { afterEach, test } from "node:test";
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
+  createRuntimeHostProfileCredentialStore,
   encodeRuntimeHostOwnerConnectionCode,
   LOCAL_RUNTIME_HOST_PROFILE,
   RuntimeHostPermanentReconnectError,
@@ -119,7 +120,11 @@ test('removes obsolete experimental Guest profiles and pairing intents at startu
   const credentials = createClientRuntimeHostCredentialStore(root);
   const catalog = createClientRuntimeHostProfileCatalog(root, credentials);
   const guest = { ...PROFILE, id: 'shared-obsolete', access: 'session_guest' as const };
-  await catalog.create(guest, 'guest-token');
+  await createRuntimeHostProfileCredentialStore(credentials).set(guest, 'guest-token');
+  await writeFile(
+    join(root, 'runtime-host-profiles.json'),
+    `${JSON.stringify({ schemaVersion: 3, profiles: [guest] })}\n`,
+  );
   await writeFile(
     join(root, 'runtime-host-profile-selection.json'),
     `${JSON.stringify({

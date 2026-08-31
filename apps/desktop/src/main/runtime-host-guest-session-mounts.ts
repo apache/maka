@@ -26,7 +26,10 @@ import {
 } from '@maka/runtime-host/client';
 import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from '@maka/storage/credential-store';
-import type { DesktopSessionCollaborationImportResult } from '../preload/bridge-contract.js';
+import type {
+  SessionCollaborationImportResult,
+  SessionCollaborationMountSummary,
+} from '../shared/session-collaboration.js';
 import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
 
@@ -43,11 +46,6 @@ export interface GuestSessionMount {
   readonly credential: string;
 }
 
-export interface GuestSessionMountSummary {
-  readonly mountId: string;
-  readonly name: string;
-}
-
 interface GuestSessionMountDocument {
   readonly schemaVersion: typeof STORE_SCHEMA_VERSION;
   readonly mounts: readonly GuestSessionMount[];
@@ -58,6 +56,7 @@ interface LiveGuestActivation {
   readonly controller: AbortController;
   mountId?: string;
   stage: 'connecting' | 'finalizing';
+  finalization?: Promise<void>;
   task: Promise<unknown>;
 }
 
@@ -68,11 +67,11 @@ export interface GuestSessionMountStore {
 
 export interface DesktopGuestSessionMountService {
   start(): Promise<void>;
-  list(): Promise<readonly GuestSessionMountSummary[]>;
+  list(): Promise<readonly SessionCollaborationMountSummary[]>;
   importInvitation(
     code: string,
     allowInsecure: boolean,
-  ): Promise<DesktopSessionCollaborationImportResult>;
+  ): Promise<SessionCollaborationImportResult>;
   remove(mountId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -148,9 +147,18 @@ export function createDesktopGuestSessionMountService(input: {
     activation.stage = 'connecting';
     await input.mount(resolveMountTarget(mount), activation.controller.signal);
     activation.controller.signal.throwIfAborted();
+    if (removingMounts.has(mount.mountId)) {
+      throw new Error('Shared Session mount was removed while connecting');
+    }
     activation.stage = 'finalizing';
-    await input.finalizeAccess(mount.mountId, activation.controller.signal);
-    activation.controller.signal.throwIfAborted();
+    const finalization = input.finalizeAccess(mount.mountId, activation.controller.signal);
+    activation.finalization = finalization;
+    try {
+      await finalization;
+      activation.controller.signal.throwIfAborted();
+    } finally {
+      if (activation.finalization === finalization) activation.finalization = undefined;
+    }
   };
 
   const beginStartupReconciliation = (mount: GuestSessionMount): void => {
@@ -175,7 +183,12 @@ export function createDesktopGuestSessionMountService(input: {
           await activate(activation, mount);
           return;
         } catch (error) {
-          if (closed || activation.controller.signal.aborted) return;
+          if (
+            closed ||
+            activation.controller.signal.aborted ||
+            removingMounts.has(mount.mountId)
+          ) return;
+          activation.stage = 'connecting';
           onError(asError(error), mount);
           await wait(delayMs, activation.controller.signal);
           delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
@@ -192,10 +205,17 @@ export function createDesktopGuestSessionMountService(input: {
   const remove = async (mountId: string): Promise<void> => {
     removingMounts.add(mountId);
     try {
-      const finalizing = [...activations].find(
-        (activation) => activation.mountId === mountId && activation.stage === 'finalizing',
+      const matching = [...activations].filter((activation) => activation.mountId === mountId);
+      for (const activation of matching) {
+        if (activation.stage === 'connecting') {
+          activation.controller.abort(new Error('Shared Session mount was removed'));
+        }
+      }
+      await Promise.allSettled(
+        matching.flatMap((activation) =>
+          activation.finalization ? [activation.finalization] : [],
+        ),
       );
-      if (finalizing) await finalizing.task.catch(() => undefined);
       const removed = await mutate(async () => {
         const current = await load();
         const mount = current.get(mountId);
@@ -221,7 +241,7 @@ export function createDesktopGuestSessionMountService(input: {
     code: string,
     allowInsecure: boolean,
     activation: LiveGuestActivation,
-  ): Promise<DesktopSessionCollaborationImportResult> => {
+  ): Promise<SessionCollaborationImportResult> => {
     activation.controller.signal.throwIfAborted();
     let bundle;
     let invitation;
@@ -293,7 +313,7 @@ export function createDesktopGuestSessionMountService(input: {
   const importInvitation = (
     code: string,
     allowInsecure: boolean,
-  ): Promise<DesktopSessionCollaborationImportResult> => {
+  ): Promise<SessionCollaborationImportResult> => {
     if (closed) return Promise.reject(new Error('Shared Session mount service is closed'));
     const activation: LiveGuestActivation = {
       kind: 'import',

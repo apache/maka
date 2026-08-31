@@ -108,6 +108,85 @@ test('settles admitted finalization before committing unmount desire', async () 
   assert.deepEqual(await store.read(), []);
 });
 
+test('removal fences a connecting startup mount before credential finalization', async () => {
+  const retained = retainedMount('shared-connecting');
+  let stored: readonly GuestSessionMount[] = [retained];
+  let releaseWrite!: () => void;
+  let releaseMount!: () => void;
+  let markConnecting!: () => void;
+  let markDeleting!: () => void;
+  const writeReleased = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  const mountReleased = new Promise<void>((resolve) => {
+    releaseMount = resolve;
+  });
+  const connecting = new Promise<void>((resolve) => {
+    markConnecting = resolve;
+  });
+  const deleting = new Promise<void>((resolve) => {
+    markDeleting = resolve;
+  });
+  const store: GuestSessionMountStore = {
+    read: async () => stored,
+    write: async (next) => {
+      markDeleting();
+      await writeReleased;
+      stored = next;
+    },
+  };
+  let finalizations = 0;
+  const mounts = service(store, {
+    mount: async () => {
+      markConnecting();
+      await mountReleased;
+    },
+    finalizeAccess: async () => {
+      finalizations += 1;
+    },
+  });
+
+  await mounts.start();
+  await connecting;
+  const removing = mounts.remove(retained.mountId);
+  await deleting;
+  releaseMount();
+  releaseWrite();
+  await removing;
+  assert.equal(finalizations, 0);
+  assert.deepEqual(await store.read(), []);
+  await mounts.close();
+});
+
+test('removal settles one admitted startup finalization without waiting through retries', async () => {
+  const retained = retainedMount('shared-finalizing');
+  const store = memoryStore();
+  await store.write([retained]);
+  let markFinalizing!: () => void;
+  let failFinalization!: (error: unknown) => void;
+  const finalizing = new Promise<void>((resolve) => {
+    markFinalizing = resolve;
+  });
+  const finalization = new Promise<void>((_resolve, reject) => {
+    failFinalization = reject;
+  });
+  const mounts = service(store, {
+    finalizeAccess: async () => {
+      markFinalizing();
+      await finalization;
+    },
+  });
+
+  await mounts.start();
+  await finalizing;
+  const removing = mounts.remove(retained.mountId);
+  failFinalization(new RuntimeHostPairingFinalizationInterruptedError());
+  await removing;
+
+  assert.deepEqual(await store.read(), []);
+  await mounts.close();
+});
+
 test('settles admitted finalization before closing and retains the mount', async () => {
   const store = memoryStore();
   let started!: () => void;
@@ -127,8 +206,12 @@ test('settles admitted finalization before closing and retains the mount', async
 
   const importing = mounts.importInvitation(invitation('guest-closing'), false);
   await finalizing;
-  const closing = mounts.close();
+  let closed = false;
+  const closing = mounts.close().then(() => {
+    closed = true;
+  });
   await Promise.resolve();
+  assert.equal(closed, false);
   assert.deepEqual(await store.read().then((retained) => retained.length), 1);
   finish();
   await closing;
@@ -200,4 +283,14 @@ function invitation(credential: string): string {
       transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
     },
   });
+}
+
+function retainedMount(mountId: string): GuestSessionMount {
+  return {
+    mountId,
+    name: 'Shared Host',
+    rootId: ROOT_ID,
+    transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
+    credential: 'guest-startup',
+  };
 }
