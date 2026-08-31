@@ -465,36 +465,39 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       }
       const current = this.#store.read();
       const existing = findMesh(current.meshes, invitation.meshId);
+      const pending = current.pendingJoins.find(
+        ({ invitation: candidate }) => candidate.meshId === invitation.meshId,
+      );
       const localPeerId = this.#peer.identity().peerId;
-      if (existing && !isRetired(existing, localPeerId)) {
-        throw new Error('This peer already has an unresolved membership in that Peer Mesh');
+      if (existing?.role === 'authority') {
+        throw new Error('This peer already belongs to that Peer Mesh');
       }
-      if (
-        !existing &&
-        !current.pendingJoins.some(
-          ({ invitation: pending }) => pending.meshId === invitation.meshId,
-        )
-      ) {
+      if (pending && pending.invitation.secret !== invitation.secret) {
+        throw new Error('This Peer Mesh already has an unresolved join attempt');
+      }
+      if (!existing && !pending) {
         assertMeshCapacity(current.meshes, localPeerId, current.pendingJoins.length);
       }
       const operationSignal = signal
         ? AbortSignal.any([signal, this.#lifetime.signal])
         : this.#lifetime.signal;
-      const stream = await this.#peer.connectMeshControl(
-        {
-          peerId: invitation.peerId,
-          routeHints: invitation.routeHints,
-          coordinationRelays: invitation.coordinationRelays,
-          directDeadlineMs: CONNECT_DEADLINE_MS,
-        },
-        operationSignal,
-      );
+      let stream: RuntimeHostPeerNativeStream | undefined;
+      let joinIntentAdmitted = pending !== undefined;
       try {
+        stream = await this.#peer.connectMeshControl(
+          {
+            peerId: invitation.peerId,
+            routeHints: invitation.routeHints,
+            coordinationRelays: invitation.coordinationRelays,
+            directDeadlineMs: CONNECT_DEADLINE_MS,
+          },
+          operationSignal,
+        );
         const localRoute = (await this.#refreshLocalRoute()) ?? (await this.#signLocalRoute());
         await this.#store.mutate((current) => {
           const existing = findMesh(current.meshes, invitation.meshId);
-          if (existing && !isRetired(existing, localPeerId)) {
-            throw new Error('This peer already has an unresolved membership in that Peer Mesh');
+          if (existing?.role === 'authority') {
+            throw new Error('This peer already belongs to that Peer Mesh');
           }
           const pending = current.pendingJoins.find(
             ({ invitation: candidate }) => candidate.meshId === invitation.meshId,
@@ -508,11 +511,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           if (!pending) {
             assertMeshCapacity(meshes, localPeerId, current.pendingJoins.length);
           }
-          const next: PendingPeerMeshJoin = {
-            invitation,
-            desiredMembership: 'active',
-            redemptionState: 'prepared',
-          };
+          const next: PendingPeerMeshJoin = pending
+            ? { ...pending, invitation, desiredMembership: 'active' }
+            : {
+                invitation,
+                desiredMembership: 'active',
+                redemptionState: 'prepared',
+              };
           return {
             state: {
               ...current,
@@ -526,18 +531,17 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             result: undefined,
           };
         });
-        try {
-          return await this.#redeemPendingJoin(invitation, localRoute, stream, operationSignal);
-        } catch (error) {
-          if (operationSignal.aborted) {
-            await this.#cancelPendingJoin(invitation.meshId);
-            await this.#reconcileTransit();
-          }
-          void this.reconcile().catch(() => undefined);
-          throw error;
+        joinIntentAdmitted = true;
+        return await this.#redeemPendingJoin(invitation, localRoute, stream, operationSignal);
+      } catch (error) {
+        if (operationSignal.aborted && joinIntentAdmitted) {
+          await this.#cancelPendingJoin(invitation.meshId);
+          await this.#reconcileTransit();
         }
+        void this.reconcile().catch(() => undefined);
+        throw error;
       } finally {
-        await stream.close().catch(() => undefined);
+        await stream?.close().catch(() => undefined);
       }
     });
   }

@@ -582,6 +582,51 @@ test('retries a committed invitation redemption for the same authenticated peer'
   }
 });
 
+test('cancels a recovered join while its authority is reconnecting', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-recovered-join-abort-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const memberRoot = join(root, 'member');
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+  });
+  const serving = authority.serve();
+  try {
+    const mesh = await authority.create();
+    const invitation = await authority.invite(mesh.roster.roster.meshId);
+    authorityPeer.failNextResponse();
+    await assert.rejects(member.join(invitation));
+    await member.close();
+
+    member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+    const connection = memberPeer.stallNextConnection();
+    const abort = new AbortController();
+    const retry = member.join(invitation, abort.signal);
+    await connection.started;
+    abort.abort();
+    await assert.rejects(
+      retry,
+      (error: unknown) => error instanceof Error && error.name === 'AbortError',
+    );
+    connection.release();
+
+    assert.deepEqual(member.status(), []);
+    await member.reconcile();
+    await member.reconcile();
+    assert.deepEqual(authority.status()[0]?.roster.roster.members, ['peer-a']);
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close(), serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('cancels a redemption stalled after the control connection opens', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-abort-'));
   const network = new MemoryPeerNetwork();
@@ -736,6 +781,12 @@ class MemoryPeerClient implements PeerMeshTransport {
   #responseDelayMs = 0;
   #reachable = true;
   #routeHints: readonly string[];
+  #nextConnectionBarrier:
+    | {
+        readonly started: () => void;
+        readonly wait: Promise<void>;
+      }
+    | undefined;
   transitPolicy = {
     allowedPeerIds: [] as readonly string[],
     relayCandidates: [] as readonly {
@@ -797,6 +848,22 @@ class MemoryPeerClient implements PeerMeshTransport {
       release = resolve;
     });
     this.#nextTransitBarrier = { started: markStarted, wait };
+    return { started, release };
+  }
+
+  stallNextConnection(): {
+    readonly started: Promise<void>;
+    readonly release: () => void;
+  } {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#nextConnectionBarrier = { started: markStarted, wait };
     return { started, release };
   }
 
@@ -867,9 +934,17 @@ class MemoryPeerClient implements PeerMeshTransport {
     };
   }
 
-  async connectMeshControl(input: {
-    readonly peerId: string;
-  }): Promise<RuntimeHostPeerNativeStream> {
+  async connectMeshControl(
+    input: { readonly peerId: string },
+    signal?: AbortSignal,
+  ): Promise<RuntimeHostPeerNativeStream> {
+    const barrier = this.#nextConnectionBarrier;
+    if (barrier) {
+      this.#nextConnectionBarrier = undefined;
+      barrier.started();
+      await waitForAbortable(barrier.wait, signal);
+    }
+    signal?.throwIfAborted();
     const remote = this.peers.get(input.peerId);
     if (!remote || !remote.#reachable) {
       throw new Error('Peer is unavailable');
@@ -926,6 +1001,21 @@ class MemoryPeerClient implements PeerMeshTransport {
       setTimeout(() => server.onStream(stream), this.#responseDelayMs);
     } else if (server) server.onStream(stream);
     else stream.abort();
+  }
+}
+
+async function waitForAbortable(task: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return task;
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([task, aborted]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
   }
 }
 
