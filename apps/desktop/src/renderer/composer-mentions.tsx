@@ -56,8 +56,8 @@ export interface ComposerMentions {
 
 /** Which backend surface the popups should describe. */
 export interface ComposerMentionsSurface {
-  /** Invalidates Runtime's invocable projection after installed Skills settle. */
-  skillCatalogRevision: number;
+  /** Injected by the Module Hub boundary to invalidate Runtime's projection. */
+  skillCatalogRevision?: number;
   sessionId?: string;
   projectPath?: string;
   newSessionModel?: { llmConnectionSlug: string; model: string };
@@ -78,7 +78,7 @@ function useComposerMentions(options: ComposerMentionsSurface): ComposerMentions
   const {
     projectPath,
     sessionId,
-    skillCatalogRevision,
+    skillCatalogRevision = 0,
     newSessionModel,
     newSessionCollaborationMode,
     newSessionPermissionMode,

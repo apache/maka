@@ -90,7 +90,7 @@ import {
   useWorkbarController,
 } from './features/workbar';
 import * as Goals from './features/goals';
-import { ModuleHubHost, useModuleHubController } from './features/module-hub';
+import * as ModuleHub from './features/module-hub';
 import {
   SessionNavigationProvider,
   createSessionOpenCommand,
@@ -1360,7 +1360,7 @@ function AppShellContent({
     },
     [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
   );
-  const refreshProjectSkillsRef = useRef<() => Promise<void>>(async () => {});
+  const moduleHubCommands = useMemo(ModuleHub.createModuleHubCommandPort, []);
   const {
     projectInfo,
     projects,
@@ -1387,7 +1387,7 @@ function AppShellContent({
     sessionProjectId: sharedSessionActive ? undefined : activeSession?.projectId,
     sessionProfileKind: sharedSessionActive ? undefined : activeDesktopSession?.profileKind,
     onProjectSelected: (ownerSessionId) => {
-      void refreshProjectSkillsRef.current();
+      void moduleHubCommands.refreshProjectSkills();
       if (ownerSessionId && activeIdRef.current === ownerSessionId) openNewTaskSurface();
     },
     toastApi,
@@ -1410,16 +1410,6 @@ function AppShellContent({
       append: (text: string) => composer.appendText(text),
     };
   }, []);
-  const moduleHub = useModuleHubController({
-    selection: navSelection,
-    selectModule: setNavSelection,
-    ...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {}),
-    useSkillInChat,
-    openSession: (sessionId) => openSessionInChatRef.current(sessionId),
-    appendComposerText: (text) => composerRef.current?.appendText(text),
-    captureActiveComposerClaim,
-  });
-  refreshProjectSkillsRef.current = moduleHub.commands.refreshProjectSkills;
   const workHubProjectsRef = useRef(projects);
   workHubProjectsRef.current = projects;
   const workHubCoordinationGeneration = workHubCoordinationGenerationRef.current;
@@ -1563,7 +1553,6 @@ function AppShellContent({
   // the SURFACE is named here — the projection itself is owned by
   // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
   const composerMentionsSurface: ComposerMentionsSurface = {
-    skillCatalogRevision: moduleHub.selectors.skillCatalogRevision,
     sessionId: ownerActiveId,
     projectPath: activeId
       ? ownerActiveId
@@ -2605,7 +2594,7 @@ function AppShellContent({
     openHelp,
     openScheduledTaskCreate: () => {
       closePalette();
-      moduleHub.commands.openScheduledTaskCreate();
+      moduleHubCommands.openScheduledTaskCreate();
     },
     openProjectFolder,
     openSessionInChat,
@@ -2615,9 +2604,9 @@ function AppShellContent({
     openSkillsFolder,
     openWorkspaceFolder,
     refreshConnections: defaultHostConnections.refreshConnections,
-    copyTodayDailyReview: moduleHub.commands.copyTodayDailyReview,
-    pasteTodayDailyReview: moduleHub.commands.pasteTodayDailyReview,
-    saveTodayDailyReview: moduleHub.commands.saveTodayDailyReview,
+    copyTodayDailyReview: moduleHubCommands.copyTodayDailyReview,
+    pasteTodayDailyReview: moduleHubCommands.pasteTodayDailyReview,
+    saveTodayDailyReview: moduleHubCommands.saveTodayDailyReview,
     setNavSelection,
     setPermissionMode,
     setThemePref,
@@ -2634,13 +2623,25 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-    // Goal state lives below the shell and wakes only its three readers. Composer
-    // mentions still wrap the frame so one projection serves every composer.
+    // Goal state and Module Hub ownership both live below the shell. Composer
+    // mentions still wrap the frame so one projection serves every composer,
+    // including side-chat panels, without rebuilding the frame on catalog moves.
     <Goals.GoalProvider
       activeSessionId={ownerActiveId}
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
       reportError={showSessionError}
     >
+    <ModuleHub.ModuleHubProvider
+      selection={navSelection}
+      selectModule={setNavSelection}
+      {...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {})}
+      useSkillInChat={useSkillInChat}
+      openSession={(sessionId) => openSessionInChatRef.current(sessionId)}
+      appendComposerText={(text) => composerRef.current?.appendText(text)}
+      captureActiveComposerClaim={captureActiveComposerClaim}
+      commandPort={moduleHubCommands}
+    >
+    <ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
     <ComposerMentionsProvider {...composerMentionsSurface}>
     <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
@@ -2770,6 +2771,7 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={shellObscured ? true : undefined}
         sideNav={
+          <ModuleHub.ModuleHubScheduledTasksBoundary>
           <SessionNavigationProvider
             rail={sessionRail}
             projects={localProjects}
@@ -2782,7 +2784,6 @@ function AppShellContent({
             onSelectSession={openSession}
             workHubActive={workHubActive}
             selection={navSelection}
-            scheduledTasks={moduleHub.selectors.scheduledTasks}
             moduleMemory={navigationState.moduleMemory}
             onSelect={setNavSelection}
             onOpenSettings={openSettings}
@@ -2798,6 +2799,7 @@ function AppShellContent({
           >
             {SESSION_RAIL}
           </SessionNavigationProvider>
+          </ModuleHub.ModuleHubScheduledTasksBoundary>
         }
       >
         <AppShellDetailPanel agentsView={agentsView}>
@@ -2812,7 +2814,7 @@ function AppShellContent({
           <MakaUriContext.Provider value={dispatchMakaUri}>
           <div className="maka-detail-with-artifacts">
             <div className="mainColumn" data-home-surface={homeSurfaceActive ? 'true' : undefined}>
-              <ModuleHubHost model={moduleHub.host} />
+              <ModuleHub.ModuleHubHost />
               {workHubEnabled && workHubActive && navSelection.section === 'sessions' ? (
                 workHubCoordinationSessionId ? (
                   <WorkHubSurface
@@ -3278,6 +3280,8 @@ function AppShellContent({
     </div>
     </SessionCollaboration.SessionTurnRequestInboxProvider>
     </ComposerMentionsProvider>
+    </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
+    </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
   );
 }

@@ -66,7 +66,7 @@ describe('Module Hub feature boundary', () => {
   });
 
   it('is consumed outside the feature only through index or testing', () => {
-    const allowed = /\/features\/module-hub\/(?:index|testing)(?:\.js)?$/;
+    const allowed = /\/features\/module-hub\/(?:index|stories|testing)(?:\.js)?$/;
     const violations: string[] = [];
     for (const root of [join(desktopRoot, 'src'), join(desktopRoot, 'stories')]) {
       for (const path of sourceFiles(root)) {
@@ -92,6 +92,7 @@ describe('Module Hub feature boundary', () => {
     const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
     assert.equal(productionEntry.includes('createFakeModuleHub'), false);
     assert.equal(productionEntry.includes("from './testing"), false);
+    assert.equal(productionEntry.includes('useModuleHubController'), false);
   });
 
   it('keeps module data, pages, nonce, bridges, and subscriptions out of AppShell', () => {
@@ -116,8 +117,38 @@ describe('Module Hub feature boundary', () => {
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(appShell.includes('useModuleHubController({'), true);
-    assert.equal(appShell.includes('<ModuleHubHost model={moduleHub.host} />'), true);
+    for (const forbidden of [
+      'useModuleHubController(',
+      'moduleHub.commands',
+      'moduleHub.selectors',
+      'moduleHub.host',
+      '<ModuleHubHost model=',
+    ]) {
+      assert.equal(appShell.includes(forbidden), false, forbidden);
+    }
+    assert.equal(appShell.includes('<ModuleHub.ModuleHubProvider'), true);
+    assert.equal(
+      appShell.includes('<ModuleHub.ModuleHubScheduledTasksBoundary>'),
+      true,
+    );
+    assert.equal(
+      appShell.includes('<ModuleHub.ModuleHubSkillCatalogRevisionBoundary>'),
+      true,
+    );
+    assert.equal(appShell.includes('<ModuleHub.ModuleHubHost />'), true);
+
+    const provider = readFileSync(
+      join(featureRoot, 'ui', 'module-hub-provider.tsx'),
+      'utf8',
+    );
+    assert.equal(
+      provider.includes('const controller = useModuleHubController(input);'),
+      true,
+    );
+    assert.equal(
+      provider.includes('commandPort.connect(controller.commands)'),
+      true,
+    );
 
     const effects = readFileSync(
       join(desktopRoot, 'src', 'renderer', 'app-shell-effects.ts'),

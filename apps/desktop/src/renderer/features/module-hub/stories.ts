@@ -17,15 +17,8 @@
  * under the License.
  */
 
-export { ModuleHubServicesProvider } from './services-context.js';
-export type {
-  ModuleHubClipboardService,
-  ModuleHubServices,
-} from './ports.js';
-export { ModuleHubHost } from './ui/module-hub-host.js';
 export {
-  createModuleHubCommandPort,
-  ModuleHubProvider,
-  ModuleHubScheduledTasksBoundary,
-  ModuleHubSkillCatalogRevisionBoundary,
-} from './ui/module-hub-provider.js';
+  createFakeModuleHubHostModel,
+  createFakeModuleHubServices,
+} from './testing.js';
+export { ModuleHubHostView } from './ui/module-hub-host.js';
