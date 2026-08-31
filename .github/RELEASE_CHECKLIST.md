@@ -63,10 +63,10 @@ Before the first product release, confirm the checked-in `.asf.yaml` has reconci
 - the `Immutable release tags` ruleset blocks updates, force-pushes, and deletions of `v*` tags;
 - the `release` Environment accepts only its declared source-candidate tag pattern and requires a
   reviewer other than the triggering user;
-- `npm-publication` and `product-release` accept only `main`; `product-release` requires a reviewer
-  other than the triggering user. `npm-publication` has no GitHub
-  approval gate because scheduled Nightly publication is automatic; formal npm publication still
-  requires human 2FA approval after staging.
+- `npm-publication`, `nightly`, and `product-release` accept only `main`; `product-release` requires
+  a reviewer other than the triggering user. `npm-publication` and `nightly` have no GitHub approval
+  gate because scheduled npm and Desktop Nightly publication is automatic; formal npm publication
+  still requires human 2FA approval after staging.
 
 These controls close the check-to-upload and check-to-stage windows. Finalize uses GitHub Actions
 OIDC rather than a stored signing key to attest every convenience artifact. Keep the Release in

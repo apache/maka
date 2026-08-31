@@ -700,7 +700,14 @@ export function ChatView(props: {
         >
           {showEmptyState ? null : (
             <>
-              {chat.length === 0 && !streamingActive ? emptyContent : null}
+              {/* A transient is already the first visible conversation row.
+                  Do not prepend the empty-chat Maka hero while that optimistic
+                  message waits for durable transcript or live-turn identity. */}
+              {chat.length === 0
+                && transientMessages.length === 0
+                && !streamingActive
+                ? emptyContent
+                : null}
               {turns.map((turn) => {
                 return (
                   <div

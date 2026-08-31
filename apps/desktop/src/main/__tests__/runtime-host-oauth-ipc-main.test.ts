@@ -29,6 +29,9 @@ import {
 } from '../runtime-host-oauth-ipc-main.js';
 import { RuntimeHostOAuthPresentation } from '../runtime-host-oauth-presentation.js';
 
+type OAuthClient = RuntimeHostOAuthIpcDeps['client'];
+type OAuthIpcHandler = Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1];
+
 test('presents the Host OAuth handoff without exposing the authorization URL', async () => {
   const opened: string[] = [];
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
@@ -47,10 +50,6 @@ test('presents the Host OAuth handoff without exposing the authorization URL', a
 
 test('adapts every Host OAuth provider through one Desktop flow', async () => {
   const provider = 'openai-codex' as const;
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const opened: string[] = [];
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
     opened.push(url);
@@ -77,16 +76,14 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
       },
     ],
   };
-  const client = {
+  const clientOverrides = {
     loadConnectionCatalog: async () => catalog,
-    createConnection: async () => {
-      throw new Error('Existing OAuth Connection must be reused');
-    },
-    updateConnection: async () => {
-      throw new Error('Enabled OAuth Connection must not be rewritten');
-    },
-    startOAuthLogin: async (nextAttemptId, connectionId) => {
+    startOAuthLogin: async (nextAttemptId, target) => {
       attemptId = nextAttemptId;
+      assert.deepEqual(target, {
+        kind: 'existing',
+        connectionId: catalog.connections[0]?.connectionId,
+      });
       // Codex device login presents through `open_external`: the browser
       // carries the authorization and the Host writes the credential back.
       void presentation
@@ -98,7 +95,11 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         .then(() => {
           phase = 'authenticated';
         });
-      return oauthProjection(nextAttemptId, connectionId, 'awaiting_authorization');
+      return oauthProjection(
+        nextAttemptId,
+        target.kind === 'existing' ? target.connectionId : '',
+        'awaiting_authorization',
+      );
     },
     queryOAuthLogin: async (nextAttemptId) =>
       oauthProjection(
@@ -106,14 +107,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         catalog.connections[0]?.connectionId ?? '',
         phase,
       ),
-    cancelOAuthLogin: async (nextAttemptId) => {
-      phase = 'cancelled';
-      return oauthProjection(
-        nextAttemptId,
-        catalog.connections[0]?.connectionId ?? '',
-        phase,
-      );
-    },
     fetchConnectionModels: async () => {
       const current = catalog.connections[0];
       assert.ok(current);
@@ -153,26 +146,9 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
             updatedAt: 1,
           }
         : null,
-    deleteCredential: async ({ expected }) => ({
-      kind: 'committed' as const,
-      vaultRevision: 1,
-      status: {
-        locator: expected.locator,
-        configured: false as const,
-        credentialId: null,
-        revision: null,
-        updatedAt: null,
-      },
-    }),
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-
-  registerRuntimeHostOAuthIpc({
-    ipcMain: {
-      handle(channel, handler) {
-        handlers.set(channel, handler);
-      },
-    },
-    client,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => {
       changed += 1;
@@ -188,7 +164,11 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     assert.equal(handlers.has(`${prefix}:get-account-state`), true);
     assert.equal(handlers.has(`${prefix}:logout`), true);
   }
-  const authorization = await invoke(handlers, 'openai-codex:get-auth-url');
+  const authorization = await invoke(
+    handlers,
+    'openai-codex:get-auth-url',
+    catalog.connections[0]?.connectionId,
+  );
   assert.deepEqual(authorization, { authRequestId: attemptId, stateHint: 'STATE-HINT' });
   assert.deepEqual(opened, ['https://codex.example/authorize']);
   assert.deepEqual(
@@ -211,11 +191,306 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
     provider,
     runtimeState: 'authenticated',
   });
+  assertNoUnexpectedClientCalls();
+});
+
+test('provider-scoped OAuth IPC rejects a Connection ID owned by another provider', async () => {
+  const xaiConnection = {
+    connectionId: '00000000-0000-4000-8000-000000000009',
+    revision: 1,
+    slug: 'xai-oauth',
+    name: 'xAI Grok',
+    providerType: 'xai-oauth' as const,
+    enabled: true,
+    enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    models: [],
+  };
+  let starts = 0;
+  let mutations = 0;
+  const clientOverrides = {
+    loadConnectionCatalog: async () => ({
+      revision: 1,
+      defaultTarget: null,
+      connections: [xaiConnection],
+    }),
+    queryCredential: async () => {
+      throw new Error('Cross-provider IPC must not inspect another credential');
+    },
+    startOAuthLogin: async () => {
+      starts += 1;
+      throw new Error('Cross-provider IPC must not start Host OAuth');
+    },
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
+    presentation: new RuntimeHostOAuthPresentation(async () => undefined),
+    emitConnectionListChanged: () => {
+      mutations += 1;
+    },
+    isProviderEnabled: () => true,
+  });
+
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:get-auth-url', xaiConnection.connectionId),
+    {
+      ok: false,
+      reason: 'unknown',
+      message: 'OAuth account does not match this provider',
+    },
+  );
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:get-account-state', xaiConnection.connectionId),
+    { provider: 'openai-codex', runtimeState: 'not_logged_in' },
+  );
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:refresh-tokens', xaiConnection.connectionId),
+    {
+      ok: false,
+      reason: 'refresh_failed',
+      message: 'OAuth account is not connected',
+    },
+  );
+  assert.deepEqual(await invoke(handlers, 'openai-codex:logout', xaiConnection.connectionId), {
+    ok: false,
+    reason: 'unknown',
+    message: 'OAuth account does not match this provider',
+  });
+  assert.equal(starts, 0);
+  assert.equal(mutations, 0);
+  assertNoUnexpectedClientCalls();
+});
+
+test('malformed OAuth Connection IDs fail closed before catalog or credential access', async () => {
+  let emissions = 0;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides: {},
+    presentation: new RuntimeHostOAuthPresentation(async () => undefined),
+    emitConnectionListChanged: () => {
+      emissions += 1;
+    },
+    isProviderEnabled: () => true,
+  });
+
+  for (const malformed of [null, 7, {}]) {
+    assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url', malformed), {
+      ok: false,
+      reason: 'unknown',
+      message: 'Invalid OAuth Connection identity',
+    });
+    assert.deepEqual(await invoke(handlers, 'openai-codex:get-account-state', malformed), {
+      ok: false,
+      reason: 'unknown',
+      message: 'Invalid OAuth Connection identity',
+    });
+    assert.deepEqual(await invoke(handlers, 'openai-codex:refresh-tokens', malformed), {
+      ok: false,
+      reason: 'refresh_failed',
+      message: 'Invalid OAuth Connection identity',
+    });
+    assert.deepEqual(await invoke(handlers, 'openai-codex:logout', malformed), {
+      ok: false,
+      reason: 'unknown',
+      message: 'Invalid OAuth Connection identity',
+    });
+  }
+  assert.equal(emissions, 0);
+  assertNoUnexpectedClientCalls();
+});
+
+test('a second OAuth start cannot replace or cancel a pending active attempt', async () => {
+  const provider = 'openai-codex' as const;
+  const connectionId = '00000000-0000-4000-8000-000000000011';
+  const configuredConnections = [
+    {
+      connectionId: '00000000-0000-4000-8000-000000000012',
+      revision: 1,
+      slug: 'codex-subscription-2',
+      name: 'OpenAI Codex 2',
+      providerType: provider,
+      enabled: true,
+      enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      models: [],
+    },
+    {
+      connectionId: '00000000-0000-4000-8000-000000000013',
+      revision: 1,
+      slug: 'codex-subscription-3',
+      name: 'OpenAI Codex 3',
+      providerType: provider,
+      enabled: true,
+      enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      models: [],
+    },
+  ];
+  const foreignConnection = {
+    connectionId: '00000000-0000-4000-8000-000000000014',
+    revision: 1,
+    slug: 'xai-oauth',
+    name: 'xAI Grok',
+    providerType: 'xai-oauth' as const,
+    enabled: true,
+    enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    models: [],
+  };
+  const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
+  let starts = 0;
+  let cancels = 0;
+  let firstAttemptId = '';
+  let phase: 'awaiting_authorization' | 'authenticated' = 'awaiting_authorization';
+  let markFirstPresentationPoll!: () => void;
+  const firstPresentationPoll = new Promise<void>((resolve) => {
+    markFirstPresentationPoll = resolve;
+  });
+  const clientOverrides = {
+    loadConnectionCatalog: async () => ({
+      revision: 1,
+      defaultTarget: null,
+      connections: [...configuredConnections, foreignConnection],
+    }),
+    updateConnection: async (expected) => ({
+      kind: 'committed' as const,
+      catalogRevision: 2,
+      connection: { connectionId: expected.connectionId, revision: expected.revision + 1 },
+    }),
+    deleteCredential: async ({ expected }) => ({
+      kind: 'committed' as const,
+      vaultRevision: 2,
+      status: {
+        locator: expected.locator,
+        configured: false as const,
+        credentialId: null,
+        revision: null,
+        updatedAt: null,
+      },
+    }),
+    fetchConnectionModels: async () => {
+      throw new Error('model discovery unavailable');
+    },
+    queryCredential: async (locator) => ({
+      locator,
+      configured: true as const,
+      credentialId: '00000000-0000-4000-8000-000000000015',
+      revision: 1,
+      updatedAt: 1,
+    }),
+    startOAuthLogin: async (attemptId: string) => {
+      starts += 1;
+      if (starts === 2) throw new Error('Another OAuth login is already in progress');
+      firstAttemptId = attemptId;
+      return oauthProjection(attemptId, connectionId, 'awaiting_authorization');
+    },
+    queryOAuthLogin: async (attemptId: string) => {
+      markFirstPresentationPoll();
+      return oauthProjection(attemptId, connectionId, phase);
+    },
+    cancelOAuthLogin: async (attemptId: string) => {
+      cancels += 1;
+      return oauthProjection(attemptId, connectionId, 'cancelled');
+    },
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
+    presentation,
+    emitConnectionListChanged: () => undefined,
+    isProviderEnabled: () => true,
+  });
+
+  const firstAuthorization = invoke(handlers, 'openai-codex:get-auth-url');
+  await firstPresentationPoll;
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-auth-url'), {
+    ok: false,
+    reason: 'unknown',
+    message: 'Another OAuth login is already in progress',
+  });
+  assert.equal(starts, 1);
+  assert.equal(cancels, 0);
+  await presentation.openExternal(
+    'https://auth.example/device',
+    'FIRST',
+    new AbortController().signal,
+  );
+  phase = 'authenticated';
+  assert.deepEqual(await firstAuthorization, {
+    authRequestId: firstAttemptId,
+    stateHint: 'FIRST',
+  });
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:logout', foreignConnection.connectionId),
+    {
+      ok: false,
+      reason: 'unknown',
+      message: 'OAuth account does not match this provider',
+    },
+  );
+  assert.deepEqual(await invoke(handlers, 'openai-codex:logout'), {
+    ok: false,
+    reason: 'unknown',
+    message: 'Select a specific OAuth account to log out',
+  });
+  assert.equal(cancels, 0);
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:logout', configuredConnections[0]?.connectionId),
+    { ok: true },
+  );
+  assert.equal(cancels, 0);
+  assert.deepEqual(
+    await invoke(handlers, 'openai-codex:complete-authorization', firstAttemptId),
+    { ok: true },
+  );
+  assert.equal(cancels, 0);
+  assertNoUnexpectedClientCalls();
+});
+
+test('completion rejects a terminal projection that changes Connection identity', async () => {
+  const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
+  const startedId = '00000000-0000-4000-8000-000000000021';
+  const changedId = '00000000-0000-4000-8000-000000000022';
+  let attemptId = '';
+  let synchronized = 0;
+  let emitted = 0;
+  const clientOverrides = {
+    loadConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
+    fetchConnectionModels: async () => {
+      synchronized += 1;
+      throw new Error('must not synchronize a changed identity');
+    },
+    startOAuthLogin: async (nextAttemptId: string) => {
+      attemptId = nextAttemptId;
+      await presentation.openExternal(
+        'https://auth.example/device',
+        'IDENTITY',
+        new AbortController().signal,
+      );
+      return oauthProjection(nextAttemptId, startedId, 'awaiting_authorization');
+    },
+    queryOAuthLogin: async (nextAttemptId: string) =>
+      oauthProjection(nextAttemptId, changedId, 'authenticated'),
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
+    presentation,
+    emitConnectionListChanged: () => {
+      emitted += 1;
+    },
+    isProviderEnabled: () => true,
+  });
+
+  await invoke(handlers, 'openai-codex:get-auth-url');
+  assert.deepEqual(await invoke(handlers, 'openai-codex:complete-authorization', attemptId), {
+    ok: false,
+    reason: 'unknown',
+    message: 'OAuth authorization changed Connection identity',
+  });
+  assert.equal(synchronized, 0);
+  assert.equal(emitted, 0);
+  assertNoUnexpectedClientCalls();
 });
 
 test('keeps a committed OAuth login successful when model discovery fails', async () => {
   const provider = 'openai-codex' as const;
-  const connection = {
+  const modelId = PROVIDER_DEFAULTS[provider].fallbackModels[0];
+  assert.ok(modelId);
+  const existing = {
     connectionId: '00000000-0000-4000-8000-000000000002',
     revision: 1,
     slug: 'codex-subscription',
@@ -225,28 +500,25 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
     models: [],
   };
-  const catalog: ConnectionCatalogSnapshot = {
+  const created = {
+    ...existing,
+    connectionId: '00000000-0000-4000-8000-000000000003',
+    slug: 'codex-subscription-2',
+  };
+  let catalog: ConnectionCatalogSnapshot = {
     revision: 1,
     defaultTarget: null,
-    connections: [connection],
+    connections: [existing],
   };
-  const handlers = new Map<
-    string,
-    Parameters<RuntimeHostOAuthIpcDeps['ipcMain']['handle']>[1]
-  >();
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
   let attemptId = '';
   let changed = 0;
-  const client = {
+  const fetchedConnectionIds: string[] = [];
+  const clientOverrides = {
     loadConnectionCatalog: async () => catalog,
-    createConnection: async () => {
-      throw new Error('Existing OAuth Connection must be reused');
-    },
-    updateConnection: async () => {
-      throw new Error('Enabled OAuth Connection must not be rewritten');
-    },
-    startOAuthLogin: async (nextAttemptId: string) => {
+    startOAuthLogin: async (nextAttemptId: string, target) => {
       attemptId = nextAttemptId;
+      assert.deepEqual(target, { kind: 'create', providerType: provider });
       await presentation.openExternal(
         'https://auth.example/device',
         'DEVICE-CODE',
@@ -254,38 +526,48 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
       );
       return {
         attemptId: nextAttemptId,
-        connectionId: connection.connectionId,
-        provider,
+        connection: {
+          connectionId: created.connectionId,
+          slug: created.slug,
+          providerType: provider,
+        },
         phase: 'awaiting_authorization' as const,
       };
     },
-    queryOAuthLogin: async (nextAttemptId: string) => ({
-      attemptId: nextAttemptId,
-      connectionId: connection.connectionId,
-      provider,
-      phase: 'authenticated' as const,
-    }),
-    cancelOAuthLogin: async (nextAttemptId: string) => ({
-      attemptId: nextAttemptId,
-      connectionId: connection.connectionId,
-      provider,
-      phase: 'cancelled' as const,
-    }),
-    fetchConnectionModels: async () => {
+    queryOAuthLogin: async (nextAttemptId: string) => {
+      catalog = { ...catalog, revision: 2, connections: [existing, created] };
+      return {
+        attemptId: nextAttemptId,
+        connection: {
+          connectionId: created.connectionId,
+          slug: created.slug,
+          providerType: provider,
+        },
+        phase: 'authenticated' as const,
+      };
+    },
+    fetchConnectionModels: async (connectionId: string) => {
+      fetchedConnectionIds.push(connectionId);
       throw new Error('provider temporarily unavailable');
     },
-    setDefaultConnectionTarget: async () => {
-      throw new Error('Default selection must not run after failed discovery');
+    setDefaultConnectionTarget: async (expectedCatalogRevision, target) => {
+      assert.equal(expectedCatalogRevision, catalog.revision);
+      catalog = { ...catalog, revision: catalog.revision + 1, defaultTarget: target };
+      return { kind: 'committed' as const, catalogRevision: catalog.revision };
     },
-    queryCredential: async () => null,
-    deleteCredential: async () => {
-      throw new Error('Credential deletion must not run');
-    },
-  } satisfies RuntimeHostOAuthIpcDeps['client'];
-
-  registerRuntimeHostOAuthIpc({
-    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
-    client,
+    queryCredential: async (locator) =>
+      locator.scope === 'connection' && locator.connectionId === created.connectionId
+        ? {
+            locator,
+            configured: true as const,
+            credentialId: '00000000-0000-4000-8000-000000000004',
+            revision: 1,
+            updatedAt: 1,
+          }
+        : null,
+  } satisfies Partial<OAuthClient>;
+  const { handlers, assertNoUnexpectedClientCalls } = registerOAuthTestHandlers({
+    clientOverrides,
     presentation,
     emitConnectionListChanged: () => {
       changed += 1;
@@ -302,7 +584,67 @@ test('keeps a committed OAuth login successful when model discovery fails', asyn
     { ok: true },
   );
   assert.equal(changed, 1);
+  assert.deepEqual(fetchedConnectionIds, [created.connectionId]);
+  assert.deepEqual(catalog.defaultTarget, { connectionId: created.connectionId, modelId });
+  assert.deepEqual(await invoke(handlers, 'openai-codex:get-account-state'), {
+    provider,
+    runtimeState: 'authenticated',
+  });
+  assertNoUnexpectedClientCalls();
 });
+
+function createFailClosedOAuthClient(overrides: Partial<OAuthClient>): {
+  readonly client: OAuthClient;
+  assertNoUnexpectedClientCalls(): void;
+} {
+  const unexpectedCalls: Array<{ readonly method: keyof OAuthClient; readonly args: unknown[] }> = [];
+  const unexpected =
+    (method: keyof OAuthClient) =>
+    (...args: unknown[]): never => {
+      unexpectedCalls.push({ method, args });
+      throw new Error(`Unexpected OAuth client call: ${String(method)}`);
+    };
+  const client = {
+    loadConnectionCatalog: unexpected('loadConnectionCatalog'),
+    createConnection: unexpected('createConnection'),
+    updateConnection: unexpected('updateConnection'),
+    deleteCredential: unexpected('deleteCredential'),
+    fetchConnectionModels: unexpected('fetchConnectionModels'),
+    setDefaultConnectionTarget: unexpected('setDefaultConnectionTarget'),
+    queryCredential: unexpected('queryCredential'),
+    startOAuthLogin: unexpected('startOAuthLogin'),
+    queryOAuthLogin: unexpected('queryOAuthLogin'),
+    cancelOAuthLogin: unexpected('cancelOAuthLogin'),
+    ...overrides,
+  } satisfies OAuthClient;
+  return {
+    client,
+    assertNoUnexpectedClientCalls: () => assert.deepEqual(unexpectedCalls, []),
+  };
+}
+
+function registerOAuthTestHandlers(input: {
+  readonly clientOverrides: Partial<OAuthClient>;
+  readonly presentation: RuntimeHostOAuthPresentation;
+  readonly emitConnectionListChanged: () => void;
+  readonly isProviderEnabled: NonNullable<RuntimeHostOAuthIpcDeps['isProviderEnabled']>;
+}): {
+  readonly handlers: ReadonlyMap<string, OAuthIpcHandler>;
+  assertNoUnexpectedClientCalls(): void;
+} {
+  const handlers = new Map<string, OAuthIpcHandler>();
+  const { client, assertNoUnexpectedClientCalls } = createFailClosedOAuthClient(
+    input.clientOverrides,
+  );
+  registerRuntimeHostOAuthIpc({
+    ipcMain: { handle: (channel, handler) => void handlers.set(channel, handler) },
+    client,
+    presentation: input.presentation,
+    emitConnectionListChanged: input.emitConnectionListChanged,
+    isProviderEnabled: input.isProviderEnabled,
+  });
+  return { handlers, assertNoUnexpectedClientCalls };
+}
 
 function oauthProjection(
   attemptId: string,
@@ -311,8 +653,11 @@ function oauthProjection(
 ) {
   return {
     attemptId,
-    connectionId,
-    provider: 'openai-codex' as const,
+    connection: {
+      connectionId,
+      slug: 'codex-subscription',
+      providerType: 'openai-codex' as const,
+    },
     phase,
   };
 }

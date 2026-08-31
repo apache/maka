@@ -1198,7 +1198,10 @@ test('OAuth connection effects resolve the canonical access token instead of sen
       refresh_token: 'oauth-refresh-token-must-not-escape',
       expires_at: Date.now() + 60 * 60_000,
     });
-    const enrollment = await stores.operations.beginInteractiveOAuthLogin(connection.connectionId);
+    const enrollment = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'connection-effect-oauth',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
     assert.equal(enrollment.kind, 'ready');
     if (enrollment.kind !== 'ready') throw new Error('OAuth enrollment did not start');
     const credential = await stores.operations.completeInteractiveOAuthLogin(

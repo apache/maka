@@ -673,7 +673,16 @@ const opencodeGoModelIds = toolCallingModelIds(
 // probes, max_tokens 8–200) — a failure shape that even "the send settles it"
 // cannot surface, which is why these ids are also vetoed in
 // `authorizeConnectionModel` rather than merely dropped from this derivation.
-const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set(['muse-spark-1.2-contributor-free']);
+// 2026-08-30 x-preview-f-free (Ox Alpha Free): retired upstream — dropped from
+// the anonymous /models listing and every completion returns HTTP 401
+// {"type":"ModelError","message":"Model x-preview-f-free is not supported"}.
+// models.dev still snapshots it as free+active, so the derivation kept offering
+// it as a default-enabled, picker-visible row until this quarantine. Remove
+// once the snapshot marks it deprecated (or upstream serves it again).
+const OPENCODE_FREE_BROKEN_MODEL_IDS = new Set([
+  'muse-spark-1.2-contributor-free',
+  'x-preview-f-free',
+]);
 const opencodeFreeModelIds = toolCallingModelIds(
   'OpenCode Free',
   Object.fromEntries(

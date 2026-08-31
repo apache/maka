@@ -10,6 +10,7 @@ apps/desktop/src/renderer/chat-message-surface.tsx
 apps/desktop/src/renderer/chat-recovery-notice.tsx
 apps/desktop/src/renderer/command-palette.tsx
 apps/desktop/src/renderer/composer-mentions.tsx
+apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
@@ -17,6 +18,12 @@ apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
+apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
+apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
@@ -80,7 +87,6 @@ apps/desktop/src/renderer/settings/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
-apps/desktop/src/renderer/settings/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-profiles-section.tsx
 apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx

@@ -26,6 +26,7 @@ import { createClientRuntimeHostProfileCatalog } from "@maka/runtime-host/client
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
+  isDesktopRuntimeHostManagedSshServiceBinding,
 } from "../runtime-host-managed-services.js";
 import {
   createDesktopRuntimeHostProfileService,
@@ -154,6 +155,7 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     profile,
   );
   assert.ok(binding);
+  assert.ok(isDesktopRuntimeHostManagedSshServiceBinding(binding));
   assert.equal(await managedServices.markUninstallingIfCurrent(binding), true);
   assert.equal(
     findDesktopRuntimeHostManagedServiceBinding(
@@ -185,4 +187,52 @@ test("keeps Desktop service bindings outside the shared profile catalog", async 
     await managedServices.removeCleanupPendingIfCurrent(binding),
     true,
   );
+});
+
+test("persists a WSL deployment through its environment control route", async () => {
+  const root = await mkdtemp(join(tmpdir(), "maka-managed-wsl-deployment-"));
+  roots.push(root);
+  const store = createDesktopRuntimeHostManagedServiceStore(root);
+  const environment = {
+    id: "ubuntu",
+    name: "Ubuntu",
+    kind: "environment" as const,
+    provider: { kind: "wsl" as const, distribution: "Ubuntu-24.04" },
+    rootId: "a".repeat(64),
+    operatorPath: "/home/operator/.local/share/maka/operator",
+  };
+  await store.save(environment, {
+    deployment: {
+      id: environment.rootId,
+      rootPath: "/home/operator/.config/Maka/workspaces/default",
+      deploymentId,
+    },
+  });
+
+  assert.deepEqual(
+    findDesktopRuntimeHostManagedServiceBinding(await store.read(), environment),
+    {
+      profile: environment,
+      deployment: {
+        id: environment.rootId,
+        rootPath: "/home/operator/.config/Maka/workspaces/default",
+        deploymentId,
+      },
+      state: "active",
+    },
+  );
+  await assert.rejects(
+    store.save(
+      { ...environment, id: "ubuntu-duplicate" },
+      {
+        deployment: {
+          id: environment.rootId,
+          rootPath: "/home/operator/.config/Maka/workspaces/default",
+          deploymentId,
+        },
+      },
+    ),
+    /already bound/u,
+  );
+  await assert.rejects(store.save(profile, deployedService), /already bound/u);
 });

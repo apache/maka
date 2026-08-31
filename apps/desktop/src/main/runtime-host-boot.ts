@@ -53,6 +53,8 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
+  runtimeHostProfileAccess,
+  type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
 import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
@@ -101,6 +103,7 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
+import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -174,9 +177,17 @@ import {
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
 import {
+  createDesktopGuestSessionMountService,
+  createGuestSessionMountStore,
+  registerDesktopGuestSessionMountIpc,
+} from './runtime-host-guest-session-mounts.js';
+import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
-import { runDesktopRuntimeHostWslSetup } from './runtime-host-wsl-controller.js';
+import {
+  runDesktopRuntimeHostWslManagement,
+  runDesktopRuntimeHostWslSetup,
+} from './runtime-host-wsl-controller.js';
 import {
   createRuntimeHostSetupPackageResolver,
   desktopRuntimeHostDevelopmentPeerTarget,
@@ -245,6 +256,7 @@ if (runtimeHostPeerConfiguration) {
     runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
+      endpointKind: 'client',
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
     runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
@@ -503,6 +515,28 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const guestSessionMountService = createDesktopGuestSessionMountService({
+  store: createGuestSessionMountStore(runtimeHostCredentialStore),
+  mount: async (target, signal, onConnectionPhase) => {
+    if (target.profile.kind !== 'remote' || !target.credential) {
+      throw new Error('A shared Session requires a remote Guest target');
+    }
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.mountGuest(
+      { profile: target.profile, credential: target.credential },
+      signal,
+      onConnectionPhase,
+    );
+  },
+  finalizeAccess: async (mountId, signal) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.finalizeGuestAccess(mountId, signal);
+  },
+  unmount: async (mountId) => {
+    if (!runtimeHostManager) return;
+    await runtimeHostManager.unmountGuest(mountId);
+  },
+});
 const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   ipcMain,
   clientInstanceId: runtimeHostClientInstanceId,
@@ -538,6 +572,7 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  runWslManagement: runDesktopRuntimeHostWslManagement,
   runPeerManagement: runtimeHostSshTerminal.runPeerManagement,
   directPeerClientAvailable: runtimeHostDirectPeerAvailable,
   runUpdate: runtimeHostSshTerminal.runUpdate,
@@ -594,6 +629,9 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
 const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
   ipcMain,
   localMesh: () => runtimeHostPeerMesh,
+  localHost: localRuntimeHostRemoteAccess,
+  runLocal: localRuntimeHostOperator.runPeerMesh,
+  liveHost: (profileId) => runtimeHostManager?.current(profileId)?.candidate?.client,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
 });
@@ -933,6 +971,8 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
     resolveLocalCollaborationConnectionTarget: () =>
       localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
+    resolveProfileCollaborationConnectionTarget: (profile) =>
+      runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(
@@ -948,6 +988,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
@@ -962,7 +1003,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
           console.error("[runtime-host] Browser target retirement failed:", error),
         );
       }
-      if (state.readiness === "unavailable") {
+      if (
+        state.readiness === 'unavailable' &&
+        state.target.profile.id === runtimeHostManager?.defaultProfileId()
+      ) {
         defaultRuntimeHostRecovery.offer({
           profileId: state.target.profile.id,
           profileName: state.target.profile.name,
@@ -984,6 +1028,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: "unavailable",
         isDefault:
@@ -1007,6 +1052,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId,
         profileName: state?.target.profile.name ?? profileId,
         profileKind: state?.target.profile.kind ?? "remote",
+        profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
         ...(state?.readiness === "ready"
           ? { hostId: state.candidate.client.hostId }
           : state?.readiness !== "unavailable" && state && "hostId" in state && state.hostId
@@ -1037,6 +1083,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+await guestSessionMountService.start().catch((error: unknown) => {
+  console.error('[runtime-host] shared Sessions could not be restored:', error);
+});
 await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
   console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
 });
@@ -1475,6 +1524,7 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  registerDesktopGuestSessionMountIpc(ipcMain, guestSessionMountService);
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,
@@ -1532,36 +1582,40 @@ function registerPersistentClientIpc(): void {
       );
     },
   );
+  const projectRuntimeHostIdentity = (
+    epoch: string,
+    target: ResolvedRuntimeHostProfile,
+    readiness: 'ready' | 'reconnecting',
+    hostId: string,
+  ): DesktopRuntimeHostIdentity => ({
+    hostId,
+    targetEpoch: epoch,
+    profileId: target.profile.id,
+    profileName: target.profile.name,
+    profileKind: target.profile.kind,
+    profileAccess: runtimeHostProfileAccess(target.profile),
+    readiness,
+  });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const current = runtimeHostManager?.current();
     if (!current?.hostId) {
       throw new Error("Desktop Runtime Host identity is unavailable");
     }
-    return {
-      hostId: current.hostId,
-      targetEpoch: current.epoch,
-      profileId: current.target.profile.id,
-      profileName: current.target.profile.name,
-      profileKind: current.target.profile.kind,
-      readiness: current.readiness,
-    };
+    return projectRuntimeHostIdentity(
+      current.epoch,
+      current.target,
+      current.readiness,
+      current.hostId,
+    );
   });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
-      const hostId = state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : state.readiness === "reconnecting"
-          ? state.hostId
-          : undefined;
+      if (state.readiness !== "ready" && state.readiness !== "reconnecting") return [];
+      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId;
       if (!hostId) return [];
-      return [{
-        hostId,
-        targetEpoch: state.epoch,
-        profileId: state.target.profile.id,
-        profileName: state.target.profile.name,
-        profileKind: state.target.profile.kind,
-        readiness: state.readiness,
-      }];
+      return [
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness, hostId),
+      ];
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
@@ -1712,11 +1766,19 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
+  const guestMountShutdown = Promise.resolve().then(() => guestSessionMountService.close());
+  const runtimeHostManagerShutdown = guestMountShutdown
+    .catch(() => undefined)
+    .then(() => runtimeHostManager?.close());
+  const runtimeHostPeerShutdown = runtimeHostManagerShutdown
+    .catch(() => undefined)
+    .then(() => runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close());
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
-    runtimeHostManager?.close(),
-    runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
+    guestMountShutdown,
+    runtimeHostManagerShutdown,
+    runtimeHostPeerShutdown,
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),

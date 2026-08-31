@@ -129,6 +129,7 @@ export function buildLlmHistorySummarizer(options: BuildLlmHistorySummarizerOpti
             model: options.resolveModel(),
             wrapLanguageModel: ai!.wrapLanguageModel,
             tracker: providerRequestTracker,
+            historyCompactRoute: 'text_summary',
             ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
           })
         : options.resolveModel();

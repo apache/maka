@@ -45,6 +45,7 @@ export interface ConnectionContext {
   principal: string;
   principalKind?: RuntimeHostConnectionAuthority['principalKind'];
   credentialId?: string;
+  credentialClientInstanceId?: string;
   clientInstanceId?: string;
   turnAdmissionAuthorization?: RootTurnAdmissionAuthorization;
   acquireResidency(): OperationResidency;

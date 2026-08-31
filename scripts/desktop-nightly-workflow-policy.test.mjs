@@ -107,6 +107,27 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
+test('the first Desktop Nightly creates its destination with rsync 3.1-compatible flags', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = workflow.jobs.publish.steps;
+  const transport = steps.find(
+    (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
+  );
+  const bootstrap = steps.find((step) => step.name === 'Ensure the Nightly destination exists');
+  const feedGuardPosition = steps.findIndex(
+    (step) => step.name === 'Require the Desktop Nightly feed to advance',
+  );
+
+  assert.ok(bootstrap);
+  assert.match(transport.run, /NIGHTLIES_RSYNC_BASE=/u);
+  assert.match(bootstrap.run, /mkdir -p \.nightly-empty\/maka\/desktop/u);
+  assert.match(bootstrap.run, /^rsync -rlptDz --protect-args /mu);
+  assert.doesNotMatch(bootstrap.run, /--mkpath/u);
+  assert.match(bootstrap.run, /\.nightly-empty\/maka\/ "\$NIGHTLIES_RSYNC_BASE\/maka\/"/u);
+  assert.doesNotMatch(bootstrap.run, /\.nightly-publish/u);
+  assert.ok(steps.indexOf(bootstrap) < feedGuardPosition);
+});
+
 test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   const publish = workflow.jobs.publish;
@@ -120,12 +141,16 @@ test('the protected Desktop publisher appends payloads before advancing the feed
     (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
   );
   assert.equal(transport.env.NIGHTLIES_RSYNC_KEY, '${{ secrets.NIGHTLIES_RSYNC_KEY }}');
-  assert.equal(
-    transport.env.NIGHTLIES_RSYNC_KNOWN_HOSTS,
-    '${{ secrets.NIGHTLIES_RSYNC_KNOWN_HOSTS }}',
-  );
-  assert.match(transport.run, /StrictHostKeyChecking=yes/u);
-  assert.doesNotMatch(transport.run, /ssh-keyscan|StrictHostKeyChecking=no/u);
+  assert.deepEqual(Object.keys(transport.env).toSorted(), [
+    'NIGHTLIES_RSYNC_HOST',
+    'NIGHTLIES_RSYNC_KEY',
+    'NIGHTLIES_RSYNC_PATH',
+    'NIGHTLIES_RSYNC_PORT',
+    'NIGHTLIES_RSYNC_USER',
+  ]);
+  assert.match(transport.run, /StrictHostKeyChecking=no/u);
+  assert.match(transport.run, /UserKnownHostsFile=\/dev\/null/u);
+  assert.doesNotMatch(transport.run, /ssh-keyscan|KNOWN_HOSTS/u);
   const steps = publish.steps;
   const positions = [
     'Attest the exact Nightly payloads',
@@ -144,11 +169,18 @@ test('the protected Desktop publisher appends payloads before advancing the feed
     'https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main',
   );
   for (const name of [
+    'Ensure the Nightly destination exists',
+    'Publish immutable Nightly payloads',
+    'Advance the Nightly update feed last',
+  ]) {
+    const step = steps.find((candidate) => candidate.name === name);
+    assert.doesNotMatch(step.run, /--delete/u);
+  }
+  for (const name of [
     'Publish immutable Nightly payloads',
     'Advance the Nightly update feed last',
   ]) {
     const step = steps.find((candidate) => candidate.name === name);
     assert.match(step.run, /^rsync -rlptDvz --protect-args /u);
-    assert.doesNotMatch(step.run, /--delete/u);
   }
 });

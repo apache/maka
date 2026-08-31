@@ -108,7 +108,10 @@ function deferred<T>() {
 let latestController: TaskEntryController | undefined;
 
 function ControllerProbe(props: { reportError(error: unknown): void }) {
-  latestController = useTaskEntryController({ reportError: props.reportError });
+  latestController = useTaskEntryController({
+    reportError: props.reportError,
+    manageProjects() {},
+  });
   return null;
 }
 

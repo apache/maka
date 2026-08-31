@@ -26,6 +26,7 @@ import {
   decodeOAuthLoginProjection,
   decodeOAuthPresentationRequest,
   decodeOAuthPresentationResult,
+  OAUTH_OPERATION_SPECS,
   type OAuthPresentationMethod,
 } from '../protocol/index.js';
 
@@ -34,12 +35,18 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
     decodeClientFrame({
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     }),
     {
       requestId: 'request',
       operation: 'oauth.login.start',
-      input: { attemptId: 'attempt', connectionId: 'connection' },
+      input: {
+        attemptId: 'attempt',
+        target: { kind: 'existing', connectionId: 'connection' },
+      },
     },
   );
   assert.deepEqual(
@@ -49,8 +56,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -61,8 +71,11 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
       ok: true,
       result: {
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'openai-codex',
+        connection: {
+          connectionId: 'connection',
+          slug: 'codex-subscription',
+          providerType: 'openai-codex',
+        },
         phase: 'failed',
         failure: 'provider_rejected',
       },
@@ -76,13 +89,35 @@ test('OAuth login protocol binds attempt identity and closes terminal projection
         ok: true,
         result: {
           attemptId: 'attempt',
-          connectionId: 'connection',
-          provider: 'openai-codex',
+          connection: {
+            connectionId: 'connection',
+            slug: 'codex-subscription',
+            providerType: 'openai-codex',
+          },
           phase: 'authenticated',
           failure: 'internal_failure',
         },
       }),
     (error: unknown) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeClientFrame({
+        requestId: 'epoch-53-request',
+        operation: 'oauth.login.start',
+        input: { attemptId: 'attempt', connectionId: 'connection' },
+      }),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        attemptId: 'attempt',
+        connectionId: 'connection',
+        provider: 'openai-codex',
+        phase: 'authenticated',
+      }),
+    RuntimeHostProtocolError,
   );
 });
 
@@ -146,8 +181,11 @@ test('OAuth login projections refuse a retired provider on the wire', () => {
     () =>
       decodeOAuthLoginProjection({
         attemptId: 'attempt',
-        connectionId: 'connection',
-        provider: 'claude-subscription',
+        connection: {
+          connectionId: 'connection',
+          slug: 'claude-subscription',
+          providerType: 'claude-subscription',
+        },
         phase: 'awaiting_authorization',
       }),
     RuntimeHostProtocolError,
@@ -155,15 +193,71 @@ test('OAuth login projections refuse a retired provider on the wire', () => {
   assert.deepEqual(
     decodeOAuthLoginProjection({
       attemptId: 'attempt',
-      connectionId: 'connection',
-      provider: 'openai-codex',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
       phase: 'awaiting_authorization',
     }),
     {
       attemptId: 'attempt',
-      connectionId: 'connection',
-      provider: 'openai-codex',
+      connection: {
+        connectionId: 'connection',
+        slug: 'codex-subscription',
+        providerType: 'openai-codex',
+      },
       phase: 'awaiting_authorization',
     },
+  );
+});
+
+test('OAuth operations correlate attempt and Connection identity', () => {
+  const projection = decodeOAuthLoginProjection({
+    attemptId: 'attempt-output',
+    connection: {
+      connectionId: 'connection-output',
+      slug: 'codex-subscription',
+      providerType: 'openai-codex',
+    },
+    phase: 'authenticated',
+  });
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.query'].assertOutputForInput?.(
+        { attemptId: 'attempt-input' },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'existing', connectionId: 'another-connection' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      OAUTH_OPERATION_SPECS['oauth.login.start'].assertOutputForInput?.(
+        {
+          attemptId: projection.attemptId,
+          target: { kind: 'create', providerType: 'xai-oauth' },
+        },
+        projection,
+      ),
+    RuntimeHostProtocolError,
+  );
+  assert.throws(
+    () =>
+      decodeOAuthLoginProjection({
+        ...projection,
+        connection: { ...projection.connection, slug: 'Invalid Slug' },
+      }),
+    RuntimeHostProtocolError,
   );
 });

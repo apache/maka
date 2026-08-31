@@ -57,6 +57,7 @@ pub(super) struct Behaviour {
 
 pub(super) struct InboundStream {
     pub(super) peer_id: PeerId,
+    pub(super) connection_id: ConnectionId,
     pub(super) stream: Stream,
 }
 
@@ -102,6 +103,7 @@ impl Behaviour {
         let (sender, receiver) = mpsc::channel(OUTBOUND_COMMAND_CAPACITY);
         lock(&self.shared).insert(connection_id, peer_id, relay_peer_id, Some(sender));
         Handler::direct(
+            connection_id,
             peer_id,
             self.protocol.clone(),
             self.incoming.clone(),
@@ -172,6 +174,22 @@ pub(super) struct Control {
 }
 
 impl Control {
+    pub(super) fn relays_with_active_streams(
+        &self,
+        active_streams: &HashMap<ConnectionId, usize>,
+    ) -> HashSet<PeerId> {
+        lock(&self.shared)
+            .connections
+            .iter()
+            .filter_map(|(connection_id, connection)| {
+                active_streams
+                    .contains_key(connection_id)
+                    .then_some(connection.relay_peer_id)
+                    .flatten()
+            })
+            .collect()
+    }
+
     pub(super) fn connections_via(&self, relays: &HashSet<PeerId>) -> Vec<ConnectionId> {
         lock(&self.shared)
             .connections
@@ -321,6 +339,7 @@ fn lock(shared: &Arc<Mutex<DirectConnections>>) -> MutexGuard<'_, DirectConnecti
 }
 
 pub(super) struct Handler {
+    connection_id: Option<ConnectionId>,
     peer_id: Option<PeerId>,
     protocol: Option<StreamProtocol>,
     incoming: Option<mpsc::Sender<InboundStream>>,
@@ -331,12 +350,14 @@ pub(super) struct Handler {
 
 impl Handler {
     fn direct(
+        connection_id: ConnectionId,
         peer_id: PeerId,
         protocol: StreamProtocol,
         incoming: mpsc::Sender<InboundStream>,
         commands: mpsc::Receiver<NewStream>,
     ) -> Self {
         Self {
+            connection_id: Some(connection_id),
             peer_id: Some(peer_id),
             protocol: Some(protocol),
             incoming: Some(incoming),
@@ -348,6 +369,7 @@ impl Handler {
 
     fn relayed() -> Self {
         Self {
+            connection_id: None,
             peer_id: None,
             protocol: None,
             incoming: None,
@@ -428,6 +450,9 @@ impl ConnectionHandler for Handler {
             }) => {
                 if let Some(incoming) = self.incoming.as_ref() {
                     let _ = incoming.try_send(InboundStream {
+                        connection_id: self
+                            .connection_id
+                            .expect("direct handlers have a connection id"),
                         peer_id: self.peer_id.expect("direct handlers have a peer id"),
                         stream,
                     });

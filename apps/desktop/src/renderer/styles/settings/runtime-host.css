@@ -289,6 +289,12 @@
   gap: var(--space-4);
 }
 
+.settingsPeerMeshEndpoint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .settingsPeerMeshIdentity,
 .settingsPeerMeshToolbar,
 .settingsPeerMeshCardHeading,
@@ -309,9 +315,52 @@
   background: var(--background-secondary);
 }
 
+.settingsPeerMeshRename {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshPeerId {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: copy;
+  text-align: start;
+}
+
+.settingsPeerMeshPeerId:hover,
+.settingsPeerMeshPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settingsRuntimeHostPeerId {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: copy;
+  font: inherit;
+  text-align: start;
+}
+
+.settingsRuntimeHostPeerId:hover,
+.settingsRuntimeHostPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .settingsPeerMeshIdentity > div,
 .settingsPeerMeshToolbar > div:first-child,
-.settingsPeerMeshCardIdentity > div,
 .settingsPeerMeshMemberIdentity > div,
 .settingsPeerMeshFocusedHeading > div {
   display: flex;
@@ -322,7 +371,6 @@
 }
 
 .settingsPeerMeshIdentityIcon,
-.settingsPeerMeshCardIcon,
 .settingsPeerMeshFocusedIcon,
 .settingsPeerMeshEmptyIcon {
   display: grid;
@@ -332,8 +380,7 @@
   background: oklch(from var(--accent) l c h / 0.1);
 }
 
-.settingsPeerMeshIdentityIcon,
-.settingsPeerMeshCardIcon {
+.settingsPeerMeshIdentityIcon {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-control);
@@ -388,7 +435,59 @@
   background: var(--background-secondary);
 }
 
-.settingsPeerMeshCardIdentity,
+.settingsPeerMeshCardDisclosure {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: start;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child > span:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.settingsPeerMeshCardTitle {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font: var(--maka-text-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshCardMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshChevron {
+  flex: 0 0 auto;
+  color: var(--foreground-secondary);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshChevron.isExpanded {
+  transform: rotate(180deg);
+}
+
 .settingsPeerMeshCardControls,
 .settingsPeerMeshMemberIdentity,
 .settingsPeerMeshFocusedHeading,
@@ -400,6 +499,14 @@
 
 .settingsPeerMeshCardControls {
   flex: 0 0 auto;
+}
+
+.settingsPeerMeshCardDetails {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
 }
 
 .settingsPeerMeshTransit {
@@ -463,19 +570,6 @@
   border-radius: var(--radius-control);
 }
 
-.settingsPeerMeshCardIdentity {
-  min-width: 0;
-}
-
-.settingsPeerMeshName {
-  overflow: hidden;
-  color: var(--foreground-primary);
-  font: var(--maka-text-body);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .settingsPeerMeshMembersHeading {
   margin-top: var(--space-1);
   padding-block: var(--space-1);
@@ -517,6 +611,25 @@
   max-width: min(360px, 55vw);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settingsPeerMeshMemberHeading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshMemberName {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshMemberHeading code {
+  min-width: 0;
 }
 
 .settingsPeerMeshFocusedView {

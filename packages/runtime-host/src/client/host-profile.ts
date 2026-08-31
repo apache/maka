@@ -43,7 +43,7 @@ import {
   readRuntimeHostPeerAuthenticationResult,
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
-import type { RuntimeHostPeerClient } from './peer-client.js';
+import type { RuntimeHostPeerClient, RuntimeHostPeerConnectionPhase } from './peer-client.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -155,6 +155,12 @@ export interface ResolvedRuntimeHostProfile {
   readonly profile: RuntimeHostProfile;
   readonly credential?: string;
 }
+
+export type RuntimeHostConnectionPhase =
+  | RuntimeHostPeerConnectionPhase
+  | 'authenticating'
+  | 'handshaking'
+  | 'waiting_for_ready';
 
 export function sameResolvedRuntimeHostProfileTarget(
   left: ResolvedRuntimeHostProfile,
@@ -272,6 +278,7 @@ export async function connectRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -326,6 +333,7 @@ export async function connectRemoteRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -351,8 +359,12 @@ export async function connectRemoteRuntimeHostProfile(
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      ...(input.onConnectionPhase === undefined
+        ? {}
+        : { onConnectionPhase: input.onConnectionPhase }),
     });
   } else {
+    notifyConnectionPhase(input.onConnectionPhase, 'connecting');
     const activation =
       transport.kind === 'ssh' && transport.activation
         ? await (overrides.activateSshOperator ?? activateRuntimeHostSshOperator)({
@@ -420,6 +432,7 @@ export async function connectRemoteRuntimeHostProfile(
   }
   try {
     input.signal?.throwIfAborted();
+    notifyConnectionPhase(input.onConnectionPhase, 'waiting_for_ready');
     await (overrides.waitForReady ?? waitForRuntimeHostReady)(
       connection,
       input.readyTimeoutMs ?? 45_000,
@@ -454,6 +467,7 @@ export async function connectPeerRuntimeHost(input: {
   readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
+  readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const stream = await input.peerClient.connect(
@@ -464,6 +478,7 @@ export async function connectPeerRuntimeHost(input: {
       directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
     },
     input.signal,
+    input.onConnectionPhase,
   );
   const abort = () => stream.abort();
   input.signal?.addEventListener('abort', abort, { once: true });
@@ -471,6 +486,7 @@ export async function connectPeerRuntimeHost(input: {
   let transferred = false;
   try {
     input.signal?.throwIfAborted();
+    notifyConnectionPhase(input.onConnectionPhase, 'authenticating');
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
       stream,
@@ -481,6 +497,7 @@ export async function connectPeerRuntimeHost(input: {
         `Runtime Host profile ${input.profileId} rejected its access credential`,
       );
     }
+    notifyConnectionPhase(input.onConnectionPhase, 'handshaking');
     const result = await connectRuntimeHostMessageTransport({
       transport: new FramedByteStreamTransport(
         new RuntimeHostPeerByteStream(stream, authentication.remainder),
@@ -509,6 +526,17 @@ export async function connectPeerRuntimeHost(input: {
   } finally {
     input.signal?.removeEventListener('abort', abort);
     if (!transferred) stream.abort();
+  }
+}
+
+function notifyConnectionPhase(
+  observer: ((phase: RuntimeHostConnectionPhase) => void) | undefined,
+  phase: RuntimeHostConnectionPhase,
+): void {
+  try {
+    observer?.(phase);
+  } catch {
+    // Connection progress is diagnostic state and cannot control the connection.
   }
 }
 
@@ -636,6 +664,11 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     if (!profile) {
       throw new RuntimeHostPermanentReconnectError(`Unknown Runtime Host profile: ${id}`);
     }
+    if (profile.kind === 'remote' && profile.access === 'session_guest') {
+      throw new RuntimeHostPermanentReconnectError(
+        'Session Guest access is retained only as a shared Session mount',
+      );
+    }
     if (profile.kind === 'environment') return { profile };
     const credential = await this.credentials.get(profile);
     if (!credential) {
@@ -666,6 +699,7 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     requireNew: boolean,
   ): Promise<RuntimeHostProfileDocument> {
     const profile = decodePersistedRuntimeHostProfile(value);
+    assertOwnerProfile(profile);
     return this.#exclusive(async () => {
       const current = await this.#readSnapshot();
       const previousProfile = current.profiles.find((candidate) => candidate.id === profile.id);
@@ -773,6 +807,8 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     }
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     const profile = decodeRemoteRuntimeHostProfile(value);
+    assertOwnerProfile(expectedProfile);
+    assertOwnerProfile(profile);
     if (
       profile.id !== expectedProfile.id ||
       !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile) ||
@@ -858,6 +894,12 @@ export function decodePersistedRuntimeHostProfile(value: unknown): PersistedRunt
   return requireRecord(value, 'Runtime Host profile').kind === 'environment'
     ? decodeEnvironmentRuntimeHostProfile(value)
     : decodeRemoteRuntimeHostProfile(value);
+}
+
+function assertOwnerProfile(profile: PersistedRuntimeHostProfile): void {
+  if (profile.kind === 'remote' && profile.access === 'session_guest') {
+    throw new Error('Session Guest access is retained only as a shared Session mount');
+  }
 }
 
 export function decodeEnvironmentRuntimeHostProfile(value: unknown): EnvironmentRuntimeHostProfile {

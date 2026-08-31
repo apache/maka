@@ -43,6 +43,7 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   // The conversation is the Coordination Session transcript. An ordinary
   // Session is a routing target and a status row, never a turn in WorkHub.
   await waitForWorkHubReady(page, 1);
@@ -58,11 +59,12 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   const routedTurn = page.locator('.workhub-turn', { hasText: routedPrompt });
   await expect(routedTurn.locator('.workhub-submitted')).toBeVisible();
   await routedTurn.locator('.workhub-submitted > button').click();
-  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeHidden();
 
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await waitForWorkHubReady(page, 1);
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   await expect(
     page.locator('.workhub-projected-turn .workhub-user-bubble > p', {
       hasText: routedPrompt,
@@ -92,6 +94,7 @@ test('WorkHub defers destructive correction until linked delegation exists', asy
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   await page.evaluate(async () => {
     await window.maka.sessions.create({ name: '登录稳定性' });
   });

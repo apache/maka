@@ -178,7 +178,6 @@
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
     "src/renderer/settings/runtime-host-onboarding-dialog.tsx",
-    "src/renderer/settings/runtime-host-peer-mesh-dialog.tsx",
     "src/renderer/settings/runtime-host-profiles-section.tsx",
     "src/renderer/settings/runtime-host-project-directory-editor.tsx",
     "src/renderer/settings/runtime-host-settings-bridge.ts",
@@ -326,7 +325,6 @@
   "legacyPlatformImports": [
     "src/renderer/platform/desktop/create-workbar-services.ts -> src/renderer/session-message-settlement"
   ],
-  "hookTransitions": [],
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-app-update.ts": {
@@ -390,7 +388,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 4363
+        "nonTriviaTokens": 4376
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 5,
@@ -587,7 +585,7 @@
           "react": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 3877
+        "nonTriviaTokens": 3836
       },
       "src/renderer/app-shell-overlays.tsx": {
         "importDeclarations": 14,
@@ -625,7 +623,7 @@
           "react": 1
         },
         "importSpecifiers": 22,
-        "nonTriviaTokens": 990
+        "nonTriviaTokens": 977
       },
       "src/renderer/app-shell-project-actions.ts": {
         "importDeclarations": 9,
@@ -714,7 +712,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 23,
-        "nonTriviaTokens": 2931
+        "nonTriviaTokens": 3042
       },
       "src/renderer/app-shell-session-settings-actions.ts": {
         "importDeclarations": 9,
@@ -946,7 +944,7 @@
           "useShellRunUpdates": 1,
           "useShellSearch": 1,
           "useStableActions": 7,
-          "useState": 18,
+          "useState": 17,
           "useSystemUiLocale": 1,
           "useTaskEntryController": 1,
           "useTaskSubmissionReadiness": 1,
@@ -1064,7 +1062,7 @@
           "react": 1
         },
         "importSpecifiers": 187,
-        "nonTriviaTokens": 15912
+        "nonTriviaTokens": 15908
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -2465,7 +2463,6 @@
           "window.maka.sessionCollaboration.decideTurnRequest": 1,
           "window.maka.sessionCollaboration.getAccess": 1,
           "window.maka.sessionCollaboration.getTurnRequests": 1,
-          "window.maka.sessionCollaboration.importInvitation": 1,
           "window.maka.sessionCollaboration.prepareInvitation": 1,
           "window.maka.sessionCollaboration.revokeGrant": 1,
           "window.maka.sessionCollaboration.revokePrincipal": 1
@@ -2477,9 +2474,9 @@
         },
         "hookCalls": {
           "useEffect": 1,
-          "useState": 8,
-          "useToast": 2,
-          "useUiLocale": 2
+          "useState": 6,
+          "useToast": 1,
+          "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3146,9 +3143,9 @@
           "setTimeout": 2
         },
         "hookCalls": {
-          "useEffect": 4,
+          "useEffect": 5,
           "useMountedRef": 1,
-          "useRef": 3,
+          "useRef": 5,
           "useRuntimeHostSettingsTarget": 1,
           "useState": 18,
           "useUiLocale": 1
@@ -3911,34 +3908,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/runtime-host-peer-mesh-dialog.tsx": {
-        "bridgePaths": {
-          "window.maka.runtimeHostPeerMesh.execute": 6
-        },
-        "environmentCapabilities": {
-          "navigator.clipboard.writeText": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useState": 5,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../../preload/bridge-contract.js": 1,
-          "@astryxdesign/core": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@astryxdesign/core/Stack": 1,
-          "@maka/runtime-host/protocol": 2,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
-        }
-      },
       "src/renderer/settings/runtime-host-profiles-section.tsx": {
         "bridgePaths": {
           "window.maka.localRuntimeHostRemoteAccess.createConnectionCode": 1,
@@ -3949,7 +3918,6 @@
           "window.maka.runtimeHostProfiles.addAndEnable": 1,
           "window.maka.runtimeHostProfiles.getSnapshot": 1,
           "window.maka.runtimeHostProfiles.remove": 1,
-          "window.maka.runtimeHostProfiles.resolvePairingRecovery": 1,
           "window.maka.runtimeHostProfiles.setDefault": 1,
           "window.maka.runtimeHostProfiles.setEnabled": 1,
           "window.maka.runtimeHostProfiles.subscribeChanges": 1
@@ -3969,14 +3937,14 @@
         "actionFactories": [],
         "dependencyPaths": {
           "../../preload/bridge-contract.js": 1,
+          "../features/runtime-host-management": 1,
+          "../features/session-collaboration": 1,
           "../locales/session-collaboration-copy.js": 1,
           "../locales/settings-projects-copy.js": 1,
-          "../session-collaboration-dialog.js": 1,
           "./password-input.js": 1,
           "./runtime-host-connection-code-dialog.js": 1,
           "./runtime-host-management-dialog.js": 1,
           "./runtime-host-onboarding-dialog.js": 1,
-          "./runtime-host-peer-mesh-dialog.js": 1,
           "./settings-error-copy.js": 1,
           "./settings-section.js": 1,
           "@astryxdesign/core": 1,
@@ -5570,7 +5538,7 @@
       "nonTriviaTokens": 206
     },
     "src/renderer/main.tsx": {
-      "importDeclarations": 17,
+      "importDeclarations": 8,
       "bridgePaths": {
         "window.maka.onboarding.getSnapshot": 2
       },
@@ -5586,23 +5554,14 @@
         "../preload/bridge-contract.js": 1,
         "./app": 1,
         "./cached-theme-bootstrap": 1,
-        "./features/goals": 1,
-        "./features/module-hub": 1,
-        "./features/session-navigation": 1,
-        "./features/task-entry": 1,
-        "./features/workbar": 1,
-        "./platform/desktop/create-goal-services": 1,
-        "./platform/desktop/create-module-hub-services": 1,
-        "./platform/desktop/create-session-navigation-services": 1,
-        "./platform/desktop/create-task-entry-services": 1,
-        "./platform/desktop/create-workbar-services": 1,
+        "./composition/desktop-feature-services": 1,
         "./styles.css": 1,
         "./use-system-ui-locale": 1,
         "@maka/ui": 1,
         "react-dom/client": 1
       },
-      "importSpecifiers": 16,
-      "nonTriviaTokens": 412
+      "importSpecifiers": 8,
+      "nonTriviaTokens": 268
     }
   },
   "rootDebtClosure": {

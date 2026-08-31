@@ -58,6 +58,7 @@ pub struct ConnectPeerOptions {
 #[napi(object)]
 pub struct ConfigurePeerTransitOptions {
     pub allowed_peer_ids: Vec<String>,
+    pub approved_relay_peer_ids: Vec<String>,
     pub relay_candidates: Vec<PeerTransitRelayCandidate>,
 }
 
@@ -65,6 +66,7 @@ pub struct ConfigurePeerTransitOptions {
 pub struct PeerTransitRelayCandidate {
     pub peer_id: String,
     pub addresses: Vec<String>,
+    pub coordination_relays: Vec<String>,
 }
 
 #[napi(object)]
@@ -140,13 +142,17 @@ impl PeerEndpoint {
     #[napi]
     pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
         let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
+        let approved_relays = parse_peer_ids(options.approved_relay_peer_ids)?;
         let relays = parse_transit_relay_candidates(options.relay_candidates)?;
         let trusted_relays = relays
             .iter()
-            .filter_map(|address| engine::transit_relay_peer_id(address).ok())
+            .map(|candidate| candidate.peer_id)
             .collect::<HashSet<_>>();
         let local_peer_id = parse_peer_id(&self.peer_id)?;
-        if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
+        if allowed_peers.contains(&local_peer_id)
+            || approved_relays.contains(&local_peer_id)
+            || trusted_relays.contains(&local_peer_id)
+        {
             return Err(Error::new(
                 Status::InvalidArg,
                 "peer endpoint cannot configure itself as a transit peer",
@@ -157,6 +163,7 @@ impl PeerEndpoint {
             .send(EngineCommand::ConfigureTransit {
                 policy: engine::TransitPolicy {
                     allowed_peers,
+                    approved_relays,
                     relays,
                 },
                 result: result_tx,
@@ -461,9 +468,11 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
 
 fn parse_transit_relay_candidates(
     candidates: Vec<PeerTransitRelayCandidate>,
-) -> Result<Vec<Multiaddr>> {
+) -> Result<Vec<engine::TransitRelayCandidate>> {
     let address_count = candidates.iter().try_fold(0usize, |count, candidate| {
-        count.checked_add(candidate.addresses.len())
+        count
+            .checked_add(candidate.addresses.len())?
+            .checked_add(candidate.coordination_relays.len())
     });
     if address_count.is_none_or(|count| count > MAX_TRANSIT_RELAY_ADDRESSES) {
         return Err(Error::new(
@@ -476,17 +485,38 @@ fn parse_transit_relay_candidates(
         let Ok(expected_peer) = candidate.peer_id.parse::<PeerId>() else {
             continue;
         };
+        let mut addresses = Vec::new();
         for value in candidate.addresses {
             let Ok(address) = value.parse::<Multiaddr>() else {
                 continue;
             };
             if engine::transit_relay_peer_id(&address).ok() == Some(expected_peer) {
-                relays.push(address);
+                addresses.push(address);
             }
         }
+        let mut coordination_relays = candidate
+            .coordination_relays
+            .into_iter()
+            .filter_map(|value| value.parse::<Multiaddr>().ok())
+            .filter(|address| {
+                engine::coordination_relay_peer_id(address)
+                    .is_ok_and(|peer_id| peer_id != expected_peer)
+            })
+            .collect::<Vec<_>>();
+        addresses.sort_unstable_by_key(ToString::to_string);
+        addresses.dedup();
+        coordination_relays.sort_unstable_by_key(ToString::to_string);
+        coordination_relays.dedup();
+        if !addresses.is_empty() || !coordination_relays.is_empty() {
+            relays.push(engine::TransitRelayCandidate {
+                peer_id: expected_peer,
+                addresses,
+                coordination_relays,
+            });
+        }
     }
-    relays.sort_unstable_by_key(ToString::to_string);
-    relays.dedup();
+    relays.sort_unstable_by_key(|candidate| candidate.peer_id.to_string());
+    relays.dedup_by_key(|candidate| candidate.peer_id);
     Ok(relays)
 }
 
@@ -544,6 +574,7 @@ mod tests {
         let expected = PeerId::random();
         let other = PeerId::random();
         let accepted = format!("/ip4/192.0.2.1/tcp/4001/p2p/{expected}");
+        let coordination = format!("/ip4/198.51.100.1/tcp/4001/p2p/{other}");
         let relays = parse_transit_relay_candidates(vec![PeerTransitRelayCandidate {
             peer_id: expected.to_string(),
             addresses: vec![
@@ -551,9 +582,21 @@ mod tests {
                 format!("/ip4/192.0.2.2/tcp/4001/p2p/{other}"),
                 "not-a-multiaddr".to_owned(),
             ],
+            coordination_relays: vec![
+                coordination.clone(),
+                format!("/ip4/198.51.100.2/tcp/4001/p2p/{expected}"),
+            ],
         }])
         .expect("candidate policy");
 
-        assert_eq!(relays, vec![accepted.parse().expect("accepted multiaddr")]);
+        assert_eq!(relays.len(), 1);
+        assert_eq!(
+            relays[0].addresses,
+            vec![accepted.parse().expect("accepted multiaddr")],
+        );
+        assert_eq!(
+            relays[0].coordination_relays,
+            vec![coordination.parse().expect("coordination multiaddr")],
+        );
     }
 }

@@ -463,19 +463,11 @@ export function createAppShellChatActions(deps: {
         });
         unsentSessionId = session.id;
         optimisticSessionId = session.id;
-        // Consumed: the choice is now the created Session's, not the next
-        // draft's. A failed create leaves it in place so a retry keeps it.
-        if (newChatPermissionChoice) clearNewChatPermissionChoice();
-        // Active-stream snapshots can only restore assistant segments that
-        // are still streaming. Wait until the observer is ready before the
-        // first admission so a completed segment in a still-running Turn
-        // cannot become durable text without live identity.
-        await activateSessionForFirstSend(session.id);
-        if (activeIdRef.current !== session.id) {
-          await discardUnsentSession();
-          return false;
-        }
         optimisticMessageId = messageId;
+        // Stage the first row before activation. `setActiveId` projects this
+        // session-owned transient in the same state transition that replaces
+        // the new-chat surface, so the empty-session Maka hero cannot paint
+        // between observation settling and the submitted content appearing.
         showTransientUserMessage(
           session.id,
           messageId,
@@ -486,6 +478,19 @@ export function createAppShellChatActions(deps: {
             inlineReferences: [],
           },
         );
+        // Consumed: the choice is now the created Session's, not the next
+        // draft's. A failed create leaves it in place so a retry keeps it.
+        if (newChatPermissionChoice) clearNewChatPermissionChoice();
+        // Active-stream snapshots can only restore assistant segments that
+        // are still streaming. Wait until the observer is ready before the
+        // first admission so a completed segment in a still-running Turn
+        // cannot become durable text without live identity.
+        await activateSessionForFirstSend(session.id);
+        if (activeIdRef.current !== session.id) {
+          removeOptimisticUserMessage(session.id, messageId);
+          await discardUnsentSession();
+          return false;
+        }
         if (exactTurn) armTurnActive(session.id, messageId);
         const attachmentItems =
           pending && pending.length > 0

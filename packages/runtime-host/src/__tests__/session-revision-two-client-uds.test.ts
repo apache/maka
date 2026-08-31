@@ -870,7 +870,10 @@ async function seedSource(
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
-      turnId: 'turn-1',
+      // A user upload carries the uploadId sentinel as its turnId, not a
+      // conversation turn — so it is not selected by the turn-scoped artifact
+      // copy and must be carried by the referenced-attachment include path.
+      turnId: 'upload-source-artifact',
       name: 'source.txt',
       kind: 'file',
       content: 'retained bytes',
@@ -905,7 +908,7 @@ async function seedSource(
             ref: {
               kind: 'session_file',
               sessionId: source.id,
-              relativePath: artifact.relativePath,
+              relativePath: artifact.id,
             },
           },
         ],
@@ -965,7 +968,7 @@ async function seedSource(
               ref: {
                 kind: 'session_file',
                 sessionId: source.id,
-                relativePath: artifact.relativePath,
+                relativePath: artifact.id,
               },
             },
           ],
@@ -1529,6 +1532,25 @@ async function verifyDurableBranch(
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
     await artifacts.recover();
+    // Every copy kind that retains the upload turn must carry a rewritten,
+    // readable copy of the user-uploaded attachment (regression guard for the
+    // turn-scoped-only artifact selection that dropped user uploads).
+    const assertCopiedUpload = async (sessionId: string): Promise<void> => {
+      const sessionMessages = await execution.sessionStore.readMessagesSnapshot(sessionId);
+      const uploadMessage = sessionMessages.find(
+        (message) => message.type === 'user' && message.attachments?.[0],
+      );
+      const uploadRef =
+        uploadMessage?.type === 'user' ? uploadMessage.attachments?.[0]?.ref : undefined;
+      assert.equal(uploadRef?.kind, 'session_file', `${sessionId} must retain the upload`);
+      if (uploadRef?.kind !== 'session_file') return;
+      assert.equal(uploadRef.sessionId, sessionId);
+      assert.notEqual(uploadRef.relativePath, 'source-artifact');
+      assert.deepEqual(await artifacts.readTextInSession(sessionId, uploadRef.relativePath), {
+        ok: true,
+        text: 'retained bytes',
+      });
+    };
     const messages = await execution.sessionStore.readMessagesSnapshot(branchSessionId);
     assert.equal(messages.length, 3);
     const user = messages.find((message) => message.type === 'user');
@@ -1537,8 +1559,14 @@ async function verifyDurableBranch(
     assert.equal(ref?.kind, 'session_file');
     if (ref?.kind !== 'session_file') assert.fail('Copied attachment must remain session-backed');
     assert.equal(ref.sessionId, branchSessionId);
-    assert.notEqual(ref.relativePath, `${sourceSessionId}/source-artifact-source.txt`);
+    // The user-upload attachment ref carries the source artifact id; the copy
+    // must rewrite it to a fresh target artifact id, never leave the source id.
+    assert.notEqual(ref.relativePath, 'source-artifact');
     assert.equal((await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 })).total, 2);
+    assert.deepEqual(await artifacts.readTextInSession(branchSessionId, ref.relativePath), {
+      ok: true,
+      text: 'retained bytes',
+    });
     assert.deepEqual((await tasks.list(branchSessionId)).map((task) => task.subject).sort(), [
       'Legacy child task',
       'Retained task',
@@ -1562,6 +1590,7 @@ async function verifyDurableBranch(
       (await execution.sessionStore.readHeaderSnapshot(admittedRevisionTargetId)).revisionState,
       'committed',
     );
+    await assertCopiedUpload(admittedRevisionTargetId);
     assert.equal(
       (await execution.sessionStore.readHeaderSnapshot(lineageRevisionTargetId)).revisionState,
       'committed',
@@ -1602,6 +1631,7 @@ async function verifyDurableBranch(
         (message) => message.turnId !== 'active-source-turn',
       ),
     );
+    await assertCopiedUpload(activeSourceSideConversationTargetId);
     const sideConversationRuns = await execution.agentRunStore.listSessionRuns(
       graphSideConversationTargetId,
     );

@@ -27,7 +27,7 @@ The Work Board is a user-owned, local-first surface for deferred work. It is not
 execution authority:
 
 - no `task_*` tools, no `task.ledger.query`, and no `workflow_task_ledger_*` reads/writes;
-- no model-visible tools and no turn-tail injection;
+- no model-visible tools or automatic prompt injection;
 - no Goal, AgentRun, RuntimeEvent, or Agent Graph writes;
 - execution state is projected at read time, never copied into board storage.
 

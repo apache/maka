@@ -73,12 +73,13 @@ The workflow boundaries are:
 
 ### GitHub Environment
 
-The checked-in `.asf.yaml` is the authority for the `npm-publication` and `product-release`
+The checked-in `.asf.yaml` is the authority for the `npm-publication`, `nightly`, and `product-release`
 Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
 - a selected `main` branch rule for `npm-publication`, with no approval gate so the
   scheduled Nightly can publish automatically;
+- a selected `main` branch rule for `nightly`, with no approval gate so Desktop Nightly can publish automatically;
 - a selected `main` branch rule for `product-release`, with `M4n5ter` as required reviewer and
   self-review disabled;
 - administrator bypass disabled where repository policy permits it.

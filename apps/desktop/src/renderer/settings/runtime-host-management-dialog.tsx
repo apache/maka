@@ -84,12 +84,14 @@ export interface RuntimeHostManagementTarget {
   readonly id: string;
   readonly name: string;
   readonly subtitle?: string;
+  readonly scope: 'full' | 'project_directories';
   readonly directPeerManagement: boolean;
 }
 
 export function RuntimeHostManagementDialog(props: {
   readonly target: RuntimeHostManagementTarget | undefined;
   readonly onClose: () => void;
+  readonly onManagePeerMesh?: (target: RuntimeHostManagementTarget) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -152,7 +154,7 @@ export function RuntimeHostManagementDialog(props: {
       } catch (failure) {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
       }
-      if (shouldLoadUpdatePolicy) {
+      if (shouldLoadUpdatePolicy && target.scope === 'full') {
         try {
           const policy = await window.maka.runtimeHostManagement.getUpdatePolicy(target.id);
           if (!disposed) applyUpdatePolicy(policy);
@@ -163,7 +165,7 @@ export function RuntimeHostManagementDialog(props: {
           }
         }
       }
-      if (shouldLoadUpdatePolicy && target.directPeerManagement) {
+      if (shouldLoadUpdatePolicy && target.scope === 'full' && target.directPeerManagement) {
         try {
           const peer = await window.maka.runtimeHostManagement.getDirectPeer(target.id);
           if (!disposed) applyDirectPeer(peer);
@@ -230,7 +232,9 @@ export function RuntimeHostManagementDialog(props: {
       setResult(response);
       reconcileDirectoryPolicy(response.service);
       if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
-      else if (action !== 'logs') await reloadUpdatePolicy(target.id);
+      else if (target.scope === 'full' && action !== 'logs') {
+        await reloadUpdatePolicy(target.id);
+      }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setUpdatePolicy(undefined);
@@ -581,6 +585,7 @@ export function RuntimeHostManagementDialog(props: {
     directoryPolicyEdit !== undefined &&
     JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(directoryPolicyEdit.baseline.roots);
   const updateOutcome = lastUpdateOutcome;
+  const fullManagement = target?.scope === 'full';
   return (
     <Dialog
       isOpen={target !== undefined}
@@ -714,7 +719,7 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
-                  {serviceInstalled && target?.directPeerManagement ? (
+                  {serviceInstalled && fullManagement && target?.directPeerManagement ? (
                     <section className="settingsRuntimeHostDirectPeer">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">
                         <div>
@@ -813,6 +818,15 @@ export function RuntimeHostManagementDialog(props: {
                             />
                           </details>
                           <div className="settingsRuntimeHostUpdatePolicyActions">
+                            {target && props.onManagePeerMesh ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                label={copy.managePeerMesh}
+                                isDisabled={loading}
+                                onClick={() => props.onManagePeerMesh?.(target)}
+                              />
+                            ) : null}
                             <Button
                               variant="secondary"
                               size="sm"
@@ -856,7 +870,7 @@ export function RuntimeHostManagementDialog(props: {
                       ) : null}
                     </section>
                   ) : null}
-                  {serviceInstalled ? (
+                  {serviceInstalled && fullManagement ? (
                     <section className="settingsRuntimeHostUpdatePolicy">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">
                         <div>
@@ -1026,7 +1040,7 @@ export function RuntimeHostManagementDialog(props: {
                       </Text>
                     )}
                   </div>
-                  {result.action === 'logs' ? (
+                  {fullManagement && result.action === 'logs' ? (
                     <pre ref={logsRef} className="settingsRuntimeHostManagementLogs">
                       {result.logs || copy.noLogs}
                     </pre>
@@ -1243,7 +1257,7 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     onClick={props.onClose}
                   />
-                  {target && !uninstalled ? (
+                  {target && fullManagement && !uninstalled ? (
                     <MoreMenu
                       label={copy.moreActions(target.name)}
                       size="sm"
@@ -1276,14 +1290,14 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         onClick={() => void run('status')}
                       />
-                      {serviceInstalled && supervised && serviceActive ? (
+                      {fullManagement && serviceInstalled && supervised && serviceActive ? (
                         <Button
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
                           onClick={() => void run('restart')}
                         />
-                      ) : serviceInstalled && supervised ? (
+                      ) : fullManagement && serviceInstalled && supervised ? (
                         <Button
                           variant="primary"
                           label={copy.startService}

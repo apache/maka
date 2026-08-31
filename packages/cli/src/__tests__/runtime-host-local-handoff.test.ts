@@ -333,25 +333,14 @@ test('explicit npm-global restart claims an exact staged legacy takeover', async
       resolveCandidate: async () => TARGET,
       withPackage: async (_candidate, use) => use(sourcePackageRoot),
       prepareDeployment: prepareRuntimeHostPackageDeployment,
-      connectOrSpawn: async (input) => {
-        launchedEntrypoint = String(input.candidateEntrypoint);
-        const registration = hostRegistration({
-          hostEpoch: 'new-host',
-          pid: 84,
-          generation: input.generation,
-        });
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      activateTarget: async (input) => {
+        launchedEntrypoint = input.staged.candidateEntrypoint;
         return {
-          kind: 'connected',
-          registration,
-          spawnedProcess: {
-            pid: 84,
-            exited: new Promise(() => undefined),
+          kind: 'ready',
+          settle: async () => {
+            closed += 1;
           },
-          connection: {
-            close: async () => {
-              closed += 1;
-            },
-          } as never,
         };
       },
     },
@@ -390,26 +379,351 @@ test('legacy restart reports active work without claiming deployment authority',
       resolveCandidate: async () => TARGET,
       withPackage: async (_candidate, use) => use(sourcePackageRoot),
       prepareDeployment: prepareRuntimeHostPackageDeployment,
-      connectOrSpawn: async () => ({
-        kind: 'incompatible',
-        registration: observed,
-        handshake: {
-          kind: 'incompatible',
-          hostEpoch: observed.hostEpoch,
-          protocolMin: 0,
-          protocolMax: 0,
-          compatibilityEpoch: observed.compatibilityEpoch,
-          compositionId: observed.compositionId,
-          compositionRevision: observed.compositionRevision,
-          state: 'ready',
-          replacement: 'blocked_by_residency',
-        },
+      connectExisting: async () => incompatibleHost(observed),
+      activateTarget: async () => ({
+        kind: 'active_work',
+        settle: async () => undefined,
       }),
     },
   );
 
   assert.equal(result.kind, 'active_work');
   assert.equal(await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }), undefined);
+});
+
+test('external npm replacement retires through the exact source package and commits the target', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-reconcile-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+    sourceRetirementHelper: true,
+  });
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  const claimed = await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+  assert.equal(claimed.kind, 'applied');
+  const events: string[] = [];
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+      activeWorkPolicy: 'interrupt_active_work',
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: targetPackageRoot,
+          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (candidate, use) => {
+        assert.equal(candidate.version, TARGET.version);
+        return use(targetPackageRoot);
+      },
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      retireSource: async (input) => {
+        assert.match(input.sourceCliPath, /registry-[a-f0-9]{64}\/dist\/cli\.js$/u);
+        assert.equal(input.expectedHostEpoch, 'old-host');
+        assert.equal(input.activeWorkPolicy, 'interrupt_active_work');
+        events.push('source-retired');
+        return 'prepared';
+      },
+      activateTarget: async (input) => {
+        assert.equal(input.target.version, TARGET.version);
+        events.push('target-ready');
+        return {
+          kind: 'ready',
+          settle: async () => {
+            events.push('settled');
+          },
+        };
+      },
+    },
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.deepEqual(events, ['source-retired', 'target-ready', 'settled']);
+  const record = await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot });
+  assert.equal(record?.state.kind, 'owned');
+  assert.deepEqual(record?.state.selected, TARGET);
+});
+
+test('external source active work rolls back without launching the target', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-active-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+    sourceRetirementHelper: true,
+  });
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: targetPackageRoot,
+          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (candidate, use) => {
+        assert.equal(candidate.version, TARGET.version);
+        return use(targetPackageRoot);
+      },
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      retireSource: async () => 'active_work',
+      activateTarget: async () => assert.fail('active source work must prevent target activation'),
+    },
+  );
+
+  assert.equal(result.kind, 'active_work');
+  const record = await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot });
+  assert.deepEqual(record?.state, { kind: 'owned', owner: CLI_OWNER, selected: PREVIOUS });
+});
+
+test('pre-helper source release keeps the bounded idle-only takeover path', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-pre-helper-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version);
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+  let takeoverHostEpoch: string | undefined;
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: targetPackageRoot,
+          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (candidate, use) => {
+        assert.equal(candidate.version, TARGET.version);
+        return use(targetPackageRoot);
+      },
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      retireSource: async () => assert.fail('a pre-helper source must not run the new helper'),
+      activateTarget: async (input) => {
+        takeoverHostEpoch = input.takeoverHostEpoch;
+        return { kind: 'ready', settle: async () => undefined };
+      },
+    },
+  );
+
+  assert.equal(result.kind, 'completed');
+  assert.equal(takeoverHostEpoch, 'old-host');
+});
+
+test('source helper failure preserves the durable handoff for recovery', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-helper-failure-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+    sourceRetirementHelper: true,
+  });
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: targetPackageRoot,
+          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (candidate, use) => {
+        assert.equal(candidate.version, TARGET.version);
+        return use(targetPackageRoot);
+      },
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      retireSource: async () => {
+        throw new Error('source helper exited');
+      },
+      activateTarget: async () => assert.fail('a failed source helper must not launch the target'),
+    },
+  );
+
+  assert.equal(result.kind, 'recovery_required');
+  assert.equal(
+    result.kind === 'recovery_required' ? result.phase : undefined,
+    'prepare_host_cutover',
+  );
+  assert.equal(
+    (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
+    'handoff',
+  );
+});
+
+test('a Host epoch change after confirmation cannot retire the replacement process', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-host-race-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+    sourceRetirementHelper: true,
+  });
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => ({
+        owner: CLI_OWNER,
+        observedRelease: {
+          version: TARGET.version,
+          packageRoot: targetPackageRoot,
+          cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+        },
+      }),
+      resolveCandidate: async () => TARGET,
+      withPackage: async (_candidate, use) => use(targetPackageRoot),
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () =>
+        incompatibleHost(hostRegistration({ hostEpoch: 'replacement-host' })),
+      retireSource: async () => assert.fail('an unconfirmed replacement Host must not retire'),
+      activateTarget: async () => assert.fail('an unconfirmed replacement Host must remain'),
+    },
+  );
+
+  assert.equal(result.kind, 'recovery_required');
+  assert.equal(
+    result.kind === 'recovery_required' ? result.phase : undefined,
+    'prepare_host_cutover',
+  );
+  assert.equal(
+    (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
+    'handoff',
+  );
+});
+
+test('external reconciliation asks the activator to adjudicate when npm changes again', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-installation-race-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const sourcePackageRoot = await selfContainedPackage(base, PREVIOUS.version, {
+    sourceRetirementHelper: true,
+  });
+  const targetPackageRoot = await selfContainedPackage(base, TARGET.version);
+  const authorityRoot = join(base, 'authority');
+  await stageSelectedPackage(base, sourcePackageRoot);
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+  let installationReads = 0;
+  let settlementRequested = false;
+
+  const result = await restartRuntimeHostNpmGlobalDeployment(
+    {
+      rootPath: join(base, 'root'),
+      registration: hostRegistration(),
+      deploymentPathOptions: { platform: 'linux', homeDir: join(base, 'home') },
+    },
+    { authorityRoot },
+    {
+      resolveInstallation: async () => {
+        installationReads += 1;
+        return {
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: installationReads === 1 ? TARGET.version : '3.0.0',
+            packageRoot: targetPackageRoot,
+            cliPath: join(targetPackageRoot, 'dist', 'cli.js'),
+          },
+        };
+      },
+      resolveCandidate: async () => TARGET,
+      withPackage: async (candidate, use) => {
+        assert.equal(candidate.version, TARGET.version);
+        return use(targetPackageRoot);
+      },
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+      connectExisting: async () => incompatibleHost(hostRegistration()),
+      retireSource: async () => 'prepared',
+      activateTarget: async () => ({
+        kind: 'ready',
+        settle: async () => {
+          settlementRequested = true;
+        },
+      }),
+    },
+  );
+
+  assert.equal(result.kind, 'recovery_required');
+  assert.equal(result.kind === 'recovery_required' ? result.phase : undefined, 'finalize_target');
+  assert.equal(settlementRequested, true);
+  assert.equal(
+    (await readLocalHostDeploymentRecord(ROOT_ID, { authorityRoot }))?.state.kind,
+    'handoff',
+  );
 });
 
 test('local restart keeps service Hosts under operator authority', async () => {
@@ -463,7 +777,97 @@ test('committed target conflicting with the observed Host fails closed', async (
   );
 });
 
-async function selfContainedPackage(base: string, version: string): Promise<string> {
+test('external npm replacement rejects a different durable source owner before staging', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-owner-mismatch-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const authorityRoot = join(base, 'authority');
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: DESKTOP_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+
+  await assert.rejects(
+    restartRuntimeHostNpmGlobalDeployment(
+      { rootPath: join(base, 'root'), registration: hostRegistration() },
+      { authorityRoot },
+      {
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: TARGET.version,
+            packageRoot: base,
+            cliPath: join(base, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => assert.fail('cross-owner replacement must not resolve'),
+        withPackage: async () => assert.fail('cross-owner replacement must not stage a target'),
+        connectExisting: async () => assert.fail('cross-owner replacement must not observe a Host'),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostLocalHandoffError && error.code === 'source_owner_mismatch',
+  );
+});
+
+test('external npm downgrade is rejected before staging or retirement', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-external-downgrade-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const authorityRoot = join(base, 'authority');
+  await applyLocalHostDeploymentTransition(
+    ROOT_ID,
+    { kind: 'claim', owner: CLI_OWNER, selected: PREVIOUS },
+    { authorityRoot },
+  );
+  const downgrade = {
+    kind: 'npm_registry' as const,
+    version: '0.9.0',
+    integrity: `sha512-${Buffer.alloc(64, 9).toString('base64')}`,
+  };
+
+  await assert.rejects(
+    restartRuntimeHostNpmGlobalDeployment(
+      { rootPath: join(base, 'root'), registration: hostRegistration() },
+      { authorityRoot },
+      {
+        resolveInstallation: async () => ({
+          owner: CLI_OWNER,
+          observedRelease: {
+            version: downgrade.version,
+            packageRoot: base,
+            cliPath: join(base, 'dist', 'cli.js'),
+          },
+        }),
+        resolveCandidate: async () => downgrade,
+        withPackage: async () => assert.fail('a downgrade must not be staged'),
+      },
+    ),
+    (error: unknown) =>
+      error instanceof RuntimeHostLocalHandoffError && error.code === 'unsupported_downgrade',
+  );
+});
+
+async function stageSelectedPackage(base: string, sourcePackageRoot: string): Promise<void> {
+  await stageRuntimeHostNpmGlobalDeploymentTarget(
+    {
+      rootId: ROOT_ID,
+      owner: CLI_OWNER,
+      target: PREVIOUS,
+      transactionId: 'selected-source',
+    },
+    { platform: 'linux', homeDir: join(base, 'home') },
+    {
+      withPackage: async (_candidate, use) => use(sourcePackageRoot),
+      prepareDeployment: prepareRuntimeHostPackageDeployment,
+    },
+  );
+}
+
+async function selfContainedPackage(
+  base: string,
+  version: string,
+  options: { readonly sourceRetirementHelper?: boolean } = {},
+): Promise<string> {
   const root = join(base, `source-${version}`);
   const runtimeHostRoot = join(root, 'node_modules', '@maka', 'runtime-host');
   await Promise.all([
@@ -473,6 +877,9 @@ async function selfContainedPackage(base: string, version: string): Promise<stri
   await Promise.all([
     writeFile(join(root, 'package.json'), JSON.stringify({ name: 'maka-agent', version })),
     writeFile(join(root, 'dist', 'cli.js'), ''),
+    ...(options.sourceRetirementHelper
+      ? [writeFile(join(root, 'dist', 'runtime-host-local-source-retirement.js'), '')]
+      : []),
     writeFile(join(runtimeHostRoot, 'package.json'), '{}'),
     writeFile(join(runtimeHostRoot, 'dist', 'execution-candidate-main.js'), ''),
   ]);
@@ -496,5 +903,23 @@ function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegist
     pid: 42,
     createdAt: new Date(0).toISOString(),
     ...overrides,
+  };
+}
+
+function incompatibleHost(registration: HostRegistration) {
+  return {
+    kind: 'incompatible' as const,
+    registration,
+    handshake: {
+      kind: 'incompatible' as const,
+      hostEpoch: registration.hostEpoch,
+      protocolMin: 0,
+      protocolMax: 0,
+      compatibilityEpoch: registration.compatibilityEpoch,
+      compositionId: registration.compositionId,
+      compositionRevision: registration.compositionRevision,
+      state: 'ready' as const,
+      replacement: 'blocked_by_residency' as const,
+    },
   };
 }

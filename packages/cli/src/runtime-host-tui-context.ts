@@ -49,6 +49,7 @@ import {
   resolveRuntimeHostCliTarget,
 } from './runtime-host-cli-context.js';
 import type {
+  ConnectionIdentity,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -59,6 +60,7 @@ import {
 } from './runtime-host-session-driver.js';
 import {
   createRuntimeHostOnboardingSurface,
+  projectRuntimeHostConnectionIdentities,
   projectRuntimeHostModelChoices,
 } from './runtime-host-onboarding.js';
 import {
@@ -73,11 +75,7 @@ export interface RuntimeHostTuiContext {
   readonly cwd: string;
   readonly connectionSlug: string;
   readonly connectionId?: string;
-  readonly connectionIdentities: readonly {
-    readonly connectionId: string;
-    readonly connectionSlug: string;
-    readonly enabled: boolean;
-  }[];
+  readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
   readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
@@ -181,11 +179,7 @@ export async function createRuntimeHostTuiContext(
       ...(selectedTarget.connectionId === undefined
         ? {}
         : { connectionId: selectedTarget.connectionId }),
-      connectionIdentities: catalog.connections.map((entry) => ({
-        connectionId: entry.connectionId,
-        connectionSlug: entry.slug,
-        enabled: entry.enabled,
-      })),
+      connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
       ...(selectedTarget.connection
         ? { providerType: selectedTarget.connection.providerType }
