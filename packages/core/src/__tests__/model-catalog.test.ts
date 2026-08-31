@@ -358,7 +358,6 @@ test('catalog provenance follows the projected model facts marker used in produc
       modelSource: 'fetched',
     },
   });
-  assert.equal(entry?.capabilitySource, 'user_override');
   assert.equal(entry?.contextWindow, 200_000);
 });
 
@@ -380,7 +379,6 @@ test('fallback provider catalogs include projected facts-backed models', () => {
   });
   const entry = entries.find((candidate) => candidate.id === 'custom-free-model');
   assert.equal(entry?.contextWindow, 128_000);
-  assert.equal(entry?.capabilitySource, 'user_override');
 });
 
 test('fallback provider catalogs apply facts to known fallback models', () => {
@@ -404,7 +402,6 @@ test('fallback provider catalogs apply facts to known fallback models', () => {
   const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
   assert.equal(entry?.contextWindow, 200_000);
   assert.equal(entry?.inputLimit, 200_000);
-  assert.equal(entry?.capabilitySource, 'user_override');
 });
 
 test('unknown persisted provider ids return an empty catalog', () => {

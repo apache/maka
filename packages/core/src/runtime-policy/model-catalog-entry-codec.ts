@@ -37,7 +37,6 @@ import {
 } from './domain-codec.js';
 
 const ENTRY_SOURCES = ['provider_api', 'static_catalog', 'unknown'] as const;
-const CAPABILITY_SOURCES = [...ENTRY_SOURCES, 'user_override'] as const;
 const UNAVAILABLE_REASONS = [
   'none',
   'not_in_live_list',
@@ -83,7 +82,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'providerType',
       'connectionSlug',
       'source',
-      'capabilitySource',
       'unavailableReason',
       'availability',
       'canUseAsChatDefault',
@@ -91,7 +89,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'capabilities',
       'thinkingLevels',
       'lifecycle',
-      'recommendedRank',
       'docsUrl',
       'contextWindow',
       'inputLimit',
@@ -107,7 +104,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'id',
       'providerType',
       'source',
-      'capabilitySource',
       'unavailableReason',
       'availability',
       'canUseAsChatDefault',
@@ -142,7 +138,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       ? {}
       : { connectionSlug: nonEmptyStringValue(item.connectionSlug, 'entry connection slug', 128) }),
     source: oneOf(item.source, ENTRY_SOURCES, 'entry source'),
-    capabilitySource: oneOf(item.capabilitySource, CAPABILITY_SOURCES, 'entry capability source'),
     unavailableReason: oneOf(
       item.unavailableReason,
       UNAVAILABLE_REASONS,
@@ -154,11 +149,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
     capabilities: decodeKnownCapabilities(item.capabilities),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
     lifecycle: oneOf<ModelCatalogLifecycle>(item.lifecycle, LIFECYCLES, 'entry lifecycle'),
-    ...(item.recommendedRank === undefined
-      ? {}
-      : {
-          recommendedRank: integerValue(item.recommendedRank, 'entry recommended rank', 1, 4096),
-        }),
     ...(item.docsUrl === undefined
       ? {}
       : { docsUrl: nonEmptyStringValue(item.docsUrl, 'entry docs URL', 2048) }),

@@ -47,8 +47,6 @@ import {
 } from './model-thinking.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
 
-export type ModelCapabilitySource = 'provider_api' | 'static_catalog' | 'user_override' | 'unknown';
-
 export type ModelUnavailableReason =
   | 'none'
   | 'not_in_live_list'
@@ -110,7 +108,6 @@ export interface ModelCatalogEntry {
   providerType: ProviderType;
   connectionSlug?: string;
   source: 'provider_api' | 'static_catalog' | 'unknown';
-  capabilitySource: ModelCapabilitySource;
   unavailableReason: ModelUnavailableReason;
   availability: ModelCatalogAvailability;
   canUseAsChatDefault: boolean;
@@ -126,7 +123,6 @@ export interface ModelCatalogEntry {
    */
   thinkingLevels: readonly ThinkingLevel[];
   lifecycle: ModelCatalogLifecycle;
-  recommendedRank?: number;
   docsUrl?: string;
   contextWindow?: number;
   inputLimit?: number;
@@ -214,7 +210,6 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
     modelSource: input.modelSource,
   });
   const normalizedDefaultModel = input.defaultModel?.trim();
-  const recommendedRanks = recommendedRanksForProvider(input.providerType, input.fallbackModels);
   const source = inventory === 'live' ? 'provider_api' : 'static_catalog';
   // An empty array without a successful discovery source is the persisted
   // shape of a failed or not-yet-run discovery. It must not hide the static
@@ -233,7 +228,6 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
     modelSource,
     savedChoiceSources,
     normalizedDefaultModel,
-    recommendedRanks,
   };
   const seen = new Set<string>();
   const entries = rawModels
@@ -424,7 +418,6 @@ interface EntryContext {
   readonly modelSource: ModelDiscoverySource;
   readonly savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>;
   readonly normalizedDefaultModel: string | undefined;
-  readonly recommendedRanks: ReadonlyMap<string, number>;
 }
 
 /**
@@ -446,11 +439,10 @@ function makeEntry(
   source: ModelCatalogEntry['source'],
   overrides: EntryOverrides = {},
 ): ModelCatalogEntry {
-  const { input, modelSource, savedChoiceSources, normalizedDefaultModel, recommendedRanks } = ctx;
+  const { input, modelSource, savedChoiceSources, normalizedDefaultModel } = ctx;
   const normalizedModel = { ...model, id: model.id.trim() };
   const pricing = findPricing(input, normalizedModel.id);
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
-  const recommendedRank = recommendedRanks.get(normalizedModel.id);
   const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
   const inputLimit = normalizedModel.inputLimit ?? metadata.inputLimit;
   const maxOutputTokens = normalizedModel.maxOutputTokens ?? metadata.maxOutputTokens;
@@ -494,13 +486,6 @@ function makeEntry(
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
-    capabilitySource: normalizedModel.factOverriddenFields?.includes('capabilities')
-      ? 'user_override'
-      : normalizedModel.capabilities
-        ? source
-        : metadata.capabilities
-          ? 'static_catalog'
-          : 'unknown',
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
@@ -508,7 +493,6 @@ function makeEntry(
     capabilities: normalizeCapabilities(capabilities),
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
     lifecycle: metadata.lifecycle ?? 'unknown',
-    ...(recommendedRank ? { recommendedRank } : {}),
     ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(inputLimit !== undefined ? { inputLimit } : {}),
@@ -603,20 +587,6 @@ function provenanceSources(
       : {}),
     ...(userChoice.length > 0 ? { userChoice } : {}),
   };
-}
-
-function recommendedRanksForProvider(
-  providerType: ProviderType,
-  fallbackModels: readonly string[] | undefined,
-): Map<string, number> {
-  const ids = curatedCatalogFallbackModelsForProvider(providerType) ?? fallbackModels ?? [];
-  const result = new Map<string, number>();
-  for (const id of ids) {
-    const trimmed = id.trim();
-    if (!trimmed || result.has(trimmed)) continue;
-    result.set(trimmed, result.size + 1);
-  }
-  return result;
 }
 
 function userChoiceSources(
