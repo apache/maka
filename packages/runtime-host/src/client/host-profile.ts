@@ -1013,13 +1013,15 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
   ): Promise<boolean> {
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
-    const current = await this.#readSnapshot();
-    const profile = current.profiles.find(
-      (candidate): candidate is RemoteRuntimeHostProfile =>
-        candidate.id === expectedProfile.id && candidate.kind === 'remote',
-    );
-    if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
-    return (await this.credentials.get(profile))?.profileIncarnationId === expectedIncarnationId;
+    return this.#exclusive(async () => {
+      const current = await this.#readSnapshot();
+      const profile = current.profiles.find(
+        (candidate): candidate is RemoteRuntimeHostProfile =>
+          candidate.id === expectedProfile.id && candidate.kind === 'remote',
+      );
+      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+      return (await this.credentials.get(profile))?.profileIncarnationId === expectedIncarnationId;
+    });
   }
 
   async #removeProfile(

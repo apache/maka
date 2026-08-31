@@ -552,6 +552,45 @@ describe('Runtime Host profiles', () => {
     assert.equal(await providers.get(incarnation, 'owner-a'), null);
   });
 
+  test('profile incarnation validation waits for removal rollback', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const stored = createRuntimeHostProfileCredentialStore(credentialStore);
+    const removalStarted = deferred();
+    const allowRemovalFailure = deferred();
+    const credentials: RuntimeHostProfileCredentialStore = {
+      ...stored,
+      delete: async () => {
+        removalStarted.resolve();
+        await allowRemovalFailure.promise;
+        throw new Error('credential store unavailable');
+      },
+    };
+    const removingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const validatingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await removingCatalog.save(profile, 'terminal-token');
+    const resolved = await removingCatalog.resolve(profile.id);
+    assert.ok(resolved.profileIncarnationId);
+    const incarnation = { profile, profileIncarnationId: resolved.profileIncarnationId };
+
+    const removal = removingCatalog.remove(profile.id);
+    await removalStarted.promise;
+    let validationSettled = false;
+    const validation = validatingCatalog
+      .isRemoteProfileIncarnationCurrent(incarnation)
+      .then((current) => {
+        validationSettled = true;
+        return current;
+      });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(validationSettled, false);
+
+    allowRemovalFailure.resolve();
+    await assert.rejects(removal, /credential store unavailable/u);
+    assert.equal(await validation, true);
+  });
+
   test('recreating the same profile id and target assigns a new incarnation', async () => {
     const path = await profilePath();
     const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
