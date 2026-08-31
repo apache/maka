@@ -80,17 +80,20 @@ export function encodeDurableToolResultOutputWithArtifacts(
   }
   return (async () => {
     try {
+      const decodedImages = output.value.map((part) =>
+        part.type === 'file' &&
+        part.data.type === 'data' &&
+        part.mediaType.toLowerCase().startsWith('image/')
+          ? decodeBoundedImageData(part.data.data)
+          : undefined,
+      );
       const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
-      for (const part of output.value) {
-        if (
-          part.type !== 'file' ||
-          part.data.type !== 'data' ||
-          !part.mediaType.toLowerCase().startsWith('image/')
-        ) {
+      for (const [index, part] of output.value.entries()) {
+        const bytes = decodedImages[index];
+        if (!bytes || part.type !== 'file') {
           value.push(part);
           continue;
         }
-        const bytes = decodeBoundedImageData(part.data.data);
         const ref = await persistArtifact({ bytes, mediaType: part.mediaType });
         value.push({ ...part, data: { ref } } as never);
       }

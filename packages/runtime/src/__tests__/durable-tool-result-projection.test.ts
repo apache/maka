@@ -24,6 +24,7 @@ import {
   decodeEffectiveToolResultProjection,
   encodeDefaultDurableToolResultOutput,
   encodeDurableToolResultOutput,
+  encodeDurableToolResultOutputWithArtifacts,
 } from '../durable-tool-result-projection.js';
 
 describe('durable Tool Result projection codec', () => {
@@ -118,6 +119,39 @@ describe('durable Tool Result projection codec', () => {
     );
 
     assert.equal(projection.kind, 'failure');
+  });
+
+  it('validates every inline image before persisting any projection artifact', async () => {
+    let writes = 0;
+    const projection = await encodeDurableToolResultOutputWithArtifacts(
+      {
+        type: 'content',
+        value: [
+          {
+            type: 'file',
+            data: { type: 'data', data: Buffer.from('valid').toString('base64') },
+            mediaType: 'image/png',
+          },
+          {
+            type: 'file',
+            data: { type: 'data', data: 'not-canonical-base64' },
+            mediaType: 'image/png',
+          },
+        ],
+      },
+      'session-1',
+      async () => {
+        writes += 1;
+        return {
+          kind: 'session_file',
+          sessionId: 'session-1',
+          relativePath: 'artifact-1',
+        };
+      },
+    );
+
+    assert.equal(projection.kind, 'failure');
+    assert.equal(writes, 0);
   });
 
   it('validates default image refs through the same closed schema', () => {
