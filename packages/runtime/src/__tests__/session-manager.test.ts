@@ -13386,10 +13386,15 @@ class MissingCheckpointProjectionAgentRunStore extends MemoryAgentRunStore {
     return undefined;
   }
 
+  async readEventLedgerRevision(): Promise<string> {
+    return 'missing-checkpoint-projection-test-revision';
+  }
+
   async repairEventProjection(
     _sessionId: string,
     _type: AgentRunEvent['type'],
     event: AgentRunEvent | null,
+    _options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void> {
     this.repairedProjection = event;
   }
