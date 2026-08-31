@@ -18,8 +18,8 @@
  */
 
 /**
- * Renderer-side normalization and recovery presentation. Actionable blocked
- * reasons are shared with the sidebar's priority ordering in @maka/ui.
+ * Renderer-side presentation rules that only Desktop has: which blocked reasons
+ * are worth acting on, and what to offer after a turn fails.
  *
  * Separated from the React component layer so the rules can be unit-tested
  * without a DOM, mirroring the `session-health-notice.ts` pattern.
@@ -34,11 +34,30 @@
  */
 
 import { SANDBOX_BOUNDARY_RESTART_CLOSURE_CLASS } from '@maka/core/sandbox-boundary';
-import type { SessionSummary } from '@maka/core/session';
-import { isActionableBlocked } from '@maka/ui';
+import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
+
+/**
+ * Session-level "blocked" is only worth interrupting the user when
+ * they can ACT on it: configure a connection, re-login, or confirm a
+ * permission. `tool_failed` / `unknown` mean "the last run's bookkeeping
+ * didn't close cleanly" — the conversation itself is intact and
+ * retryable, and the failure detail already surfaces on the failed
+ * turn inside the chat. Runtime keeps writing the strict status (the
+ * #397/#410 terminal-fact invariant is untouched); this is a
+ * display-layer distinction only.
+ */
+const ACTIONABLE_BLOCKED_REASONS: ReadonlySet<SessionBlockedReason> = new Set([
+  'NO_REAL_CONNECTION',
+  'auth',
+  'permission_required',
+]);
+
+export function isActionableBlocked(reason: SessionBlockedReason | undefined): boolean {
+  return reason !== undefined && ACTIONABLE_BLOCKED_REASONS.has(reason);
+}
 
 /**
  * Normalize a SessionSummary as it enters renderer state. Authoritative
