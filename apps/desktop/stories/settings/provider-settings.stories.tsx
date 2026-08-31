@@ -214,6 +214,37 @@ const problemConnections = [
   }),
 ];
 
+const oauthConnections = [
+  makeConnection({
+    slug: 'openai-codex',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-2',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-3',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'xai-oauth',
+    name: 'xAI Grok',
+    providerType: 'xai-oauth',
+    defaultModel: 'grok-4',
+    lastTestStatus: 'verified',
+  }),
+];
+
 function createBridge(input: {
   connections?: IdentifiedLlmConnection[];
   defaultSlug?: string | null;
@@ -329,9 +360,14 @@ function installSubscriptionFixtures() {
 }
 
 function xaiDeviceSubscriptionFixture() {
+  const connection = {
+    connectionId: 'connection-xai-oauth-2',
+    slug: 'xai-oauth-2',
+    providerType: 'xai-oauth' as const,
+  };
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
-    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH', connection }),
     openAuthUrl: async () => ({ ok: true }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
     cancelAuthorization: async () => ({ ok: true }),
@@ -345,11 +381,16 @@ function browserSubscriptionFixture(state: {
   plan?: string;
   errorMessage?: string;
 }) {
+  const connection = {
+    connectionId: 'connection-openai-codex-4',
+    slug: 'openai-codex-4',
+    providerType: 'openai-codex' as const,
+  };
   return {
     getAccountState: async () => state,
-    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook' }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook', connection }),
     openAuthUrl: async () => ({ ok: true }),
-    completeAuthorization: async () => ({ ok: true }),
+    completeAuthorization: async () => ({ ok: true, connection }),
     cancelAuthorization: async () => ({ ok: true }),
     logout: async () => ({ ok: true }),
   };
@@ -599,6 +640,51 @@ export const AddConnectionCatalog: Story = {
       autoOpen="catalog"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接. OAuth rows are enrollment intents and
+// describe the number of configured Connection entities, never provider-wide
+// login state.
+export const OAuthCatalogNoAccounts: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} autoOpen="catalog" />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('使用 ChatGPT Plus / Pro 账号添加连接。')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogOneAccount: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections.slice(0, 1) })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogMultipleAccounts: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 3 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthConnectionsDisambiguated: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: oauthConnections })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText('OpenAI Codex · openai-codex')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-2')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-3')).resolves.toBeTruthy();
+  },
 };
 
 // Real path: 设置 → 模型 → 添加连接 → pick a provider — level three, its form.
