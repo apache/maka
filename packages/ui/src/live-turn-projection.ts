@@ -18,6 +18,7 @@
  */
 
 import {
+  ASSISTANT_PROGRESS_TOOL_NAME,
   decodeToolStepProgress,
   type AssistantTextPhase,
   type MessageContent,
@@ -110,6 +111,8 @@ export interface LiveTurnProjection {
    */
   unconfirmed?: true;
   providerRetry?: LiveProviderRetry;
+  /** Runtime compatibility tools hidden from the user-facing activity log. */
+  hiddenToolUseIds?: string[];
   steps: LiveTurnStepProjection[];
 }
 
@@ -267,6 +270,19 @@ export function applyLiveTurnEvent(
     ? current
     : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
   const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
+  if (event.type === 'tool_start' && event.toolName === ASSISTANT_PROGRESS_TOOL_NAME) {
+    const hiddenToolUseIds = prior.hiddenToolUseIds?.includes(event.toolUseId)
+      ? prior.hiddenToolUseIds
+      : [...(prior.hiddenToolUseIds ?? []), event.toolUseId];
+    return { ...priorWithoutRetry, hiddenToolUseIds };
+  }
+  if (
+    event.type !== 'tool_start' &&
+    'toolUseId' in event &&
+    prior.hiddenToolUseIds?.includes(event.toolUseId)
+  ) {
+    return priorWithoutRetry;
+  }
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
     || event.type === 'text_delta'

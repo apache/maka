@@ -19,6 +19,7 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { ASSISTANT_PROGRESS_TOOL_NAME } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   materializeChat,
@@ -379,6 +380,44 @@ test('retains persisted nested tool activity identity', () => {
     parentToolCallId: 'exec-1',
     parentOperationId: 'exec-operation-1',
   });
+});
+
+test('hides the persisted progress transport while preserving commentary text', () => {
+  const messages: StoredMessage[] = [
+    userMsg('turn-1', 1, 'inspect the repository'),
+    {
+      type: 'assistant',
+      id: 'commentary-1',
+      turnId: 'turn-1',
+      ts: 2,
+      text: 'I am checking the recent repository activity.',
+      phase: 'commentary',
+      modelId: 'fixture',
+    },
+    {
+      type: 'tool_call',
+      id: 'progress-1',
+      turnId: 'turn-1',
+      ts: 3,
+      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+      args: { text: 'I am checking the recent repository activity.' },
+      stepId: 'commentary-1',
+    },
+    {
+      type: 'tool_result',
+      id: 'progress-result-1',
+      turnId: 'turn-1',
+      ts: 4,
+      toolUseId: 'progress-1',
+      isError: false,
+      content: { kind: 'json', value: { status: 'displayed' } },
+    },
+  ];
+
+  assert.deepEqual(materializeTools(messages), []);
+  assert.deepEqual(timelineText(materializeTurns(messages)[0]), [
+    'text:I am checking the recent repository activity.',
+  ]);
 });
 
 function shellRunResult(revision: number) {

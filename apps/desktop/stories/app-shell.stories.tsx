@@ -550,7 +550,7 @@ export const StreamingTurn: Story = {
 // attribute, and the elapsed clock is dropped rather than pinned under it,
 // because any value it could print is a real wall-clock difference that would
 // differ between two captures. In the app the same row reads
-// "正在琢磨… · 2m 1s", with the phrase swapping every 20s.
+// "等待模型输出… · 2m 1s".
 export const RunningStatusDuringToolRun: Story = {
   render: () => (
     <ComposedShell
@@ -761,7 +761,7 @@ export const ProviderRateLimited: Story = {
 };
 
 // Real path: the provider throttles a live request and Runtime schedules a
-// retry. The running turn swaps its working phrase for the retry Banner
+// retry. The running turn swaps its waiting status for the retry Banner
 // (`ModelProviderRetryIndicator`) — the "retrying" state no story reached.
 export const ProviderRetrying: Story = {
   render: () => (
@@ -855,7 +855,7 @@ export const ManyTurns: Story = {
 // Real path: Desktop Computer Use is exposed through the Runtime Host Client
 // Capability bridge. The settled observation establishes the confirmed target;
 // the following sequence inherits it while live progress replaces the generic
-// working phrase at the bottom of the turn.
+// waiting status at the bottom of the turn.
 export const ComputerUseObservability: Story = {
   render: () => (
     <ComposedShell

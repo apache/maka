@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { ASSISTANT_PROGRESS_TOOL_NAME } from '@maka/core/events';
 import type { PipeShellOutput, PtyShellOutput } from '@maka/core/shell-run';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
 import type { SessionEvent, ShellRunSnapshotResult, ToolResultContent } from '@maka/core/events';
@@ -53,6 +54,81 @@ function toolStatus(entry: MakaPiToolEntry | undefined): string | undefined {
 }
 
 describe('Maka Pi TUI transcript', () => {
+  test('renders commentary without exposing the progress transport tool', () => {
+    const state = createMakaPiTranscriptState();
+    appendUserPrompt(state, 'inspect the repository', 'message-1', true);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'text_delta',
+        messageId: 'step-1',
+        text: 'I am checking the recent repository activity.',
+        phase: 'commentary',
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        stepId: 'step-1',
+        toolUseId: 'progress-1',
+        toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+        args: { text: 'I am checking the recent repository activity.' },
+      }),
+    );
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'progress-1',
+        isError: false,
+        content: { kind: 'json', value: { status: 'displayed' } },
+      }),
+    );
+
+    assert.deepEqual(
+      state.entries.map((entry) => entry.kind),
+      ['user', 'assistant'],
+    );
+    assert.equal(
+      state.entries[1]?.kind === 'assistant' ? state.entries[1].phase : undefined,
+      'commentary',
+    );
+  });
+
+  test('omits empty durable assistant steps between thinking and tools', () => {
+    const state = createMakaPiTranscriptState();
+    replaceTranscriptWithStoredMessages(state, [
+      {
+        type: 'assistant',
+        id: 'assistant-1',
+        turnId: 'turn-1',
+        ts: 1,
+        text: '',
+        thinking: { text: 'Need to inspect the file.' },
+        modelId: 'model-1',
+      },
+      {
+        type: 'tool_call',
+        id: 'read-1',
+        turnId: 'turn-1',
+        ts: 2,
+        toolName: 'Read',
+        args: { path: 'package.json' },
+      },
+    ]);
+
+    assert.deepEqual(
+      state.entries.map((entry) => entry.kind),
+      ['thinking', 'tool'],
+    );
+    const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi);
+    const thinkingIndex = rendered.findIndex((line) => line.includes('Thinking…'));
+    const toolIndex = rendered.findIndex((line) => line.includes('Read'));
+    assert.equal(toolIndex - thinkingIndex, 2);
+  });
+
   test('renders manual compaction from the typed terminal outcome', async () => {
     for (const [outcome, expected] of [
       [{ kind: 'compacted' as const, checkpointId: 'checkpoint-1' }, 'Context compacted.'],

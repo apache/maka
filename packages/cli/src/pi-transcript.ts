@@ -18,16 +18,17 @@
  */
 
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
-import type {
-  AssistantTextPhase,
-  ProviderRetryEvent,
-  ProviderRetryScheduledEvent,
-  SandboxBoundaryRequestEvent,
-  UserQuestionRequestEvent,
-  SessionEvent,
-  ShellRunSnapshotResult,
-  ToolOutputStream,
-  ToolResultContent,
+import {
+  ASSISTANT_PROGRESS_TOOL_NAME,
+  type AssistantTextPhase,
+  type ProviderRetryEvent,
+  type ProviderRetryScheduledEvent,
+  type SandboxBoundaryRequestEvent,
+  type UserQuestionRequestEvent,
+  type SessionEvent,
+  type ShellRunSnapshotResult,
+  type ToolOutputStream,
+  type ToolResultContent,
 } from '@maka/core/events';
 import {
   deriveTurnRecords,
@@ -815,9 +816,10 @@ export function applyMakaSessionEventToTranscript(
       // renders normally and the tool_result fold below still applies.
       const ref = event.shellRunRef ?? readArgsRef(event.args);
       const suppressed =
-        (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
-        !!ref &&
-        !!findShellRunParent(state, ref, event.toolUseId);
+        event.toolName === ASSISTANT_PROGRESS_TOOL_NAME ||
+        ((event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
+          !!ref &&
+          !!findShellRunParent(state, ref, event.toolUseId));
       state.entries.push({
         kind: 'tool',
         turnId: event.turnId,
@@ -841,6 +843,10 @@ export function applyMakaSessionEventToTranscript(
 
     case 'tool_result': {
       const tool = findToolEntry(state, event.toolUseId);
+      if (tool && tool.toolName === ASSISTANT_PROGRESS_TOOL_NAME) {
+        state.entries.splice(state.entries.indexOf(tool), 1);
+        break;
+      }
       if (tool?.suppressed && event.contentOmitted && !event.isError) {
         state.entries.splice(state.entries.indexOf(tool), 1);
         break;
@@ -1088,15 +1094,18 @@ function storedMessagesToTranscriptEntries(
             expanded: false,
           });
         }
-        entries.push({
-          kind: 'assistant',
-          messageId: message.id,
-          text: message.text,
-          ...(message.phase !== undefined ? { phase: message.phase } : {}),
-        });
+        if (message.text.trim()) {
+          entries.push({
+            kind: 'assistant',
+            messageId: message.id,
+            text: message.text,
+            ...(message.phase !== undefined ? { phase: message.phase } : {}),
+          });
+        }
         break;
       }
       case 'tool_call':
+        if (message.toolName === ASSISTANT_PROGRESS_TOOL_NAME) break;
         entries.push(
           storedToolToTranscriptEntry(
             message,
@@ -1528,7 +1537,7 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
       case 'goal_continuation':
         return renderGoalContinuationBlock(entry.text, contentWidth);
       case 'assistant':
-        return renderAssistantBlock(entry.text, contentWidth);
+        return renderAssistantBlock(entry.text, contentWidth, entry.phase);
       case 'thinking':
         return renderThinkingBlock(entry, contentWidth, entry.expanded);
       case 'tool':
@@ -1565,7 +1574,7 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
     case 'assistant':
       // text_complete authoritatively replaces streamed text, including with a
       // same-length final, so the full value must participate in the cache key.
-      return `assistant|${width}|${entry.text}`;
+      return `assistant|${width}|${entry.phase ?? ''}|${entry.text}`;
     case 'thinking':
       // Not just the length: `thinking_complete` can replace the streamed text
       // in place with a same-length final, which a length-only key would miss and
@@ -2183,11 +2192,14 @@ function renderGoalContinuationBlock(text: string, width: number): string[] {
 }
 
 /** An assistant turn: bare markdown prose, no speaker label or indent. */
-function renderAssistantBlock(text: string, width: number): string[] {
+function renderAssistantBlock(text: string, width: number, phase?: AssistantTextPhase): string[] {
   if (!text.trim()) return [];
-  return new Markdown(text, 0, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
+  const lines = new Markdown(text, 0, 0, markdownTheme, undefined, {
+    preserveOrderedListMarkers: true,
+  })
     .render(width)
     .map((line) => fitLine(line, width));
+  return phase === 'commentary' ? lines.map(ansi.muted) : lines;
 }
 
 function renderNotice(entry: MakaPiNoticeEntry, width: number): string[] {

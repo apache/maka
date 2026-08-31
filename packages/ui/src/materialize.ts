@@ -26,16 +26,17 @@ import {
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
-import type {
-  AssistantTextPhase,
-  AttachmentRef,
-  InlineReference,
-  MessageContent,
-  QuoteRef,
-  ShellRunUpdate,
-  ToolActivityKind,
-  ToolResultContent,
-  ToolStepProgress,
+import {
+  ASSISTANT_PROGRESS_TOOL_NAME,
+  type AssistantTextPhase,
+  type AttachmentRef,
+  type InlineReference,
+  type MessageContent,
+  type QuoteRef,
+  type ShellRunUpdate,
+  type ToolActivityKind,
+  type ToolResultContent,
+  type ToolStepProgress,
 } from '@maka/core/events';
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
@@ -205,7 +206,12 @@ export function materializeTools(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
   return messages
-    .filter((message) => message.type === "tool_call")
+    .filter(
+      (
+        message,
+      ): message is Extract<StoredMessage, { type: "tool_call" }> =>
+        message.type === "tool_call" && message.toolName !== ASSISTANT_PROGRESS_TOOL_NAME,
+    )
     .map((call) => {
       const result = results.get(call.id);
       return {

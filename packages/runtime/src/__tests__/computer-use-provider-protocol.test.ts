@@ -24,7 +24,7 @@ import type { AgentRunHeader } from '@maka/core/agent-run';
 
 import type { LlmConnection } from '@maka/core/llm-connections';
 
-import type { SessionEvent } from '@maka/core/events';
+import { ASSISTANT_PROGRESS_TOOL_NAME, type SessionEvent } from '@maka/core/events';
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 
@@ -196,7 +196,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       assert.deepEqual(toolResults, [{ isError: false }, { isError: false }, { isError: false }]);
       assert.deepEqual(
         (requestBodies[0].tools as Array<{ name: string }>).map((tool) => tool.name),
-        ['maka_computer'],
+        ['maka_computer', ASSISTANT_PROGRESS_TOOL_NAME],
       );
       if (provider.expectedThinking) {
         for (const body of requestBodies) {
@@ -755,7 +755,7 @@ describe('OpenAI-compatible product loops', () => {
       (requestBodies[0]!.tools as Array<{ function?: { name?: string } }>).map(
         (tool) => tool.function?.name,
       ),
-      ['maka_computer'],
+      ['maka_computer', ASSISTANT_PROGRESS_TOOL_NAME],
     );
     assertOpenAiReasoningAndToolPair(requestBodies[1]?.messages, 1);
     assertOpenAiReasoningAndToolPair(requestBodies[2]?.messages, 2);

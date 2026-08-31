@@ -129,6 +129,7 @@ export interface ModelAdapterStreamInput {
   messages: ModelMessage[];
   tools: ModelToolSet;
   activeTools: string[];
+  toolChoice?: 'auto' | 'none' | { type: 'tool'; toolName: string };
   /** Observe each successfully pulled SDK stream part before semantic translation. */
   onStreamActivity: () => void;
   system?: string;
@@ -297,6 +298,10 @@ export class ModelAdapter {
     const providerSystem = input.system
       ? remapProviderToolNamesInText(input.system, providerToolName)
       : undefined;
+    const toolChoice =
+      typeof input.toolChoice === 'object'
+        ? { ...input.toolChoice, toolName: providerToolName(input.toolChoice.toolName) }
+        : input.toolChoice;
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
           this.input.providerOptions,
@@ -315,7 +320,11 @@ export class ModelAdapter {
       // ordinary text when the SDK leaves toolChoice at its `auto` default.
       // The child-agent finalization step relies on this boundary to spend its
       // last budgeted request on a summary instead of one more unusable call.
-      ...(input.activeTools.length === 0 ? { toolChoice: 'none' } : {}),
+      ...(toolChoice !== undefined
+        ? { toolChoice }
+        : input.activeTools.length === 0
+          ? { toolChoice: 'none' }
+          : {}),
       repairToolCall: async ({
         toolCall,
         error,

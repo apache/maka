@@ -35,7 +35,7 @@ import {
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
-import type { StorageRef } from '@maka/core/events';
+import { ASSISTANT_PROGRESS_TOOL_NAME, type StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
@@ -6093,6 +6093,7 @@ describe('AiSdkBackend model history', () => {
         { text: 'The implementation is ready.', phase: 'final_answer' },
       ],
     );
+    assert.equal(modelToolNames(model).includes(ASSISTANT_PROGRESS_TOOL_NAME), false);
     assert.match(JSON.stringify(model.doStreamCalls[1]), /commentary_continuation/);
   });
 
@@ -6344,6 +6345,204 @@ describe('AiSdkBackend model history', () => {
       [
         { text: 'I will inspect the file.', phase: 'commentary' },
         { text: 'README inspected.', phase: 'final_answer' },
+      ],
+    );
+  });
+
+  test('projects ProgressUpdate tool calls as commentary for phase-less providers', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'progress-1',
+                  toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+                  input: JSON.stringify({
+                    text: 'I am checking the recent repository activity.',
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                {
+                  type: 'text-delta',
+                  id: 'text-final',
+                  delta: 'The repository activity is summarized.',
+                },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'summarize recent activity');
+    const assistants: AssistantMessage[] = [];
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async (message) => {
+        if (message.type === 'assistant') assistants.push(message);
+      },
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.equal(modelToolNames(model).includes(ASSISTANT_PROGRESS_TOOL_NAME), true);
+    assert.deepEqual(model.doStreamCalls[0]?.toolChoice, {
+      type: 'tool',
+      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+    });
+    assert.deepEqual(model.doStreamCalls[1]?.toolChoice, { type: 'auto' });
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [
+        {
+          text: 'I am checking the recent repository activity.',
+          phase: 'commentary',
+        },
+        {
+          text: 'The repository activity is summarized.',
+          phase: 'final_answer',
+        },
+      ],
+    );
+    assert.deepEqual(
+      assistants.map((message) => ({ text: message.text, phase: message.phase })),
+      [
+        {
+          text: 'I am checking the recent repository activity.',
+          phase: 'commentary',
+        },
+        {
+          text: 'The repository activity is summarized.',
+          phase: 'final_answer',
+        },
+      ],
+    );
+  });
+
+  test('does not force ProgressUpdate again when the provider also emits commentary text', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-commentary' },
+                {
+                  type: 'text-delta',
+                  id: 'text-commentary',
+                  delta: 'I am checking the recent repository activity.',
+                },
+                { type: 'text-end', id: 'text-commentary' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'progress-1',
+                  toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+                  input: JSON.stringify({
+                    text: 'I am checking the recent repository activity.',
+                  }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-final' },
+                {
+                  type: 'text-delta',
+                  id: 'text-final',
+                  delta: 'The repository activity is summarized.',
+                },
+                { type: 'text-end', id: 'text-final' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const durable = durableTurnHarness('turn-1', 'summarize recent activity');
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      appendMessage: async () => {},
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(model.doStreamCalls[0]?.toolChoice, {
+      type: 'tool',
+      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+    });
+    assert.deepEqual(model.doStreamCalls[1]?.toolChoice, { type: 'auto' });
+    assert.deepEqual(
+      events.flatMap((event) =>
+        event.type === 'text_complete' ? [{ text: event.text, phase: event.phase }] : [],
+      ),
+      [
+        {
+          text: 'I am checking the recent repository activity.',
+          phase: 'commentary',
+        },
+        {
+          text: 'The repository activity is summarized.',
+          phase: 'final_answer',
+        },
       ],
     );
   });
@@ -9481,16 +9680,20 @@ describe('AiSdkBackend request-shape diagnostics', () => {
       events.push(event);
     }
 
-    assert.deepEqual(modelToolNames(model), sortedModelToolNames(['Read', 'WebFetch']));
+    assert.deepEqual(
+      modelToolNames(model),
+      sortedModelToolNames(['Read', 'WebFetch', ASSISTANT_PROGRESS_TOOL_NAME]),
+    );
     assert.equal(modelToolNames(model).includes(TOOL_SEARCH_NAME), false);
-    // toolCount tracks the model-visible (active) tools — the two real tools.
+    // toolCount tracks the model-visible tools, including the runtime-owned
+    // progress transport for phase-less providers.
     // The invalid fallback lives in providerTools but is never advertised, so
     // it is not counted (toolCount is the wire-visible subset).
     const usageEvent = events.find(
       (event): event is Extract<SessionEvent, { type: 'token_usage' }> =>
         event.type === 'token_usage',
     );
-    assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 2);
+    assert.equal(toolSchemaPromptSegment(usageEvent)?.toolCount, 3);
   });
 
   test('volatile turn-tail facts do not churn the durable prefix hash', async () => {

@@ -116,11 +116,154 @@
   padding: var(--space-0-5) 0 0;
 }
 
+.maka-work-log {
+  min-width: 0;
+}
+
+.maka-work-log:not([data-collapsible="true"]),
+.maka-work-log:not([data-collapsible="true"]) .maka-work-log-content {
+  display: contents;
+}
+
+.maka-work-log-header {
+  display: flex;
+  width: 100%;
+  min-height: var(--h-control-sm);
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0-5) 0;
+  border: 0;
+  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+  color: var(--muted-foreground);
+  background: transparent;
+  font: var(--maka-text-body);
+  text-align: start;
+  cursor: default;
+}
+
+.maka-work-log-label {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-work-log-chevron {
+  flex: 0 0 auto;
+  color: inherit;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.maka-work-log-header[aria-expanded="true"] .maka-work-log-chevron {
+  transform: rotate(90deg);
+}
+
+@media (hover: hover) {
+  .maka-work-log-header:hover {
+    color: var(--foreground-secondary);
+  }
+}
+
+.maka-work-log-header:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.maka-work-log-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.maka-work-log-content[hidden] {
+  display: none;
+}
+
+.maka-processing-block {
+  min-width: 0;
+}
+
+.maka-processing-header {
+  display: flex;
+  width: 100%;
+  min-height: var(--h-control-sm);
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-0-5) 0;
+  border: 0;
+  border-radius: var(--radius-element);
+  color: var(--muted-foreground);
+  background: transparent;
+  font: var(--maka-text-body);
+  text-align: start;
+  cursor: default;
+}
+
+.maka-processing-icon {
+  display: inline-flex;
+  width: var(--icon-control);
+  height: var(--icon-control);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+.maka-processing-summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: inherit;
+  font-weight: var(--font-weight-normal);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-processing-chevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.maka-processing-header[aria-expanded="true"] .maka-processing-chevron {
+  transform: rotate(90deg);
+}
+
+.maka-processing-block[data-running="true"] .maka-processing-summary {
+  color: var(--foreground-secondary);
+}
+
+.maka-processing-block[data-error="true"] .maka-processing-icon,
+.maka-processing-block[data-error="true"] .maka-processing-summary {
+  color: var(--destructive);
+}
+
+@media (hover: hover) {
+  .maka-processing-header:hover {
+    background: var(--foreground-5);
+  }
+}
+
+.maka-processing-header:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
 .maka-processing-sequence {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: var(--space-1);
+  margin-inline-start: var(--space-2);
+  padding-inline-start: var(--space-2-5);
+  border-inline-start: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.maka-processing-sequence[hidden] {
+  display: none;
 }
 
 /* Expanded activity headers stay reachable while their own detail is being

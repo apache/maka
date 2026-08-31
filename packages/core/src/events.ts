@@ -70,6 +70,12 @@ export const TOOL_ACTIVITY_KINDS = [
 export type ToolActivityKind = (typeof TOOL_ACTIVITY_KINDS)[number];
 export const ASSISTANT_TEXT_PHASES = ['commentary', 'final_answer'] as const;
 /**
+ * Runtime-owned compatibility transport for providers without native
+ * assistant text phases. Clients render the projected commentary text and
+ * hide this implementation-detail tool from the activity log.
+ */
+export const ASSISTANT_PROGRESS_TOOL_NAME = 'ProgressUpdate';
+/**
  * Maka-owned assistant text semantics.
  *
  * OpenAI Responses can provide this explicitly. Phase-less protocols such as

@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useId, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, BookOpen, Check, ChevronRight, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -65,6 +65,11 @@ import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
 import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
+import {
+  isProcessingRunning,
+  processingHasError,
+  summarizeProcessing,
+} from './processing-summary.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -619,6 +624,51 @@ export const TurnView = memo(function TurnView(props: {
           segment.repliesTo === undefined
             ? 'assistant-opening'
             : `assistant-after-${segment.repliesTo}`;
+        const segmentSettled =
+          !ownsTurnChrome ||
+          (!props.liveStreaming && turn.status !== 'running');
+        const finalAnswerIndex = segmentFinalAnswerIndex(segment.items, segmentSettled);
+        const workItems =
+          finalAnswerIndex < 0 ? segment.items : segment.items.slice(0, finalAnswerIndex);
+        const answerItems =
+          finalAnswerIndex < 0 ? [] : segment.items.slice(finalAnswerIndex);
+        const workLogCollapsed = segmentSettled || finalAnswerIndex >= 0;
+        const renderTimelineItem = (
+          item: AssistantFoldedTimelineEntry,
+          index: number,
+          collapseProcessing: boolean,
+        ): ReactNode => {
+          if (item.kind !== 'processing') {
+            return (
+              <TurnTimelineEntry
+                key={timelineEntryKey(item, index)}
+                item={item}
+                onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                onOpenLinkedSession={props.onOpenLinkedSession}
+                onSwitchToBypassAndRetry={
+                  props.onSwitchToBypassAndRetry
+                    ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                    : undefined
+                }
+                initialLiveContent={props.liveStreaming?.initialLiveContent}
+              />
+            );
+          }
+          return (
+            <ProcessingBlock
+              key={`processing-${item.id}`}
+              entries={item.children}
+              autoCollapse={collapseProcessing}
+              onOpenLinkedSession={props.onOpenLinkedSession}
+              onSwitchToBypassAndRetry={
+                props.onSwitchToBypassAndRetry
+                  ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                  : undefined
+              }
+              initialLiveContent={props.liveStreaming?.initialLiveContent}
+            />
+          );
+        };
         return (
           <Fragment key={assistantKey}>
             <LocalizedChatMessage
@@ -629,37 +679,22 @@ export const TurnView = memo(function TurnView(props: {
             >
             <div className="maka-assistant-answer-content">
               {/* The turn timeline is the rendering source of truth
-                (materialize.ts): each step's 深度思考 disclosure, answer bubble,
-                and Astryx tool group in the order the model produced them.
-                #1307: runs of reasoning + tools between answer texts render
-                through the derived fold as collapsed Processing blocks. */}
-              {segment.items.map((item, index) =>
-                item.kind === 'processing' ? (
-                  <ProcessingBlock
-                    key={`processing-${item.id}`}
-                    entries={item.children}
-                    onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                        : undefined
-                    }
-                    initialLiveContent={props.liveStreaming?.initialLiveContent}
-                  />
-                ) : (
-                  <TurnTimelineEntry
-                    key={timelineEntryKey(item, index)}
-                    item={item}
-                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                    onOpenLinkedSession={props.onOpenLinkedSession}
-                    onSwitchToBypassAndRetry={
-                      props.onSwitchToBypassAndRetry
-                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                        : undefined
-                    }
-                    initialLiveContent={props.liveStreaming?.initialLiveContent}
-                  />
-                ),
+                (materialize.ts). Before a final answer, commentary and activity
+                stay exposed. Once the answer begins they remain mounted inside
+                one work-log disclosure, while the final answer stays outside. */}
+              {workItems.length > 0 && (
+                <TurnWorkLog
+                  collapsed={workLogCollapsed}
+                  durationMs={turn.durationMs}
+                  startedAt={turn.startedAt}
+                >
+                  {workItems.map((item, index) =>
+                    renderTimelineItem(item, index, workLogCollapsed)
+                  )}
+                </TurnWorkLog>
+              )}
+              {answerItems.map((item, index) =>
+                renderTimelineItem(item, workItems.length + index, true)
               )}
               {/* A failed turn's banner states the OUTCOME of the turn, so it
                   belongs after the work it is the outcome of. `description`
@@ -817,6 +852,22 @@ function splitTimelineAtUserMessages(
     segments.push({ kind: 'assistant', items: [], repliesTo });
   }
   return segments;
+}
+
+function segmentFinalAnswerIndex(
+  items: readonly AssistantFoldedTimelineEntry[],
+  settled: boolean,
+): number {
+  const explicit = items.findIndex(
+    (item) => item.kind === 'text' && item.phase === 'final_answer',
+  );
+  if (explicit >= 0) return explicit;
+  if (!settled) return -1;
+  const hasPhasedText = items.some(
+    (item) => item.kind === 'text' && item.phase !== undefined,
+  );
+  if (hasPhasedText) return -1;
+  return items.findLastIndex((item) => item.kind === 'text');
 }
 
 export interface TurnFooterActionMeta {
@@ -984,22 +1035,17 @@ const STATUS_FOOTER_ICON: Record<TurnFooterActionMeta['id'], ReactNode> = {
   info: <Info size={ICON_SIZE.control} aria-hidden="true" />,
 };
 
-/** How long one working phrase holds before the next fades in. */
-const WORKING_PHRASE_INTERVAL_MS = 20_000;
-/** Must match the `.maka-turn-working-phrase` transition duration in styles.css. */
-const WORKING_PHRASE_FADE_MS = 300;
 const ELAPSED_TICK_MS = 1_000;
 
 /**
- * The live turn's running status line: a working phrase that rotates every 20s,
- * and the elapsed clock beside it.
+ * The live turn's running status line: a truthful activity label and the
+ * elapsed clock beside it.
  *
- * The elapsed time is what actually carries the message — it is the only part
- * that proves the harness and the model are still moving, and it is why the
- * phrase pool can afford to be playful rather than informative. Both are driven
- * by the clock, so this component owns its own timers and re-renders only
- * itself: hoisting the seconds into the turn (let alone the shell) would repaint
- * the whole transcript once a second while an answer streams into it.
+ * A quiet provider request does not prove that the model is actively making
+ * semantic progress. The default therefore says only that Maka is waiting for
+ * model output. A concrete tool label can replace it when Runtime has direct
+ * evidence of work in flight. The clock is local presentation state so ticking
+ * it does not repaint the whole transcript.
  *
  * `startedAt` is the turn's own first-message timestamp, so the clock measures
  * the wait the user actually experienced — from pressing send, not from
@@ -1013,15 +1059,12 @@ export function TurnRunningStatus(props: {
   activityLabel?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
-  const phrases = copy.workingPhrases;
   const { startedAt } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   // Undefined until an effect measures it, which is also what keeps a static
   // render deterministic: the clock is a client-only value, so server markup
   // and the first paint carry the phrase alone.
   const [elapsedMs, setElapsedMs] = useState<number | undefined>(undefined);
-  const [phraseIndex, setPhraseIndex] = useState(0);
-  const [phraseFading, setPhraseFading] = useState(false);
 
   useEffect(() => {
     // Frozen (fixture / reduced motion) the clock is dropped rather than
@@ -1036,27 +1079,11 @@ export function TurnRunningStatus(props: {
     return () => window.clearInterval(tick);
   }, [startedAt]);
 
-  useEffect(() => {
-    if (phrases.length < 2 || !isTimeDrivenMotionEnabled(rootRef.current)) return;
-    let fadeTimer: number | undefined;
-    const rotate = window.setInterval(() => {
-      setPhraseFading(true);
-      fadeTimer = window.setTimeout(() => {
-        setPhraseIndex((current) => (current + 1) % phrases.length);
-        setPhraseFading(false);
-      }, WORKING_PHRASE_FADE_MS);
-    }, WORKING_PHRASE_INTERVAL_MS);
-    return () => {
-      window.clearInterval(rotate);
-      if (fadeTimer !== undefined) window.clearTimeout(fadeTimer);
-    };
-  }, [phrases.length]);
-
   return (
     <div
       className="maka-turn-processing"
       role="status"
-      aria-label={props.activityLabel ?? copy.processing}
+      aria-label={props.activityLabel ?? copy.awaitingModelOutput}
       ref={rootRef}
     >
       {props.showSpinner !== false && (
@@ -1066,8 +1093,8 @@ export function TurnRunningStatus(props: {
           talk over the answer being streamed beside it, so the row's label is
           its whole accessible name and the text is decoration. */}
       <span className="maka-turn-indicator-text" aria-hidden="true">
-        <span className="maka-turn-working-phrase" data-fading={phraseFading || undefined}>
-          {props.activityLabel ?? phrases[phraseIndex] ?? copy.processing}
+        <span className="maka-turn-status-label">
+          {props.activityLabel ?? copy.awaitingModelOutput}
         </span>
         {elapsedMs !== undefined && (
           <>
@@ -1293,24 +1320,149 @@ function TurnTimelineEntry(props: {
   );
 }
 
+function formatWorkLogDuration(durationMs: number, locale: 'en' | 'zh'): string {
+  if (locale === 'en') return formatTurnDuration(durationMs);
+  const seconds = Math.floor(Math.max(0, durationMs) / 1_000);
+  if (seconds < 60) return `${seconds} 秒`;
+  return `${Math.floor(seconds / 60)} 分钟 ${seconds % 60} 秒`;
+}
+
+function TurnWorkLog(props: {
+  children: ReactNode;
+  collapsed: boolean;
+  durationMs?: number;
+  startedAt?: number;
+}) {
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).messages;
+  const [expanded, setExpanded] = useState(!props.collapsed);
+  const [capturedDurationMs, setCapturedDurationMs] = useState<number | undefined>();
+  const previousCollapsed = useRef(props.collapsed);
+  const contentId = useId();
+  const collapseNow = props.collapsed && !previousCollapsed.current;
+  const visibleExpanded = props.collapsed ? (collapseNow ? false : expanded) : true;
+
+  useEffect(() => {
+    const shouldCollapse = props.collapsed && !previousCollapsed.current;
+    previousCollapsed.current = props.collapsed;
+    if (!shouldCollapse) return;
+    setExpanded(false);
+    if (props.durationMs === undefined && props.startedAt !== undefined) {
+      setCapturedDurationMs(Math.max(0, Date.now() - props.startedAt));
+    }
+  }, [props.collapsed, props.durationMs, props.startedAt]);
+
+  const durationMs = props.durationMs ?? capturedDurationMs;
+  const label =
+    durationMs === undefined
+      ? copy.workLog
+      : copy.workLogDuration(formatWorkLogDuration(durationMs, locale));
+
+  return (
+    <div
+      className="maka-work-log"
+      data-work-log="true"
+      data-collapsible={props.collapsed ? 'true' : undefined}
+    >
+      {props.collapsed && (
+        <button
+          type="button"
+          className="maka-work-log-header"
+          aria-expanded={visibleExpanded}
+          aria-controls={contentId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <span className="maka-work-log-label">{label}</span>
+          <ChevronRight
+            className="maka-work-log-chevron"
+            size={ICON_SIZE.meta}
+            aria-hidden="true"
+          />
+        </button>
+      )}
+      <div
+        id={contentId}
+        className="maka-work-log-content"
+        hidden={props.collapsed && !visibleExpanded}
+      >
+        {props.children}
+      </div>
+    </div>
+  );
+}
+
 function ProcessingBlock(props: {
   entries: FoldedTimelineChild[];
+  /** Collapse once when the phase produces its final answer or settles. */
+  autoCollapse: boolean;
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
+  const locale = useUiLocale();
   const { entries } = props;
+  const [expanded, setExpanded] = useState(!props.autoCollapse);
+  const previousAutoCollapse = useRef(props.autoCollapse);
+  const running = isProcessingRunning(entries);
+  const hasError = processingHasError(entries);
+  const summary = summarizeProcessing(entries, locale);
+  const contentId = useId();
+
+  useEffect(() => {
+    const shouldCollapse = props.autoCollapse && !previousAutoCollapse.current;
+    previousAutoCollapse.current = props.autoCollapse;
+    if (shouldCollapse) setExpanded(false);
+  }, [props.autoCollapse]);
+
   return (
-    <div className="maka-processing-sequence">
-      {entries.map((entry, index) => (
-        <TurnTimelineEntry
-          key={timelineEntryKey(entry, index)}
-          item={entry}
-          onOpenLinkedSession={props.onOpenLinkedSession}
-          onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-          initialLiveContent={props.initialLiveContent}
+    <div
+      className="maka-processing-block"
+      data-processing="block"
+      data-running={running ? 'true' : undefined}
+      data-error={hasError ? 'true' : undefined}
+    >
+      <button
+        type="button"
+        className="maka-processing-header"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="maka-processing-icon" aria-hidden="true">
+          <BookOpen size={ICON_SIZE.control} />
+        </span>
+        <span className="maka-processing-summary">{summary}</span>
+        <ChevronRight
+          className="maka-processing-chevron"
+          size={ICON_SIZE.meta}
+          aria-hidden="true"
         />
-      ))}
+      </button>
+      <div
+        id={contentId}
+        className="maka-processing-sequence"
+        hidden={!expanded}
+      >
+        {entries.map((entry, index) =>
+          entry.kind === 'tools' ? (
+            <ToolTrow
+              key={timelineEntryKey(entry, index)}
+              items={entry.items}
+              variant="rows"
+              onOpenLinkedSession={props.onOpenLinkedSession}
+              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+            />
+          ) : (
+            <TurnTimelineEntry
+              key={timelineEntryKey(entry, index)}
+              item={entry}
+              onOpenLinkedSession={props.onOpenLinkedSession}
+              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+              initialLiveContent={props.initialLiveContent}
+            />
+          ),
+        )}
+      </div>
     </div>
   );
 }
@@ -1332,6 +1484,7 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
         streaming={props.live}
         settledText={props.settledText}
         density="compact"
+        tone="muted"
       />
     </ChatReasoning>
   );

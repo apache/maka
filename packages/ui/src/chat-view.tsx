@@ -148,7 +148,7 @@ export function ChatView(props: {
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
   /**
-   * True while the live turn's running status line (spinner · working phrase ·
+   * True while the live turn's running status line (spinner · status label ·
    * elapsed clock) should show, as the trailing entry of the tail turn.
    *
    * One flag for the whole turn, replacing the #646 pair that split the wait
@@ -798,7 +798,7 @@ export function ChatView(props: {
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
-                           the working phrase without a clock. */
+                           the status label without a clock. */
                         (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>

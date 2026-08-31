@@ -38,26 +38,27 @@
  *     └─ yield from queue
  */
 
-import type {
-  AssistantTextPhase,
-  SessionEvent,
-  CompleteEvent,
-  AbortEvent,
-  ErrorEvent,
-  TextCompleteEvent,
-  ThinkingCompleteEvent,
-  TokenUsageEvent,
-  TextDeltaEvent,
-  ThinkingDeltaEvent,
-  ProviderRetryEvent,
-  ProviderRetryReason,
-  ToolResultEvent,
-  ToolResultContent,
-  ToolStartEvent,
-  StorageRef,
-  AttachmentRef,
-  QuoteRef,
-  ContextBudgetExhaustedDetail,
+import {
+  ASSISTANT_PROGRESS_TOOL_NAME,
+  type AssistantTextPhase,
+  type SessionEvent,
+  type CompleteEvent,
+  type AbortEvent,
+  type ErrorEvent,
+  type TextCompleteEvent,
+  type ThinkingCompleteEvent,
+  type TokenUsageEvent,
+  type TextDeltaEvent,
+  type ThinkingDeltaEvent,
+  type ProviderRetryEvent,
+  type ProviderRetryReason,
+  type ToolResultEvent,
+  type ToolResultContent,
+  type ToolStartEvent,
+  type StorageRef,
+  type AttachmentRef,
+  type QuoteRef,
+  type ContextBudgetExhaustedDetail,
 } from '@maka/core/events';
 import type {
   StoredMessage,
@@ -243,6 +244,7 @@ import {
   type ToolAvailabilityConfig,
   type ToolAvailabilityPlan,
 } from './tool-availability.js';
+import { assistantProgressText, buildAssistantProgressTool } from './assistant-progress-tool.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
 import {
@@ -1081,6 +1083,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly modelAdapter: ModelAdapter;
   private readonly resolvedProviderOptions: Record<string, unknown>;
   private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly forceInitialProgressUpdate: boolean;
   private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /** Bounds outstanding Code Mode cells on this backend. */
@@ -1154,6 +1157,9 @@ export class AiSdkBackend implements AgentBackend {
       appendTurnTailPrompt: (content, turnTailPrompt) =>
         this.appendTurnTailPrompt(content, turnTailPrompt),
     });
+    if (input.tools.some((tool) => tool.name === ASSISTANT_PROGRESS_TOOL_NAME)) {
+      throw new Error(`Tool name "${ASSISTANT_PROGRESS_TOOL_NAME}" is reserved by Runtime`);
+    }
     if (
       input.tools.some(
         (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
@@ -1161,6 +1167,7 @@ export class AiSdkBackend implements AgentBackend {
     ) {
       throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
     }
+    const runtime = resolveModelRuntime(input.connection, input.modelId);
     const memoryTools = input.memoryExtraction
       ? buildMemoryExtractionTriggerTools({
           capabilities: input.memoryExtraction,
@@ -1177,13 +1184,21 @@ export class AiSdkBackend implements AgentBackend {
             : {}),
         })
       : [];
-    const runtime = resolveModelRuntime(input.connection, input.modelId);
+    const progressTools =
+      runtime.wire !== 'openai-responses' && input.header.subagentParent === undefined
+        ? [buildAssistantProgressTool()]
+        : [];
+    this.forceInitialProgressUpdate =
+      progressTools.length > 0 && runtime.parallelToolCalls !== true;
     this.applyPatchProfile = runtime.applyPatchProfile;
     const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
     this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
       // The archive decoder is a runtime protocol tool, not a host binding:
       // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
+      bindToolResultArchiveDecoder(
+        [...modelTools, ...memoryTools, ...progressTools],
+        input.toolResultArchive,
+      ),
       input.toolAvailability,
       buildInvalidMakaTool(),
     );
@@ -2199,6 +2214,7 @@ export class AiSdkBackend implements AgentBackend {
         let terminalProviderError: unknown;
         let commentaryContinuationPending = false;
         let commentaryContinuationUsed = false;
+        let initialProgressUpdatePending = this.forceInitialProgressUpdate;
         agentLoop: for (;;) {
           await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
@@ -2314,6 +2330,15 @@ export class AiSdkBackend implements AgentBackend {
               messages: attemptMessages,
               tools: modelTools,
               activeTools: activeToolsForRequest,
+              ...(initialProgressUpdatePending &&
+              activeToolsForRequest.includes(ASSISTANT_PROGRESS_TOOL_NAME)
+                ? {
+                    toolChoice: {
+                      type: 'tool' as const,
+                      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
+                    },
+                  }
+                : {}),
               onStreamActivity: () => requestWatchdog?.markActivity(),
               repairToolCall: async ({
                 toolCall,
@@ -2520,6 +2545,27 @@ export class AiSdkBackend implements AgentBackend {
                       : {}),
                   } satisfies ToolStartEvent);
                 } else {
+                  const progressText =
+                    event.toolCall.toolName === ASSISTANT_PROGRESS_TOOL_NAME
+                      ? assistantProgressText(event.toolCall.input)
+                      : undefined;
+                  if (progressText !== undefined) {
+                    initialProgressUpdatePending = false;
+                    if (stepText.length === 0) {
+                      stepTextPhase = 'commentary';
+                      stepText += progressText;
+                      attemptSawText = true;
+                      queue.push({
+                        type: 'text_delta',
+                        id: this.newId(),
+                        turnId,
+                        ts: this.now(),
+                        messageId: currentStepMessageId,
+                        text: progressText,
+                        phase: 'commentary',
+                      } satisfies TextDeltaEvent);
+                    }
+                  }
                   stepHasClientToolCall = true;
                   returnedToolCalls.push(event.toolCall);
                 }
