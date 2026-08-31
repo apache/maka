@@ -161,6 +161,19 @@ export function durableProjectionToToolResultOutput(
   }
 }
 
+export function rewriteDurableToolResultProjectionArtifactRefs(
+  projection: DurableToolResultProjection,
+  rewrite: (ref: DurableProjectionArtifactRef) => DurableProjectionArtifactRef,
+): DurableToolResultProjection {
+  if (projection.kind !== 'content') return projection;
+  return {
+    ...projection,
+    parts: projection.parts.map((part) =>
+      part.kind === 'artifact' ? { ...part, ref: rewrite(part.ref) } : part,
+    ),
+  };
+}
+
 export type EffectiveToolResultProjection =
   | {
       kind: 'projection';

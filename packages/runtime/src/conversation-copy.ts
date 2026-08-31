@@ -58,6 +58,7 @@ import {
   isArchivedToolResultPlaceholder,
   type ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
+import { rewriteDurableToolResultProjectionArtifactRefs } from './durable-tool-result-projection.js';
 
 export interface ConversationCopySlice {
   readonly messages: readonly StoredMessage[];
@@ -1161,6 +1162,14 @@ function rewriteRuntimeEventReferences(
         ? {
             ...event.content,
             result: rewriteRuntimeToolResult(event.content.result, references),
+            ...(event.content.modelProjection
+              ? {
+                  modelProjection: rewriteDurableToolResultProjectionArtifactRefs(
+                    event.content.modelProjection,
+                    (ref) => rewriteProjectionArtifactRef(ref, references),
+                  ),
+                }
+              : {}),
           }
         : event.content;
   const refs = event.refs
@@ -1586,6 +1595,17 @@ function rewriteStorageRef(
     sessionId: references.targetSessionId,
     relativePath,
   };
+}
+
+function rewriteProjectionArtifactRef(
+  ref: Extract<StorageRef, { kind: 'session_context' | 'session_file' }>,
+  references: ConversationCopyArtifactReferenceMap,
+): Extract<StorageRef, { kind: 'session_context' | 'session_file' }> {
+  const rewritten = rewriteStorageRef(ref, references);
+  if (rewritten.kind !== 'session_context' && rewritten.kind !== 'session_file') {
+    throw new Error('Conversation copy produced an invalid projection Artifact reference');
+  }
+  return rewritten;
 }
 
 function rewriteArchivedToolResult(

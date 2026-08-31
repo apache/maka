@@ -1357,6 +1357,119 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
   }
 });
 
+test('conversation copy remaps durable projection artifacts with the copied result', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-projection-copy-'));
+  const runStore = createSqliteAgentRunStore(root);
+  const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
+  try {
+    await runStore.ready?.();
+    await runStore.createRun(
+      agentRunHeader({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
+    );
+    const sourceRef = {
+      kind: 'session_file' as const,
+      sessionId: 'session-source',
+      relativePath: 'artifact-source',
+    };
+    const sourceEvents: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'event-user',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'read the image' },
+      }),
+      runtimeEvent({
+        id: 'event-call',
+        ts: 2,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'provider-call-1',
+          name: 'Read',
+          args: { path: 'image.png' },
+        },
+      }),
+      runtimeEvent({
+        id: 'event-result',
+        ts: 3,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'provider-call-1',
+          name: 'Read',
+          result: { kind: 'image', mimeType: 'image/png', ref: sourceRef },
+          modelProjection: {
+            version: 1,
+            kind: 'content',
+            parts: [{ kind: 'artifact', mediaType: 'image/png', ref: sourceRef }],
+          },
+        },
+      }),
+      runtimeEvent({ id: 'event-terminal', ts: 4, status: 'completed' }),
+    ];
+    await runtimeEventStore.importConversationCopyRuntimeEvents('session-source', [
+      { runId: 'run-source', events: sourceEvents },
+    ]);
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'run_completed',
+      id: 'completed-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 4,
+    });
+    const source = await new RuntimeReadModel({ runStore, runtimeEventStore }).getSessionView(
+      'session-source',
+    );
+
+    await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map([['artifact-source', 'artifact-target']]),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const [targetRun] = await runStore.listSessionRuns('session-target');
+    assert.ok(targetRun);
+    const targetResult = (
+      await runtimeEventStore.readRuntimeEvents('session-target', targetRun.runId)
+    ).find((event) => event.content?.kind === 'function_response');
+    assert.equal(targetResult?.content?.kind, 'function_response');
+    if (targetResult?.content?.kind !== 'function_response') return;
+    const expectedRef = {
+      kind: 'session_file',
+      sessionId: 'session-target',
+      relativePath: 'artifact-target',
+    };
+    assert.deepEqual(
+      targetResult.content.modelProjection?.kind === 'content'
+        ? targetResult.content.modelProjection.parts[0]
+        : undefined,
+      { kind: 'artifact', mediaType: 'image/png', ref: expectedRef },
+    );
+  } finally {
+    runtimeEventStore.close();
+    runStore.close?.();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('conversation copy rewrites the parent operation id of a nested Code Mode call', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-parent-op-'));
   const runStore = createSqliteAgentRunStore(root);
