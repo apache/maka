@@ -71,6 +71,65 @@ const rowActions: SessionRowActions = {
   onDelete: () => undefined,
 };
 
+function renderedSessionIds(props: Partial<SessionRailData> & { sessions: SessionSummary[] }): string[] {
+  const { document } = parseHTML(renderToStaticMarkup(
+    <LocaleProvider locale="en"><Rail {...props} /></LocaleProvider>,
+  ));
+  return [...document.querySelectorAll('[data-maka-contract="session-row"]')]
+    .map((row) => row.getAttribute('data-session-id')!);
+}
+
+test('priority sorting promotes actionable work without mistaking stale running or old failures for work', () => {
+  const rows: SessionSummary[] = [
+    { ...session, id: 'ordinary', lastMessageAt: 100 },
+    { ...session, id: 'old-running', status: 'running', runningTurnIds: [], lastMessageAt: 90 },
+    { ...session, id: 'old-error', status: 'blocked', blockedReason: 'tool_failed', lastMessageAt: 80 },
+    { ...session, id: 'unknown-error', status: 'blocked', blockedReason: 'unknown', lastMessageAt: 70 },
+    { ...session, id: 'unread', hasUnread: true, lastMessageAt: 60 },
+    { ...session, id: 'streaming', runningTurnIds: [], lastMessageAt: 50 },
+    { ...session, id: 'host-running', runningTurnIds: ['turn-1'], lastMessageAt: 40 },
+    { ...session, id: 'legacy-running', status: 'running', lastMessageAt: 30 },
+    { ...session, id: 'auth', status: 'blocked', blockedReason: 'auth', lastMessageAt: 20 },
+    { ...session, id: 'connection', status: 'blocked', blockedReason: 'NO_REAL_CONNECTION', lastMessageAt: 19 },
+    { ...session, id: 'permission', status: 'blocked', blockedReason: 'permission_required', lastMessageAt: 18 },
+    { ...session, id: 'waiting', status: 'waiting_for_user', lastMessageAt: 10 },
+  ];
+  const original = structuredClone(rows);
+  assert.deepEqual(renderedSessionIds({
+    sessions: rows, sortMode: 'priority', streamingSessionIds: new Set(['streaming']),
+  }), ['waiting', 'auth', 'connection', 'permission', 'streaming', 'host-running', 'legacy-running', 'unread',
+    'ordinary', 'old-running', 'old-error', 'unknown-error']);
+  assert.deepEqual(renderedSessionIds({ sessions: rows }), rows.map((row) => row.id));
+  assert.deepEqual(rows, original, 'sorting must not mutate the Session catalog');
+});
+
+test('priority sorting preserves pinned membership and uses stable timestamp/id ties', () => {
+  const rows = [
+    { ...session, id: 'z', lastMessageAt: 5 },
+    { ...session, id: 'a', lastMessageAt: 5 },
+    { ...session, id: 'waiting', status: 'waiting_for_user' as const, lastMessageAt: 1 },
+    { ...session, id: 'pinned', isFlagged: true, lastMessageAt: 0 },
+    { ...session, id: 'pinned-waiting', isFlagged: true, status: 'waiting_for_user' as const },
+  ];
+  assert.deepEqual(renderedSessionIds({ sessions: rows, sortMode: 'priority' }),
+    ['pinned-waiting', 'pinned', 'waiting', 'a', 'z']);
+});
+
+test('pre-grouped history sorts within each group without moving work across groups', () => {
+  const first = [{ ...session, id: 'first-new', lastMessageAt: 20 },
+    { ...session, id: 'first-waiting', status: 'waiting_for_user' as const, lastMessageAt: 10 }];
+  const second = [{ ...session, id: 'second-old', lastMessageAt: 1 },
+    { ...session, id: 'second-new', lastMessageAt: 100 }];
+  const groups = [{ id: 'project-1', label: 'First project', sessions: first },
+    { id: 'runtime-host:2', label: 'Remote Host', sessions: second }];
+  const props = { sessions: [...first, ...second], groups };
+  assert.deepEqual(renderedSessionIds({ ...props, sortMode: 'priority' }),
+    ['first-waiting', 'first-new', 'second-new', 'second-old']);
+  assert.deepEqual(renderedSessionIds({ ...props, sortMode: 'updated_at' }),
+    ['first-new', 'first-waiting', 'second-new', 'second-old']);
+  assert.deepEqual(groups[0]?.sessions.map((row) => row.id), ['first-new', 'first-waiting']);
+});
+
 const project: ProjectRecord = {
   id: 'project-1',
   name: 'Maka',

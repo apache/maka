@@ -28,6 +28,7 @@ import {
   createSessionOpenCommand,
   deriveSessionRail,
   sessionMatchesRail,
+  sessionRailLayoutStore,
   SessionNavigationServicesProvider,
   useSessionNavigationController,
   useSessionNavigationReads,
@@ -197,14 +198,57 @@ describe('useSessionNavigationController', () => {
 
 describe('useSessionNavigationReads', () => {
   let latestReads: ReturnType<typeof useSessionNavigationReads> | undefined;
+  let renderCount = 0;
 
   function ReadsProbe(props: Parameters<typeof useSessionNavigationReads>[0]) {
+    renderCount++;
     latestReads = useSessionNavigationReads(props);
     return null;
   }
 
   afterEach(() => {
     latestReads = undefined;
+    renderCount = 0;
+  });
+
+  it('ignores rail preferences while still reacting to geometry changes', async () => {
+    const { root } = installReactRenderer();
+    const initialLayout = sessionRailLayoutStore.getState();
+    try {
+      await act(async () => root.render(createElement(ReadsProbe, {
+        sessions: linkedCatalog,
+        activeSessionId: 'child',
+        activeSession: linkedCatalog[1],
+        hiddenSessionIds,
+      })));
+      const initialRenderCount = renderCount;
+      const initialReads = latestReads;
+
+      await act(async () => sessionRailLayoutStore.setSortMode(
+        initialLayout.sortMode === 'priority' ? 'updated_at' : 'priority',
+      ));
+      await act(async () => sessionRailLayoutStore.setViewMode(
+        initialLayout.viewMode === 'project' ? 'conversation' : 'project',
+      ));
+      assert.equal(renderCount, initialRenderCount, 'rail preferences must not rerender the shell');
+      assert.equal(latestReads, initialReads);
+
+      await act(async () => sessionRailLayoutStore.setCollapsed(!initialLayout.collapsed));
+      assert.ok(renderCount > initialRenderCount);
+      assert.equal(latestReads?.layout.collapsed, !initialLayout.collapsed);
+
+      const beforeWidthChange = renderCount;
+      const nextWidth = initialLayout.width === 300 ? 320 : 300;
+      await act(async () => sessionRailLayoutStore.setWidth(nextWidth));
+      assert.ok(renderCount > beforeWidthChange);
+      assert.equal(latestReads?.layout.width, nextWidth);
+    } finally {
+      await act(async () => root.unmount());
+      sessionRailLayoutStore.setCollapsed(initialLayout.collapsed);
+      sessionRailLayoutStore.setWidth(initialLayout.width);
+      sessionRailLayoutStore.setViewMode(initialLayout.viewMode);
+      sessionRailLayoutStore.setSortMode(initialLayout.sortMode);
+    }
   });
 
   it('projects linked, archived, hidden, Project, and Runtime Host Sessions once', async () => {

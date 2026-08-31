@@ -23,7 +23,6 @@ import { deriveBranchBanner, type BranchBanner } from '../model/branch-banner.js
 import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { deriveSessionRail, type SessionRailProjection } from '../model/session-rail.js';
 import {
-  selectRailLayout,
   sessionRailLayoutStore,
   type SessionRailLayoutState,
 } from '../model/session-rail-layout-store.js';
@@ -33,19 +32,22 @@ import {
 } from '../model/session-revisions.js';
 import type { SessionNavigationSession } from '../ports.js';
 
+const selectRailCollapsed = (state: SessionRailLayoutState): boolean => state.collapsed;
+const selectRailWidth = (state: SessionRailLayoutState): number => state.width;
+
 export interface SessionNavigationReads {
   /** The rail's membership, derived once and shared with the command palette. */
   rail: SessionRailProjection<SessionNavigationSession>;
   branchBanner: BranchBanner | undefined;
   revisionNavigation: SessionRevisionNavigation | undefined;
-  layout: SessionRailLayoutState;
+  layout: Pick<SessionRailLayoutState, 'collapsed' | 'width'>;
 }
 
 /**
  * What the shell reads from Session Navigation, as opposed to what it owns.
  *
  * Nothing here holds state: three `useMemo`s over the catalog the shell already
- * has, and one subscription to the rail's geometry — which the window frame
+ * has, and subscriptions to the rail's geometry — which the window frame
  * needs, because `--maka-sidenav-width` is where the titlebar's breadcrumb
  * starts. The rail's own state lives under `SessionNavigationProvider` and is
  * not visible from here, which is the point of #4109: a hook called in the
@@ -74,6 +76,7 @@ export function useSessionNavigationReads(input: {
     () => deriveSessionRevisionNavigation(sessions, activeSessionId),
     [activeSessionId, sessions],
   );
-  const layout = useExternalStoreSelector(sessionRailLayoutStore, selectRailLayout);
-  return { rail, branchBanner, revisionNavigation, layout };
+  const collapsed = useExternalStoreSelector(sessionRailLayoutStore, selectRailCollapsed);
+  const width = useExternalStoreSelector(sessionRailLayoutStore, selectRailWidth);
+  return { rail, branchBanner, revisionNavigation, layout: { collapsed, width } };
 }

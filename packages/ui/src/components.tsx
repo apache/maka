@@ -33,6 +33,7 @@ export type {
   SessionRailChrome,
   SessionRailData,
   SessionViewMode,
+  SessionSortMode,
 } from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
 export type { BundledSkillCatalogEntry, DailyReviewMarkdownActionInput, ManagedSkillSourceEntry, ManagedSkillUpdatePreview, SkillEntry, SkillGovernanceDetails } from './module-panel-types.js';

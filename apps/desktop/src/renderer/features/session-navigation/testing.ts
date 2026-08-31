@@ -47,7 +47,10 @@ export {
   SESSION_LIST_EXPANDED_MIN_WIDTH,
   writeSessionListViewMode,
 } from './model/session-list-layout.js';
-export { createSessionRailLayoutStore } from './model/session-rail-layout-store.js';
+export {
+  createSessionRailLayoutStore,
+  sessionRailLayoutStore,
+} from './model/session-rail-layout-store.js';
 
 export function createFakeSessionNavigationServices(
   overrides: Partial<SessionNavigationServices> = {},

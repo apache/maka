@@ -23,6 +23,8 @@ import type { StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { dotForStatus, type StatusSemantic } from './status-vocabulary.js';
 import { getConversationCopy } from './conversation-copy.js';
 
+export { isActionableBlocked } from '@maka/core/session';
+
 export interface SessionStatusPresentation {
   label: string;
   variant?: StatusDotVariant;

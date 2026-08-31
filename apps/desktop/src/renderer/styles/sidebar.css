@@ -229,17 +229,29 @@
 }
 
 /*
- * Grouping switch (session-list-panel.tsx): the last row of the sticky top
+ * Grouping and sorting (session-list-panel.tsx): the last row of the sticky top
  * region, above the scrolling history it governs.
  *
  * Block padding only. The zone already insets its content to the same two
- * vertical lines the nav rows' boxes sit on, so the control spans exactly the
- * 新任务 row's width and the top region reads as one stack; an inline padding
- * here would inset it a second time. `layout="fill"` handles the rest — each
- * segment takes exactly half.
+ * vertical lines the nav rows' boxes sit on. Content-sized grouping leaves room
+ * for sorting on the same row, with Astryx's stock item padding at every width.
  */
-.maka-session-grouping-switch {
+.maka-session-list-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
   padding-block: var(--spacing-1) var(--spacing-2);
+}
+
+.maka-session-grouping-switch {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.maka-session-sorting-switch {
+  display: flex;
+  flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 /*

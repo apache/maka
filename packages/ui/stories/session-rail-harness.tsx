@@ -39,6 +39,7 @@ export type SessionRailStoryProps = Partial<SessionRailData> &
 export function SessionRail(props: SessionRailStoryProps) {
   const data: SessionRailData = {
     sessions: props.sessions,
+    sortMode: props.sortMode,
     activeId: props.activeId,
     streamingSessionIds: props.streamingSessionIds,
     staleSessionIds: props.staleSessionIds,
@@ -60,6 +61,8 @@ export function SessionRail(props: SessionRailStoryProps) {
     maxWidth: props.maxWidth ?? 480,
     viewMode: props.viewMode ?? 'conversation',
     onViewModeChange: props.onViewModeChange,
+    sortMode: props.sortMode,
+    onSortModeChange: props.onSortModeChange,
     selection: props.selection,
     scheduledTasks: props.scheduledTasks,
     moduleMemory: props.moduleMemory,

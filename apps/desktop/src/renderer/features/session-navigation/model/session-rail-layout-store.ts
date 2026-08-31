@@ -18,15 +18,17 @@
  */
 
 import type { SideNavImperativeCollapseHandle } from '@astryxdesign/core/SideNav';
-import type { SessionViewMode } from '@maka/ui';
+import type { SessionSortMode, SessionViewMode } from '@maka/ui';
 import { safeLocalStorageSet } from '../../../browser-storage.js';
 import { createObservableState } from '../../../observable-state.js';
 import {
   clampSessionListWidth,
   readSessionListCollapsed,
+  readSessionListSortMode,
   readSessionListViewMode,
   readSessionListWidth,
   SESSION_LIST_EXPANDED_MIN_WIDTH,
+  writeSessionListSortMode,
   writeSessionListViewMode,
 } from './session-list-layout.js';
 
@@ -36,6 +38,7 @@ export interface SessionRailLayoutState {
   readonly collapsed: boolean;
   readonly width: number;
   readonly viewMode: SessionViewMode;
+  readonly sortMode: SessionSortMode;
 }
 
 /**
@@ -57,6 +60,7 @@ export function createSessionRailLayoutStore() {
     collapsed: readSessionListCollapsed(),
     width: readSessionListWidth(),
     viewMode: readSessionListViewMode(),
+    sortMode: readSessionListSortMode(),
   });
   const collapseHandleRef: { current: SideNavImperativeCollapseHandle | null } = { current: null };
   let widthPersistHandle: ReturnType<typeof setTimeout> | undefined;
@@ -96,6 +100,12 @@ export function createSessionRailLayoutStore() {
       state.replaceState({ ...current, viewMode: next });
       writeSessionListViewMode(next);
     },
+    setSortMode(next: SessionSortMode): void {
+      const current = state.getState();
+      if (current.sortMode === next) return;
+      state.replaceState({ ...current, sortMode: next });
+      writeSessionListSortMode(next);
+    },
   };
 }
 
@@ -104,8 +114,7 @@ export type SessionRailLayoutStore = ReturnType<typeof createSessionRailLayoutSt
 export const sessionRailLayoutStore: SessionRailLayoutStore = createSessionRailLayoutStore();
 
 /**
- * The whole geometry. Both readers use more than one field of it, and the store
- * replaces its state only when a field actually moved, so the identity is
- * already the comparison — a per-field selector would buy no granularity.
+ * The rail consumes both geometry and display preferences. The shell selects
+ * only collapsed/width so changing a rail preference stays within the rail.
  */
 export const selectRailLayout = (state: SessionRailLayoutState): SessionRailLayoutState => state;

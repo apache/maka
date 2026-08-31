@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SandboxBoundaryRequestEvent } from '@maka/core/events';
 import type { SessionEventStreamSnapshot } from '@maka/core/session-event-health';
-import type { SessionSummary } from '@maka/core/session';
+import type { SessionBlockedReason, SessionSummary } from '@maka/core/session';
 import { armLiveTurn, confirmLiveTurn } from '@maka/ui';
 import { settledSessionTransientIds } from '../../renderer/settled-session-transients.js';
 import { normalizeSessionSummaryForDisplay } from '../../renderer/session-status-presentation.js';
@@ -76,6 +76,31 @@ function seededState(): AppShellSessionUiState {
 }
 
 describe('session live run display state', () => {
+  it('preserves actionable blocks and normalizes old failures without changing stored facts', () => {
+    const cases: Array<[SessionBlockedReason | undefined, SessionSummary['status']]> = [
+      ['NO_REAL_CONNECTION', 'blocked'],
+      ['auth', 'blocked'],
+      ['permission_required', 'blocked'],
+      ['tool_failed', 'active'],
+      ['unknown', 'active'],
+      [undefined, 'active'],
+    ];
+    for (const [blockedReason, expectedStatus] of cases) {
+      const stored = Object.freeze({
+        id: 'blocked-session', status: 'blocked', blockedReason,
+      } as SessionSummary);
+      const displayed = normalizeSessionSummaryForDisplay(stored);
+      assert.equal(displayed.status, expectedStatus, blockedReason ?? 'missing reason');
+      if (expectedStatus === 'blocked') {
+        assert.equal(displayed, stored);
+      } else {
+        assert.equal('blockedReason' in displayed, false);
+      }
+      assert.equal(stored.status, 'blocked');
+      assert.equal(stored.blockedReason, blockedReason);
+    }
+  });
+
   it('keeps persisted running as a fallback only while live state is unknown', () => {
     const unknown = { id: 'unknown', status: 'running' } as SessionSummary;
     const knownEmpty = {

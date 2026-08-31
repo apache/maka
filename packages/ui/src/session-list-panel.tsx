@@ -22,10 +22,16 @@ import {
   SegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
 import { SideNav } from '@astryxdesign/core/SideNav';
+import {
+  DropdownMenu,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+} from '@astryxdesign/core/DropdownMenu';
 import { SessionHistoryList } from './session-history-list.js';
 import {
   useSessionRailChrome,
   type SessionViewMode,
+  type SessionSortMode,
 } from './session-rail-context.js';
 import {
   SessionSidebarFooter,
@@ -33,6 +39,7 @@ import {
 } from './session-sidebar-nav.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { ArrowDownWideNarrow, ICON_SIZE } from './icons.js';
 
 /**
  * One element, created once, for the ~1,000 fibers below it.
@@ -48,7 +55,7 @@ const SESSION_HISTORY_LIST = <SessionHistoryList />;
 export function SessionListPanel() {
   const copy = getConversationCopy(useUiLocale()).sessions;
   const chrome = useSessionRailChrome();
-  const { collapsed, viewMode, onViewModeChange } = chrome;
+  const { collapsed, viewMode, onViewModeChange, sortMode = 'updated_at', onSortModeChange } = chrome;
 
   // A view switch, not a command: two exclusive ways to read the same list.
   // Astryx spends a SegmentedControl on exactly this — see its own file-explorer
@@ -57,10 +64,9 @@ export function SessionListPanel() {
   // grouping am I in?" and then answered it with a radio dot.
   //
   // Text labels, not icons: a clock and a folder are two icons the rail has to
-  // teach, and it never had anywhere to teach them — 按时间 / 按项目 is the
-  // whole vocabulary and it fits. The control spans the rail's full width so
-  // the two segments are one object with a visible current half, rather than a
-  // pair of small buttons floating beside a title.
+  // teach, and it never had anywhere to teach them — 全部任务 / 按项目 is the
+  // whole vocabulary and it fits. Hug the labels instead of equal-width
+  // segments so grouping and sorting stay on one row at the minimum rail width.
   //
   // It lives here, in the sticky top region, and NOT as a list heading's
   // endContent: the heading is gone (the rail landmark already names the panel,
@@ -75,11 +81,43 @@ export function SessionListPanel() {
         onChange={(mode) => onViewModeChange(mode as SessionViewMode)}
         label={copy.groupingAriaLabel}
         size="sm"
-        layout="fill"
+        layout="hug"
       >
-        <SegmentedControlItem value="conversation" label={copy.groupByTime} />
+        <SegmentedControlItem
+          value="conversation"
+          label={copy.groupingAllTasks}
+          aria-description={copy.groupingAllTasks === copy.allTasks ? undefined : copy.allTasks}
+        />
         <SegmentedControlItem value="project" label={copy.groupByProject} />
       </SegmentedControl>
+    </div>
+  ) : undefined;
+
+  const sortingLabel = sortMode === 'priority' ? copy.sortByPriority : copy.sortByUpdated;
+  const sortingSwitch = onSortModeChange && !collapsed ? (
+    <div className="maka-session-sorting-switch">
+      <DropdownMenu
+        placement="below"
+        alignment="end"
+        hasChevron={false}
+        button={{
+          label: `${copy.sortingAriaLabel}: ${sortingLabel}`,
+          icon: <ArrowDownWideNarrow size={ICON_SIZE.chrome} aria-hidden="true" />,
+          isIconOnly: true,
+          tooltip: `${copy.sortingAriaLabel}: ${sortingLabel}`,
+          variant: 'ghost',
+          size: 'sm',
+        }}
+      >
+        <DropdownMenuRadioGroup
+          label={copy.sortingAriaLabel}
+          value={sortMode}
+          onChange={(mode) => onSortModeChange(mode as SessionSortMode)}
+        >
+          <DropdownMenuRadioItem value="updated_at" label={copy.sortByUpdated} />
+          <DropdownMenuRadioItem value="priority" label={copy.sortByPriority} />
+        </DropdownMenuRadioGroup>
+      </DropdownMenu>
     </div>
   ) : undefined;
 
@@ -123,7 +161,12 @@ export function SessionListPanel() {
         topContent={
           <>
             <SessionSidebarNav />
-            {groupingSwitch}
+            {groupingSwitch || sortingSwitch ? (
+              <div className="maka-session-list-controls">
+                {groupingSwitch}
+                {sortingSwitch}
+              </div>
+            ) : null}
           </>
         }
         footer={<SessionSidebarFooter />}

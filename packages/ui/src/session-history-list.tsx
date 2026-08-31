@@ -21,6 +21,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -53,10 +54,14 @@ import {
 } from '@astryxdesign/core/SideNav';
 import { VStack } from '@astryxdesign/core/Stack';
 import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
-import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
+import {
+  describeBlockedReason,
+  isActionableBlocked,
+  presentSessionStatus,
+} from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
-import { useSessionRailData } from './session-rail-context.js';
+import { useSessionRailData, type SessionSortMode } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 
@@ -90,6 +95,23 @@ export interface SessionHistoryGroup {
 export function SessionHistoryList() {
   const rail = useSessionRailData();
   const locale = useUiLocale();
+  const { sessions, groups: suppliedGroups, sortMode = 'updated_at', streamingSessionIds } = rail;
+  const groups = useMemo(() => {
+    const sort = (rows: readonly SessionSummary[]) =>
+      sortSessionsForHistory(rows, sortMode, streamingSessionIds);
+    return suppliedGroups
+      ? suppliedGroups.map((group) => ({
+          key: group.id,
+          label: group.label,
+          sessions: sort(group.sessions),
+          project: group.project,
+        }))
+      : groupSessionsForHistory(sort(sessions), locale, sortMode).map((group) => ({
+          key: group.id,
+          label: group.label,
+          sessions: group.sessions,
+        }));
+  }, [sessions, suppliedGroups, sortMode, streamingSessionIds, locale]);
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Delete' && event.key !== 'Backspace') return;
@@ -114,22 +136,7 @@ export function SessionHistoryList() {
   // handler, nothing an assistive tech user needs to be told about separately.
   return (
     <div className="maka-session-list" onKeyDown={handleListKeyDown}>
-      <SessionListGroups
-        groups={
-          rail.groups
-            ? rail.groups.map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-                project: g.project,
-              }))
-            : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-              }))
-        }
-      />
+      <SessionListGroups groups={groups} />
     </div>
   );
 }
@@ -811,14 +818,11 @@ interface SessionGroup {
 function groupSessionsForHistory(
   sessions: readonly SessionSummary[],
   locale: UiLocale,
+  sortMode: SessionSortMode,
 ): SessionGroup[] {
   const copy = getConversationCopy(locale).sessions;
-  const ordered = [...sessions].sort((a, b) => {
-    const timestampDelta = (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0);
-    return timestampDelta || a.id.localeCompare(b.id);
-  });
-  const pinned = ordered.filter((session) => session.isFlagged);
-  const unpinned = ordered.filter((session) => !session.isFlagged);
+  const pinned = sessions.filter((session) => session.isFlagged);
+  const unpinned = sessions.filter((session) => !session.isFlagged);
   const groups: SessionGroup[] = [];
   if (pinned.length > 0) {
     groups.push({ id: 'pinned', label: copy.pinned, sessions: pinned });
@@ -826,7 +830,39 @@ function groupSessionsForHistory(
   if (unpinned.length > 0) {
     // Visible SideNavSection title so pinned / recent read as two zones
     // (empty label used to drop the section chrome and blur the boundary).
-    groups.push({ id: 'unpinned', label: copy.recent, sessions: unpinned });
+    groups.push({
+      id: 'unpinned',
+      label: sortMode === 'priority' ? copy.allTasks : copy.recent,
+      sessions: unpinned,
+    });
   }
   return groups;
+}
+
+/** Rank only the already-visible rows; linked children and group membership stay unchanged. */
+function sortSessionsForHistory(
+  sessions: readonly SessionSummary[],
+  mode: SessionSortMode,
+  streamingSessionIds?: ReadonlySet<string>,
+): SessionSummary[] {
+  const priority = (session: SessionSummary): number => {
+    if (session.status === 'waiting_for_user') return 0;
+    if (session.status === 'blocked' && isActionableBlocked(session.blockedReason)) return 1;
+    const running =
+      streamingSessionIds?.has(session.id) ||
+      (session.runningTurnIds !== undefined
+        ? session.runningTurnIds.length > 0
+        : session.status === 'running');
+    if (running) return 2;
+    if (session.hasUnread) return 3;
+    return 4;
+  };
+  return [...sessions].sort((left, right) => {
+    const priorityDelta = mode === 'priority' ? priority(left) - priority(right) : 0;
+    return (
+      priorityDelta ||
+      (right.lastMessageAt ?? 0) - (left.lastMessageAt ?? 0) ||
+      left.id.localeCompare(right.id)
+    );
+  });
 }

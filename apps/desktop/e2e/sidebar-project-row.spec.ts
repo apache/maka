@@ -147,15 +147,20 @@ test('task row action menu accepts pointer selection', async ({
   await expect(page.getByRole('dialog', { name: '重命名任务' })).toBeVisible();
 });
 
-test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {
+test('rail grouping and sorting survive a renderer reload', async ({ projectSidebarWindow: page }) => {
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
-  const byTime = sidebar.getByRole('radio', { name: '按时间', exact: true });
+  const allTasks = sidebar.getByRole('radio', { name: '全部任务', exact: true });
   const byProject = sidebar.getByRole('radio', { name: '按项目', exact: true });
 
-  await expect(byTime).toBeChecked();
+  await expect(allTasks).toBeChecked();
+  const sorting = sidebar.getByRole('button', { name: /^任务排序方式:/ });
+  await expect(sorting).toHaveAccessibleName('任务排序方式: 最近更新');
+  await sorting.click();
+  await page.getByRole('menuitemradio', { name: '优先级', exact: true }).click();
+  await expect(sorting).toHaveAccessibleName('任务排序方式: 优先级');
   await byProject.click();
   await expect(byProject).toBeChecked();
   await expect
@@ -168,6 +173,10 @@ test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: 
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
 
   await expect(sidebar.getByRole('radio', { name: '按项目', exact: true })).toBeChecked();
+  await expect(sorting).toHaveAccessibleName('任务排序方式: 优先级');
+  await sorting.click();
+  await expect(page.getByRole('menuitemradio', { name: '优先级', exact: true })).toBeChecked();
+  await page.keyboard.press('Escape');
   await expect
     .poll(() => page.evaluate(() => localStorage.getItem('maka-chat-list-view-mode-v1')))
     .toBe('project');
