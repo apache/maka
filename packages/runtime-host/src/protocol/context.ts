@@ -71,6 +71,29 @@ export interface ContextDiagnosticsComposition {
   readonly unlabelledToolBytes?: number;
 }
 
+export type ContextDiagnosticsRequestPrefix =
+  | {
+      readonly status: 'no_predecessor' | 'unavailable';
+      readonly previousSegmentCount: 0;
+      readonly preservedSegmentCount: 0;
+    }
+  | {
+      readonly status: 'preserved' | 'unknown';
+      readonly previousSegmentCount: number;
+      readonly preservedSegmentCount: number;
+    }
+  | {
+      readonly status: 'diverged';
+      readonly previousSegmentCount: number;
+      readonly preservedSegmentCount: number;
+      readonly firstDivergentSegment: {
+        readonly kind: 'tool_schema' | 'system_prompt' | 'message' | 'provider_options';
+        readonly index: number;
+        readonly role?: string;
+        readonly label?: string;
+      };
+    };
+
 export type ContextDiagnosticsResult =
   | {
       readonly status: 'unavailable';
@@ -98,6 +121,8 @@ export type ContextDiagnosticsResult =
         readonly turnCount: number;
         readonly estimatedTokens: number;
       };
+      /** Runtime-owned verdict; Host and Desktop must not recompute it. */
+      readonly requestPrefix?: ContextDiagnosticsRequestPrefix;
     };
 
 const QUERY_ERRORS = [
@@ -174,6 +199,7 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
       'contextWindow',
       'composition',
       'compaction',
+      'requestPrefix',
     ],
   );
   if (record.status === 'unavailable') {
@@ -196,7 +222,14 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
     record,
     'Available context diagnostics',
     ['status', 'providerId', 'modelId', 'completedAt'],
-    ['inputTokens', 'cacheReadInputTokens', 'contextWindow', 'composition', 'compaction'],
+    [
+      'inputTokens',
+      'cacheReadInputTokens',
+      'contextWindow',
+      'composition',
+      'compaction',
+      'requestPrefix',
+    ],
   );
   return {
     status: 'available',
@@ -223,6 +256,74 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
     ...(available.compaction === undefined
       ? {}
       : { compaction: decodeContextDiagnosticsCompaction(available.compaction) }),
+    ...(available.requestPrefix === undefined
+      ? {}
+      : { requestPrefix: decodeContextDiagnosticsRequestPrefix(available.requestPrefix) }),
+  };
+}
+
+function decodeContextDiagnosticsRequestPrefix(value: unknown): ContextDiagnosticsRequestPrefix {
+  const prefix = requireShapedRecord(
+    value,
+    'Context diagnostics request prefix',
+    ['status', 'previousSegmentCount', 'preservedSegmentCount'],
+    ['firstDivergentSegment'],
+  );
+  const previousSegmentCount = requireCount(prefix.previousSegmentCount, 'previousSegmentCount');
+  const preservedSegmentCount = requireCount(prefix.preservedSegmentCount, 'preservedSegmentCount');
+  if (preservedSegmentCount > previousSegmentCount) {
+    throw invalidProtocolFrame('Invalid request prefix segment counts');
+  }
+  if (prefix.status === 'no_predecessor' || prefix.status === 'unavailable') {
+    if (
+      prefix.firstDivergentSegment !== undefined ||
+      previousSegmentCount !== 0 ||
+      preservedSegmentCount !== 0
+    ) {
+      throw invalidProtocolFrame('Invalid unavailable request prefix');
+    }
+    return { status: prefix.status, previousSegmentCount: 0, preservedSegmentCount: 0 };
+  }
+  if (prefix.status === 'preserved' || prefix.status === 'unknown') {
+    if (
+      prefix.firstDivergentSegment !== undefined ||
+      (prefix.status === 'preserved' && preservedSegmentCount !== previousSegmentCount)
+    ) {
+      throw invalidProtocolFrame('Invalid request prefix result');
+    }
+    return { status: prefix.status, previousSegmentCount, preservedSegmentCount };
+  }
+  if (prefix.status !== 'diverged' || prefix.firstDivergentSegment === undefined) {
+    throw invalidProtocolFrame('Invalid request prefix status');
+  }
+  const segment = requireShapedRecord(
+    prefix.firstDivergentSegment,
+    'Request prefix divergent segment',
+    ['kind', 'index'],
+    ['role', 'label'],
+  );
+  if (
+    segment.kind !== 'tool_schema' &&
+    segment.kind !== 'system_prompt' &&
+    segment.kind !== 'message' &&
+    segment.kind !== 'provider_options'
+  ) {
+    throw invalidProtocolFrame('Invalid request prefix segment kind');
+  }
+  return {
+    status: 'diverged',
+    previousSegmentCount,
+    preservedSegmentCount,
+    firstDivergentSegment: {
+      kind: segment.kind,
+      index: requireCount(segment.index, 'requestPrefixSegmentIndex'),
+      ...(segment.role === undefined
+        ? {}
+        : { role: requireString(segment.role, 'requestPrefixSegmentRole', 256) }),
+      ...(segment.label === undefined
+        ? {}
+        : { label: requireString(segment.label, 'requestPrefixSegmentLabel', 256) }),
+    },
   };
 }
 
