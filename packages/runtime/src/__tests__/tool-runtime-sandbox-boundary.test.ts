@@ -1077,10 +1077,13 @@ function header(cwd = process.cwd()): SessionHeader {
 async function waitForBoundaryRequest(
   events: SessionEvent[],
 ): Promise<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  const deadline = Date.now() + 5_000;
+  while (true) {
     const event = events.find((candidate) => candidate.type === 'sandbox_boundary_request');
     if (event?.type === 'sandbox_boundary_request') return event;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(10, remaining)));
   }
-  throw new Error('Sandbox boundary request was not emitted');
+  throw new Error('Sandbox boundary request was not emitted before the 5s deadline');
 }
