@@ -20,7 +20,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  chmodSync,
   cpSync,
   mkdirSync,
   mkdtempSync,
@@ -92,18 +91,33 @@ export function sha256File(path) {
 
 export function qualificationSandboxInvocation({ args, account, useSudo }) {
   if (!useSudo) return { command: 'bwrap', args };
+  const separator = args.indexOf('--');
+  if (separator === -1) throw new Error('Qualification sandbox command is missing');
   return {
     command: 'sudo',
     args: [
       '--non-interactive',
       '--',
-      'bwrap',
-      '--unshare-user',
-      '--gid',
+      '/usr/bin/bwrap',
+      ...args.slice(0, separator),
+      '--cap-add',
+      'CAP_SETUID',
+      '--cap-add',
+      'CAP_SETGID',
+      '--cap-add',
+      'CAP_SETPCAP',
+      '--',
+      '/usr/bin/setpriv',
+      '--regid',
       String(account.gid),
-      '--uid',
+      '--reuid',
       String(account.uid),
-      ...args,
+      '--clear-groups',
+      '--inh-caps=-all',
+      '--ambient-caps=-all',
+      '--bounding-set=-all',
+      '--no-new-privs',
+      ...args.slice(separator + 1),
     ],
   };
 }
@@ -115,7 +129,10 @@ export async function qualifyReleasedCliStateRoot(input) {
   assertCommandAvailable('bwrap');
   assertCommandAvailable('timeout');
   const useSudo = parseSudoBwrapEnvironment(process.env[SUDO_BWRAP_ENV]);
-  if (useSudo) assertCommandAvailable('sudo');
+  if (useSudo) {
+    assertCommandAvailable('sudo');
+    assertCommandAvailable('/usr/bin/setpriv');
+  }
   assertTarballDigest(input.source, input.sourceSha256, 'source');
   assertTarballDigest(input.target, input.targetSha256, 'target');
   const scope = mkdtempSync(join(tmpdir(), 'maka-released-state-root-'));
@@ -363,7 +380,6 @@ export function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
 }
 
 function runQualificationSandbox({ innerInputPath, sandbox, scope, useSudo }) {
-  if (useSudo) chmodSync(scope, 0o711);
   const invocation = qualificationSandboxInvocation({
     args: qualificationSandboxArgs({ innerInputPath, sandbox, scope }),
     account: sandbox.account,

@@ -95,7 +95,7 @@ test('rejects ambiguous artifact identity and unknown arguments', () => {
   );
 });
 
-test('uses a fixed privileged Bubblewrap launcher and drops back to the account', () => {
+test('uses privilege only for mount setup and drops every privilege before Node', () => {
   const args = ['--die-with-parent', '--', '/usr/bin/node'];
   assert.deepEqual(
     qualificationSandboxInvocation({ args, account: { uid: 1001, gid: 1002 }, useSudo: false }),
@@ -108,15 +108,33 @@ test('uses a fixed privileged Bubblewrap launcher and drops back to the account'
       args: [
         '--non-interactive',
         '--',
-        'bwrap',
-        '--unshare-user',
-        '--gid',
+        '/usr/bin/bwrap',
+        '--die-with-parent',
+        '--cap-add',
+        'CAP_SETUID',
+        '--cap-add',
+        'CAP_SETGID',
+        '--cap-add',
+        'CAP_SETPCAP',
+        '--',
+        '/usr/bin/setpriv',
+        '--regid',
         '1002',
-        '--uid',
+        '--reuid',
         '1001',
-        ...args,
+        '--clear-groups',
+        '--inh-caps=-all',
+        '--ambient-caps=-all',
+        '--bounding-set=-all',
+        '--no-new-privs',
+        '/usr/bin/node',
       ],
     },
+  );
+  assert.throws(
+    () =>
+      qualificationSandboxInvocation({ args: ['--die-with-parent'], account: {}, useSudo: true }),
+    /sandbox command is missing/u,
   );
 });
 
