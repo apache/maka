@@ -56,6 +56,11 @@ interface ManagedPeerMeshCommand {
   readonly signal?: AbortSignal;
 }
 
+interface ActivePeerMeshOperation {
+  readonly controller: AbortController;
+  readonly cancellable: boolean;
+}
+
 type RunManagedPeerMeshCommand = (command: ManagedPeerMeshCommand) => Promise<PeerMeshResult>;
 
 export function createDesktopRuntimeHostPeerMeshManagement(input: {
@@ -69,7 +74,7 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   readonly profiles: Pick<DesktopRuntimeHostProfileService, 'resolveManagedService'>;
   readonly runRemote: SshTerminal['runPeerMeshManagement'];
 }): { close(): void } {
-  const activeOperations = new Map<string, AbortController>();
+  const activeOperations = new Map<string, ActivePeerMeshOperation>();
   const execute = async (
     targetValue: unknown,
     actionValue: unknown,
@@ -217,13 +222,18 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       if (!operationId) {
         return execute(target, action, meshId, peerId, invitation, displayName);
       }
+      const parsedTarget = requireTarget(target);
+      const parsedAction = requireAction(action);
       const controller = new AbortController();
       if (activeOperations.has(operationId)) throw new Error('Peer Mesh operation is already active');
-      activeOperations.set(operationId, controller);
+      activeOperations.set(operationId, {
+        controller,
+        cancellable: canCancelOperation(parsedTarget, parsedAction),
+      });
       try {
         return await execute(
-          target,
-          action,
+          parsedTarget,
+          parsedAction,
           meshId,
           peerId,
           invitation,
@@ -239,11 +249,14 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   input.ipcMain.handle(cancelChannel, (_event, operationIdValue) => {
     const operationId = requireOperationId(operationIdValue, true);
     if (!operationId) throw new Error('Peer Mesh operation ID is required');
-    activeOperations.get(operationId)?.abort(new Error('Peer Mesh operation was cancelled'));
+    const operation = activeOperations.get(operationId);
+    if (operation?.cancellable) {
+      operation.controller.abort(new Error('Peer Mesh operation was cancelled'));
+    }
   });
   return {
     close: () => {
-      for (const controller of activeOperations.values()) {
+      for (const { controller } of activeOperations.values()) {
         controller.abort(new Error('Peer Mesh management closed'));
       }
       activeOperations.clear();
@@ -318,6 +331,13 @@ function runLivePeerMeshCommand(
         displayName: requiredDisplayName(command.displayName),
       });
   }
+}
+
+function canCancelOperation(
+  target: DesktopRuntimeHostPeerMeshTarget,
+  action: PeerMeshAction,
+): boolean {
+  return action === 'status' || (target.kind === 'desktop' && action === 'join');
 }
 
 async function reconcileDesktopTarget(
