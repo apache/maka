@@ -124,7 +124,9 @@ durable transcript sequence rather than wall-clock order.
 The ordinary Session records the delegated request, tools, side effects, and
 authoritative result. WorkHub may display a bounded projection or record a
 coordination summary, but it does not copy the ordinary Session's complete
-transcript into the Coordination Session.
+transcript into the Coordination Session. The assignment projection preserves
+`create_new` so the visible card explicitly tells the user that WorkHub created a
+new work item rather than merely saying that an existing item accepted the request.
 
 Delegation linkage uses one closed, typed `delegation_assigned` record in the
 existing Coordination Session transcript. Under the Coordination and target

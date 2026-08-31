@@ -220,6 +220,36 @@ test('rebuilds active linkage outside the bounded visible timeline in transcript
   }]);
 });
 
+test('projects durable create_new disposition as an explicit new-work announcement', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-created',
+    turnId: 'action-created',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-created',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-created',
+    targetSessionId: 'login',
+    targetSessionName: 'Login stability',
+    targetTurnId: 'login-turn',
+    targetMessageId: 'login-message',
+    delegationId: 'login-delegation',
+    disposition: 'create_new',
+    userText: 'Fix login stability',
+    create: {
+      title: 'Login stability',
+      workspace: { kind: 'host_path', path: '/workspace' },
+    },
+  };
+
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment])[0]?.assignment?.createdNew,
+    true,
+  );
+});
+
 test('a durable replacement abort terminalizes the retired source linkage', () => {
   const assignment: StoredMessage = {
     type: 'workhub_coordination',

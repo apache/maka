@@ -223,6 +223,7 @@ export function projectWorkHubCoordinationTurns(
           targetTurnId: message.targetTurnId,
           feedbackState: 'accepted',
           linkState: terminalLinkState.get(message.delegationId) ?? 'active',
+          ...(message.disposition === 'create_new' ? { createdNew: true as const } : {}),
         },
         updatedAt: message.ts,
       });

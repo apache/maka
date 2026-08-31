@@ -208,6 +208,43 @@ test('durable delegation renders terminal link state instead of stale execution 
   }
 });
 
+test('durable creation explicitly announces the new work', () => {
+  const turn: WorkHubCoordinationTurn = {
+    messageId: 'created-assignment',
+    turnId: 'created-action',
+    text: 'Fix login stability',
+    state: 'completed',
+    assignment: {
+      actionId: 'created-action',
+      delegationId: 'created-delegation',
+      targetSessionId: 'login',
+      targetSessionName: 'Login stability',
+      targetMessageId: 'login-message',
+      targetTurnId: 'login-turn',
+      feedbackState: 'accepted',
+      linkState: 'active',
+      createdNew: true,
+    },
+    updatedAt: 10,
+  };
+  const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale,
+      children: createElement(AstryxLocaleProvider, {
+        children: createElement(WorkHubCoordinationTurnView, {
+          turn,
+          projection: { sessions: [], turns: [] },
+          locale,
+          onOpenSession: () => undefined,
+        }),
+      }),
+    }),
+  );
+
+  assert.match(render('en'), /Created new work:/u);
+  assert.match(render('zh'), /已创建新工作：/u);
+});
+
 test('surface projection refresh gate rejects older reads after a newer refresh starts', () => {
   const gate = new WorkHubProjectionRefreshGate();
   const first = gate.begin();

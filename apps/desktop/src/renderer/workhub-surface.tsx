@@ -577,7 +577,7 @@ export function WorkHubCoordinationTurnView(props: {
           session={session}
           targetSessionId={assignment.targetSessionId}
           fallbackName={assignment.targetSessionName}
-          heading={copy.sentTo}
+          heading={assignment.createdNew ? copy.createdWork : copy.sentTo}
           state={assignment.linkState === 'active'
             ? copy.assignmentLinkStates.active(copy.delegationStates[assignment.feedbackState])
             : copy.assignmentLinkStates[assignment.linkState]}
@@ -677,7 +677,7 @@ function WorkHubTurnView(props: {
             <SubmittedWorkView
               session={target}
               targetSessionId={submitted.target.sessionId}
-              heading={copy.sentTo}
+              heading={submitted.evidence === 'new_session' ? copy.createdWork : copy.sentTo}
               state={target
                 ? (target.archived ? copy.archived : copy.states[target.state])
                 : copy.accepted}
@@ -767,7 +767,7 @@ function workHubCopy(locale: UiLocale) {
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
       choseWork: (name: string) => `选择“${name}”`,
-      sentTo: '已交给：', accepted: '已接收', sessionFallback: '普通 Session',
+      sentTo: '已交给：', createdWork: '已创建新工作：', accepted: '已接收', sessionFallback: '普通 Session',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -778,7 +778,7 @@ function workHubCopy(locale: UiLocale) {
       retry: '重试',
       submitFailures: {
         candidates_changed: '工作列表已变化，请重新发送以使用最新目标。',
-        linked_correction_unavailable: '跨 Session 更正将在持久委托关联完成后开放；请先打开原 Session 停止当前工作。',
+        linked_correction_unavailable: '找不到可更正的有效委托关联；请重新发送，或打开原 Session 确认当前工作。',
         target_waiting: '目标 Session 正在等待你的处理；请先打开并完成该交互。',
         action_changed: '这次操作已发生变化，请重新发送。',
         delivery_failed: '输入未能送达，请重试。',
@@ -814,7 +814,7 @@ function workHubCopy(locale: UiLocale) {
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',
     choseWork: (name: string) => `Choose “${name}”`,
-    sentTo: 'Sent to:', accepted: 'Accepted', sessionFallback: 'Ordinary Session',
+    sentTo: 'Sent to:', createdWork: 'Created new work:', accepted: 'Accepted', sessionFallback: 'Ordinary Session',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',
@@ -825,7 +825,7 @@ function workHubCopy(locale: UiLocale) {
     retry: 'Retry',
     submitFailures: {
       candidates_changed: 'The work list changed. Send again to use the latest targets.',
-      linked_correction_unavailable: 'Cross-Session correction will be available with persistent delegation. Open the original Session to stop its current work first.',
+      linked_correction_unavailable: 'No active delegation link is available to correct. Send again, or open the original Session to confirm its current work.',
       target_waiting: 'The target Session needs your input. Open it and resolve that interaction first.',
       action_changed: 'This action changed. Send it again.',
       delivery_failed: 'The input could not be delivered. Try again.',

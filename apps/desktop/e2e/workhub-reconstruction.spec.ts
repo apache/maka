@@ -76,6 +76,30 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   ).toHaveText('关联有效 · 已完成');
 });
 
+test('WorkHub explicitly announces a newly created work item', async ({ window: page }) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('检查支付回调重复投递时的幂等性');
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+  await waitForWorkHubReady(page, 1);
+
+  const prompt = '创建一个新的 Session，名为登录稳定性';
+  const workHubComposer = page.locator(
+    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
+  );
+  await workHubComposer.fill(prompt);
+  await workHubComposer.press('Enter');
+
+  const createdTurn = page.locator('.workhub-turn', { hasText: prompt });
+  await expect(createdTurn.locator('.workhub-submitted')).toContainText('已创建新工作：');
+  await expect(createdTurn.locator('.workhub-submitted-session strong')).toHaveText('登录稳定性');
+});
+
 test('WorkHub replaces the exact linked delegation across Sessions', async ({
   window: page,
 }) => {

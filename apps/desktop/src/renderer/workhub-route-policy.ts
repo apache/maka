@@ -21,6 +21,16 @@ import type {
   WorkHubSessionFacts,
   WorkHubSessionTarget,
 } from './workhub-controller.js';
+import {
+  affirmativeWorkHubExistingCorrectionTarget,
+  affirmativeWorkHubNamedCreationTitle,
+  hasWorkHubCorrectionCue,
+  hasWorkHubNamedCreationClause,
+  isAffirmativeWorkHubCorrectionRequest,
+  isAffirmativeWorkHubExistingTargetCorrectionRequest,
+  isAffirmativeWorkHubNewTopicRequest,
+  isExplicitWorkHubCreationRequest,
+} from '@maka/core/workhub-creation-intent';
 
 export type WorkHubRouteEvidence =
   | 'explicit_target'
@@ -57,16 +67,10 @@ export interface WorkHubRoutePolicy {
 }
 
 export function workHubNewSessionName(text: string): string {
-  const explicitChinese = text.match(
-    /(?:标题|名称|名字)(?:为|叫|是|：|:)\s*[“”"']?([^,，。；;\n“”"']{2,48})/u,
-  )?.[1]?.trim();
-  const explicitEnglish = text.match(
-    /\b(?:called|named|titled)\s+[“”"']?([^,，。；;.!?\n“”"']{2,48})/iu,
-  )?.[1]?.trim();
-  const explicit = explicitChinese ?? explicitEnglish;
+  const explicit = affirmativeWorkHubNamedCreationTitle(text);
   if (explicit) return explicit;
   const withoutCreationPrefix = text.trim().replace(
-    /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:called|named|titled))?[，,:：\s-]*/iu,
+    /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:叫做?|名为|命名为|标题为|名称为|名字为|called|named|titled))?[，,:：\s-]*/iu,
     '',
   );
   const firstClause = withoutCreationPrefix.split(/[，。；;\n]/u)[0]?.trim();
@@ -102,6 +106,10 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         return { kind: 'target', target: explicitTarget, evidence: 'explicit_target' };
       }
 
+      if (hasWorkHubCorrectionCue(text) && !isAffirmativeWorkHubCorrectionRequest(text)) {
+        return { kind: 'discussion' };
+      }
+
       const correctionText = naturalCorrectionTargetText(text);
       const correctedFrom = currentFocus && sessions.some((session) =>
         session.target.sessionId === currentFocus?.sessionId)
@@ -121,33 +129,18 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
-        const exactCorrection = rankExactSessions(correctionText, alternatives);
-        if (
-          exactCorrection[0] &&
-          exactCorrection[0].matchLength > (exactCorrection[1]?.matchLength ?? 0)
-        ) {
+        const affirmedCorrections = alternatives.filter((session) =>
+          isAffirmativeWorkHubExistingTargetCorrectionRequest(text, session.sessionName));
+        if (affirmedCorrections.length === 1) {
           return {
             kind: 'target',
-            target: exactCorrection[0].session.target,
+            target: affirmedCorrections[0]!.target,
             evidence: 'route_correction',
             correctedFrom,
           };
         }
-        const relatedCorrection = rankRelatedSessions(
-          correctionText,
-          alternatives,
-          originPromptBySessionId,
-        );
-        if (relatedCorrection.length === 1) {
-          return {
-            kind: 'target',
-            target: relatedCorrection[0]!.session.target,
-            evidence: 'route_correction',
-            correctedFrom,
-          };
-        }
-        const options = relatedCorrection.length > 1
-          ? relatedCorrection.map(({ session }) => session)
+        const options = affirmedCorrections.length > 1
+          ? affirmedCorrections
           : alternatives.sort((left, right) => right.updatedAt - left.updatedAt);
         return {
           kind: 'clarification',
@@ -354,6 +347,7 @@ function looksLikePreviousFocus(value: string): boolean {
 }
 
 function naturalCorrectionTargetText(value: string): string | undefined {
+  if (!isAffirmativeWorkHubCorrectionRequest(value)) return undefined;
   const chineseCreation = value.match(
     /^\s*(?:(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|不对|错了|搞错了|弄错了)(?:[\s\p{P}\p{S}]+|$)(?:(?:请|麻烦|帮我)\s*)?(?:(?:创建|新建|新开)(?:一个)?|开一个)(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)(?:叫|名为|命名为)?\s*(.{2,})$/iu,
   )?.[1]?.trim();
@@ -362,35 +356,11 @@ function naturalCorrectionTargetText(value: string): string | undefined {
     /^\s*(?:no|not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?)|wrong\s+(?:one|session|work|task))\b(?:[\s\p{P}\p{S}]+|$)(?:(?:please|kindly)\s+)?(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)(?:\s+(?:called|named))?\s+(.{2,}?)(?:\s+instead)?[.!]?$/iu,
   )?.[1]?.trim();
   if (englishCreation) return englishCreation;
-  const replacement = '(?:应该(?:是|用|改成|改为|切到|转到)?|而是|改成|改为|换成|换到|切到|转到|用|是)';
-  const chinese = value.match(
-    new RegExp(`(?:(?:不是|不要再继续)\\s*(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))|(?:(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)|[^，,。；;\\n]{1,32}(?:那个|那项工作|Session|会话|工作|任务))\\s*(?:不对|搞错了|弄错了))[，,。；;\\n]\\s*${replacement}\\s*(.{2,})$`, 'iu'),
-  )?.[1]?.trim();
-  if (chinese) return chinese;
-  return value.match(
-    /\b(?:not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?|[^,.;\n]{1,32}\s+(?:session|work|task))|wrong\s+(?:one|session|work|task))\b[,.;\s]{0,4}(?:use|switch\s+to|change\s+to|move\s+to)\s+(.{2,})$/iu,
-  )?.[1]?.trim();
+  return affirmativeWorkHubExistingCorrectionTarget(value);
 }
 
 function looksLikeCorrectionCreation(value: string): boolean {
-  if (hasNegatedCreationClause(value)) return false;
-  return /(?:创建|新建|新开|开一个)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|\b(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)\b/iu.test(
-    value,
-  );
-}
-
-function hasNegatedCreationClause(value: string): boolean {
-  return value
-    .split(/[，,。；;！？!?\n]|而是|\b(?:but|instead)\b/iu)
-    .some((clause) => {
-      const negation = clause.match(
-        /(?:不要|别|无需|不用|不需要|先不|暂不|禁止)|\b(?:do\s+not|don't|never|without)\b/iu,
-      );
-      if (!negation || negation.index === undefined) return false;
-      return /(?:创建|新建|新开|开一个)|\b(?:creat(?:e|ing)|start(?:ing)?|open(?:ing)?)\b/iu.test(
-        clause.slice(negation.index + negation[0].length),
-      );
-    });
+  return isExplicitWorkHubCreationRequest(value);
 }
 
 function looksLikeContentReplacement(value: string): boolean {
@@ -404,30 +374,12 @@ function looksLikeTargetUncertainty(value: string): boolean {
 }
 
 function looksLikeExplicitNewSession(value: string): boolean {
-  if (looksLikeCreationDeliberation(value)) return false;
-  return /(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)/iu.test(
-    value,
-  );
+  return isExplicitWorkHubCreationRequest(value) &&
+    (!hasWorkHubNamedCreationClause(value) || Boolean(affirmativeWorkHubNamedCreationTitle(value)));
 }
 
 function looksExecutable(value: string): boolean {
-  if (looksLikeCreationDeliberation(value)) return false;
-  const action = /(?:修复|修改|更新|实现|创建|新增|删除|移除|处理|完成|运行|测试|提交|推送|检查|优化|补充|整理|fix|implement|update|create|add|remove|delete|handle|finish|run|test|commit|push|check|optimize)/iu;
-  if (!action.test(value)) return false;
-  const directRequest = /(?:请|帮我|麻烦|现在(?:就)?|开始|can you|could you|would you|please)/iu.test(value);
-  if (directRequest) return true;
-  const designQuestion = /(?:[?？]\s*$|怎么|如何|为什么|是否|该不该|值不值得|^\s*(?:how|why|whether|what\s+(?:is|are|was|were|should|would|could|do|does|did|can))\b)/iu.test(
-    value,
-  );
-  return !designQuestion;
-}
-
-function looksLikeCreationDeliberation(value: string): boolean {
-  const creation = /(?:创建|新建|新开|开一个)(?:.{0,8})(?:Session|会话|工作|任务)|(?:create|start|open)(?:.{0,12})(?:session|work|task)/iu;
-  if (!creation.test(value)) return false;
-  return /(?:不要|别|无需|不用|不需要|先不|暂不|是否|要不要|该不该|应不应该|能不能|可不可以|为什么|如何|怎么|(?:do\s+not|don't|should\s+(?:we|i)|whether|why|how|can\s+(?:we|i)))/iu.test(
-    value,
-  ) || /[?？]\s*$/u.test(value);
+  return isAffirmativeWorkHubNewTopicRequest(value);
 }
 
 const ROUTING_STOP_TERMS = new Set([

@@ -425,6 +425,41 @@ test('production composition commits automatic titles through Host-owned Session
   });
 });
 
+test('WorkHub creates new work through the production assignment composition', async () => {
+  await withCompositionRoot(async ({ root, owner }) => {
+    const connectionId = await configureFakeDefaultTarget(owner);
+    const { composition, manager } = await createCapturedExecutionComposition(owner);
+    const context = {
+      hostEpoch: 'execution-composition-test',
+      connectionId: 'workhub-create-client',
+      principal: 'local_os_user' as const,
+      acquireResidency: () => ({ release() {} }),
+    };
+    try {
+      const resolved = await composition.handlers['workhub.coordination.resolve']({}, context);
+      assert.equal(resolved.ok, true);
+      const created = await composition.handlers['workhub.coordination.act'](
+        {
+          actionId: 'workhub-create-action',
+          userText: 'Fix login stability',
+          proposal: { disposition: 'create_new', title: 'Login stability' },
+          create: { workspace: { kind: 'host_path', path: root } },
+        },
+        context,
+      );
+
+      assert.equal(created.ok, true, JSON.stringify(created));
+      if (!created.ok || created.result.disposition !== 'create_new') return;
+      const targetSessionId = created.result.targetSessionId;
+      const session = (await manager.listSessions()).find(({ id }) => id === targetSessionId);
+      assert.equal(session?.name, 'Login stability');
+      assert.equal(session?.llmConnectionId, connectionId);
+    } finally {
+      await composition.close();
+    }
+  });
+});
+
 test('WorkHub correction replaces its link without stopping a shared manual Turn', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
     const connectionId = await configureFakeDefaultTarget(owner);
@@ -539,7 +574,7 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
       const correction = await composition.handlers['workhub.coordination.act'](
         {
           actionId: 'workhub-correction-action',
-          userText: 'No, move this to the other session instead',
+          userText: `No, move this to ${correctionDestination.sessionName} instead`,
           candidateSetId: correctionCandidates.result.candidateSetId,
           confirmation: { kind: 'user_correction' },
           proposal: {

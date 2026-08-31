@@ -32,6 +32,14 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   isWorkHubCoordinationSessionTarget,
 } from '@maka/core/session';
+import {
+  affirmativeWorkHubNamedCreationTitle,
+  hasWorkHubCorrectionCue,
+  hasWorkHubNamedCreationClause,
+  isAffirmativeWorkHubExistingTargetCorrectionRequest,
+  isAffirmativeWorkHubNewTopicRequest,
+  isExplicitWorkHubCreationRequest,
+} from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
@@ -266,10 +274,14 @@ export class WorkHubCoordinationActionGate {
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
     if (proposal.disposition === 'create_new') {
-      if (!input.create) {
+      if (
+        !input.create ||
+        !isAffirmativeWorkHubNewTopicRequest(input.userText) ||
+        !workHubCreationTitleMatches(input.userText, proposal.title)
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub creation context is unavailable',
+          'WorkHub creation requires explicit affirmative intent and creation context',
         );
       }
       const sessionId = workHubCreatedSessionId(input.actionId);
@@ -282,7 +294,7 @@ export class WorkHubCoordinationActionGate {
     if (proposal.disposition === 'replace') {
       if (
         input.confirmation?.kind !== 'user_correction' ||
-        !isExplicitWorkHubCorrectionText(input.userText)
+        !hasWorkHubCorrectionCue(input.userText)
       ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -304,6 +316,18 @@ export class WorkHubCoordinationActionGate {
       }
       const prepared = await this.#effects.readReplacement(replaced.delegationId);
       if (prepared) {
+        if (
+          !isExplicitWorkHubCorrectionText(
+            input.userText,
+            prepared.disposition,
+            prepared.targetSessionName,
+          )
+        ) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub replacement target is not affirmed in trusted user text',
+          );
+        }
         if (
           prepared.actionId !== input.actionId ||
           prepared.actionFingerprint !==
@@ -355,7 +379,7 @@ export class WorkHubCoordinationActionGate {
     }
     const target = input.proposal.target;
     if (target.disposition === 'create_new') {
-      if (!isExplicitWorkHubCorrectionCreation(input.userText)) {
+      if (!isExplicitWorkHubCorrectionText(input.userText, 'create_new', target.title)) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub replacement creation requires explicit non-negated user intent',
@@ -399,6 +423,14 @@ export class WorkHubCoordinationActionGate {
       );
     }
     this.#assertTarget(destination);
+    if (
+      !isExplicitWorkHubCorrectionText(input.userText, 'delegate_existing', destination.sessionName)
+    ) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub replacement target is not affirmed in trusted user text',
+      );
+    }
     if (destination.sessionId === replaced.targetSessionId) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
@@ -492,7 +524,7 @@ export class WorkHubCoordinationActionGate {
       const reason =
         replacement.disposition === 'delegate_existing'
           ? await this.#replacementAbortReason(replacement)
-          : undefined;
+          : 'target_unavailable';
       if (reason) await this.#effects.abortReplacement({ replacement, reason });
       throw error;
     }
@@ -765,25 +797,6 @@ function replacementActionFingerprint(
   });
 }
 
-function isExplicitWorkHubCorrectionCreation(value: string): boolean {
-  if (hasNegatedCreationClause(value)) return false;
-  return /(?:创建|新建|新开|开一个)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|\b(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)\b/iu.test(
-    value,
-  );
-}
-
-function hasNegatedCreationClause(value: string): boolean {
-  return value.split(/[，,。；;！？!?\n]|而是|\b(?:but|instead)\b/iu).some((clause) => {
-    const negation = clause.match(
-      /(?:不要|别|无需|不用|不需要|先不|暂不|禁止)|\b(?:do\s+not|don't|never|without)\b/iu,
-    );
-    if (!negation || negation.index === undefined) return false;
-    return /(?:创建|新建|新开|开一个)|\b(?:creat(?:e|ing)|start(?:ing)?|open(?:ing)?)\b/iu.test(
-      clause.slice(negation.index + negation[0].length),
-    );
-  });
-}
-
 function assignmentInputFromRecord(
   assignment: WorkHubDelegationAssignedMessage,
 ): WorkHubDelegationAssignmentInput {
@@ -829,22 +842,31 @@ function hash(value: string): string {
  * a strategy-provided replacement proposal and confirmation marker are not
  * sufficient authority. Keep this deliberately narrower than route inference.
  */
-export function isExplicitWorkHubCorrectionText(value: string): boolean {
-  return (
-    /(?:^|[，,。；;\s])(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?/iu.test(
-      value,
-    ) ||
-    /(?:^|[，,。；;\s])(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?\s*(?:不对|搞错了|弄错了)/iu.test(
-      value,
-    ) ||
-    /^\s*(?:不对|错了|搞错了|弄错了)[\s\p{P}\p{S}]+(?:(?:请|麻烦|帮我)\s*)?(?:应该|而是|改成|改为|换成|换到|切到|转到|用|创建|新建|新开|开一个)/iu.test(
-      value,
-    ) ||
-    /^\s*(?:no|nope)\b[^.\n]{0,40}\b(?:use|switch|change|move|send|create|start|open)\b/iu.test(
-      value,
-    ) ||
-    /\b(?:not\s+(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?|wrong\s+(?:one|session|work|task))\b/iu.test(
-      value,
-    )
+export function isExplicitWorkHubCorrectionText(
+  value: string,
+  targetDisposition: WorkHubDelegationDisposition,
+  targetSessionName?: string,
+): boolean {
+  if (targetDisposition === 'create_new') {
+    if (!hasWorkHubCorrectionCue(value) || !isExplicitWorkHubCreationRequest(value)) return false;
+    return workHubCreationTitleMatches(value, targetSessionName);
+  }
+  return Boolean(
+    targetSessionName &&
+      isAffirmativeWorkHubExistingTargetCorrectionRequest(value, targetSessionName),
   );
+}
+
+function workHubCreationTitleMatches(value: string, targetSessionName?: string): boolean {
+  if (!hasWorkHubNamedCreationClause(value)) return true;
+  const namedTitle = affirmativeWorkHubNamedCreationTitle(value);
+  return Boolean(
+    namedTitle &&
+      targetSessionName &&
+      normalizeCorrectionIdentity(namedTitle) === normalizeCorrectionIdentity(targetSessionName),
+  );
+}
+
+function normalizeCorrectionIdentity(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
 }

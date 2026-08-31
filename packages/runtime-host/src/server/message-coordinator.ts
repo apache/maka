@@ -549,9 +549,19 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       receipt?.admission.sessionId === sessionId &&
       receipt.sourceMessage.messageId === messageId
     ) {
-      // A root source receipt is the latest durable ownership proof and
-      // therefore outranks the steering location from which a Message may
-      // have been folded into this successor.
+      // Only a single-source admission proves that this Message created the
+      // root. Recovery may fold several steering Messages into one successor;
+      // every source in that batch shares the Turn and none may stop it alone.
+      if (
+        receipt.admission.sourceMessages.length !== 1 ||
+        receipt.admission.userMessageId === null
+      ) {
+        return {
+          kind: 'shared_turn',
+          turnId: receipt.admission.turnId,
+          runId: receipt.admission.runId,
+        };
+      }
       return {
         kind: 'owned_root',
         turnId: receipt.admission.turnId,
