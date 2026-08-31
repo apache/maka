@@ -297,7 +297,6 @@ describe('ToolRuntime durable boundary', () => {
         persistDurableProjectionArtifact: async (input) => {
           order.push('artifact');
           assert.equal(input.turnId, 'turn-1');
-          assert.equal(input.toolCallId, 'provider-call-1');
           assert.equal(input.mediaType, 'image/png');
           assert.deepEqual([...input.bytes], [137, 80, 78, 71]);
           return artifactRef;

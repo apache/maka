@@ -356,7 +356,6 @@ export interface ToolRuntimeInput {
   invocationId?: string;
   persistDurableProjectionArtifact?: (input: {
     turnId: string;
-    toolCallId: string;
     bytes: Uint8Array;
     mediaType: string;
   }) => Promise<DurableProjectionArtifactRef>;
@@ -785,7 +784,6 @@ export class ToolRuntime {
             ? ({ bytes, mediaType }) =>
                 this.input.persistDurableProjectionArtifact!({
                   turnId,
-                  toolCallId,
                   bytes,
                   mediaType,
                 })
