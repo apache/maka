@@ -83,6 +83,37 @@ describe('ModelCallAttempt codec', () => {
     assert.equal(decoded.requestObservation?.segments[0]?.comparison, 'exact');
   });
 
+  test('rejects a prepared-request observation whose semantic segments are out of order', () => {
+    assert.throws(() =>
+      decodeModelCallAttempt({
+        ...attempt(),
+        requestObservation: {
+          schemaVersion: 1,
+          digest: `sha256:${'a'.repeat(64)}`,
+          bytes: 42,
+          segments: [
+            {
+              kind: 'message',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'b'.repeat(64)}`,
+              bytes: 21,
+            },
+            {
+              kind: 'system_prompt',
+              index: 0,
+              cacheable: true,
+              comparison: 'exact',
+              digest: `sha256:${'c'.repeat(64)}`,
+              bytes: 21,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
   test('accepts bounded provider failure diagnostics on history compaction calls', () => {
     const decoded = decodeModelCallAttempt(
       attempt({

@@ -224,8 +224,7 @@ import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-atte
 import {
   ProviderRequestTracker,
   type ModelCallAccountingInput,
-  type ProviderRequestAttemptRecord,
-  type ProviderRequestCaptureRecord,
+  type PreparedRequestArtifactInput,
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
@@ -754,19 +753,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
-  /**
-   * Durable prepared-request capture boundary. When configured, rejection
-   * prevents the corresponding provider request from being dispatched.
-   */
-  recordProviderRequestCapture?: (
-    capture: ProviderRequestCaptureRecord,
+  /** Optional private artifact sink for the secret-free prepared request. */
+  persistPreparedRequestArtifact?: (
+    input: PreparedRequestArtifactInput,
   ) => Promise<{ artifactId: string }>;
-  /** Best-effort durable row for one physical provider request attempt. */
-  recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
-  /**
-   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
-   * stays a diagnostic trace: this one carries the accounting record.
-   */
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
@@ -3216,14 +3206,14 @@ export class AiSdkBackend implements AgentBackend {
   /**
    * One tracker for one physical provider call kind (#1679).
    *
-   * Auxiliary calls get the same capture, attempt, and accounting plumbing the
+   * Auxiliary calls get the same observation, attempt, and accounting plumbing the
    * main send uses, built here because the sinks and the current run live on
    * this backend. Callers receive a ready tracker rather than the ingredients:
    * a half-wired tracker is what produces records nothing can attribute.
    *
-   * Absent only when there is nothing to feed: no capture sink *and* no
-   * canonical sink. Metering deliberately does not depend on capture — capture
-   * is a diagnostic, and a deployment that turns it off must still be billed.
+   * Absent only when there is nothing to feed: no artifact sink, canonical
+   * sink, or dispatch gate. Metering deliberately does not depend on artifact
+   * persistence: the observation is created in memory for every tracked call.
    */
   private createProviderRequestTracker(input: {
     turnId: string;
@@ -3237,7 +3227,7 @@ export class AiSdkBackend implements AgentBackend {
      */
     runId: string | undefined;
   }): ProviderRequestTracker | undefined {
-    const persistCapture = this.input.recordProviderRequestCapture;
+    const persistArtifact = this.input.persistPreparedRequestArtifact;
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
@@ -3254,15 +3244,14 @@ export class AiSdkBackend implements AgentBackend {
               runId,
             })
         : undefined;
-    if (!persistCapture && !accounting && !beforeDispatch) return undefined;
+    if (!persistArtifact && !accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
       contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
       now: this.now,
       newId: this.newId,
-      ...(persistCapture ? { persistCapture } : {}),
-      recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(persistArtifact ? { persistArtifact } : {}),
       ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });

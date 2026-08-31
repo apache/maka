@@ -842,8 +842,16 @@ function rewriteProviderRequestAttempt(
     ...data,
     traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
     attemptId: eventId,
-    captureId: requiredMappedId(operationalEventIds, data.captureId, 'provider request capture'),
-    captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
+    ...(data.captureId !== undefined && data.captureArtifactId !== undefined
+      ? {
+          captureId: requiredMappedId(
+            operationalEventIds,
+            data.captureId,
+            'provider request capture',
+          ),
+          captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
+        }
+      : {}),
   };
 }
 
@@ -915,16 +923,17 @@ function providerRequestCapture(event: AgentRunEvent): Record<string, unknown> &
 function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> & {
   readonly traceId: string;
   readonly attemptId: string;
-  readonly captureId: string;
-  readonly captureArtifactId: string;
+  readonly captureId?: string;
+  readonly captureArtifactId?: string;
 } {
   const data = event.data;
+  const hasCaptureId = typeof data?.captureId === 'string';
+  const hasArtifactId = typeof data?.captureArtifactId === 'string';
   if (
     !data ||
     data.attemptId !== event.id ||
     typeof data.traceId !== 'string' ||
-    typeof data.captureId !== 'string' ||
-    typeof data.captureArtifactId !== 'string'
+    hasCaptureId !== hasArtifactId
   ) {
     throw new Error(`Cannot copy invalid provider request attempt ${event.id}`);
   }
@@ -932,8 +941,9 @@ function providerRequestAttempt(event: AgentRunEvent): Record<string, unknown> &
     ...data,
     traceId: data.traceId,
     attemptId: data.attemptId,
-    captureId: data.captureId,
-    captureArtifactId: data.captureArtifactId,
+    ...(hasCaptureId && hasArtifactId
+      ? { captureId: data.captureId as string, captureArtifactId: data.captureArtifactId as string }
+      : {}),
   };
 }
 

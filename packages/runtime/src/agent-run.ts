@@ -85,10 +85,6 @@ import {
   type RuntimeContinuationStartAdmissionProof,
 } from './runtime-continuation-admission.js';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureLedgerRecord,
-} from './provider-request-telemetry.js';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
 
@@ -438,46 +434,6 @@ export class AgentRun {
     return write.catch((error: unknown) => {
       if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
       throw error;
-    });
-  }
-
-  recordProviderRequestCapture(capture: ProviderRequestCaptureLedgerRecord): Promise<void> {
-    if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
-    return this.enqueueRequiredRunStoreWrite('append provider request capture', async () => {
-      const {
-        schemaVersion,
-        serializedRequest: _serializedRequest,
-        ...data
-      } = capture as ProviderRequestCaptureLedgerRecord & { serializedRequest?: string };
-      await this.input.runStore?.appendEvent(
-        this.sessionId,
-        this.runId,
-        {
-          type: 'provider_request_captured',
-          id: capture.captureId,
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: capture.turnId,
-          ts: this.input.now(),
-          data: { schemaVersion, ...data },
-        },
-        { durable: true },
-      );
-    });
-  }
-
-  recordProviderRequestAttempt(attempt: ProviderRequestAttemptRecord): void {
-    if (!this.input.runStore) return;
-    this.enqueueBestEffortProviderAttempt('append provider request attempt', async () => {
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'provider_request_attempt_recorded',
-        id: attempt.attemptId,
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: attempt.turnId,
-        ts: attempt.completedAt,
-        data: { ...attempt },
-      });
     });
   }
 
@@ -1575,19 +1531,6 @@ export class AgentRun {
     });
     this.traceQueue = next.catch(() => {});
     return next;
-  }
-
-  /**
-   * Each physical provider request gets its own best-effort diagnostic row.
-   * One failed attempt append must not suppress later attempts or poison the
-   * general AgentRun store latch; a required capture independently gates every
-   * provider dispatch.
-   */
-  private enqueueBestEffortProviderAttempt(label: string, operation: () => Promise<void>): void {
-    const next = this.traceQueue
-      .then(operation, operation)
-      .catch((error) => this.enqueueTraceWriteFailure(error, label));
-    this.traceQueue = next.catch(() => {});
   }
 
   /**

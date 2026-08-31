@@ -1980,6 +1980,30 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         latencyMs: 0.5,
       },
     });
+    await runStore.appendEvent('session-source', 'run-source', {
+      type: 'provider_request_attempt_recorded',
+      id: 'attempt-without-capture-source',
+      runId: 'run-source',
+      sessionId: 'session-source',
+      turnId: 'turn-1',
+      ts: 2.55,
+      data: {
+        traceId: 'provider-trace-without-capture-source',
+        attemptId: 'attempt-without-capture-source',
+        turnId: 'turn-1',
+        step: 2,
+        attempt: 1,
+        providerId: 'provider-without-capture',
+        modelId: 'model',
+        requestHash: 'request-hash-without-capture',
+        requestBytes: 13,
+        segments: [],
+        startedAt: 2.5,
+        completedAt: 2.55,
+        status: 'completed',
+        latencyMs: 0.05,
+      },
+    });
     // A legacy event from the retired active-full writer is treated like any
     // other event this build cannot emit and is therefore not copied.
     await runStore.appendEvent('session-source', 'run-source', {
@@ -2182,6 +2206,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       [
         'provider_request_captured',
         'provider_request_attempt_recorded',
+        'provider_request_attempt_recorded',
         'history_compact_checkpoint_recorded',
         'run_completed',
       ],
@@ -2190,10 +2215,17 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       (event) => event.type === 'provider_request_captured',
     );
     const targetAttempt = targetOperationalEvents.find(
-      (event) => event.type === 'provider_request_attempt_recorded',
+      (event) =>
+        event.type === 'provider_request_attempt_recorded' && event.data?.providerId === 'provider',
+    );
+    const targetAttemptWithoutCapture = targetOperationalEvents.find(
+      (event) =>
+        event.type === 'provider_request_attempt_recorded' &&
+        event.data?.providerId === 'provider-without-capture',
     );
     assert.ok(targetCapture);
     assert.ok(targetAttempt);
+    assert.ok(targetAttemptWithoutCapture);
     assert.equal(targetCapture.data?.captureId, targetCapture.id);
     assert.equal(targetCapture.data?.artifactId, 'artifact-target');
     assert.notEqual(targetCapture.data?.traceId, 'provider-trace-source');
@@ -2201,6 +2233,8 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     assert.equal(targetAttempt.data?.captureId, targetCapture.id);
     assert.equal(targetAttempt.data?.captureArtifactId, 'artifact-target');
     assert.equal(targetAttempt.data?.traceId, targetCapture.data?.traceId);
+    assert.equal(targetAttemptWithoutCapture.data?.captureId, undefined);
+    assert.equal(targetAttemptWithoutCapture.data?.captureArtifactId, undefined);
     assert.equal(targetEvents[1]?.refs?.providerRequestTraceId, targetCapture.data?.traceId);
     assert.equal(targetEvents[1]?.refs?.traceEventId, targetCapture.id);
     assert.doesNotMatch(JSON.stringify(targetOperationalEvents), /OPAQUE_SOURCE_COMPACTION_STATE/);

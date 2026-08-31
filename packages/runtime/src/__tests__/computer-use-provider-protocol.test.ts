@@ -27,6 +27,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionEvent } from '@maka/core/events';
 
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
+import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -35,10 +36,7 @@ import {
   type CuObservation,
 } from '../computer-use-tools.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureRecord,
-} from '../provider-request-telemetry.js';
+import type { PreparedRequestArtifactInput } from '../provider-request-telemetry.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { createDurableTurnHarness } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
@@ -105,8 +103,8 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         text: 'Set the fixture field to provider-loop.',
       });
       const requestBodies: Array<Record<string, unknown>> = [];
-      const captures: ProviderRequestCaptureRecord[] = [];
-      const attempts: ProviderRequestAttemptRecord[] = [];
+      const captures: PreparedRequestArtifactInput[] = [];
+      const attempts: ModelCallAttempt[] = [];
       const server = await startJsonServer(async (request, response) => {
         assert.equal(request.method, 'POST');
         assert.equal(request.url, provider.expectedPath);
@@ -164,16 +162,16 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
         newId: idGenerator(),
         now: monotonicClock(),
-        recordProviderRequestCapture: async (capture) => {
+        persistPreparedRequestArtifact: async (capture) => {
           captures.push(capture);
           return { artifactId: `capture-artifact-${captures.length}` };
         },
-        recordProviderRequestAttempt: (attempt) => {
+        recordModelCallAttempt: ({ attempt }) => {
           attempts.push(attempt);
         },
       });
 
-      for await (const event of runtime.send(durable.sendInput())) {
+      for await (const event of runtime.send(durable.sendInput({ runId: 'run-1' }))) {
         durable.record(event);
         events.push(event);
         if (event.type === 'tool_result') {
@@ -216,11 +214,8 @@ describe('Anthropic-compatible Computer Use product loops', () => {
         assert.equal(attempt.status, 'completed');
         assert.equal(attempt.inputTokens, 15);
         assert.equal(attempt.cacheReadInputTokens, 4);
-        assert.equal(attempt.cacheReadInputSource, 'provider');
         assert.equal(attempt.cacheWriteInputTokens, 1);
-        assert.equal(attempt.cacheWriteInputSource, 'provider');
         assert.equal(attempt.cacheMissInputTokens, 10);
-        assert.equal(attempt.cacheMissInputSource, 'provider');
         assert.equal(attempt.outputTokens, 5);
       }
       for (const body of requestBodies) {
@@ -663,8 +658,8 @@ describe('OpenAI-compatible product loops', () => {
       text: 'Set the fixture field to provider-loop.',
     });
     const requestBodies: Array<Record<string, unknown>> = [];
-    const captures: ProviderRequestCaptureRecord[] = [];
-    const attempts: ProviderRequestAttemptRecord[] = [];
+    const captures: PreparedRequestArtifactInput[] = [];
+    const attempts: ModelCallAttempt[] = [];
     const server = await startJsonServer(async (request, response) => {
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/coding/v1/chat/completions');
@@ -714,16 +709,16 @@ describe('OpenAI-compatible product loops', () => {
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       newId: idGenerator(),
       now: monotonicClock(),
-      recordProviderRequestCapture: async (capture) => {
+      persistPreparedRequestArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: `capture-artifact-${captures.length}` };
       },
-      recordProviderRequestAttempt: (attempt) => {
+      recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
     });
 
-    for await (const event of runtime.send(durable.sendInput())) {
+    for await (const event of runtime.send(durable.sendInput({ runId: 'run-1' }))) {
       durable.record(event);
       events.push(event);
     }

@@ -1630,6 +1630,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(webSearchEnabled.kind, 'committed');
 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const usageStores = await openInteractiveUsageStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
       llmConnectionId: connection.connectionId,
@@ -1806,9 +1807,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const evidence = await waitForProviderEvidence(execution, session.id, capturedRequestCount);
-    assert.equal(evidence.captures.length, capturedRequestCount);
-    assert.equal(evidence.attempts.length, capturedRequestCount);
+    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
+    assert.equal(attempts.length, capturedRequestCount);
+    assert.ok(attempts.every((attempt) => attempt.requestObservation));
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
     const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
@@ -1843,9 +1844,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       failedStart,
       connectionContext,
     );
-    assert.equal(failedTerminal.status, 'failed');
-    assert.equal(provider.requests.length, requestsBeforeArtifactFailure);
-    assert.equal(drainRequests, 1);
+    assert.equal(failedTerminal.status, 'completed');
+    assert.equal(provider.requests.length, requestsBeforeArtifactFailure + 1);
+    assert.equal(drainRequests, 0);
   } finally {
     try {
       await composition?.close();
@@ -3621,32 +3622,28 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForProviderEvidence(
-  execution: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+async function waitForCanonicalAttempts(
+  usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<{ captures: unknown[]; attempts: unknown[] }> {
+): Promise<readonly ModelCallAttempt[]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const runs = await execution.agentRunStore.listSessionRuns(sessionId);
-    const events = (
-      await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
-    ).flat();
-    const captures = events.filter((event) => event.type === 'provider_request_captured');
-    const attempts = events.filter((event) => event.type === 'provider_request_attempt_recorded');
-    if (captures.length >= expectedRequests && attempts.length >= expectedRequests) {
-      return { captures, attempts };
-    }
+    const page = await usage.modelCalls.modelCallAttempts(
+      { from: 0, to: Number.MAX_SAFE_INTEGER },
+      sessionId,
+    );
+    if (page.attempts.length >= expectedRequests) return page.attempts;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  const runs = await execution.agentRunStore.listSessionRuns(sessionId);
-  const events = (
-    await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
-  ).flat();
+  const page = await usage.modelCalls.modelCallAttempts(
+    { from: 0, to: Number.MAX_SAFE_INTEGER },
+    sessionId,
+  );
   throw new Error(
-    `Hosted provider request evidence was not persisted: ${JSON.stringify({
+    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
       expectedRequests,
-      captures: events.filter((event) => event.type === 'provider_request_captured').length,
-      attempts: events.filter((event) => event.type === 'provider_request_attempt_recorded').length,
+      attempts: page.attempts.length,
+      unreadableRecords: page.unreadableRecords,
     })}`,
   );
 }

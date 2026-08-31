@@ -135,8 +135,7 @@ describe('buildLlmHistorySummarizer', () => {
           return now;
         },
         newId: () => 'trace-id',
-        persistCapture: async () => ({ artifactId: 'artifact-1' }),
-        recordAttempt: () => {},
+        persistArtifact: async () => ({ artifactId: 'artifact-1' }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',
@@ -200,8 +199,7 @@ describe('buildLlmHistorySummarizer', () => {
         turnId: 'turn-1',
         now: () => 100 + id,
         newId: () => `request-${++id}`,
-        persistCapture: async () => ({ artifactId: `artifact-${id}` }),
-        recordAttempt: () => {},
+        persistArtifact: async () => ({ artifactId: `artifact-${id}` }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',

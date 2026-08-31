@@ -117,6 +117,11 @@ export interface PreparedRequestObservationSegment {
  */
 export interface PreparedRequestObservation {
   schemaVersion: typeof PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION;
+  /**
+   * Identity of the complete secret-free normalized serialization. It does not
+   * prove semantic equality when any segment is `opaque`; continuity consumers
+   * must compare the ordered segment identity and each segment's `comparison`.
+   */
   digest: string;
   bytes: number;
   segments: PreparedRequestObservationSegment[];
@@ -159,7 +164,7 @@ export interface ModelCallAttempt {
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  /** Join key for the private prepared-request artifact; absent when capture is disabled. */
+  /** Join key for the private prepared-request artifact, when best-effort persistence won the race. */
   captureArtifactId?: string;
   /** Semantic request actually prepared for this dispatched physical attempt. */
   requestObservation?: PreparedRequestObservation;
@@ -343,8 +348,25 @@ function isPreparedRequestObservation(value: unknown): value is PreparedRequestO
     isNonNegativeInteger(value.bytes) &&
     Array.isArray(value.segments) &&
     value.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS &&
-    value.segments.every(isPreparedRequestObservationSegment)
+    value.segments.every(isPreparedRequestObservationSegment) &&
+    hasOrderedPreparedRequestSegments(value.segments)
   );
+}
+
+function hasOrderedPreparedRequestSegments(
+  segments: readonly PreparedRequestObservationSegment[],
+): boolean {
+  let previousKind = -1;
+  let previousIndex = -1;
+  for (const segment of segments) {
+    const kind = PREPARED_REQUEST_SEGMENT_KINDS.indexOf(segment.kind);
+    if (kind < previousKind) return false;
+    if (kind === previousKind && segment.index <= previousIndex) return false;
+    if (kind !== previousKind) previousIndex = -1;
+    previousKind = kind;
+    previousIndex = segment.index;
+  }
+  return true;
 }
 
 const PRICING_RATES_SHAPE = defineObjectShape<PricingConfig>()(

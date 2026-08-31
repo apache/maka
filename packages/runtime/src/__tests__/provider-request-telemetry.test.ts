@@ -244,94 +244,17 @@ describe('strict provider-request usage', () => {
   });
 });
 
-describe('provider request capture commit', () => {
-  test('links body-free metadata and returns the committed artifact reference', async () => {
-    const ledgerCaptures: Array<Record<string, unknown>> = [];
-    const recordCapture = telemetry.createProviderRequestCaptureRecorder({
-      persistArtifact: async () => ({ artifactId: 'artifact-capture-1' }),
-      recordLedger: async (capture) => {
-        ledgerCaptures.push(capture as unknown as Record<string, unknown>);
-      },
-    });
-
-    const result = await recordCapture({
-      schemaVersion: 2,
-      traceId: 'trace-1',
-      captureId: 'capture-1',
-      turnId: 'turn-1',
-      step: 0,
-      providerId: 'openai',
-      modelId: 'gpt-test',
-      requestHash: 'sha256:request',
-      requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
-      requestBytes: 2,
-      segments: [],
-      serializedRequest: '{}',
-    });
-
-    assert.deepEqual(result, { artifactId: 'artifact-capture-1' });
-    assert.equal(ledgerCaptures.length, 1);
-    assert.equal(ledgerCaptures[0]?.artifactId, 'artifact-capture-1');
-    assert.equal(Object.hasOwn(ledgerCaptures[0]!, 'serializedRequest'), false);
-  });
-
-  test('retains the request artifact when a failed ledger append may have landed', async () => {
-    const ledgerError = new Error('capture ledger append failed');
-    const ledgerCaptures: Array<Record<string, unknown>> = [];
-    const persistedArtifactIds = new Set<string>();
-    const createRecorder = Reflect.get(
-      telemetry,
-      'createProviderRequestCaptureRecorder',
-    ) as unknown as
-      | ((input: Record<string, unknown>) => (capture: Record<string, unknown>) => Promise<unknown>)
-      | undefined;
-    assert.equal(typeof createRecorder, 'function');
-    const recordCapture = createRecorder!({
-      persistArtifact: async () => {
-        persistedArtifactIds.add('artifact-capture-1');
-        return { artifactId: 'artifact-capture-1' };
-      },
-      recordLedger: async (capture: Record<string, unknown>) => {
-        ledgerCaptures.push(capture);
-        throw ledgerError;
-      },
-    });
-
-    await assert.rejects(
-      recordCapture({
-        schemaVersion: 2,
-        traceId: 'trace-1',
-        captureId: 'capture-1',
-        turnId: 'turn-1',
-        step: 0,
-        providerId: 'openai',
-        modelId: 'gpt-test',
-        requestHash: 'sha256:request',
-        requestPayloadWithoutProviderOptionsHash: 'sha256:shared-request',
-        requestBytes: 2,
-        segments: [],
-        serializedRequest: '{}',
-      }),
-      (error) => error === ledgerError,
-    );
-    assert.equal(ledgerCaptures.length, 1);
-    assert.deepEqual([...persistedArtifactIds], ['artifact-capture-1']);
-  });
-});
-
 describe('provider request tracker', () => {
   test('records the request model context window on completed attempts', async () => {
-    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const attempts: ModelCallAttempt[] = [];
     const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-context',
       turnId: 'turn-context',
       contextWindow: 200_000,
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => ({ artifactId: 'artifact' }),
-      recordAttempt: async (attempt) => {
-        attempts.push(attempt);
-      },
+      persistArtifact: async () => ({ artifactId: 'artifact' }),
+      accounting: canonicalAccounting(attempts),
     });
 
     const result = await tracker.trackStream({
@@ -346,17 +269,15 @@ describe('provider request tracker', () => {
   });
 
   test('omits a non-positive request model context window', async () => {
-    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
+    const attempts: ModelCallAttempt[] = [];
     const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-context',
       turnId: 'turn-context',
       contextWindow: 0,
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => ({ artifactId: 'artifact' }),
-      recordAttempt: async (attempt) => {
-        attempts.push(attempt);
-      },
+      persistArtifact: async () => ({ artifactId: 'artifact' }),
+      accounting: canonicalAccounting(attempts),
     });
 
     const result = await tracker.trackStream({
@@ -373,15 +294,9 @@ describe('provider request tracker', () => {
   test('persists a logical capture before each physical attempt and reuses it for retries', async () => {
     const captures: Array<{
       captureId: string;
-      requestHash: string;
       serializedRequest: string;
     }> = [];
-    const attempts: Array<{
-      step: number;
-      attempt: number;
-      status: string;
-      captureId: string;
-    }> = [];
+    const attempts: ModelCallAttempt[] = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as
       | (new (
           input: Record<string, unknown>,
@@ -397,20 +312,11 @@ describe('provider request tracker', () => {
       turnId: 'turn-1',
       now: () => Date.now(),
       newId: () => `id-${++id}`,
-      persistCapture: async (capture: {
-        captureId: string;
-        requestHash: string;
-        serializedRequest: string;
-      }) => {
+      persistArtifact: async (capture: { captureId: string; serializedRequest: string }) => {
         captures.push(capture);
         return { artifactId: `artifact-${captures.length}` };
       },
-      recordAttempt: async (attempt: {
-        step: number;
-        attempt: number;
-        status: string;
-        captureId: string;
-      }) => attempts.push(attempt),
+      accounting: canonicalAccounting(attempts),
     });
     tracker.setStep(2);
     const params = preparedParams('hello');
@@ -461,34 +367,34 @@ describe('provider request tracker', () => {
     assert.equal(captures.length, 1);
     assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), params);
     assert.deepEqual(
-      attempts.map(({ step, attempt, status, captureId }) => ({
+      attempts.map(({ step, attempt, status, captureArtifactId }) => ({
         step,
         attempt,
         status,
-        captureId,
+        captureArtifactId,
       })),
       [
         {
           step: 2,
-          attempt: 1,
+          attempt: 0,
           status: 'failed',
-          captureId: captures[0]!.captureId,
+          captureArtifactId: 'artifact-1',
         },
         {
           step: 2,
-          attempt: 2,
+          attempt: 1,
           status: 'completed',
-          captureId: captures[0]!.captureId,
+          captureArtifactId: 'artifact-1',
         },
       ],
     );
-    assert.equal((attempts[1] as Record<string, unknown>).cacheReadInputSource, 'provider');
-    assert.equal((attempts[1] as Record<string, unknown>).cacheMissInputSource, 'derived');
+    assert.equal(attempts[1]?.cacheReadInputTokens, 4);
+    assert.equal(attempts[1]?.cacheMissInputTokens, 6);
   });
 
   test('captures and attributes a non-streaming physical provider call', async () => {
     const captures: Array<{ captureId: string; serializedRequest: string }> = [];
-    const attempts: Array<Record<string, unknown>> = [];
+    const attempts: ModelCallAttempt[] = [];
     let providerCalls = 0;
     let id = 0;
     const tracker = new telemetry.ProviderRequestTracker({
@@ -496,13 +402,11 @@ describe('provider request tracker', () => {
       turnId: 'turn-history',
       now: () => 1_000 + id,
       newId: () => `history-${++id}`,
-      persistCapture: async (capture) => {
+      persistArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: 'history-artifact' };
       },
-      recordAttempt: (attempt) => {
-        attempts.push(attempt as unknown as Record<string, unknown>);
-      },
+      accounting: canonicalAccounting(attempts),
     });
     const params = preparedParams('history summary');
     const result = await tracker.trackGenerate({
@@ -529,12 +433,12 @@ describe('provider request tracker', () => {
     assert.equal(captures.length, 1);
     assert.deepEqual(JSON.parse(captures[0]!.serializedRequest), params);
     assert.deepEqual(
-      attempts.map(({ status, finishReason, inputTokens, outputTokens, captureId }) => ({
+      attempts.map(({ status, finishReason, inputTokens, outputTokens, captureArtifactId }) => ({
         status,
         finishReason,
         inputTokens,
         outputTokens,
-        captureId,
+        captureArtifactId,
       })),
       [
         {
@@ -542,7 +446,7 @@ describe('provider request tracker', () => {
           finishReason: 'stop',
           inputTokens: 7,
           outputTokens: 3,
-          captureId: captures[0]!.captureId,
+          captureArtifactId: 'history-artifact',
         },
       ],
     );
@@ -555,11 +459,10 @@ describe('provider request tracker', () => {
       turnId: 'turn-compaction',
       now: () => 1_000,
       newId: () => 'compaction-id',
-      persistCapture: async (capture) => {
+      persistArtifact: async (capture) => {
         captures.push(capture);
         return { artifactId: 'compaction-artifact' };
       },
-      recordAttempt: () => undefined,
     });
     const params = {
       image: new URL('https://example.com/provider-image.png'),
@@ -654,11 +557,10 @@ describe('provider request tracker', () => {
       beforeDispatch: async () => {
         throw new Error('Run Composition store unavailable');
       },
-      persistCapture: async () => {
+      persistArtifact: async () => {
         captured = true;
         return { artifactId: 'unreachable-artifact' };
       },
-      recordAttempt: () => {},
     });
 
     await assert.rejects(
@@ -678,7 +580,7 @@ describe('provider request tracker', () => {
     assert.equal(dispatched, false);
   });
 
-  test('captures a changed logical body separately and blocks provider calls on capture failure', async () => {
+  test('dispatches with its observation when private artifact persistence fails', async () => {
     const captures: string[] = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as new (
       input: Record<string, unknown>,
@@ -692,12 +594,11 @@ describe('provider request tracker', () => {
       turnId: 'turn-2',
       now: () => Date.now(),
       newId: () => `capture-${captures.length + 1}`,
-      persistCapture: async (capture: { requestHash: string }) => {
-        captures.push(capture.requestHash);
+      persistArtifact: async (capture: { observation: { digest: string } }) => {
+        captures.push(capture.observation.digest);
         if (captures.length === 2) throw new Error('capture unavailable');
         return { artifactId: 'artifact-1' };
       },
-      recordAttempt: () => {},
     });
     tracker.setStep(0);
     const completed = await tracker.trackStream({
@@ -712,26 +613,70 @@ describe('provider request tracker', () => {
     });
     await drain(completed.stream);
 
-    await assert.rejects(
-      tracker.trackStream({
-        providerId: 'anthropic',
-        modelId: 'claude-test',
-        params: preparedParams('after'),
-        abortSignal: new AbortController().signal,
-        doStream: async () => {
-          providerCalls += 1;
-          return { stream: streamOf([finishPart()]) };
-        },
-      }),
-      /capture unavailable/,
-    );
-    assert.equal(providerCalls, 1);
+    const withoutArtifact = await tracker.trackStream({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('after'),
+      abortSignal: new AbortController().signal,
+      doStream: async () => {
+        providerCalls += 1;
+        return { stream: streamOf([finishPart()]) };
+      },
+    });
+    await drain(withoutArtifact.stream);
+    assert.equal(providerCalls, 2);
     assert.equal(captures.length, 2);
     assert.notEqual(captures[0], captures[1]);
   });
 
+  test('does not wait for private artifact persistence before dispatch or accounting', async () => {
+    let releaseArtifact!: (value: { artifactId: string }) => void;
+    const artifactPending = new Promise<{ artifactId: string }>((resolve) => {
+      releaseArtifact = resolve;
+    });
+    const recorded: ModelCallAttempt[] = [];
+    let providerCalls = 0;
+    const tracker = new telemetry.ProviderRequestTracker({
+      traceId: 'trace-slow-artifact',
+      turnId: 'turn-slow-artifact',
+      now: () => 1_000,
+      newId: () => 'slow-artifact-id',
+      persistArtifact: () => artifactPending,
+      accounting: {
+        sessionId: 'session-1',
+        resolveRunId: () => 'run-1',
+        callKind: 'main',
+        record: ({ attempt }) => {
+          recorded.push(attempt);
+        },
+      },
+    });
+
+    const tracked = tracker.trackGenerate({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      params: preparedParams('hello'),
+      doGenerate: async () => {
+        providerCalls += 1;
+        return { finishReason: 'stop' };
+      },
+    });
+    const outcome = await Promise.race([
+      tracked.then(() => 'completed' as const),
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 25)),
+    ]);
+    releaseArtifact({ artifactId: 'artifact-late' });
+    await tracked;
+
+    assert.equal(outcome, 'completed');
+    assert.equal(providerCalls, 1);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]?.captureArtifactId, undefined);
+    assert.ok(recorded[0]?.requestObservation);
+  });
+
   test('records an errored stream after output as interrupted', async () => {
-    const attempts: Array<{ status: string }> = [];
+    const attempts: ModelCallAttempt[] = [];
     const Tracker = Reflect.get(telemetry, 'ProviderRequestTracker') as unknown as new (
       input: Record<string, unknown>,
     ) => {
@@ -743,8 +688,8 @@ describe('provider request tracker', () => {
       turnId: 'turn-3',
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => ({ artifactId: 'artifact' }),
-      recordAttempt: async (attempt: { status: string }) => attempts.push(attempt),
+      persistArtifact: async () => ({ artifactId: 'artifact' }),
+      accounting: canonicalAccounting(attempts),
     });
     tracker.setStep(0);
     const result = await tracker.trackStream({
@@ -759,17 +704,15 @@ describe('provider request tracker', () => {
   });
 
   test('records an in-flight attempt as aborted when its signal is cancelled', async () => {
-    const attempts: Array<{ status: string }> = [];
+    const attempts: ModelCallAttempt[] = [];
     const abort = new AbortController();
     const tracker = new telemetry.ProviderRequestTracker({
       traceId: 'trace-4',
       turnId: 'turn-4',
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => ({ artifactId: 'artifact' }),
-      recordAttempt: async (attempt) => {
-        attempts.push(attempt);
-      },
+      persistArtifact: async () => ({ artifactId: 'artifact' }),
+      accounting: canonicalAccounting(attempts),
     });
     tracker.setStep(0);
     await tracker.trackStream({
@@ -788,7 +731,7 @@ describe('provider request tracker', () => {
 
   test('does not capture or record an attempt when cancellation predates dispatch', async () => {
     let captures = 0;
-    let attempts = 0;
+    const attempts: ModelCallAttempt[] = [];
     let providerCalls = 0;
     const abort = new AbortController();
     abort.abort();
@@ -797,13 +740,11 @@ describe('provider request tracker', () => {
       turnId: 'turn-5',
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => {
+      persistArtifact: async () => {
         captures += 1;
         return { artifactId: 'artifact' };
       },
-      recordAttempt: async () => {
-        attempts += 1;
-      },
+      accounting: canonicalAccounting(attempts),
     });
 
     await assert.rejects(
@@ -821,13 +762,13 @@ describe('provider request tracker', () => {
     );
 
     assert.equal(captures, 0);
-    assert.equal(attempts, 0);
+    assert.equal(attempts.length, 0);
     assert.equal(providerCalls, 0);
   });
 
   test('does not dispatch or record an attempt when cancellation happens during capture', async () => {
     let captures = 0;
-    let attempts = 0;
+    const attempts: ModelCallAttempt[] = [];
     let providerCalls = 0;
     const abort = new AbortController();
     const tracker = new telemetry.ProviderRequestTracker({
@@ -835,14 +776,12 @@ describe('provider request tracker', () => {
       turnId: 'turn-6',
       now: () => Date.now(),
       newId: () => 'id',
-      persistCapture: async () => {
+      persistArtifact: async () => {
         captures += 1;
         abort.abort();
         return { artifactId: 'artifact' };
       },
-      recordAttempt: async () => {
-        attempts += 1;
-      },
+      accounting: canonicalAccounting(attempts),
     });
 
     await assert.rejects(
@@ -860,10 +799,21 @@ describe('provider request tracker', () => {
     );
 
     assert.equal(captures, 1);
-    assert.equal(attempts, 0);
+    assert.equal(attempts.length, 0);
     assert.equal(providerCalls, 0);
   });
 });
+
+function canonicalAccounting(attempts: ModelCallAttempt[]): telemetry.ModelCallAccountingInput {
+  return {
+    sessionId: 'session-1',
+    resolveRunId: () => 'run-1',
+    callKind: 'main',
+    record: ({ attempt }) => {
+      attempts.push(attempt);
+    },
+  };
+}
 
 function preparedParams(text: string): Record<string, unknown> {
   return {
@@ -934,7 +884,6 @@ describe('canonical model-call accounting', () => {
     resolveRunId?: () => string | undefined;
     /** Models a deployment with request capture switched off. */
     withoutCapture?: boolean;
-    recordAttempt?: (attempt: telemetry.ProviderRequestAttemptRecord) => void;
     callKind?: ModelCallAttempt['callKind'];
     historyCompactRoute?: ModelCallAttempt['historyCompactRoute'];
   }): telemetry.ProviderRequestTracker {
@@ -946,8 +895,7 @@ describe('canonical model-call accounting', () => {
       newId: () => `id-${++n}`,
       ...(overrides.withoutCapture
         ? {}
-        : { persistCapture: async () => ({ artifactId: 'artifact-1' }) }),
-      recordAttempt: overrides.recordAttempt ?? (() => {}),
+        : { persistArtifact: async () => ({ artifactId: 'artifact-1' }) }),
       accounting: {
         sessionId: 'session-1',
         resolveRunId: overrides.resolveRunId ?? (() => 'run-1'),
@@ -971,11 +919,10 @@ describe('canonical model-call accounting', () => {
       turnId: 'turn-abandoned-capture',
       now: () => 1_000,
       newId: () => 'capture-abandoned',
-      persistCapture: async () => {
+      persistArtifact: async () => {
         abort.abort();
         return { artifactId: 'artifact-abandoned' };
       },
-      recordAttempt: () => {},
       accounting: {
         sessionId: 'session-1',
         resolveRunId: () => 'run-1',
@@ -1037,15 +984,11 @@ describe('canonical model-call accounting', () => {
 
   test('persists a structured failure fingerprint and the selected compaction route', async () => {
     const recorded: ModelCallAttempt[] = [];
-    const diagnosticAttempts: telemetry.ProviderRequestAttemptRecord[] = [];
     const tracker = accountingTracker({
       callKind: 'history_compact',
       historyCompactRoute: 'provider_native',
       record: ({ attempt }) => {
         recorded.push(attempt);
-      },
-      recordAttempt: (attempt) => {
-        diagnosticAttempts.push(attempt);
       },
     });
     const providerError = Object.assign(new Error('provider payload must not persist'), {
@@ -1077,13 +1020,6 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.providerCode, 'rate_limit_exceeded');
     assert.equal(attempt.providerRequestId, 'req-compact-1');
     assert.equal(attempt.retryable, false);
-    assert.deepEqual(diagnosticAttempts[0]?.failure, {
-      errorClass: 'RateLimit',
-      httpStatus: 429,
-      providerCode: 'rate_limit_exceeded',
-      providerRequestId: 'req-compact-1',
-      retryable: false,
-    });
     assert.doesNotMatch(
       JSON.stringify(attempt),
       /private request body|private response body|private prompt/i,
@@ -1181,14 +1117,10 @@ describe('canonical model-call accounting', () => {
     // request body is still a record of a call that really was billed, so the
     // canonical seam must not be gated on the capture sink being configured.
     const recorded: ModelCallAttempt[] = [];
-    const attempts: telemetry.ProviderRequestAttemptRecord[] = [];
     const tracker = accountingTracker({
       withoutCapture: true,
       record: ({ attempt }) => {
         recorded.push(attempt);
-      },
-      recordAttempt: (a) => {
-        attempts.push(a);
       },
     });
 
@@ -1205,14 +1137,6 @@ describe('canonical model-call accounting', () => {
     assert.equal(attempt.captureArtifactId, undefined, 'there is no artifact to point at');
     assert.match(attempt.requestObservation?.digest ?? '', /^sha256:[a-f0-9]{64}$/);
     assert.ok((attempt.requestObservation?.segments.length ?? 0) > 0);
-    // Best-effort attempt telemetry remains body-free; only the canonical
-    // attempt carries the observation that describes a dispatched request.
-    assert.equal(attempts.length, 1);
-    assert.equal(attempts[0]?.captureId, undefined);
-    assert.equal(attempts[0]?.captureArtifactId, undefined);
-    assert.equal(Object.hasOwn(attempts[0]!, 'requestHash'), false);
-    assert.equal(Object.hasOwn(attempts[0]!, 'requestBytes'), false);
-    assert.equal(Object.hasOwn(attempts[0]!, 'segments'), false);
   });
 
   test('an unresolvable price records unpriced rather than zero', async () => {

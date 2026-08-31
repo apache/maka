@@ -19,6 +19,14 @@
 
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import {
+  PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS,
+  PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION,
+  PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH,
+  type PreparedRequestObservation,
+  type PreparedRequestObservationSegment,
+  type PreparedRequestObservationSegmentKind,
+} from '@maka/core/model-call-attempt';
 import { toJSONSchema } from 'zod';
 
 import type { MakaTool } from './tool-runtime.js';
@@ -28,57 +36,12 @@ export interface CanonicalToolSet {
   activeTools: string[];
 }
 
-export type PreparedRequestSegmentKind =
-  | 'tool_schema'
-  | 'system_prompt'
-  | 'message'
-  | 'provider_options';
-
-export interface PreparedRequestSegment {
-  kind: PreparedRequestSegmentKind;
-  index: number;
-  cacheable: boolean;
-  /** Exact hashes may be compared; opaque hashes are diagnostic-only. */
-  comparison: 'exact' | 'opaque';
-  hash: string;
-  bytes: number;
-  /** Number of source segments represented; greater than one is an opaque remainder. */
-  representedSegments?: number;
-  role?: string;
-  /**
-   * What this segment is, when the seam can name it. Set for `tool_schema` from
-   * the tool's own name, which the provider payload already carries.
-   *
-   * Present so a size can be acted on: "tool definitions are 40% of the prompt"
-   * names no tool to remove, and every segment kind but this one is already a
-   * single thing (#2323). Optional because a payload that names nothing is a
-   * shape this capture still has to describe.
-   */
-  label?: string;
-}
-
-export interface PreparedProviderRequestInput {
-  providerId: string;
-  modelId: string;
-  instructions?: unknown;
-  messages: readonly unknown[];
-  tools?: readonly unknown[];
-  providerOptions?: Record<string, unknown>;
-  /** Exact secret-free model-call parameters captured at the provider seam. */
-  requestPayload?: unknown;
-}
-
-export interface PreparedProviderRequestCapture {
-  schemaVersion: 2;
-  requestHash: string;
-  /** Hash of protocol-independent model-call semantics for cross-protocol comparison. */
-  requestPayloadWithoutProviderOptionsHash: string;
-  requestBytes: number;
+export interface PreparedRequestMaterial {
+  /** Full secret-free representation for the private request artifact. */
   serializedRequest: string;
-  segments: PreparedRequestSegment[];
+  /** Bounded public observation derived from that same representation. */
+  observation: PreparedRequestObservation;
 }
-
-export type PreparedRequestSegmentRef = Pick<PreparedRequestSegment, 'kind' | 'index' | 'role'>;
 
 /**
  * Split the registry into the full dispatch set (`providerTools`) and the
@@ -130,19 +93,11 @@ export function toolSchemaCharsForDiagnostics(
  * exact request evidence, but are not claimed to be a provider-cacheable prefix
  * segment. None of this is presented as the provider's final wire body.
  */
-export function capturePreparedProviderRequest(
-  input: PreparedProviderRequestInput,
-): PreparedProviderRequestCapture {
-  const payload = input.requestPayload ?? {
-    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
-    messages: input.messages,
-    tools: input.tools ?? [],
-    ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-  };
+export function prepareRequestObservation(payload: unknown): PreparedRequestMaterial {
   const normalizedPayload = normalizePreparedValue(payload);
   const serializedRequest = JSON.stringify(normalizedPayload.value);
-  const segments: PreparedRequestSegment[] = [];
-  const parts = semanticRequestParts(payload, input);
+  const segments: PreparedRequestObservationSegment[] = [];
+  const parts = semanticRequestParts(payload);
 
   for (const [index, tool] of parts.tools.entries()) {
     segments.push(preparedSegment('tool_schema', index, tool, true, undefined, toolLabel(tool)));
@@ -165,33 +120,34 @@ export function capturePreparedProviderRequest(
   }
 
   return {
-    schemaVersion: 2,
-    requestHash: hashSerialized(serializedRequest),
-    requestPayloadWithoutProviderOptionsHash: stableHash(
-      normalizePreparedValue(protocolIndependentRequestPayload(payload)).value,
-    ),
-    requestBytes: Buffer.byteLength(serializedRequest, 'utf8'),
     serializedRequest,
-    segments: boundPreparedRequestSegments(segments),
+    observation: {
+      schemaVersion: PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION,
+      digest: hashSerialized(serializedRequest),
+      bytes: Buffer.byteLength(serializedRequest, 'utf8'),
+      segments: boundPreparedRequestSegments(segments),
+    },
   };
 }
 
-const MAX_PREPARED_REQUEST_SEGMENTS = 256;
 const MAX_PREPARED_REQUEST_REMAINDERS = 4;
 
 function boundPreparedRequestSegments(
-  segments: readonly PreparedRequestSegment[],
-): PreparedRequestSegment[] {
-  if (segments.length <= MAX_PREPARED_REQUEST_SEGMENTS) return [...segments];
-  const kept = segments.slice(0, MAX_PREPARED_REQUEST_SEGMENTS - MAX_PREPARED_REQUEST_REMAINDERS);
-  const remainders: PreparedRequestSegment[] = [];
+  segments: readonly PreparedRequestObservationSegment[],
+): PreparedRequestObservationSegment[] {
+  if (segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS) return [...segments];
+  const kept = segments.slice(
+    0,
+    PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS - MAX_PREPARED_REQUEST_REMAINDERS,
+  );
+  const remainders: PreparedRequestObservationSegment[] = [];
   for (const segment of segments.slice(kept.length)) {
     const previous = remainders.at(-1);
     if (previous?.kind === segment.kind) {
       previous.bytes += segment.bytes;
       previous.representedSegments = (previous.representedSegments ?? 1) + 1;
-      previous.hash = hashSerialized(
-        JSON.stringify(['prepared-segment-remainder', previous.hash, segment.hash]),
+      previous.digest = hashSerialized(
+        JSON.stringify(['prepared-segment-remainder', previous.digest, segment.digest]),
       );
       continue;
     }
@@ -200,7 +156,7 @@ function boundPreparedRequestSegments(
       index: segment.index,
       cacheable: segment.cacheable,
       comparison: 'opaque',
-      hash: hashSerialized(JSON.stringify(['prepared-segment-remainder', segment.hash])),
+      digest: hashSerialized(JSON.stringify(['prepared-segment-remainder', segment.digest])),
       bytes: segment.bytes,
       representedSegments: 1,
     });
@@ -208,24 +164,14 @@ function boundPreparedRequestSegments(
   return [...kept, ...remainders];
 }
 
-function semanticRequestParts(
-  payload: unknown,
-  fallback: PreparedProviderRequestInput,
-): {
+function semanticRequestParts(payload: unknown): {
   instructions?: unknown;
   messages: readonly unknown[];
   tools: readonly unknown[];
   providerOptions?: Record<string, unknown>;
 } {
   if (!isObjectLike(payload)) {
-    return {
-      ...(fallback.instructions !== undefined ? { instructions: fallback.instructions } : {}),
-      messages: fallback.messages,
-      tools: fallback.tools ?? [],
-      ...(fallback.providerOptions !== undefined
-        ? { providerOptions: fallback.providerOptions }
-        : {}),
-    };
+    return { messages: [], tools: [] };
   }
   const prompt = Array.isArray(payload.prompt) ? payload.prompt : undefined;
   const instructions: unknown[] = [];
@@ -240,7 +186,7 @@ function semanticRequestParts(
   const payloadMessages = Array.isArray(payload.messages) ? payload.messages : undefined;
   const providerOptions = isPlainObject(payload.providerOptions)
     ? payload.providerOptions
-    : fallback.providerOptions;
+    : undefined;
   return {
     ...(prompt
       ? instructions.length > 0
@@ -248,204 +194,11 @@ function semanticRequestParts(
         : {}
       : payload.instructions !== undefined
         ? { instructions: payload.instructions }
-        : fallback.instructions !== undefined
-          ? { instructions: fallback.instructions }
-          : {}),
-    messages: prompt ? messages : (payloadMessages ?? fallback.messages),
-    tools: Array.isArray(payload.tools) ? payload.tools : (fallback.tools ?? []),
+        : {}),
+    messages: prompt ? messages : (payloadMessages ?? []),
+    tools: Array.isArray(payload.tools) ? payload.tools : [],
     ...(providerOptions !== undefined ? { providerOptions } : {}),
   };
-}
-
-function protocolIndependentRequestPayload(payload: unknown): unknown {
-  if (!isObjectLike(payload)) return payload;
-  const { providerOptions, ...shared } = payload;
-  const identities: ProtocolIndependentRequestIdentities = {
-    approvalIds: new Map(),
-    toolCallIds: new Map(),
-  };
-  const reasoningEffort = protocolIndependentReasoningEffort(providerOptions);
-  const protocolIndependent: Record<string, unknown> = {
-    ...shared,
-    ...(Array.isArray(shared.prompt)
-      ? {
-          prompt: shared.prompt.map((message) => withoutPromptProviderOptions(message, identities)),
-        }
-      : {}),
-    ...(Array.isArray(shared.messages)
-      ? {
-          messages: shared.messages.map((message) =>
-            withoutPromptProviderOptions(message, identities),
-          ),
-        }
-      : {}),
-    ...(Array.isArray(shared.tools)
-      ? { tools: shared.tools.map(withoutObjectProviderOptions) }
-      : {}),
-    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-  };
-  const thinkingBudget = anthropicThinkingBudget(providerOptions);
-  if (
-    thinkingBudget === undefined ||
-    !isNonNegativeSafeInteger(protocolIndependent.maxOutputTokens)
-  ) {
-    return protocolIndependent;
-  }
-  const wireOutputLimit = protocolIndependent.maxOutputTokens + thinkingBudget;
-  return Number.isSafeInteger(wireOutputLimit)
-    ? { ...protocolIndependent, maxOutputTokens: wireOutputLimit }
-    : protocolIndependent;
-}
-
-function protocolIndependentReasoningEffort(
-  providerOptions: unknown,
-): string | string[] | undefined {
-  if (!isObjectLike(providerOptions)) return undefined;
-  const efforts = new Set<string>();
-  const anthropic = providerOptions.anthropic;
-  if (isObjectLike(anthropic) && typeof anthropic.effort === 'string') {
-    efforts.add(anthropic.effort);
-  }
-  for (const namespace of Object.values(providerOptions)) {
-    if (!isObjectLike(namespace)) continue;
-    if (typeof namespace.reasoningEffort === 'string') efforts.add(namespace.reasoningEffort);
-    if (isObjectLike(namespace.thinking) && namespace.thinking.type === 'disabled') {
-      efforts.add('none');
-    }
-    const thinkingConfig = namespace.thinkingConfig;
-    if (isObjectLike(thinkingConfig) && typeof thinkingConfig.thinkingLevel === 'string') {
-      efforts.add(thinkingConfig.thinkingLevel);
-    }
-    if (isObjectLike(thinkingConfig) && thinkingConfig.thinkingBudget === 0) {
-      efforts.add('none');
-    }
-    const chatTemplateKwargs = namespace.chat_template_kwargs;
-    if (isObjectLike(chatTemplateKwargs) && chatTemplateKwargs.thinking === false) {
-      efforts.add('none');
-    }
-  }
-  const normalized = [...efforts].sort();
-  return normalized.length > 1 ? normalized : normalized[0];
-}
-
-interface ProtocolIndependentRequestIdentities {
-  approvalIds: Map<string, string>;
-  toolCallIds: Map<string, string>;
-}
-
-function withoutPromptProviderOptions(
-  value: unknown,
-  identities: ProtocolIndependentRequestIdentities,
-): unknown {
-  const message = withoutObjectProviderOptions(value);
-  if (!isObjectLike(message) || !Array.isArray(message.content)) return message;
-  return {
-    ...message,
-    content: message.content.map((part) => withoutPromptPartProviderOptions(part, identities)),
-  };
-}
-
-function withoutPromptPartProviderOptions(
-  value: unknown,
-  identities: ProtocolIndependentRequestIdentities,
-): unknown {
-  const part = withoutObjectProviderOptions(value);
-  if (!isObjectLike(part)) return part;
-  if (part.type === 'tool-call') {
-    const { providerExecuted: _providerExecuted, ...shared } = part;
-    return {
-      ...shared,
-      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
-    };
-  }
-  if (part.type === 'tool-approval-request') {
-    const { isAutomatic: _isAutomatic, signature: _signature, ...shared } = part;
-    return {
-      ...shared,
-      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
-      toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
-    };
-  }
-  if (part.type === 'tool-approval-response') {
-    const { providerExecuted: _providerExecuted, ...shared } = part;
-    return {
-      ...shared,
-      approvalId: protocolIndependentId(part.approvalId, identities.approvalIds, 'approval'),
-    };
-  }
-  if (part.type !== 'tool-result') return part;
-  const output = withoutObjectProviderOptions(part.output);
-  const normalizedPart = {
-    ...part,
-    toolCallId: protocolIndependentId(part.toolCallId, identities.toolCallIds, 'tool-call'),
-  };
-  if (!isObjectLike(output) || output.type !== 'content' || !Array.isArray(output.value)) {
-    return { ...normalizedPart, output };
-  }
-  return {
-    ...normalizedPart,
-    output: { ...output, value: output.value.map(withoutObjectProviderOptions) },
-  };
-}
-
-function protocolIndependentId(
-  value: unknown,
-  identities: Map<string, string>,
-  prefix: string,
-): unknown {
-  if (typeof value !== 'string') return value;
-  const existing = identities.get(value);
-  if (existing) return existing;
-  const normalized = `${prefix}-${identities.size + 1}`;
-  identities.set(value, normalized);
-  return normalized;
-}
-
-function withoutObjectProviderOptions(value: unknown): unknown {
-  if (!isObjectLike(value)) return value;
-  const { providerOptions: _providerOptions, ...shared } = value;
-  return shared;
-}
-
-function anthropicThinkingBudget(providerOptions: unknown): number | undefined {
-  if (!isObjectLike(providerOptions)) return undefined;
-  const anthropic = providerOptions.anthropic;
-  if (!isObjectLike(anthropic)) return undefined;
-  const thinking = anthropic.thinking;
-  if (!isObjectLike(thinking) || thinking.type !== 'enabled') return undefined;
-  return isNonNegativeSafeInteger(thinking.budgetTokens) ? thinking.budgetTokens : undefined;
-}
-
-function isNonNegativeSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-export function findFirstChangedCacheableSegment(
-  current: Pick<PreparedProviderRequestCapture, 'segments'>,
-  prior: Pick<PreparedProviderRequestCapture, 'segments'>,
-): PreparedRequestSegmentRef | undefined {
-  const currentSegments = current.segments.filter((segment) => segment.cacheable);
-  const priorSegments = prior.segments.filter((segment) => segment.cacheable);
-  const segmentCount = Math.max(currentSegments.length, priorSegments.length);
-  for (let position = 0; position < segmentCount; position += 1) {
-    const currentSegment = currentSegments[position];
-    const priorSegment = priorSegments[position];
-    if (
-      currentSegment?.kind === priorSegment?.kind &&
-      currentSegment?.index === priorSegment?.index &&
-      currentSegment?.hash === priorSegment?.hash
-    ) {
-      continue;
-    }
-    const changed = currentSegment ?? priorSegment;
-    if (!changed) return undefined;
-    return {
-      kind: changed.kind,
-      index: changed.index,
-      ...(changed.role !== undefined ? { role: changed.role } : {}),
-    };
-  }
-  return undefined;
 }
 
 /** The provider-visible tools — the active subset actually serialized on the wire. */
@@ -458,13 +211,13 @@ function providerVisibleTools(
 }
 
 function preparedSegment(
-  kind: PreparedRequestSegmentKind,
+  kind: PreparedRequestObservationSegmentKind,
   index: number,
   value: unknown,
   cacheable: boolean,
   role?: string,
   label?: string,
-): PreparedRequestSegment {
+): PreparedRequestObservationSegment {
   const normalized = normalizePreparedValue(value);
   const serialized = JSON.stringify(normalized.value);
   return {
@@ -472,10 +225,14 @@ function preparedSegment(
     index,
     cacheable,
     comparison: normalized.opaque || containsComparisonOpaqueRedaction(value) ? 'opaque' : 'exact',
-    hash: hashSerialized(serialized),
+    digest: hashSerialized(serialized),
     bytes: Buffer.byteLength(serialized, 'utf8'),
-    ...(role !== undefined ? { role } : {}),
-    ...(label !== undefined ? { label } : {}),
+    ...(role !== undefined
+      ? { role: role.slice(0, PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH) }
+      : {}),
+    ...(label !== undefined
+      ? { label: label.slice(0, PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH) }
+      : {}),
   };
 }
 
@@ -563,6 +320,30 @@ function normalizePreparedValue(value: unknown): NormalizedPreparedValue {
     }
     ancestors.add(current);
     try {
+      if (current instanceof ArrayBuffer) {
+        return {
+          value: {
+            [tag]: 'binary',
+            kind: 'ArrayBuffer',
+            encoding: 'base64',
+            value: Buffer.from(current).toString('base64'),
+          },
+          opaque: false,
+        };
+      }
+      if (ArrayBuffer.isView(current)) {
+        return {
+          value: {
+            [tag]: 'binary',
+            kind: current.constructor?.name ?? 'ArrayBufferView',
+            encoding: 'base64',
+            value: Buffer.from(current.buffer, current.byteOffset, current.byteLength).toString(
+              'base64',
+            ),
+          },
+          opaque: false,
+        };
+      }
       if (current instanceof Date) {
         const timestamp = current.getTime();
         return {
