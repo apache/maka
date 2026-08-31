@@ -81,7 +81,7 @@ export function createProjectManagementService(deps: {
   chooseDirectory(): Promise<string | undefined>;
   selection: {
     currentSelection(): Promise<CurrentProjectSelection>;
-    setSelection(projectId: string | null, projectPath: string): void | Promise<void>;
+    setSelection(projectId: string | null, projectPath: string): void;
   };
   capabilities: DesktopProjectCapabilities;
 }): ProjectManagementService {
