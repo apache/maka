@@ -561,6 +561,8 @@ The current Graph should not be mistaken for a general distributed stream proces
 
 These are deliberate boundaries. They keep Graph useful without moving workflow semantics, resource management, or product presentation into the Agent runtime.
 
+Tracking for the replay timeline and reconcile-history gaps above: [Agent Graph operational topology #2596](https://github.com/apache/maka/issues/2596), [Session Inspector #1625](https://github.com/apache/maka/issues/1625)
+
 ## Graph, Swarm, agent_spawn, and Rive
 
 The four mechanisms solve different coordination problems.

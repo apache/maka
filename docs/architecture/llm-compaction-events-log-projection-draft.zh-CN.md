@@ -447,11 +447,11 @@ Maka 只有一套 LLM compaction 机制，以及一个相邻的 current-request 
 | 机制 | Source | 发生时机 | Durable result | 本章定位 |
 |---|---|---|---|---|
 | History LLM compaction | 安全的 RuntimeEvent prefix | 手动请求、pre-turn capacity、active-turn capacity 或 provider overflow | Schema V2 或 V3 checkpoint 记录进 AgentRun event ledger | 本章主体 |
-| Active Tool Result Prune | 当前 Turn 的 provider-visible tool result | 同一 Turn 的下一 step 前 | raw result 先归档；placeholder 只改当前 messages | 第二章主体 |
+| Active Tool Result Prune | 当前 Turn 的 provider-visible tool result | 同一 Turn 的下一 step 前 | raw result 先归档；projection transition 持久记录 replacement | 第二章主体 |
 
 两者都保留 canonical source，但不会形成并行的 compaction authority。History compaction 始终选择安全 RuntimeEvent prefix，生成并校验一个 replacement，再先持久化一个 checkpoint、后进入 replay。trigger-specific 代码可以固定 live head 或保留 verbatim tail，但不再拥有另一套 planner、summary format、controller 或 durable block。
 
-Active Tool Result Prune 仍是 deterministic、非 LLM 的 rewrite。它先归档 eligible raw Tool Result，再替换 current provider request 中的该结果。它既不总结 span，也不创建 checkpoint；后续 history-compaction planner 读取 canonical RuntimeEvents，不会把 prune placeholder 当成 source authority。
+Active Tool Result Prune 仍是 deterministic、非 LLM 的 rewrite。它先归档 eligible raw Tool Result，再向 AgentRun event ledger 追加 durable projection transition，并由 effective-history reducer 生成 current request。后续 replay、restart、budgeting 与 compaction 也消费同一 reducer。Prune 既不总结 span，也不创建 checkpoint，canonical RuntimeEvents 保持不变。
 
 Placeholder 携带 bounded `maka://archive/...` 地址和 `ArchiveRead` 指令；model replay 会为 legacy placeholder 确定性补回这个地址。Runtime 不再把 archived body eager-expand 回每次请求。只有模型确实需要细节时才调用 `ArchiveRead`，Host 在返回 bounded inspect/query 结果前校验 Session、hash 与 byte size。后续 checkpoint 会用 summary 替换已覆盖的 placeholder，并且有意不携带 archive roots。完整 Tool Result 仍在 canonical RuntimeEvent ledger 中，但 model reachability 不会变成永久的 cross-checkpoint authority。
 

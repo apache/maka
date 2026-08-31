@@ -142,6 +142,8 @@ RuntimeEvent 保存了 AI 交互的 canonical message semantics，但当前并�
 
 因此，本章所说的“状态空间回放”首先是**交互语义与 Runtime 状态的可重建性**。如果未来要承诺 bit-exact deterministic replay，还需要对运行配置、prompt、tool catalog、投影策略和 provider request shape 做版本化或快照化。这不是削弱 Event Log 的价值，反而说明它提供了正确的基础：message facts 保持稳定，request materialization 可以独立演进。
 
+跟踪：[Recovery-grade RuntimeEvent ledger #615](https://github.com/apache/maka/issues/615)
+
 ## 两条思想来源
 
 这个设计有两条明确的思想脉络。
@@ -167,6 +169,8 @@ Maka 并不是在进程内实现了 Kafka，也没有声称 RuntimeEventStore �
 | Run | 这一次具体执行尝试是谁？状态是什么？ | `runId` / `AgentRun` |
 
 RuntimeEvent 仍保留 `invocationId` 作为兼容与事件关联字段。生产主链把它绑定到 Run 身份；它不再对应单独的 Invocation 生命周期对象或 Runner 层。
+
+跟踪：[RuntimeInvocation event spine #4311](https://github.com/apache/maka/issues/4311)
 
 这里最重要的判断是：**Turn 不是 Run，聊天消息也不是执行状态。** 一个用户可见的回合需要一个系统可追踪的执行封套；否则，系统只能知道“出现过一些消息”，却无法可靠回答“这次执行是否真正结束”。
 
@@ -390,6 +394,8 @@ Maka 当前保护的核心不变量是：
 - 启动恢复是确定性终结与修复，不是从任意位置热续跑。续跑走另一条路：`safe_boundary_continuation` 从一个经过校验的安全边界接着跑，Run header 上是 `continuationSource`，由 `RuntimeKernel` 完成准入和 dispatch；两者的区别见[第八章](./runtime-resume-architecture.zh-CN.md)。
 
 这些不是应该隐藏的实现细节，而是当前架构的真实边界。未来拆分 Backend 或加入 checkpoint 时，首要目标不是减少文件行数，而是保持 request shape、工具可见性、事件顺序和 terminal invariant 不变。
+
+跟踪：[`AiSdkBackend` decomposition #3909](https://github.com/apache/maka/issues/3909)
 
 ## 代码阅读地图
 

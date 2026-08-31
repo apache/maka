@@ -32,6 +32,8 @@ owners:
 
 # 第八章：Resume 不是重试——Maka 如何从崩溃事实安全继续
 
+跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)、[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)、[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
+
 > 本章回答一个看起来简单、实际上很危险的问题：Maka 在模型调用工具时崩溃，重启后怎样知道哪些事情已经发生、哪些事情可以继续、哪些事情必须停下来等人处理？核心答案是：**先从不可变的 RuntimeEvent 恢复事实，再由唯一的 RecoveryResolver 判定工具状态；只有历史、执行和 workspace 三条边界都能证明安全时，才创建新的 Run 继续。Resume 从不复活旧进程，也不把“再试一次”伪装成恢复。**
 
 本文面向第一次接触 Maka Runtime 的工程师。前半部分用一个文件写入例子建立直觉，后半部分说明 Phase 0–4、Desktop/CLI 接线、T1/T2、恢复判定、workspace checkpoint 和工程实施顺序。
