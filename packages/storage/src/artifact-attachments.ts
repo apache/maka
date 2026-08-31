@@ -150,8 +150,16 @@ export interface ReadImageSnapshotPlan {
   retract(): Promise<void>;
 }
 
+export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactStore, 'create'> {
+  /** Create with a receipt saying whether this call published the artifact. */
+  createOwned?: (input: Parameters<ArtifactStore['create']>[0]) => Promise<{
+    record: Awaited<ReturnType<ArtifactStore['create']>>;
+    publishedByThisCall: boolean;
+  }>;
+}
+
 export function createReadImageSnapshotPlanner(
-  artifactStore: Pick<ArtifactStore, 'create'>,
+  artifactStore: ReadImageSnapshotArtifactStore,
   /**
    * Narrow reclaim for a `tool_result_projection` artifact this planner
    * published. Optional so callers that cannot reclaim still get the planner;
@@ -191,7 +199,11 @@ export function createReadImageSnapshotPlanner(
       .update(accepted.bytes)
       .digest('hex')}`;
     let publication: Promise<void> | undefined;
-    let published = false;
+    // Ownership, not success. The id is derived from the bytes, so a create for
+    // an image an earlier projection already published succeeds by replaying
+    // that record — and reclaiming it would delete content that is still in
+    // use. Only a create that actually published may be retracted.
+    let owned = false;
     const ref = Object.freeze({
       kind: 'session_file' as const,
       sessionId: accepted.sessionId,
@@ -200,26 +212,32 @@ export function createReadImageSnapshotPlanner(
     return Object.freeze({
       ref,
       persist() {
-        publication ??= artifactStore
-          .create({
-            id,
-            sessionId: accepted.sessionId,
-            turnId: accepted.turnId,
-            name: accepted.name,
-            kind: 'image',
-            content: accepted.bytes,
-            mimeType: accepted.mimeType,
-            source: 'tool_result_projection',
-          })
-          .then((artifact) => {
-            if (artifact.id !== id) throw new Error('Artifact publication changed its planned id');
-            published = true;
-          });
+        const input = {
+          id,
+          sessionId: accepted.sessionId,
+          turnId: accepted.turnId,
+          name: accepted.name,
+          kind: 'image' as const,
+          content: accepted.bytes,
+          mimeType: accepted.mimeType,
+          source: 'tool_result_projection' as const,
+        };
+        publication ??= (
+          artifactStore.createOwned
+            ? artifactStore.createOwned(input)
+            : artifactStore.create(input).then((record) => ({
+                record,
+                publishedByThisCall: false,
+              }))
+        ).then(({ record, publishedByThisCall }) => {
+          if (record.id !== id) throw new Error('Artifact publication changed its planned id');
+          owned = publishedByThisCall;
+        });
         return publication;
       },
       async retract() {
-        if (!published || !retractPublished) return;
-        published = false;
+        if (!owned || !retractPublished) return;
+        owned = false;
         publication = undefined;
         await retractPublished(accepted.sessionId, id).catch(() => undefined);
       },

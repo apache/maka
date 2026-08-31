@@ -294,6 +294,51 @@ describe('artifact attachment authority', () => {
       });
     });
   });
+  test('retraction reclaims only what the retracting plan published', async () => {
+    await withStore(async (store) => {
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: png.slice(),
+        mimeType: 'image/png',
+      };
+      const deleted: string[] = [];
+      // The id is derived from the bytes, so a second projection for the same
+      // image in the same Turn gets the first one's record back. Retracting the
+      // second must not delete the artifact the first one committed.
+      const owned = {
+        create: (createInput: Parameters<typeof store.create>[0]) => store.create(createInput),
+        createOwned: async (createInput: Parameters<typeof store.create>[0]) => {
+          const existing = createInput.id
+            ? await store.getInSession(createInput.sessionId, createInput.id)
+            : undefined;
+          const record = await store.create(createInput);
+          return { record, publishedByThisCall: !existing?.record };
+        },
+      };
+      const planner = createReadImageSnapshotPlanner(owned, async (_sessionId, artifactId) => {
+        deleted.push(artifactId);
+        await store.delete(artifactId);
+      });
+
+      const first = planner(input);
+      await first.persist();
+      const second = planner(input);
+      await second.persist();
+      assert.equal(second.ref.relativePath, first.ref.relativePath);
+
+      await second.retract();
+
+      assert.deepEqual(deleted, []);
+      assert.equal((await store.readBinary(first.ref.relativePath)).ok, true);
+
+      await first.retract();
+
+      assert.deepEqual(deleted, [first.ref.relativePath]);
+      assert.equal((await store.readBinary(first.ref.relativePath)).ok, false);
+    });
+  });
 });
 
 function sessionFileRef(relativePath: string, sessionId = 'session-1'): StorageRef {

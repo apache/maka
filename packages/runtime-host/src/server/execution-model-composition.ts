@@ -91,7 +91,7 @@ type HostExecutionRuntimePolicyAuthority = {
 
 type HostExecutionArtifactAuthority = Pick<
   InteractiveArtifactStoreWriter,
-  'create' | 'readDurableAttachmentBinary' | 'deleteOwnedArtifactInSession'
+  'create' | 'createOwned' | 'readDurableAttachmentBinary' | 'deleteOwnedArtifactInSession'
 >;
 
 type HostExecutionUsageAuthority = {
