@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import {
   createSqliteArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
@@ -59,7 +59,19 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  deleteOwnedDeepResearchArtifactInSession(sessionId: string, artifactId: string): Promise<void>;
+  /**
+   * Narrow system delete for one Session-owned artifact of a declared source.
+   *
+   * Not a user delete: the sources this serves are `userDeletable: false`
+   * precisely because durable replay may depend on them. The caller must name
+   * the source it believes it owns, and a mismatch throws — so a caller that is
+   * wrong about what it is reclaiming reclaims nothing.
+   */
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void>;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
@@ -142,10 +154,10 @@ function createWriterFacade(
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
-    deleteOwnedDeepResearchArtifactInSession: (sessionId, artifactId) =>
+    deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
       run(async () => {
         const entry = await store.getInSession(sessionId, artifactId);
-        if (!entry.record || entry.record.source !== 'deep_research') {
+        if (!entry.record || entry.record.source !== source) {
           throw new Error('Artifact does not belong to the expected Session authority');
         }
         await store.delete(artifactId);

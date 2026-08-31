@@ -137,9 +137,28 @@ interface ReadImageSnapshotInput {
 export interface ReadImageSnapshotPlan {
   ref: Extract<StorageRef, { kind: 'session_file' }>;
   persist(): Promise<void>;
+  /**
+   * Undo a publication whose projection was never admitted (#4283).
+   *
+   * A Tool Result projection carrying several images publishes them one at a
+   * time; if a later one fails, the projection is rejected and the earlier
+   * publications become artifacts no durable record will ever name. Retracting
+   * them is best-effort by design: failing to retract only delays reclamation,
+   * while failing to reject would put an unreferenced artifact in front of the
+   * user as if the tool had produced it.
+   */
+  retract(): Promise<void>;
 }
 
-export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore, 'create'>) {
+export function createReadImageSnapshotPlanner(
+  artifactStore: Pick<ArtifactStore, 'create'>,
+  /**
+   * Narrow reclaim for a `tool_result_projection` artifact this planner
+   * published. Optional so callers that cannot reclaim still get the planner;
+   * without it `retract()` is a no-op and reclamation waits for reachability.
+   */
+  retractPublished?: (sessionId: string, artifactId: string) => Promise<void>,
+) {
   return (input: ReadImageSnapshotInput): ReadImageSnapshotPlan => {
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
@@ -172,6 +191,7 @@ export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore
       .update(accepted.bytes)
       .digest('hex')}`;
     let publication: Promise<void> | undefined;
+    let published = false;
     const ref = Object.freeze({
       kind: 'session_file' as const,
       sessionId: accepted.sessionId,
@@ -193,8 +213,15 @@ export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore
           })
           .then((artifact) => {
             if (artifact.id !== id) throw new Error('Artifact publication changed its planned id');
+            published = true;
           });
         return publication;
+      },
+      async retract() {
+        if (!published || !retractPublished) return;
+        published = false;
+        publication = undefined;
+        await retractPublished(accepted.sessionId, id).catch(() => undefined);
       },
     });
   };
