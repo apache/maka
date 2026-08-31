@@ -120,3 +120,89 @@ test('upward scrolling releases the live tail while skipped geometry materialize
   expect(afterGrowth.distance).toBeGreaterThan(released.distance);
   expect(Math.abs(afterGrowth.top - released.top)).toBeLessThanOrEqual(4);
 });
+
+test('keyboard focus into a skipped card releases the live tail', async ({
+  oversizedTurnWindow: page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  const root = page.locator(SCROLLER);
+  await root.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await waitForPaintedFrames(page);
+
+  const boundary = await root.evaluate((element, segmentSelector) => {
+    // Use the actual sequential focus order inside the transcript. The
+    // containment boundary is the tool-card row around Astryx's native button,
+    // so visibility must be asked of that row rather than its focused child.
+    const headers = [...element.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]')]
+      .map((header) => ({ header, row: header.closest<HTMLElement>(segmentSelector) }))
+      .filter((entry): entry is { header: HTMLElement; row: HTMLElement } =>
+        entry.row != null,
+      );
+    for (let index = 1; index < headers.length; index += 1) {
+      const previous = headers[index - 1]!;
+      const anchor = headers[index]!;
+      if (
+        !previous.row.checkVisibility({ contentVisibilityAuto: true })
+        && anchor.row.checkVisibility({ contentVisibilityAuto: true })
+      ) {
+        previous.header.dataset.focusBoundaryTarget = 'true';
+        anchor.header.dataset.focusBoundaryAnchor = 'true';
+        anchor.header.focus({ preventScroll: true });
+        return { found: true, headerCount: headers.length };
+      }
+    }
+    return { found: false, headerCount: headers.length };
+  }, SEGMENT);
+  expect(boundary.headerCount).toBeGreaterThan(5);
+  expect(boundary.found).toBe(true);
+
+  // This is the normal sequential-navigation path, not a synthetic focus
+  // event. Shift+Tab enters the immediately preceding skipped activity card.
+  await page.keyboard.press('Shift+Tab');
+  await waitForPaintedFrames(page, 6);
+
+  const focused = await root.evaluate((element) => {
+    const active = document.activeElement as HTMLElement | null;
+    const rootRect = element.getBoundingClientRect();
+    const activeRect = active?.getBoundingClientRect();
+    return {
+      target: active?.dataset.focusBoundaryTarget === 'true',
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      top: element.scrollTop,
+      activeTop: activeRect?.top ?? Number.NaN,
+      withinViewport: activeRect != null
+        && activeRect.bottom > rootRect.top
+        && activeRect.top < rootRect.bottom,
+    };
+  });
+  expect(focused.target).toBe(true);
+  expect(focused.distance).toBeGreaterThan(100);
+  expect(focused.withinViewport).toBe(true);
+
+  // A later content delivery resizes the observed transcript box. It must not
+  // re-pin and move the focused card out from under keyboard/AT navigation.
+  await root.evaluate((element) => {
+    const list = element.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    const growth = document.createElement('div');
+    growth.style.height = '600px';
+    list.append(growth);
+  });
+  await waitForPaintedFrames(page);
+
+  const afterGrowth = await root.evaluate((element) => {
+    const active = document.activeElement as HTMLElement | null;
+    return {
+      target: active?.dataset.focusBoundaryTarget === 'true',
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      top: element.scrollTop,
+      activeTop: active?.getBoundingClientRect().top ?? Number.NaN,
+    };
+  });
+  expect(afterGrowth.target).toBe(true);
+  expect(afterGrowth.distance).toBeGreaterThan(focused.distance);
+  expect(Math.abs(afterGrowth.top - focused.top)).toBeLessThanOrEqual(4);
+  expect(Math.abs(afterGrowth.activeTop - focused.activeTop)).toBeLessThanOrEqual(4);
+});

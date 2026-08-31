@@ -24,6 +24,10 @@ import { ensureSidebarExpanded, expect, test } from './fixtures';
 
 const PERF_ENABLED = process.env.MAKA_TRANSCRIPT_PERF === '1';
 const STRESS_ENABLED = process.env.MAKA_TRANSCRIPT_STRESS === '1';
+// Long-animation-frame delivery includes the native compositor. Xvfb's
+// software/virtual display is useful for functional E2E, but is not comparable
+// to the macOS arm64 environment in which this release threshold was measured.
+const NATIVE_MACOS_ARM64_PERF_GATE = process.platform === 'darwin' && process.arch === 'arm64';
 const SCROLLER = '[data-chat-scroll-container="true"]';
 
 interface BrowserCounters {
@@ -327,6 +331,10 @@ test('oversized single Turn upward scroll metrics', async ({
   oversizedTurnWindow: page,
 }) => {
   test.skip(!PERF_ENABLED, 'manual same-build CDP oversized-Turn harness');
+  test.skip(
+    !NATIVE_MACOS_ARM64_PERF_GATE,
+    '50 ms release gate is calibrated for native macOS arm64, not Linux/Xvfb',
+  );
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   await expect(page.locator('[data-turn-id="turn-oversized-fixture"]')).toHaveCount(1);

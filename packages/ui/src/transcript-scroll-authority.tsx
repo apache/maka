@@ -39,7 +39,10 @@
  * offset is the reader — by construction, with no timing heuristic. The one
  * ambiguous delivery is an upward wheel that materializes intrinsic geometry
  * before its scroll event; a scoped wheel listener releases early only when no
- * nested scroller can consume that input.
+ * nested scroller can consume that input. Focus has the same ambiguity when
+ * keyboard or assistive navigation enters a skipped content-visibility subtree,
+ * so focus entering from outside the viewport releases before its geometry can
+ * move the tail.
  */
 
 import {
@@ -223,6 +226,21 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         releaseTail();
       };
       target.addEventListener('wheel', onWheel, { passive: true });
+      // Sequential keyboard navigation and assistive technology can focus an
+      // element in a content-visibility:auto subtree that is currently skipped.
+      // Chromium materializes that subtree and scrolls it into view, but the
+      // resulting scroll/resize deliveries cannot distinguish that reader move
+      // from geometry growth. Release while focus ownership is unambiguous.
+      // Merely focusing a control already in the viewport keeps tail-following.
+      const onFocusIn = (event: FocusEvent): void => {
+        if (!pinned || !(event.target instanceof HTMLElement)) return;
+        const focusedRect = event.target.getBoundingClientRect();
+        const rootRect = target.getBoundingClientRect();
+        const outsideViewport =
+          focusedRect.bottom <= rootRect.top || focusedRect.top >= rootRect.bottom;
+        if (outsideViewport || distanceToTail() > PIN_THRESHOLD_PX) releaseTail();
+      };
+      target.addEventListener('focusin', onFocusIn);
       // Everything that moves the tail without the reader asking, watched in
       // one place: the scroller's own box, because the tail also moves when the
       // viewport shrinks (a window resize, a composer that gains a line), and
@@ -258,6 +276,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
         target.removeEventListener('wheel', onWheel);
+        target.removeEventListener('focusin', onFocusIn);
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
