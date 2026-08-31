@@ -62,6 +62,7 @@ import {
   type WorkspaceExecutor,
   type WorkspaceExecutorFacts,
 } from '../workspace-executor.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const ONE_PIXEL_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==',
@@ -2632,12 +2633,11 @@ describe('builtin FormatJson (file in place)', () => {
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error('timed out waiting for predicate');
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    pollMs: 10,
+    message: 'timed out waiting for predicate',
+  });
 }
 
 async function linuxMissingExactWriteFixture() {

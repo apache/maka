@@ -38,6 +38,7 @@ import {
 } from '../goal-continuation.js';
 import type { GoalEvaluation } from '../goal-evaluator.js';
 import type { MakaToolContext } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const SESSION = 'sess-1';
 function controlledCall<T>() {
@@ -185,11 +186,7 @@ function setup(opts?: {
 }
 
 async function waitFor(condition: () => boolean, message = 'condition was not met'): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!condition()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(condition, { timeoutMs: 1_000, message });
 }
 
 function settleExternal(

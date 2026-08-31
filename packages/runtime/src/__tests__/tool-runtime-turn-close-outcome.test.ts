@@ -27,6 +27,7 @@ import type { ToolOutcomeCommit, ToolPreparedCommit } from '../runtime-commit-si
 import type { MakaTool } from '../tool-runtime.js';
 
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 /**
  * #2253: a stop that lands while an AskUserQuestion is parked ends the turn
@@ -129,11 +130,11 @@ describe('ToolRuntime turn-close outcome identity', () => {
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 500; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  throw new Error('condition never became true');
+  await pollFor(predicate, {
+    attempts: 500,
+    pollMs: 2,
+    message: 'condition never became true',
+  });
 }
 
 function header(): SessionHeader {

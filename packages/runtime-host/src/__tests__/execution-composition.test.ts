@@ -54,6 +54,7 @@ import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
 } from '../server/execution-composition.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const require = createRequire(import.meta.url);
 const FAKE_CONNECTION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -1257,9 +1258,5 @@ async function withCompositionRoot(
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
+  await pollFor(predicate, { timeoutMs, pollMs: 10, message: 'Timed out waiting for condition' });
 }

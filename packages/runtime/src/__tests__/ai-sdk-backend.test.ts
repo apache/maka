@@ -99,6 +99,7 @@ import type { MemoryExtractionSourceSnapshot } from '../memory-extraction.js';
 import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -15899,11 +15900,11 @@ function monotonicClock(): () => number {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  assert.fail('condition was not met before timeout');
+  await pollFor(predicate, {
+    attempts: 20,
+    pollMs: 0,
+    message: 'condition was not met before timeout',
+  });
 }
 
 /**

@@ -135,6 +135,7 @@ import {
   fingerprintAgentGraphRunnableIntent,
 } from '../stream-graph-admission.js';
 import type { AgentGraphRunnableIntent } from '../stream-graph-readiness.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 test('sendMessage rejects removed Automation as a live trigger', async () => {
   const runStore = new MemoryAgentRunStore();
@@ -12749,10 +12750,7 @@ async function drainAll(iterable: AsyncIterable<SessionEvent>): Promise<SessionE
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  for (let i = 0; i < 500 && !(await predicate()); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  assert.strictEqual(await predicate(), true);
+  await waitFor(predicate, { attempts: 500, pollMs: 2 });
 }
 
 /** Mock model: first request calls the Probe tool, second finishes with text. */

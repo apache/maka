@@ -38,6 +38,7 @@ import {
   RuntimeOwnerCleanupError,
 } from '../runtime-kernel.js';
 import { BackendRegistry, type SessionStore } from '../session-manager.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('RuntimeKernel Interaction close cleanup', () => {
   test('reserve followed by begin failure settles a concurrent stop claim', async () => {
@@ -697,11 +698,7 @@ function containsFailure(failure: unknown, expected: unknown): boolean {
   );
 }
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  assert.fail('condition was not met');
+  await pollFor(predicate, { attempts: 50 });
 }
 
 async function within<T>(promise: Promise<T>, operation: string): Promise<T> {

@@ -94,6 +94,7 @@ import {
   waitFor,
   waitForTuiPaint,
 } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 // Deadline for `Promise.race([run, …])` close watchdogs. A passing race
 // resolves the moment `run` settles, so this only bounds how long a FAILING
@@ -7990,12 +7991,7 @@ function editorInputText(terminal: FakeTerminal): string | undefined {
 
 /** Like waitFor, but with a caller-chosen deadline for slower convergence. */
 async function waitForUpTo(predicate: () => boolean, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await delay(10);
-  }
-  assert.equal(predicate(), true);
+  await pollFor(predicate, { timeoutMs: ms, pollMs: 10 });
 }
 
 function exitMaka(_terminal: FakeTerminal): void {

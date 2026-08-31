@@ -45,6 +45,7 @@ import { createExecutionRuntimeHostComposition } from '../server/execution-compo
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { HostRuntimePolicyCoordinator } from '../server/runtime-policy-coordinator.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const context: ConnectionContext = {
   hostEpoch: 'runtime-policy-test-epoch',
@@ -1132,9 +1133,5 @@ async function settlesWithin<T>(promise: Promise<T>, label: string): Promise<T> 
 }
 
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`${label} did not occur`);
+  await pollFor(predicate, { attempts: 100, pollMs: 10, message: `${label} did not occur` });
 }

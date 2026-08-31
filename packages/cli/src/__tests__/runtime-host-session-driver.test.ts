@@ -56,6 +56,7 @@ import type {
   MakaSideConversationParentStatus,
 } from '../session-driver.js';
 import { WAIT_BUDGET_MS } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Host Maka Session driver', () => {
   test('maps authoritative Catalog activity into Session summaries', () => {
@@ -3090,12 +3091,10 @@ function sequenceIds(...ids: string[]): () => string {
   return () => ids[index++] ?? `id-${index}`;
 }
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + WAIT_BUDGET_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail('Timed out waiting for fake Host state');
+  await pollFor(predicate, {
+    timeoutMs: WAIT_BUDGET_MS,
+    message: 'Timed out waiting for fake Host state',
+  });
 }
 
 describe('turn consumer lag recovery (#3180)', () => {

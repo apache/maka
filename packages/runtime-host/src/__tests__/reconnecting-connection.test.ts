@@ -42,6 +42,7 @@ import {
   type OperationKey,
   type OperationOutput,
 } from '../protocol/index.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 test('a reconnecting Client retries an interrupted query on the replacement connection', async () => {
   const first = connectionHarness('first', (operation) => {
@@ -599,12 +600,7 @@ test('an omitted unstableMaxMs stays compatible with a large maxMs', async () =>
 });
 
 function waitForCondition(condition: () => boolean): Promise<void> {
-  return (async () => {
-    for (let i = 0; i < 1_000 && !condition(); i += 1) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-    assert.ok(condition());
-  })();
+  return waitFor(condition, { attempts: 1_000 });
 }
 
 function yieldToEventLoop(): Promise<void> {

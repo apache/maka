@@ -41,6 +41,7 @@ import {
 } from '../interaction-authority.js';
 import { SessionManager } from '../session-manager.js';
 import { ToolRuntime, type DurableSessionEventSink, type MakaTool } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('Runtime Interaction authority seam', () => {
   test('binds the exact Run and rejects release before durable close', async () => {
@@ -618,9 +619,5 @@ async function immediate(): Promise<void> {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) return;
-    await immediate();
-  }
-  assert.fail('condition was not reached');
+  await pollFor(predicate, { attempts: 20, message: 'condition was not reached' });
 }

@@ -69,3 +69,50 @@ export function withTimeout<T>(
     if (timer) clearTimeout(timer);
   }) as Promise<T>;
 }
+
+export interface WaitForOptions {
+  /** Wall-clock budget. Omit to bound the wait by `attempts` alone. */
+  timeoutMs?: number;
+  /** Poll-count budget. Omit to bound the wait by `timeoutMs` alone. */
+  attempts?: number;
+  /** Delay between polls. Omit to yield with `setImmediate` instead. */
+  pollMs?: number;
+  /** Failure message. */
+  message?: string;
+}
+
+/**
+ * Poll `predicate` until it holds, or throw once the budget is spent.
+ *
+ * The copies this replaces expressed their budget two ways — a wall-clock
+ * deadline or a poll count — and neither is derivable from the other: under
+ * load `100 attempts × setImmediate` and `1_000ms` diverge in opposite
+ * directions. Both are kept so every call site can pass what it had.
+ *
+ * The predicate is always evaluated once more before the throw, which is what
+ * the copies ending in `assert.ok(predicate())` did. A wait that would have
+ * passed under any copy still passes here.
+ */
+export async function waitFor(
+  predicate: () => boolean | Promise<boolean>,
+  options: WaitForOptions = {},
+): Promise<void> {
+  const { timeoutMs, attempts, pollMs, message = 'condition was not met' } = options;
+  const deadline = timeoutMs === undefined ? Number.POSITIVE_INFINITY : Date.now() + timeoutMs;
+  const limit = attempts ?? Number.POSITIVE_INFINITY;
+  // `await` on a plain boolean still yields a microtask, and for a synchronous
+  // predicate that tick is observable: it lets a pending render flush before
+  // the result is read, so a TUI wait returns one frame early and the next
+  // keystroke lands on a screen that has not settled. A synchronous predicate
+  // is therefore read without yielding.
+  for (let attempt = 0; attempt < limit && Date.now() < deadline; attempt += 1) {
+    const outcome = predicate();
+    if (outcome === true || (outcome !== false && (await outcome))) return;
+    await (pollMs === undefined
+      ? new Promise<void>((resolve) => setImmediate(resolve))
+      : new Promise<void>((resolve) => setTimeout(resolve, pollMs)));
+  }
+  const last = predicate();
+  if (last === true || (last !== false && (await last))) return;
+  throw new Error(message);
+}

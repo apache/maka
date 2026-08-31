@@ -30,6 +30,7 @@ import {
   type MakaTool,
   type MakaToolContext,
 } from '../tool-runtime.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 describe('AdmissionLimiter', () => {
   test('grants waiting permits in FIFO order and makes release idempotent', async () => {
@@ -381,9 +382,5 @@ function testConnection(): LlmConnection {
   };
 }
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for condition');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, { timeoutMs, message: 'Timed out waiting for condition' });
 }

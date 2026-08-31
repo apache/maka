@@ -37,6 +37,7 @@ import {
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { HostRuntimeResourceCoordinator } from '../server/runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const SESSION_ID = 'real-resource-session';
 
@@ -281,11 +282,11 @@ describe('real Host Runtime Resource process lifecycle', {
   }
 
   async function waitUntil(check: () => Promise<boolean>): Promise<void> {
-    const deadline = Date.now() + 10_000;
-    while (!(await check())) {
-      if (Date.now() >= deadline) throw new Error('Timed out waiting for PTY control to close');
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await waitFor(check, {
+      timeoutMs: 10_000,
+      pollMs: 10,
+      message: 'Timed out waiting for PTY control to close',
+    });
   }
 });
 

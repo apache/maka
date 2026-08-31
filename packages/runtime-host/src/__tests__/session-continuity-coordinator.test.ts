@@ -45,6 +45,7 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { ClientSessionSubscription } from '../client/session-subscription.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const HOST_EPOCH = 'host-epoch';
 const SESSION_ID = 'session-1';
@@ -2581,9 +2582,8 @@ function assistantMessage(text: string): Extract<StoredMessage, { type: 'assista
   };
 }
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await delayImmediate();
-  }
-  throw new Error('Timed out waiting for continuity state');
+  await pollFor(predicate, {
+    attempts: 100,
+    message: 'Timed out waiting for continuity state',
+  });
 }
