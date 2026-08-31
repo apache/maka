@@ -57,6 +57,14 @@ import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
 /** Astryx's own thresholds, so the affordance keeps the feel readers learnt. */
 const PIN_THRESHOLD_PX = 10;
 const BUTTON_THRESHOLD_PX = 100;
+const TRANSCRIPT_SELECTOR = '.maka-chat-message-list';
+const FOCUS_VISIBILITY_BOUNDARY = [
+  '.maka-assistant-answer-content > .maka-chat-message-bubble-assistant',
+  '.maka-assistant-answer-content > .maka-processing-sequence',
+  '.maka-assistant-answer-content > .maka-deep-thinking',
+  '.maka-assistant-answer-content > .maka-tool-activity-card',
+  '.maka-processing-sequence > *',
+].join(',');
 
 export interface TranscriptScrollSnapshot {
   /** Following the tail: growth writes `scrollTop`. */
@@ -231,22 +239,56 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       // Chromium materializes that subtree and scrolls it into view, but the
       // resulting scroll/resize deliveries cannot distinguish that reader move
       // from geometry growth. Release while focus ownership is unambiguous.
-      // A visible composer is outside the transcript and must never release the
-      // tail. A visible transcript control also keeps following when geometry
-      // grew before ResizeObserver delivered it: in that window the root is
-      // still on the offset this authority wrote. Focus navigation that moved
-      // the reader changes that offset, or leaves the target outside the root
-      // viewport before Chromium brings it into view.
-      const onFocusIn = (event: FocusEvent): void => {
-        if (!pinned || !(event.target instanceof HTMLElement)) return;
-        if (!event.target.closest('.maka-chat-message-list')) return;
-        const focusedRect = event.target.getBoundingClientRect();
+      // `focusin` is too late to decide whether focus moved the reader: Chromium
+      // has already scrolled a partially visible control fully into view by then.
+      // The preceding focusout names the incoming target in `relatedTarget`, so
+      // remember whether its containment boundary was outside the viewport before
+      // the browser reveals it. This also distinguishes pending geometry growth
+      // from reader movement without depending on ResizeObserver delivery order.
+      let incomingFocus:
+        | { readonly target: HTMLElement; readonly outsideViewport: boolean }
+        | undefined;
+      const isOutsideViewport = (element: HTMLElement): boolean => {
+        const boundary = element.closest<HTMLElement>(FOCUS_VISIBILITY_BOUNDARY) ?? element;
+        const focusedRect = boundary.getBoundingClientRect();
         const rootRect = target.getBoundingClientRect();
-        const outsideViewport =
-          focusedRect.bottom <= rootRect.top || focusedRect.top >= rootRect.bottom;
+        return focusedRect.bottom <= rootRect.top || focusedRect.top >= rootRect.bottom;
+      };
+      const onFocusOut = (event: FocusEvent): void => {
+        const next = event.relatedTarget;
+        if (!(next instanceof HTMLElement) || !target.contains(next)) {
+          incomingFocus = undefined;
+          return;
+        }
+        incomingFocus = {
+          target: next,
+          outsideViewport:
+            next.closest(TRANSCRIPT_SELECTOR) !== null && isOutsideViewport(next),
+        };
+      };
+      // Listen on the document so focus entering from the sidebar or another
+      // surface is captured before it reaches this scroll root too. The fallback
+      // keeps the state-machine harness independent of a full DOM implementation.
+      const focusEventRoot = target.ownerDocument || target;
+      focusEventRoot.addEventListener('focusout', onFocusOut, true);
+      const onFocusIn = (event: FocusEvent): void => {
+        if (!(event.target instanceof HTMLElement)) {
+          incomingFocus = undefined;
+          return;
+        }
+        const before = incomingFocus?.target === event.target ? incomingFocus : undefined;
+        incomingFocus = undefined;
+        if (!pinned) return;
+        if (!event.target.closest(TRANSCRIPT_SELECTOR)) return;
+        if (before?.outsideViewport === false) return;
+        const outsideViewport = isOutsideViewport(event.target);
         const readerMoved =
           lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) >= 1;
-        if (outsideViewport || (readerMoved && distanceToTail() > PIN_THRESHOLD_PX)) {
+        if (
+          before?.outsideViewport === true
+          || outsideViewport
+          || (before === undefined && readerMoved && distanceToTail() > PIN_THRESHOLD_PX)
+        ) {
           releaseTail();
         }
       };
@@ -287,6 +329,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         target.removeEventListener('scroll', onScroll);
         target.removeEventListener('wheel', onWheel);
         target.removeEventListener('focusin', onFocusIn);
+        focusEventRoot.removeEventListener('focusout', onFocusOut, true);
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
