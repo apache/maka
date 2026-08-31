@@ -254,6 +254,7 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
       ) => this.#acceptUserQuestionRequest(run, input),
       acceptFormRequest: (input: Parameters<RuntimeInteractionRunOwner['acceptFormRequest']>[0]) =>
         this.#acceptFormRequest(run, input),
+      withdrawFormRequest: (requestId: string) => this.#withdrawFormRequest(run, requestId),
       acceptSandboxBoundaryRequest: (
         input: Parameters<RuntimeInteractionRunOwner['acceptSandboxBoundaryRequest']>[0],
       ) => this.#acceptSandboxBoundaryRequest(run, input),
@@ -964,6 +965,60 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
         });
       }
       return closure.task;
+    } catch (error) {
+      return rejected(error);
+    }
+  }
+
+  #withdrawFormRequest(run: BoundRun, requestId: string): Promise<void> {
+    try {
+      this.#assertOwnedRun(run);
+      this.#throwIfPoisoned();
+      if (run.released) {
+        throw this.#poison(
+          new RuntimeInteractionInvariantError(
+            `Released Interaction Run ${run.runId} cannot withdraw a form`,
+          ),
+        );
+      }
+      return observed(
+        this.#sessionAdmission.run(run.sessionId, async (admission) => {
+          this.#throwIfPoisoned();
+          // A whole-Run stop/terminal closure that already claimed ownership
+          // remains the reason for every still-pending Interaction in that Run.
+          if (run.closure) return;
+          const record = await this.#readInteraction(requestId);
+          // Cancellation may win while admission is still proving publication.
+          // The producer will also observe its abort and must not publish afterward.
+          if (!record) return;
+          if (!sameRun(record.request, run) || record.request.request.kind !== 'form') {
+            throw this.#poison(
+              new RuntimeInteractionInvariantError(
+                `Interaction Run ${run.runId} cannot withdraw form ${requestId}`,
+              ),
+            );
+          }
+          // A canonical user answer or Run closure that won the Session admission
+          // race stays authoritative.
+          if (record.outcome) return;
+          const entry = this.#requireLiveStored(record.request);
+          if (entry.kind !== 'form' || entry.run !== run) {
+            throw this.#poison(
+              new RuntimeInteractionInvariantError(
+                `Form ${requestId} is not owned by Interaction Run ${run.runId}`,
+              ),
+            );
+          }
+          const outcome = await this.#commitOutcome(record.request, {
+            kind: 'closure',
+            reason: 'producer_cancelled',
+            committedAt: this.#now(),
+          });
+          await this.#refreshCanonicalContinuity(run.sessionId, admission);
+          this.#throwIfPoisoned();
+          await this.#applyAndDelete(entry, outcome);
+        }),
+      );
     } catch (error) {
       return rejected(error);
     }

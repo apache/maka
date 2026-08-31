@@ -101,6 +101,7 @@ describe('RuntimeKernel Interaction close cleanup', () => {
           acceptSandboxBoundaryRequest: async () => {},
           acceptUserQuestionRequest: async () => {},
           acceptFormRequest: async () => {},
+          withdrawFormRequest: async () => {},
           close: async () => {
             closeCalls += 1;
             closeStarted.resolve();
@@ -485,6 +486,7 @@ function runtimeFixture(options: RuntimeFixtureOptions = {}): {
       acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
       acceptFormRequest: async () => {},
+      withdrawFormRequest: async () => {},
       close: async () => {
         markCloseStarted();
         if (options.deferredClose) await closeReleased;

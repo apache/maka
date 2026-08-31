@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { HostedFormSettlement } from '@maka/core/backend-types';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionHeader } from '@maka/core/session';
 import { z } from 'zod';
@@ -49,7 +50,7 @@ function header(): SessionHeader {
   };
 }
 
-function formTool(): MakaTool<Record<string, never>> {
+function formTool(cancellationSignal?: AbortSignal): MakaTool<Record<string, never>> {
   return {
     name: 'SyntheticForm',
     description: 'Exercise the provider-neutral form seam.',
@@ -57,30 +58,33 @@ function formTool(): MakaTool<Record<string, never>> {
     nesting: 'direct_only',
     impl: (_input, context) => {
       if (!context.requestUserForm) throw new Error('Form Interaction is unavailable');
-      return context.requestUserForm({
-        message: 'Choose deployment settings',
-        requester: { name: 'deploy', source: 'Synthetic provider' },
-        fields: [
-          {
-            kind: 'integer',
-            name: 'replicas',
-            label: 'Replicas',
-            required: true,
-            minimum: 1,
-            maximum: 10,
-          },
-          {
-            kind: 'multi_select',
-            name: 'regions',
-            label: 'Regions',
-            required: false,
-            options: [
-              { value: 'us', label: 'US' },
-              { value: 'eu', label: 'EU' },
-            ],
-          },
-        ],
-      });
+      return context.requestUserForm(
+        {
+          message: 'Choose deployment settings',
+          requester: { name: 'deploy', source: 'Synthetic provider' },
+          fields: [
+            {
+              kind: 'integer',
+              name: 'replicas',
+              label: 'Replicas',
+              required: true,
+              minimum: 1,
+              maximum: 10,
+            },
+            {
+              kind: 'multi_select',
+              name: 'regions',
+              label: 'Regions',
+              required: false,
+              options: [
+                { value: 'us', label: 'US' },
+                { value: 'eu', label: 'EU' },
+              ],
+            },
+          ],
+        },
+        cancellationSignal ? { cancellationSignal } : undefined,
+      );
     },
   };
 }
@@ -196,5 +200,59 @@ describe('ToolRuntime form Interaction', () => {
       toolRuntime.respondToUserForm({ requestId: secondRequest.requestId, action: 'cancel' }),
       false,
     );
+  });
+
+  test('withdraws the exact hosted form when its producer is cancelled', async () => {
+    const events: SessionEvent[] = [];
+    const producer = new AbortController();
+    let admitted: { requestId: string; settlement: HostedFormSettlement } | undefined;
+    const withdrawals: string[] = [];
+    const toolRuntime = createTestToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'c' } as never,
+      modelId: 'm',
+      appendMessage: async () => {},
+      newId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+      hostedInteraction: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        admitUserQuestionRequest: async () => {
+          throw new Error('Unexpected user question');
+        },
+        admitFormRequest: async (input) => {
+          admitted = { requestId: input.request.requestId, settlement: input.settlement };
+        },
+        withdrawFormRequest: async (requestId) => {
+          withdrawals.push(requestId);
+          await admitted?.settlement.applyClosure('producer_cancelled');
+        },
+        admitSandboxBoundaryRequest: async () => {
+          throw new Error('Unexpected sandbox boundary');
+        },
+      },
+    });
+    const pending = toolRuntime.settleToolCall({
+      tool: formTool(producer.signal),
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: sink(events),
+    });
+    while (!admitted) await new Promise<void>((resolve) => setImmediate(resolve));
+
+    producer.abort(new DOMException('Provider invocation ended', 'AbortError'));
+    await pending;
+
+    assert.deepEqual(withdrawals, [admitted.requestId]);
+    assert.equal(toolRuntime.pendingUserFormCount(), 0);
+    assert.equal(events.filter((event) => event.type === 'form_answer_ack').length, 0);
   });
 });
