@@ -257,10 +257,12 @@ describe('artifact attachment authority', () => {
       bytes[0] = 0;
       input.name = 'mutated after prepare';
       await Promise.all([plan.persist(), plan.persist()]);
+      const published = await store.list('session-1');
       assert.deepEqual(
-        (await store.list('session-1')).map((artifact) => artifact.id),
+        published.map((artifact) => artifact.id),
         [plan.ref.relativePath],
       );
+      assert.equal(published[0]?.name, 'Tool Result image');
       assert.deepEqual(await store.readBinary(plan.ref.relativePath), {
         ok: true,
         base64: Buffer.from(png).toString('base64'),
