@@ -69,7 +69,6 @@
     "./agent-graph-topology": "./dist/agent-graph-topology.js",
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
-    "./task-ledger": "./dist/task-ledger.js",
     "./session-todo": "./dist/session-todo.js",
     "./foreign-session": "./dist/foreign-session.js",
     "./external-session": "./dist/external-session.js",
