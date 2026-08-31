@@ -274,6 +274,58 @@ test('remote TUI publication revalidates every reconnect result', async () => {
   await target.closePublication?.();
 });
 
+test('remote TUI publication reconnects through current direct-peer routes', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness(DIRECT_PROFILE);
+  const connectedProfiles: RemoteRuntimeHostProfile[] = [];
+  const initial = connectionHarness('connection-1');
+  const replacement = connectionHarness('connection-2');
+  let reconnect: ((signal: AbortSignal) => Promise<RuntimeHostConnection>) | undefined;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: DIRECT_PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async (input) => {
+        assert.equal(input.profile.kind, 'remote');
+        if (input.profile.kind !== 'remote') throw new Error('expected a remote profile');
+        connectedProfiles.push(input.profile);
+        return connectedProfiles.length === 1 ? initial.connection : replacement.connection;
+      },
+      createPeerClient: () => ({ close: async () => undefined }) as RuntimeHostPeerClient,
+      createReconnectingConnection: async (input) => {
+        reconnect = input.connect;
+        return reconnectingConnection(initial.connection);
+      },
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'direct provider companion to connect');
+  assert.ok(reconnect);
+
+  const moved: RemoteRuntimeHostProfile = {
+    ...DIRECT_PROFILE,
+    transport: {
+      kind: 'libp2p-direct',
+      peerId: 'peer-a',
+      routeHints: ['/ip6/2001:db8::10/udp/4001/quic-v1'],
+      coordinationRelays: ['/dns4/relay.example.com/tcp/443/wss/p2p/relay-a'],
+    },
+  };
+  profiles.update(moved);
+  await reconnect(new AbortController().signal);
+
+  assert.deepEqual(connectedProfiles, [DIRECT_PROFILE, moved]);
+  await target.closePublication?.();
+});
+
 test('remote TUI publication retires when another process removes its profile', async () => {
   const credentials = credentialHarness('provider-secret');
   const profiles = profileHarness();
@@ -338,6 +390,45 @@ test('remote TUI publication cannot write into a recreated profile incarnation',
   await assert.rejects(setCredential, /profile is no longer current/u);
   assert.equal(credentials.values.has('office\0incarnation-a\0terminal-client'), false);
   assert.equal(credentials.values.has('office\0incarnation-b\0terminal-client'), false);
+  assert.deepEqual(latest(), { kind: 'unavailable', reason: 'target_mismatch' });
+  await target.closePublication?.();
+});
+
+test('remote TUI publication cannot register capabilities after profile recreation', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const connection = connectionHarness('connection-1');
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => connection.connection,
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'provider companion to connect');
+
+  const heldMutation = profiles.holdNextMutation();
+  const replace = target.replaceClientCapabilities({ offers: () => [] });
+  await heldMutation.started;
+  profiles.remove();
+  profiles.recreate('incarnation-b');
+  heldMutation.release();
+
+  await assert.rejects(
+    replace,
+    (error: unknown) =>
+      error instanceof RuntimeHostProfileConnectionError && error.reason === 'target_mismatch',
+  );
+  assert.equal(connection.replacements, 0);
   assert.deepEqual(latest(), { kind: 'unavailable', reason: 'target_mismatch' });
   await target.closePublication?.();
 });
@@ -529,9 +620,9 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
     | undefined;
   const catalog: Pick<
     RuntimeHostProfileCatalog,
-    'isRemoteProfileIncarnationCurrent' | 'mutateRemoteProfileIfCurrent'
+    'readRemoteProfileIfCurrent' | 'mutateRemoteProfileIfCurrent'
   > = {
-    isRemoteProfileIncarnationCurrent: async (expected) => {
+    readRemoteProfileIfCurrent: async (expected) => {
       const snapshot = current;
       const held = heldValidation;
       heldValidation = undefined;
@@ -539,11 +630,11 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
         held.started.resolve();
         await held.release.promise;
       }
-      return (
-        snapshot !== undefined &&
+      return snapshot !== undefined &&
         snapshot.profileIncarnationId === expected.profileIncarnationId &&
         sameRemoteRuntimeHostProfileTarget(snapshot.profile, expected.profile)
-      );
+        ? snapshot.profile
+        : undefined;
     },
     mutateRemoteProfileIfCurrent: async (expected, mutation) => {
       const held = heldMutation;
@@ -581,6 +672,11 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
       current = { profile: initial, profileIncarnationId };
       invalidate();
     },
+    update: (profile: RemoteRuntimeHostProfile) => {
+      assert.ok(current);
+      current = { profile, profileIncarnationId: current.profileIncarnationId };
+      invalidate();
+    },
     holdNextValidation: () => {
       const started = deferred();
       const release = deferred();
@@ -598,6 +694,7 @@ function profileHarness(initial: RemoteRuntimeHostProfile = PROFILE) {
 
 interface ConnectionHarness {
   connection: RuntimeHostConnection;
+  replacements: number;
   unregisters: number;
   closes: number;
 }
@@ -612,6 +709,7 @@ function connectionHarness(
   });
   const harness: ConnectionHarness = {
     connection: undefined as unknown as RuntimeHostConnection,
+    replacements: 0,
     unregisters: 0,
     closes: 0,
   };
@@ -623,10 +721,13 @@ function connectionHarness(
     compositionId: 'maka.interactive',
     compositionRevision: 'composition-revision',
     closed,
-    replaceClientCapabilities: async () => ({ registrationIds: [] }),
+    replaceClientCapabilities: async () => {
+      harness.replacements += 1;
+      return { registrationId: 'registration-a', revision: harness.replacements };
+    },
     unregisterClientCapabilities: async () => {
       harness.unregisters += 1;
-      return { registrationIds: [] };
+      return { registrationId: 'registration-a', revision: harness.unregisters };
     },
     subscribeConfigurationChanges: () => () => undefined,
     subscribeProjectCatalogChanges: () => () => undefined,

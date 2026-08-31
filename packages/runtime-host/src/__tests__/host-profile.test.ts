@@ -32,6 +32,7 @@ import {
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
+  decodeRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
   RuntimeHostProfileConnectionError,
@@ -577,18 +578,16 @@ describe('Runtime Host profiles', () => {
     const removal = removingCatalog.remove(profile.id);
     await removalStarted.promise;
     let validationSettled = false;
-    const validation = validatingCatalog
-      .isRemoteProfileIncarnationCurrent(incarnation)
-      .then((current) => {
-        validationSettled = true;
-        return current;
-      });
+    const validation = validatingCatalog.readRemoteProfileIfCurrent(incarnation).then((current) => {
+      validationSettled = true;
+      return current;
+    });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(validationSettled, false);
 
     allowRemovalFailure.resolve();
     await assert.rejects(removal, /credential store unavailable/u);
-    assert.equal(await validation, true);
+    assert.deepEqual(await validation, decodeRemoteRuntimeHostProfile(profile));
   });
 
   test('recreating the same profile id and target assigns a new incarnation', async () => {
@@ -619,8 +618,11 @@ describe('Runtime Host profiles', () => {
     };
 
     assert.notEqual(second.profileIncarnationId, first.profileIncarnationId);
-    assert.equal(await catalog.isRemoteProfileIncarnationCurrent(firstIncarnation), false);
-    assert.equal(await catalog.isRemoteProfileIncarnationCurrent(secondIncarnation), true);
+    assert.equal(await catalog.readRemoteProfileIfCurrent(firstIncarnation), undefined);
+    assert.deepEqual(
+      await catalog.readRemoteProfileIfCurrent(secondIncarnation),
+      decodeRemoteRuntimeHostProfile(profile),
+    );
     assert.equal(await providers.get(secondIncarnation, 'owner-a'), null);
     let staleMutationRan = false;
     assert.equal(

@@ -228,7 +228,10 @@ export interface RuntimeHostProfileCatalog {
     target: RuntimeHostRemoteProfileIncarnation,
     mutation: (profile: RemoteRuntimeHostProfile) => Promise<void>,
   ): Promise<boolean>;
-  isRemoteProfileIncarnationCurrent(target: RuntimeHostRemoteProfileIncarnation): Promise<boolean>;
+  /** Return the canonical profile while this exact profile lifetime remains current. */
+  readRemoteProfileIfCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+  ): Promise<RemoteRuntimeHostProfile | undefined>;
 }
 
 export interface RuntimeHostProfileCredential {
@@ -1008,9 +1011,9 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
     });
   }
 
-  async isRemoteProfileIncarnationCurrent(
+  async readRemoteProfileIfCurrent(
     target: RuntimeHostRemoteProfileIncarnation,
-  ): Promise<boolean> {
+  ): Promise<RemoteRuntimeHostProfile | undefined> {
     const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
     const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
     return this.#exclusive(async () => {
@@ -1019,8 +1022,12 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         (candidate): candidate is RemoteRuntimeHostProfile =>
           candidate.id === expectedProfile.id && candidate.kind === 'remote',
       );
-      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
-      return (await this.credentials.get(profile))?.profileIncarnationId === expectedIncarnationId;
+      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) {
+        return undefined;
+      }
+      return (await this.credentials.get(profile))?.profileIncarnationId === expectedIncarnationId
+        ? profile
+        : undefined;
     });
   }
 

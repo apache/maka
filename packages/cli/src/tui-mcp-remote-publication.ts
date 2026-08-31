@@ -55,7 +55,7 @@ interface RemoteTuiMcpPublicationDeps {
   readonly createReconnectingConnection: typeof createRuntimeHostReconnectingConnection;
   readonly profiles: Pick<
     RuntimeHostProfileCatalog,
-    'isRemoteProfileIncarnationCurrent' | 'mutateRemoteProfileIfCurrent'
+    'readRemoteProfileIfCurrent' | 'mutateRemoteProfileIfCurrent'
   >;
   readonly subscribeProfileChanges: (listener: (error?: Error) => void) => () => void;
 }
@@ -152,7 +152,27 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
   }
 
   replaceClientCapabilities(provider: ClientCapabilityProvider, timeoutMs?: number) {
-    return this.#requireConnection().replaceClientCapabilities(provider, timeoutMs);
+    return this.#serialize(async () => {
+      if (this.#closed) throw new Error('Remote MCP publication is closed');
+      let result:
+        | Awaited<ReturnType<RuntimeHostConnection['replaceClientCapabilities']>>
+        | undefined;
+      const committed = await this.#deps.profiles.mutateRemoteProfileIfCurrent(
+        this.#profileTarget(),
+        async () => {
+          result = await this.#requireConnection().replaceClientCapabilities(provider, timeoutMs);
+        },
+      );
+      if (!committed) {
+        await this.#retire('target_mismatch');
+        throw new RuntimeHostProfileConnectionError(
+          'target_mismatch',
+          'Remote MCP publication profile is no longer current',
+        );
+      }
+      if (!result) throw new Error('Runtime Host did not confirm MCP capability registration');
+      return result;
+    });
   }
 
   unregisterClientCapabilities(timeoutMs?: number) {
@@ -249,9 +269,9 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
           : undefined;
       this.#peerClient = peerClient;
       const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
-        await this.#requireCurrentProfile();
+        const profile = await this.#requireCurrentProfile();
         const connection = await this.#deps.connectProfile({
-          profile: this.#input.profile,
+          profile,
           credential,
           clientInstanceId,
           sshInteraction: 'batch',
@@ -347,12 +367,17 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
     });
   }
 
-  async #profileStillCurrent(): Promise<boolean> {
-    return this.#deps.profiles.isRemoteProfileIncarnationCurrent(this.#profileTarget());
+  async #currentProfile(): Promise<RemoteRuntimeHostProfile | undefined> {
+    return this.#deps.profiles.readRemoteProfileIfCurrent(this.#profileTarget());
   }
 
-  async #requireCurrentProfile(): Promise<void> {
-    if (await this.#profileStillCurrent()) return;
+  async #profileStillCurrent(): Promise<boolean> {
+    return (await this.#currentProfile()) !== undefined;
+  }
+
+  async #requireCurrentProfile(): Promise<RemoteRuntimeHostProfile> {
+    const profile = await this.#currentProfile();
+    if (profile) return profile;
     throw new RuntimeHostProfileConnectionError(
       'target_mismatch',
       'Remote MCP publication profile is no longer current',
