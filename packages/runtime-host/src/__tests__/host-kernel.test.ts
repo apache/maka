@@ -2411,7 +2411,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('rejects a previous-epoch Client before admitting ScheduledTask commands', async () => {
+  test('rejects a previous-epoch Client before admitting catalog commands', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -2439,9 +2439,9 @@ describe('non-serving Runtime Host kernel', () => {
         await assert.rejects(
           () =>
             writeClientFrame(transport, {
-              requestId: 'post-epoch-mismatch-scheduled-task-query',
-              operation: 'scheduled-task.query',
-              input: { kind: 'list' },
+              requestId: 'post-epoch-mismatch-catalog-query',
+              operation: 'connection.catalog.query',
+              input: { kind: 'start' },
             }),
           (error: unknown) => error instanceof RuntimeHostTransportError && error.code === 'closed',
         );

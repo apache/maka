@@ -403,11 +403,15 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', () => {
+        throw new Error('pending continuation setup must not build a backend');
+      });
       const manager = new SessionManager({
         store: stores.sessionStore,
         runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
-        backends: new BackendRegistry(),
+        backends,
         safeBoundaryResumeEnabled: true,
         inspectContinuationSafety: async () => ({
           workspaceIdentity: workspace.workspaceIdentity,

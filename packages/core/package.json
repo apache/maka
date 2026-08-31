@@ -8,6 +8,7 @@
   "private": true,
   "exports": {
     "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
+    "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-event": "./dist/runtime-event.js",
@@ -86,6 +87,7 @@
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
     "./model-catalog": "./dist/model-catalog.js",
+    "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",

@@ -137,9 +137,36 @@ interface ReadImageSnapshotInput {
 export interface ReadImageSnapshotPlan {
   ref: Extract<StorageRef, { kind: 'session_file' }>;
   persist(): Promise<void>;
+  /**
+   * Undo a publication whose projection was never admitted (#4283).
+   *
+   * A Tool Result projection carrying several images publishes them one at a
+   * time; if a later one fails, the projection is rejected and the earlier
+   * publications become artifacts no durable record will ever name. Retracting
+   * them is best-effort by design: failing to retract only delays reclamation,
+   * while failing to reject would put an unreferenced artifact in front of the
+   * user as if the tool had produced it.
+   */
+  retract(): Promise<void>;
 }
 
-export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore, 'create'>) {
+export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactStore, 'create'> {
+  /** Create with a receipt saying whether this call published the artifact. */
+  createOwned?: (input: Parameters<ArtifactStore['create']>[0]) => Promise<{
+    record: Awaited<ReturnType<ArtifactStore['create']>>;
+    publishedByThisCall: boolean;
+  }>;
+}
+
+export function createReadImageSnapshotPlanner(
+  artifactStore: ReadImageSnapshotArtifactStore,
+  /**
+   * Narrow reclaim for a `tool_result_projection` artifact this planner
+   * published. Optional so callers that cannot reclaim still get the planner;
+   * without it `retract()` is a no-op and reclamation waits for reachability.
+   */
+  retractPublished?: (sessionId: string, artifactId: string) => Promise<void>,
+) {
   return (input: ReadImageSnapshotInput): ReadImageSnapshotPlan => {
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
@@ -172,6 +199,11 @@ export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore
       .update(accepted.bytes)
       .digest('hex')}`;
     let publication: Promise<void> | undefined;
+    // Ownership, not success. The id is derived from the bytes, so a create for
+    // an image an earlier projection already published succeeds by replaying
+    // that record — and reclaiming it would delete content that is still in
+    // use. Only a create that actually published may be retracted.
+    let owned = false;
     const ref = Object.freeze({
       kind: 'session_file' as const,
       sessionId: accepted.sessionId,
@@ -180,21 +212,34 @@ export function createReadImageSnapshotPlanner(artifactStore: Pick<ArtifactStore
     return Object.freeze({
       ref,
       persist() {
-        publication ??= artifactStore
-          .create({
-            id,
-            sessionId: accepted.sessionId,
-            turnId: accepted.turnId,
-            name: accepted.name,
-            kind: 'image',
-            content: accepted.bytes,
-            mimeType: accepted.mimeType,
-            source: 'tool_result_projection',
-          })
-          .then((artifact) => {
-            if (artifact.id !== id) throw new Error('Artifact publication changed its planned id');
-          });
+        const input = {
+          id,
+          sessionId: accepted.sessionId,
+          turnId: accepted.turnId,
+          name: accepted.name,
+          kind: 'image' as const,
+          content: accepted.bytes,
+          mimeType: accepted.mimeType,
+          source: 'tool_result_projection' as const,
+        };
+        publication ??= (
+          artifactStore.createOwned
+            ? artifactStore.createOwned(input)
+            : artifactStore.create(input).then((record) => ({
+                record,
+                publishedByThisCall: false,
+              }))
+        ).then(({ record, publishedByThisCall }) => {
+          if (record.id !== id) throw new Error('Artifact publication changed its planned id');
+          owned = publishedByThisCall;
+        });
         return publication;
+      },
+      async retract() {
+        if (!owned || !retractPublished) return;
+        owned = false;
+        publication = undefined;
+        await retractPublished(accepted.sessionId, id).catch(() => undefined);
       },
     });
   };

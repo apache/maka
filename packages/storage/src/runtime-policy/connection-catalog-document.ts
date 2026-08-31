@@ -463,7 +463,9 @@ export class ConnectionCatalogDocumentOwner {
         hasModelInventory: previous.models.length > 0,
       },
       result.models,
-      { aliases: modelIdAliasesForProvider(previous.providerType) },
+      {
+        aliases: modelIdAliasesForProvider(previous.providerType),
+      },
     );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
@@ -714,6 +716,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionTestSummary,
+    modelFactsFingerprint: string,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
     const index = findConnectionIndex(current, expected);
@@ -725,6 +728,7 @@ export class ConnectionCatalogDocumentOwner {
       ...previous,
       revision: nextRevision(previous.revision),
       lastTest: result,
+      lastTestModelFactsFingerprint: modelFactsFingerprint,
     });
   }
 
@@ -746,7 +750,11 @@ export class ConnectionCatalogDocumentOwner {
     // provider that can no longer be tested, so there is nothing to
     // invalidate.
     if (previous.lastTest === undefined || isRetiredProvider(previous.providerType)) return false;
-    const { lastTest: _lastTest, ...withoutLastTest } = previous;
+    const {
+      lastTest: _lastTest,
+      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+      ...withoutLastTest
+    } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
       revision: nextRevision(previous.revision),
@@ -769,7 +777,11 @@ export class ConnectionCatalogDocumentOwner {
     if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
       if (!invalidates(connection)) return connection;
-      const { lastTest: _lastTest, ...withoutLastTest } = connection;
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
       return {
         ...withoutLastTest,
         revision: nextRevision(connection.revision),

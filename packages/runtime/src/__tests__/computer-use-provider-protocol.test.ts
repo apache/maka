@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { after, describe, test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
 
 import type { LlmConnection } from '@maka/core/llm-connections';
 
@@ -43,12 +44,130 @@ import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import { latestObservationIn } from './observation-text-reader.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
+const PROVIDER_STATE_IDENTITY = `sha256:${'1'.repeat(64)}` as const;
 
 after(async () => {
   await Promise.all(servers.map((server) => server.close()));
 });
 
 describe('Anthropic-compatible Computer Use product loops', () => {
+  test('replays every same-route Anthropic reasoning block in provider order', async () => {
+    const sessionId = 'session-anthropic-redacted-replay';
+    const firstTurn = createDurableTurnHarness({
+      sessionId,
+      runId: 'run-prev',
+      turnId: 'turn-prev',
+      text: 'Inspect first.',
+    });
+    const secondTurn = createDurableTurnHarness({
+      sessionId,
+      runId: 'run-current',
+      turnId: 'turn-current',
+      text: 'Continue.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/messages');
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      if (requestBodies.length === 1) {
+        respondAnthropicReasoningBlocksStream(response, 'claude-sonnet-4-5-20250929', [
+          {
+            kind: 'signed',
+            text: 'inspect safely',
+            signature: 'signed-thinking-1',
+          },
+          { kind: 'redacted', data: 'opaque-redacted-thinking-1' },
+          { kind: 'redacted', data: 'opaque-redacted-thinking-2' },
+        ]);
+      } else {
+        respondAnthropicStream(response, 'claude-sonnet-4-5-20250929', 2, undefined);
+      }
+    });
+    const providerConnection = connection('anthropic', server.url, 'claude-sonnet-4-5-20250929');
+    const createRuntime = () =>
+      createTestAiSdkBackend({
+        sessionId,
+        header: {
+          ...header('anthropic', 'claude-sonnet-4-5-20250929'),
+          llmConnectionId: 'connection-anthropic',
+        },
+        appendMessage: async () => {},
+        connection: providerConnection,
+        apiKey: 'test-key',
+        providerStateIdentity: PROVIDER_STATE_IDENTITY,
+        modelId: 'claude-sonnet-4-5-20250929',
+        modelFactory: (input) => getAIModel(input),
+        tools: [],
+        maxSteps: 1,
+        loadTurnRuntimeEvents: async (turnId) =>
+          [...firstTurn.ledger, ...secondTurn.ledger].filter((event) => event.turnId === turnId),
+        newId: idGenerator(),
+        now: monotonicClock(),
+      });
+    const sourceRun = {
+      runId: 'run-prev',
+      sessionId,
+      turnId: 'turn-prev',
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'connection-anthropic',
+      llmConnectionSlug: 'anthropic',
+      modelId: 'claude-sonnet-4-5-20250929',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      cwd: '/tmp/maka',
+      permissionMode: 'bypass',
+      createdAt: 1,
+      updatedAt: 2,
+      completedAt: 2,
+    } satisfies AgentRunHeader;
+    for await (const event of createRuntime().send(firstTurn.sendInput())) firstTurn.record(event);
+    assert.deepEqual(
+      firstTurn.ledger
+        .filter(
+          (
+            event,
+          ): event is RuntimeEvent & {
+            content: Extract<NonNullable<RuntimeEvent['content']>, { kind: 'thinking' }>;
+          } => event.partial === false && event.content?.kind === 'thinking',
+        )
+        .map((event) => [
+          event.content.text,
+          event.content.signature,
+          isRecord(event.content.providerOptions?.anthropic)
+            ? event.content.providerOptions.anthropic.redactedData
+            : undefined,
+        ]),
+      [
+        ['inspect safely', 'signed-thinking-1', undefined],
+        ['', undefined, 'opaque-redacted-thinking-1'],
+        ['', undefined, 'opaque-redacted-thinking-2'],
+      ],
+      'ModelAdapter must preserve every ordered reasoning block at the RuntimeEvent boundary',
+    );
+
+    for await (const event of createRuntime().send(
+      secondTurn.sendInput({
+        runtimeContext: firstTurn.ledger,
+        runtimeContextRunHeaders: [sourceRun],
+      }),
+    )) {
+      secondTurn.record(event);
+    }
+
+    assert.equal(requestBodies.length, 2);
+    assert.deepEqual(
+      collectRecords(requestBodies[1]!.messages)
+        .filter((block) => block.type === 'thinking' || block.type === 'redacted_thinking')
+        .map((block) => [block.type, block.thinking, block.signature, block.data]),
+      [
+        ['thinking', 'inspect safely', 'signed-thinking-1', undefined],
+        ['redacted_thinking', undefined, undefined, 'opaque-redacted-thinking-1'],
+        ['redacted_thinking', undefined, undefined, 'opaque-redacted-thinking-2'],
+      ],
+    );
+  });
+
   for (const provider of [
     {
       providerType: 'kimi-coding-plan',
@@ -329,6 +448,124 @@ describe('Anthropic-compatible Computer Use product loops', () => {
 });
 
 describe('OpenAI-compatible product loops', () => {
+  test('github-copilot replays same-route reasoning_content on its OpenAI Chat wire', async () => {
+    const sessionId = 'session-github-copilot-reasoning-replay';
+    const currentTurn = createDurableTurnHarness({
+      sessionId,
+      runId: 'run-current',
+      turnId: 'turn-current',
+      text: 'Continue.',
+    });
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const server = await startJsonServer(async (request, response) => {
+      assert.equal(request.method, 'POST');
+      assert.equal(request.url, '/v1/chat/completions');
+      requestBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+      respondOpenAiTextStream(response, 'gpt-5.4', 1, 'reasoning_content', 'next step');
+    });
+    const providerConnection = connection(
+      'github-copilot',
+      `${server.url}/v1`,
+      'gpt-5.4',
+      'openai-chat',
+    );
+    const runtime = createTestAiSdkBackend({
+      sessionId,
+      header: {
+        ...header('github-copilot', 'gpt-5.4'),
+        llmConnectionId: 'connection-copilot',
+      },
+      appendMessage: async () => {},
+      connection: providerConnection,
+      apiKey: 'test-key',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      modelId: 'gpt-5.4',
+      modelFactory: (input) => getAIModel(input),
+      tools: [],
+      maxSteps: 1,
+      loadTurnRuntimeEvents: currentTurn.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const sourceRun = {
+      runId: 'run-prev',
+      sessionId,
+      turnId: 'turn-prev',
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'connection-copilot',
+      llmConnectionSlug: 'github-copilot',
+      modelId: 'gpt-5.4',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      cwd: '/tmp/maka',
+      permissionMode: 'bypass',
+      createdAt: 1,
+      updatedAt: 2,
+      completedAt: 2,
+    } satisfies AgentRunHeader;
+    const priorEvents = [
+      {
+        id: 'rt-user-prev',
+        invocationId: 'inv-prev',
+        runId: 'run-prev',
+        sessionId,
+        turnId: 'turn-prev',
+        ts: 1,
+        partial: false,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'Inspect first.' },
+      },
+      {
+        id: 'rt-thinking-prev',
+        invocationId: 'inv-prev',
+        runId: 'run-prev',
+        sessionId,
+        turnId: 'turn-prev',
+        ts: 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'copilot reasoning',
+          providerOptions: { maka: { openAiChatReasoningField: 'reasoning_content' } },
+        },
+        refs: { providerEventId: 'step-prev' },
+      },
+      {
+        id: 'rt-text-prev',
+        invocationId: 'inv-prev',
+        runId: 'run-prev',
+        sessionId,
+        turnId: 'turn-prev',
+        ts: 3,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'Inspection complete.' },
+        refs: { providerEventId: 'step-prev' },
+      },
+    ] satisfies RuntimeEvent[];
+
+    for await (const event of runtime.send(
+      currentTurn.sendInput({
+        runtimeContext: priorEvents,
+        runtimeContextRunHeaders: [sourceRun],
+      }),
+    )) {
+      currentTurn.record(event);
+    }
+
+    assert.equal(requestBodies.length, 1);
+    const replayedAssistant = (requestBodies[0]!.messages as unknown[]).find(
+      (message) => isRecord(message) && message.role === 'assistant',
+    );
+    assert.ok(replayedAssistant && isRecord(replayedAssistant));
+    assert.equal(replayedAssistant.reasoning_content, 'copilot reasoning');
+    assert.equal(replayedAssistant.content, 'Inspection complete.');
+  });
+
   for (const provider of [
     {
       providerType: 'deepseek',
@@ -340,6 +577,12 @@ describe('OpenAI-compatible product loops', () => {
       providerType: 'ollama-cloud',
       modelId: 'glm-5.2',
       responseField: 'reasoning_content',
+      requestField: 'reasoning',
+    },
+    {
+      providerType: 'github-copilot',
+      modelId: 'gpt-5.4',
+      responseField: 'reasoning',
       requestField: 'reasoning',
     },
   ] as const) {
@@ -401,7 +644,10 @@ describe('OpenAI-compatible product loops', () => {
           message.tool_calls.some((toolCall) => isRecord(toolCall) && toolCall.id === 'call-1'),
       );
       assert.ok(replayedAssistant && isRecord(replayedAssistant));
-      assert.equal(replayedAssistant[provider.requestField], 'reasoning-step-1');
+      assert.equal(
+        replayedAssistant[provider.requestField],
+        provider.responseField === 'reasoning' ? '' : 'reasoning-step-1',
+      );
       assert.equal(
         replayedAssistant[
           provider.requestField === 'reasoning' ? 'reasoning_content' : 'reasoning'
@@ -433,22 +679,25 @@ describe('OpenAI-compatible product loops', () => {
       'openai-chat',
       131_072,
     );
+    const sourceRun = {
+      runId: 'run-kimi-openai-recovered-tool-step',
+      invocationId: 'invocation-kimi-openai-recovered-tool-step',
+      sessionId,
+      turnId: previousTurnId,
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'test-connection-id',
+      llmConnectionSlug: providerConnection.slug,
+      modelId: 'k3',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      cwd: '/tmp/maka',
+      permissionMode: 'ask',
+      createdAt: 1,
+      updatedAt: 5,
+      completedAt: 5,
+    } satisfies AgentRunHeader;
     const recovered = backfillRuntimeEventsFromStoredMessages({
-      run: {
-        runId: 'run-kimi-openai-recovered-tool-step',
-        invocationId: 'invocation-kimi-openai-recovered-tool-step',
-        sessionId,
-        turnId: previousTurnId,
-        status: 'completed',
-        backendKind: 'ai-sdk',
-        llmConnectionSlug: providerConnection.slug,
-        modelId: 'k3',
-        cwd: '/tmp/maka',
-        permissionMode: 'ask',
-        createdAt: 1,
-        updatedAt: 5,
-        completedAt: 5,
-      } satisfies AgentRunHeader,
+      run: sourceRun,
       messages: [
         {
           type: 'user',
@@ -498,6 +747,7 @@ describe('OpenAI-compatible product loops', () => {
       appendMessage: async () => {},
       connection: providerConnection,
       apiKey: 'test-key',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
       modelId: 'k3',
       modelFactory: (input) => getAIModel(input),
       providerOptions: buildProviderOptions(providerConnection, 'k3'),
@@ -509,7 +759,10 @@ describe('OpenAI-compatible product loops', () => {
     });
 
     for await (const event of runtime.send(
-      currentTurn.sendInput({ runtimeContext: recovered.events }),
+      currentTurn.sendInput({
+        runtimeContext: recovered.events,
+        runtimeContextRunHeaders: [sourceRun],
+      }),
     )) {
       currentTurn.record(event);
     }
@@ -573,6 +826,23 @@ describe('OpenAI-compatible product loops', () => {
       'openai-chat',
       131_072,
     );
+    const sourceRun = {
+      runId: firstTurn.anchor.runId,
+      invocationId: firstTurn.anchor.invocationId,
+      sessionId,
+      turnId: firstTurn.anchor.turnId,
+      status: 'completed',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'test-connection-id',
+      llmConnectionSlug: providerConnection.slug,
+      modelId: 'k3',
+      providerStateIdentity: PROVIDER_STATE_IDENTITY,
+      cwd: '/tmp/maka',
+      permissionMode: 'ask',
+      createdAt: firstTurn.anchor.ts,
+      updatedAt: firstTurn.anchor.ts + 1,
+      completedAt: firstTurn.anchor.ts + 1,
+    } satisfies AgentRunHeader;
     const createRuntime = () =>
       createTestAiSdkBackend({
         testProjectionArtifacts: true,
@@ -583,6 +853,7 @@ describe('OpenAI-compatible product loops', () => {
         },
         connection: providerConnection,
         apiKey: 'test-key',
+        providerStateIdentity: PROVIDER_STATE_IDENTITY,
         modelId: 'k3',
         modelFactory: (input) => getAIModel(input),
         providerOptions: buildProviderOptions(providerConnection, 'k3'),
@@ -603,21 +874,7 @@ describe('OpenAI-compatible product loops', () => {
     );
 
     const recovered = backfillRuntimeEventsFromStoredMessages({
-      run: {
-        runId: firstTurn.anchor.runId,
-        invocationId: firstTurn.anchor.invocationId,
-        sessionId,
-        turnId: firstTurn.anchor.turnId,
-        status: 'completed',
-        backendKind: 'ai-sdk',
-        llmConnectionSlug: providerConnection.slug,
-        modelId: 'k3',
-        cwd: '/tmp/maka',
-        permissionMode: 'ask',
-        createdAt: firstTurn.anchor.ts,
-        updatedAt: firstTurn.anchor.ts + 1,
-        completedAt: firstTurn.anchor.ts + 1,
-      } satisfies AgentRunHeader,
+      run: sourceRun,
       messages: storedMessages,
       newId: idGenerator(),
       now: monotonicClock(),
@@ -633,7 +890,10 @@ describe('OpenAI-compatible product loops', () => {
     );
 
     for await (const event of createRuntime().send(
-      secondTurn.sendInput({ runtimeContext: recovered.events }),
+      secondTurn.sendInput({
+        runtimeContext: recovered.events,
+        runtimeContextRunHeaders: [sourceRun],
+      }),
     )) {
       secondTurn.record(event);
     }
@@ -1181,6 +1441,72 @@ function respondOpenAiTextStream(
   response.end();
 }
 
+function respondAnthropicReasoningBlocksStream(
+  response: ServerResponse,
+  model: string,
+  blocks: readonly (
+    | { kind: 'signed'; text: string; signature: string }
+    | { kind: 'redacted'; data: string }
+  )[],
+) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+  });
+  const send = (event: string, data: unknown) => {
+    response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  send('message_start', {
+    type: 'message_start',
+    message: {
+      id: 'msg-redacted',
+      type: 'message',
+      role: 'assistant',
+      model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 0 },
+    },
+  });
+  for (const [index, block] of blocks.entries()) {
+    send('content_block_start', {
+      type: 'content_block_start',
+      index,
+      content_block:
+        block.kind === 'signed'
+          ? { type: 'thinking', thinking: '' }
+          : { type: 'redacted_thinking', data: block.data },
+    });
+    if (block.kind === 'signed') {
+      send('content_block_delta', {
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'thinking_delta', thinking: block.text },
+      });
+      send('content_block_delta', {
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'signature_delta', signature: block.signature },
+      });
+    }
+    send('content_block_stop', { type: 'content_block_stop', index });
+  }
+  send('content_block_start', {
+    type: 'content_block_start',
+    index: blocks.length,
+    content_block: { type: 'text', text: 'Inspection complete.' },
+  });
+  send('content_block_stop', { type: 'content_block_stop', index: blocks.length });
+  send('message_delta', {
+    type: 'message_delta',
+    delta: { stop_reason: 'end_turn', stop_sequence: null },
+    usage: { output_tokens: 5 },
+  });
+  send('message_stop', { type: 'message_stop' });
+  response.end();
+}
+
 function header(providerType: LlmConnection['providerType'], model: string): SessionHeader {
   return {
     id: `session-${providerType}`,
@@ -1196,6 +1522,7 @@ function header(providerType: LlmConnection['providerType'], model: string): Ses
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: providerType,
     connectionLocked: true,
     model,

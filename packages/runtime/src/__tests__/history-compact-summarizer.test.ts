@@ -1413,7 +1413,7 @@ describe('buildLlmHistorySummarizer', () => {
       coveredRuntimeEvents: [old],
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'connection-codex',
         modelId: 'gpt-5.3-codex',
         itemId: 'cmp_123',
         encryptedContent: 'opaque-state',

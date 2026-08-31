@@ -89,7 +89,7 @@ export class HostDeepResearchCoordinator {
         readText: (artifactId, options) =>
           this.#artifacts.readTextInSession(sessionId, artifactId, options),
         delete: (artifactId) =>
-          this.#artifacts.deleteOwnedDeepResearchArtifactInSession(sessionId, artifactId),
+          this.#artifacts.deleteOwnedArtifactInSession(sessionId, artifactId, 'deep_research'),
       },
     });
   }

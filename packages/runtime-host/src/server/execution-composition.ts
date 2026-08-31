@@ -41,6 +41,7 @@ import {
   BackendRegistry,
   SessionManager,
   type BackendFactory,
+  type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
@@ -109,7 +110,7 @@ import { HostContextCoordinator } from './context-coordinator.js';
 import { HostClientCapabilityCoordinator } from './client-capability-coordinator.js';
 import { HostDeepResearchCoordinator } from './deep-research-coordinator.js';
 import { HostDailyReviewCoordinator } from './daily-review-coordinator.js';
-import { createHostAiSdkBackend } from './execution-model-composition.js';
+import { prepareHostAiSdkBackend } from './execution-model-composition.js';
 import {
   createInteractiveRunComposer,
   createInteractiveRunComposerFactory,
@@ -664,51 +665,51 @@ export async function createExecutionRuntimeHostComposition(
       lane: memoryExtractionLane,
       acquireResidency: () => context.acquireResidency('memory-extraction'),
     });
+    const hostAiSdkBackendInput = <T extends BackendPreparationContext>(backendContext: T) => ({
+      context: backendContext,
+      runtimePolicy: runtimePolicyStores,
+      oauthCredentials,
+      createRunComposer: createInteractiveRunComposerFactory({
+        skills,
+        memory: requireMemory(memory),
+        taskLedger,
+        clientCapabilities: requireClientCapabilities(clientCapabilities),
+        resolveTavilyWebSearchReadiness: () =>
+          resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
+        ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+        planStore: openedPlanStore,
+        deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
+          backendContext.sessionId,
+        ),
+        goalTools: requireGoal(goal).tools,
+        builtinTools,
+        hostTools,
+        resolveRootTools: (sessionId) =>
+          requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
+        parentAgentTools: childAgentTools.parentTools,
+        childTools: childAgentTools.childTools,
+        worktreePatchWriteBackAvailable: true,
+      }),
+      ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction === false
+        ? {}
+        : { memoryExtraction }),
+      artifacts: openedArtifactStore,
+      ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
+      ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
+      executionArtifacts,
+      usage: openedUsageStores,
+      childAgents: bindHostChildAgentBackend(
+        requireSessionManager(manager),
+        backendContext.sessionId,
+      ),
+      runtimeCommitSink: stores.runtimeEventStore,
+      requestDrain: context.requestDrain,
+    });
     backends.register(
       'ai-sdk',
-      dependencies.primaryBackendFactory ??
-        ((backendContext) =>
-          createHostAiSdkBackend({
-            context: backendContext,
-            runtimePolicy: runtimePolicyStores,
-            oauthCredentials,
-            createRunComposer: createInteractiveRunComposerFactory({
-              skills,
-              memory: requireMemory(memory),
-              taskLedger,
-              clientCapabilities: requireClientCapabilities(clientCapabilities),
-              resolveTavilyWebSearchReadiness: () =>
-                resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
-              ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
-              planStore: openedPlanStore,
-              deepResearchTools: requireDeepResearch(deepResearch).toolsForSession(
-                backendContext.sessionId,
-              ),
-              goalTools: requireGoal(goal).tools,
-              builtinTools,
-              hostTools,
-              resolveRootTools: (sessionId) =>
-                requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-              parentAgentTools: childAgentTools.parentTools,
-              childTools: childAgentTools.childTools,
-              worktreePatchWriteBackAvailable: true,
-            }),
-            ...(hostedExecutionRunProfile(backendContext.header.toolProfile)?.memoryExtraction ===
-            false
-              ? {}
-              : { memoryExtraction }),
-            artifacts: openedArtifactStore,
-            ...(openedContextOffloadReader ? { contextOffload: openedContextOffloadReader } : {}),
-            ...(storage.contextOffloadUnavailable ? { contextOffloadUnavailable: true } : {}),
-            executionArtifacts,
-            usage: openedUsageStores,
-            childAgents: bindHostChildAgentBackend(
-              requireSessionManager(manager),
-              backendContext.sessionId,
-            ),
-            runtimeCommitSink: stores.runtimeEventStore,
-            requestDrain: context.requestDrain,
-          })),
+      dependencies.primaryBackendFactory ?? {
+        prepare: (backendContext) => prepareHostAiSdkBackend(hostAiSdkBackendInput(backendContext)),
+      },
     );
     const runtimeAuthority: RuntimeHostedRootAuthority = {
       bindRun: (identity) => messages.bindRun(identity),

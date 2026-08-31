@@ -159,6 +159,8 @@ import { readLatestContextDiagnostics, type ContextDiagnostics } from './context
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
 import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
@@ -264,7 +266,10 @@ export type CompactSessionInput =
       };
     };
 
-export type PlanSafeBoundaryContinuationInput = Omit<RuntimeContinuationPlannerInput, 'sessionId'>;
+export type PlanSafeBoundaryContinuationInput = Omit<
+  RuntimeContinuationPlannerInput,
+  'sessionId' | 'admissionRoute'
+>;
 
 export interface PlanAuthoritativeSafeBoundaryContinuationInput {
   sourceRunId: string;
@@ -678,6 +683,17 @@ export interface BackendFactoryContext {
     turnId: string,
   ) => Promise<void>;
   /**
+   * Session-scoped read of every committed model-projection transition (#4283).
+   * The reducer folds these onto the RuntimeEvent ledger, so a lossy rewrite
+   * survives the Turn that made it.
+   */
+  loadModelProjectionTransitions?: () => Promise<LoadedModelProjectionTransitions>;
+  /** Durable append for one transition; persistence precedes any model-visible loss. */
+  recordModelProjectionTransition?: (
+    transition: ModelProjectionTransition,
+    turnId: string,
+  ) => Promise<void>;
+  /**
    * Durable read of the given turn's persisted RuntimeEvents from the
    * authoritative run ledger. The Runtime reloads this projection between
    * provider requests; mid-turn compaction also derives its coverage pool from
@@ -690,21 +706,43 @@ export interface BackendFactoryContext {
 
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
 
-export class BackendRegistry {
-  private readonly factories = new Map<PersistedBackendKind, BackendFactory>();
+export type BackendPreparationContext = Pick<
+  BackendFactoryContext,
+  'sessionId' | 'workspaceRoot' | 'header' | 'abortSignal'
+>;
 
-  register(kind: PersistedBackendKind, factory: BackendFactory): void {
-    this.factories.set(kind, factory);
+export interface PreparedBackendActivation {
+  readonly providerStateIdentity?: `sha256:${string}`;
+  build(ctx: BackendFactoryContext): AgentBackend | Promise<AgentBackend>;
+}
+
+export interface PreparedBackendFactory {
+  prepare(ctx: BackendPreparationContext): Promise<PreparedBackendActivation>;
+}
+
+type BackendRegistration = BackendFactory | PreparedBackendFactory;
+
+export class BackendRegistry {
+  private readonly registrations = new Map<PersistedBackendKind, BackendRegistration>();
+
+  register(kind: PersistedBackendKind, registration: BackendRegistration): void {
+    this.registrations.set(kind, registration);
   }
 
-  async build(kind: PersistedBackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
-    const f = this.factories.get(kind);
-    if (!f) throw new Error(`No backend factory registered for kind="${kind}"`);
-    return await f(ctx);
+  async prepare(
+    kind: PersistedBackendKind,
+    ctx: BackendPreparationContext,
+  ): Promise<PreparedBackendActivation> {
+    const registration = this.registrations.get(kind);
+    if (!registration) throw new Error(`No backend factory registered for kind="${kind}"`);
+    if (typeof registration === 'function') {
+      return { build: registration };
+    }
+    return await registration.prepare(ctx);
   }
 
   has(kind: PersistedBackendKind): boolean {
-    return this.factories.has(kind);
+    return this.registrations.has(kind);
   }
 }
 
@@ -1977,6 +2015,39 @@ export class SessionManager {
     sessionId: string,
     input: PlanSafeBoundaryContinuationInput,
   ): Promise<SafeBoundaryContinuationPlan> {
+    let admissionRoute: RuntimeContinuationPlannerInput['admissionRoute'];
+    try {
+      if (!this.deps.runStore) throw new Error('AgentRunStore is not configured');
+      const [header, runHeaders] = await Promise.all([
+        this.deps.store.readHeader(sessionId),
+        this.deps.runStore.listSessionRuns(sessionId),
+      ]);
+      const targetProviderStateIdentity = (
+        await this.deps.backends.prepare(header.backend, {
+          sessionId,
+          workspaceRoot: header.workspaceRoot,
+          header,
+        })
+      ).providerStateIdentity;
+      admissionRoute = {
+        runHeaders,
+        targetProviderStateIdentity,
+        targetModelId: header.model,
+      };
+    } catch {
+      const plan: SafeBoundaryContinuationPlan = {
+        disposition: 'park',
+        rejectionReasons: ['continuation_authority_unavailable'],
+        diagnostics: [
+          {
+            code: 'continuation_authority_unavailable',
+            message: 'provider replay admission authority is unavailable',
+          },
+        ],
+      };
+      this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+      return plan;
+    }
     const planner = new RuntimeContinuationPlanner({
       readSourceRun: async (targetSessionId, runId) => {
         if (!this.deps.runStore) throw new Error('AgentRunStore is not configured');
@@ -2008,7 +2079,7 @@ export class SessionManager {
       },
       newId: this.deps.newId,
     });
-    const plan = await planner.plan({ sessionId, ...input });
+    const plan = await planner.plan({ sessionId, admissionRoute, ...input });
     this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
     return plan;
   }

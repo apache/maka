@@ -138,11 +138,20 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           fetch: requestFetch,
         }).chat(modelId);
       }
+      if (reasoningReplay.kind !== 'openai-chat-plaintext') {
+        throw new Error('Copilot OpenAI Chat wire requires plaintext reasoning replay');
+      }
+      const reasoningTransport = createOpenAiChatReasoningTransport(
+        requestFetch,
+        openAiChatReasoningTransportState ??
+          createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
+      );
       return createOpenAICompatible({
         name: 'github-copilot',
         apiKey,
         baseURL,
-        fetch: requestFetch,
+        fetch: reasoningTransport.fetch,
+        transformRequestBody: reasoningTransport.transformRequestBody,
       }).chatModel(modelId);
     }
 

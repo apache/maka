@@ -58,7 +58,7 @@ test('checkpoint replay uses the canonical ledger before stale tool results are 
     charsPerToken: 1,
     providerState: {
       kind: 'openai_codex_remote_v2',
-      connectionSlug: 'codex',
+      connectionId: 'connection-codex',
       modelId: 'gpt-test',
       itemId: 'compact-item',
       encryptedContent: 'encrypted',
@@ -67,24 +67,6 @@ test('checkpoint replay uses the canonical ledger before stale tool results are 
 
   const result = applyRuntimeEventContextBudget([...coveredEvents, tail], {
     charsPerToken: 1,
-    staleToolResultPrune: {
-      enabled: true,
-      maxResultEstimatedTokens: 1,
-      minRecentTurnsFull: 0,
-      archiveRefs: [
-        {
-          runtimeEventId: 'result',
-          toolCallId: 'tool-call',
-          toolName: 'Bash',
-          artifactId: 'artifact-1',
-          bodySha256: createHash('sha256').update(serializedPayload).digest('hex'),
-          originalEstimatedTokens: serializedPayload.length,
-          originalBytes: Buffer.byteLength(serializedPayload, 'utf8'),
-          rewriteVersion: 1,
-          reason: 'stale_tool_result_pruned_before_compact',
-        },
-      ],
-    },
     historyCompact: { enabled: true, checkpoint },
   });
 

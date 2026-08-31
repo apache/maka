@@ -41,6 +41,7 @@ import { HostConnectionEffectCoordinator } from '../server/connection-effect-coo
 import { HostOAuthExecutionAuthority } from '../server/oauth-execution-authority.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { resolveExecutionTarget } from '../server/execution-model-authority.js';
 import type { ConnectionOnboardingSaveResult, OperationOutcome } from '../protocol/index.js';
 
 const context: ConnectionContext = {
@@ -487,6 +488,71 @@ test('a save whose connection changed between discovery and commit is superseded
       context,
     );
     assertSaved(retried);
+  });
+});
+
+test('provider state identity follows endpoint, credential, and request-header ownership', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('identity-relay', 'openai-compatible'),
+      baseUrl: 'https://relay-a.example.test/v1',
+    });
+    await setConnectionCredential(stores, connection, 'key-a');
+    const header = {
+      llmConnectionId: connection.connectionId,
+      llmConnectionSlug: connection.slug,
+      model: 'gpt-5',
+    };
+    const resolveIdentity = async () =>
+      (
+        await resolveExecutionTarget(
+          header,
+          stores,
+          new HostOAuthExecutionAuthority(stores),
+          () => {
+            throw new Error('API-key provider must not create an OAuth refresh transport');
+          },
+        )
+      ).providerStateIdentity;
+    const initial = await resolveIdentity();
+
+    const moved = await stores.connectionCatalog.update({
+      expected: { connectionId: connection.connectionId, revision: connection.revision },
+      changes: {
+        name: connection.name,
+        baseUrl: 'https://relay-b.example.test/v1',
+        enabled: true,
+        enabledModelIds: connection.enabledModelIds,
+      },
+    });
+    assert.equal(moved.kind, 'committed');
+    const afterEndpoint = await resolveIdentity();
+    assert.notEqual(afterEndpoint, initial);
+
+    const status = await connectionCredentialStatus(stores, connection);
+    assert.equal(status.configured, true);
+    if (!status.configured) return;
+    const rotated = await stores.credentialVault.set({
+      locator: connectionCredential(connection),
+      expected: { credentialId: status.credentialId, revision: status.revision },
+      secret: 'key-b',
+    });
+    assert.equal(rotated.kind, 'committed');
+    const afterCredential = await resolveIdentity();
+    assert.notEqual(afterCredential, afterEndpoint);
+
+    const headers = await stores.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'request_headers',
+      },
+      expected: null,
+      secret: JSON.stringify({ 'X-Relay-Account': 'account-b' }),
+    });
+    assert.equal(headers.kind, 'committed');
+    const afterHeaders = await resolveIdentity();
+    assert.notEqual(afterHeaders, afterCredential);
   });
 });
 

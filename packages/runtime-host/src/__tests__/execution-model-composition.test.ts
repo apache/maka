@@ -37,6 +37,8 @@ import {
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
@@ -90,6 +92,7 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
+  prepareHostAiSdkBackend,
   resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
@@ -158,6 +161,24 @@ test('backend creation resolves a bound Session by immutable Connection identity
     connectionId: '11111111-1111-4111-8111-111111111111',
     connectionSlug: 'backend-creation-connection',
   });
+});
+
+test('prepared backend activation builds from its admitted provider snapshot', async () => {
+  let providerReadAvailable = true;
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      if (!providerReadAvailable) throw new Error('provider state was read after admission');
+      return readyExecutionConnection();
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const { context, ...dependencies } = input;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  providerReadAvailable = false;
+
+  const backend = await prepared.build(context);
+  await backend.dispose();
 });
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -814,95 +835,99 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
       resolve: async () => oauthTokens,
     }),
   } as unknown as HostOAuthExecutionAuthority;
-  const backend = await createHostAiSdkBackend(
-    backendCreationFixture({
-      abortSignal: new AbortController().signal,
-      modelId,
-      oauthCredentials,
-      resolveExecutionConnection: async () => ({
-        kind: 'ready',
-        connection: {
-          slug: 'backend-creation-connection',
-          providerType: 'openai-codex',
-          enabledModelIds: [modelId],
-          models: [
-            {
-              id: modelId,
-              capabilities: { chat: true, functionCalling: true },
-              contextWindow: 32_768,
-              maxOutputTokens: 1_024,
-            },
-          ],
-        },
-        networkProxy: { enabled: false },
-        secretMaterial: { connection: { secret: 'oauth-material' } },
-      }),
-      readPricing: async () => ({ revision: 0, overrides: [] }),
-      recordHistoryCompactCheckpoint: async (checkpoint) => {
-        recordedTextCheckpoint = 'summary' in checkpoint;
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    modelId,
+    oauthCredentials,
+    resolveExecutionConnection: async () => ({
+      kind: 'ready',
+      connection: {
+        slug: 'backend-creation-connection',
+        providerType: 'openai-codex',
+        enabledModelIds: [modelId],
+        models: [
+          {
+            id: modelId,
+            capabilities: { chat: true, functionCalling: true },
+            contextWindow: 32_768,
+            maxOutputTokens: 1_024,
+          },
+        ],
       },
-      recordModelCallAttempt: async ({ attempt }) => {
-        attempts.push(attempt);
-      },
-      createFetchTransport: () => ({
-        fetch: async (url, init) => {
-          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          requests.push({
-            url: String(url),
-            body,
-          });
-          const providerInput = Array.isArray(body.input) ? body.input : [];
-          if (
-            !providerInput.some(
-              (item) =>
-                typeof item === 'object' &&
-                item !== null &&
-                'type' in item &&
-                item.type === 'compaction_trigger',
-            )
-          ) {
-            return Response.json({
-              id: 'resp-text-fallback',
-              object: 'response',
-              created_at: 1,
-              status: 'completed',
-              model: modelId,
-              output: [
-                {
-                  type: 'message',
-                  id: 'msg-text-fallback',
-                  status: 'completed',
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'output_text',
-                      text: fallbackSummary,
-                      annotations: [],
-                      logprobs: [],
-                    },
-                  ],
-                },
-              ],
-              usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
-            });
-          }
-          return Response.json(
-            {
-              error: {
-                message: 'request rejected without echoing this body',
-                code: 'missing_required_parameter',
-              },
-            },
-            {
-              status: 400,
-              headers: { 'x-request-id': 'req-codex-compact' },
-            },
-          );
-        },
-        close: async () => undefined,
-      }),
+      networkProxy: { enabled: false },
+      secretMaterial: { connection: { secret: 'oauth-material' } },
     }),
-  );
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+    recordHistoryCompactCheckpoint: async (checkpoint) => {
+      recordedTextCheckpoint = 'summary' in checkpoint;
+    },
+    recordModelCallAttempt: async ({ attempt }) => {
+      attempts.push(attempt);
+    },
+    createFetchTransport: () => ({
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        requests.push({
+          url: String(url),
+          body,
+        });
+        const providerInput = Array.isArray(body.input) ? body.input : [];
+        if (
+          !providerInput.some(
+            (item) =>
+              typeof item === 'object' &&
+              item !== null &&
+              'type' in item &&
+              item.type === 'compaction_trigger',
+          )
+        ) {
+          return Response.json({
+            id: 'resp-text-fallback',
+            object: 'response',
+            created_at: 1,
+            status: 'completed',
+            model: modelId,
+            output: [
+              {
+                type: 'message',
+                id: 'msg-text-fallback',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: fallbackSummary,
+                    annotations: [],
+                    logprobs: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
+          });
+        }
+        return Response.json(
+          {
+            error: {
+              message: 'request rejected without echoing this body',
+              code: 'missing_required_parameter',
+            },
+          },
+          {
+            status: 400,
+            headers: { 'x-request-id': 'req-codex-compact' },
+          },
+        );
+      },
+      close: async () => undefined,
+    }),
+  });
+  const { context, ...dependencies } = fixture;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  const providerStateIdentity = prepared.providerStateIdentity;
+  assert.ok(providerStateIdentity);
+  const backend = await prepared.build(context);
+  assert.ok(backend.compactHistory);
 
   try {
     const runtimeContext: RuntimeEvent[] = [
@@ -920,6 +945,87 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
         'agent',
         'b'.repeat(8_000),
       ),
+      {
+        id: 'compact-old-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-source-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-old-model',
+        ts: 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'CROSS_MODEL_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'cross-model-reasoning-item',
+              reasoningEncryptedContent: 'CROSS_MODEL_ENCRYPTED_REASONING',
+            },
+          },
+        },
+      },
+      {
+        id: 'compact-current-route-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 3,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'SAME_ROUTE_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'same-route-reasoning-item',
+              reasoningEncryptedContent: 'SAME_ROUTE_ENCRYPTED_REASONING',
+            },
+          },
+        },
+      },
+      {
+        id: 'compact-provider-tool-call',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 4,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        refs: { stepId: 'compact-provider-step' },
+      },
+      {
+        id: 'compact-provider-tool-result',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 5,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          result: { type: 'web_search_result', query: 'latest Maka' },
+          providerOutput: { type: 'web_search_result', id: 'ws_compact' },
+          providerExecuted: true,
+          isError: false,
+        },
+      },
       compactRuntimeTextEvent(
         'compact-recent-user',
         'turn-recent-user',
@@ -928,11 +1034,45 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
         'recent context',
       ),
     ];
-    const result = await backend.compactHistory({
+    const compactInput = {
       turnId: 'turn-compact',
       runId: 'run-compact',
       runtimeContext,
-    });
+      runtimeContextRunHeaders: [
+        {
+          runId: 'compact-source-run',
+          sessionId: 'backend-creation-session',
+          turnId: 'turn-old-model',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
+          llmConnectionSlug: 'backend-creation-connection',
+          modelId: 'gpt-5.2',
+          cwd: '/workspace',
+          permissionMode: 'bypass',
+          createdAt: 1,
+          updatedAt: 2,
+          completedAt: 2,
+        } satisfies AgentRunHeader,
+        {
+          runId: 'compact-same-route-run',
+          sessionId: 'backend-creation-session',
+          turnId: 'turn-current-route-model',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
+          llmConnectionSlug: 'backend-creation-connection',
+          modelId,
+          providerStateIdentity,
+          cwd: '/workspace',
+          permissionMode: 'bypass',
+          createdAt: 2,
+          updatedAt: 3,
+          completedAt: 3,
+        } satisfies AgentRunHeader,
+      ],
+    } satisfies BackendCompactHistoryInput;
+    const result = await backend.compactHistory(compactInput);
 
     assert.equal(requests.length, 2, JSON.stringify(result));
     assert.match(requests[0]!.url, /\/codex\/responses$/);
@@ -940,7 +1080,34 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     const nativeRequestText = JSON.stringify(requests[0]!.body);
     const fallbackRequestText = JSON.stringify(requests[1]!.body);
     assert.match(nativeRequestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_PROVIDER_REASONING/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_PROVIDER_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /recent context/);
     assert.doesNotMatch(nativeRequestText, /context summarization assistant/i);
+    const nativeInput = requests[0]!.body.input;
+    assert.ok(Array.isArray(nativeInput));
+    const functionCallIds = new Set(
+      nativeInput
+        .filter(
+          (item): item is Record<string, unknown> =>
+            typeof item === 'object' && item !== null && item.type === 'function_call',
+        )
+        .map((item) => String(item.call_id)),
+    );
+    const functionOutputIds = nativeInput
+      .filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === 'object' && item !== null && item.type === 'function_call_output',
+      )
+      .map((item) => String(item.call_id));
+    assert.deepEqual([...functionCallIds], ['compact-web-search']);
+    assert.deepEqual(functionOutputIds, ['compact-web-search']);
+    assert.deepEqual(
+      functionOutputIds.filter((callId) => !functionCallIds.has(callId)),
+      [],
+    );
     assert.doesNotMatch(fallbackRequestText, /"type":"compaction_trigger"/);
     assert.match(fallbackRequestText, /context summarization assistant/i);
     assert.equal(result.outcome.kind, 'compacted');

@@ -361,6 +361,8 @@ export interface ToolRuntimeInput {
   }) => {
     ref: Extract<DurableProjectionArtifactRef, { kind: 'session_file' }>;
     persist(): Promise<void>;
+    /** Reclaim this publication when the projection is rejected (#4283). */
+    retract?(): Promise<void>;
   };
   spawnChildSession?: (input: {
     parentRunId: string;

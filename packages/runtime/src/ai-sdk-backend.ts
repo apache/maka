@@ -208,9 +208,11 @@ import {
 import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
+  admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
+  compatibleProviderReasoningReplayEventIds,
   formatTextWithInlineRefs,
   steeringMessagesMissingFromBase,
   steeringModelMessage,
@@ -695,6 +697,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Session context ────────────────────────────────────────────────────
   sessionId: string;
   header: SessionHeader;
+  /** Host-frozen provider endpoint and credential ownership for this backend generation. */
+  providerStateIdentity?: `sha256:${string}`;
   /** Append-message function bound to this session (e.g. SessionStore wrapper). */
   appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
@@ -1112,12 +1116,24 @@ export class AiSdkBackend implements AgentBackend {
     this.compaction = new AiSdkCompaction({
       input,
       sessionId: this.sessionId,
+      targetConnectionId: input.header.llmConnectionId,
+      targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
       modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
-      materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, checkpoint),
+      materializeRuntimeReplayPlan: (
+        plan,
+        imageBudget,
+        checkpoint,
+        providerReasoningReplayEventIds,
+      ) =>
+        this.materializeRuntimeReplayPlan(
+          plan,
+          imageBudget,
+          checkpoint,
+          providerReasoningReplayEventIds,
+        ),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
     });
     if (
@@ -1443,12 +1459,8 @@ export class AiSdkBackend implements AgentBackend {
     let stepText = '';
     let stepTextProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepTextPartStartOffset = 0;
-    let stepThinking = '';
-    let sawStepThinking = false;
-    let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
-    let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
-    let stepResponsesThinkingPartsByItemId = new Map<string, AssistantThinkingPart>();
-    let stepSignature: string | undefined;
+    let stepThinkingParts: AssistantThinkingPart[] = [];
+    let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
     const startedAt = this.now();
 
     // Flush the current step's AssistantMessage (text + thinking) and the paired
@@ -1461,21 +1473,10 @@ export class AiSdkBackend implements AgentBackend {
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
     const flushStep = async (): Promise<void> => {
-      const hasThinking = sawStepThinking || stepSignature !== undefined;
+      const hasThinking = stepThinkingParts.length > 0;
       if (stepText.length === 0 && !hasThinking) return;
       const stepId = currentStepMessageId;
-      const thinkingParts: AssistantThinkingPart[] =
-        stepResponsesThinkingParts.length > 0
-          ? stepResponsesThinkingParts
-          : [
-              {
-                text: stepThinking,
-                ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
-                ...(stepThinkingProviderOptions !== undefined
-                  ? { providerOptions: stepThinkingProviderOptions }
-                  : {}),
-              },
-            ];
+      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -1489,21 +1490,22 @@ export class AiSdkBackend implements AgentBackend {
         ...(hasThinking
           ? {
               thinking: {
-                text: stepThinking,
-                ...(thinkingParts.length === 1 && thinkingParts[0]!.signature !== undefined
-                  ? { signature: thinkingParts[0]!.signature }
+                text: thinkingText,
+                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
+                  ? { signature: stepThinkingParts[0]!.signature }
                   : {}),
-                ...(thinkingParts.length === 1 && thinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: thinkingParts[0]!.providerOptions }
+                ...(stepThinkingParts.length === 1 &&
+                stepThinkingParts[0]!.providerOptions !== undefined
+                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
                   : {}),
-                ...(thinkingParts.length > 1 ? { parts: thinkingParts } : {}),
+                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
               },
             }
           : {}),
       };
       await this.input.appendMessage(msg);
       if (hasThinking) {
-        for (const part of thinkingParts) {
+        for (const part of stepThinkingParts) {
           queue.push({
             type: 'thinking_complete',
             id: this.newId(),
@@ -1539,12 +1541,8 @@ export class AiSdkBackend implements AgentBackend {
       stepText = '';
       stepTextProviderOptions = undefined;
       stepTextPartStartOffset = 0;
-      stepThinking = '';
-      sawStepThinking = false;
-      stepThinkingProviderOptions = undefined;
-      stepResponsesThinkingParts = [];
-      stepResponsesThinkingPartsByItemId = new Map();
-      stepSignature = undefined;
+      stepThinkingParts = [];
+      stepThinkingPartsById = new Map();
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
@@ -1778,6 +1776,7 @@ export class AiSdkBackend implements AgentBackend {
         canContinueHistoryCompactCheckpointForModel(
           checkpoint,
           this.input.connection,
+          this.input.header.llmConnectionId,
           this.input.modelId,
         )
           ? checkpoint
@@ -1900,7 +1899,12 @@ export class AiSdkBackend implements AgentBackend {
             // the active-step shaper must see that growth so it can roll the
             // checkpoint forward instead of resurrecting raw history.
           }
-          const replayPlan = buildRuntimeEventModelReplayPlan(replayEvents, {
+          // The current Turn is model-visible history like any other, so it is
+          // folded through the same reducer before it becomes messages. Without
+          // this, a result archived at step N is rebuilt in full at step N+1 and
+          // the ledger's account of what the model sees stops being true.
+          const foldedReplayEvents = await this.compaction.foldEffectiveModelHistory(replayEvents);
+          const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
               ...turnEvents,
@@ -1916,6 +1920,13 @@ export class AiSdkBackend implements AgentBackend {
             replayPlan,
             scope.imageBudget,
             projectionCheckpoint,
+            compatibleProviderReasoningReplayEventIds(
+              replayEvents,
+              input.runtimeContextRunHeaders,
+              this.input.providerStateIdentity,
+              this.input.modelId,
+              scope.runId,
+            ),
           );
           return projectionCheckpoint
             ? currentTurnMessages
@@ -2212,20 +2223,32 @@ export class AiSdkBackend implements AgentBackend {
                   >,
                   stepTextPartStartOffset,
                 );
+              } else if (event.kind === 'thinking-start') {
+                if (event.providerOptions !== undefined) {
+                  attemptSawContinuationMetadata = true;
+                }
+                const part: AssistantThinkingPart = {
+                  text: '',
+                  ...(event.providerOptions !== undefined
+                    ? { providerOptions: event.providerOptions }
+                    : {}),
+                };
+                stepThinkingParts.push(part);
+                if (event.reasoningPartId) {
+                  stepThinkingPartsById.set(event.reasoningPartId, part);
+                }
               } else if (event.kind === 'thinking') {
-                sawStepThinking = true;
-                stepThinking += event.text;
                 if (event.text.length > 0) attemptSawThinking = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
                     attemptSawContinuationMetadata = true;
                   }
-                  stepThinkingProviderOptions = event.providerOptions;
                 }
-                const itemId =
-                  event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
-                if (typeof itemId === 'string' && itemId.length > 0) {
-                  let part = stepResponsesThinkingPartsByItemId.get(itemId);
+                const partId =
+                  event.reasoningPartId ?? responsesReasoningItemId(event.providerOptions);
+                let part: AssistantThinkingPart | undefined;
+                if (typeof partId === 'string' && partId.length > 0) {
+                  part = stepThinkingPartsById.get(partId);
                   if (
                     part &&
                     event.providerOptions === undefined &&
@@ -2235,45 +2258,42 @@ export class AiSdkBackend implements AgentBackend {
                     // output_item.done. Keep it out of the finalized item or
                     // its durable summary boundaries will no longer match.
                     part = { text: '' };
-                    stepResponsesThinkingParts.push(part);
-                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                    stepThinkingParts.push(part);
+                    stepThinkingPartsById.set(partId, part);
                   }
                   if (!part) {
-                    part = {
-                      text:
-                        stepResponsesThinkingParts.length === 0 && event.text.length === 0
-                          ? stepThinking
-                          : '',
-                    };
-                    stepResponsesThinkingParts.push(part);
-                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                    part = { text: '' };
+                    stepThinkingParts.push(part);
+                    stepThinkingPartsById.set(partId, part);
                   }
-                  const nextPartText = part.text + event.text;
+                } else {
+                  part = stepThinkingParts.at(-1);
                   if (
-                    event.reasoningSummaryText !== undefined &&
-                    event.reasoningSummaryText !== nextPartText
+                    part &&
+                    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid'
                   ) {
-                    throw new Error(
-                      'Streamed plaintext Responses reasoning does not match final provider summary',
-                    );
-                  }
-                  part.text = nextPartText;
-                  if (event.providerOptions !== undefined) {
-                    part.providerOptions = event.providerOptions;
-                  }
-                } else if (stepResponsesThinkingParts.length > 0) {
-                  const lastPart = stepResponsesThinkingParts.at(-1)!;
-                  const lastState = decodePlaintextResponsesReasoningState(
-                    lastPart.providerOptions,
-                  );
-                  if (lastState.kind === 'valid') {
                     // An invalid next item has no usable stream id. Do not
                     // append its deltas to the finalized item: partial-error
                     // flush must keep that item's durable boundaries valid.
-                    stepResponsesThinkingParts.push({ text: event.text });
-                  } else {
-                    lastPart.text += event.text;
+                    part = undefined;
                   }
+                }
+                if (!part) {
+                  part = { text: '' };
+                  stepThinkingParts.push(part);
+                }
+                const nextPartText = part.text + event.text;
+                if (
+                  event.reasoningSummaryText !== undefined &&
+                  event.reasoningSummaryText !== nextPartText
+                ) {
+                  throw new Error(
+                    'Streamed plaintext Responses reasoning does not match final provider summary',
+                  );
+                }
+                part.text = nextPartText;
+                if (event.providerOptions !== undefined) {
+                  part.providerOptions = event.providerOptions;
                 }
                 queue.push({
                   type: 'thinking_delta',
@@ -2285,7 +2305,17 @@ export class AiSdkBackend implements AgentBackend {
                 } satisfies ThinkingDeltaEvent);
               } else if (event.kind === 'thinking-signature') {
                 attemptSawContinuationMetadata = true;
-                stepSignature = event.signature;
+                let part = event.reasoningPartId
+                  ? stepThinkingPartsById.get(event.reasoningPartId)
+                  : stepThinkingParts.at(-1);
+                if (!part) {
+                  part = { text: '' };
+                  stepThinkingParts.push(part);
+                  if (event.reasoningPartId) {
+                    stepThinkingPartsById.set(event.reasoningPartId, part);
+                  }
+                }
+                part.signature = event.signature;
               } else if (event.kind === 'provider-tool-input') {
                 // The provider has started its own tool. Even without a
                 // final tool-call/result event, retrying can repeat external
@@ -2450,7 +2480,7 @@ export class AiSdkBackend implements AgentBackend {
               ) {
                 if (idleWatchdogRecovery) {
                   idleWatchdogRetryCount += 1;
-                  if (stepThinking.length > 0) {
+                  if (stepThinkingParts.length > 0) {
                     await flushStep();
                     currentStepMessageId = this.newId();
                   }
@@ -3357,16 +3387,31 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: [],
       };
     }
-    const priorRuntimeContext = input.runtimeContext.filter(
+    const rawPriorRuntimeContext = input.runtimeContext.filter(
       (event) => event.turnId !== input.turnId,
+    );
+    // Everything below reads EFFECTIVE model history: raw events folded through
+    // the durable projection-transition reducer (#4283). Replay, budgeting and
+    // compaction share one input, so no RuntimeEvent replay path can resurrect
+    // content a committed transition removed. The StoredMessage projection used
+    // by the degraded fallbacks below is a separate representation that the fold
+    // does not reach — see #4283 for that remaining gap.
+    const preparedContextBudget = await this.compaction.prepareContextBudgetPolicy(
+      rawPriorRuntimeContext,
+      input.turnId,
+    );
+    const priorRuntimeContext = preparedContextBudget.events;
+    const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
+      priorRuntimeContext,
+      input.runtimeContextRunHeaders,
+      this.input.providerStateIdentity,
+      this.input.modelId,
     );
     const projectedMessages = await this.materializePriorMessages(
       scope.imageBudget,
       priorStored,
       buildSteeringSidecar(priorRuntimeContext),
     );
-    const preparedContextBudget =
-      await this.compaction.prepareContextBudgetPolicy(priorRuntimeContext);
     let contextBudget = preparedContextBudget.policy;
     const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
     let runtimeContext = budgeted?.events ?? priorRuntimeContext;
@@ -3401,6 +3446,7 @@ export class AiSdkBackend implements AgentBackend {
           turnId: input.turnId,
           runId: scope.runId,
           runtimeContext: priorRuntimeContext,
+          runtimeContextRunHeaders: input.runtimeContextRunHeaders,
         },
         automaticMemorySource
           ? {
@@ -3530,6 +3576,7 @@ export class AiSdkBackend implements AgentBackend {
           plan,
           scope.imageBudget,
           projectedHistoryCompactCheckpoint,
+          providerReasoningReplayEventIds,
         ),
         gate: 'runtime_replay_text_only',
         diagnostics: plan.diagnostics,
@@ -3553,6 +3600,7 @@ export class AiSdkBackend implements AgentBackend {
                 degradedPlan,
                 scope.imageBudget,
                 projectedHistoryCompactCheckpoint,
+                providerReasoningReplayEventIds,
               )
             : await materializeReplayFallback(),
         gate: input.continuation
@@ -3571,6 +3619,7 @@ export class AiSdkBackend implements AgentBackend {
         plan,
         scope.imageBudget,
         projectedHistoryCompactCheckpoint,
+        providerReasoningReplayEventIds,
       ),
       gate: 'runtime_replay_provider_native',
       diagnostics: plan.diagnostics,
@@ -3641,7 +3690,8 @@ export class AiSdkBackend implements AgentBackend {
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
     budget: ProviderImageBudget,
-    historyCompactCheckpoint?: HistoryCompactCheckpoint,
+    historyCompactCheckpoint: HistoryCompactCheckpoint | undefined,
+    providerReasoningReplayEventIds: ReadonlySet<string>,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
     type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
@@ -3675,6 +3725,23 @@ export class AiSdkBackend implements AgentBackend {
                 type: 'reasoning' as const,
                 text: item.text,
                 providerOptions: { anthropic: { signature: item.signature } },
+              },
+            }
+          : undefined;
+      }
+      const anthropic = item.providerOptions?.anthropic;
+      if (
+        anthropic &&
+        typeof anthropic === 'object' &&
+        !Array.isArray(anthropic) &&
+        typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
+      ) {
+        return replaySupport.signedThinking
+          ? {
+              part: {
+                type: 'reasoning' as const,
+                text: item.text,
+                providerOptions: item.providerOptions,
               },
             }
           : undefined;
@@ -3936,7 +4003,10 @@ export class AiSdkBackend implements AgentBackend {
       }
     };
 
-    for (const item of plan.items) {
+    for (const item of admitProviderReasoningReplayItems(
+      plan.items,
+      providerReasoningReplayEventIds,
+    )) {
       switch (item.kind) {
         case 'tool_call':
           if (item.toolName !== 'apply_patch') {

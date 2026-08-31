@@ -59,6 +59,19 @@ import {
   type ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
 import { rewriteDurableToolResultProjectionArtifactRefs } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import {
+  buildModelProjectionTransition,
+  decodeModelProjectionTransition,
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
+import {
+  baseToolResultProjection,
+  decodeLedgerTransition,
+  reduceEffectiveModelProjections,
+} from './model-projection-transition-ledger.js';
+import { archivedToolResultProjection } from './tool-result-archive-transition.js';
 
 export interface ConversationCopySlice {
   readonly messages: readonly StoredMessage[];
@@ -276,6 +289,7 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
       return { run, runtimeEvents: events, operationalEvents };
     }),
   );
+  await rebuildCopiedProjectionTransitions(input.sourceSessionId, sourceRuns, runs, input.runStore);
   const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
@@ -284,6 +298,95 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   };
   assertConversationRuntimeLedgerCopySupported(plan);
   return plan;
+}
+
+/**
+ * Rebuild the copied slice's transition records from the source fold.
+ *
+ * Two things make "copy the records you happen to hold" wrong. A transition is
+ * recorded by the run that decided it, which for a prior-Turn archive is a
+ * LATER run than the one holding its target — so copying by run keeps the
+ * target and drops the record that replaced it. And a ledger holds records the
+ * source fold refused: rival roots resolved by content-derived id, stale
+ * writers. Carrying those lets the copy re-decide and make a source-rejected
+ * transition model-visible.
+ *
+ * So the source reduction is the authority here too: every record for a copied
+ * target is gathered, folded, and only the applied chain is kept, in the order
+ * the fold applied it.
+ */
+async function rebuildCopiedProjectionTransitions(
+  sessionId: string,
+  sourceRuns: readonly AgentRunHeader[],
+  runs: readonly {
+    readonly run: AgentRunHeader;
+    readonly runtimeEvents: readonly RuntimeEvent[];
+    readonly operationalEvents: AgentRunEvent[];
+  }[],
+  runStore: Pick<AgentRunStore, 'readEvents'>,
+): Promise<void> {
+  const owningRun = new Map<string, { run: AgentRunHeader; operationalEvents: AgentRunEvent[] }>();
+  const copiedRuntimeEvents: RuntimeEvent[] = [];
+  for (const { run, runtimeEvents, operationalEvents } of runs) {
+    for (const event of runtimeEvents) {
+      owningRun.set(event.id, { run, operationalEvents });
+      copiedRuntimeEvents.push(event);
+    }
+  }
+
+  const ledgerEvents = new Map<string, AgentRunEvent>();
+  const transitions: ModelProjectionTransition[] = [];
+  const collect = (events: readonly AgentRunEvent[]): void => {
+    for (const event of events) {
+      const transition = decodeLedgerTransition(event, sessionId);
+      if (!transition || !owningRun.has(transition.target.runtimeEventId)) continue;
+      if (ledgerEvents.has(transition.transitionId)) continue;
+      ledgerEvents.set(transition.transitionId, event);
+      transitions.push(transition);
+    }
+  };
+  const copiedRunIds = new Set(runs.map(({ run }) => run.runId));
+  for (const { operationalEvents } of runs) collect(operationalEvents);
+  for (const run of sourceRuns) {
+    if (copiedRunIds.has(run.runId)) continue;
+    collect(await runStore.readEvents(sessionId, run.runId));
+  }
+  if (transitions.length === 0) return;
+
+  // Records this build cannot decode are not gathered above, so the copy would
+  // silently lose whatever they removed. Refuse instead.
+  for (const run of sourceRuns) {
+    for (const event of copiedRunIds.has(run.runId)
+      ? runs.find(({ run: copied }) => copied.runId === run.runId)!.operationalEvents
+      : await runStore.readEvents(sessionId, run.runId)) {
+      if (
+        event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE &&
+        !decodeLedgerTransition(event, sessionId) &&
+        typeof event.data?.runtimeEventId === 'string' &&
+        owningRun.has(event.data.runtimeEventId)
+      ) {
+        throw new Error(
+          `Cannot copy a conversation whose projection transition ${event.id} is unreadable`,
+        );
+      }
+    }
+  }
+
+  for (const { operationalEvents } of runs) {
+    for (let index = operationalEvents.length - 1; index >= 0; index -= 1) {
+      if (operationalEvents[index]!.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE) {
+        operationalEvents.splice(index, 1);
+      }
+    }
+  }
+  for (const transition of reduceEffectiveModelProjections(copiedRuntimeEvents, transitions)
+    .applied) {
+    const owner = owningRun.get(transition.target.runtimeEventId)!;
+    const event = ledgerEvents.get(transition.transitionId)!;
+    // The record moves to the run that owns its target, so the copy keeps one
+    // rule for every operational event: an event belongs to the run it is in.
+    owner.operationalEvents.push({ ...event, runId: owner.run.runId, turnId: owner.run.turnId });
+  }
 }
 
 function assertConversationRuntimeLedgerCopySupported(
@@ -376,6 +479,14 @@ export async function cloneConversationRuntimeLedger(
     }
   }
   const checkpointIds = new Map<string, string>();
+  // Transition lineage across the copy boundary: source transition id -> target
+  // id, plus the effective projection each target has reached, so a chained
+  // successor is rebuilt against the projection it actually replaces.
+  const transitionIds = new Map<string, string>();
+  const transitionState = new Map<
+    string,
+    { projection: DurableToolResultProjection; transitionId: string }
+  >();
   const preparedPlans = flattenedPlans.map((plan) => {
     const runId = runIds.get(plan.run.runId)!;
     const invocationId = targetInvocationIds.get(plan.run.runId)!;
@@ -391,6 +502,8 @@ export async function cloneConversationRuntimeLedger(
         sourceCompactableEvents.get(plan.run.runId) ?? [],
         clonedEventBySourceId,
         checkpointIds,
+        transitionIds,
+        transitionState,
         operationalEventIds,
         providerTraceIds,
         logicalCallIds,
@@ -705,6 +818,8 @@ function cloneAgentRunEvent(
   sourceCompactableEvents: readonly RuntimeEvent[],
   clonedRuntimeEvents: ReadonlyMap<string, RuntimeEvent>,
   checkpointIds: Map<string, string>,
+  transitionIds: Map<string, string>,
+  transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
   operationalEventIds: ReadonlyMap<string, string>,
   providerTraceIds: ReadonlyMap<string, string>,
   logicalCallIds: ReadonlyMap<string, string>,
@@ -805,6 +920,20 @@ function cloneAgentRunEvent(
       checkpointId: checkpoint.checkpointId,
       checkpoint,
     };
+  } else if (event.type === MODEL_PROJECTION_TRANSITION_EVENT_TYPE) {
+    const cloned = cloneModelProjectionTransition(
+      event,
+      references,
+      clonedRuntimeEvents,
+      transitionIds,
+      transitionState,
+    );
+    // Every transition whose target is in the copied slice was gathered into
+    // this run's ledger, wherever it was recorded. So a transition that finds no
+    // cloned target has genuinely lost its target as well, and dropping it
+    // cannot bring replaced content back.
+    if (!cloned) return null;
+    data = { ...event.data, transition: cloned, runtimeEventId: cloned.target.runtimeEventId };
   }
 
   return {
@@ -814,6 +943,73 @@ function cloneAgentRunEvent(
     runId: ids.runId,
     ...(data ? { data } : {}),
   };
+}
+
+/**
+ * Rebuild one projection transition inside the target Session.
+ *
+ * A transition is a claim about a specific projection of a specific event, so a
+ * copy cannot carry it verbatim: the target's RuntimeEvent id, artifact ids and
+ * therefore its projection digest are all different. Rebuilding it re-derives
+ * the digest from the CLONED event, which also means a copy that failed to
+ * remap something cannot silently produce an inert transition — the replaced
+ * content would come back, so the mismatch throws instead.
+ */
+function cloneModelProjectionTransition(
+  event: AgentRunEvent,
+  references: ConversationCopyReferenceMap,
+  clonedRuntimeEvents: ReadonlyMap<string, RuntimeEvent>,
+  transitionIds: Map<string, string>,
+  transitionState: Map<string, { projection: DurableToolResultProjection; transitionId: string }>,
+): ModelProjectionTransition | null {
+  let source: ModelProjectionTransition;
+  try {
+    source = decodeModelProjectionTransition(event.data?.transition, event.sessionId);
+  } catch {
+    throw new Error(`Cannot copy invalid model projection transition ${event.id}`);
+  }
+  const clonedTarget = clonedRuntimeEvents.get(source.target.runtimeEventId);
+  if (!clonedTarget) return null;
+  const placeholder = source.replacement.kind === 'json' ? source.replacement.value : undefined;
+  if (!isArchivedToolResultPlaceholder(placeholder)) {
+    throw new Error(`Cannot copy unsupported model projection transition ${event.id}`);
+  }
+  const existing = transitionState.get(clonedTarget.id);
+  const sourceProjection = existing?.projection ?? baseToolResultProjection(clonedTarget);
+  if (!sourceProjection) {
+    throw new Error(`Cannot copy model projection transition ${event.id} onto its target`);
+  }
+  const rewritten = rewriteArchivedToolResult(placeholder, references);
+  const transition = buildModelProjectionTransition({
+    sessionId: references.targetSessionId,
+    target: {
+      runtimeEventId: clonedTarget.id,
+      part: 'tool_result',
+      toolCallId: source.target.toolCallId,
+      toolName: source.target.toolName,
+    },
+    sourceProjection,
+    replacement: archivedToolResultProjection(rewritten),
+    // The applied chain is copied in fold order, so a predecessor is always
+    // rebuilt before its successor. An unmapped one means the chain broke, and
+    // rooting the successor instead would change what the fold decides.
+    ...(source.previousTransitionId
+      ? {
+          previousTransitionId: requiredMappedId(
+            transitionIds,
+            source.previousTransitionId,
+            'model projection transition',
+          ),
+        }
+      : {}),
+    now: source.createdAt,
+  });
+  transitionIds.set(source.transitionId, transition.transitionId);
+  transitionState.set(clonedTarget.id, {
+    projection: transition.replacement,
+    transitionId: transition.transitionId,
+  });
+  return transition;
 }
 
 function rewriteProviderRequestCapture(

@@ -360,6 +360,7 @@ export class HostRuntimePolicyCoordinator {
           };
         case 'invalid_policy_input':
         case 'invalid_connection_input':
+        case 'revision_conflict':
           if (mode !== 'mutation') {
             throw invariantFailure('A read operation admitted invalid runtime policy input');
           }
@@ -440,7 +441,15 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
     // Profiles ride on their enabled_model_id item, never in one header
     // table: a header item is atomic to the paginator, so a long declaration
     // list would make the whole connection unreadable.
-    const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const {
+      enabledModelIds,
+      models,
+      relayModelProfiles,
+      // This marker is durable invalidation metadata, not part of the
+      // client-visible catalog protocol.
+      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+      ...header
+    } = connection;
     items.push({
       kind: 'connection',
       connectionIndex,

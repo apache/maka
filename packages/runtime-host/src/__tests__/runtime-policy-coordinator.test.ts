@@ -879,6 +879,74 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
   });
 });
 
+test('catalog pages preserve model-facts provenance from the projected snapshot', async () => {
+  await withCoordinator(async ({ coordinator, root, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'facts-backed',
+        name: 'Facts backed',
+        providerType: 'openai',
+        enabled: true,
+        enabledModelIds: ['custom-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await stores.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'facts-backed-test-key',
+    });
+    assert.equal(credential.kind, 'committed');
+    if (credential.kind !== 'committed') return;
+    const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'provider-model' }],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    assert.equal(discovered.kind, 'committed');
+    if (discovered.kind !== 'committed') return;
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { 'openai:custom-model': { contextWindow: 200_000 } },
+      }),
+      'utf8',
+    );
+
+    const result = await coordinator.handlers['connection.catalog.query'](
+      { kind: 'start' },
+      context,
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok || result.result.kind !== 'page') return;
+    const decoded = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.query'].decodeOutput(
+      result.result,
+    );
+    if (decoded.kind !== 'page') return;
+    assert.deepEqual(
+      decoded.items.find(
+        (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
+          item.kind === 'model' && item.model.id === 'custom-model',
+      )?.model.factOverriddenFields,
+      ['contextWindow', 'inputLimit'],
+    );
+  });
+});
+
 test('catalog protocol preserves an extra request body after a committed update', async () => {
   await withCoordinator(async ({ coordinator, stores }) => {
     const emptyBodyBytes = Buffer.byteLength(JSON.stringify({ padding: '' }), 'utf8');

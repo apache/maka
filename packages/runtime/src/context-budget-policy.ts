@@ -96,13 +96,20 @@ export function resolveSelectedModelContextWindow(
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
+  const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
+  // A model-facts pin is the cross-provider correction authority. It must win
+  // over the older relay-only declaration so catalog display and execution use
+  // the same window. Relay declarations retain their existing precedence when
+  // there is no facts pin for this field.
+  if (model?.factOverriddenFields?.includes('contextWindow')) {
+    return narrowestPositiveLimit(model.contextWindow, model.inputLimit);
+  }
   // A user declaration outranks both the provider's /models report and
   // generated metadata — mirrors the declared-vision precedence in
   // model-metadata.ts. A declared context window is legal on any provider: it
   // states a fact about the model, not a request shape (#1584).
   const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
   if (declared !== undefined) return declared;
-  const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
   const metadata = lookupModelMetadata(connection.providerType, selectedModelId);
   // Provider/access-path facts outrank static metadata. Within one source,
   // use the narrowest positive bound: models.dev's input limit can be lower

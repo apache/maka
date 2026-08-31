@@ -394,9 +394,13 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for Host-bound directory references', () => {
-    // Epoch 67 already belongs to durable Message lifecycle ownership on main.
-    // Directory references widen closed message inputs and need a later boundary.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 67);
+    // Epoch 80 belongs to catalog model-facts provenance on main. Directory
+    // references widen closed message inputs and need a later boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 80);
+  });
+
+  test('publishes a new compatibility epoch for catalog model-facts provenance', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {

@@ -63,6 +63,7 @@ import {
 } from '@maka/core/runtime-event';
 import { formatAttachmentResourceRef } from '@maka/core/attachments';
 import type { AttachmentRef, DirectoryReference, QuoteRef } from '@maka/core/events';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type {
   ModelMessage,
   ToolResultOutput,
@@ -76,7 +77,49 @@ import {
 import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 
-export const PROVIDER_REPLAY_PROJECTION_VERSION = 1;
+export const PROVIDER_REPLAY_PROJECTION_VERSION = 2;
+
+/**
+ * Resolve the RuntimeEvents whose provider-owned reasoning may cross the
+ * current provider boundary. Route provenance remains on AgentRunHeader;
+ * current-run events are same-route by construction during mid-turn replay.
+ */
+export function compatibleProviderReasoningReplayEventIds(
+  events: readonly RuntimeEvent[],
+  runHeaders: readonly AgentRunHeader[] | undefined,
+  targetProviderStateIdentity: `sha256:${string}` | undefined,
+  targetModelId: string,
+  currentRunId?: string,
+): ReadonlySet<string> {
+  const compatibleRunIds = new Set(currentRunId ? [currentRunId] : []);
+  if (targetProviderStateIdentity && runHeaders) {
+    for (const run of runHeaders) {
+      if (
+        run.providerStateIdentity === targetProviderStateIdentity &&
+        run.modelId === targetModelId
+      ) {
+        compatibleRunIds.add(run.runId);
+      }
+    }
+  }
+  return new Set(
+    events.filter((event) => compatibleRunIds.has(event.runId)).map((event) => event.id),
+  );
+}
+
+/**
+ * Apply provider-reasoning admission without disturbing portable transcript
+ * or tool evidence. Durable replay identities and wire materializers share
+ * this item projection.
+ */
+export function admitProviderReasoningReplayItems(
+  items: readonly RuntimeEventModelReplayItem[],
+  providerReasoningReplayEventIds: ReadonlySet<string>,
+): RuntimeEventModelReplayItem[] {
+  return items.filter(
+    (item) => item.kind !== 'thinking' || providerReasoningReplayEventIds.has(item.eventId),
+  );
+}
 
 // ============================================================================
 // Effective model-history sizing

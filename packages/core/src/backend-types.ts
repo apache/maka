@@ -41,6 +41,7 @@ import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
+import type { AgentRunHeader } from './agent-run.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -91,6 +92,12 @@ export interface BackendSendInput {
    * compatibility projection.
    */
   runtimeContext?: RuntimeEvent[];
+  /**
+   * Existing durable run headers for `runtimeContext`, used only to verify
+   * provider-owned replay against the current model route. RuntimeEvents stay
+   * the transcript authority; route provenance remains owned by AgentRun.
+   */
+  runtimeContextRunHeaders?: readonly AgentRunHeader[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
   /**
@@ -170,6 +177,8 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
+  /** Source-run route authority for provider-owned history projected into the compaction call. */
+  runtimeContextRunHeaders?: readonly AgentRunHeader[];
 }
 
 export interface BackendCompactHistoryResult {

@@ -504,7 +504,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       const summary = options.providerNative
         ? ({
             kind: 'openai_codex_remote_v2',
-            connectionSlug: 'codex-subscription',
+            connectionId: 'test-connection-id',
             modelId: 'mock-model-id',
             itemId: 'cmp_mid_turn',
             encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
@@ -1745,6 +1745,7 @@ function header(): SessionHeader {
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model-id',

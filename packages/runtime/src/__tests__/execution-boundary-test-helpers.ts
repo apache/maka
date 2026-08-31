@@ -26,6 +26,7 @@ import {
   type ToolResultArchiveServices,
 } from '../tool-result-archive-capability.js';
 import { ToolRuntime, type ToolRuntimeInput } from '../tool-runtime.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 export const readExternalExecutionBoundary: AiSdkBackendInput['readExecutionBoundary'] = async () =>
   createExternalExecutionBoundary();
@@ -39,8 +40,22 @@ export function createTestAiSdkBackend(input: TestAiSdkBackendInput): AiSdkBacke
   const { testProjectionArtifacts, ...backendInput } = input;
   const artifacts = new Map<string, Uint8Array>();
   let nextArtifactId = 0;
+  // A whole transition ledger by default, for the same reason the archive
+  // capability above is whole: a lossy model-history rewrite is only allowed
+  // when it can be made durable, so a fixture without this seam would silently
+  // disable pruning rather than exercise it (#4283).
+  const transitions: ModelProjectionTransition[] = [];
   return new AiSdkBackend({
     readExecutionBoundary: readExternalExecutionBoundary,
+    loadModelProjectionTransitions: async () => ({
+      transitions: [...transitions],
+      unreadableTargets: new Set<string>(),
+      unscopedUnreadable: 0,
+    }),
+    recordModelProjectionTransition: async (transition) => {
+      transitions.push(transition);
+    },
+    providerStateIdentity: `sha256:${'1'.repeat(64)}`,
     ...backendInput,
     ...(testProjectionArtifacts
       ? {

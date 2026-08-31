@@ -70,6 +70,8 @@ export function encodeDurableToolResultOutput(
 interface DurableProjectionArtifactPlan {
   ref: Extract<DurableProjectionArtifactRef, { kind: 'session_file' }>;
   persist(): Promise<void>;
+  /** Undo a publication whose projection is not going to be admitted. */
+  retract?(): Promise<void>;
 }
 
 type DurableProjectionArtifactPlanner = (input: {
@@ -86,6 +88,7 @@ export function encodeDurableToolResultOutputWithArtifacts(
     return encodeDurableToolResultOutput(output, sessionId);
   }
   return (async () => {
+    const publishedPlans: DurableProjectionArtifactPlan[] = [];
     try {
       const prepared = prepareContentProjection(output, sessionId, planArtifact);
       const persisted = new Set<string>();
@@ -93,9 +96,16 @@ export function encodeDurableToolResultOutputWithArtifacts(
         if (persisted.has(artifact.ref.relativePath)) continue;
         await artifact.persist();
         persisted.add(artifact.ref.relativePath);
+        publishedPlans.push(artifact);
       }
       return prepared.projection;
     } catch {
+      // Publication is all-or-nothing: a projection this codec refuses must not
+      // leave images behind that no durable record will ever reference (#4283).
+      // Retraction is best effort — a failed retraction only delays reclamation.
+      for (const artifact of publishedPlans) {
+        await artifact.retract?.().catch(() => undefined);
+      }
       return DURABLE_TOOL_RESULT_PROJECTION_FAILURE;
     }
   })();
