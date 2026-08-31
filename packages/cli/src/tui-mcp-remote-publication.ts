@@ -248,8 +248,9 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
           ? this.#deps.createPeerClient()
           : undefined;
       this.#peerClient = peerClient;
-      const connect = (signal?: AbortSignal): Promise<RuntimeHostConnection> =>
-        this.#deps.connectProfile({
+      const connect = async (signal?: AbortSignal): Promise<RuntimeHostConnection> => {
+        await this.#requireCurrentProfile();
+        const connection = await this.#deps.connectProfile({
           profile: this.#input.profile,
           credential,
           clientInstanceId,
@@ -257,24 +258,28 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
           ...(peerClient ? { peerClient } : {}),
           signal: signal ? AbortSignal.any([abort.signal, signal]) : abort.signal,
         });
+        return this.#keepIfProfileCurrent(connection);
+      };
       const initial = await connect();
       if (this.#closed || generation !== this.#generation) {
         await initial.close().catch(() => undefined);
         await this.#closePeer(peerClient);
         return;
       }
-      const connection = await this.#deps.createReconnectingConnection({
-        initialConnection: initial,
-        connect,
-        onFatalError: (error) => {
-          if (!this.#closed && generation === this.#generation) {
-            this.#setUnavailable(classifyUnavailable(error));
-            if (this.#peerClient === peerClient) {
-              void this.#closePeer(peerClient);
+      const connection = await this.#keepIfProfileCurrent(
+        await this.#deps.createReconnectingConnection({
+          initialConnection: initial,
+          connect,
+          onFatalError: (error) => {
+            if (!this.#closed && generation === this.#generation) {
+              this.#setUnavailable(classifyUnavailable(error));
+              if (this.#peerClient === peerClient) {
+                void this.#closePeer(peerClient);
+              }
             }
-          }
-        },
-      });
+          },
+        }),
+      );
       if (this.#closed || generation !== this.#generation) {
         await connection.close().catch(() => undefined);
         await this.#closePeer(peerClient);
@@ -344,6 +349,24 @@ class RemoteTuiMcpPublicationTarget implements TuiMcpPublicationTarget {
 
   async #profileStillCurrent(): Promise<boolean> {
     return this.#deps.profiles.isRemoteProfileIncarnationCurrent(this.#profileTarget());
+  }
+
+  async #requireCurrentProfile(): Promise<void> {
+    if (await this.#profileStillCurrent()) return;
+    throw new RuntimeHostProfileConnectionError(
+      'target_mismatch',
+      'Remote MCP publication profile is no longer current',
+    );
+  }
+
+  async #keepIfProfileCurrent<T extends RuntimeHostConnection>(connection: T): Promise<T> {
+    try {
+      await this.#requireCurrentProfile();
+      return connection;
+    } catch (error) {
+      await connection.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   #profileTarget(): RuntimeHostRemoteProfileIncarnation {

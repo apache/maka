@@ -180,6 +180,100 @@ test('remote TUI publication aborts an in-flight connection before closing', asy
   assert.equal(observedSignal?.aborted, true);
 });
 
+test('remote TUI publication revalidates its profile before publishing an initial connection', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const connection = connectionHarness('connection-1');
+  const wrapperStarted = deferred();
+  const allowWrapper = deferred();
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => connection.connection,
+      createReconnectingConnection: async () => {
+        wrapperStarted.resolve();
+        await allowWrapper.promise;
+        return reconnectingConnection(connection.connection);
+      },
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await wrapperStarted.promise;
+
+  profiles.remove();
+  profiles.recreate('incarnation-b');
+  allowWrapper.resolve();
+
+  await waitFor(() => {
+    const current = latest();
+    return current.kind === 'unavailable' && current.reason === 'target_mismatch';
+  }, 'recreated profile to reject the uninstalled connection');
+  assert.equal(connection.closes, 1);
+  await target.closePublication?.();
+});
+
+test('remote TUI publication revalidates every reconnect result', async () => {
+  const credentials = credentialHarness('provider-secret');
+  const profiles = profileHarness();
+  const initial = connectionHarness('connection-1');
+  const replacement = connectionHarness('connection-2');
+  const reconnectStarted = deferred();
+  const allowReconnect = deferred();
+  let attempts = 0;
+  let reconnect: ((signal: AbortSignal) => Promise<RuntimeHostConnection>) | undefined;
+  const target = createRemoteTuiMcpPublicationTarget(
+    {
+      clientDataRoot: '/client-data',
+      profile: PROFILE,
+      profileIncarnationId: PROFILE_INCARNATION_ID,
+      ownerClientInstanceId: 'terminal-client',
+    },
+    {
+      credentials: credentials.store,
+      loadClientInstanceId: async () => 'provider-client',
+      connectProfile: async () => {
+        attempts += 1;
+        if (attempts === 1) return initial.connection;
+        reconnectStarted.resolve();
+        await allowReconnect.promise;
+        return replacement.connection;
+      },
+      createReconnectingConnection: async (input) => {
+        reconnect = input.connect;
+        return reconnectingConnection(initial.connection);
+      },
+      profiles: profiles.catalog,
+      subscribeProfileChanges: profiles.subscribe,
+    },
+  );
+  const latest = await availability(target);
+  await waitFor(() => latest().kind === 'connected', 'provider companion to connect');
+  assert.ok(reconnect);
+
+  const attempt = reconnect(new AbortController().signal);
+  await reconnectStarted.promise;
+  profiles.remove();
+  profiles.recreate('incarnation-b');
+  allowReconnect.resolve();
+
+  await assert.rejects(
+    attempt,
+    (error: unknown) =>
+      error instanceof RuntimeHostProfileConnectionError && error.reason === 'target_mismatch',
+  );
+  assert.equal(replacement.closes, 1);
+  await target.closePublication?.();
+});
+
 test('remote TUI publication retires when another process removes its profile', async () => {
   const credentials = credentialHarness('provider-secret');
   const profiles = profileHarness();
