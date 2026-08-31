@@ -146,7 +146,7 @@ describe('SQLite SessionTodo store', () => {
           { content: 'first', status: 'pending' },
         ],
       });
-      await reopened.purge(SESSION_ID);
+      await reopened.purgeSessionState(SESSION_ID);
       assert.deepEqual(await reopened.readOrBootstrap(SESSION_ID), { items: [] });
       reopened.close();
     });
@@ -242,6 +242,150 @@ describe('SQLite SessionTodo store', () => {
       );
       assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
         items: [{ content: 'recovered', status: 'pending' }],
+      });
+      todos.close();
+    });
+  });
+
+  test('initializes latest copies atomically and accepts only an identical retry', async () => {
+    await withRoot(async (root) => {
+      const todos = createSqliteSessionTodoStore(root);
+      await todos.replaceAll('source', [{ content: 'current work', status: 'in_progress' }]);
+      const input = { sourceSessionId: 'source', targetSessionId: 'target', copyCurrent: true };
+      const expected = { items: [{ content: 'current work', status: 'in_progress' as const }] };
+      assert.deepEqual(await todos.initializeCopy(input), expected);
+      assert.deepEqual(await todos.initializeCopy(input), expected);
+      await todos.replaceAll('target', [{ content: 'different', status: 'pending' }]);
+      await assert.rejects(() => todos.initializeCopy(input), /different state/);
+      todos.close();
+    });
+  });
+
+  test('fails closed when a copy source or target document is corrupt', async () => {
+    await withRoot(async (root) => {
+      const todos = createSqliteSessionTodoStore(root);
+      await todos.replaceAll('source', [{ content: 'current work', status: 'pending' }]);
+      await todos.replaceAll('corrupt-target', []);
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare(
+            'UPDATE workflow_session_todo_documents SET record_json = ? WHERE session_id = ?',
+          )
+          .run('{not-json', 'corrupt-target');
+      } finally {
+        database.close();
+      }
+
+      await assert.rejects(
+        () =>
+          todos.initializeCopy({
+            sourceSessionId: 'source',
+            targetSessionId: 'corrupt-target',
+            copyCurrent: true,
+          }),
+        /Invalid SessionTodo document JSON/,
+      );
+
+      const corruptSource = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        corruptSource
+          .prepare(
+            'UPDATE workflow_session_todo_documents SET record_json = ? WHERE session_id = ?',
+          )
+          .run('{not-json', 'source');
+      } finally {
+        corruptSource.close();
+      }
+      await assert.rejects(
+        () =>
+          todos.initializeCopy({
+            sourceSessionId: 'source',
+            targetSessionId: 'new-target',
+            copyCurrent: true,
+          }),
+        /Invalid SessionTodo document JSON/,
+      );
+
+      const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          verified
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
+            )
+            .get('new-target')!.count,
+          0,
+        );
+      } finally {
+        verified.close();
+      }
+      todos.close();
+    });
+  });
+
+  test('writes an explicit empty copy marker that later legacy events cannot revive', async () => {
+    await withRoot(async (root) => {
+      const todos = createSqliteSessionTodoStore(root);
+      assert.deepEqual(
+        await todos.initializeCopy({
+          sourceSessionId: 'source',
+          targetSessionId: 'historical-target',
+          copyCurrent: false,
+        }),
+        { items: [] },
+      );
+      const tasks = createSqliteTaskLedgerStore(root);
+      await tasks.create('historical-target', [{ subject: 'must not revive' }]);
+      tasks.close();
+      assert.deepEqual(await todos.readOrBootstrap('historical-target'), { items: [] });
+      todos.close();
+    });
+  });
+
+  test('purges Todo and legacy bootstrap rows in one lifecycle operation', async () => {
+    await withRoot(async (root) => {
+      const tasks = createSqliteTaskLedgerStore(root);
+      await tasks.create(SESSION_ID, [{ subject: 'legacy' }]);
+      tasks.close();
+      const todos = createSqliteSessionTodoStore(root);
+      await todos.replaceAll(SESSION_ID, [{ content: 'current', status: 'pending' }]);
+      await todos.purgeSessionState(SESSION_ID);
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          database
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
+            )
+            .get(SESSION_ID)!.count,
+          0,
+        );
+        assert.equal(
+          database
+            .prepare(
+              'SELECT COUNT(*) AS count FROM workflow_task_ledger_events WHERE session_id = ?',
+            )
+            .get(SESSION_ID)!.count,
+          0,
+        );
+      } finally {
+        database.close();
+      }
+      todos.close();
+    });
+  });
+
+  test('linearizes concurrent whole-document replacements', async () => {
+    await withRoot(async (root) => {
+      const todos = createSqliteSessionTodoStore(root);
+      const writes = Array.from({ length: 128 }, (_, index) =>
+        todos.replaceAll(SESSION_ID, [{ content: `write ${index}`, status: 'pending' }]),
+      );
+      await Promise.all(writes);
+      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
+        items: [{ content: 'write 127', status: 'pending' }],
       });
       todos.close();
     });

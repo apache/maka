@@ -675,7 +675,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
       goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease),
-    listActionableTaskKeys: async () => [],
     acquireResidency,
     onProjectionChanged: (sessionId) => {
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);

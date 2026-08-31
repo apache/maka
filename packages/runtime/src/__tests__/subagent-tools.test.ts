@@ -26,7 +26,6 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { SessionHeader } from '@maka/core/session';
-import type { Task, TaskAgentOutcome, TaskLedgerStore, TaskOwner } from '@maka/core/task-ledger';
 import type { SessionEvent } from '@maka/core/events';
 import { zodSchema } from 'ai';
 import { buildBuiltinTools } from '../builtin-tools.js';
@@ -101,7 +100,7 @@ describe('subagent tools', () => {
     );
   });
 
-  test('agent_spawn advertises task_id only when task binding is available', async () => {
+  test('agent_spawn does not advertise retired task binding', async () => {
     const advertisedProperties = async (tool: MakaTool) => {
       const schema = (await zodSchema(tool.parameters as never).jsonSchema) as {
         properties?: Record<string, unknown>;
@@ -116,14 +115,6 @@ describe('subagent tools', () => {
       'write_back',
       'isolation',
     ]);
-    assert.deepStrictEqual(
-      Object.keys(
-        await advertisedProperties(
-          buildSubagentSpawnTool({ taskLedger: taskLedgerStub(undefined, []) }),
-        ),
-      ),
-      ['profile', 'subagent_id', 'task', 'write_back', 'isolation', 'task_id'],
-    );
   });
 
   test('agent_spawn strips task_id when task binding is unavailable', () => {
@@ -422,7 +413,6 @@ describe('subagent tools', () => {
       {
         profile: LOCAL_READ_AGENT_PROFILE,
         task: 'Inspect the runtime tests.',
-        task_id: 'ignored-without-task-binding',
       },
       {
         sessionId: 'session-1',
@@ -630,258 +620,6 @@ describe('subagent tools', () => {
 
     assert.strictEqual(output.length, 2);
     assert.strictEqual((output[1]?.length ?? Number.POSITIVE_INFINITY) < 1_100, true);
-  });
-
-  test('agent_spawn binds a current-session task and records real child refs without auto-completing', async () => {
-    const task: Task = {
-      id: 'task-uuid',
-      key: 'T1',
-      subject: 'inspect runtime',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const calls: string[] = [];
-    const ledger = taskLedgerStub(task, calls);
-    const tool = buildSubagentSpawnTool({ taskLedger: ledger });
-    const result = await tool.impl(
-      {
-        profile: LOCAL_READ_AGENT_PROFILE,
-        task: 'Inspect the runtime tests.',
-        task_id: 'T1',
-      },
-      {
-        sessionId: 'session-1',
-        turnId: 'parent-turn',
-        cwd: '/tmp/cwd',
-        toolCallId: 'tool-1',
-        abortSignal: new AbortController().signal,
-        emitOutput: () => {},
-        spawnChildSession: async (input) => {
-          await input.onReady?.({
-            childSessionId: 'child-session',
-            runId: 'child-run',
-            turnId: 'child-turn',
-            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-            permissionMode: 'explore',
-          });
-          return {
-            agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-            agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-            runId: 'child-run',
-            turnId: 'child-turn',
-            status: 'completed',
-            permissionMode: 'explore',
-            summary: 'inspection complete',
-            artifactIds: [],
-          };
-        },
-      },
-    );
-    assert.deepStrictEqual(calls, [
-      'get:session-1:T1',
-      'claim:child-turn',
-      'settle:completed:child-run',
-    ]);
-    assert.strictEqual(task.status, 'in_progress');
-    assert.deepStrictEqual(task.owner, {
-      actor: 'child_agent',
-      sessionId: 'child-session',
-      agentId: LOCAL_READ_AGENT_ID,
-      runId: 'child-run',
-      turnId: 'child-turn',
-    });
-    assert.partialDeepStrictEqual(result, {
-      kind: 'subagent',
-      runId: 'child-run',
-      status: 'completed',
-    });
-  });
-
-  test('agent_spawn rejects a forged task reference before starting a child', async () => {
-    let spawned = false;
-    const ledger = taskLedgerStub(undefined, []);
-    const tool = buildSubagentSpawnTool({ taskLedger: ledger });
-    await expectRejects(
-      Promise.resolve(
-        tool.impl(
-          {
-            profile: LOCAL_READ_AGENT_PROFILE,
-            task: 'Inspect.',
-            task_id: 'T99',
-          },
-          {
-            sessionId: 'session-1',
-            turnId: 'parent-turn',
-            cwd: '/tmp',
-            toolCallId: 'tool-1',
-            abortSignal: new AbortController().signal,
-            emitOutput: () => {},
-            spawnChildSession: async () => {
-              spawned = true;
-              return {};
-            },
-          },
-        ),
-      ),
-      /No such task in this session/,
-    );
-    assert.strictEqual(spawned, false);
-  });
-
-  test('agent_spawn records failed and cancelled child outcomes with real refs', async () => {
-    for (const status of ['failed', 'cancelled'] as const) {
-      const task: Task = {
-        id: `task-${status}`,
-        key: 'T1',
-        subject: status,
-        status: 'pending',
-        createdAt: 1,
-        updatedAt: 1,
-      };
-      const calls: string[] = [];
-      const tool = buildSubagentSpawnTool({ taskLedger: taskLedgerStub(task, calls) });
-      const result = await tool.impl(
-        {
-          profile: LOCAL_READ_AGENT_PROFILE,
-          task: `Run child that becomes ${status}.`,
-          task_id: task.key,
-        },
-        {
-          sessionId: 'session-1',
-          turnId: 'parent-turn',
-          cwd: '/tmp',
-          toolCallId: 'tool-1',
-          abortSignal: new AbortController().signal,
-          emitOutput: () => {},
-          spawnChildSession: async (input) => {
-            await input.onReady?.({
-              childSessionId: 'child-session',
-              runId: 'child-run',
-              turnId: `child-${status}`,
-              agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-              agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-              permissionMode: 'explore',
-            });
-            return {
-              agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-              agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-              runId: `run-${status}`,
-              turnId: `child-${status}`,
-              status,
-              permissionMode: 'explore',
-              summary: `${status} summary`,
-              artifactIds: [],
-            };
-          },
-        },
-      );
-      assert.deepStrictEqual(calls, [
-        'get:session-1:T1',
-        `claim:child-${status}`,
-        `settle:${status}:run-${status}`,
-      ]);
-      assert.strictEqual(task.status, status);
-      assert.deepStrictEqual(task.owner, {
-        actor: 'child_agent',
-        sessionId: 'child-session',
-        agentId: LOCAL_READ_AGENT_ID,
-        runId: `run-${status}`,
-        turnId: `child-${status}`,
-      });
-      assert.partialDeepStrictEqual(result, { kind: 'subagent', status, runId: `run-${status}` });
-    }
-  });
-
-  test('agent_spawn marks a claimed task failed when child startup throws', async () => {
-    const task: Task = {
-      id: 'task-startup-failure',
-      key: 'T1',
-      subject: 'startup',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const calls: string[] = [];
-    const tool = buildSubagentSpawnTool({ taskLedger: taskLedgerStub(task, calls) });
-    await expectRejects(
-      Promise.resolve(
-        tool.impl(
-          {
-            profile: LOCAL_READ_AGENT_PROFILE,
-            task: 'Fail after allocating the child turn.',
-            task_id: task.key,
-          },
-          {
-            sessionId: 'session-1',
-            turnId: 'parent-turn',
-            cwd: '/tmp',
-            toolCallId: 'tool-1',
-            abortSignal: new AbortController().signal,
-            emitOutput: () => {},
-            spawnChildSession: async (input) => {
-              await input.onReady?.({
-                childSessionId: 'child-session',
-                runId: 'child-run',
-                turnId: 'child-turn',
-                agentId: requireBuiltinAgentDefinitionByProfile(input.agentProfile).id,
-                agentName: requireBuiltinAgentDefinitionByProfile(input.agentProfile).name,
-                permissionMode: 'explore',
-              });
-              throw new Error('child startup failed');
-            },
-          },
-        ),
-      ),
-      /child startup failed/,
-    );
-    assert.deepStrictEqual(calls, [
-      'get:session-1:T1',
-      'claim:child-turn',
-      'settle:failed:undefined',
-    ]);
-    assert.strictEqual(task.status, 'failed');
-  });
-
-  test('agent_spawn rejects a task reference that only exists in another session', async () => {
-    const task: Task = {
-      id: 'other-task',
-      key: 'T1',
-      subject: 'other',
-      status: 'pending',
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const ledger = taskLedgerStub(task, []);
-    ledger.get = async (sessionId) => (sessionId === 'session-2' ? task : undefined);
-    let spawned = false;
-    const tool = buildSubagentSpawnTool({ taskLedger: ledger });
-    await expectRejects(
-      Promise.resolve(
-        tool.impl(
-          {
-            profile: LOCAL_READ_AGENT_PROFILE,
-            task: 'Inspect.',
-            task_id: task.key,
-          },
-          {
-            sessionId: 'session-1',
-            turnId: 'parent-turn',
-            cwd: '/tmp',
-            toolCallId: 'tool-1',
-            abortSignal: new AbortController().signal,
-            emitOutput: () => {},
-            spawnChildSession: async () => {
-              spawned = true;
-              return {};
-            },
-          },
-        ),
-      ),
-      /No such task in this session/,
-    );
-    assert.strictEqual(spawned, false);
   });
 
   test('agent_spawn validates profile contracts and delegates worktree availability to runtime', async () => {
@@ -1377,42 +1115,5 @@ function testConnection(): LlmConnection {
     enabled: true,
     createdAt: 1,
     updatedAt: 1,
-  };
-}
-function taskLedgerStub(task: Task | undefined, calls: string[]): TaskLedgerStore {
-  return {
-    list: async () => (task ? [task] : []),
-    get: async (sessionId, id) => {
-      calls.push(`get:${sessionId}:${id}`);
-      return task && (task.id === id || task.key === id) ? task : undefined;
-    },
-    create: async () => ({ created: [], total: task ? 1 : 0 }),
-    update: async () => {
-      if (!task) throw new Error('No such task');
-      return { updated: task, total: 1 };
-    },
-    claim: async (_sessionId, _id, owner: TaskOwner) => {
-      if (!task) throw new Error('No such task');
-      calls.push(`claim:${owner.turnId}`);
-      task.status = 'in_progress';
-      task.owner = owner;
-      return { updated: task, total: 1 };
-    },
-    claimAvailable: async (_sessionId, _id, owner: TaskOwner) => {
-      if (!task) throw new Error('No such task');
-      calls.push(`claimAvailable:${owner.turnId}`);
-      task.status = 'in_progress';
-      task.owner = owner;
-      return { updated: task, total: 1 };
-    },
-    settleAgentOutcome: async (_sessionId, _id, outcome: TaskAgentOutcome) => {
-      if (!task) throw new Error('No such task');
-      calls.push(`settle:${outcome.status}:${outcome.owner.runId}`);
-      task.owner = outcome.owner;
-      if (outcome.status === 'failed') task.status = 'failed';
-      if (outcome.status === 'cancelled') task.status = 'cancelled';
-      return { updated: task, total: 1 };
-    },
-    subscribe: () => () => {},
   };
 }

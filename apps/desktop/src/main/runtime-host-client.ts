@@ -26,7 +26,10 @@ import {
   type TurnRecord,
 } from "@maka/core/session";
 import { markPersisted } from "@maka/core/persisted-value";
-import type { Task } from "@maka/core/task-ledger";
+import {
+  projectSessionTodoItemsForDisplay,
+  type SessionTodoItem,
+} from "@maka/core/session-todo";
 
 import type {
   ConnectionCatalogSnapshot,
@@ -1283,35 +1286,10 @@ export class DesktopRuntimeHostClient {
     return this.request("context.compact", input);
   }
 
-  async listTasks(sessionId: string): Promise<Task[]> {
-    const projection = await collectStableProjection({
-      name: "Task ledger",
-      sessionId,
-      start: () =>
-        this.request("task.ledger.query", { kind: "list_start", sessionId }),
-      continue: (first, cursor) =>
-        this.request("task.ledger.query", {
-          kind: "list_continue",
-          sessionId,
-          revision: first.revision,
-          cursor,
-        }),
-      page(result, first) {
-        if (
-          result.kind !== "page" ||
-          result.sessionId !== sessionId ||
-          (first !== undefined && result.revision !== first.revision)
-        ) {
-          throw invalidProjection("Task ledger");
-        }
-        return {
-          source: result,
-          items: result.tasks,
-          nextCursor: result.nextCursor,
-        };
-      },
-    });
-    return projection.items;
+  async querySessionTodo(sessionId: string): Promise<SessionTodoItem[]> {
+    const result = await this.request("session.todo.query", { sessionId });
+    if (result.sessionId !== sessionId) throw invalidProjection("SessionTodo");
+    return projectSessionTodoItemsForDisplay(result.items);
   }
 
   queryUsage(

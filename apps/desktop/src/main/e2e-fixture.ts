@@ -28,7 +28,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
@@ -231,39 +231,17 @@ export async function seedE2eFixture(input: {
 
   if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
     const owner = await tryAcquireInteractiveRootOwner(storageRoot);
-    if (!owner) throw new Error('Unable to acquire the E2E fixture task-ledger root');
+    if (!owner) throw new Error('Unable to acquire the E2E fixture SessionTodo root');
     try {
-      const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+      const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
       try {
-        const created = await tasks.create(
-          TURN_SESSION_ID,
-          [
-            { subject: '补齐桌面端无障碍覆盖' },
-            { subject: '核对模型选择器的键盘路径' },
-            { subject: '确认工具结果可以展开阅读' },
-          ],
-          { source: 'import', actor: 'system' },
-        );
-        await tasks.update(
-          TURN_SESSION_ID,
-          created.created[0]!.id,
-          { status: 'in_progress' },
-          { source: 'import', actor: 'system' },
-        );
-        await tasks.update(
-          TURN_SESSION_ID,
-          created.created[2]!.id,
-          { status: 'in_progress' },
-          { source: 'import', actor: 'system' },
-        );
-        await tasks.update(
-          TURN_SESSION_ID,
-          created.created[2]!.id,
-          { status: 'completed', completionEvidence: '工具输出已成功显示。' },
-          { source: 'import', actor: 'system' },
-        );
+        await todos.replaceAll(TURN_SESSION_ID, [
+          { content: '补齐桌面端无障碍覆盖', status: 'in_progress' },
+          { content: '核对模型选择器的键盘路径', status: 'pending' },
+          { content: '确认工具结果可以展开阅读', status: 'completed' },
+        ]);
       } finally {
-        tasks.close();
+        todos.close();
       }
     } finally {
       await owner.close();

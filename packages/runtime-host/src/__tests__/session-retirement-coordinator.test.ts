@@ -1210,8 +1210,8 @@ async function withHarness(
           actions.purgedArtifacts.push(sessionId);
         },
       },
-      taskLedger: {
-        purgeConversationTaskLedger: async (sessionId) => {
+      sessionTodo: {
+        purgeSessionState: async (sessionId) => {
           actions.purgedTasks.push(sessionId);
         },
       },

@@ -95,7 +95,7 @@ import type {
 } from '@maka/core/daily-review';
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
-import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import type {
   DesktopTranscriptBatch,
@@ -961,9 +961,9 @@ export interface MakaBridge {
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void;
   };
 
-  tasks: {
-    list(sessionId: string): Promise<Task[]>;
-    subscribeChanges(handler: (event: TaskLedgerChangedEvent) => void): () => void;
+  todo: {
+    read(sessionId: string): Promise<SessionTodoItem[]>;
+    subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void;
   };
   deepResearch: {
     get(sessionId: string): Promise<DeepResearchClientProgress | undefined>;

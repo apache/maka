@@ -34,7 +34,6 @@ import {
   type SessionHeader,
   WORKHUB_COORDINATION_SESSION_ID,
 } from '@maka/core/session';
-import { filterModelVisibleTaskLedgerTasks } from '@maka/core/task-ledger';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
 import {
@@ -174,7 +173,7 @@ import { SessionContinuityCoordinator } from './session-continuity-coordinator.j
 import { createSessionTranscriptReader } from './session-transcript-reader.js';
 import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
-import { HostTaskLedgerCoordinator } from './task-ledger-coordinator.js';
+import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
@@ -264,7 +263,6 @@ export async function createExecutionRuntimeHostComposition(
   let graphClient: HostAgentGraphCoordinator | undefined;
   let sessionEffects: HostSessionEffectCoordinator | undefined;
   let memoryExtraction: HostMemoryExtractionCoordinator | undefined;
-  let unsubscribeTaskLedger: (() => void) | undefined;
   let unsubscribeTranscriptChanges: (() => void) | undefined;
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
@@ -280,7 +278,7 @@ export async function createExecutionRuntimeHostComposition(
     const openedGoalStore = storage.goal;
     const memoryStore = storage.memoryBundle;
     const longTermMemoryStore = storage.longTermMemory;
-    const taskLedgerStore = storage.taskLedger;
+    const sessionTodoStore = storage.sessionTodo;
     const openedArtifactStore = storage.artifacts;
     const openedContextOffloadStore = storage.contextOffload;
     const openedContextOffloadReader = openedContextOffloadStore
@@ -356,10 +354,12 @@ export async function createExecutionRuntimeHostComposition(
     workspaceExecution = createRuntimeHostWorkspaceExecutionComposition({
       ...(workspaceFilesystemWorker ? { filesystemWorker: workspaceFilesystemWorker } : {}),
     });
-    const taskLedger = new HostTaskLedgerCoordinator(
-      taskLedgerStore,
+    const sessionTodo = new HostSessionTodoCoordinator(
+      sessionTodoStore,
       sessionAdmission,
       stores.sessionStore,
+      (sessionId) => requireContinuity(continuity).enqueueSessionDomainChanged(sessionId, 'todo'),
+      context.requestDrain,
     );
     runtimeResources = new HostRuntimeResourceCoordinator({
       manager: shellRuns,
@@ -424,7 +424,6 @@ export async function createExecutionRuntimeHostComposition(
     ];
     const hostTools = [...childHostTools, ...historyTools];
     const childAgentTools = createHostChildAgentToolComposition({
-      taskLedger,
       builtinTools,
       hostTools: childHostTools,
       worktreePatchWriteBackAvailable: true,
@@ -565,9 +564,6 @@ export async function createExecutionRuntimeHostComposition(
     unsubscribeUsageChanges = openedUsageStores.subscribeSessionUsageChanges((sessionId) =>
       continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'usage'),
     );
-    unsubscribeTaskLedger = taskLedger.subscribe(({ sessionId }) =>
-      continuityCoordinator.enqueueSessionDomainChanged(sessionId, 'task'),
-    );
     deepResearch = new HostDeepResearchCoordinator({
       store: openedDeepResearchStore,
       artifacts: openedArtifactStore,
@@ -672,7 +668,7 @@ export async function createExecutionRuntimeHostComposition(
       createRunComposer: createInteractiveRunComposerFactory({
         skills,
         memory: requireMemory(memory),
-        taskLedger,
+        sessionTodo,
         clientCapabilities: requireClientCapabilities(clientCapabilities),
         resolveTavilyWebSearchReadiness: () =>
           resolveHostTavilyWebSearchReadiness(runtimePolicyStores.operations),
@@ -757,7 +753,6 @@ export async function createExecutionRuntimeHostComposition(
           ...(input.boundTools ? { boundTools: input.boundTools } : {}),
           ...(input.childTools ? { childTools: input.childTools } : {}),
           ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
-          taskLedger,
           worktreePatchWriteBackAvailable: true,
           tavilyReady,
         }),
@@ -808,7 +803,7 @@ export async function createExecutionRuntimeHostComposition(
           shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
           skills,
           memory: requireMemory(memory),
-          taskLedger,
+          sessionTodo,
           ...(runProfile ? { toolProfile: header.toolProfile } : {}),
           ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
           builtinTools,
@@ -873,7 +868,7 @@ export async function createExecutionRuntimeHostComposition(
             shell: resolveTurnShellPlan(runtimePolicy.policy.shell),
             skills,
             memory: requireMemory(memory),
-            taskLedger,
+            sessionTodo,
             ...(capabilitySnapshot ? { clientCapabilities: capabilitySnapshot } : {}),
             builtinTools,
             hostTools: surface.hostTools,
@@ -924,7 +919,6 @@ export async function createExecutionRuntimeHostComposition(
         (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.shell,
       );
       const childTools = createHostChildAgentToolComposition({
-        taskLedger,
         builtinTools: { ...builtinTools, shell },
         hostTools,
         worktreePatchWriteBackAvailable: true,
@@ -1249,16 +1243,6 @@ export async function createExecutionRuntimeHostComposition(
       }),
       admitTurn: (sessionId, text, checkpoint, controlLease) =>
         goalExecutionCoordinator.admitTurn(sessionId, text, checkpoint, controlLease),
-      listActionableTaskKeys: async (sessionId) => {
-        const tasks = await taskLedger.list(sessionId, {
-          includeTerminal: false,
-          includeArchived: false,
-          classifyResumeTrust: true,
-        });
-        return filterModelVisibleTaskLedgerTasks(tasks)
-          .filter((task) => task.status === 'pending' || task.status === 'in_progress')
-          .map((task) => task.key);
-      },
       acquireResidency: () => context.acquireResidency('goal'),
       onProjectionChanged: (sessionId) => continuityCoordinator.enqueueCanonicalRefresh(sessionId),
       requestDrain: context.requestDrain,
@@ -1432,6 +1416,7 @@ export async function createExecutionRuntimeHostComposition(
       discardImportedSession: async (sessionId) => {
         const outcomes = await Promise.allSettled([
           stores.purgeConversationOperationalState(sessionId),
+          sessionTodoStore.purgeSessionState(sessionId),
           stores.sessionStore.remove(sessionId),
         ]);
         for (const outcome of outcomes) {
@@ -1457,7 +1442,7 @@ export async function createExecutionRuntimeHostComposition(
     const sessionRevisions = new HostSessionRevisionCoordinator({
       stores,
       artifacts: openedArtifactStore,
-      taskLedger: taskLedgerStore,
+      sessionTodo: sessionTodoStore,
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
@@ -1481,7 +1466,7 @@ export async function createExecutionRuntimeHostComposition(
       capabilities: clientCapabilities,
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
-      taskLedger: taskLedgerStore,
+      sessionTodo: sessionTodoStore,
       assertNoContextOffloadReferences: async (sessionIds) => {
         if (!openedContextOffloadStore) {
           throw new Error('Context-offload reader is unavailable during Session removal', {
@@ -1597,7 +1582,7 @@ export async function createExecutionRuntimeHostComposition(
         handlers: [
           runtimePolicy.handlers,
           connectionEffects.handlers,
-          taskLedger.handlers,
+          sessionTodo.handlers,
           artifacts.handlers,
           skills.handlers,
           usagePricing.handlers,
@@ -1625,7 +1610,6 @@ export async function createExecutionRuntimeHostComposition(
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeUsageChanges?.();
-            unsubscribeTaskLedger?.();
           },
         ],
         releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],
@@ -1841,7 +1825,6 @@ export async function createExecutionRuntimeHostComposition(
     try {
       unsubscribeTranscriptChanges?.();
       unsubscribeUsageChanges?.();
-      unsubscribeTaskLedger?.();
     } catch (closeError) {
       errors.push(closeError);
     }

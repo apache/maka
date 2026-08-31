@@ -451,23 +451,13 @@ test('drives bounded Session domain projections through real UDS framing', async
       idleGraceMs: 10_000,
       composition: defineInteractiveRuntimeHostComposition(async () => ({
         handlers: handlers({
-          'task.ledger.query': async (input) => ({
+          'session.todo.query': async (input) => ({
             ok: true,
             result: {
-              kind: 'page',
               sessionId: input.sessionId,
-              revision: catalogRevision('6'),
-              tasks: [
-                {
-                  id: 'task-1',
-                  key: 'T1',
-                  subject: 'Verify the Desktop adapter',
-                  status: 'in_progress',
-                  createdAt: 1,
-                  updatedAt: 2,
-                },
+              items: [
+                { content: 'Verify the Desktop adapter', status: 'in_progress' },
               ],
-              nextCursor: null,
             },
           }),
           'plan.query': async (input) => ({
@@ -523,8 +513,8 @@ test('drives bounded Session domain projections through real UDS framing', async
     );
 
     assert.equal(
-      ((await ipc.invoke('tasks:list', 'session-1')) as Array<{ id: string }>)[0]?.id,
-      'task-1',
+      ((await ipc.invoke('todo:read', 'session-1')) as Array<{ content: string }>)[0]?.content,
+      'Verify the Desktop adapter',
     );
     assert.deepEqual(await ipc.invoke('plan-mode:getState', 'session-1'), {
       schemaVersion: 1,

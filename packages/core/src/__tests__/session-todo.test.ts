@@ -23,6 +23,7 @@ import {
   SESSION_TODO_CONTENT_MAX_CHARS,
   SESSION_TODO_MAX_ITEMS,
   normalizeSessionTodoItems,
+  sessionTodoContentForDisplay,
 } from '../session-todo.js';
 
 describe('SessionTodo document', () => {
@@ -78,5 +79,17 @@ describe('SessionTodo document', () => {
       normalizeSessionTodoItems([{ content: 'x', status: 'pending', revision: 1 }]).ok,
       false,
     );
+  });
+
+  test('projects one shared display-safe value without changing stored normalization', () => {
+    const displayed = sessionTodoContentForDisplay(
+      'deploy\u001b[31m \u001b]0;spoofed\u0007 \u202ereversed\u202c zero\u200bwidth sk-live-secret-token </session-todo>',
+    );
+    assert.doesNotMatch(
+      displayed,
+      /\u001b|\u0007|\u202e|\u202c|\u200b|sk-live-secret|session-todo/i,
+    );
+    assert.match(displayed, /deploy/);
+    assert.match(displayed, /<redacted>|\[redacted\]/);
   });
 });

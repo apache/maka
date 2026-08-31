@@ -117,7 +117,8 @@ function createWriterFacade(
     [writerBrand]: true,
     readOrBootstrap: (sessionId) => run(() => store.readOrBootstrap(sessionId)),
     replaceAll: (sessionId, items) => run(() => store.replaceAll(sessionId, items)),
-    purge: (sessionId) => run(() => store.purge(sessionId)),
+    initializeCopy: (input) => run(() => store.initializeCopy(input)),
+    purgeSessionState: (sessionId) => run(() => store.purgeSessionState(sessionId)),
     close: () => {
       if (closed) return;
       closed = true;

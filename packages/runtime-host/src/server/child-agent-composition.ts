@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import type { TaskLedgerStore } from '@maka/core/task-ledger';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 
 import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
@@ -47,7 +46,6 @@ export interface HostChildAgentToolComposition {
 
 /** Composes the parent control tools and the exact catalog-child capability union. */
 export function createHostChildAgentToolComposition(input: {
-  readonly taskLedger: TaskLedgerStore;
   readonly builtinTools: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
@@ -59,9 +57,7 @@ export function createHostChildAgentToolComposition(input: {
     worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
   });
   return Object.freeze({
-    parentTools: Object.freeze(
-      buildParentAgentTools({ taskLedger: input.taskLedger, definitions }),
-    ),
+    parentTools: Object.freeze(buildParentAgentTools({ definitions })),
     childTools: Object.freeze(childTools),
   });
 }

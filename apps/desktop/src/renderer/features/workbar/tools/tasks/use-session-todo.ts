@@ -19,78 +19,74 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { generalizedErrorMessage, generalizedErrorMessageChinese } from '@maka/core/redaction';
-import { type Task } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import { useUiLocale } from '@maka/ui';
 import { getShellRemainingCopy } from '../../../../locales/shell-remaining-copy.js';
 import { useWorkbarServices } from '../../services-context.js';
 
-interface SessionTaskSnapshot {
+interface SessionTodoView {
   sessionId?: string;
-  tasks: Task[];
+  items: SessionTodoItem[];
   loading: boolean;
   error?: string;
 }
 
-const EMPTY_SNAPSHOT: SessionTaskSnapshot = {
-  tasks: [],
-  loading: false,
-};
+const EMPTY: SessionTodoView = { items: [], loading: false };
 
-export function useSessionTasks(sessionId: string | undefined): SessionTaskSnapshot & { retry: () => void } {
-  const { tasks: tasksService } = useWorkbarServices();
+export function useSessionTodo(sessionId: string | undefined): SessionTodoView & { retry: () => void } {
+  const { todo } = useWorkbarServices();
   const locale = useUiLocale();
   const copy = getShellRemainingCopy(locale).tasks;
-  const revisionRef = useRef(0);
-  const [snapshot, setSnapshot] = useState<SessionTaskSnapshot>(EMPTY_SNAPSHOT);
+  const generation = useRef(0);
+  const [snapshot, setSnapshot] = useState<SessionTodoView>(EMPTY);
 
-  const load = useCallback((targetSessionId: string, preserveTasks: boolean) => {
-    const revision = ++revisionRef.current;
+  const load = useCallback((targetSessionId: string, preserve: boolean) => {
+    const requestGeneration = ++generation.current;
     setSnapshot((current) => ({
       sessionId: targetSessionId,
-      tasks: preserveTasks && current.sessionId === targetSessionId ? current.tasks : [],
+      items: preserve && current.sessionId === targetSessionId ? current.items : [],
       loading: true,
     }));
-    void tasksService.list(targetSessionId).then(
-      (tasks) => {
-        if (revision !== revisionRef.current) return;
-        setSnapshot({ sessionId: targetSessionId, tasks, loading: false });
+    void todo.read(targetSessionId).then(
+      (items) => {
+        if (requestGeneration !== generation.current) return;
+        setSnapshot({ sessionId: targetSessionId, items, loading: false });
       },
       (error: unknown) => {
-        if (revision !== revisionRef.current) return;
+        if (requestGeneration !== generation.current) return;
         setSnapshot((current) => ({
           sessionId: targetSessionId,
-          tasks: current.sessionId === targetSessionId ? current.tasks : [],
+          items: current.sessionId === targetSessionId ? current.items : [],
           loading: false,
-          error: locale === 'zh'
-            ? generalizedErrorMessageChinese(error, copy.loadFailed)
-            : generalizedErrorMessage(error, copy.loadFailed),
+          error:
+            locale === 'zh'
+              ? generalizedErrorMessageChinese(error, copy.loadFailed)
+              : generalizedErrorMessage(error, copy.loadFailed),
         }));
       },
     );
-  }, [copy.loadFailed, locale, tasksService]);
+  }, [copy.loadFailed, locale, todo]);
 
   useEffect(() => {
-    revisionRef.current += 1;
+    generation.current += 1;
     if (!sessionId) {
-      setSnapshot(EMPTY_SNAPSHOT);
+      setSnapshot(EMPTY);
       return;
     }
-    const unsubscribe = tasksService.subscribeChanges((event) => {
+    const unsubscribe = todo.subscribeChanges((event) => {
       if (event.sessionId === sessionId) load(sessionId, true);
     });
     load(sessionId, false);
     return () => {
-      revisionRef.current += 1;
+      generation.current += 1;
       unsubscribe();
     };
-  }, [load, sessionId, tasksService]);
+  }, [load, sessionId, todo]);
 
   const retry = useCallback(() => {
     if (sessionId) load(sessionId, true);
   }, [load, sessionId]);
 
-  if (snapshot.sessionId !== sessionId) {
-    return { ...EMPTY_SNAPSHOT, loading: Boolean(sessionId), retry };
-  }
+  if (snapshot.sessionId !== sessionId) return { ...EMPTY, loading: Boolean(sessionId), retry };
   return { ...snapshot, retry };
 }

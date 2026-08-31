@@ -57,7 +57,7 @@ export * from './user-question-prompt.js';
 export * from './user-question-prompt-state.js';
 export * from './redact.js';
 export * from './thinking-stream.js';
-export * from './task-ledger-panel.js';
+export * from './session-todo-panel.js';
 export * from './toast.js';
 export * from './tool-output-stream.js';
 export * from './ui.js';

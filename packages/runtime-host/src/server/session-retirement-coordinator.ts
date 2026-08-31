@@ -31,7 +31,7 @@ import {
   type SessionHeaderSnapshot,
 } from '@maka/storage/execution-stores';
 import { type SessionManager } from '@maka/runtime/session-manager';
-import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
+import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
 import {
   type OperationOutcome,
   type SessionCatalogItem,
@@ -120,7 +120,7 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly capabilities: RetirementCapabilities;
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
-  readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
+  readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
   readonly assertNoContextOffloadReferences?: (sessionIds: readonly string[]) => Promise<void>;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
@@ -191,7 +191,7 @@ export class HostSessionRetirementCoordinator {
   readonly #capabilities: RetirementCapabilities;
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
-  readonly #taskLedger: HostSessionRetirementCoordinatorOptions['taskLedger'];
+  readonly #sessionTodo: HostSessionRetirementCoordinatorOptions['sessionTodo'];
   readonly #assertNoContextOffloadReferences: HostSessionRetirementCoordinatorOptions['assertNoContextOffloadReferences'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
@@ -219,7 +219,7 @@ export class HostSessionRetirementCoordinator {
     this.#capabilities = options.capabilities;
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
-    this.#taskLedger = options.taskLedger;
+    this.#sessionTodo = options.sessionTodo;
     this.#assertNoContextOffloadReferences = options.assertNoContextOffloadReferences;
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
@@ -671,7 +671,7 @@ export class HostSessionRetirementCoordinator {
       purgeSessionSidecars(
         {
           artifacts: this.#artifacts,
-          taskLedger: this.#taskLedger,
+          sessionTodo: this.#sessionTodo,
           purgeOperationalState: this.#purgeOperationalState,
         },
         sessionId,

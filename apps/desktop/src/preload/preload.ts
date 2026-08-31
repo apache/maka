@@ -174,7 +174,7 @@ import type {
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import { createBrowserSelectionCoordinator } from './browser-selection.js';
-import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
   isWebSearchProvider,
@@ -1724,12 +1724,12 @@ const makaBridge = {
       return () => ipcRenderer.off('workBoard:changed', listener);
     },
   },
-  tasks: {
-    list(sessionId: string): Promise<Task[]> {
-      return invokeProjectedSessionRuntimeHost('tasks:list', sessionId);
+  todo: {
+    read(sessionId: string): Promise<SessionTodoItem[]> {
+      return invokeProjectedSessionRuntimeHost('todo:read', sessionId);
     },
-    subscribeChanges(handler: (event: TaskLedgerChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('tasks:changed', (scope, event: TaskLedgerChangedEvent) =>
+    subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void {
+      return subscribeEveryRuntimeHostEvent('todo:changed', (scope, event: { sessionId: string; at: number }) =>
         handler({
           ...event,
           sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),

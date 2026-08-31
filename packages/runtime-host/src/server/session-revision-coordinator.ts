@@ -58,9 +58,9 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import {
-  authenticateInteractiveTaskLedgerWriter,
-  type InteractiveTaskLedgerWriter,
-} from '@maka/storage/task-ledger-authority';
+  authenticateInteractiveSessionTodoWriter,
+  type InteractiveSessionTodoWriter,
+} from '@maka/storage/session-todo-authority';
 import type {
   OperationOutcome,
   SessionConversationCopyInput,
@@ -105,7 +105,7 @@ type ConversationCopyCreateInput = CreateSessionInput & {
 export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
-  readonly taskLedger: InteractiveTaskLedgerWriter;
+  readonly sessionTodo: InteractiveSessionTodoWriter;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
@@ -127,12 +127,12 @@ export class HostSessionRevisionCoordinator {
 
   readonly #stores: ExecutionStoresWriter<'interactive'>;
   readonly #artifacts: InteractiveArtifactStoreWriter;
-  readonly #taskLedger: InteractiveTaskLedgerWriter;
+  readonly #sessionTodo: InteractiveSessionTodoWriter;
 
   constructor(private readonly options: HostSessionRevisionCoordinatorOptions) {
     this.#stores = authenticateExecutionStoresWriter(options.stores, 'interactive');
     this.#artifacts = authenticateInteractiveArtifactStoreWriter(options.artifacts);
-    this.#taskLedger = authenticateInteractiveTaskLedgerWriter(options.taskLedger);
+    this.#sessionTodo = authenticateInteractiveSessionTodoWriter(options.sessionTodo);
   }
 
   async recover(): Promise<void> {
@@ -550,13 +550,10 @@ export class HostSessionRevisionCoordinator {
         newId: randomUUID,
       });
       const copiedMessages = runtimeCopy.copiedMessages;
-      await this.#taskLedger.copyConversationTaskLedger({
+      await this.#sessionTodo.initializeCopy({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
-        turnIds: copyTurnIds,
-        ...(slice.beforeTs === undefined ? {} : { beforeTs: slice.beforeTs }),
-        runIdMap: runtimeCopy.runIdMap,
-        ...(kind === 'side_conversation' ? { linkedChildren: 'snapshot' as const } : {}),
+        copyCurrent: kind === 'branch' && slice.beforeTs === undefined,
       });
       if (copiedMessages.length > 0) {
         await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
@@ -821,7 +818,7 @@ export class HostSessionRevisionCoordinator {
     await purgeSessionSidecars(
       {
         artifacts: this.#artifacts,
-        taskLedger: this.#taskLedger,
+        sessionTodo: this.#sessionTodo,
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
       },
