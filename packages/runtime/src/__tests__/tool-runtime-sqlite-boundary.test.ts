@@ -515,10 +515,17 @@ describe('ToolRuntime with real SQLite boundary', () => {
 
   it('does not repeat tool or projection side effects after an atomic T2 failure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-tool-sqlite-t2-retry-'));
-    let failpoint: SqliteRuntimeStoreFailpoint | undefined = 'after_runtime_event_insert';
+    let runtimeEventInsertions = 0;
+    let failT2 = true;
     const store = createSqliteRuntimeStore(join(root, 'runtime.sqlite'), {
       failpoint: (point) => {
-        if (point === failpoint) throw new Error(`sqlite runtime failpoint: ${point}`);
+        if (
+          point === ('after_runtime_event_insert' satisfies SqliteRuntimeStoreFailpoint) &&
+          failT2 &&
+          ++runtimeEventInsertions === 2
+        ) {
+          throw new Error(`sqlite runtime failpoint: ${point}`);
+        }
       },
     });
     try {
@@ -582,20 +589,22 @@ describe('ToolRuntime with real SQLite boundary', () => {
         });
 
       await assert.rejects(settle(), /sqlite runtime failpoint: after_runtime_event_insert/u);
-      failpoint = undefined;
-      await settle();
+      assert.equal(implementationCalls, 1);
+      assert.equal(artifactWrites, 1);
+      failT2 = false;
+      await assert.rejects(settle(), /duplicate_event_id/u);
 
       assert.equal(implementationCalls, 1);
       assert.equal(artifactWrites, 1);
-      assert.equal(published.filter((event) => event.type === 'tool_result').length, 1);
+      assert.equal(published.filter((event) => event.type === 'tool_result').length, 0);
       const events = await store.readRuntimeEvents('session-1', 'run-1');
       assert.deepEqual(
         events.map((event) => event.content?.kind),
-        ['function_call', undefined, 'function_response'],
+        ['function_call', undefined],
       );
       const operationId = events[0]?.refs?.operationId;
       assert.ok(operationId);
-      assert.equal((await store.readToolOperation(operationId))?.currentState, 'outcome_committed');
+      assert.equal((await store.readToolOperation(operationId))?.currentState, 'prepared');
     } finally {
       store.close();
       await rm(root, { recursive: true, force: true });
