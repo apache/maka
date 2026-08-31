@@ -121,6 +121,34 @@ test('does not compare across provider execution identities', async () => {
   );
 });
 
+test('does not compare attempts whose connection identity is missing', async () => {
+  const previous = attempt({ attemptId: 'previous', runId: 'run-1', turnId: 'turn-1' });
+  const current = attempt({
+    attemptId: 'current',
+    runId: 'run-2',
+    turnId: 'turn-2',
+    connectionSlug: undefined,
+  });
+  previous.connectionSlug = undefined;
+
+  assert.equal(
+    (
+      await deriveAttemptSemanticPrefixContinuity({
+        current,
+        currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
+        lineage: {},
+        store: prefixStore(
+          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+          [previous],
+          { runId: 'run-2', previousRootTurnId: 'turn-1' },
+        ),
+      })
+    ).status,
+    'unavailable',
+  );
+});
+
 test('does not choose between overlapping durable predecessor runs', async () => {
   const current = attempt({ attemptId: 'current', runId: 'run-3', turnId: 'turn-2' });
   const headers = [
@@ -147,6 +175,57 @@ test('does not choose between overlapping durable predecessor runs', async () =>
       })
     ).status,
     'unavailable',
+  );
+});
+
+test('uses the unique continuation tip for the previous root turn', async () => {
+  const previous = attempt({ attemptId: 'continued', runId: 'run-2', turnId: 'turn-1' });
+  const current = attempt({ attemptId: 'current', runId: 'run-3', turnId: 'turn-2' });
+
+  assert.equal(
+    (
+      await deriveAttemptSemanticPrefixContinuity({
+        current,
+        currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
+        lineage: {},
+        store: prefixStore(
+          [
+            run('run-1', 'turn-1', PROVIDER_STATE),
+            run('run-2', 'turn-1', PROVIDER_STATE, {
+              parentRunId: 'run-1',
+              continuationSource: continuationSource('run-1'),
+            }),
+            run('run-3', 'turn-2', PROVIDER_STATE),
+          ],
+          [previous],
+          { runId: 'run-3', previousRootTurnId: 'turn-1' },
+        ),
+      })
+    ).status,
+    'preserved',
+  );
+});
+
+test('compares later local turns without inheriting a copied session baseline', async () => {
+  const previous = attempt({ attemptId: 'local-1', runId: 'run-1', turnId: 'turn-1' });
+  const current = attempt({ attemptId: 'local-2', runId: 'run-2', turnId: 'turn-2' });
+
+  assert.equal(
+    (
+      await deriveAttemptSemanticPrefixContinuity({
+        current,
+        currentProviderStateIdentity: PROVIDER_STATE,
+        currentSessionInline: true,
+        lineage: {},
+        store: prefixStore(
+          [run('run-1', 'turn-1', PROVIDER_STATE), run('run-2', 'turn-2', PROVIDER_STATE)],
+          [previous],
+          { runId: 'run-2', previousRootTurnId: 'turn-1' },
+        ),
+      })
+    ).status,
+    'preserved',
   );
 });
 
@@ -224,6 +303,7 @@ function run(
   runId: string,
   turnId: string,
   providerStateIdentity: `sha256:${string}`,
+  overrides: Partial<AgentRunHeader> = {},
 ): AgentRunHeader {
   return {
     runId,
@@ -238,6 +318,18 @@ function run(
     permissionMode: 'ask',
     createdAt: 1,
     updatedAt: 2,
+    ...overrides,
+  };
+}
+
+function continuationSource(
+  sourceRunId: string,
+): NonNullable<AgentRunHeader['continuationSource']> {
+  return {
+    sourceInvocationId: sourceRunId,
+    sourceRunId,
+    sourceTurnId: 'turn-1',
+    sourceRuntimeEventHighWater: 1,
   };
 }
 

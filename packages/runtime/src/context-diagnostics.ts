@@ -21,6 +21,7 @@ import {
   isSessionInlineRun,
   supersedesLatestContext,
   type AgentRunEvent,
+  type AgentRunHeader,
   type AgentRunStore,
 } from '@maka/core/agent-run';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
@@ -39,7 +40,10 @@ import {
   validateHistoryCompactCheckpointShape,
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
-import type { SemanticPrefixContinuity } from './semantic-prefix-continuity.js';
+import {
+  deriveAttemptSemanticPrefixContinuity,
+  type SemanticPrefixContinuity,
+} from './semantic-prefix-continuity.js';
 
 export type ContextDiagnosticsUnavailableReason = 'no_completed_request' | 'trace_unavailable';
 
@@ -120,7 +124,12 @@ type ContextRunStore = Pick<
   | 'readEventProjection'
   | 'readEventLedgerRevision'
   | 'repairEventProjection'
->;
+> & {
+  readRootTurnAdmission?(
+    sessionId: string,
+    turnId: string,
+  ): Promise<{ runId: string; previousRootTurnId?: string | null } | undefined>;
+};
 
 /**
  * What the session's context is made of right now (#1580, reshaped for #2323).
@@ -214,7 +223,7 @@ async function rebuildContextFromLedger(
     for (const event of await runStore.readEvents(sessionId, run.runId)) {
       if (event.type === METERING_EVENT_TYPE) {
         sawCanonicalRecord = true;
-        const candidate = meteringAnchor(event);
+        const candidate = meteringAnchor(event, run);
         if (candidate && supersedesLatestContext(candidate, anchor)) anchor = candidate;
         continue;
       }
@@ -250,6 +259,16 @@ async function rebuildContextFromLedger(
     (anchor && !anchor.hasRequestObservation
       ? exactHistoricalComposition(anchor, historicalAttempts)
       : undefined);
+  const requestPrefix =
+    anchor?.attempt && anchor.run
+      ? await deriveAttemptSemanticPrefixContinuity({
+          current: anchor.attempt,
+          currentProviderStateIdentity: anchor.run.providerStateIdentity,
+          currentSessionInline: true,
+          lineage: anchor.run,
+          store: runStore,
+        })
+      : undefined;
   const snapshot: LatestContextSnapshot = {
     schemaVersion: LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     attemptId: resolved.attemptId,
@@ -263,6 +282,7 @@ async function rebuildContextFromLedger(
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
     ...(composition ? { composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
+    ...(requestPrefix ? { requestPrefix } : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
@@ -379,6 +399,8 @@ interface MeteringAnchor {
   contextWindow?: number;
   composition?: ContextDiagnosticsComposition;
   hasRequestObservation: boolean;
+  attempt?: ModelCallAttempt;
+  run?: AgentRunHeader;
 }
 
 interface CheckpointCandidate {
@@ -388,7 +410,7 @@ interface CheckpointCandidate {
 }
 
 /** Only a completed MAIN call describes the conversation's own context. */
-function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
+function meteringAnchor(event: AgentRunEvent, run: AgentRunHeader): MeteringAnchor | undefined {
   let attempt: ModelCallAttempt;
   try {
     attempt = decodeModelCallAttempt(event.data);
@@ -407,6 +429,8 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     startedAt: attempt.startedAt,
     completedAt: attempt.completedAt,
     hasRequestObservation: attempt.requestObservation !== undefined,
+    attempt,
+    run,
     ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
     ...(attempt.cacheReadInputTokens !== undefined
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }

@@ -68,6 +68,24 @@ test('rejects v2 snapshots that the canonical writer cannot produce', () => {
         estimatedTokens: 10,
       },
     },
+    {
+      ...base,
+      requestPrefix: {
+        status: 'diverged',
+        previousSegmentCount: 1,
+        preservedSegmentCount: 0,
+        firstDivergentSegment: { kind: 'message', index: 0, role: {} },
+      },
+    },
+    {
+      ...base,
+      requestPrefix: {
+        status: 'preserved',
+        previousSegmentCount: 1,
+        preservedSegmentCount: 1,
+        unexpected: true,
+      },
+    },
   ];
 
   for (const snapshot of impossible) {

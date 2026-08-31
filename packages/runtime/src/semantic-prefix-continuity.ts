@@ -62,7 +62,6 @@ interface AttemptContinuityInput {
   currentProviderStateIdentity?: `sha256:${string}`;
   currentSessionInline: boolean;
   lineage: {
-    conversationCopy?: boolean;
     parentRunId?: string;
     parentTurnId?: string;
     retriedFromTurnId?: string;
@@ -190,7 +189,6 @@ async function predecessorAttempt(
     return parent ? latestAttempt(parent, await attemptsFor(store, parent)) : undefined;
   }
   if (
-    lineage.conversationCopy ||
     lineage.parentSessionId ||
     lineage.parentTurnId ||
     lineage.retriedFromTurnId ||
@@ -215,8 +213,30 @@ async function predecessorAttempt(
   const previousRuns = runs.filter(
     (run) => run.turnId === admission.previousRootTurnId && isSessionInlineRun(run),
   );
-  if (previousRuns.length !== 1) return undefined;
-  return latestAttempt(previousRuns[0]!, await attemptsFor(store, previousRuns[0]!));
+  const previous = uniqueDurableRunTip(previousRuns);
+  return previous ? latestAttempt(previous, await attemptsFor(store, previous)) : undefined;
+}
+
+function uniqueDurableRunTip(runs: readonly AgentRunHeader[]): AgentRunHeader | undefined {
+  const byId = new Map(runs.map((run) => [run.runId, run]));
+  if (byId.size !== runs.length) return undefined;
+  const childByParent = new Map<string, string>();
+  for (const run of runs) {
+    if (!run.parentRunId || !byId.has(run.parentRunId)) continue;
+    if (childByParent.has(run.parentRunId)) return undefined;
+    childByParent.set(run.parentRunId, run.runId);
+  }
+  const tips = runs.filter((run) => !childByParent.has(run.runId));
+  if (tips.length !== 1) return undefined;
+
+  const visited = new Set<string>();
+  let cursor: AgentRunHeader | undefined = tips[0];
+  while (cursor) {
+    if (visited.has(cursor.runId)) return undefined;
+    visited.add(cursor.runId);
+    cursor = cursor.parentRunId ? byId.get(cursor.parentRunId) : undefined;
+  }
+  return visited.size === runs.length ? tips[0] : undefined;
 }
 
 async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<ModelCallAttempt[]> {
@@ -276,6 +296,7 @@ function sameDomain(
     input.currentProviderStateIdentity !== undefined &&
     input.currentProviderStateIdentity === previous.run.providerStateIdentity &&
     current.sessionId === before.sessionId &&
+    current.connectionSlug !== undefined &&
     current.connectionSlug === before.connectionSlug &&
     current.providerId === before.providerId &&
     current.modelId === before.modelId &&
@@ -296,32 +317,70 @@ function unavailable(): SemanticPrefixContinuity {
 
 export function isSemanticPrefixContinuity(value: unknown): value is SemanticPrefixContinuity {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<SemanticPrefixContinuity>;
+  const candidate = value as {
+    status?: unknown;
+    previousSegmentCount?: unknown;
+    preservedSegmentCount?: unknown;
+    firstDivergentSegment?: unknown;
+  };
   if (
+    !hasOnlyKeys(candidate, [
+      'status',
+      'previousSegmentCount',
+      'preservedSegmentCount',
+      'firstDivergentSegment',
+    ])
+  ) {
+    return false;
+  }
+  if (
+    typeof candidate.previousSegmentCount !== 'number' ||
+    typeof candidate.preservedSegmentCount !== 'number' ||
     !Number.isSafeInteger(candidate.previousSegmentCount) ||
     !Number.isSafeInteger(candidate.preservedSegmentCount) ||
-    candidate.previousSegmentCount! < 0 ||
-    candidate.preservedSegmentCount! < 0 ||
-    candidate.preservedSegmentCount! > candidate.previousSegmentCount!
+    candidate.previousSegmentCount < 0 ||
+    candidate.preservedSegmentCount < 0 ||
+    candidate.preservedSegmentCount > candidate.previousSegmentCount
   ) {
     return false;
   }
   if (candidate.status === 'no_predecessor' || candidate.status === 'unavailable') {
-    return candidate.previousSegmentCount === 0 && candidate.preservedSegmentCount === 0;
+    return (
+      candidate.firstDivergentSegment === undefined &&
+      candidate.previousSegmentCount === 0 &&
+      candidate.preservedSegmentCount === 0
+    );
   }
   if (candidate.status === 'preserved') {
-    return candidate.preservedSegmentCount === candidate.previousSegmentCount;
+    return (
+      candidate.firstDivergentSegment === undefined &&
+      candidate.preservedSegmentCount === candidate.previousSegmentCount
+    );
   }
-  if (candidate.status === 'unknown') return true;
+  if (candidate.status === 'unknown') return candidate.firstDivergentSegment === undefined;
   if (candidate.status !== 'diverged') return false;
-  const segment = candidate.firstDivergentSegment;
+  const segment = candidate.firstDivergentSegment as
+    | { kind?: unknown; index?: unknown; role?: unknown; label?: unknown }
+    | undefined;
   return Boolean(
     segment &&
+      hasOnlyKeys(segment, ['kind', 'index', 'role', 'label']) &&
       (segment.kind === 'tool_schema' ||
         segment.kind === 'system_prompt' ||
         segment.kind === 'message' ||
         segment.kind === 'provider_options') &&
+      typeof segment.index === 'number' &&
       Number.isSafeInteger(segment.index) &&
-      segment.index >= 0,
+      segment.index >= 0 &&
+      (segment.role === undefined || isBoundedText(segment.role)) &&
+      (segment.label === undefined || isBoundedText(segment.label)),
   );
+}
+
+function hasOnlyKeys(value: object, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isBoundedText(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 256;
 }

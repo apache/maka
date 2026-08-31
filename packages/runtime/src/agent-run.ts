@@ -483,10 +483,7 @@ export class AgentRun {
           current: attempt,
           currentProviderStateIdentity: this.providerStateIdentity,
           currentSessionInline: this.isSessionInline(),
-          lineage: {
-            ...this.lineage,
-            ...(this.header.conversationCopy ? { conversationCopy: true } : {}),
-          },
+          lineage: this.lineage,
           store: runStore,
         }).catch(() => ({
           status: 'unavailable' as const,

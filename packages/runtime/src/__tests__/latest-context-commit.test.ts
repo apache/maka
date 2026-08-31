@@ -200,6 +200,8 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
           },
           repairEventProjection: (sessionId, type, event, options) =>
             reopened.repairEventProjection(sessionId, type, event, options),
+          readRootTurnAdmission: (sessionId, turnId) =>
+            reopened.readRootTurnAdmission(sessionId, turnId),
         },
         session.id,
       );
@@ -208,7 +210,7 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
       assert.equal(cold.status, 'available');
       if (cold.status !== 'available') return;
       assert.deepEqual(cold.composition, successor.composition);
-      assert.equal(cold.requestPrefix, undefined);
+      assert.deepEqual(cold.requestPrefix, successor.requestPrefix);
     } finally {
       reopened.close?.();
     }
