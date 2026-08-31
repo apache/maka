@@ -61,7 +61,6 @@ import {
   buildSubagentSpawnTool,
 } from '../subagent-tools.js';
 import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
-import { expect } from '../test-helpers.js';
 
 describe('subagent tools', () => {
   test('parent-facing agent tools declare permission hints and names', () => {
@@ -168,8 +167,12 @@ describe('subagent tools', () => {
 
     const parsed = schema.safeParse({ task: 'Inspect the repo.' });
     assert.strictEqual(parsed.success, false);
-    expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
-      'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, or pass one legacy profile: local_read, web_research.',
+    assert.ok(
+      parsed.error?.issues
+        .map((issue) => issue.message)
+        .includes(
+          'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, or pass one legacy profile: local_read, web_research.',
+        ),
     );
   });
 
@@ -482,8 +485,8 @@ describe('subagent tools', () => {
       { stream: 'stdout', chunk: 'Child tool finished: Read file\n' },
       { stream: 'stdout', chunk: 'Child agent Local Read: completed\n' },
     ]);
-    expect(JSON.stringify(output)).not.toContain('secret.txt');
-    expect(JSON.stringify(output)).not.toContain('secret body');
+    assert.ok(!JSON.stringify(output).includes('secret.txt'));
+    assert.ok(!JSON.stringify(output).includes('secret body'));
     assert.deepStrictEqual(result, {
       kind: 'subagent',
       childSessionId: 'child-session',
@@ -688,7 +691,11 @@ describe('subagent tools', () => {
       runId: 'child-run',
       turnId: 'child-turn',
     });
-    expect(result).toMatchObject({ kind: 'subagent', runId: 'child-run', status: 'completed' });
+    assert.partialDeepStrictEqual(result, {
+      kind: 'subagent',
+      runId: 'child-run',
+      status: 'completed',
+    });
   });
 
   test('agent_spawn rejects a forged task reference before starting a child', async () => {
@@ -782,7 +789,7 @@ describe('subagent tools', () => {
         runId: `run-${status}`,
         turnId: `child-${status}`,
       });
-      expect(result).toMatchObject({ kind: 'subagent', status, runId: `run-${status}` });
+      assert.partialDeepStrictEqual(result, { kind: 'subagent', status, runId: `run-${status}` });
     }
   });
 
@@ -1009,7 +1016,7 @@ describe('subagent tools', () => {
       },
     );
     assert.strictEqual(calls.length, 1);
-    expect(calls[0]).toMatchObject({
+    assert.partialDeepStrictEqual(calls[0], {
       agentProfile: IMPLEMENTATION_AGENT_PROFILE,
       prompt: 'Edit files.',
     });
@@ -1192,7 +1199,7 @@ describe('subagent tools', () => {
 
     const diagnosticTail = await call({ view: 'catalog', cursor: '8' });
     assert.deepStrictEqual(diagnosticTail.page, { returned: 3, total: 11 });
-    expect((diagnosticTail.presets as Array<Record<string, unknown>>)[2]).toMatchObject({
+    assert.partialDeepStrictEqual((diagnosticTail.presets as Array<Record<string, unknown>>)[2], {
       subagent_id: 'reader-10',
       status: 'unavailable',
       reason: 'connection_disabled',

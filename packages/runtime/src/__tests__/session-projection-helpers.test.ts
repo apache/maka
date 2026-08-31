@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
 import type { StoredMessage } from '@maka/core/session';
 import {
   buildStatusPatch,
@@ -78,7 +77,7 @@ describe('session projection helpers', () => {
       },
     );
 
-    expect(
+    assert.partialDeepStrictEqual(
       buildTurnStateMessage({
         id: 'state-2',
         turnId: 'turn-2',
@@ -86,15 +85,16 @@ describe('session projection helpers', () => {
         status: 'failed',
         partialOutputRetained: false,
       }),
-    ).toMatchObject({
-      type: 'turn_state',
-      id: 'state-2',
-      turnId: 'turn-2',
-      ts: 101,
-      status: 'failed',
-      errorClass: 'unknown',
-      partialOutputRetained: false,
-    });
+      {
+        type: 'turn_state',
+        id: 'state-2',
+        turnId: 'turn-2',
+        ts: 101,
+        status: 'failed',
+        errorClass: 'unknown',
+        partialOutputRetained: false,
+      },
+    );
   });
 
   test('turnHasRetainedOutput only treats visible assistant text and tool results as retained output', () => {

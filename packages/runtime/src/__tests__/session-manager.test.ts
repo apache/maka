@@ -74,7 +74,6 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
 import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
-import { expect } from '../test-helpers.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import type { LanguageModelV4StreamPart } from '@ai-sdk/provider';
@@ -1275,24 +1274,25 @@ describe('SessionManager claimed graph intent execution', () => {
     assert.strictEqual(result.status, 'completed');
     assert.strictEqual(trustedReads, 1);
     assert.strictEqual(executions.length, 1);
-    expect(executions[0]).toMatchObject({
+    assert.partialDeepStrictEqual(executions[0], {
       sessionId: child.id,
       turnId: claim.targetTurnId,
       runId: claim.targetRunId,
       userMessageId: 'id-1',
-      execution: {
-        kind: 'claimed_agent_graph_intent',
-        claim,
-        agentId: LOCAL_READ_AGENT_ID,
-        agentName: LOCAL_READ_AGENT_DEFINITION.name,
-      },
-      content: { text: prompt },
     });
-    expect(
+    assert.deepStrictEqual((executions[0] as { execution?: unknown }).execution, {
+      kind: 'claimed_agent_graph_intent',
+      claim,
+      agentId: LOCAL_READ_AGENT_ID,
+      agentName: LOCAL_READ_AGENT_DEFINITION.name,
+    });
+    assert.deepStrictEqual((executions[0] as { content?: unknown }).content, { text: prompt });
+    assert.partialDeepStrictEqual(
       (await store.readMessages(child.id)).find(
         (message) => message.type === 'user' && message.turnId === claim.targetTurnId,
       ),
-    ).toMatchObject({ id: 'id-1', text: prompt });
+      { id: 'id-1', text: prompt },
+    );
   });
 
   test('hosted execution rejects prompt drift from the durable graph claim before admission', async () => {
@@ -1437,14 +1437,15 @@ describe('SessionManager claimed graph intent execution', () => {
 
     assert.strictEqual(result.status, 'completed');
     assert.strictEqual(newIdCallsAtExecution, 0);
-    expect(
+    assert.partialDeepStrictEqual(
       (await store.readMessages(child.id)).find(
         (message) => message.type === 'user' && message.turnId === claim.targetTurnId,
       ),
-    ).toMatchObject({
-      id: 'durable-graph-user-message',
-      text: 'resume admitted graph root',
-    });
+      {
+        id: 'durable-graph-user-message',
+        text: 'resume admitted graph root',
+      },
+    );
   });
 
   test('hosted retry rejects an existing Run without its durable RootTurn admission', async () => {
@@ -1604,7 +1605,7 @@ describe('SessionManager claimed graph intent execution', () => {
     });
 
     const run = await runStore.readRun(child.id, claim.targetRunId);
-    expect(run).toMatchObject({
+    assert.partialDeepStrictEqual(run, {
       status: 'failed',
       failureClass: 'app_restarted',
       agentId: LOCAL_READ_AGENT_ID,
@@ -1617,7 +1618,7 @@ describe('SessionManager claimed graph intent execution', () => {
       (event) => event.status === 'failed',
     );
     assert.strictEqual(terminalEvents.length, 1);
-    expect(terminalEvents[0]?.actions?.stateDelta).toMatchObject({
+    assert.partialDeepStrictEqual(terminalEvents[0]?.actions?.stateDelta, {
       recovered: true,
       recoveryReason: 'child_internal_admission_without_run',
       executionKind: 'claimed_agent_graph_intent',
@@ -1664,7 +1665,7 @@ describe('SessionManager claimed graph intent execution', () => {
       },
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       claimId: claim.claimId,
       graphId: claim.graphId,
       intentId: claim.intentId,
@@ -1693,17 +1694,18 @@ describe('SessionManager claimed graph intent execution', () => {
     assert.strictEqual(isSessionInlineRun(run), true);
     assert.strictEqual(run.parentRunId, undefined);
     assert.strictEqual(run.turnId, 'graph-turn');
-    expect(
+    assert.partialDeepStrictEqual(
       (await store.readMessages(child.id)).find(
         (message) => message.type === 'user' && message.turnId === 'graph-turn',
       ),
-    ).toMatchObject({ text: 'summarize the routed records' });
+      { text: 'summarize the routed records' },
+    );
 
     await store.updateHeader(child.id, { isArchived: true });
     const retry = await manager.runClaimedAgentGraphIntent({
       ...graphExecutionInput(claim, 'summarize the routed records'),
     });
-    expect(retry).toMatchObject({
+    assert.partialDeepStrictEqual(retry, {
       claimId: result.claimId,
       childSessionId: result.childSessionId,
       turnId: result.turnId,
@@ -4479,9 +4481,9 @@ describe('SessionManager permission mode updates', () => {
       ],
     );
     const firstEvents = await runStore.readEvents(session.id, finalRuns[0]!.runId);
-    expect(firstEvents.map((event) => event.type)).toContain('run_created');
-    expect(firstEvents.map((event) => event.type)).toContain('run_started');
-    expect(firstEvents.map((event) => event.type)).toContain('run_completed');
+    assert.ok(firstEvents.map((event) => event.type).includes('run_created'));
+    assert.ok(firstEvents.map((event) => event.type).includes('run_started'));
+    assert.ok(firstEvents.map((event) => event.type).includes('run_completed'));
 
     const summary = await manager.setPermissionMode(session.id, 'bypass');
     assert.strictEqual(summary.permissionMode, 'bypass');
@@ -5114,10 +5116,11 @@ describe('SessionManager permission mode updates', () => {
     );
 
     assert.strictEqual(providerSteps, 1);
-    expect(
+    assert.partialDeepStrictEqual(
       events.find((event) => event.type === 'token_usage' && event.runtimeSteps !== undefined),
-    ).toMatchObject({ type: 'token_usage', runtimeSteps: 1 });
-    expect(events.at(-1)).toMatchObject({ type: 'complete', stopReason: 'step_limit' });
+      { type: 'token_usage', runtimeSteps: 1 },
+    );
+    assert.partialDeepStrictEqual(events.at(-1), { type: 'complete', stopReason: 'step_limit' });
   });
 
   test('executes an approved continuation after a path move without another user message', async () => {
@@ -5227,7 +5230,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(continuationRun.parentTurnId, sourceTurnId);
     assert.strictEqual(continuationRun.cwd, movedCwd);
     assert.strictEqual(continuationRun.status, 'completed');
-    expect(continuationRun).toMatchObject({
+    assert.partialDeepStrictEqual(continuationRun, {
       orchestrationMode: 'swarm',
       orchestrationSource: 'turn_override',
       agentSwarmAuthorization: 'turn_override',
@@ -5238,11 +5241,18 @@ describe('SessionManager permission mode updates', () => {
       session.id,
       plan.continuation.runId,
     );
-    expect(continuationEvents[0]?.actions?.continuationStart).toMatchObject({
+    assert.partialDeepStrictEqual(continuationEvents[0]?.actions?.continuationStart, {
       protocol: 'continuation_start_v2',
       claimId: plan.continuation.claimId,
       boundaryDigest: plan.continuation.boundary?.manifestDigest,
-      immediateSource: {
+      replayManifestDigest: plan.continuation.boundary?.manifestDigest,
+      providerProjectionVersion: 1,
+      providerReplayDigest: plan.continuation.providerReplayDigest,
+    });
+    assert.deepStrictEqual(
+      (continuationEvents[0]?.actions?.continuationStart as Record<string, unknown> | undefined)
+        ?.immediateSource,
+      {
         sessionId: session.id,
         invocationId: sourceInvocationId,
         runId: sourceRunId,
@@ -5250,10 +5260,7 @@ describe('SessionManager permission mode updates', () => {
         highWater: sourceEvents.length,
         prefixDigest: plan.continuation.boundary?.segments.at(-1)?.prefixDigest,
       },
-      replayManifestDigest: plan.continuation.boundary?.manifestDigest,
-      providerProjectionVersion: 1,
-      providerReplayDigest: plan.continuation.providerReplayDigest,
-    });
+    );
     assert.deepStrictEqual(continuationEvents[0]?.actions?.runtimeProtocol, {
       toolBoundary: 't1_after_preflight_v1',
     });
@@ -5380,19 +5387,20 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(store.disposeCount, 1);
 
     const cachedMessages = await store.readMessages(session.id);
-    expect(
+    assert.partialDeepStrictEqual(
       cachedMessages
         .filter(
           (message) =>
             message.type === 'turn_state' && message.turnId === plan.continuation?.turnId,
         )
         .at(-1),
-    ).toMatchObject({
-      type: 'turn_state',
-      status: 'aborted',
-      abortSource: 'renderer.stop_button',
-      parentTurnId: sourceTurnId,
-    });
+      {
+        type: 'turn_state',
+        status: 'aborted',
+        abortSource: 'renderer.stop_button',
+        parentTurnId: sourceTurnId,
+      },
+    );
   });
 
   test('parks repeated planning after the source run already produced a continuation', async () => {
@@ -5946,7 +5954,7 @@ describe('SessionManager permission mode updates', () => {
       plan.continuation.claimId,
     );
     assert.strictEqual(recoveredEvents.filter(isTerminalRuntimeEvent).length, 1);
-    expect(recoveredEvents.at(-1)?.actions?.stateDelta).toMatchObject({
+    assert.partialDeepStrictEqual(recoveredEvents.at(-1)?.actions?.stateDelta, {
       recovered: true,
       recoveryReason: 'continuation_abandoned_before_provider_dispatch',
       failureClass: 'continuation_abandoned_before_provider_dispatch',
@@ -6309,7 +6317,7 @@ describe('SessionManager permission mode updates', () => {
     await expectRejects(runStore.readRun(session.id, plan.continuation.runId), /unknown run/i);
     assert.strictEqual(backendCalls, 0);
 
-    expect(await manager.recoverInterruptedSessions()).not.toContain(session.id);
+    assert.ok(!(await manager.recoverInterruptedSessions()).includes(session.id));
     const durableRepairEvents = await runStore.readRuntimeEvents(
       session.id,
       plan.continuation.runId,
@@ -6321,7 +6329,7 @@ describe('SessionManager permission mode updates', () => {
       'created',
     );
 
-    expect(await manager.recoverInterruptedSessions()).toContain(session.id);
+    assert.ok((await manager.recoverInterruptedSessions()).includes(session.id));
     const repairedRun = await runStore.readRun(session.id, plan.continuation.runId);
     assert.strictEqual(repairedRun.status, 'failed');
     assert.strictEqual(repairedRun.failureClass, 'continuation_abandoned_before_provider_dispatch');
@@ -7722,17 +7730,18 @@ describe('SessionManager permission mode updates', () => {
     await manager.getMessages(session.id);
 
     const cachedMessages = await store.readMessages(session.id);
-    expect(
+    assert.partialDeepStrictEqual(
       cachedMessages.find(
         (message) => message.type === 'turn_state' && message.turnId === 'repair-continuation-turn',
       ),
-    ).toMatchObject({
-      type: 'turn_state',
-      status: 'failed',
-      errorClass: 'missing_terminal_event',
-      parentTurnId: sourceTurnId,
-      partialOutputRetained: false,
-    });
+      {
+        type: 'turn_state',
+        status: 'failed',
+        errorClass: 'missing_terminal_event',
+        parentTurnId: sourceTurnId,
+        partialOutputRetained: false,
+      },
+    );
   });
 
   test('getMessages can retry repair when the failed header update is interrupted', async () => {
@@ -8173,8 +8182,8 @@ describe('SessionManager permission mode updates', () => {
       message.type === 'assistant' ? [message.text] : [],
     );
 
-    expect(assistantTexts).toContain('the resumed article');
-    expect(assistantTexts).not.toContain('private child output');
+    assert.ok(assistantTexts.includes('the resumed article'));
+    assert.ok(!assistantTexts.some((text) => text.includes('private child output')));
     assert.strictEqual(
       messages.some((message) => message.id === 'continuation-start'),
       false,
@@ -8353,18 +8362,19 @@ describe('SessionManager permission mode updates', () => {
       },
     });
 
-    expect(
+    assert.partialDeepStrictEqual(
       (await manager.getMessages(session.id)).find(
         (message) => message.type === 'permission_decision',
       ),
-    ).toMatchObject({
-      type: 'permission_decision',
-      id: 'request-canonical',
-      turnId: header.turnId,
-      toolUseId: 'tool-canonical',
-      decision: 'allow',
-      reviewer: 'auto_review',
-    });
+      {
+        type: 'permission_decision',
+        id: 'request-canonical',
+        turnId: header.turnId,
+        toolUseId: 'tool-canonical',
+        decision: 'allow',
+        reviewer: 'auto_review',
+      },
+    );
   });
 
   test('the in-flight overlay keeps a pending sandbox boundary request visible in the view', async () => {
@@ -8810,29 +8820,29 @@ describe('SessionManager permission mode updates', () => {
     });
 
     const childMessages = await store.readMessages(child.id);
-    expect(childMessages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(childMessages[0], {
       type: 'user',
       turnId: 'source',
       text: 'runtime branch context',
     });
-    expect(childMessages[1]).toMatchObject({
+    assert.partialDeepStrictEqual(childMessages[1], {
       type: 'assistant',
       turnId: 'source',
       text: 'runtime branch answer',
     });
-    expect(childMessages[2]).toMatchObject({ type: 'system_note', kind: 'session_start' });
+    assert.partialDeepStrictEqual(childMessages[2], { type: 'system_note', kind: 'session_start' });
     assert.strictEqual(
       childMessages.some((message) => message.type === 'turn_state'),
       false,
     );
 
     const runtimeMessages = await manager.getMessages(child.id);
-    expect(runtimeMessages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(runtimeMessages[0], {
       type: 'user',
       turnId: 'source',
       text: 'runtime branch context',
     });
-    expect(runtimeMessages[1]).toMatchObject({
+    assert.partialDeepStrictEqual(runtimeMessages[1], {
       type: 'assistant',
       turnId: 'source',
       text: 'runtime branch answer',
@@ -8928,14 +8938,15 @@ describe('SessionManager permission mode updates', () => {
     const childSourceEvents = childSourceRun
       ? await runStore.readRuntimeEvents(child.id, childSourceRun.runId)
       : [];
-    expect(
+    assert.partialDeepStrictEqual(
       childSourceEvents.find((event) => event.actions?.permissionDecision)?.actions
         ?.permissionDecision,
-    ).toMatchObject({
-      requestId: 'request-canonical',
-      toolName: 'Write',
-      decision: 'deny',
-    });
+      {
+        requestId: 'request-canonical',
+        toolName: 'Write',
+        decision: 'deny',
+      },
+    );
     assert.strictEqual(
       childSourceEvents.some((event) => event.actions?.permissionRequest),
       false,
@@ -8946,32 +8957,34 @@ describe('SessionManager permission mode updates', () => {
     );
 
     for (const copiedSession of [child, revision]) {
-      expect(
+      assert.partialDeepStrictEqual(
         (await manager.getMessages(copiedSession.id)).find(
           (message) => message.type === 'permission_decision',
         ),
-      ).toMatchObject({
-        type: 'permission_decision',
-        id: 'request-canonical',
-        turnId: header.turnId,
-        toolUseId: 'tool-canonical',
-        toolName: 'Write',
-        decision: 'deny',
-        reviewer: 'user',
-      });
+        {
+          type: 'permission_decision',
+          id: 'request-canonical',
+          turnId: header.turnId,
+          toolUseId: 'tool-canonical',
+          toolName: 'Write',
+          decision: 'deny',
+          reviewer: 'user',
+        },
+      );
     }
 
     await drain(manager.sendMessage(child.id, { turnId: 'child-next', text: 'continue' }));
-    expect(
+    assert.partialDeepStrictEqual(
       backendInstances
         .find((backend) => backend.sessionId === child.id)
         ?.sendInputs[0]?.context.find((message) => message.type === 'permission_decision'),
-    ).toMatchObject({
-      id: 'request-canonical',
-      toolUseId: 'tool-canonical',
-      toolName: 'Write',
-      decision: 'deny',
-    });
+      {
+        id: 'request-canonical',
+        toolUseId: 'tool-canonical',
+        toolName: 'Write',
+        decision: 'deny',
+      },
+    );
   });
 
   test('branch child next turn receives cloned RuntimeEvent context', async () => {
@@ -9054,8 +9067,10 @@ describe('SessionManager permission mode updates', () => {
     } catch (error) {
       branchError = error;
     }
-    expect(branchError instanceof Error ? branchError.message : String(branchError)).toContain(
-      'runtime event append failed',
+    assert.ok(
+      (branchError instanceof Error ? branchError.message : String(branchError)).includes(
+        'runtime event append failed',
+      ),
     );
 
     const child = (await store.list()).find((summary) => summary.parentSessionId === session.id);
@@ -9128,21 +9143,30 @@ describe('SessionManager permission mode updates', () => {
 
     const turns = await manager.listTurns(session.id);
 
-    expect(turns.find((turn) => turn.turnId === 'retry')).toMatchObject({
-      status: 'completed',
-      parentTurnId: 'root',
-      retriedFromTurnId: 'root',
-    });
-    expect(turns.find((turn) => turn.turnId === 'regen')).toMatchObject({
-      status: 'completed',
-      parentTurnId: 'root',
-      regeneratedFromTurnId: 'root',
-    });
-    expect(turns.find((turn) => turn.turnId === 'branch')).toMatchObject({
-      status: 'completed',
-      parentSessionId: 'parent-session',
-      branchOfTurnId: 'root',
-    });
+    assert.partialDeepStrictEqual(
+      turns.find((turn) => turn.turnId === 'retry'),
+      {
+        status: 'completed',
+        parentTurnId: 'root',
+        retriedFromTurnId: 'root',
+      },
+    );
+    assert.partialDeepStrictEqual(
+      turns.find((turn) => turn.turnId === 'regen'),
+      {
+        status: 'completed',
+        parentTurnId: 'root',
+        regeneratedFromTurnId: 'root',
+      },
+    );
+    assert.partialDeepStrictEqual(
+      turns.find((turn) => turn.turnId === 'branch'),
+      {
+        status: 'completed',
+        parentSessionId: 'parent-session',
+        branchOfTurnId: 'root',
+      },
+    );
   });
 
   test('next turn projects failed prior RuntimeEvents with the terminal fact failure class', async () => {
@@ -10483,7 +10507,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(output.truncated.events, true);
     assert.strictEqual(output.truncated.runtimeEvents, true);
     assert.strictEqual(output.truncated.bytes, true);
-    expect(output.budget).toMatchObject({
+    assert.partialDeepStrictEqual(output.budget, {
       view: 'runtime_events',
       maxBytes: 1024,
     });
@@ -10567,7 +10591,7 @@ describe('SessionManager permission mode updates', () => {
       [Symbol.asyncIterator]();
     assert.strictEqual((await iterator.next()).value?.type, 'sandbox_boundary_request');
     const [activeBoundaryRequest] = await manager.listActiveInteractions(session.id);
-    expect(activeBoundaryRequest).toMatchObject({
+    assert.partialDeepStrictEqual(activeBoundaryRequest, {
       type: 'sandbox_boundary_request',
       requestId: 'boundary-1',
       toolUseId: 'tool-1',
@@ -10871,7 +10895,7 @@ describe('SessionManager permission mode updates', () => {
       (event) => event.actions?.endInvocation,
     );
     assert.strictEqual(terminal?.status, 'failed');
-    expect(terminal?.actions?.stateDelta).toMatchObject({
+    assert.partialDeepStrictEqual(terminal?.actions?.stateDelta, {
       stopReason: 'step_limit',
       failureClass: 'tool_step_cap_reached',
     });
@@ -11130,7 +11154,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(run?.status, 'cancelled');
     assert.strictEqual(run?.failureClass, undefined);
     const events = (await runStore.readEvents(session.id, run!.runId)).map((event) => event.type);
-    expect(events).toContain('run_cancelled');
+    assert.ok(events.includes('run_cancelled'));
     assert.strictEqual(events.includes('run_failed'), false);
   });
 
@@ -11158,9 +11182,9 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(run?.permissionMode, 'ask');
     assert.strictEqual(run?.status, 'completed');
     const events = await runStore.readEvents(session.id, run!.runId);
-    expect(events.map((event) => event.type)).toContain('model_stream_started');
-    expect(events.map((event) => event.type)).toContain('model_stream_completed');
-    expect(events.map((event) => event.type)).toContain('run_completed');
+    assert.ok(events.map((event) => event.type).includes('model_stream_started'));
+    assert.ok(events.map((event) => event.type).includes('model_stream_completed'));
+    assert.ok(events.map((event) => event.type).includes('run_completed'));
     assert.strictEqual(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
   });
 
@@ -11433,8 +11457,8 @@ describe('SessionManager permission mode updates', () => {
     );
     await cleanupCalled.promise;
 
-    expect(observedEventIds).toContain('cleanup-continuation-text');
-    expect(observedEventIds).not.toContain('cleanup-child-text');
+    assert.ok(observedEventIds.includes('cleanup-continuation-text'));
+    assert.ok(!observedEventIds.includes('cleanup-child-text'));
   });
 
   test('persists an explicit same-coverage successor checkpoint', async () => {
@@ -12671,8 +12695,10 @@ describe('SessionManager permission mode updates', () => {
     } catch (error) {
       removedError = error;
     }
-    expect(removedError instanceof Error ? removedError.message : String(removedError)).toContain(
-      'Unknown session',
+    assert.ok(
+      (removedError instanceof Error ? removedError.message : String(removedError)).includes(
+        'Unknown session',
+      ),
     );
 
     const admitted = await manager.reviseBeforeTurn(root.id, { sourceTurnId: 'first' });
@@ -12707,8 +12733,10 @@ describe('SessionManager permission mode updates', () => {
     } catch (error) {
       branchError = error;
     }
-    expect(branchError instanceof Error ? branchError.message : String(branchError)).toContain(
-      'Cannot branch before unknown turn',
+    assert.ok(
+      (branchError instanceof Error ? branchError.message : String(branchError)).includes(
+        'Cannot branch before unknown turn',
+      ),
     );
   });
 });

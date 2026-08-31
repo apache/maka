@@ -19,21 +19,20 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../../test-helpers.js';
 import { PROXY_DEFAULTS } from '@maka/core/settings/network-settings';
 import { buildProxyUrl, parseProxyConfig } from '../proxy-parser.js';
 
 describe('parseProxyConfig', () => {
   test('coerces type and port safely', () => {
-    expect(parseProxyConfig({ type: 'ftp', port: '7890' })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'ftp', port: '7890' }), {
       type: 'http',
       port: 7890,
     });
-    expect(parseProxyConfig({ type: 'socks5', port: 0 })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'socks5', port: 0 }), {
       type: 'socks5',
       port: 8080,
     });
-    expect(parseProxyConfig({ type: 'https', port: 999_999 })).toMatchObject({
+    assert.partialDeepStrictEqual(parseProxyConfig({ type: 'https', port: 999_999 }), {
       type: 'https',
       port: 8080,
     });

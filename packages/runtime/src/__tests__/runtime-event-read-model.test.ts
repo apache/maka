@@ -24,7 +24,6 @@ import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-i
 import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
-import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
@@ -345,14 +344,14 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         'turn_state',
       ],
     );
-    expect(out.messages[1]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[1], {
       type: 'tool_call',
       id: 'tool-1',
       toolName: 'Read',
       displayName: 'Read file',
       intent: 'inspect',
     });
-    expect(out.messages[2]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[2], {
       type: 'permission_decision',
       id: 'req-1',
       toolUseId: 'tool-1',
@@ -360,18 +359,18 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       decision: 'allow',
       hint: 'needs read access',
     });
-    expect(out.messages[3]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[3], {
       type: 'tool_result',
       id: 'legacy-result',
       toolUseId: 'tool-1',
       durationMs: 42,
     });
-    expect(out.messages[4]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[4], {
       type: 'assistant',
       modelId: 'claude-sonnet-4-5',
       text: 'The file says: file contents',
     });
-    expect(out.messages[6]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[6], {
       type: 'turn_state',
       status: 'completed',
       parentTurnId: 'parent-turn',
@@ -454,47 +453,54 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     const projected = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
     assert.deepStrictEqual(projected.diagnostics, []);
-    expect(projected.messages[0]).toMatchObject({
-      type: 'assistant',
-      providerOptions: {
+    assert.partialDeepStrictEqual(projected.messages[0], { type: 'assistant' });
+    assert.deepStrictEqual(
+      (projected.messages[0] as { providerOptions?: unknown }).providerOptions,
+      {
         openai: {
           itemId: 'message-1',
           annotations: [{ type: 'url_citation', url: 'https://maka.example/' }],
         },
       },
-    });
-    expect(projected.messages[1]).toMatchObject({
+    );
+    assert.partialDeepStrictEqual(projected.messages[1], {
       type: 'tool_call',
-      providerOptions: { anthropic: { type: 'server_tool_use' } },
       providerExecuted: true,
     });
-    expect(projected.messages[2]).toMatchObject({
+    assert.deepStrictEqual(
+      (projected.messages[1] as { providerOptions?: unknown }).providerOptions,
+      {
+        anthropic: { type: 'server_tool_use' },
+      },
+    );
+    assert.partialDeepStrictEqual(projected.messages[2], {
       type: 'tool_result',
       providerExecuted: true,
       providerOutput: rawProviderOutput,
-      content: {
-        kind: 'web_search',
-        provider: 'model',
-        query: 'latest Maka',
-        rows: [
-          {
-            title: 'Maka',
-            url: 'https://maka.example/',
-            snippet: '',
-            source: 'maka.example',
-          },
-        ],
-      },
+    });
+    assert.deepStrictEqual((projected.messages[2] as { content?: unknown }).content, {
+      kind: 'web_search',
+      provider: 'model',
+      query: 'latest Maka',
+      rows: [
+        {
+          title: 'Maka',
+          url: 'https://maka.example/',
+          snippet: '',
+          source: 'maka.example',
+        },
+      ],
     });
 
     const replay = buildRuntimeEventModelReplayPlan(events);
     assert.deepStrictEqual(replay.diagnostics, []);
-    expect(
+    assert.partialDeepStrictEqual(
       replay.items.find((item) => item.kind === 'tool_result' && item.toolCallId === 'search-1'),
-    ).toMatchObject({
-      output: rawProviderOutput,
-      providerExecuted: true,
-    });
+      {
+        output: rawProviderOutput,
+        providerExecuted: true,
+      },
+    );
   });
 
   test('projects an AskUserQuestion round trip without a legacy row for the live request', () => {
@@ -735,9 +741,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     const replay = buildRuntimeEventModelReplayPlan(events);
 
-    expect(replay.items.find((item) => item.kind === 'tool_result')).toMatchObject({
-      output: { kind: 'text', text: '未完成：目标无效。' },
-    });
+    assert.deepStrictEqual(
+      (replay.items.find((item) => item.kind === 'tool_result') as { output?: unknown } | undefined)
+        ?.output,
+      { kind: 'text', text: '未完成：目标无效。' },
+    );
     assert.deepStrictEqual(replay.diagnostics, []);
   });
 
@@ -849,22 +857,19 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     const out = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
     const projected = out.messages.find((message) => message.type === 'tool_result');
 
-    expect(projected).toMatchObject({
-      type: 'tool_result',
-      toolUseId: 'tool-1',
-      content: {
-        kind: 'archived_tool_result',
-        status: 'not_loaded',
-        artifactId: 'artifact-tool-result',
-        bodySha256: 'a'.repeat(64),
-        runtimeEventId: 'evt-tool-result',
-        toolCallId: 'tool-1',
-        toolName: 'Read',
-        originalEstimatedTokens: 200,
-        originalBytes: 800,
-        rewriteVersion: 1,
-        reason: 'stale_tool_result_pruned_before_compact',
-      },
+    assert.partialDeepStrictEqual(projected, { type: 'tool_result', toolUseId: 'tool-1' });
+    assert.deepStrictEqual((projected as { content?: unknown } | undefined)?.content, {
+      kind: 'archived_tool_result',
+      status: 'not_loaded',
+      artifactId: 'artifact-tool-result',
+      bodySha256: 'a'.repeat(64),
+      runtimeEventId: 'evt-tool-result',
+      toolCallId: 'tool-1',
+      toolName: 'Read',
+      originalEstimatedTokens: 200,
+      originalBytes: 800,
+      rewriteVersion: 1,
+      reason: 'stale_tool_result_pruned_before_compact',
     });
     assert.deepStrictEqual(
       out.diagnostics.map((diag) => diag.code),
@@ -922,7 +927,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     const defaultOut = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
     const defaultProjected = defaultOut.messages.find((message) => message.type === 'tool_result');
-    expect(defaultProjected).toMatchObject({ type: 'tool_result' });
+    assert.partialDeepStrictEqual(defaultProjected, { type: 'tool_result' });
     assert.strictEqual(archivedStatus(defaultProjected), 'not_loaded');
 
     const missingOut = projectRuntimeEventsToStoredMessagesWithArchiveStatuses(events, {
@@ -930,7 +935,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       archiveStatuses: { 'evt-tool-result': 'missing' },
     });
     const missingProjected = missingOut.messages.find((message) => message.type === 'tool_result');
-    expect(missingProjected).toMatchObject({ type: 'tool_result' });
+    assert.partialDeepStrictEqual(missingProjected, { type: 'tool_result' });
     assert.strictEqual(archivedStatus(missingProjected), 'missing');
 
     const corruptOut = projectRuntimeEventsToStoredMessagesWithArchiveStatuses(events, {
@@ -938,7 +943,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       archiveStatuses: [{ runtimeEventId: 'evt-tool-result', status: 'corrupt' }],
     });
     const corruptProjected = corruptOut.messages.find((message) => message.type === 'tool_result');
-    expect(corruptProjected).toMatchObject({ type: 'tool_result' });
+    assert.partialDeepStrictEqual(corruptProjected, { type: 'tool_result' });
     assert.strictEqual(archivedStatus(corruptProjected), 'corrupt');
   });
 
@@ -963,7 +968,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     assert.strictEqual(out.messages.length, 1);
-    expect(out.messages[0]).toMatchObject({ type: 'assistant', text: 'final' });
+    assert.partialDeepStrictEqual(out.messages[0], { type: 'assistant', text: 'final' });
     assert.deepStrictEqual(
       out.diagnostics.map((diag) => diag.code),
       ['partial_skipped'],
@@ -1631,7 +1636,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     );
 
-    expect(out.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[0], {
       type: 'turn_state',
       status: 'aborted',
       abortedAt: ts + 9,
@@ -1660,7 +1665,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     const withStep = projectRuntimeEventsToStoredMessages([stepCall('tool-step', 'step-1')], {
       runHeaders: [header],
     });
-    expect(withStep.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(withStep.messages[0], {
       type: 'tool_call',
       id: 'tool-step',
       stepId: 'step-1',
@@ -1672,7 +1677,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       runHeaders: [header],
     });
     const legacyCall = withoutStep.messages[0];
-    expect(legacyCall).toMatchObject({ type: 'tool_call', id: 'tool-legacy' });
+    assert.partialDeepStrictEqual(legacyCall, { type: 'tool_call', id: 'tool-legacy' });
     assert.strictEqual(legacyCall && 'stepId' in legacyCall, false);
   });
 
@@ -1711,7 +1716,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     assert.strictEqual(out.messages.length, 2);
     for (const message of out.messages) {
-      expect(message).toMatchObject({
+      assert.partialDeepStrictEqual(message, {
         origin: 'code_mode',
         modelVisibility: 'hidden',
         parentToolCallId: 'exec-1',
@@ -1740,7 +1745,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[0], {
       type: 'tool_call',
       id: 'tool-kind',
       activityKind: 'command',

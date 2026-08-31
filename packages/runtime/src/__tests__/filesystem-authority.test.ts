@@ -25,7 +25,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { expect } from '../test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { SandboxCommandError } from '../sandbox/errors.js';
 import { createLocalWorkspaceExecutor } from '../workspace-executor.js';
@@ -99,9 +98,10 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(written).toMatchObject({ kind: 'file_diff', paths: [target] });
-      expect((written as { diff: string }).diff).toContain('--- /dev/null');
-      expect((written as { diff: string }).diff).toContain('+hello');
+      assert.partialDeepStrictEqual(written, { kind: 'file_diff' });
+      assert.deepStrictEqual((written as { paths: string[] }).paths, [target]);
+      assert.ok((written as { diff: string }).diff.includes('--- /dev/null'));
+      assert.ok((written as { diff: string }).diff.includes('+hello'));
       assert.strictEqual(await readFile(target, 'utf8'), 'hello');
 
       const read = await runTool(toolNamed(tools, 'Read'), { path: target }, cwd, BYPASS);
@@ -113,9 +113,10 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(edited).toMatchObject({ kind: 'file_diff', paths: [target] });
-      expect((edited as { diff: string }).diff).toContain('-hello');
-      expect((edited as { diff: string }).diff).toContain('+bye');
+      assert.partialDeepStrictEqual(edited, { kind: 'file_diff' });
+      assert.deepStrictEqual((edited as { paths: string[] }).paths, [target]);
+      assert.ok((edited as { diff: string }).diff.includes('-hello'));
+      assert.ok((edited as { diff: string }).diff.includes('+bye'));
       assert.strictEqual(await readFile(target, 'utf8'), 'bye');
 
       await writeFile(join(outside, 'data.json'), '{"b":1,"a":2}', 'utf8');
@@ -125,7 +126,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         BYPASS,
       );
-      expect(formatted).toMatchObject({ kind: 'file_diff' });
+      assert.partialDeepStrictEqual(formatted, { kind: 'file_diff' });
 
       const globbed = (await runTool(
         toolNamed(tools, 'Glob'),
@@ -242,7 +243,7 @@ describe('file tools follow the execution boundary', () => {
         cwd,
         MANAGED,
       );
-      expect(result).toMatchObject({ kind: 'file_write', path: target, bytes: 1 });
+      assert.partialDeepStrictEqual(result, { kind: 'file_write', path: target, bytes: 1 });
       assert.strictEqual(calls.length, 1);
       // The worker decided; nothing was written by the host backend.
       await assert.rejects(readFile(target, 'utf8'));
@@ -391,7 +392,7 @@ describe('file tools follow the execution boundary', () => {
         BYPASS,
       )) as { matches: string[] };
       assert.strictEqual(found.matches.length, 1);
-      expect(found.matches[0]).toContain('needle here');
+      assert.ok(found.matches[0].includes('needle here'));
     } finally {
       await cleanup();
     }
@@ -440,7 +441,7 @@ describe('file tools follow the execution boundary', () => {
 
       const result = await runTool(toolNamed(tools, 'Read'), { path: 'image.png' }, cwd, MANAGED);
 
-      expect(result).toMatchObject({ kind: 'image', mimeType: 'image/png' });
+      assert.partialDeepStrictEqual(result, { kind: 'image', mimeType: 'image/png' });
       assert.strictEqual(snapshots.length, 1);
       assert.strictEqual(Buffer.from(snapshots[0] ?? new Uint8Array()).toString('hex'), '89504e47');
     } finally {

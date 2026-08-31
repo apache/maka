@@ -22,7 +22,6 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect } from '../test-helpers.js';
 import { LocalWorkspaceExecutor } from '../workspace-executor.js';
 
 const ONE_PIXEL_IMAGES = [
@@ -55,7 +54,7 @@ describe('LocalWorkspaceExecutor exec', () => {
       emitOutput: (stream, chunk) => events.push({ stream, chunk }),
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 0,
       stdout: 'from-cwd',
       stderr: 'err-data',
@@ -80,7 +79,7 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 5_000,
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 7,
       stdout: 'out-data',
       stderr: 'err-data',
@@ -105,7 +104,7 @@ describe('LocalWorkspaceExecutor exec', () => {
       timeoutMs: 5_000,
     });
 
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       exitCode: 0,
       stdout: 'literal $HOME && ok',
       stderr: '',
@@ -203,12 +202,12 @@ describe('LocalWorkspaceExecutor file operations', () => {
     const writeResult = await executor.writeFile({ cwd, path: file, content: 'hello' });
     const readResult = await executor.readFile({ cwd, path: file });
 
-    expect(writeResult).toMatchObject({
+    assert.partialDeepStrictEqual(writeResult, {
       ok: true,
       path: file,
       bytes: 5,
     });
-    expect(readResult).toMatchObject({ content: 'hello' });
+    assert.partialDeepStrictEqual(readResult, { content: 'hello' });
     assert.strictEqual(await readFile(file, 'utf8'), 'hello');
   });
 
@@ -220,7 +219,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
 
     const readResult = await executor.readFile({ cwd, path: file, offset: 1, limit: 2 });
 
-    expect(readResult).toMatchObject({ content: 'line2\nline3' });
+    assert.partialDeepStrictEqual(readResult, { content: 'line2\nline3' });
   });
 
   test('globs files from the provided cwd with a result cap', async () => {
@@ -270,7 +269,7 @@ describe('LocalWorkspaceExecutor file operations', () => {
     assert.deepStrictEqual(hit.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);
-    expect(miss).toMatchObject({ matches: [] });
+    assert.deepStrictEqual((miss as { matches: string[] }).matches, []);
     assert.deepStrictEqual(optionLikePattern.matches, [
       `${join(cwd, 'src', 'main.ts')}:1:export const token = 1; // --flag`,
     ]);

@@ -41,7 +41,6 @@ import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfile,
 } from '@maka/core/permission-profile';
-import { expect } from '../test-helpers.js';
 import { buildBuiltinTools } from '../builtin-tools.js';
 import { SandboxManager } from '../sandbox/sandbox-manager.js';
 import { LinuxBubblewrapBackend } from '../sandbox/linux-sandbox.js';
@@ -1756,10 +1755,10 @@ describe('builtin Bash streaming output', () => {
       },
     );
 
-    expect(result).toMatchObject({
-      kind: 'shell_run',
-      status: 'cancelled',
-      operation: { kind: 'stop', applied: true },
+    assert.partialDeepStrictEqual(result, { kind: 'shell_run', status: 'cancelled' });
+    assert.deepStrictEqual((result as Record<string, unknown>).operation, {
+      kind: 'stop',
+      applied: true,
     });
     assert.deepStrictEqual(calls, [
       {
@@ -1961,19 +1960,19 @@ describe('builtin Bash streaming output', () => {
       events.some((event) => event.stream === 'stderr' && event.chunk.includes('err')),
       true,
     );
-    expect(result).toMatchObject({
+    assert.partialDeepStrictEqual(result, {
       kind: 'terminal',
       cwd,
       cmd: 'printf "out"; printf "err" >&2',
       exitCode: 0,
-      output: {
-        mode: 'pipes',
-        stdout: 'out',
-        stderr: 'err',
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        redacted: false,
-      },
+    });
+    assert.deepStrictEqual((result as Record<string, unknown>).output, {
+      mode: 'pipes',
+      stdout: 'out',
+      stderr: 'err',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      redacted: false,
     });
   });
 
@@ -2050,7 +2049,7 @@ describe('builtin Bash streaming output', () => {
     )) as { output: { stdout: string; stdoutTruncated: boolean } };
 
     assert.strictEqual(result.output.stdoutTruncated, true);
-    expect(result.output.stdout).toContain('omitted for safety');
+    assert.ok(result.output.stdout.includes('omitted for safety'));
   });
 
   test('a failing command surfaces stdout/stderr on the rejection error', async () => {
@@ -2178,7 +2177,7 @@ describe('builtin read tools path containment', () => {
     const read = tool('Read');
 
     const absoluteResult = await runTool(read, { path: join(root, 'inside.txt') }, root);
-    expect(absoluteResult).toMatchObject({ content: 'inside' });
+    assert.partialDeepStrictEqual(absoluteResult, { content: 'inside' });
     await expectRejects(
       runTool(read, { path: join(outside, 'secret.txt') }, root),
       /Read path must stay inside/,
@@ -2193,7 +2192,7 @@ describe('builtin read tools path containment', () => {
     );
 
     const result = await runTool(read, { path: 'inside.txt' }, root);
-    expect(result).toMatchObject({ content: 'inside' });
+    assert.partialDeepStrictEqual(result, { content: 'inside' });
   });
 
   test('Glob and Grep constrain search roots to session cwd', async () => {
@@ -2227,9 +2226,9 @@ describe('builtin read tools path containment', () => {
     );
 
     const globResult = await runTool(glob, { pattern: '**/*.ts' }, root);
-    expect(globResult).toMatchObject({ files: ['src/main.ts'] });
+    assert.deepStrictEqual((globResult as { files: string[] }).files, ['src/main.ts']);
     const absoluteGlobResult = await runTool(glob, { pattern: '**/*.ts', cwd: root }, root);
-    expect(absoluteGlobResult).toMatchObject({ files: ['src/main.ts'] });
+    assert.deepStrictEqual((absoluteGlobResult as { files: string[] }).files, ['src/main.ts']);
     const grepResult = await runTool(grep, { pattern: 'token', path: 'src' }, root);
     assert.strictEqual(JSON.stringify(grepResult).includes('main.ts'), true);
     const absoluteGrepResult = await runTool(
@@ -2269,7 +2268,8 @@ describe('builtin write tools path containment', () => {
         content: 'from-executor',
       },
     ]);
-    expect(result).toMatchObject({ kind: 'file_diff', paths: ['/workspace/created.txt'] });
+    assert.partialDeepStrictEqual(result, { kind: 'file_diff' });
+    assert.deepStrictEqual((result as { paths: string[] }).paths, ['/workspace/created.txt']);
   });
 
   test('Edit rejects image results from the workspace executor', async () => {
@@ -2360,7 +2360,7 @@ describe('builtin write tools path containment', () => {
       root,
     );
 
-    expect(result).toMatchObject({ kind: 'file_diff' });
+    assert.partialDeepStrictEqual(result, { kind: 'file_diff' });
     assert.match((result as { diff: string }).diff, /-const v500 = 500;/);
     assert.match((result as { diff: string }).diff, /\+const v500 = -1;/);
   });
@@ -2388,9 +2388,12 @@ describe('builtin write tools path containment', () => {
     const glob = tool('Glob');
     const grep = tool('Grep');
 
-    expect(await runTool(read, { path: join(cwd, 'src', 'inside.txt') }, cwd)).toMatchObject({
-      content: 'inside token\n',
-    });
+    assert.partialDeepStrictEqual(
+      await runTool(read, { path: join(cwd, 'src', 'inside.txt') }, cwd),
+      {
+        content: 'inside token\n',
+      },
+    );
     await runTool(write, { path: join(cwd, 'src', 'written.txt'), content: 'written\n' }, cwd);
     assert.strictEqual(await readFile(join(workspace, 'src', 'written.txt'), 'utf8'), 'written\n');
     await runTool(
@@ -2402,9 +2405,11 @@ describe('builtin write tools path containment', () => {
       await readFile(join(workspace, 'src', 'inside.txt'), 'utf8'),
       'inside edited\n',
     );
-    expect(await runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'src') }, cwd)).toMatchObject({
-      files: ['inside.txt', 'written.txt'],
-    });
+    const scopedGlobResult = await runTool(glob, { pattern: '*.txt', cwd: join(cwd, 'src') }, cwd);
+    assert.deepStrictEqual((scopedGlobResult as { files: string[] }).files, [
+      'inside.txt',
+      'written.txt',
+    ]);
     const grepResult = await runTool(grep, { pattern: 'edited', path: join(cwd, 'src') }, cwd);
     assert.strictEqual(JSON.stringify(grepResult).includes('inside.txt'), true);
 

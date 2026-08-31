@@ -27,7 +27,6 @@ import type { ModelCallCommit } from '@maka/core/agent-run';
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expect } from '../test-helpers.js';
 import type { RuntimeEvent, RuntimeEventContent } from '@maka/core/runtime-event';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { ProviderRequestTracker } from '../provider-request-telemetry.js';
@@ -1387,8 +1386,8 @@ describe('buildLlmHistorySummarizer', () => {
 
     assert.strictEqual(result, VALID_SUMMARY);
     const serialized = JSON.stringify(seen[0]);
-    expect(serialized).toContain('PRIOR_SUMMARY');
-    expect(serialized).toContain('NEWLY_EVICTED_RAW');
+    assert.ok(serialized.includes('PRIOR_SUMMARY'));
+    assert.ok(serialized.includes('NEWLY_EVICTED_RAW'));
     assert.strictEqual(serialized.includes('ALREADY_SUMMARIZED_RAW'), false);
   });
 
@@ -1430,8 +1429,8 @@ describe('buildLlmHistorySummarizer', () => {
     });
 
     const serialized = JSON.stringify(seen);
-    expect(serialized).toContain('OLD_PROVIDER_ONLY_FACT');
-    expect(serialized).toContain('NEW_PORTABLE_FACT');
+    assert.ok(serialized.includes('OLD_PROVIDER_ONLY_FACT'));
+    assert.ok(serialized.includes('NEW_PORTABLE_FACT'));
     assert.strictEqual(serialized.includes('opaque-state'), false);
   });
 });

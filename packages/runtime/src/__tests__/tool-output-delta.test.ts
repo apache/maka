@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { ToolOutputDeltaEvent } from '@maka/core/events';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import { expect } from '../test-helpers.js';
 import { createToolOutputDeltaEmitter } from '../tool-output-delta.js';
 
 describe('ToolOutputDelta emitter', () => {
@@ -66,7 +65,7 @@ describe('ToolOutputDelta emitter', () => {
 
     assert.strictEqual(events.length, 1);
     assert.strictEqual(events[0]?.redacted, true);
-    expect(events[0]?.chunk).toContain('[redacted]');
+    assert.ok(events[0]?.chunk.includes('[redacted]'));
     assert.strictEqual(events[0]?.chunk.includes('sk-live-secret-token-value'), false);
   });
 
