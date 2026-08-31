@@ -935,7 +935,7 @@ export class ToolRuntime {
       parentOperationId?: string;
     } = {},
     attempt?: DurableToolAttempt,
-  ): Promise<DurableToolResultProjection> {
+  ): Promise<void> {
     const content: ToolResultContent = {
       kind: 'text',
       text: formatSyntheticToolErrorText(text),
@@ -988,7 +988,6 @@ export class ToolRuntime {
       modelProjection,
       ...activityIdentity,
     } satisfies ToolResultEvent);
-    return modelProjection;
   }
 
   private async executeTool(
@@ -1973,7 +1972,7 @@ export class ToolRuntime {
             : uncertainOutcome
               ? `outcome_unknown: ${formatSyntheticToolErrorText(err)}`
               : formatSyntheticToolErrorText(err);
-      const modelProjection = await this.writeSyntheticToolResult(
+      await this.writeSyntheticToolResult(
         toolUseId,
         turnId,
         tool.name,
