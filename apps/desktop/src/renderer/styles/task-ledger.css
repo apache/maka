@@ -22,6 +22,10 @@
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-2);
+  /* The compact row layout keys off THIS panel's width, not the viewport: the
+     right workbar resizes down to SESSION_WORKBAR_MIN_WIDTH (320px) inside an
+     otherwise wide window, where a viewport media query would never fire. */
+  container: maka-task-ledger / inline-size;
 }
 
 .maka-task-ledger-tree {
@@ -135,7 +139,11 @@
   outline-offset: 1px;
 }
 
-@media (max-width: 620px) {
+/* Below ~420px of panel width the four-column grid can no longer hold the
+   deepest clamped indent (128px at depth 6) plus key + subject + status/meta,
+   so status/detail drop under the subject and the subject column may shrink to
+   zero. 420px keeps the 480px default wide while covering the 320px floor. */
+@container maka-task-ledger (max-width: 420px) {
   .maka-task-ledger-row-content { grid-template-columns: 14px minmax(32px, auto) minmax(0, 1fr); }
   .maka-task-ledger-meta { grid-column: 3; justify-content: flex-start; }
   .maka-task-ledger-detail { grid-column: 3; white-space: normal; overflow-wrap: anywhere; }

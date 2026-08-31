@@ -980,10 +980,13 @@ export const TasksRecentlyFinished: Story = {
 
 // Real path: 任务工作栏 → 任务 on a deeply decomposed task. The row indent is
 // clamped at depth 6, so an eighth-level subtask stays legible instead of
-// marching off the panel.
+// marching off the panel. Pinned at the 320px workbar floor
+// (SESSION_WORKBAR_MIN_WIDTH), the width where the depth-6 indent would
+// overflow a four-column row — the panel container query must collapse to the
+// compact layout so the deepest row still fits.
 export const TasksDeepNesting: Story = {
   decorators: [bridge({ tasks: deepTaskChain })],
-  render: () => <Workbar tab="tasks" />,
+  render: () => <Workbar tab="tasks" width={320} />,
   play: async ({ canvasElement }) => {
     await waitFor(() => {
       const panel = canvasElement.querySelector<HTMLElement>('.maka-task-ledger-panel');
