@@ -95,10 +95,12 @@ is what makes one-time migration and explicit clearing deterministic.
 ## One-time legacy bootstrap
 
 The first Host read of an uninitialized Session, through either `todo_read` or
-`session.todo.query`, projects only canonical legacy Tasks whose status is
-`pending` or `in_progress`, then persists the result even when it is empty.
-Terminal, blocked, failed, cancelled, ownership, evidence, and hierarchy fields
-are not imported.
+`session.todo.query`, keeps canonical `pending` and `in_progress` Tasks at their
+current status. A canonical `blocked` Task is imported as `pending` with the
+same subject so unfinished work remains visible for replanning. The Host then
+persists the result even when it is empty. Workflow-only blocked reasons,
+ownership, evidence, hierarchy, and terminal `completed`, `failed`, or
+`cancelled` Tasks are not imported.
 
 The first explicit `todo_write` never reads or merges legacy Tasks. It writes
 the requested complete list directly. Once a SessionTodo row exists, no later
