@@ -44,6 +44,7 @@ import { build as esbuildBuild } from 'esbuild';
 import { buildCursorOverlay } from '../../../scripts/build-cursor-overlay.mjs';
 import {
   createDevelopmentLaunchSession,
+  developmentProfileConflictDetail,
   handleDevelopmentLaunchOutcome,
   waitForDevelopmentLaunchVerdict,
 } from './dev-app-runtime.mjs';
@@ -191,12 +192,18 @@ if (app) {
     });
     // All branching lives in handleDevelopmentLaunchOutcome; this line is the only
     // un-automated surface here (launcher scripts are non-exported, darwin-only).
-    waitForDevelopmentLaunchVerdict({ stopped: launchSession.isStopping, resultFile: app.resultFile }).then((outcome) =>
-      handleDevelopmentLaunchOutcome(outcome, {
-        log: (m) => console.error('[dev]', m),
-        exit: (code) => launchSession.stop(code),
-      }),
-    );
+    waitForDevelopmentLaunchVerdict({ stopped: launchSession.isStopping, resultFile: app.resultFile })
+      .then(async (outcome) => {
+        const conflictDetail =
+          outcome === 'absorbed'
+            ? await developmentProfileConflictDetail({ argv: process.argv.slice(2) })
+            : '';
+        handleDevelopmentLaunchOutcome(outcome, {
+          log: (m) => console.error('[dev]', m),
+          exit: (code) => launchSession.stop(code),
+          conflictDetail,
+        });
+      });
   } else {
     app.child.on('exit', (code) => launchSession.stop(code ?? 0));
   }

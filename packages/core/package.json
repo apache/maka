@@ -138,7 +138,8 @@
     "./tool-result-status": "./dist/tool-result-status.js",
     "./ui-locale": "./dist/ui-locale.js",
     "./unified-diff": "./dist/unified-diff.js",
-    "./dev-single-instance": "./dist/dev-single-instance.js"
+    "./dev-single-instance": "./dist/dev-single-instance.js",
+    "./dev-single-instance-owner": "./dist/dev-single-instance-owner.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/model-metadata.generated.ts",

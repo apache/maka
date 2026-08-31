@@ -51,11 +51,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -211,6 +212,67 @@ export async function readDevelopmentLaunchResult(resultFile, loader) {
     return constants.parseDevelopmentLaunchResult(readFileSync(resultFile, 'utf8'));
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * The shared dev profile's userData dir on this platform: Electron derives it
+ * from the 'Maka Dev' app name. Windows has no POSIX SingletonLock symlink, so
+ * it resolves to null there and the conflict detail degrades to the generic
+ * wording (#3539).
+ */
+export function defaultDevUserDataDir(platform = process.platform) {
+  if (platform === 'darwin') return DEV_USER_DATA_DIR;
+  if (platform === 'linux') {
+    const xdgConfigHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+    return join(xdgConfigHome, 'Maka Dev');
+  }
+  return null;
+}
+
+/** PID liveness for the scripts side; EPERM counts as alive (other user). */
+function pidLiveness(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+/**
+ * Holder identity for a lost launch race, resolved from Chromium's own
+ * SingletonLock record (see #3539) — never from the process table. An explicit
+ * `--user-data-dir` wins over the platform default, matching launch behavior;
+ * on platforms without a POSIX lock symlink the detail is empty. The pure
+ * record classifier comes from @maka/core; the symlink read and the liveness
+ * probe are this script's own OS effects. Empty string when nothing
+ * trustworthy resolves, so callers fall back to the generic wording verbatim.
+ */
+export async function developmentProfileConflictDetail(options = {}) {
+  const explicitUserDataDir = splitDevelopmentCliArgs(options.argv ?? []).userDataDir;
+  const platform = options.platform ?? process.platform;
+  const userDataDir =
+    explicitUserDataDir ?? options.userDataDir ?? defaultDevUserDataDir(platform);
+  if (!userDataDir) return '';
+  const loader =
+    options.loader ?? (() => import('@maka/core/dev-single-instance-owner'));
+  let mod;
+  try {
+    mod = await loader();
+  } catch {
+    return '';
+  }
+  if (typeof mod?.resolveLiveDevProfileOwnerFromTarget !== 'function') return '';
+  try {
+    const target = readlinkSync(join(userDataDir, 'SingletonLock'), 'utf8');
+    const owner = mod.resolveLiveDevProfileOwnerFromTarget(target, {
+      liveness: options.liveness ?? pidLiveness,
+      localHostname: options.localHostname ?? hostname(),
+    });
+    return owner ? ` The holder appears to be ${mod.describeDevProfileOwner(owner)}.` : '';
+  } catch {
+    return '';
   }
 }
 
@@ -391,11 +453,12 @@ export async function startDevelopmentApp(options = {}) {
       env: viteUrl ? { ...process.env, VITE_DEV_SERVER_URL: viteUrl } : process.env,
     });
     child.once('exit', (code) => {
-      void plainLoserExitCode(code).then((loser) => {
+      void plainLoserExitCode(code).then(async (loser) => {
         if (!loser) return;
+        const holder = await developmentProfileConflictDetail({ argv });
         console.error(
           'Maka Dev could not start: another instance holds the shared profile lock ' +
-            `(loser exit code ${code}). Quit it (Cmd-Q) and retry.`,
+            `(loser exit code ${code}).${holder} Quit it (Cmd-Q) and retry.`,
         );
       });
     });
@@ -539,12 +602,15 @@ export async function waitForDevelopmentLaunchVerdict(options = {}) {
  */
 export function handleDevelopmentLaunchOutcome(outcome, effects = {}) {
   const log = effects.log ?? console.error;
+  const conflictDetail = effects.conflictDetail ?? '';
   const exit = effects.exit ?? ((code) => { process.exitCode = code; });
   switch (outcome) {
     case 'started':
       return;
     case 'absorbed':
-      log('Maka Dev was absorbed by another instance holding the profile lock; quitting.');
+      log(
+        `Maka Dev was absorbed by another instance holding the profile lock${conflictDetail}; quitting.`,
+      );
       exit(1);
       return;
     case 'never-started':

@@ -19,6 +19,7 @@
  */
 
 import {
+  developmentProfileConflictDetail,
   handleDevelopmentLaunchOutcome,
   startDevelopmentApp,
   waitForDevelopmentLaunchVerdict,
@@ -58,9 +59,14 @@ if (app.isMacosBundle) {
   });
   // All decisions live in handleDevelopmentLaunchOutcome (see dev.mjs for the
   // one-line coupling note); this is the only unobserved part.
+  const conflictDetail =
+    outcome === 'absorbed'
+      ? await developmentProfileConflictDetail({ argv: process.argv.slice(2) })
+      : '';
   handleDevelopmentLaunchOutcome(outcome, {
     log: (m) => console.error('[dev-app]', m),
     exit: (code) => stop(code),
+    conflictDetail,
   });
 } else {
   app.child.on('exit', (code, signal) => {
