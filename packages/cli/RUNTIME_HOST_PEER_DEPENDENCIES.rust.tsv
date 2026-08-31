@@ -221,6 +221,7 @@ tinyvec@1.12.0	X				X			X
 tinyvec_macros@0.1.1	X				X			X
 tokio@1.53.1					X			
 tokio-macros@2.7.2					X			
+tokio-util@0.7.19					X			
 tracing@0.1.44					X			
 tracing-attributes@0.1.31					X			
 tracing-core@0.1.36					X			

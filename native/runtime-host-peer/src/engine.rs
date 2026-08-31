@@ -274,6 +274,11 @@ struct DirectConnectState {
     retiring_connections: HashSet<ConnectionId>,
 }
 
+enum PendingAttemptAdmission {
+    Active(PendingConnect),
+    Expired(PendingConnect),
+}
+
 impl DirectConnectState {
     fn allocate_attempt_id(&mut self) -> ConnectAttemptId {
         let attempt_id = ConnectAttemptId(self.next_attempt_id);
@@ -285,7 +290,8 @@ impl DirectConnectState {
         &mut self,
         request_id: u32,
         attempt_id: ConnectAttemptId,
-    ) -> Option<PendingConnect> {
+        now: Instant,
+    ) -> Option<PendingAttemptAdmission> {
         if self
             .pending
             .get(&request_id)
@@ -293,7 +299,13 @@ impl DirectConnectState {
         {
             return None;
         }
-        self.pending.remove(&request_id)
+        self.pending.remove(&request_id).map(|pending| {
+            if pending.deadline <= now {
+                PendingAttemptAdmission::Expired(pending)
+            } else {
+                PendingAttemptAdmission::Active(pending)
+            }
+        })
     }
 }
 
@@ -881,9 +893,27 @@ async fn run_endpoint_async(
             }
             Some(opened) = opened_rx.recv() => {
                 let request_id = opened.request_id;
-                if let Some(mut waiter) =
-                    direct.take_pending_attempt(opened.request_id, opened.attempt_id)
-                {
+                let Some(admission) = direct.take_pending_attempt(
+                    opened.request_id,
+                    opened.attempt_id,
+                    Instant::now(),
+                ) else {
+                    continue;
+                };
+                let mut waiter = match admission {
+                    PendingAttemptAdmission::Active(waiter) => waiter,
+                    PendingAttemptAdmission::Expired(waiter) => {
+                        let error = pending_connect_deadline_error(&waiter);
+                        fail_pending_connect(
+                            &mut swarm,
+                            &mut direct,
+                            &mut coordination_relays,
+                            waiter,
+                            error,
+                        );
+                        continue;
+                    }
+                };
                     match opened.result {
                         Ok(opened) => {
                             if waiter.stream_kind == StreamKind::Application
@@ -986,7 +1016,6 @@ async fn run_endpoint_async(
                             );
                         }
                     }
-                }
             }
             event = swarm.select_next_some() => {
                 handle_swarm_event(
@@ -1061,33 +1090,37 @@ async fn run_endpoint_async(
                     .collect::<Vec<_>>();
                 for request_id in expired {
                     if let Some(waiter) = direct.pending.remove(&request_id) {
-                        let (code, message) = match waiter.stream_kind {
-                            StreamKind::Application
-                                if !waiter.transit_relay_peers.is_empty() => (
-                                "transit_unavailable",
-                                "no direct or approved transit path was established before the deadline",
-                            ),
-                            StreamKind::Application => (
-                                "direct_path_unavailable",
-                                "no direct path was established before the deadline",
-                            ),
-                            StreamKind::MeshControl => (
-                                "mesh_control_unavailable",
-                                "no Mesh control path was established before the deadline",
-                            ),
-                        };
+                        let error = pending_connect_deadline_error(&waiter);
                         fail_pending_connect(
                             &mut swarm,
                             &mut direct,
                             &mut coordination_relays,
                             waiter,
-                            PeerError::new(code, message),
+                            error,
                         );
                     }
                 }
             }
         }
     }
+}
+
+fn pending_connect_deadline_error(waiter: &PendingConnect) -> PeerError {
+    let (code, message) = match waiter.stream_kind {
+        StreamKind::Application if !waiter.transit_relay_peers.is_empty() => (
+            "transit_unavailable",
+            "no direct or approved transit path was established before the deadline",
+        ),
+        StreamKind::Application => (
+            "direct_path_unavailable",
+            "no direct path was established before the deadline",
+        ),
+        StreamKind::MeshControl => (
+            "mesh_control_unavailable",
+            "no Mesh control path was established before the deadline",
+        ),
+    };
+    PeerError::new(code, message)
 }
 
 type BuiltSwarm = (
@@ -2635,6 +2668,40 @@ fn native_error(error: impl std::fmt::Display) -> PeerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_at_the_immutable_deadline_cannot_commit() {
+        let now = Instant::now();
+        let mut direct = DirectConnectState::default();
+        let attempt_id = direct.allocate_attempt_id();
+        let (result, _response) = oneshot::channel();
+        direct.pending.insert(
+            7,
+            PendingConnect {
+                attempt_id,
+                peer_id: PeerId::random(),
+                result,
+                stream_kind: StreamKind::Application,
+                deadline: now,
+                opening: None,
+                dials: HashMap::new(),
+                direct_routes: Vec::new(),
+                coordination_relays: Vec::new(),
+                coordination_relay_peers: Vec::new(),
+                transit_relay_peers: HashSet::new(),
+                transit_after: now,
+                next_route_attempt: now,
+                retry_coordination: false,
+                cancellation: CancellationToken::new(),
+            },
+        );
+
+        assert!(matches!(
+            direct.take_pending_attempt(7, attempt_id, now),
+            Some(PendingAttemptAdmission::Expired(_))
+        ));
+        assert!(direct.pending.is_empty());
+    }
 
     #[tokio::test]
     async fn identity_signature_is_bound_to_peer_and_payload() {
