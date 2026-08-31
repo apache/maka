@@ -1957,6 +1957,9 @@ test('a correction with a negated creation tail never proposes a new Session', (
     'Wrong session; switch to Login without creating a new session',
     '不是这个，而是不要真的创建一个新的 Session',
     'Wrong session; do not actually create a new Session',
+    '不是这个，而是不要在没有我确认的情况下创建一个新的 Session',
+    'Wrong session; do not under any circumstances whatsoever ever create a new session',
+    'Wrong session; create a note and do not ever create a new session',
   ];
 
   for (const text of cases) {

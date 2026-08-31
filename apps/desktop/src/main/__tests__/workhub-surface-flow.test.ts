@@ -153,8 +153,58 @@ test('durable delegation renders every projected target state as a navigable res
     );
     assert.match(markup, /<button/u);
     assert.match(markup, /Payments/u);
+    assert.match(markup, /Active link/u);
     assert.match(markup, new RegExp(label, 'u'));
     assert.match(markup, new RegExp(`data-state="${state}"`, 'u'));
+    assert.match(markup, /data-link-state="active"/u);
+  }
+});
+
+test('durable delegation renders terminal link state instead of stale execution feedback', () => {
+  const terminalLinks = [
+    ['superseded', 'Superseded link', '已被更正'],
+    ['aborted', 'Aborted replacement', '更正已中止'],
+  ] as const;
+  for (const [linkState, english, chinese] of terminalLinks) {
+    const turn: WorkHubCoordinationTurn = {
+      messageId: `assignment-${linkState}`,
+      turnId: `action-${linkState}`,
+      text: 'Continue payments',
+      state: 'completed',
+      assignment: {
+        actionId: `action-${linkState}`,
+        delegationId: `delegation-${linkState}`,
+        targetSessionId: 'payment',
+        targetSessionName: 'Payments',
+        targetMessageId: 'payment-message',
+        targetTurnId: 'payment-turn',
+        // Link authority must win even if the target execution projection is stale.
+        feedbackState: 'running',
+        linkState,
+      },
+      updatedAt: 10,
+    };
+    const render = (locale: 'en' | 'zh') => renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale,
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(WorkHubCoordinationTurnView, {
+            turn,
+            projection: { sessions: [], turns: [] },
+            locale,
+            onOpenSession: () => undefined,
+          }),
+        }),
+      }),
+    );
+    const englishMarkup = render('en');
+    const chineseMarkup = render('zh');
+
+    assert.match(englishMarkup, new RegExp(english, 'u'));
+    assert.doesNotMatch(englishMarkup, />Running</u);
+    assert.match(englishMarkup, new RegExp(`data-state="${linkState}"`, 'u'));
+    assert.match(englishMarkup, new RegExp(`data-link-state="${linkState}"`, 'u'));
+    assert.match(chineseMarkup, new RegExp(chinese, 'u'));
   }
 });
 
@@ -216,6 +266,44 @@ test('surface replaces a local discussion placeholder with its durable model ans
       updatedAt: 10,
     },
   ];
+
+  assert.deepEqual(visibleWorkHubConversation(durable, local), {
+    coordination: durable,
+    local: [],
+  });
+});
+
+test('surface replaces a submitted placeholder with its durable assignment state', () => {
+  const local = [{
+    requestId: 'replacement-action',
+    text: 'Switch to Login',
+    state: 'settled' as const,
+    outcome: {
+      kind: 'submitted' as const,
+      strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+      requestId: 'replacement-action',
+      target: { sessionId: 'login' },
+      turnId: 'login-turn',
+      evidence: 'explicit_target' as const,
+    },
+  }];
+  const durable: WorkHubCoordinationTurn[] = [{
+    messageId: 'assignment',
+    turnId: 'replacement-action',
+    text: 'Switch to Login',
+    state: 'completed',
+    assignment: {
+      actionId: 'replacement-action',
+      delegationId: 'login-delegation',
+      targetSessionId: 'login',
+      targetSessionName: 'Login',
+      targetMessageId: 'login-message',
+      targetTurnId: 'login-turn',
+      feedbackState: 'accepted',
+      linkState: 'active',
+    },
+    updatedAt: 10,
+  }];
 
   assert.deepEqual(visibleWorkHubConversation(durable, local), {
     coordination: durable,

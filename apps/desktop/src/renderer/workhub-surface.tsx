@@ -129,13 +129,18 @@ export function visibleWorkHubConversation(
 } {
   const localByRequestId = new Map(local.map((turn) => [turn.requestId, turn]));
   const visibleCoordination = coordination.filter(
-    (turn) =>
-      localByRequestId.get(turn.turnId)?.outcome?.kind === 'discussion' ||
-      !localByRequestId.has(turn.turnId),
+    (turn) => {
+      const localTurn = localByRequestId.get(turn.turnId);
+      return !localTurn ||
+        localTurn.outcome?.kind === 'discussion' ||
+        localTurn.outcome?.kind === 'submitted';
+    },
   );
   const coordinationTurnIds = new Set(coordination.map(({ turnId }) => turnId));
   const visibleLocal = local.filter(
-    (turn) => turn.outcome?.kind !== 'discussion' || !coordinationTurnIds.has(turn.requestId),
+    (turn) =>
+      !coordinationTurnIds.has(turn.requestId) ||
+      (turn.outcome?.kind !== 'discussion' && turn.outcome?.kind !== 'submitted'),
   );
   return { coordination: visibleCoordination, local: visibleLocal };
 }
@@ -561,7 +566,10 @@ export function WorkHubCoordinationTurnView(props: {
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={assignment?.feedbackState ?? props.turn.state}
+      state={assignment?.linkState === 'active'
+        ? assignment.feedbackState
+        : assignment?.linkState ?? props.turn.state}
+      linkState={assignment?.linkState}
       projected
     >
       {assignment ? (
@@ -570,7 +578,9 @@ export function WorkHubCoordinationTurnView(props: {
           targetSessionId={assignment.targetSessionId}
           fallbackName={assignment.targetSessionName}
           heading={copy.sentTo}
-          state={copy.delegationStates[assignment.feedbackState]}
+          state={assignment.linkState === 'active'
+            ? copy.assignmentLinkStates.active(copy.delegationStates[assignment.feedbackState])
+            : copy.assignmentLinkStates[assignment.linkState]}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -683,6 +693,7 @@ function WorkHubTurnView(props: {
 function WorkHubMessageFrame(props: {
   text: string;
   state: string;
+  linkState?: 'active' | 'superseded' | 'aborted';
   projected?: boolean;
   children: ReactNode;
 }) {
@@ -690,6 +701,7 @@ function WorkHubMessageFrame(props: {
     <section
       className={`workhub-turn${props.projected ? ' workhub-projected-turn' : ''}`}
       data-state={props.state}
+      data-link-state={props.linkState}
     >
       <ChatMessage sender="user" density="compact" className="workhub-message">
         <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user workhub-user-bubble">
@@ -781,6 +793,11 @@ function workHubCopy(locale: UiLocale) {
         aborted: '已中止',
         recovering: '正在恢复',
       },
+      assignmentLinkStates: {
+        active: (execution: string) => `关联有效 · ${execution}`,
+        superseded: '已被更正',
+        aborted: '更正已中止',
+      },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
     } as const;
   }
@@ -822,6 +839,11 @@ function workHubCopy(locale: UiLocale) {
       failed: 'Failed',
       aborted: 'Aborted',
       recovering: 'Recovering',
+    },
+    assignmentLinkStates: {
+      active: (execution: string) => `Active link · ${execution}`,
+      superseded: 'Superseded link',
+      aborted: 'Aborted replacement',
     },
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },
   } as const;

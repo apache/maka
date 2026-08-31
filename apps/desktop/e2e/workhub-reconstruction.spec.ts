@@ -73,7 +73,7 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await expect(
     page.locator('.workhub-projected-turn', { hasText: routedPrompt })
       .locator('.workhub-submitted-state'),
-  ).toHaveText('已完成');
+  ).toHaveText('关联有效 · 已完成');
 });
 
 test('WorkHub replaces the exact linked delegation across Sessions', async ({
@@ -128,10 +128,10 @@ test('WorkHub replaces the exact linked delegation across Sessions', async ({
   await expect(correctionTurn.locator('.workhub-error')).toHaveCount(0);
   await expect(
     continuedTurn.locator('.workhub-submitted-state'),
-  ).toHaveText('已中止');
+  ).toHaveText('已被更正');
   await expect(
     correctionTurn.locator('.workhub-submitted-state'),
   ).toContainText(
-    /^(?:活跃|运行中|等待中|已完成)$/u,
+    /^关联有效 · (?:已接收|进行中|等待你|已完成|失败|已中止|正在恢复)$/u,
   );
 });

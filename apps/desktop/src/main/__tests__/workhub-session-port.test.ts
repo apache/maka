@@ -265,6 +265,68 @@ test('a durable replacement abort terminalizes the retired source linkage', () =
   );
 });
 
+test('durable supersession terminalizes only the replaced linkage', () => {
+  const source: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const replacement: StoredMessage = {
+    ...source,
+    id: 'assignment-new',
+    turnId: 'action-new',
+    ts: 2,
+    schemaVersion: 2,
+    actionId: 'action-new',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'action-new',
+    targetSessionId: 'login',
+    targetSessionName: 'Login',
+    targetTurnId: 'login-turn',
+    targetMessageId: 'login-message',
+    delegationId: 'login-delegation',
+    userText: 'Switch to login',
+    replacesActionId: 'action-old',
+    replacesDelegationId: 'payments-delegation',
+  };
+  const superseded: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'superseded-old',
+    turnId: 'action-new',
+    ts: 3,
+    schemaVersion: 2,
+    kind: 'delegation_superseded',
+    actionId: 'action-new',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'action-new',
+    supersededActionId: 'action-old',
+    supersededDelegationId: 'payments-delegation',
+    replacementDelegationId: 'login-delegation',
+  };
+  const messages = [source, replacement, superseded];
+
+  assert.deepEqual(
+    projectWorkHubCoordinationTurns(messages).map((turn) => turn.assignment?.linkState),
+    ['superseded', 'active'],
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{ actionId: 'action-new', targetSessionId: 'login', sequence: 1 }]);
+});
+
 test('Coordination transcript adapter emits an initial empty ready snapshot and closes cleanly', async () => {
   const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
   const snapshots: unknown[] = [];

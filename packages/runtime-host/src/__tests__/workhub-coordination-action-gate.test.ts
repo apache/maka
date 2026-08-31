@@ -253,23 +253,31 @@ describe('WorkHub Coordination Action Gate', () => {
       ),
     );
 
-    await assert.rejects(
-      new WorkHubCoordinationActionGate(effects).act(
-        {
-          actionId: 'negated-replacement-create',
-          userText: '不是这个，而是不要真的创建一个新的 Session',
-          confirmation: { kind: 'user_correction' },
-          proposal: {
-            disposition: 'replace',
-            replacesActionId: 'source-action',
-            target: { disposition: 'create_new', title: 'New Session' },
+    const negatedCreationCases = [
+      '不是这个，而是不要真的创建一个新的 Session',
+      '不是这个，而是不要在没有我确认的情况下创建一个新的 Session',
+      'Wrong session; do not under any circumstances whatsoever ever create a new session',
+      'Wrong session; create a note and do not ever create a new session',
+    ];
+    for (const [index, userText] of negatedCreationCases.entries()) {
+      await assert.rejects(
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: `negated-replacement-create-${index}`,
+            userText,
+            confirmation: { kind: 'user_correction' },
+            proposal: {
+              disposition: 'replace',
+              replacesActionId: 'source-action',
+              target: { disposition: 'create_new', title: 'New Session' },
+            },
+            create: { workspace: { kind: 'host_path', path: '/workspace' } },
           },
-          create: { workspace: { kind: 'host_path', path: '/workspace' } },
-        },
-        CONTEXT,
-      ),
-      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
-    );
+          CONTEXT,
+        ),
+        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+      );
+    }
     assert.equal(effects.replacements.size, 0);
     assert.equal(effects.retirements.length, 0);
   });
