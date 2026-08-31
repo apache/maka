@@ -123,6 +123,8 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { copyToClipboard } from './tui-clipboard.js';
+import { getTuiCopyCopy, lastAssistantText, serializeTranscriptText } from './tui-copy-command.js';
 import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
@@ -360,6 +362,7 @@ function sessionConnectionIdentityNotice(
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
   const pickerCopy = getTuiPickerCopy(locale);
+  const copyCopy = getTuiCopyCopy(locale);
   const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
@@ -3246,6 +3249,52 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         void runControl(compactSession);
+      },
+    },
+    copy: {
+      description: primaryGuidance.commands.copy,
+      // Refused mid-turn: copy grabs the finished reply, and while a turn streams
+      // the last assistant entry is the half-written one — copying that would
+      // silently hand back a partial message. Wait for the turn (or Esc) first.
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        const scope = parts.length >= 2 ? parts[1] : undefined;
+        if (parts.length > 2 || (scope !== undefined && scope !== 'all')) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: 'Usage: /copy [all]',
+          });
+          requestRender();
+          return;
+        }
+        const copyAll = scope === 'all';
+        const text = copyAll
+          ? serializeTranscriptText(state, {
+              user: copyCopy.roleUser,
+              assistant: copyCopy.roleAssistant,
+            })
+          : lastAssistantText(state);
+        if (!text) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: copyCopy.nothingToCopy,
+          });
+          requestRender();
+          return;
+        }
+        copyToClipboard(terminal, text);
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: formatUiMessage(
+            copyAll ? copyCopy.copiedAll : copyCopy.copiedLast,
+            { count: text.length },
+            locale,
+          ),
+        });
+        requestRender();
       },
     },
     exit: {

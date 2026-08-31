@@ -18,6 +18,24 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  copy: {
+    en: {
+      copiedLast:
+        'Copied the last reply to the clipboard · {count, plural, one {# char} other {# chars}}',
+      copiedAll:
+        'Copied the conversation to the clipboard · {count, plural, one {# char} other {# chars}}',
+      nothingToCopy: 'Nothing to copy yet.',
+      roleUser: 'You:',
+      roleAssistant: 'Maka:',
+    },
+    zh: {
+      copiedLast: '已复制最后一条回复到剪贴板 · {count} 个字符',
+      copiedAll: '已复制整段对话到剪贴板 · {count} 个字符',
+      nothingToCopy: '暂无可复制的内容。',
+      roleUser: '你：',
+      roleAssistant: 'Maka：',
+    },
+  },
   'mcp-status': {
     en: {
       title: 'MCP SERVERS',
@@ -281,6 +299,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: 'Compact session context',
         context: 'Show latest request context usage',
+        copy: 'Copy the last reply (or /copy all) to the clipboard',
         exit: 'Exit Maka',
         goal: 'Show autonomous goal status',
         graph: 'Show, enable, disable, or run one Graph turn',
@@ -331,6 +350,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: '压缩会话上下文',
         context: '查看最近一次请求的上下文用量',
+        copy: '复制最后一条回复（或 /copy all）到剪贴板',
         exit: '退出 Maka',
         goal: '查看自主目标状态',
         graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',
