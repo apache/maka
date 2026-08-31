@@ -49,6 +49,9 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
     const panelStyle = getComputedStyle(panel);
     const panelOverflow = panelStyle.overflow;
     const headingStyle = getComputedStyle(heading);
+    const stickyLayerToken = getComputedStyle(document.documentElement)
+      .getPropertyValue('--z-sticky')
+      .trim();
     const panelMaxHeight = panelStyle.maxHeight;
     const panelRectBefore = panel.getBoundingClientRect();
     const headingRectBefore = heading.getBoundingClientRect();
@@ -65,6 +68,7 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
       panelMaxHeight,
       headingPosition: headingStyle.position,
       headingZIndex: headingStyle.zIndex,
+      stickyLayerToken,
       headingBackground: headingStyle.backgroundColor,
       headingBoxShadow: headingStyle.boxShadow,
       panelScrollHeight: panel.scrollHeight,
@@ -77,7 +81,8 @@ test('Agent Graph keeps its heading fixed while the content scrolls', async ({ w
   });
   expect(geometry.panelOverflow).toBe('auto');
   expect(geometry.headingPosition).toBe('sticky');
-  expect(geometry.headingZIndex).toBe('20');
+  expect(geometry.stickyLayerToken).not.toBe('');
+  expect(geometry.headingZIndex).toBe(geometry.stickyLayerToken);
   expect(geometry.headingBackground).not.toBe('rgba(0, 0, 0, 0)');
   expect(geometry.headingBoxShadow).not.toBe('none');
   expect(geometry.panelScrollHeight).toBeGreaterThan(geometry.panelClientHeight);
