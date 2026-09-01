@@ -48,13 +48,9 @@ import {
   TOOL_STREAM_MAX_CHUNKS,
   TOOL_STREAM_MAX_CHUNK_CHARS,
   TOOL_STREAM_MAX_TOTAL_CHARS,
-  applyLiveTurnEvent,
-  applyLiveTurnEvents,
   applyToolOutputChunk,
-  applyToolOutputChunks,
   type ToolOutputChunk,
 } from '@maka/ui';
-import type { SessionEvent } from '@maka/core/events';
 
 function chunk(seq: number, text: string, stream: 'stdout' | 'stderr' = 'stdout', redacted = false): ToolOutputChunk {
   return { seq, text, stream, redacted, createdAt: 1_700_000_000_000 + seq };
@@ -175,136 +171,5 @@ describe('applyToolOutputChunk — clean-path flags', () => {
     // may be false — but the secret would also be gone. Assert the
     // contract that matters: secret never appears in stored state.
     assert.equal(result.chunks[0]!.text.includes('sk-test1234567890ABCDEF'), false);
-  });
-});
-
-describe('applyToolOutputChunks — display-batch semantics', () => {
-  it('matches sequential application for ordered, duplicate, and out-of-order chunks', () => {
-    const incoming = [
-      chunk(3, 'third'),
-      chunk(1, 'first'),
-      chunk(2, 'second'),
-      chunk(2, 'ignored duplicate'),
-      chunk(4, 'Authorization: Bearer sk-test1234567890ABCDEF'),
-    ];
-    let sequential: ToolOutputChunk[] | undefined;
-    let sequentialTruncated = false;
-    let sequentialRedacted = false;
-    for (const item of incoming) {
-      const result = applyToolOutputChunk(sequential, item);
-      sequential = result.chunks;
-      sequentialTruncated ||= result.truncated;
-      sequentialRedacted ||= result.redacted;
-    }
-
-    const batched = applyToolOutputChunks(undefined, incoming);
-    assert.deepEqual(batched.chunks, sequential);
-    assert.equal(batched.truncated, sequentialTruncated);
-    assert.equal(batched.redacted, sequentialRedacted);
-  });
-
-  it('matches sequential live-turn projection across mixed stream boundaries', () => {
-    const events: SessionEvent[] = [
-      {
-        type: 'tool_start',
-        id: 'start-a',
-        turnId: 'turn-1',
-        ts: 1,
-        stepId: 'assistant-1',
-        toolUseId: 'tool-a',
-        toolName: 'shell',
-        args: {},
-      },
-      {
-        type: 'tool_output_delta',
-        id: 'a-2',
-        turnId: 'turn-1',
-        ts: 2,
-        sessionId: 'session-1',
-        toolCallId: 'tool-a',
-        toolUseId: 'tool-a',
-        seq: 2,
-        stream: 'stdout',
-        chunk: 'second',
-        redacted: false,
-        createdAt: 2,
-      },
-      {
-        type: 'tool_output_delta',
-        id: 'a-1',
-        turnId: 'turn-1',
-        ts: 3,
-        sessionId: 'session-1',
-        toolCallId: 'tool-a',
-        toolUseId: 'tool-a',
-        seq: 1,
-        stream: 'stdout',
-        chunk: 'first',
-        redacted: false,
-        createdAt: 1,
-      },
-      {
-        type: 'text_delta',
-        id: 'text-1',
-        turnId: 'turn-1',
-        messageId: 'assistant-1',
-        ts: 4,
-        startOffset: 0,
-        text: 'answer',
-      },
-      {
-        type: 'tool_output_delta',
-        id: 'a-3',
-        turnId: 'turn-1',
-        ts: 5,
-        sessionId: 'session-1',
-        toolCallId: 'tool-a',
-        toolUseId: 'tool-a',
-        seq: 3,
-        stream: 'stderr',
-        chunk: 'third',
-        redacted: false,
-        createdAt: 3,
-      },
-    ];
-    let sequential;
-    for (const event of events) {
-      sequential = applyLiveTurnEvent(sequential, event, 'zh');
-    }
-
-    assert.deepEqual(applyLiveTurnEvents(undefined, events, 'zh'), sequential);
-  });
-
-  it('preserves first-output step creation and pending steering semantics', () => {
-    const events: SessionEvent[] = [
-      {
-        type: 'steering_message',
-        id: 'steer-event',
-        turnId: 'turn-1',
-        messageId: 'steer-1',
-        ts: 1,
-        content: { text: 'continue' },
-      },
-      ...[1, 2].map((seq) => ({
-        type: 'tool_output_delta' as const,
-        id: `output-${seq}`,
-        turnId: 'turn-1',
-        ts: seq + 1,
-        sessionId: 'session-1',
-        toolCallId: 'tool-a',
-        toolUseId: 'tool-a',
-        seq,
-        stream: 'stdout' as const,
-        chunk: String(seq),
-        redacted: false,
-        createdAt: seq,
-      })),
-    ];
-    let sequential;
-    for (const event of events) {
-      sequential = applyLiveTurnEvent(sequential, event, 'zh');
-    }
-
-    assert.deepEqual(applyLiveTurnEvents(undefined, events, 'zh'), sequential);
   });
 });

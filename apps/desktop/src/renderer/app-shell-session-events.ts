@@ -22,12 +22,12 @@ import type { StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   applyLiveTurnEvents,
-  ASSISTANT_MAX_DELTA_CHARS,
   clearInteractions,
   reduceInteractionQueues,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
-  THINKING_MAX_DELTA_CHARS,
+  TOOL_STREAM_MAX_CHUNKS,
+  TOOL_STREAM_MAX_TOTAL_CHARS,
   type LiveTurnProjection,
   type InteractionQueues,
   type TransientUserMessageProjection,
@@ -70,130 +70,11 @@ export interface AppShellSessionEventHandlers {
 export interface AppShellSessionDisplayBatch {
   readonly pendingEvents: Map<string, SessionEvent[]>;
   readonly displayPendingSessions: Set<string>;
-  readonly lastCommitAtBySession: Map<string, number>;
-  readonly streamedCharsBySession: Map<string, { turnId: string; chars: number }>;
   framePending: boolean;
 }
 
 export function createAppShellSessionDisplayBatch(): AppShellSessionDisplayBatch {
-  return {
-    pendingEvents: new Map(),
-    displayPendingSessions: new Set(),
-    lastCommitAtBySession: new Map(),
-    streamedCharsBySession: new Map(),
-    framePending: false,
-  };
-}
-
-type AssistantDisplayDelta = Extract<
-  SessionEvent,
-  { type: 'text_delta' | 'thinking_delta' }
->;
-type DisplayStreamEvent = Extract<
-  SessionEvent,
-  { type: 'text_delta' | 'thinking_delta' | 'tool_output_delta' }
->;
-
-const SHORT_STREAM_FRAME_MS = 16;
-const MEDIUM_STREAM_FRAME_MS = 32;
-const LONG_STREAM_FRAME_MS = 50;
-const MEDIUM_STREAM_CHARS = 4 * 1024;
-const LONG_STREAM_CHARS = 16 * 1024;
-
-function projectedStreamChars(projection: LiveTurnProjection | undefined): number {
-  if (!projection) return 0;
-  let chars = 0;
-  for (const step of projection.steps) {
-    chars += step.text?.text.length ?? 0;
-    chars += step.thinking?.text.length ?? 0;
-    for (const tool of step.tools) {
-      for (const chunk of tool.outputChunks ?? []) chars += chunk.text.length;
-    }
-    if (chars >= LONG_STREAM_CHARS) return LONG_STREAM_CHARS;
-  }
-  return chars;
-}
-
-function displayEventChars(event: DisplayStreamEvent): number {
-  return event.type === 'tool_output_delta' ? event.chunk.length : event.text.length;
-}
-
-export function streamDisplayIntervalMs(chars: number): number {
-  if (chars >= LONG_STREAM_CHARS) return LONG_STREAM_FRAME_MS;
-  if (chars >= MEDIUM_STREAM_CHARS) return MEDIUM_STREAM_FRAME_MS;
-  return SHORT_STREAM_FRAME_MS;
-}
-
-function canCoalesceAssistantDelta(
-  previous: SessionEvent | undefined,
-  next: AssistantDisplayDelta,
-): previous is AssistantDisplayDelta {
-  const previousPhase = (previous as { phase?: unknown } | undefined)?.phase;
-  const nextPhase = (next as { phase?: unknown }).phase;
-  if (
-    previous?.type !== next.type
-    || previous.turnId !== next.turnId
-    || previous.messageId !== next.messageId
-    || previousPhase !== nextPhase
-  ) {
-    return false;
-  }
-  if (previous.startOffset === undefined || next.startOffset === undefined) {
-    return previous.startOffset === undefined && next.startOffset === undefined;
-  }
-  return next.startOffset === previous.startOffset + previous.text.length;
-}
-
-export function coalesceDisplayEvents(events: readonly SessionEvent[]): SessionEvent[] {
-  const result: SessionEvent[] = [];
-  let first: AssistantDisplayDelta | undefined;
-  let last: AssistantDisplayDelta | undefined;
-  let chunks: string[] = [];
-  let chars = 0;
-
-  const flush = (): void => {
-    if (!first || !last) return;
-    result.push(chunks.length === 1
-      ? first
-      : {
-          ...first,
-          id: last.id,
-          ts: last.ts,
-          text: chunks.join(''),
-        });
-    first = undefined;
-    last = undefined;
-    chunks = [];
-    chars = 0;
-  };
-
-  for (const event of events) {
-    const maxDeltaChars = event.type === 'thinking_delta'
-      ? THINKING_MAX_DELTA_CHARS
-      : ASSISTANT_MAX_DELTA_CHARS;
-    if (
-      (event.type === 'text_delta' || event.type === 'thinking_delta')
-      && (!last || canCoalesceAssistantDelta(last, event))
-      && chars + event.text.length <= maxDeltaChars
-    ) {
-      first ??= event;
-      last = event;
-      chunks.push(event.text);
-      chars += event.text.length;
-      continue;
-    }
-    flush();
-    if (event.type === 'text_delta' || event.type === 'thinking_delta') {
-      first = event;
-      last = event;
-      chunks.push(event.text);
-      chars = event.text.length;
-    } else {
-      result.push(event);
-    }
-  }
-  flush();
-  return result;
+  return { pendingEvents: new Map(), displayPendingSessions: new Set(), framePending: false };
 }
 
 export function createAppShellSessionEventHandlers(options: {
@@ -226,8 +107,6 @@ export function createAppShellSessionEventHandlers(options: {
   toastApi: ToastApi;
   notifyRunEnded?: (payload: { kind: 'completed' | 'errored'; sessionId: string; body?: string }) => void;
   scheduleFrame?: (callback: () => void) => void;
-  scheduleDelay?: (callback: () => void, delayMs: number) => void;
-  now?: () => number;
   displayBatch?: AppShellSessionDisplayBatch;
 }): AppShellSessionEventHandlers {
   const {
@@ -262,16 +141,6 @@ export function createAppShellSessionEventHandlers(options: {
         }
       : undefined
   );
-  const scheduleDelay = options.scheduleDelay ?? (
-    (callback: () => void, delayMs: number) => {
-      globalThis.setTimeout(callback, delayMs);
-    }
-  );
-  const now = options.now ?? (
-    typeof performance === 'undefined'
-      ? Date.now
-      : () => performance.now()
-  );
   const displayBatch = options.displayBatch ?? createAppShellSessionDisplayBatch();
 
   function applyProjectionEvents(
@@ -299,53 +168,41 @@ export function createAppShellSessionEventHandlers(options: {
   function takePendingDisplayEvents(sessionId: string): SessionEvent[] {
     const events = displayBatch.pendingEvents.get(sessionId) ?? [];
     displayBatch.pendingEvents.delete(sessionId);
-    return coalesceDisplayEvents(events);
+    return events;
   }
 
-  function scheduleDisplayEvent(sessionId: string, event: DisplayStreamEvent): void {
+  function scheduleDisplayEvent(sessionId: string, event: SessionEvent): void {
     const events = displayBatch.pendingEvents.get(sessionId) ?? [];
     events.push(event);
     displayBatch.pendingEvents.set(sessionId, events);
-    const previousCount = displayBatch.streamedCharsBySession.get(sessionId);
-    const currentProjection = liveTurnBySessionRef.current[sessionId];
-    const baseChars = previousCount?.turnId === event.turnId
-      ? previousCount.chars
-      : currentProjection?.turnId === event.turnId
-        ? projectedStreamChars(currentProjection)
-        : 0;
-    const streamedChars = Math.min(
-      LONG_STREAM_CHARS,
-      baseChars + displayEventChars(event),
-    );
-    displayBatch.streamedCharsBySession.set(sessionId, {
-      turnId: event.turnId,
-      chars: streamedChars,
-    });
+    if (event.type === 'tool_output_delta') {
+      let chunks = 0;
+      let chars = 0;
+      for (let index = events.length - 1; index >= 0; index -= 1) {
+        const candidate = events[index];
+        if (
+          candidate?.type === 'tool_output_delta'
+          && candidate.turnId === event.turnId
+          && candidate.toolUseId === event.toolUseId
+        ) {
+          chunks += 1;
+          chars += candidate.chunk.length;
+          if (
+            chunks > TOOL_STREAM_MAX_CHUNKS
+            || chars > TOOL_STREAM_MAX_TOTAL_CHARS
+          ) events.splice(index, 1);
+        }
+      }
+    }
     if (displayBatch.framePending || !scheduleFrame) return;
     displayBatch.framePending = true;
-    const intervalMs = streamDisplayIntervalMs(streamedChars);
-    const lastCommitAt =
-      displayBatch.lastCommitAtBySession.get(sessionId)
-      ?? Number.NEGATIVE_INFINITY;
-    const delayMs = Math.max(0, intervalMs - (now() - lastCommitAt));
-    const flush = () => {
+    scheduleFrame(() => {
       displayBatch.framePending = false;
       if (!displayBatch.pendingEvents.size) return;
       const batches = new Map(displayBatch.pendingEvents);
       displayBatch.pendingEvents.clear();
-      const committedAt = now();
-      for (const pendingSessionId of batches.keys()) {
-        displayBatch.lastCommitAtBySession.set(pendingSessionId, committedAt);
-      }
-      for (const [pendingSessionId, pendingEvents] of batches) {
-        batches.set(pendingSessionId, coalesceDisplayEvents(pendingEvents));
-      }
       setLiveTurnBySession((current) => replaceLiveTurns(current, batches));
-    };
-    if (delayMs > 0 && scheduleDelay) {
-      scheduleDelay(() => scheduleFrame(flush), delayMs);
-    }
-    else scheduleFrame(flush);
+    });
   }
 
   function flushDisplayEvents(sessionId: string): void {
@@ -357,8 +214,6 @@ export function createAppShellSessionEventHandlers(options: {
   function dropDisplayEvents(sessionId: string): void {
     displayBatch.pendingEvents.delete(sessionId);
     displayBatch.displayPendingSessions.delete(sessionId);
-    displayBatch.lastCommitAtBySession.delete(sessionId);
-    displayBatch.streamedCharsBySession.delete(sessionId);
   }
 
   function markDisplayPending(sessionId: string): void {
@@ -458,14 +313,6 @@ export function createAppShellSessionEventHandlers(options: {
     ) {
       scheduleDisplayEvent(sessionId, event);
       return;
-    }
-    if (
-      event.type === 'complete'
-      || event.type === 'error'
-      || event.type === 'abort'
-    ) {
-      displayBatch.lastCommitAtBySession.delete(sessionId);
-      displayBatch.streamedCharsBySession.delete(sessionId);
     }
     const pending = takePendingDisplayEvents(sessionId);
     const before = applyProjectionEvents(liveTurnBySessionRef.current[sessionId], pending);

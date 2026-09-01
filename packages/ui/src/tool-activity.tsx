@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
@@ -718,7 +718,7 @@ function ToolOutputStream(props: {
   const copy = getToolActivityCopy(useUiLocale()).output;
   const preRef = useRef<HTMLPreElement>(null);
   const runs = useMemo(() => coalesceToolOutputDisplayRuns(props.chunks), [props.chunks]);
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (!props.live) return;
     const el = preRef.current;
     if (!el) return;

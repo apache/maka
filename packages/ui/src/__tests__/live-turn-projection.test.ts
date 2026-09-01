@@ -19,10 +19,12 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { encodeToolStepProgress } from '@maka/core/events';
+import { encodeToolStepProgress, type SessionEvent } from '@maka/core/events';
 import {
   applyLiveTurnEvent,
+  applyLiveTurnEvents,
   armLiveTurn,
+  coalesceLiveTurnEvents,
   confirmLiveTurn,
   reconcileTerminalLiveTurn,
   settleLiveTurnStep,
@@ -31,6 +33,128 @@ import {
 import { materializeTurns, overlayLiveTurn, type ToolActivityItem } from '../materialize.js';
 import { redactSecrets } from '../redact.js';
 import { getConversationCopy } from '../conversation-copy.js';
+
+describe('frame-batched live-turn projection', () => {
+  it('coalesces only contiguous assistant deltas from the same stream', () => {
+    const events = coalesceLiveTurnEvents([
+      {
+        type: 'text_delta',
+        id: 'e1',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 1,
+        startOffset: 0,
+        text: 'Hel',
+      },
+      {
+        type: 'text_delta',
+        id: 'e2',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 2,
+        startOffset: 3,
+        text: 'lo',
+      },
+      {
+        type: 'thinking_delta',
+        id: 'e3',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 3,
+        startOffset: 0,
+        text: 'think',
+      },
+      {
+        type: 'text_delta',
+        id: 'e4',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 4,
+        startOffset: 8,
+        text: 'gap',
+      },
+    ]);
+
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[0], {
+      type: 'text_delta',
+      id: 'e2',
+      turnId: 'turn-1',
+      messageId: 'assistant-1',
+      ts: 2,
+      startOffset: 0,
+      text: 'Hello',
+    });
+  });
+
+  it('keeps coalesced deltas within the renderer trust-boundary limit', () => {
+    const events = coalesceLiveTurnEvents(
+      Array.from({ length: 9_000 }, (_, index) => ({
+        type: 'text_delta' as const,
+        id: `event-${index}`,
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: index,
+        startOffset: index,
+        text: 'x',
+      })),
+    );
+
+    assert.equal(events.length, 3);
+    assert.equal(
+      events.map((event) => event.type === 'text_delta' ? event.text : '').join('').length,
+      9_000,
+    );
+    assert.ok(events.every((event) => event.type !== 'text_delta' || event.text.length <= 4_096));
+  });
+
+  it('matches sequential projection across redaction and stream boundaries', () => {
+    const events: SessionEvent[] = [
+      {
+        type: 'text_delta',
+        id: 'e1',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 1,
+        startOffset: 0,
+        text: 'Authorization: Bearer sk-test',
+      },
+      {
+        type: 'text_delta',
+        id: 'e2',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 2,
+        startOffset: 30,
+        text: '1234567890ABCDEF',
+      },
+      {
+        type: 'thinking_delta',
+        id: 'e3',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 3,
+        startOffset: 0,
+        text: 'check',
+      },
+      {
+        type: 'text_delta',
+        id: 'e4',
+        turnId: 'turn-1',
+        messageId: 'assistant-1',
+        ts: 4,
+        startOffset: 46,
+        text: ' done',
+      },
+    ];
+    let sequential;
+    for (const event of events) {
+      sequential = applyLiveTurnEvent(sequential, event, 'zh');
+    }
+
+    assert.deepEqual(applyLiveTurnEvents(undefined, events, 'zh'), sequential);
+  });
+});
 
 // A client that just sent cannot read "has my turn started" off session status:
 // it is the same before the turn starts and after it ends. The arm carries

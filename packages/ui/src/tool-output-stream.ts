@@ -119,98 +119,6 @@ export interface ApplyToolOutputChunkResult {
   redacted: boolean;
 }
 
-function prepareToolOutputChunk(
-  rawChunk: ToolOutputChunk,
-  maxChunkChars: number,
-  truncatedChunkMarker: string,
-): {
-  chunk: ToolOutputChunk;
-  redacted: boolean;
-  truncated: boolean;
-} {
-  const redactedText = redactSecrets(rawChunk.text);
-  const redactionHappened = redactedText !== rawChunk.text;
-
-  let storedText = redactedText;
-  let truncated = false;
-  if (storedText.length > maxChunkChars) {
-    const tail = storedText.slice(storedText.length - maxChunkChars + truncatedChunkMarker.length);
-    storedText = truncatedChunkMarker + tail;
-    truncated = true;
-  }
-
-  return {
-    chunk: {
-      ...rawChunk,
-      text: storedText,
-      redacted: rawChunk.redacted || redactionHappened,
-    },
-    redacted: redactionHappened,
-    truncated,
-  };
-}
-
-export function applyToolOutputChunks(
-  prevChunks: ToolOutputChunk[] | undefined,
-  rawChunks: readonly ToolOutputChunk[],
-  options: ApplyToolOutputChunkOptions = {},
-): ApplyToolOutputChunkResult {
-  const list = prevChunks ?? [];
-  if (rawChunks.length === 0) {
-    return { chunks: list, redacted: false, truncated: false };
-  }
-
-  const maxChunks = options.maxChunks ?? TOOL_STREAM_MAX_CHUNKS;
-  const maxTotalChars = options.maxTotalChars ?? TOOL_STREAM_MAX_TOTAL_CHARS;
-  const maxChunkChars = options.maxChunkChars ?? TOOL_STREAM_MAX_CHUNK_CHARS;
-  const truncatedChunkMarker = getSharedUiCopy(options.locale ?? 'zh').stream.toolChunkTruncated;
-  const chunks = [...list];
-  const seqs = new Set(chunks.map((chunk) => chunk.seq));
-  let totalChars = chunks.reduce((sum, chunk) => sum + chunk.text.length, 0);
-  let redacted = false;
-  let truncated = false;
-  let changed = false;
-
-  for (const rawChunk of rawChunks) {
-    if (seqs.has(rawChunk.seq)) continue;
-    const prepared = prepareToolOutputChunk(
-      rawChunk,
-      maxChunkChars,
-      truncatedChunkMarker,
-    );
-    redacted ||= prepared.redacted;
-    truncated ||= prepared.truncated;
-
-    let low = 0;
-    let high = chunks.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (chunks[middle]!.seq < prepared.chunk.seq) low = middle + 1;
-      else high = middle;
-    }
-    chunks.splice(low, 0, prepared.chunk);
-    seqs.add(prepared.chunk.seq);
-    totalChars += prepared.chunk.text.length;
-    changed = true;
-
-    while (
-      chunks.length > 0
-      && (chunks.length > maxChunks || totalChars > maxTotalChars)
-    ) {
-      const dropped = chunks.shift()!;
-      seqs.delete(dropped.seq);
-      totalChars -= dropped.text.length;
-      truncated = true;
-    }
-  }
-
-  return {
-    chunks: changed ? chunks : list,
-    redacted,
-    truncated,
-  };
-}
-
 /**
  * Apply a single incoming `tool_output_delta` chunk to the running
  * list. Returns the new list, plus flags for whether redaction
@@ -236,5 +144,64 @@ export function applyToolOutputChunk(
   rawChunk: ToolOutputChunk,
   options: ApplyToolOutputChunkOptions = {},
 ): ApplyToolOutputChunkResult {
-  return applyToolOutputChunks(prevChunks, [rawChunk], options);
+  const maxChunks = options.maxChunks ?? TOOL_STREAM_MAX_CHUNKS;
+  const maxTotalChars = options.maxTotalChars ?? TOOL_STREAM_MAX_TOTAL_CHARS;
+  const maxChunkChars = options.maxChunkChars ?? TOOL_STREAM_MAX_CHUNK_CHARS;
+  const truncatedChunkMarker = getSharedUiCopy(options.locale ?? 'zh').stream.toolChunkTruncated;
+
+  const list = prevChunks ?? [];
+
+  // Dedup-by-seq: if the seq is already present, return prev untouched.
+  // This MUST happen before we burn CPU on redaction/truncation for a
+  // chunk that's already in the list.
+  if (list.some((existing) => existing.seq === rawChunk.seq)) {
+    return { chunks: list, redacted: false, truncated: false };
+  }
+
+  // L1: secondary redaction. The renderer doesn't get to trust
+  // upstream's redactor; we mask again here so React state never
+  // contains raw secrets.
+  const redactedText = redactSecrets(rawChunk.text);
+  const redactionHappened = redactedText !== rawChunk.text;
+
+  // L2: per-chunk cap. A single oversize chunk gets tail-kept;
+  // we prepend a marker so the user knows the head was dropped.
+  let storedText = redactedText;
+  let chunkTruncated = false;
+  if (storedText.length > maxChunkChars) {
+    const tail = storedText.slice(storedText.length - maxChunkChars + truncatedChunkMarker.length);
+    storedText = truncatedChunkMarker + tail;
+    chunkTruncated = true;
+  }
+
+  const storedChunk: ToolOutputChunk = {
+    ...rawChunk,
+    text: storedText,
+    redacted: rawChunk.redacted || redactionHappened,
+  };
+
+  // Sorted insert by seq.
+  const merged = [...list, storedChunk].sort((a, b) => a.seq - b.seq);
+
+  // L3: per-tool count + total-chars caps. Drop oldest until both
+  // invariants hold. Loop bounded by current length so worst-case
+  // O(n) even on a flood.
+  let dropped = false;
+  let chunks = merged;
+  while (chunks.length > maxChunks) {
+    chunks = chunks.slice(1);
+    dropped = true;
+  }
+  let totalChars = chunks.reduce((sum, c) => sum + c.text.length, 0);
+  while (totalChars > maxTotalChars && chunks.length > 0) {
+    totalChars -= chunks[0]!.text.length;
+    chunks = chunks.slice(1);
+    dropped = true;
+  }
+
+  return {
+    chunks,
+    redacted: redactionHappened,
+    truncated: chunkTruncated || dropped,
+  };
 }
