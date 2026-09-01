@@ -97,8 +97,9 @@ test('reconciles retired OpenCode Free models without removing user models', asy
       ({ slug }) => slug === 'opencode-free',
     );
     assert.deepEqual(migrated?.enabledModelIds, ['nemotron-3-ultra-free', 'user-model']);
-    assert.ok(migrated?.models.some(({ id }) => id === 'big-pickle'));
-    assert.ok(!migrated?.models.some(({ id }) => id === 'deepseek-v4-flash-free'));
+    // The row stores no inventory of its own: this provider ships one, and the
+    // resolver prepends the current build's list to whatever the row holds.
+    assert.deepEqual(migrated?.models, []);
     assert.deepEqual((await stores.connectionCatalog.getSnapshot()).defaultTarget, {
       connectionId: migrated?.connectionId,
       modelId: 'nemotron-3-ultra-free',
@@ -266,15 +267,15 @@ test('a historical persisted seed migrates atomically, inventory and default inc
 
     await ensureBootstrapRuntimePolicy({ workspaceRoot: root, stores, environment: {} });
 
-    // One document write carried all three: enabled ids, the re-derived
-    // static inventory, and the retargeted default.
+    // One document write carried all three: enabled ids, the dropped static
+    // inventory, and the retargeted default.
     const catalog = await stores.connectionCatalog.getSnapshot();
     const migrated = catalog.connections.find(({ slug }) => slug === 'opencode-free');
     assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
-    assert.deepEqual(
-      migrated?.models.map(({ id }) => id),
-      [...OPENCODE_FREE_ENABLED_MODEL_IDS],
-    );
+    // The pinned copy goes rather than being re-pinned to this build's list:
+    // the resolver prepends the shipped inventory on every read, so a row that
+    // stores one can only go stale again.
+    assert.deepEqual(migrated?.models, []);
     assert.deepEqual(catalog.defaultTarget, {
       connectionId,
       modelId: OPENCODE_FREE_DEFAULT_MODEL,
