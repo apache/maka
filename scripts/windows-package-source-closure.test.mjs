@@ -28,7 +28,27 @@ import {
   windowsReleasePatternCoversSource,
 } from './windows-package-source-closure.mjs';
 
-test('the Windows package trigger covers the packaged worker and driver import closure', async () => {
+/**
+ * The `packages/` half of this lane's filter that the import closure does not
+ * account for. Each entry schedules a 25-minute Windows runner on its own, so
+ * it has to earn that here rather than sit indistinguishable among the twenty
+ * derived entries — which is the only way a rotted one is ever noticed.
+ */
+const UNDERIVED_PACKAGE_PATTERNS = new Map([
+  // Regenerated and diffed by `check:release`, and consumed by the packaging
+  // step rather than imported by the worker.
+  ['packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv', 'peer dependency manifest'],
+  ['packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt', 'peer dependency manifest'],
+  // Candidate election runs in the packaged app, not in the worker closure, and
+  // has broken this path before.
+  ['packages/runtime-host/src/client/connect-or-spawn.ts', 'Runtime Host candidate election'],
+  ['packages/runtime-host/src/client/launcher.ts', 'Runtime Host candidate election'],
+  // Builds the worker the closure starts from, so it precedes rather than joins
+  // it.
+  ['packages/runtime/scripts/build-filesystem-worker.mjs', 'builds the worker itself'],
+]);
+
+test('the Windows package trigger is exactly its closure plus declared exceptions', async () => {
   const closure = await collectWindowsPackageSourceClosure();
   const patterns = readWindowsReleasePathPatterns();
   const missing = closure.filter(
@@ -48,6 +68,17 @@ test('the Windows package trigger covers the packaged worker and driver import c
     assert.ok(closure.includes(expected), `closure omitted ${expected}`);
   }
   assert.deepEqual(missing, []);
+
+  // The other direction, which containment alone cannot see: a pattern backed
+  // by nothing is dead weight that still books a Windows runner every time it
+  // matches, and nothing reports it. Exceptions are declared above, so this
+  // fails both when the closure stops reaching an entry and when a stale
+  // exception outlives its reason.
+  const underived = patterns
+    .filter((pattern) => pattern.startsWith('packages/'))
+    .filter((pattern) => !closure.some((path) => windowsReleasePatternCoversSource(path, pattern)))
+    .sort();
+  assert.deepEqual(underived, [...UNDERIVED_PACKAGE_PATTERNS.keys()].sort());
 });
 
 test('the Windows package workflow path list has no duplicate entries', () => {

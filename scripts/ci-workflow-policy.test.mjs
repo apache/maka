@@ -371,7 +371,6 @@ test('the recovery lane pairs its path filter with a nightly run and a main push
     triggers.match(/\n {2}push:\n(?:(?: {4}[^\n]*)?\n)*/u)?.[0] ?? '',
     /\bpaths(-ignore)?:/u,
   );
-  assert.match(triggers, /\n {2}schedule:\n/u);
   assert.match(triggers, /\n {2}workflow_dispatch:/u);
   assert.match(readWorkflow('windows-recovery.yml'), /\n {4}name: windows_recovery/u);
 });
@@ -468,14 +467,43 @@ test('the recovery lane filters pull requests by what only Windows can prove', (
   }
 });
 
-test('the sandbox lane pairs its path filter with a nightly run', () => {
-  const workflow = readWorkflow('windows-sandbox-w0.yml');
+/**
+ * Filtered lanes with no automatic path that runs them when the filter misses.
+ * Each one first observes a transitive edit it cannot match wherever that edit
+ * eventually lands, which for a release lane is release day. They predate the
+ * gates narrowed here and are listed rather than fixed so the gap is countable.
+ */
+const LANES_WITHOUT_A_FILTER_ESCAPE = new Set([
+  // Both pair the pull request with a `push: main` carrying the same filter,
+  // which observes the same set and so is not an escape at all.
+  'gitoxide-helper-admission.yml',
+  'runtime-host-peer-admission.yml',
+  // Pairs it with `workflow_dispatch`, which nothing fires on its own.
+  'runtime-host-owner-platform.yml',
+]);
 
-  // The filter is a pre-filter, not the lane's import closure, so dropping the
-  // schedule would silently lose every transitive edit it cannot match, and
-  // dropping the filter would put the whole runtime back on pull requests.
-  assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
-  assert.match(workflow, /\n {2}schedule:/u);
+test('a filtered pull-request lane can still run when its filter misses', () => {
+  // A path filter is a pre-filter, not the lane's import closure, so an edit it
+  // cannot match is invisible to it. Something must therefore run the lane
+  // without consulting the filter: a schedule, an unfiltered push, or a caller
+  // that reaches it through `workflow_call`. Enumerated over the directory
+  // rather than asserted lane by lane, because the three hand-written pairings
+  // this replaces covered three lanes and missed every other one — including
+  // `release-windows-check.yml`, whose filter was narrowed in this branch.
+  const uncovered = [];
+  for (const name of readdirSync(WORKFLOW_DIR).filter((file) => file.endsWith('.yml'))) {
+    const triggers = triggerBlock(name);
+    if (!/\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u.test(triggers)) continue;
+
+    const push = triggers.match(/\n {2}push:\n(?:(?: {4,}[^\n]*)?\n)*/u)?.[0] ?? '';
+    const escapes =
+      /\n {2}schedule:/u.test(triggers) ||
+      /\n {2}workflow_call:/u.test(triggers) ||
+      (push !== '' && !/\bpaths(-ignore)?:/u.test(push));
+    if (!escapes) uncovered.push(name);
+  }
+
+  assert.deepEqual(uncovered.sort(), [...LANES_WITHOUT_A_FILTER_ESCAPE].sort());
 });
 
 test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
