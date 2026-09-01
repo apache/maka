@@ -110,7 +110,6 @@ type Harness = {
   toggleAll: boolean[];
   entered: Array<string | undefined>;
   exits: number;
-  deleteRequests: number;
   pressKey(key: string, focusedSessionId?: string): Promise<void>;
   dispose(): Promise<void>;
   clickRow(sessionId: string, modifiers?: Partial<MouseEventInit>): Promise<void>;
@@ -137,7 +136,6 @@ async function mount(
   const toggleAll: boolean[] = [];
   const entered: Array<string | undefined> = [];
   let exits = 0;
-  let deleteRequests = 0;
   const rowSelection: SessionRailRowSelection = {
     active: options.active ?? false,
     selectedIds: new Set(options.selectedIds ?? []),
@@ -152,9 +150,6 @@ async function mount(
     },
     onToggleAll: (selected) => toggleAll.push(selected),
     onArchiveSelected: () => undefined,
-    onDeleteSelected: () => {
-      deleteRequests += 1;
-    },
   };
   const data: SessionRailData = {
     sessions: SESSIONS,
@@ -183,9 +178,6 @@ async function mount(
     entered,
     get exits() {
       return exits;
-    },
-    get deleteRequests() {
-      return deleteRequests;
     },
     pressKey: async (key: string, focusedSessionId = 'a') => {
       // linkedom has no focus model and reports `activeElement` as null, where a
@@ -319,19 +311,6 @@ test('Escape outside the mode is not this handler\'s business', async () => {
   try {
     await harness.pressKey('Escape');
     assert.equal(harness.exits, 0);
-  } finally {
-    await harness.dispose();
-  }
-});
-
-test('Delete asks for the marked set, not the focused row', async () => {
-  // Deleting the focused row while several are marked is the shape of an
-  // unrecoverable surprise: the user sees N marked and loses one they did not
-  // single out.
-  const harness = await mount({ active: true, selectedIds: ['a', 'c'] });
-  try {
-    await harness.pressKey('Delete');
-    assert.equal(harness.deleteRequests, 1);
   } finally {
     await harness.dispose();
   }

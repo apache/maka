@@ -68,7 +68,6 @@ const rowActions: SessionRowActions = {
   onArchive: () => undefined,
   onUnarchive: () => undefined,
   onRename: () => undefined,
-  onDelete: () => undefined,
 };
 
 const project: ProjectRecord = {

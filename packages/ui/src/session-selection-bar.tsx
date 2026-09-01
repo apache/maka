@@ -20,7 +20,7 @@
 import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { getConversationCopy } from './conversation-copy.js';
-import { ICON_SIZE, Archive, Trash2 } from './icons.js';
+import { ICON_SIZE, Archive } from './icons.js';
 import { useUiLocale } from './locale-context.js';
 import { useSessionRailSelection } from './session-rail-context.js';
 
@@ -37,10 +37,14 @@ import { useSessionRailSelection } from './session-rail-context.js';
  * Not every task in the catalog: a box that silently included rows behind a
  * collapsed project would name a number the user never agreed to.
  *
- * The commands are `secondary`, not `ghost`: ghost renders as bare text, and a
+ * The command is `secondary`, not `ghost`: ghost renders as bare text, and a
  * label with no container beside a checkbox and a count does not read as
- * something to press. Both carry the same container so neither is the primary —
- * one of them is destructive and must not be emphasised by accident.
+ * something to press.
+ *
+ * Archive is the only sweep. Delete is irreversible and lives in Settings ›
+ * 已归档任务, where a task has to be archived first — the step that makes
+ * deleting a set deliberate rather than one click away from a count the user
+ * built by dragging.
  *
  * TWO ROWS, because one does not fit. The rail is 180px at its narrowest and
  * 260px by default; the first attempt put count and three text buttons on one
@@ -91,14 +95,6 @@ export function SessionSelectionBar() {
           isDisabled={busy || count === 0}
           onClick={() => void selection.onArchiveSelected()}
           label={copy.selectionArchive}
-        />
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={<Trash2 size={ICON_SIZE.meta} />}
-          isDisabled={busy || count === 0}
-          onClick={() => void selection.onDeleteSelected()}
-          label={copy.selectionDelete}
         />
       </div>
     </div>

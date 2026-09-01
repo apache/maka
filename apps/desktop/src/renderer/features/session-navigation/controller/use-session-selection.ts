@@ -30,7 +30,7 @@ import {
 import type { SessionNavigationRowActions } from './session-row-actions.js';
 
 /**
- * The rail's multi-select: which rows are marked, and the two sweeps they feed.
+ * The rail's multi-select: which rows are marked, and the sweep they feed.
  *
  * The selection is reconciled against the catalog on every change to it, not
  * only after a sweep. Another window deleting a task, a Host going away, or a
@@ -138,10 +138,6 @@ export function useSessionSelection(input: {
     () => runSweep((ids) => commands.archiveSelected(ids)),
     [commands, runSweep],
   );
-  const onDeleteSelected = useCallback(
-    () => runSweep((ids) => commands.deleteSelected(ids)),
-    [commands, runSweep],
-  );
 
   /**
    * The rows' half, memoized on the selection ALONE.
@@ -172,14 +168,12 @@ export function useSessionSelection(input: {
       onExit,
       onToggleAll,
       onArchiveSelected,
-      onDeleteSelected,
       busy,
     }),
     [
       busy,
       listedSessionIds,
       onArchiveSelected,
-      onDeleteSelected,
       onEnter,
       onExit,
       onToggleAll,

@@ -642,14 +642,12 @@
 }
 
 /*
- * Two equal halves, not a flex row that lets the longer label win. Grid keeps
- * 归档 and 删除 the same size at every rail width, so neither reads as the
- * primary action — one of them is destructive and must not be emphasised by
- * accident.
+ * One full-width command. Grid rather than a flex row so the button spans the
+ * bar at every rail width instead of shrinking to its label.
  */
 .maka-session-selection-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: var(--space-1);
 }
 

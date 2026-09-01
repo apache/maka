@@ -45,7 +45,6 @@ import {
   PinOff,
   Plug,
   SquarePen,
-  Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -72,7 +71,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
 
-type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
+type SessionRowActionId = 'flag' | 'archive' | 'rename';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
 
@@ -121,7 +120,6 @@ export interface SessionRowActions {
   onArchive(sessionId: string): void | Promise<void>;
   onUnarchive(sessionId: string): void | Promise<void>;
   onRename(sessionId: string, name: string): void | Promise<void>;
-  onDelete(sessionId: string): void | Promise<void>;
 }
 
 export interface ProjectRowActions {
@@ -145,42 +143,18 @@ export function SessionHistoryList() {
   const locale = useUiLocale();
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Escape' && event.key !== 'Delete' && event.key !== 'Backspace') return;
-    // The text-entry guard comes first, and now covers Escape too: a rename
-    // field is where Escape means "abandon this edit", and answering it by
-    // clearing the selection behind the dialog would be a second, invisible
-    // effect of one keypress.
+    if (event.key !== 'Escape') return;
+    // The text-entry guard: a rename field is where Escape means "abandon this
+    // edit", and answering it by clearing the selection behind the dialog would
+    // be a second, invisible effect of one keypress.
     const active = document.activeElement as HTMLElement | null;
     if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
-    const selecting = selection?.active === true;
-    const marked = selecting && selection.selectedIds.size > 0;
-    if (event.key === 'Escape') {
-      // Escape leaves the mode, matching the 取消 button. Without it the only
-      // way out is finding that button, and a mode entered by accident from the
-      // row menu becomes one the user is stuck in.
-      if (!selecting) return;
-      event.preventDefault();
-      selection.onExit();
-      return;
-    }
-    if (marked) {
-      // Delete is about the marked set once one exists. Deleting the focused
-      // row instead would act on one of several rows the user marked, which is
-      // the shape of an unrecoverable surprise. The sweep confirms first.
-      event.preventDefault();
-      void selection?.onDeleteSelected();
-      return;
-    }
-    const row = active.closest<HTMLElement>(
-      '[data-maka-contract="session-row"], [data-session-id]',
-    );
-    const sessionId =
-      row?.dataset.sessionId ??
-      row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
-    if (sessionId && rail.rowActions) {
-      event.preventDefault();
-      void rail.rowActions.onDelete(sessionId);
-    }
+    // Escape leaves the mode, matching the 取消 button. Without it the only way
+    // out is finding that button, and a mode entered by accident from the row
+    // menu becomes one the user is stuck in.
+    if (selection?.active !== true) return;
+    event.preventDefault();
+    selection.onExit();
   }
 
   // Memoized on what it derives from. Rebuilt per render it would give
@@ -1108,6 +1082,12 @@ function SessionItemActions(props: {
                 );
             },
           },
+          // Archive is where the rail stops. Deleting is the one row action
+          // that cannot be undone, and the rail is where a mis-click is
+          // likeliest: rows are dense, the menu is one hover away, and the row
+          // under the cursor moves as the catalog refreshes. It lives in
+          // Settings › 已归档任务 instead — reachable only for a task already
+          // archived, which is the step that makes the intent deliberate.
           {
             label: props.session.isArchived ? copy.unarchive : copy.archive,
             icon: props.session.isArchived ? ArchiveRestore : Archive,
@@ -1117,15 +1097,6 @@ function SessionItemActions(props: {
                   ? actions.onUnarchive(props.session.id)
                   : actions.onArchive(props.session.id),
               ),
-          },
-          { type: 'divider' },
-          {
-            label: copy.delete,
-            icon: Trash2,
-            onClick: () => {
-              pendingMenuIntentRef.current = () =>
-                runRowAction('delete', () => actions.onDelete(props.session.id));
-            },
           },
         ]}
       />

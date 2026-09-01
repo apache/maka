@@ -140,8 +140,12 @@ export interface SessionRailSelection {
   /** Leaves the mode and drops what was marked. */
   onExit(): void;
   onToggleAll(selected: boolean): void;
+  /**
+   * The rail's only sweep. There is no delete here: it cannot be undone, and it
+   * belongs to Settings › 已归档任务, which can only reach a task that was
+   * archived first.
+   */
   onArchiveSelected(): void | Promise<void>;
-  onDeleteSelected(): void | Promise<void>;
   /** A sweep is running. The commands disable while one is, so a second click
    *  cannot ask for the same set twice. */
   busy?: boolean;
