@@ -268,7 +268,6 @@ export function projectModelsDevModel(
     displayName: model.name,
     ...(model.description !== undefined ? { description: model.description } : {}),
     lifecycle,
-    docsUrl: provider.doc,
     contextWindow: model.limit?.context,
     ...(model.limit?.input !== undefined ? { inputLimit: model.limit.input } : {}),
     maxOutputTokens: model.limit?.output,
