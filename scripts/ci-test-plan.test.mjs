@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
@@ -165,6 +165,50 @@ test('release authority changes select their dedicated contract gate', () => {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
+});
+
+// Derived from the gate scripts themselves, because the sets above are hand
+// maintained and drift silently in both directions: a test the gate runs but
+// no lane selects can be edited green, and a listed path that no longer exists
+// is dead weight nothing reports. Both had happened — three of the release
+// gate's own tests reached no lane, and the set named a
+// `prepare-windows-upgrade-baseline.test.mjs` that never existed.
+test('every test a gate script runs reaches a lane that runs that gate', () => {
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const lanesByTest = new Map();
+  for (const [script, lane] of [
+    ['check:release', 'releaseContract'],
+    ['check:asf-source', 'asfSource'],
+  ]) {
+    for (const file of scripts[script].match(/scripts\/[\w.-]+\.test\.mjs/gu) ?? []) {
+      lanesByTest.set(file, (lanesByTest.get(file) ?? new Set()).add(lane));
+    }
+  }
+  assert.ok(lanesByTest.size > 0, 'no gate script names a test file');
+
+  // A test two gates share needs only one of them: either run executes it.
+  for (const [file, lanes] of lanesByTest) {
+    const plan = planTests([file], { graph });
+    assert.ok(
+      [...lanes].some((lane) => plan[lane]),
+      `${file} reaches no ${[...lanes].join('/')}`,
+    );
+  }
+});
+
+// The other direction of the same drift. Every literal path in the planner is
+// matched against a changed file, so one that no longer exists can never match
+// and nothing reports it: the phantom baseline test sat here for a month, and
+// `agent-run-store.test.ts` stayed in the storage stress set for a month after
+// #1994 deleted it.
+test('the planner names no path that no longer exists', () => {
+  const source = readFileSync(new URL('ci-test-plan.mjs', import.meta.url), 'utf8');
+  const paths = [...source.matchAll(/^ {2}'([\w.-]+(?:\/[\w.-]+)+)',$/gmu)].map(([, path]) => path);
+  assert.ok(paths.length > 0, 'the planner names no paths');
+
+  for (const path of paths) {
+    assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), path);
+  }
 });
 
 test('Product Nightly authority changes select the release contract gate', () => {
