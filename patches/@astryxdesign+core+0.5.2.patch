@@ -19,7 +19,7 @@ index ff34874..0f5ae14 100644
  export declare function ChatLayout({ children, composer, density, emptyState, scrollButton, scrollRef: externalScrollRef, xstyle, className, style, 'data-testid': testId, ref, ...rest }: ChatLayoutProps): import("react").JSX.Element;
  export declare namespace ChatLayout {
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
-index ff9b9fa..de27ced 100644
+index ff9b9fa..6d4df27 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/ChatLayout.js
 @@ -28,7 +28,7 @@
@@ -31,37 +31,7 @@ index ff9b9fa..de27ced 100644
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
  import { spacingVars } from "../theme/tokens.stylex.js";
-@@ -85,7 +85,8 @@ const styles = {
-     kfzvcC: "x47corl",
-     k6WDB: "xvn2z4z",
-     keRtuK: "x67t5t6",
--    kZKoxP: "xpyat2d",
-+    kZKoxP: "x5yr21d",
-+    kY2c9j: "maka-x-blur-behind",
-     kX1K2I: "xw26lqc",
-     kAExgp: "x1bv1mxo",
-     $$css: true
-@@ -120,19 +121,16 @@ const styles = {
-     $$css: true
-   },
-   blurLayerCompact: {
--    kZKoxP: "xwzfr38",
-     kX1K2I: "xkm2don",
-     kAExgp: "xiy8rlo",
-     $$css: true
-   },
-   blurLayerBalanced: {
--    kZKoxP: "xpyat2d",
-     kX1K2I: "xw26lqc",
-     kAExgp: "x1bv1mxo",
-     $$css: true
-   },
-   blurLayerSpacious: {
--    kZKoxP: "x1wkxgih",
-     kX1K2I: "xr5yg4x",
-     kAExgp: "xo9xo30",
-     $$css: true
-@@ -195,6 +193,7 @@ export function ChatLayout({
+@@ -195,6 +195,7 @@ export function ChatLayout({
    className,
    style,
    'data-testid': testId,
@@ -69,7 +39,7 @@ index ff9b9fa..de27ced 100644
    ref,
    ...rest
  }) {
-@@ -205,12 +204,21 @@ export function ChatLayout({
+@@ -205,12 +206,21 @@ export function ChatLayout({
  
    // --- Default scroll behavior ---
    const scroll = useChatStreamScroll({
@@ -118,7 +88,7 @@ index 8c509bc..5f46785 100644
        onResizeRef.current?.();
        const messages = el.getElementsByClassName('astryx-chat-message');
 diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index e1d2ebd..1f8337e 100644
+index e1d2ebd..dcb9189 100644
 --- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 +++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
 @@ -47,6 +47,45 @@ const styles = {
@@ -167,7 +137,7 @@ index e1d2ebd..1f8337e 100644
  function getTextBeforeCursor(editable) {
    const selection = window.getSelection();
    if (!selection || selection.rangeCount === 0) {
-@@ -61,7 +100,12 @@ function getTextBeforeCursor(editable) {
+@@ -61,21 +100,27 @@ function getTextBeforeCursor(editable) {
    }
    const node = range.startContainer;
    if (node.nodeType === Node.TEXT_NODE) {
@@ -181,7 +151,25 @@ index e1d2ebd..1f8337e 100644
    }
    return null;
  }
-@@ -306,15 +350,15 @@ export function useTriggerMenu(options) {
+ function findActiveTrigger(textBeforeCursor, triggers) {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // Codex-style @ search stays open while the user types a
++          // multi-word name or leaves a trailing space to browse the full
++          // list. Slash commands keep their original single-token grammar.
++          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
+           return {
+             trigger,
+             query,
+@@ -306,15 +351,15 @@ export function useTriggerMenu(options) {
      if (!editable) {
        return;
      }
@@ -201,7 +189,7 @@ index e1d2ebd..1f8337e 100644
        if (state.isActive) {
          reset();
        }
-@@ -322,9 +366,9 @@ export function useTriggerMenu(options) {
+@@ -322,9 +367,9 @@ export function useTriggerMenu(options) {
      }
      const {
        trigger,
@@ -260,7 +248,7 @@ index 446e25b..00eb8b3 100644
      onPointerMove: handlePointerMove,
      startContent: icon ? renderIconSlot(icon, {
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 8753b5f..1fa8325 100644
+index 8753b5f..43a5abe 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -281,14 +269,8 @@ index 8753b5f..1fa8325 100644
      // Only when this component renders the header — writing `undefined`
      // unconditionally would erase a label a consumer pointed at their own
      // heading.
-@@ -151,4 +153,4 @@ export function List({
-     })
-   });
- }
--List.displayName = 'List';
-+List.displayName = 'List';
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-index 2ea4f3e..be99f2d 100644
+index 2ea4f3e..15dbdd6 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 @@ -90,6 +90,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
@@ -302,7 +284,7 @@ index 2ea4f3e..be99f2d 100644
      onLinkClick?: (href: string, event: React.MouseEvent<HTMLAnchorElement>) => void | false;
      /**
       * Citation sources keyed by ID. When provided, `[id]` and `【id】` markers
-@@ -155,8 +159,8 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
+@@ -155,7 +159,7 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
   * </Markdown>
   * ```
   */
@@ -311,10 +293,8 @@ index 2ea4f3e..be99f2d 100644
  export declare namespace Markdown {
      var displayName: string;
  }
--//# sourceMappingURL=Markdown.d.ts.map
-+//# sourceMappingURL=Markdown.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 36ed303..745ba77 100644
+index 36ed303..0184370 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
@@ -432,10 +412,10 @@ index 36ed303..745ba77 100644
 -  prevInlineNodesRef.current = [];
    return rendered;
  }
--Markdown.displayName = 'Markdown';
-+Markdown.displayName = 'Markdown';
+ Markdown.displayName = 'Markdown';
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-index 158ada1..b891fb9 100644
+index 158ada1..fe7be94 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 @@ -68,6 +68,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
@@ -451,7 +431,7 @@ index 158ada1..b891fb9 100644
      /**
       * Row-level secondary controls (icon buttons, menus) rendered as siblings
       * of the primary element at the trailing edge of the row — after the
-@@ -137,8 +143,8 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+@@ -137,7 +143,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
   * </SideNavItem>
   * ```
   */
@@ -460,10 +440,8 @@ index 158ada1..b891fb9 100644
  export declare namespace SideNavItem {
      var displayName: string;
  }
--//# sourceMappingURL=SideNavItem.d.ts.map
-+//# sourceMappingURL=SideNavItem.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-index 3d2cf00..e527e9d 100644
+index 3d2cf00..c5c0d55 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 @@ -232,6 +232,7 @@ export function SideNavItem({
@@ -483,24 +461,6 @@ index 3d2cf00..e527e9d 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
-@@ -575,4 +576,4 @@ export function SideNavItem({
-   });
-   return item;
- }
--SideNavItem.displayName = 'SideNavItem';
-+SideNavItem.displayName = 'SideNavItem';
-diff --git a/node_modules/@astryxdesign/core/dist/astryx.css b/node_modules/@astryxdesign/core/dist/astryx.css
-index 0159f32..654948b 100644
---- a/node_modules/@astryxdesign/core/dist/astryx.css
-+++ b/node_modules/@astryxdesign/core/dist/astryx.css
-@@ -1280,6 +1280,7 @@
-   .x1yn0g08:not(#\#):not(#\#):not(#\#){word-break:break-all}
-   .x13faqbe:not(#\#):not(#\#):not(#\#){word-break:break-word}
-   .x1lldw8n:not(#\#):not(#\#):not(#\#){word-break:normal}
-+  .maka-x-blur-behind:not(#\#):not(#\#):not(#\#){z-index:-1}
-   .x1ja2u2z:not(#\#):not(#\#):not(#\#){z-index:0}
-   .x1vjfegm:not(#\#):not(#\#):not(#\#){z-index:1}
-   .xfo81ep:not(#\#):not(#\#):not(#\#){z-index:1000}
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 index 7a35d1c..50ee70b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
@@ -669,47 +629,7 @@ index 693d728..7d5724e 100644
 -  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
 +  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
  }
-diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
-index d45a912..efec9fd 100644
---- a/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
-+++ b/node_modules/@astryxdesign/core/src/Chat/ChatLayout.tsx
-@@ -177,7 +177,15 @@ const styles = stylex.create({
-     pointerEvents: 'none',
-     backdropFilter: 'blur(12px)',
-     WebkitBackdropFilter: 'blur(12px)',
--    height: 100,
-+    // The fade has to cover exactly what the dock hides, and the dock's height
-+    // is its content's. A per-density constant only matched by accident: at
-+    // 'balanced' the 100px layer started 90px inside the opaque composer, so
-+    // the ramp was invisible wherever the composer painted and the transcript
-+    // stayed crisp right up to the dock's top edge.
-+    height: '100%',
-+    // Behind the dock's own chrome. The scroll button is in flow at the top of
-+    // this container and belongs on top of the fade, not under it.
-+    zIndex: -1,
-     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
-     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
-   },
-@@ -210,18 +218,16 @@ const styles = stylex.create({
-     paddingInline: spacingVars['--spacing-4'],
-   },
- 
-+  // Density tunes the ramp only — the layer's height follows the dock.
-   blurLayerCompact: {
--    height: 80,
-     maskImage: 'linear-gradient(to bottom, transparent, black 24px)',
-     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 24px)',
-   },
-   blurLayerBalanced: {
--    height: 100,
-     maskImage: 'linear-gradient(to bottom, transparent, black 36px)',
-     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 36px)',
-   },
-   blurLayerSpacious: {
--    height: 120,
-     maskImage: 'linear-gradient(to bottom, transparent, black 48px)',
-     WebkitMaskImage: 'linear-gradient(to bottom, transparent, black 48px)',
-   },
+\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -723,7 +643,7 @@ index f22bb1f..b710951 100644
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
 diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 6eefd4a..17071f1 100644
+index 6eefd4a..a3eba69 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 +++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
 @@ -167,7 +167,56 @@ const styles = stylex.create({
@@ -795,7 +715,28 @@ index 6eefd4a..17071f1 100644
    }
  
    return null;
-@@ -486,23 +537,24 @@ export function useTriggerMenu(
+@@ -199,16 +250,15 @@ function findActiveTrigger(
+ } | null {
+   for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
+     const char = textBeforeCursor[i];
+-
+-    if (char === ' ' || char === '\n') {
+-      return null;
+-    }
+-
+     for (const trigger of triggers) {
+       if (char === trigger.character) {
+         const prevChar = i > 0 ? textBeforeCursor[i - 1] : null;
+         if (prevChar === null || prevChar === ' ' || prevChar === '\n') {
+           const query = textBeforeCursor.slice(i + 1);
++          // Codex-style @ search stays open while the user types a
++          // multi-word name or leaves a trailing space to browse the full
++          // list. Slash commands keep their original single-token grammar.
++          if (trigger.character !== '@' && /[ \n]/u.test(query)) return null;
+           return {trigger, query, triggerStart: i};
+         }
+       }
+@@ -486,23 +536,24 @@ export function useTriggerMenu(
        return;
      }
  
