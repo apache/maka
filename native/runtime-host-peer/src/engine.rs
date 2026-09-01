@@ -82,6 +82,7 @@ const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_COORDINATION_RESERVATIONS: usize = 2;
 const MAX_AUTOMATIC_RELAY_CANDIDATES: usize = 8;
 const MAX_RELAY_ADDRESSES_PER_PEER: usize = 4;
+const MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES: usize = 16;
 const TRANSIT_FALLBACK_DELAY: Duration = Duration::from_secs(3);
 const MAX_TRANSIT_RESERVATIONS: usize = 32;
 const MAX_TRANSIT_CIRCUITS: usize = 8;
@@ -2551,13 +2552,38 @@ fn publish_active_coordination_relays(
     relays: &HashMap<PeerId, CoordinationRelay>,
     snapshot: &Arc<RwLock<Vec<Multiaddr>>>,
 ) {
-    let mut addresses = relays
-        .values()
-        .filter(|relay| relay.reserve && relay.reservation_accepted)
-        .flat_map(|relay| relay.reservation_addresses.iter().cloned())
+    let mut relay_routes = relays
+        .iter()
+        .filter(|(_, relay)| relay.reserve && relay.reservation_accepted)
+        .map(|(peer_id, relay)| {
+            let mut routes = relay.reservation_addresses.clone();
+            routes.sort_unstable_by_key(ToString::to_string);
+            routes.dedup();
+            (peer_id.to_string(), routes)
+        })
         .collect::<Vec<_>>();
-    addresses.sort_unstable_by_key(ToString::to_string);
-    addresses.dedup();
+    relay_routes.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let mut addresses = Vec::new();
+    let mut seen = HashSet::new();
+    let route_count = relay_routes
+        .iter()
+        .map(|(_, routes)| routes.len())
+        .max()
+        .unwrap_or_default();
+    'routes: for route_index in 0..route_count {
+        for (_, routes) in &relay_routes {
+            let Some(address) = routes.get(route_index) else {
+                continue;
+            };
+            if seen.insert(address.clone()) {
+                addresses.push(address.clone());
+                if addresses.len() == MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES {
+                    break 'routes;
+                }
+            }
+        }
+    }
     if let Ok(mut current) = snapshot.write() {
         *current = addresses;
     }
@@ -3928,6 +3954,49 @@ mod tests {
         assert_eq!(
             *snapshot.read().expect("read snapshot"),
             vec![accepted_address]
+        );
+    }
+
+    #[test]
+    fn active_coordination_routes_respect_the_shared_route_limit() {
+        let relays = (0..5)
+            .map(|relay_index| {
+                let peer_id = PeerId::random();
+                let reservation_addresses = (0..MAX_RELAY_ADDRESSES_PER_PEER)
+                    .map(|route_index| {
+                        format!(
+                            "/ip4/192.0.2.{}/tcp/{}/p2p/{peer_id}",
+                            relay_index + 1,
+                            4001 + route_index,
+                        )
+                        .parse()
+                        .expect("valid relay address")
+                    })
+                    .collect();
+                (
+                    peer_id,
+                    CoordinationRelay {
+                        reserve: true,
+                        reservation_accepted: true,
+                        reservation_addresses,
+                        ..CoordinationRelay::default()
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let snapshot = Arc::new(RwLock::new(Vec::new()));
+
+        publish_active_coordination_relays(&relays, &snapshot);
+
+        let routes = snapshot.read().expect("read snapshot");
+        assert_eq!(routes.len(), MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES);
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| coordination_relay_peer_id(route).expect("published relay identity"))
+                .collect::<HashSet<_>>()
+                .len(),
+            relays.len(),
         );
     }
 

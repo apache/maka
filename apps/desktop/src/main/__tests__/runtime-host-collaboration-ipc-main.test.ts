@@ -37,6 +37,7 @@ test('requires plaintext confirmation and reports the issued invitation routes',
     },
   };
   let prepareCalls = 0;
+  const queryCalls: Array<string | undefined> = [];
   const client = {
     async prepareCollaborationInvitation(sessionId: string, grantKinds: readonly string[]) {
       prepareCalls += 1;
@@ -57,7 +58,7 @@ test('requires plaintext confirmation and reports the issued invitation routes',
       return { principals: [], grants: [] };
     },
     async queryCollaborationTurnRequests(sessionId?: string) {
-      assert.equal(sessionId, undefined);
+      queryCalls.push(sessionId);
       return { canRequestTurns: false, requests: [] };
     },
     async revokeCollaborationPrincipal() {
@@ -103,12 +104,17 @@ test('requires plaintext confirmation and reports the issued invitation routes',
   assert.equal(decodeCollaborationInvitationCode(bundle.invitationCode).rootId, ROOT_ID);
   assert.equal(bundle.target.transport.kind, 'plaintext');
 
-  const inbox = handlers.get('session-collaboration:turn-request:inbox');
-  assert.ok(inbox);
-  assert.deepEqual(await inbox({} as Parameters<IpcHandler>[0]), {
+  const query = handlers.get('session-collaboration:turn-request:query');
+  assert.ok(query);
+  assert.deepEqual(await query({} as Parameters<IpcHandler>[0]), {
     canRequestTurns: false,
     requests: [],
   });
+  assert.deepEqual(await query({} as Parameters<IpcHandler>[0], 'session-1'), {
+    canRequestTurns: false,
+    requests: [],
+  });
+  assert.deepEqual(queryCalls, [undefined, 'session-1']);
 
   const peerHandlers = new Map<string, IpcHandler>();
   registerRuntimeHostCollaborationIpc(

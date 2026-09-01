@@ -92,12 +92,9 @@ export function registerRuntimeHostCollaborationIpc(
     ipcMain,
     'session-collaboration:turn-request:query',
     (_event, sessionId: unknown) =>
-      client.queryCollaborationTurnRequests(requiredId(sessionId, 'Session')),
-  );
-  handleReconnectableRead(
-    ipcMain,
-    'session-collaboration:turn-request:inbox',
-    () => client.queryCollaborationTurnRequests(),
+      client.queryCollaborationTurnRequests(
+        sessionId === undefined ? undefined : requiredId(sessionId, 'Session'),
+      ),
   );
   ipcMain.handle(
     'session-collaboration:turn-request:acknowledge',

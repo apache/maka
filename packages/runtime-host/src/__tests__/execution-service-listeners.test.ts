@@ -27,19 +27,18 @@ test('the execution service exposes relay reservations discovered after startup'
   let coordinationRelays: readonly string[] = [];
   let listenersClosed = false;
   let ownerClosed = false;
+  const peerListener = {
+    peerId: '12D3KooWpeer',
+    listenAddresses: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    get coordinationRelays() {
+      return coordinationRelays;
+    },
+  };
   const listeners: RuntimeHostListenerSet = {
     listeners: [],
     localEndpoint: 'local',
     websocketEndpoints: [],
-    get peerListeners() {
-      return [
-        {
-          peerId: '12D3KooWpeer',
-          listenAddresses: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-          coordinationRelays,
-        },
-      ];
-    },
+    peerListeners: [peerListener],
     async closeAdmission() {},
     async cleanup() {
       listenersClosed = true;
