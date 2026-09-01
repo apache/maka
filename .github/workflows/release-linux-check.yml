@@ -23,8 +23,9 @@ name: Release Linux check
 # were in metadata electron-builder resolves before it packages anything — the
 # executable name and the deb's homepage — and both are now also asserted in
 # milliseconds by `scripts/desktop-release-targets.test.mjs`. This lane covers
-# what that one structurally cannot: the toolchain, fpm, the AppImage runtime,
-# and the native peer actually producing and passing verification.
+# what that one structurally cannot: fpm and the AppImage runtime producing
+# real payloads, the architecture of the native peer inside them, and the
+# packaged application actually starting.
 on:
   pull_request:
     # Every input whose correctness can only be observed by building on Linux.
@@ -40,6 +41,19 @@ on:
       - 'scripts/desktop-release-targets.mjs'
       - 'scripts/desktop-update-contract.mjs'
       - 'scripts/verify-packaged-app.mjs'
+      # What the two entries above import, and what they read. The packaging
+      # configuration pulls three scripts in, the verifier pulls in the
+      # third-party closure, and `assertPackagedResources` builds its required
+      # list by listing the icon catalogue — so adding an icon changes the
+      # assertion. `packages/**` is deliberately absent: the Windows lane
+      # already covers that half and has a closure test binding it in both
+      # directions, and what is unproven here is the packaging format, not the
+      # shared runtime. The cron below is what catches the rest.
+      - 'apps/desktop/assets/**'
+      - 'scripts/desktop-nightly.mjs'
+      - 'scripts/product-release-identity.mjs'
+      - 'scripts/release-cli-file-policy.mjs'
+      - 'scripts/third-party-closure.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/release.yml'
@@ -104,8 +118,11 @@ jobs:
         run: npm run package:linux
 
       # Opens both payloads: the AppImage must not carry the deb's
-      # `package-type` marker, and the deb must carry it, declare the
-      # architecture its name claims, and satisfy the same resource, update and
-      # dependency assertions.
+      # `package-type` marker, and the deb must carry it, declare an installable
+      # package name and the architecture its filename claims, and satisfy the
+      # same resource, update and dependency assertions. The native peer's ELF
+      # header is read in both. Finally the extracted AppImage is launched —
+      # `xvfb-run` because that last step drives a real renderer over CDP, the
+      # way the macOS and Windows verifications already do.
       - name: Verify the Linux release
-        run: npm run verify:linux -- x64
+        run: xvfb-run -a npm run verify:linux -- x64

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { access, chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -30,10 +30,25 @@ import {
   assertPackagedResources,
   runCommand,
   sha256File,
+  smokePackagedRenderer,
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
+
+/**
+ * `e_machine`, at offset 18 of every ELF header. This is the one field that
+ * says which processor the file was built for.
+ */
+const ELF_MACHINES = Object.freeze({ x64: 0x3e, arm64: 0xb7 });
+
+/**
+ * Debian policy allows only lowercase letters, digits and `-+.` in a package
+ * name, and `dpkg` refuses to install one that breaks the rule. The name is
+ * derived from the product name rather than configured, so nothing else in
+ * this repository would notice a capital letter reaching it.
+ */
+const DEBIAN_PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]+$/u;
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
@@ -68,19 +83,51 @@ async function linuxDistributables(arch, environment) {
 }
 
 /**
+ * The packaging scripts refuse to cross-build because the Runtime Host peer is
+ * a host binary, and a runner that shipped the other architecture's peer would
+ * produce a package that installs and then fails at launch. Only reading the
+ * ELF header proves which one is actually inside.
+ */
+export async function assertElfArchitecture(path, arch) {
+  const handle = await open(path);
+  let header;
+  try {
+    header = Buffer.alloc(20);
+    const { bytesRead } = await handle.read(header, 0, 20, 0);
+    if (bytesRead < 20 || header.toString('latin1', 0, 4) !== '\x7fELF') {
+      throw new Error(`${basename(path)} is not an ELF binary`);
+    }
+  } finally {
+    await handle.close();
+  }
+  // EI_DATA: every architecture this project builds is little-endian, and
+  // reading `e_machine` the wrong way round would silently compare garbage.
+  if (header[5] !== 1) {
+    throw new Error(`${basename(path)} is not a little-endian ELF binary`);
+  }
+  const machine = header.readUInt16LE(18);
+  if (machine !== ELF_MACHINES[arch]) {
+    throw new Error(
+      `${basename(path)} is built for ELF machine 0x${machine.toString(16)}, not ${arch}`,
+    );
+  }
+}
+
+/**
  * Where fpm placed the application is discovered from the extracted tree rather
  * than derived from electron-builder's install prefix and product name. Deriving
  * what a payload should contain, instead of reading what it does, is exactly how
- * this verifier came to hand a checksum to a file it had never opened.
+ * this verifier came to hand a checksum to a file it had never opened. Exactly
+ * one match is required: `find` would silently pick either of two.
  */
 async function debResourcesDirectory(root) {
   const suffix = join('resources', 'app.asar');
   const entries = await readdir(root, { recursive: true });
-  const asar = entries.find((entry) => entry.endsWith(suffix));
-  if (!asar) {
-    throw new Error('The deb contains no resources/app.asar');
+  const matches = entries.filter((entry) => entry.endsWith(suffix));
+  if (matches.length !== 1) {
+    throw new Error(`The deb contains ${matches.length} resources/app.asar entries, expected 1`);
   }
-  return join(root, dirname(asar));
+  return join(root, dirname(matches[0]));
 }
 
 /**
@@ -89,6 +136,13 @@ async function debResourcesDirectory(root) {
  * deb's `package-type` marker out of the AppImage — so nothing proven about one
  * carries over to the other. `--appimage-extract` is handled by the AppImage
  * runtime itself and needs no FUSE mount; `dpkg-deb` ships with the runner.
+ *
+ * The renderer smoke test needs a display, so the caller runs this whole script
+ * under `xvfb-run`. It is applied to the AppImage only: extracting it produces
+ * the same tree its runtime mounts at launch, so running that tree is running
+ * the artifact. A deb extracted with `dpkg-deb -x` is not an installation —
+ * `dpkg` would still have to set the sandbox helper's setuid bit — so launching
+ * it would prove something about a tree no user ever has.
  */
 export async function verifyLinuxRelease(
   arch,
@@ -99,6 +153,8 @@ export async function verifyLinuxRelease(
     forbidPath = assertMissing,
     environment = process.env,
     checksum = sha256File,
+    smokeRenderer = smokePackagedRenderer,
+    assertArchitecture = assertElfArchitecture,
   } = {},
 ) {
   if (platform !== 'linux') {
@@ -112,11 +168,13 @@ export async function verifyLinuxRelease(
   await access(debPath);
   const channel = environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release';
   const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
+  const peerBinary = join('runtime-host-peer', 'maka_runtime_host_peer.node');
 
   try {
     await chmod(appImagePath, 0o755);
     await run(appImagePath, ['--appimage-extract'], { cwd: workingDirectory });
-    const appImageResources = join(workingDirectory, 'squashfs-root', 'resources');
+    const squashfsRoot = join(workingDirectory, 'squashfs-root');
+    const appImageResources = join(squashfsRoot, 'resources');
 
     await assertPackagedResources(appImageResources, { requirePath, forbidPath });
     // The deb target writes this marker into the shared unpacked tree, and it is
@@ -125,6 +183,7 @@ export async function verifyLinuxRelease(
     await forbidPath(join(appImageResources, 'package-type'));
     await assertPackagedUpdateConfiguration(appImageResources, { channel });
     await assertPackagedDependencyClosure(appImageResources);
+    await assertArchitecture(join(appImageResources, peerBinary), arch);
 
     const debRoot = join(workingDirectory, 'deb');
     await run('dpkg-deb', ['-x', debPath, debRoot]);
@@ -133,6 +192,7 @@ export async function verifyLinuxRelease(
     await assertPackagedResources(debResources, { requirePath, forbidPath });
     await assertPackagedUpdateConfiguration(debResources, { channel });
     await assertPackagedDependencyClosure(debResources);
+    await assertArchitecture(join(debResources, peerBinary), arch);
     // The mirror of the AppImage assertion above. This marker is what sends the
     // packaged updater down DebUpdater, and the deb is the one payload that has
     // to carry it: without it an installed deb would try to update itself by
@@ -140,6 +200,12 @@ export async function verifyLinuxRelease(
     const packageType = (await readFile(join(debResources, 'package-type'), 'utf8')).trim();
     if (packageType !== 'deb') {
       throw new Error(`The deb declares package-type ${packageType || '(empty)'}`);
+    }
+    // electron-builder builds this name out of the product name, so nothing
+    // else here would catch a capital letter reaching `dpkg`, which rejects it.
+    const { stdout: declaredName } = await run('dpkg-deb', ['-f', debPath, 'Package']);
+    if (!DEBIAN_PACKAGE_NAME.test(declaredName.trim())) {
+      throw new Error(`The deb declares an uninstallable package name: ${declaredName.trim()}`);
     }
     // fpm records the architecture it was told to build; the descriptor names
     // the file after the architecture it asked for. A runner that produced the
@@ -149,6 +215,13 @@ export async function verifyLinuxRelease(
     if (stdout.trim() !== namedArchitecture) {
       throw new Error(`${basename(debPath)} contains architecture ${stdout.trim() || '(none)'}`);
     }
+
+    // Every assertion above reads files. This one runs the application, the way
+    // the macOS and Windows verifications already do, and is the only thing here
+    // that can fail on a package that is structurally perfect and still cannot
+    // start — a missing shared library, or a sandbox the host will not grant.
+    await requirePath(join(squashfsRoot, 'AppRun'));
+    await smokeRenderer(join(squashfsRoot, 'AppRun'), { workingDirectory });
 
     // A formal release publishes a checksum beside each distributable, the way
     // the Windows verification does for its installer and archive. Each one is
