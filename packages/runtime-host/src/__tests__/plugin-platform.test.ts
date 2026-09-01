@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { waitFor } from '@maka/core/test-only/async-primitives';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
+import { Context } from '@maka/runtime/plugin-kernel';
+import { PluginToolService } from '@maka/runtime/plugin-tool-service';
 import {
   decodePluginCompositionApplyInput,
   decodeRequestFrame,
@@ -124,6 +126,46 @@ test('Plugin Platform installs, activates, persists, and recovers a generic pack
 
     const generationRoot = join(root, 'control', 'plugin-generations-v1');
     assert.deepEqual(await readdir(generationRoot).catch(() => []), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a real package publishes an executable Tool and removes it on uninstall', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-tool-lifecycle-'));
+  try {
+    const pluginRoot = new Context();
+    const tools = new PluginToolService(pluginRoot);
+    const composition = new MakaCompositionLoader({ root: pluginRoot });
+    const source = await writeFixturePackage(root, 'inventory-package', 'inventory', {
+      tool: { name: 'lookup_inventory', result: { sku: 'SKU-42', available: 7 } },
+      composition: [
+        {
+          type: 'insert',
+          rootId: 'profile',
+          entry: { id: 'inventory-entry', packageId: 'inventory-package' },
+        },
+      ],
+    });
+    const platform = createPlatform(join(root, 'control'), { composition, tools });
+    await platform.recover();
+
+    const installed = await platform.installPackage(source);
+    assert.equal(installed.convergence, 'converged');
+    const published = tools.resolve('shopping-session', []).tools;
+    assert.deepEqual(
+      published.map(({ name }) => name),
+      ['lookup_inventory'],
+    );
+    assert.deepEqual(await published[0]!.impl({}, {} as never), {
+      sku: 'SKU-42',
+      available: 7,
+    });
+
+    const uninstalled = await platform.uninstallPackage('inventory-package');
+    assert.equal(uninstalled.convergence, 'converged');
+    assert.deepEqual(tools.resolve('shopping-session', []).tools, []);
+    await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1552,6 +1594,7 @@ async function writeFixturePackage(
     readonly structuralDependencies?: readonly string[];
     readonly manifest?: Readonly<Record<string, unknown>>;
     readonly composition?: readonly unknown[];
+    readonly tool?: { readonly name: string; readonly result: unknown };
   } = {},
 ): Promise<string> {
   const source = join(
@@ -1587,6 +1630,7 @@ async function writeFixturePackage(
       host: Object.freeze({ apply(ctx) {
         ${options.throwOnApply ? "throw new Error('fixture activation failed');" : ''}
         ${options.provideService ? `ctx.provide(${JSON.stringify(options.provideService)}, { source: ${JSON.stringify(contributionId)} });` : ''}
+        ${options.tool ? `ctx.tools.register(Object.freeze({ name: ${JSON.stringify(options.tool.name)}, description: 'fixture tool', parameters: {}, impl: async () => (${JSON.stringify(options.tool.result)}) }));` : ''}
         ctx.effect(() => () => undefined, 'fixture');
       } }),
     });\n`,
