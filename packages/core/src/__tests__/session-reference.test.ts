@@ -110,3 +110,15 @@ test('accounts for the role prefix when truncating a single item', () => {
   assert.ok(snapshot.text.length <= 10);
   assert.doesNotMatch(snapshot.text, /User: User/);
 });
+
+test('does not emit a partial role prefix when no content fits', () => {
+  const snapshot = createSessionSnapshot([user('last', 'latest message')], {
+    sessionId: 'session-source',
+    sessionName: 'Tiny budget',
+    maxChars: 5,
+  });
+
+  assert.deepEqual(snapshot.items, []);
+  assert.equal(snapshot.text, '');
+  assert.equal(snapshot.truncated, true);
+});

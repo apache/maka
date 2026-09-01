@@ -113,11 +113,13 @@ export function createSessionSnapshot(
     if (selected.length === 0) {
       const prefixLength = formatSnapshotItem({ ...candidate, text: '' }).length;
       const contentBudget = Math.max(0, available - prefixLength);
-      selected.push({
-        ...candidate,
-        text: candidate.text.slice(0, contentBudget).trimEnd(),
-      });
-      usedChars = maxChars;
+      if (contentBudget > 0) {
+        selected.push({
+          ...candidate,
+          text: candidate.text.slice(0, contentBudget).trimEnd(),
+        });
+        usedChars = maxChars;
+      }
     }
     truncated = true;
     break;
