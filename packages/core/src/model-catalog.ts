@@ -538,10 +538,9 @@ function withinWireLimit(value: string, maxLength: number): string {
  * never set `capabilities.imageGeneration` for any of them, so the capability
  * check below could not fire on bundled data.
  *
- * An EMPTY list is not evidence. `modalities.output` is typed to text, image,
- * and audio, so a video model's real output has no representation and
- * serializes as `[]` — the same shape a future generator bug would produce.
- * Only a non-empty list says something, and what it says is what it lists.
+ * An EMPTY list is not evidence. A provider that declared no output modality
+ * and a generator bug that dropped them produce the same shape. Only a
+ * non-empty list says something, and what it says is what it lists.
  */
 function declaresNoTextOutput(model: ModelInfo): boolean {
   const output = model.modalities?.output;

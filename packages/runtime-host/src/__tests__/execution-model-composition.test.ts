@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -4123,17 +4124,6 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
 }
 
 const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledOAuthTransports(): {
   readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly refreshStarted: Promise<void>;

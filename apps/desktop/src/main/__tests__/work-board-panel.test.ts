@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, test } from 'node:test';
 import { parseHTML } from 'linkedom';
@@ -40,15 +41,6 @@ const originalGlobals = {
   }).IS_REACT_ACT_ENVIRONMENT,
 };
 const mountedRoots: Root[] = [];
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
 function item(): WorkBoardItem {
   return {
     schemaVersion: 1,

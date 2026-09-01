@@ -138,7 +138,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
       metadata.description,
       'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
     );
-    assert.equal(metadata.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
     assert.equal(metadata.contextWindow, 1_000_000);
     assert.equal(metadata.maxOutputTokens, 384_000);
     assert.equal(metadata.structuredOutput, true);

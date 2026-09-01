@@ -21,7 +21,6 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
-  DESKTOP_NIGHTLY_FEED_URL,
   resolveDesktopBuildVersion,
   resolveRuntimeHostSetupPackage,
 } from '../../scripts/desktop-nightly.mjs';
@@ -302,7 +301,7 @@ export function resolveDesktopBuilderConfig(environment = process.env) {
       runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
       makaUpdateChannel: 'nightly',
     },
-    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL, channel: 'latest' }],
+    publish: [{ provider: 'github', owner: 'apache', repo: 'maka', channel: 'dev' }],
   };
 }
 

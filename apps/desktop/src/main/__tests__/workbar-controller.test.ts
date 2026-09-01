@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, StrictMode } from 'react';
@@ -59,17 +60,6 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
     result: { ref },
   } as ShellRunUpdate;
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 let latestController: WorkbarController | undefined;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;

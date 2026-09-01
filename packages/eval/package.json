@@ -32,7 +32,7 @@
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:dist": "node --test \"dist/**/*.test.js\" && python3 harbor/test_eval_framework.py && python3 harbor/test_relay_contract.py && python3 harbor/test_relay_lifecycle.py && python3 harbor/test_egress_filter.py && python3 harbor/test_run_trial_policy.py && python3 harbor/test_relay_artifacts.py && python3 harbor/test_cell_egress_namespace.py",
+    "test:dist": "node --test \"dist/**/*.test.js\" && python3 -m unittest discover --start-directory harbor --pattern 'test_*.py'",
     "test:egress-proxy:live": "python3 harbor/test_egress_filter_live.py"
   },
   "dependencies": {
