@@ -310,3 +310,81 @@ function lifecycleForStatus(
   }
   throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported status`);
 }
+
+/**
+ * Paths present in `previous` that `next` no longer carries, in JSON Pointer
+ * form. Both arguments are whole projections, so a caller comparing only one
+ * section passes it under the same key each side and reads the same paths the
+ * generator reports.
+ *
+ * Upstream removing a fact is not upstream correcting one. A model that
+ * stopped declaring its effort set does not stop having a knob, and a build
+ * that silently adopts the shorter list drops a level the user had already
+ * chosen. What the caller does about it is policy: the generator refuses the
+ * refresh until a human acknowledges it, the Host records it and carries on.
+ */
+export function collectProjectionRemovals(previous: unknown, next: unknown): string[] {
+  const removals: string[] = [];
+  collectRemovals(previous, next, [], removals);
+  return removals.sort();
+}
+
+function collectRemovals(
+  previous: unknown,
+  next: unknown,
+  path: (string | number)[],
+  removals: string[],
+): void {
+  if (Array.isArray(previous)) {
+    if (!Array.isArray(next)) {
+      removals.push(projectionPath(path));
+      return;
+    }
+    if (path.length === 1 && path[0] === 'pricing') {
+      const nextByModelKey = new Map(
+        next.map((entry) => [(entry as { modelKey?: unknown })?.modelKey, entry]),
+      );
+      for (const entry of previous) {
+        const modelKey = (entry as { modelKey?: unknown })?.modelKey;
+        const modelPath = [...path, String(modelKey)];
+        const nextEntry = nextByModelKey.get(modelKey);
+        if (!nextEntry) removals.push(projectionPath(modelPath));
+        else collectRemovals(entry, nextEntry, modelPath, removals);
+      }
+      return;
+    }
+    for (const value of previous) {
+      if (!next.some((candidate) => Object.is(candidate, value))) {
+        removals.push(`${projectionPath(path)} value ${JSON.stringify(value)}`);
+      }
+    }
+    return;
+  }
+
+  if (!previous || typeof previous !== 'object') {
+    // A capability withdrawn is a removal even though the key survives.
+    if (
+      previous === true &&
+      next === false &&
+      path.length === 5 &&
+      path[0] === 'metadata' &&
+      path[3] === 'capabilities'
+    ) {
+      removals.push(projectionPath(path));
+    }
+    return;
+  }
+  if (!next || typeof next !== 'object' || Array.isArray(next)) {
+    removals.push(projectionPath(path));
+    return;
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    const childPath = [...path, key];
+    if (!Object.hasOwn(next, key)) removals.push(projectionPath(childPath));
+    else collectRemovals(value, (next as Record<string, unknown>)[key], childPath, removals);
+  }
+}
+
+function projectionPath(path: readonly (string | number)[]): string {
+  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
+}

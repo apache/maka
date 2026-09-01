@@ -122,11 +122,9 @@ test('a failed fetch keeps the bundled snapshot and announces nothing', async (t
 
 test('privacy mode refuses the refresh before any transport exists', async () => {
   let transportCreated = false;
-  const skipped: string[] = [];
   const refresh = startHostModelMetadataRefresh({
     policy: resolver({ kind: 'privacy_mode' }),
     publish: () => assert.fail('privacy mode must not announce a refresh'),
-    onSkipped: (reason) => skipped.push(reason),
     createFetchTransport: () => {
       transportCreated = true;
       throw new Error('transport must not be created');
@@ -136,7 +134,6 @@ test('privacy mode refuses the refresh before any transport exists', async () =>
   await refresh.settled;
 
   assert.equal(transportCreated, false);
-  assert.deepEqual(skipped, ['privacy_mode']);
 });
 
 test('the refresh goes out over the resolved proxy snapshot', async (t) => {

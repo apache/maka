@@ -17,13 +17,9 @@
  * under the License.
  */
 
+import { bundledModelMetadata, installRefreshedModelMetadata } from '@maka/core/model-metadata';
+import { fetchModelsDevProjection } from '@maka/core/models-dev-refresh';
 import { redactSecrets } from '@maka/core/redaction';
-import { installRefreshedModelMetadata } from '@maka/core/model-metadata';
-import {
-  MODELS_DEV_SOURCE_URL,
-  projectModelsDevMetadata,
-  selectModelsDevCatalog,
-} from '@maka/core/models-dev-projection';
 import {
   createProxiedFetchTransport,
   type ProxiedFetchProxy,
@@ -32,9 +28,9 @@ import {
 import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-policy-stores';
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
-/** models.dev is a few megabytes of JSON; well past that it is not the catalog. */
-const MODELS_DEV_RESPONSE_MAX_BYTES = 32 * 1024 * 1024;
 const MODELS_DEV_FETCH_TIMEOUT_MS = 10_000;
+/** A normal refresh retires hundreds of paths; the count is the signal, the names are a sample. */
+const LOGGED_REMOVAL_SAMPLE = 20;
 
 export interface HostModelMetadataRefreshInput {
   readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>;
@@ -42,7 +38,6 @@ export interface HostModelMetadataRefreshInput {
   readonly publish: () => void;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly timeoutMs?: number;
-  readonly onSkipped?: (reason: 'privacy_mode' | 'credential_not_configured') => void;
 }
 
 export interface HostModelMetadataRefresh {
@@ -58,9 +53,18 @@ export interface HostModelMetadataRefresh {
  * catalog entries, so a Host on a stale build still describes every model the
  * way the live catalog does.
  *
- * Every failure — offline, timeout, an upstream shape the projection refuses —
- * keeps the snapshot compiled into this build. There is no partial install: a
- * catalog that does not project whole is not a catalog.
+ * Every failure — offline, timeout, an oversized body, an upstream shape the
+ * projection refuses — keeps the snapshot compiled into this build. There is
+ * no partial install: a catalog that does not project whole is not a catalog.
+ *
+ * A refresh that lands is taken whole, including what upstream stopped
+ * carrying: the snapshot is not a second opinion about a model upstream still
+ * publishes. Where the generator refuses a shrinking refresh until a human
+ * acknowledges it, the Host records the removals and adopts them — nothing
+ * here is committed or redistributed, and the next process start asks again.
+ *
+ * The attempt is made once, at startup. A Host started in privacy mode does
+ * not refresh at all, and leaving privacy mode later does not start one.
  */
 export function startHostModelMetadataRefresh(
   input: HostModelMetadataRefreshInput,
@@ -83,10 +87,20 @@ export function startHostModelMetadataRefresh(
   };
 }
 
+function removalSummary(paths: readonly string[]): string {
+  const sample = paths.slice(0, LOGGED_REMOVAL_SAMPLE).join(', ');
+  const rest = paths.length - LOGGED_REMOVAL_SAMPLE;
+  return `models.dev no longer carries ${paths.length} path(s) the bundled snapshot described; adopting upstream: ${sample}${rest > 0 ? ` and ${rest} more` : ''}`;
+}
+
 async function run(input: HostModelMetadataRefreshInput, signal: AbortSignal): Promise<void> {
   const admission = await input.policy.resolveHostOutboundExecution();
   if (admission.kind !== 'ready') {
-    input.onSkipped?.(admission.kind);
+    console.error(
+      admission.kind === 'privacy_mode'
+        ? '[runtime-host] models.dev catalog refresh skipped: privacy mode is active'
+        : '[runtime-host] models.dev catalog refresh skipped: the network proxy credential is not configured',
+    );
     return;
   }
   signal.throwIfAborted();
@@ -95,18 +109,12 @@ async function run(input: HostModelMetadataRefreshInput, signal: AbortSignal): P
   );
   const timeout = AbortSignal.timeout(input.timeoutMs ?? MODELS_DEV_FETCH_TIMEOUT_MS);
   try {
-    const response = await transport.fetch(MODELS_DEV_SOURCE_URL, {
+    const metadata = await fetchModelsDevProjection({
+      fetch: transport.fetch,
       signal: AbortSignal.any([signal, timeout]),
-      headers: { accept: 'application/json' },
+      previous: bundledModelMetadata,
+      onRemovals: (paths) => console.error(`[runtime-host] ${removalSummary(paths)}`),
     });
-    if (!response.ok) {
-      throw new Error(`models.dev responded ${response.status}`);
-    }
-    const body = await response.text();
-    if (body.length > MODELS_DEV_RESPONSE_MAX_BYTES) {
-      throw new Error('models.dev response exceeded the accepted size');
-    }
-    const metadata = projectModelsDevMetadata(selectModelsDevCatalog(JSON.parse(body)));
     signal.throwIfAborted();
     // Install before publishing: a client that re-reads on the frame must find
     // the refreshed catalog, not the one it already had.

@@ -51,7 +51,12 @@ export interface ModelMetadata {
 
 type ModelsDevMetadata = Partial<Record<ProviderType, Record<string, ModelMetadata>>>;
 
-const bundledMetadata: ModelsDevMetadata = GENERATED_MODELS_DEV_METADATA;
+/**
+ * What this build shipped, before any refresh. Read it to compare a refresh
+ * against the snapshot; `lookupModelMetadata` already answers "what is true
+ * now" and is what every renderer should use.
+ */
+export const bundledModelMetadata: ModelsDevMetadata = GENERATED_MODELS_DEV_METADATA;
 let refreshedMetadata: ModelsDevMetadata | undefined;
 
 /**
@@ -68,7 +73,7 @@ export function installRefreshedModelMetadata(metadata: ModelsDevMetadata | unde
 }
 
 function activeMetadata(): ModelsDevMetadata {
-  return refreshedMetadata ?? bundledMetadata;
+  return refreshedMetadata ?? bundledModelMetadata;
 }
 const generatedModelProviderOverrides: Partial<
   Record<ProviderType, Record<string, { npm: string; api?: string }>>

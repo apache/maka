@@ -33,7 +33,7 @@ const projection = await loadTypeScriptModule(
     'utf8',
   ),
 );
-const { selectModelsDevCatalog, assertModelsDevProvider } = projection;
+const { selectModelsDevCatalog, assertModelsDevProvider, collectProjectionRemovals } = projection;
 const SOURCE_URL = projection.MODELS_DEV_SOURCE_URL;
 export const PROVIDERS = projection.MODELS_DEV_PROVIDERS;
 export const toMetadata = projection.projectModelsDevModel;
@@ -255,67 +255,12 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
 }
 
 function assertProjectionDoesNotShrink(previous, next) {
-  const removals = [];
-  collectProjectionRemovals(previous, next, [], removals);
+  const removals = collectProjectionRemovals(previous, next);
   if (removals.length === 0) return;
 
   throw new Error(
-    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+    `models.dev refresh would remove committed projection paths: ${removals.join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
   );
-}
-
-function collectProjectionRemovals(previous, next, path, removals) {
-  if (Array.isArray(previous)) {
-    if (!Array.isArray(next)) {
-      removals.push(projectionPath(path));
-      return;
-    }
-    if (path.length === 1 && path[0] === 'pricing') {
-      const nextByModelKey = new Map(next.map((entry) => [entry?.modelKey, entry]));
-      for (const entry of previous) {
-        const modelPath = [...path, entry.modelKey];
-        const nextEntry = nextByModelKey.get(entry.modelKey);
-        if (!nextEntry) removals.push(projectionPath(modelPath));
-        else collectProjectionRemovals(entry, nextEntry, modelPath, removals);
-      }
-      return;
-    }
-    for (const value of previous) {
-      if (!next.some((candidate) => Object.is(candidate, value))) {
-        removals.push(`${projectionPath(path)} value ${JSON.stringify(value)}`);
-      }
-    }
-    return;
-  }
-
-  if (!previous || typeof previous !== 'object') {
-    if (
-      previous === true &&
-      next === false &&
-      path.length === 5 &&
-      path[0] === 'metadata' &&
-      path[3] === 'capabilities'
-    ) {
-      removals.push(projectionPath(path));
-    }
-    return;
-  }
-  if (!next || typeof next !== 'object' || Array.isArray(next)) {
-    removals.push(projectionPath(path));
-    return;
-  }
-  for (const [key, value] of Object.entries(previous)) {
-    const childPath = [...path, key];
-    if (!Object.prototype.hasOwnProperty.call(next, key)) {
-      removals.push(projectionPath(childPath));
-    } else {
-      collectProjectionRemovals(value, next[key], childPath, removals);
-    }
-  }
-}
-
-function projectionPath(path) {
-  return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
 }
 
 // `--check` only proves the generated modules match the committed snapshot.

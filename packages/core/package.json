@@ -92,6 +92,7 @@
     "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
     "./models-dev-projection": "./dist/models-dev-projection.js",
+    "./models-dev-refresh": "./dist/models-dev-refresh.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",
     "./persisted-value": "./dist/persisted-value.js",
