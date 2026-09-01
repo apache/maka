@@ -143,14 +143,17 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           previous_exe="$(node scripts/prepare-windows-upgrade-baseline.mjs \
             "$version" artifacts/windows-upgrade-baseline)"
+          previous_contract="$(node -p "require('./scripts/windows-upgrade-baseline.json').artifactContract")"
           echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
+          echo "artifact_contract=$previous_contract" >> "$GITHUB_OUTPUT"
 
       - name: Exercise pinned-version upgrade and uninstall
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer -- \
             "apps/desktop/release/Maka-${version}-win-x64.exe" \
-            "${{ steps.previous.outputs.exe }}"
+            "${{ steps.previous.outputs.exe }}" \
+            "${{ steps.previous.outputs.artifact_contract }}"
 
       - name: Build the version-bumped autoupdate installer
         run: npm run package:windows-autoupdate-next
