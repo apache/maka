@@ -488,7 +488,11 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       });
     }
     for (const [itemIndex, model] of models.entries()) {
-      items.push({ kind: 'model', connectionIndex, itemIndex, model });
+      // The override's effect travels; which fields it touched does not. That
+      // provenance answers one Host-side question — whether a context window
+      // was set by hand — and this page is not where it gets asked.
+      const { factOverriddenFields: _factOverriddenFields, ...projected } = model;
+      items.push({ kind: 'model', connectionIndex, itemIndex, model: projected });
     }
     for (const [itemIndex, entry] of catalogEntries.entries()) {
       items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });

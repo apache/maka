@@ -880,7 +880,7 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
   });
 });
 
-test('catalog pages preserve model-facts provenance from the projected snapshot', async () => {
+test('catalog pages carry the model facts a user overrode, not the stored row', async () => {
   await withCoordinator(async ({ coordinator, root, stores }) => {
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
@@ -938,13 +938,14 @@ test('catalog pages preserve model-facts provenance from the projected snapshot'
       result.result,
     );
     if (decoded.kind !== 'page') return;
-    assert.deepEqual(
-      decoded.items.find(
-        (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
-          item.kind === 'model' && item.model.id === 'custom-model',
-      )?.model.factOverriddenFields,
-      ['contextWindow', 'inputLimit'],
-    );
+    // The override's effect is what a client needs: the page must show the
+    // hand-set context window, not the one the stored row was written with.
+    const overridden = decoded.items.find(
+      (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
+        item.kind === 'model' && item.model.id === 'custom-model',
+    )?.model;
+    assert.equal(overridden?.contextWindow, 200_000);
+    assert.equal(overridden?.inputLimit, 200_000);
   });
 });
 

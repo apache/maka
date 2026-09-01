@@ -82,33 +82,6 @@ export const CONNECTION_CATALOG_PAGE_MAX_BYTES = 48 * 1024;
 export const RUNTIME_POLICY_SNAPSHOT_MAX_BYTES = 48 * 1024;
 export const CREDENTIAL_SECRET_MAX_BYTES = 10 * 1024;
 
-const CONNECTION_MODEL_FIELDS = [
-  'id',
-  'displayName',
-  'description',
-  'apiProtocol',
-  'contextWindow',
-  'inputLimit',
-  'maxOutputTokens',
-  'knowledgeCutoff',
-  'structuredOutput',
-  'lastUpdated',
-  'capabilities',
-  'modalities',
-] as const;
-const MODEL_FACT_OVERRIDE_FIELDS = [
-  'displayName',
-  'description',
-  'apiProtocol',
-  'contextWindow',
-  'inputLimit',
-  'maxOutputTokens',
-  'knowledgeCutoff',
-  'structuredOutput',
-  'lastUpdated',
-  'capabilities',
-  'modalities',
-] as const;
 const QUERY_ERRORS = [
   'host_not_ready',
   'host_draining',
@@ -188,7 +161,13 @@ export type ConnectionCatalogPageItem =
       readonly kind: 'model';
       readonly connectionIndex: number;
       readonly itemIndex: number;
-      readonly model: ConnectionModel;
+      /**
+       * The stored row with the user's `model-facts.json` overrides already
+       * merged in. Which fields an override touched stays with the Host — the
+       * one reader of that provenance is its own context-budget policy, on the
+       * execution connection rather than on this page.
+       */
+      readonly model: Omit<ConnectionModel, 'factOverriddenFields'>;
     }
   | {
       /**
@@ -642,7 +621,7 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
         0,
         CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION - 1,
       ),
-      model: decodeProjectedCatalogModel(modelItem.model),
+      model: decodeDomain(() => decodeConnectionModel(modelItem.model)),
     };
   }
   if (item.kind === 'catalog_entry') {
@@ -763,32 +742,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
     ),
   };
-}
-
-/** Decode catalog-only read-time provenance without admitting it to persisted models. */
-function decodeProjectedCatalogModel(value: unknown): ConnectionModel {
-  const item = requireShapedRecord(
-    value,
-    'projected connection model',
-    ['id'],
-    [...CONNECTION_MODEL_FIELDS.slice(1), 'factOverriddenFields'],
-  );
-  const { factOverriddenFields: rawOverriddenFields, ...persistentModel } = item;
-  const model = decodeDomain(() => decodeConnectionModel(persistentModel));
-  if (rawOverriddenFields === undefined) return model;
-  if (!Array.isArray(rawOverriddenFields) || rawOverriddenFields.length === 0) {
-    throw invalidProtocolFrame('Invalid model fact overridden fields');
-  }
-  const factOverriddenFields = rawOverriddenFields.map((field) => {
-    if (!(MODEL_FACT_OVERRIDE_FIELDS as readonly unknown[]).includes(field)) {
-      throw invalidProtocolFrame('Invalid model fact overridden field');
-    }
-    return field as (typeof MODEL_FACT_OVERRIDE_FIELDS)[number];
-  });
-  if (new Set(factOverriddenFields).size !== factOverriddenFields.length) {
-    throw invalidProtocolFrame('Duplicate model fact overridden field');
-  }
-  return { ...model, factOverriddenFields };
 }
 
 function decodeCreateConnectionInput(value: unknown): CreateCatalogConnectionInput {
