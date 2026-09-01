@@ -38,6 +38,10 @@ import {
   type SandboxBoundaryExpansion,
   type SandboxBoundaryRequestStatus,
 } from './sandbox-boundary.js';
+import {
+  decodeClientCapabilityGrantTarget,
+  type ClientCapabilityGrantTarget,
+} from './client-capability-grant.js';
 
 export * from './interaction-permission-review.js';
 
@@ -61,6 +65,7 @@ export const INTERACTION_CLOSURE_REASONS = [
   'turn_terminal',
   'timed_out',
   'host_restarted',
+  'provider_disconnected',
 ] as const;
 
 const UTF8 = new TextEncoder();
@@ -95,10 +100,17 @@ export interface InteractionSandboxBoundaryRequest {
   readonly justification: string;
 }
 
+export interface InteractionClientCapabilityRequest {
+  readonly kind: 'client_capability';
+  readonly toolUseId: string;
+  readonly target: ClientCapabilityGrantTarget;
+}
+
 export type InteractionRequest =
   | InteractionPermissionRequest
   | InteractionQuestionRequest
-  | InteractionSandboxBoundaryRequest;
+  | InteractionSandboxBoundaryRequest
+  | InteractionClientCapabilityRequest;
 
 export type InteractionPermissionDecisionFields =
   | { readonly decision: 'allow'; readonly rememberForTurn: boolean }
@@ -118,10 +130,16 @@ export interface InteractionSandboxBoundaryAnswer {
   readonly decision: 'allow' | 'deny';
 }
 
+export interface InteractionClientCapabilityAnswer {
+  readonly kind: 'client_capability';
+  readonly decision: 'allow' | 'deny';
+}
+
 export type InteractionAnswer =
   | InteractionPermissionAnswer
   | InteractionQuestionAnswer
-  | InteractionSandboxBoundaryAnswer;
+  | InteractionSandboxBoundaryAnswer
+  | InteractionClientCapabilityAnswer;
 
 export type InteractionCanonicalPermissionOutcome = {
   readonly kind: 'permission_answer';
@@ -144,6 +162,12 @@ export interface InteractionCanonicalSandboxBoundaryOutcome {
   readonly committedAt: number;
 }
 
+export interface InteractionCanonicalClientCapabilityOutcome {
+  readonly kind: 'client_capability_decision';
+  readonly decision: 'allow' | 'deny';
+  readonly committedAt: number;
+}
+
 export interface InteractionCanonicalClosureOutcome {
   readonly kind: 'closure';
   readonly reason: InteractionClosureReason;
@@ -154,6 +178,7 @@ export type InteractionCanonicalOutcome =
   | InteractionCanonicalPermissionOutcome
   | InteractionCanonicalQuestionOutcome
   | InteractionCanonicalSandboxBoundaryOutcome
+  | InteractionCanonicalClientCapabilityOutcome
   | InteractionCanonicalClosureOutcome;
 
 export type InteractionQuestionProjectionInput = Pick<
@@ -173,6 +198,10 @@ const SANDBOX_BOUNDARY_REQUEST_SHAPE = defineObjectShape<InteractionSandboxBound
   ['kind', 'expansion', 'justification'],
   [],
 );
+const CLIENT_CAPABILITY_REQUEST_SHAPE = defineObjectShape<InteractionClientCapabilityRequest>()(
+  ['kind', 'toolUseId', 'target'],
+  [],
+);
 const PERMISSION_ANSWER_SHAPE = defineObjectShape<InteractionPermissionAnswer>()(
   ['kind', 'decision', 'rememberForTurn'],
   [],
@@ -182,6 +211,10 @@ const QUESTION_ANSWER_SHAPE = defineObjectShape<InteractionQuestionAnswer>()(
   [],
 );
 const SANDBOX_BOUNDARY_ANSWER_SHAPE = defineObjectShape<InteractionSandboxBoundaryAnswer>()(
+  ['kind', 'decision'],
+  [],
+);
+const CLIENT_CAPABILITY_ANSWER_SHAPE = defineObjectShape<InteractionClientCapabilityAnswer>()(
   ['kind', 'decision'],
   [],
 );
@@ -196,6 +229,11 @@ const QUESTION_OUTCOME_SHAPE = defineObjectShape<InteractionCanonicalQuestionOut
 const SANDBOX_BOUNDARY_OUTCOME_SHAPE =
   defineObjectShape<InteractionCanonicalSandboxBoundaryOutcome>()(
     ['kind', 'decision', 'status', 'committedAt'],
+    [],
+  );
+const CLIENT_CAPABILITY_OUTCOME_SHAPE =
+  defineObjectShape<InteractionCanonicalClientCapabilityOutcome>()(
+    ['kind', 'decision', 'committedAt'],
     [],
   );
 const CLOSURE_OUTCOME_SHAPE = defineObjectShape<InteractionCanonicalClosureOutcome>()(
@@ -240,6 +278,13 @@ export function decodeInteractionRequest(value: unknown): InteractionRequest {
         INTERACTION_SANDBOX_BOUNDARY_JUSTIFICATION_MAX_CHARS,
       ),
     };
+  } else if (record.kind === 'client_capability') {
+    exact(record, CLIENT_CAPABILITY_REQUEST_SHAPE, 'Client Capability request');
+    request = {
+      kind: 'client_capability',
+      toolUseId: boundedString(record.toolUseId, 'toolUseId', INTERACTION_ID_MAX_BYTES),
+      target: decodeClientCapabilityGrantTarget(record.target),
+    };
   } else {
     throw new Error('Invalid Interaction request kind');
   }
@@ -269,6 +314,12 @@ export function decodeInteractionAnswer(value: unknown): InteractionAnswer {
     exact(record, SANDBOX_BOUNDARY_ANSWER_SHAPE, 'sandbox boundary answer');
     answer = {
       kind: 'sandbox_boundary',
+      decision: oneOf(record.decision, ['allow', 'deny'] as const, 'decision'),
+    };
+  } else if (record.kind === 'client_capability') {
+    exact(record, CLIENT_CAPABILITY_ANSWER_SHAPE, 'Client Capability answer');
+    answer = {
+      kind: 'client_capability',
       decision: oneOf(record.decision, ['allow', 'deny'] as const, 'decision'),
     };
   } else {
@@ -337,6 +388,13 @@ export function decodeInteractionCanonicalOutcome(value: unknown): InteractionCa
       kind: 'sandbox_boundary_decision',
       decision,
       status,
+      committedAt: safeInteger(record.committedAt, 'committedAt', false),
+    };
+  } else if (record.kind === 'client_capability_decision') {
+    exact(record, CLIENT_CAPABILITY_OUTCOME_SHAPE, 'Client Capability outcome');
+    outcome = {
+      kind: 'client_capability_decision',
+      decision: oneOf(record.decision, ['allow', 'deny'] as const, 'decision'),
       committedAt: safeInteger(record.committedAt, 'committedAt', false),
     };
   } else if (record.kind === 'closure') {
@@ -423,6 +481,17 @@ export function projectInteractionSandboxBoundaryRequest(input: {
   }) as InteractionSandboxBoundaryRequest;
 }
 
+export function projectInteractionClientCapabilityRequest(input: {
+  readonly toolUseId: string;
+  readonly target: ClientCapabilityGrantTarget;
+}): InteractionClientCapabilityRequest {
+  return decodeInteractionRequest({
+    kind: 'client_capability',
+    toolUseId: input.toolUseId,
+    target: input.target,
+  }) as InteractionClientCapabilityRequest;
+}
+
 export function interactionAnswerMatchesRequestKind(
   request: InteractionRequest,
   answer: InteractionAnswer,
@@ -440,7 +509,9 @@ export function interactionOutcomeMatchesRequestKind(
       ? outcome.kind === 'permission_answer'
       : request.kind === 'question'
         ? outcome.kind === 'question_answer'
-        : outcome.kind === 'sandbox_boundary_decision')
+        : request.kind === 'sandbox_boundary'
+          ? outcome.kind === 'sandbox_boundary_decision'
+          : outcome.kind === 'client_capability_decision')
   );
 }
 
@@ -476,6 +547,7 @@ export function isInteractionAnswerValidForRequest(
     );
   }
   if (answer.kind === 'sandbox_boundary') return request.kind === 'sandbox_boundary';
+  if (answer.kind === 'client_capability') return request.kind === 'client_capability';
   return interactionRememberForTurnIsEligible(request, answer);
 }
 
@@ -485,7 +557,11 @@ export function isInteractionCanonicalOutcomeValidForRequest(
 ): boolean {
   if (!interactionOutcomeMatchesRequestKind(request, outcome)) return false;
   if (outcome.kind === 'closure')
-    return request.kind === 'permission' || outcome.reason !== 'timed_out';
+    return (
+      request.kind === 'permission' ||
+      request.kind === 'client_capability' ||
+      outcome.reason !== 'timed_out'
+    );
   if (outcome.kind === 'permission_answer') {
     return interactionRememberForTurnIsEligible(request, outcome);
   }
@@ -494,6 +570,9 @@ export function isInteractionCanonicalOutcomeValidForRequest(
       request.kind === 'question' &&
       interactionQuestionAnswerCountMatchesRequest(request, outcome.answers)
     );
+  }
+  if (outcome.kind === 'client_capability_decision') {
+    return request.kind === 'client_capability';
   }
   return request.kind === 'sandbox_boundary';
 }
@@ -509,6 +588,9 @@ export function interactionCanonicalOutcomesEquivalent(
     return equalAnswers(left.answers, right.answers);
   if (left.kind === 'sandbox_boundary_decision' && right.kind === 'sandbox_boundary_decision') {
     return left.decision === right.decision && left.status === right.status;
+  }
+  if (left.kind === 'client_capability_decision' && right.kind === 'client_capability_decision') {
+    return left.decision === right.decision;
   }
   return left.kind === 'closure' && right.kind === 'closure' && left.reason === right.reason;
 }

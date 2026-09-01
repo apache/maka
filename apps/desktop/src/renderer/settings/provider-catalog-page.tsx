@@ -34,13 +34,17 @@ import {
   type ProviderCatalogGroup,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
-import { type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import {
+  getProviderSettingsCopy,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
 
 type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 
@@ -225,10 +229,14 @@ export function ProviderCatalogPage(props: {
  */
 export function ProviderSetupPage(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   target: SetupTarget;
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
+  onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
+  onOnboardingOutcomeUnknown?(): Promise<void>;
+  hasSaveUncertainty?: boolean;
   onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
   labelledBy?: string;
 }) {
@@ -244,10 +252,14 @@ export function ProviderSetupPage(props: {
       <AddProviderForm
         key={props.target.providerType}
         bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
         providerType={props.target.providerType}
         existingSlugs={props.existingSlugs}
         onCancel={props.onCancel}
         onCreated={props.onCreated}
+        onOnboarded={props.onOnboarded}
+        onOnboardingOutcomeUnknown={props.onOnboardingOutcomeUnknown}
+        hasSaveUncertainty={props.hasSaveUncertainty}
       />
     </div>
   );
@@ -261,17 +273,17 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-    if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
+    if (PROVIDER_REGISTRY[type].status !== 'ready') return false;
     if (
       category !== 'all' &&
       category !== 'recommended' &&
-      PROVIDER_DEFAULTS[type].catalogGroup !== category
+      PROVIDER_REGISTRY[type].catalogGroup !== category
     ) {
       return false;
     }
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
-    return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
+    return [type, display.name, display.description, PROVIDER_REGISTRY[type].label]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 }

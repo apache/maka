@@ -650,8 +650,8 @@ export function stripEnvelopeTags(text: string): string {
  * regardless of how the digest was built — sanitizing (NFC, control/bidi/
  * zero-width) and redacting secrets, then stripping envelope tags (to a
  * fixpoint) and JSON-stringifying so the value stays a quoted, break-out-proof
- * scalar (cf. renderSafeTaskLedgerText). This covers the fields that reach the
- * digest less filtered than messages do — `cwd`, `gitBranch`, and file paths.
+ * scalar. This covers the fields that reach the digest less filtered than
+ * messages do — `cwd`, `gitBranch`, and file paths.
  * `source` and `updated_at` are the only unquoted fields; both are
  * Maka-controlled enums/timestamps.
  */

@@ -86,7 +86,7 @@ export interface RuntimeHostLifecycleTransitionInput {
 
 export class RuntimeHostLifecycleTransactionError extends Error {
   constructor(
-    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed',
+    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed' | 'active_tasks',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -213,6 +213,7 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
       readonly deploymentId?: string;
     };
     readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
+    readonly allowInterruptActiveTasks?: boolean;
     readonly ensureAvailable?: boolean;
   } = {},
 ): Promise<RuntimeHostRecoverableDeployment> {
@@ -237,11 +238,12 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
         ? { supervisor: previousProvider.supervisor }
         : {}),
     ...(options.expectedOwner ? { expectedOwner: options.expectedOwner } : {}),
+    allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
     retireIdleSupervisor: false,
   });
   if (retirement.kind === 'active_tasks') {
     throw new RuntimeHostLifecycleTransactionError(
-      'transition_failed',
+      'active_tasks',
       'Runtime Host lifecycle recovery is waiting for active work to finish',
     );
   }
@@ -367,10 +369,11 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     'registration' in connected ? connected.registration : undefined,
   );
   if (connected.kind !== 'connected') {
-    if (input.allowInterruptActiveTasks && input.supervisor) {
+    if (input.supervisor) {
       const status = await input.supervisor.status();
       assertExpectedSupervisorOwner(input.expectedOwner, status);
       if (status.active && status.pid !== null) {
+        if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
         await input.supervisor.retire();
         return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
       }

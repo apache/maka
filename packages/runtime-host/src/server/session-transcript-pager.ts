@@ -359,7 +359,11 @@ async function readRangeEdges(input: {
           targetBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES
         ) {
           if (targetStart === 0) {
-            throw new RangeError('Session transcript Turn range exceeds its capacity limit');
+            return {
+              selected: input.selected,
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
+            };
           }
           reachedFarEdge = true;
           break;
@@ -397,7 +401,11 @@ async function readRangeEdges(input: {
       groupBytes > SESSION_TRANSCRIPT_RANGE_MAX_BYTES
     ) {
       if (groupStart > 0) break;
-      throw new RangeError('Session transcript Turn range exceeds its capacity limit');
+      return {
+        selected: input.selected,
+        rangeBoundarySequence: null,
+        protectedTurnSequence: null,
+      };
     }
     if (
       retainedMessages + group.length > SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES ||

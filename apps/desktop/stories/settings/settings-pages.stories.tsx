@@ -42,13 +42,21 @@ import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
-import type { IdentifiedLlmConnection, LlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  LlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
+import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import {
   createSettingsSnapshotCache,
@@ -102,23 +110,23 @@ function makeConnection(input: {
   name: string;
   providerType: ProviderType;
   enabled?: boolean;
-}): IdentifiedLlmConnection {
-  return {
+}): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
     providerType: input.providerType,
     defaultModel: 'glm-4.7',
     enabled: input.enabled ?? true,
-    modelsFetchedAt: NOW - 18 * 60_000,
     lastTestStatus: 'verified',
     lastTestAt: new Date(NOW - 12 * 60_000).toISOString(),
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60_000,
   };
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
-const connections: IdentifiedLlmConnection[] = [
+const connections: ProjectedLlmConnection[] = [
   makeConnection({ slug: 'zai-live', name: 'Z.AI Live', providerType: 'zai-coding-plan' }),
   makeConnection({ slug: 'openai-review', name: 'OpenAI Review', providerType: 'openai' }),
   makeConnection({ slug: 'ollama-local', name: 'Ollama Local', providerType: 'ollama' }),
@@ -1593,6 +1601,9 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
   // holds both in AppShell state and applies them optimistically on click.
   const [themePref, setThemePref] = useState<ThemePreference>('auto');
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
+  const [connectionSettingsServices] = useState(
+    createDesktopConnectionSettingsServices,
+  );
 
   return (
     <>
@@ -1610,27 +1621,29 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           minHeight: 640,
         }}
       >
-        <SettingsSurface
-          onClose={noop}
-          themePref={themePref}
-          onThemeChange={setThemePref}
-          themePalette={themePalette}
-          onThemePaletteChange={setThemePalette}
-          onUiLocalePreferenceChange={noop}
-          uiLocaleUpdateGate={uiLocaleUpdateGate}
-          onDefaultPermissionModeChange={noop}
-          request={{ section: props.section }}
-          openProviderCatalog={props.openProviderCatalog}
-          initialConnectionSlug={props.initialConnectionSlug}
-          initialFocusRef={initialFocusRef}
-          onOpenDailyReview={noop}
-          onOpenSession={noop}
-          archivedTasks={archivedTasks}
-          onTaskImported={noop}
-          onRemoteHostAdded={noop}
-          onSelectedRuntimeHostProfileIdChange={noop}
-          snapshotCache={snapshotCache}
-        />
+        <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
+          <SettingsSurface
+            onClose={noop}
+            themePref={themePref}
+            onThemeChange={setThemePref}
+            themePalette={themePalette}
+            onThemePaletteChange={setThemePalette}
+            onUiLocalePreferenceChange={noop}
+            uiLocaleUpdateGate={uiLocaleUpdateGate}
+            onDefaultPermissionModeChange={noop}
+            request={{ section: props.section }}
+            openProviderCatalog={props.openProviderCatalog}
+            initialConnectionSlug={props.initialConnectionSlug}
+            initialFocusRef={initialFocusRef}
+            onOpenDailyReview={noop}
+            onOpenSession={noop}
+            archivedTasks={archivedTasks}
+            onTaskImported={noop}
+            onRemoteHostAdded={noop}
+            onSelectedRuntimeHostProfileIdChange={noop}
+            snapshotCache={snapshotCache}
+          />
+        </ConnectionSettingsServicesProvider>
       </div>
     </>
   );

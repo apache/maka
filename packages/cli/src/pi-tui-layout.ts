@@ -18,6 +18,7 @@
  */
 
 import { Container, type Component, type Terminal } from '@earendil-works/pi-tui';
+import type { UiLocale } from '@maka/core/ui-locale';
 // Deep import (pi-tui does not re-export it): the viewport shadow diff must
 // compare the same canonical lines pi-tui diffs, and pi-tui normalizes Thai/Lao
 // AM sequences before its diff. Pinned to pi-tui 0.80.3.
@@ -111,12 +112,15 @@ export class MakaActivityStripComponent implements Component {
 
 /** The pending-queue bar (Steering:/Queued:) rendered just above the editor. */
 export class MakaPendingQueueComponent implements Component {
-  constructor(private readonly state: MakaPiTranscriptState) {}
+  constructor(
+    private readonly state: MakaPiTranscriptState,
+    private readonly locale: UiLocale = 'en',
+  ) {}
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    return renderMakaPiPendingQueue(this.state, width);
+    return renderMakaPiPendingQueue(this.state, width, process.platform, this.locale);
   }
 }
 

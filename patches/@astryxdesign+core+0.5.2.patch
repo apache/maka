@@ -87,6 +87,102 @@ index 8c509bc..5f46785 100644
      observeResize(el, () => {
        onResizeRef.current?.();
        const messages = el.getElementsByClassName('astryx-chat-message');
+diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
+index e1d2ebd..1f8337e 100644
+--- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
++++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
+@@ -47,6 +47,45 @@ const styles = {
+ // Helpers
+ // =============================================================================
+ 
++const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
++function createsLineBoundary(node) {
++  return node instanceof HTMLBRElement || node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display);
++}
++function getTrailingContextCharacter(node) {
++  if (node.nodeType === Node.TEXT_NODE) {
++    return (node.textContent ?? '').slice(-1);
++  }
++  if (createsLineBoundary(node)) {
++    return '\n';
++  }
++  for (let child = node.lastChild; child; child = child.previousSibling) {
++    const character = getTrailingContextCharacter(child);
++    if (character) {
++      return character;
++    }
++  }
++  return '';
++}
++function getCharacterBeforeNode(editable, node) {
++  let current = node;
++  while (current && current !== editable) {
++    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
++      const character = getTrailingContextCharacter(sibling);
++      if (character) {
++        return character;
++      }
++    }
++    const parent = current.parentNode;
++    if (!parent || parent === editable) {
++      return '';
++    }
++    if (createsLineBoundary(parent)) {
++      return '\n';
++    }
++    current = parent;
++  }
++  return '';
++}
+ function getTextBeforeCursor(editable) {
+   const selection = window.getSelection();
+   if (!selection || selection.rangeCount === 0) {
+@@ -61,7 +100,12 @@ function getTextBeforeCursor(editable) {
+   }
+   const node = range.startContainer;
+   if (node.nodeType === Node.TEXT_NODE) {
+-    return (node.textContent ?? '').slice(0, range.startOffset);
++    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
++    const prefix = getCharacterBeforeNode(editable, node);
++    return {
++      text: prefix + nodeText,
++      nodeStart: prefix.length
++    };
+   }
+   return null;
+ }
+@@ -306,15 +350,15 @@ export function useTriggerMenu(options) {
+     if (!editable) {
+       return;
+     }
+-    const textBefore = getTextBeforeCursor(editable);
+-    if (textBefore === null) {
++    const cursorContext = getTextBeforeCursor(editable);
++    if (cursorContext === null) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+-    const found = findActiveTrigger(textBefore, triggers);
+-    if (!found) {
++    const found = findActiveTrigger(cursorContext.text, triggers);
++    if (!found || found.triggerStart < cursorContext.nodeStart) {
+       if (state.isActive) {
+         reset();
+       }
+@@ -322,9 +366,9 @@ export function useTriggerMenu(options) {
+     }
+     const {
+       trigger,
+-      query,
+-      triggerStart
++      query
+     } = found;
++    const triggerStart = found.triggerStart - cursorContext.nodeStart;
+     if (!state.isActive || state.activeTrigger !== trigger) {
+       triggerStartRef.current = triggerStart;
+       setState(prev => ({
 diff --git a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts b/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
 index 82ae62c..a97eff5 100644
 --- a/node_modules/@astryxdesign/core/dist/DropdownMenu/DropdownMenuItem.d.ts
@@ -134,7 +230,7 @@ index 446e25b..00eb8b3 100644
      onPointerMove: handlePointerMove,
      startContent: icon ? renderIconSlot(icon, {
 diff --git a/node_modules/@astryxdesign/core/dist/List/List.js b/node_modules/@astryxdesign/core/dist/List/List.js
-index 08b5f7d..94c623b 100644
+index 8753b5f..1fa8325 100644
 --- a/node_modules/@astryxdesign/core/dist/List/List.js
 +++ b/node_modules/@astryxdesign/core/dist/List/List.js
 @@ -89,6 +89,7 @@ export function List({
@@ -142,19 +238,27 @@ index 08b5f7d..94c623b 100644
    style,
    'data-testid': testId,
 +  'aria-label': ariaLabel,
-   ref
+   ref,
+   ...props
  }) {
-   const headerId = useId();
-@@ -102,6 +103,7 @@ export function List({
-   const listElement = /*#__PURE__*/_jsx(Tag, {
-     ref: ref,
-     "data-testid": testId,
-+    "aria-label": ariaLabel,
-     "aria-labelledby": header != null ? headerId : undefined,
-     ...(isOrdered && start != null && start !== 1 ? {
-       start
+@@ -106,7 +107,8 @@ export function List({
+     // is part of its contract and wins on conflict.
+     ,
+     ...props,
+-    "data-testid": testId
++    "data-testid": testId,
++    "aria-label": ariaLabel
+     // Only when this component renders the header — writing `undefined`
+     // unconditionally would erase a label a consumer pointed at their own
+     // heading.
+@@ -151,4 +153,4 @@ export function List({
+     })
+   });
+ }
+-List.displayName = 'List';
++List.displayName = 'List';
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
-index d9ad714..91cde1e 100644
+index 2ea4f3e..be99f2d 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.d.ts
 @@ -90,6 +90,10 @@ export interface MarkdownProps extends BaseProps<HTMLElement> {
@@ -172,16 +276,15 @@ index d9ad714..91cde1e 100644
   * </Markdown>
   * ```
   */
--export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, }: MarkdownProps): React.ReactElement;
-+export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, settledText, transformSource, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, }: MarkdownProps): React.ReactElement;
+-export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
++export declare function Markdown({ ref, children, display, density, headingLevelStart, isStreaming, settledText, transformSource, onLinkClick, sources, citationStyle, contentWidth, contentAlign, components, inlinePlugins, autolink, xstyle, className, style, 'data-testid': testId, ...props }: MarkdownProps): React.ReactElement;
  export declare namespace Markdown {
      var displayName: string;
  }
 -//# sourceMappingURL=Markdown.d.ts.map
-\ No newline at end of file
 +//# sourceMappingURL=Markdown.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
-index 0fd8329..a4a158a 100644
+index 36ed303..745ba77 100644
 --- a/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 +++ b/node_modules/@astryxdesign/core/dist/Markdown/Markdown.js
 @@ -8,7 +8,7 @@
@@ -193,7 +296,7 @@ index 0fd8329..a4a158a 100644
  import { Fragment } from 'react';
  import * as stylex from '@stylexjs/stylex';
  import "../theme/tokens.stylex.js";
-@@ -1048,6 +1048,8 @@ export function Markdown({
+@@ -1053,6 +1053,8 @@ export function Markdown({
    density = 'default',
    headingLevelStart = 1,
    isStreaming = false,
@@ -202,7 +305,7 @@ index 0fd8329..a4a158a 100644
    onLinkClick,
    sources,
    citationStyle = 'label',
-@@ -1072,26 +1074,22 @@ export function Markdown({
+@@ -1078,7 +1080,10 @@ export function Markdown({
  
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
@@ -212,19 +315,9 @@ index 0fd8329..a4a158a 100644
 +  });
 +  const parsedText = transformSource ? transformSource(smoothedText) : smoothedText;
    const incrementalStateRef = useRef(createIncrementalState());
--  // Reset incremental cache when the autolink option toggles — cached
--  // settled blocks were parsed with the previous setting.
--  const prevAutolinkRef = useRef(autolink);
--  if (prevAutolinkRef.current !== autolink) {
--    incrementalStateRef.current = createIncrementalState();
--    prevAutolinkRef.current = autolink;
--  }
-   const blocks = useMemo(() => {
-     if (display === 'inline') {
-       return [];
-     }
-     if (isStreaming) {
-       if (smoothedText === '') {
+   // Reset incremental cache when the autolink option toggles — cached
+   // settled blocks were parsed with the previous setting.
+@@ -1096,11 +1101,11 @@ export function Markdown({
          incrementalStateRef.current = createIncrementalState();
          return [];
        }
@@ -236,7 +329,10 @@ index 0fd8329..a4a158a 100644
 -  }, [display, smoothedText, children, isStreaming, parseOptions]);
 +    return parseMarkdown(parsedText, parseOptions);
 +  }, [display, parsedText, isStreaming, parseOptions]);
-@@ -1120,6 +1119,6 @@ export function Markdown({
+ 
+   // Assign each top-level heading the slug that parseOutlineFromMarkdown
+   // would derive for it, so Outline hash links built from the same source
+@@ -1126,9 +1131,9 @@ export function Markdown({
      if (display !== 'inline') {
        return [];
      }
@@ -245,7 +341,10 @@ index 0fd8329..a4a158a 100644
      return parseInline(input, parseOptions);
 -  }, [display, smoothedText, children, isStreaming, parseOptions]);
 +  }, [display, parsedText, isStreaming, parseOptions]);
-@@ -1139,17 +1137,25 @@ export function Markdown({
+ 
+   // Track recent boundaries for stacked fade-in animation.
+   // The number of spans needed = ceil(animationDuration / tickInterval).
+@@ -1145,17 +1150,25 @@ export function Markdown({
      const tickMs = tick != null ? Math.max(4, Math.round(tick / 10)) : 50;
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
@@ -282,7 +381,7 @@ index 0fd8329..a4a158a 100644
    const cursor = {
      offset: 0,
      boundaries,
-@@ -1174,9 +1180,6 @@ export function Markdown({
+@@ -1183,9 +1196,6 @@ export function Markdown({
        children: inlineNodes.map((node, i) => renderInline(node, i, onLinkClick, cursor, citationCtx, LinkComponent, inlinePlugins, components))
      });
  
@@ -292,7 +391,7 @@ index 0fd8329..a4a158a 100644
      return renderedInline;
    }
    const rendered = /*#__PURE__*/_jsx("div", {
-@@ -1189,11 +1192,6 @@ export function Markdown({
+@@ -1202,11 +1212,6 @@ export function Markdown({
      children: blocks.map((block, i) => renderBlock(block, i, blocks.length, density, headingLevelStart, onLinkClick, cursor, citationCtx, contentWidth ? typeof contentWidth === 'number' ? `${contentWidth}px` : contentWidth : null, contentAlign, LinkComponent, inlinePlugins, components, t, headingIdMap))
    });
  
@@ -304,14 +403,13 @@ index 0fd8329..a4a158a 100644
    return rendered;
  }
 -Markdown.displayName = 'Markdown';
-\ No newline at end of file
 +Markdown.displayName = 'Markdown';
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-index e7b8e00..fad2e72 100644
+index 158ada1..b891fb9 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.d.ts
-@@ -66,6 +66,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
-      * Right-side content (badges, counts).
+@@ -68,6 +68,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+      * renders inside the primary link or button.
       */
      endContent?: ReactNode;
 +    /**
@@ -321,30 +419,32 @@ index e7b8e00..fad2e72 100644
 +     */
 +    trailingAction?: ReactNode;
      /**
-      * Sub-items for nesting.
-      */
-@@ -112,7 +118,7 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+      * Row-level secondary controls (icon buttons, menus) rendered as siblings
+      * of the primary element at the trailing edge of the row — after the
+@@ -137,8 +143,8 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
   * </SideNavItem>
   * ```
   */
--export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
-+export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, trailingAction, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
+-export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, actions, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
++export declare function SideNavItem({ as, label, icon, selectedIcon, isSelected, isDisabled, href, onClick, endContent, trailingAction, actions, children, collapsible: itemCollapsible, size, 'data-testid': testId, ref, xstyle, ...rest }: SideNavItemProps): import("react").JSX.Element | null;
  export declare namespace SideNavItem {
      var displayName: string;
  }
+-//# sourceMappingURL=SideNavItem.d.ts.map
++//# sourceMappingURL=SideNavItem.d.ts.map
 diff --git a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-index d694da7..d0a580c 100644
+index 3d2cf00..e527e9d 100644
 --- a/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
 +++ b/node_modules/@astryxdesign/core/dist/SideNav/SideNavItem.js
-@@ -210,6 +210,7 @@ export function SideNavItem({
+@@ -232,6 +232,7 @@ export function SideNavItem({
    href,
    onClick,
    endContent,
 +  trailingAction,
+   actions,
    children,
    collapsible: itemCollapsible,
-   size = 'md',
-@@ -492,7 +493,7 @@ export function SideNavItem({
+@@ -547,7 +548,7 @@ export function SideNavItem({
    const item = /*#__PURE__*/_jsxs("div", {
      ref: itemRef,
      ...stylex.props(styles.root, xstyle),
@@ -353,6 +453,12 @@ index d694da7..d0a580c 100644
        id: `${id}-children`,
        role: "group",
        "aria-labelledby": `${id}-label`,
+@@ -575,4 +576,4 @@ export function SideNavItem({
+   });
+   return item;
+ }
+-SideNavItem.displayName = 'SideNavItem';
++SideNavItem.displayName = 'SideNavItem';
 diff --git a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts b/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
 index 7a35d1c..50ee70b 100644
 --- a/node_modules/@astryxdesign/core/dist/hooks/useStreamingText.d.ts
@@ -521,7 +627,6 @@ index 693d728..7d5724e 100644
 -  return targetText.slice(0, snapToGraphemeBoundary(targetText, displayedLen));
 +  return targetText.slice(0, snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen));
  }
-\ No newline at end of file
 diff --git a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx b/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
 index f22bb1f..b710951 100644
 --- a/node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx
@@ -534,6 +639,109 @@ index f22bb1f..b710951 100644
        aria-expanded={hasDetail ? isDetailOpen : undefined}
        aria-controls={hasDetail && isDetailOpen ? detailId : undefined}
        onClick={toggleDetail}
+diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
+index 6eefd4a..17071f1 100644
+--- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
++++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
+@@ -167,7 +167,56 @@ const styles = stylex.create({
+ // Helpers
+ // =============================================================================
+ 
+-function getTextBeforeCursor(editable: HTMLDivElement): string | null {
++const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
++
++function createsLineBoundary(node: Node): boolean {
++  return (
++    node instanceof HTMLBRElement ||
++    (node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display))
++  );
++}
++
++function getTrailingContextCharacter(node: Node): string {
++  if (node.nodeType === Node.TEXT_NODE) {
++    return (node.textContent ?? '').slice(-1);
++  }
++  if (createsLineBoundary(node)) {
++    return '\n';
++  }
++  for (let child = node.lastChild; child; child = child.previousSibling) {
++    const character = getTrailingContextCharacter(child);
++    if (character) {
++      return character;
++    }
++  }
++  return '';
++}
++
++function getCharacterBeforeNode(editable: HTMLDivElement, node: Node): string {
++  let current: Node | null = node;
++  while (current && current !== editable) {
++    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
++      const character = getTrailingContextCharacter(sibling);
++      if (character) {
++        return character;
++      }
++    }
++
++    const parent = current.parentNode;
++    if (!parent || parent === editable) {
++      return '';
++    }
++    if (createsLineBoundary(parent)) {
++      return '\n';
++    }
++    current = parent;
++  }
++  return '';
++}
++
++function getTextBeforeCursor(
++  editable: HTMLDivElement,
++): {text: string; nodeStart: number} | null {
+   const selection = window.getSelection();
+   if (!selection || selection.rangeCount === 0) {
+     return null;
+@@ -183,7 +232,9 @@ function getTextBeforeCursor(editable: HTMLDivElement): string | null {
+ 
+   const node = range.startContainer;
+   if (node.nodeType === Node.TEXT_NODE) {
+-    return (node.textContent ?? '').slice(0, range.startOffset);
++    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
++    const prefix = getCharacterBeforeNode(editable, node);
++    return {text: prefix + nodeText, nodeStart: prefix.length};
+   }
+ 
+   return null;
+@@ -486,23 +537,24 @@ export function useTriggerMenu(
+       return;
+     }
+ 
+-    const textBefore = getTextBeforeCursor(editable);
+-    if (textBefore === null) {
++    const cursorContext = getTextBeforeCursor(editable);
++    if (cursorContext === null) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+ 
+-    const found = findActiveTrigger(textBefore, triggers);
+-    if (!found) {
++    const found = findActiveTrigger(cursorContext.text, triggers);
++    if (!found || found.triggerStart < cursorContext.nodeStart) {
+       if (state.isActive) {
+         reset();
+       }
+       return;
+     }
+ 
+-    const {trigger, query, triggerStart} = found;
++    const {trigger, query} = found;
++    const triggerStart = found.triggerStart - cursorContext.nodeStart;
+ 
+     if (!state.isActive || state.activeTrigger !== trigger) {
+       triggerStartRef.current = triggerStart;
 diff --git a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx b/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
 index 21bad6a..8e2a03a 100644
 --- a/node_modules/@astryxdesign/core/src/DropdownMenu/DropdownMenuItem.tsx
@@ -568,7 +776,7 @@ index 21bad6a..8e2a03a 100644
        onPointerMove={handlePointerMove}
        startContent={
 diff --git a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
-index ea918b4..d83af73 100644
+index 0ba2449..939ddf9 100644
 --- a/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 +++ b/node_modules/@astryxdesign/core/src/Markdown/Markdown.tsx
 @@ -9,7 +9,7 @@
@@ -591,7 +799,7 @@ index ea918b4..d83af73 100644
    onLinkClick?: (
      href: string,
      event: React.MouseEvent<HTMLAnchorElement>,
-@@ -1610,6 +1614,8 @@ export function Markdown({
+@@ -1615,6 +1619,8 @@ export function Markdown({
    density = 'default',
    headingLevelStart = 1,
    isStreaming = false,
@@ -600,7 +808,7 @@ index ea918b4..d83af73 100644
    onLinkClick,
    sources,
    citationStyle = 'label',
-@@ -1638,7 +1644,10 @@ export function Markdown({
+@@ -1644,18 +1650,14 @@ export function Markdown({
  
    // Smooth bursty streamed chunks into a steady character-by-character reveal.
    // When not streaming, the hook returns children unchanged (no-op).
@@ -612,7 +820,7 @@ index ea918b4..d83af73 100644
  
    const incrementalStateRef = useRef<IncrementalState>(
      createIncrementalState(),
-@@ -1648,7 +1657,0 @@ export function Markdown({
+   );
 -  // Reset incremental cache when the autolink option toggles — cached
 -  // settled blocks were parsed with the previous setting.
 -  const prevAutolinkRef = useRef(autolink);
@@ -620,7 +828,10 @@ index ea918b4..d83af73 100644
 -    incrementalStateRef.current = createIncrementalState();
 -    prevAutolinkRef.current = autolink;
 -  }
-@@ -1660,12 +1662,12 @@ export function Markdown({
+ 
+   const blocks = useMemo(() => {
+     if (display === 'inline') {
+@@ -1666,15 +1668,15 @@ export function Markdown({
          incrementalStateRef.current = createIncrementalState();
          return [];
        }
@@ -636,7 +847,10 @@ index ea918b4..d83af73 100644
 -  }, [display, smoothedText, children, isStreaming, parseOptions]);
 +    return parseMarkdown(parsedText, parseOptions);
 +  }, [display, parsedText, isStreaming, parseOptions]);
-@@ -1695,6 +1704,6 @@ export function Markdown({
+ 
+   // Assign each top-level heading the slug that parseOutlineFromMarkdown
+   // would derive for it, so Outline hash links built from the same source
+@@ -1701,9 +1703,9 @@ export function Markdown({
      if (display !== 'inline') {
        return [];
      }
@@ -645,7 +859,10 @@ index ea918b4..d83af73 100644
      return parseInline(input, parseOptions);
 -  }, [display, smoothedText, children, isStreaming, parseOptions]);
 +  }, [display, parsedText, isStreaming, parseOptions]);
-@@ -1713,20 +1722,43 @@ export function Markdown({
+ 
+   // Track recent boundaries for stacked fade-in animation.
+   // The number of spans needed = ceil(animationDuration / tickInterval).
+@@ -1719,20 +1721,43 @@ export function Markdown({
      return Math.min(Math.ceil(duration / tickMs), 12);
    }, [token]);
  
@@ -703,7 +920,7 @@ index ea918b4..d83af73 100644
  
    const cursor: StreamingCursor = {
      offset: 0,
-@@ -1766,10 +1798,6 @@ export function Markdown({
+@@ -1774,10 +1799,6 @@ export function Markdown({
        </span>
      );
  
@@ -714,7 +931,7 @@ index ea918b4..d83af73 100644
      return renderedInline;
    }
  
-@@ -1810,12 +1838,6 @@ export function Markdown({
+@@ -1821,12 +1842,6 @@ export function Markdown({
      </div>
    );
  
@@ -728,11 +945,11 @@ index ea918b4..d83af73 100644
  }
  
 diff --git a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
-index a05ba4e..c9a10bc 100644
+index 1197085..67271f5 100644
 --- a/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
 +++ b/node_modules/@astryxdesign/core/src/SideNav/SideNavItem.tsx
-@@ -322,6 +322,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
-    * Right-side content (badges, counts).
+@@ -346,6 +346,12 @@ export interface SideNavItemProps extends BaseProps<HTMLElement> {
+    * renders inside the primary link or button.
     */
    endContent?: ReactNode;
 +  /**
@@ -742,17 +959,17 @@ index a05ba4e..c9a10bc 100644
 +   */
 +  trailingAction?: ReactNode;
    /**
-    * Sub-items for nesting.
-    */
-@@ -385,6 +391,7 @@ export function SideNavItem({
+    * Row-level secondary controls (icon buttons, menus) rendered as siblings
+    * of the primary element at the trailing edge of the row — after the
+@@ -432,6 +438,7 @@ export function SideNavItem({
    href,
    onClick,
    endContent,
 +  trailingAction,
+   actions,
    children,
    collapsible: itemCollapsible,
-   size = 'md',
-@@ -702,6 +709,7 @@ export function SideNavItem({
+@@ -792,6 +799,7 @@ export function SideNavItem({
    const item = (
      <div ref={itemRef} {...stylex.props(styles.root, xstyle)}>
        {itemElement}
@@ -964,152 +1181,3 @@ index 55b441e..7aa4174 100644
 +    snapToGraphemeBoundary(targetText, renderedPresentation.displayedLen),
 +  );
  }
-diff --git a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-index e1d2ebd6c..d4bb8cb03 100644
---- a/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-+++ b/node_modules/@astryxdesign/core/dist/Chat/useTriggerMenu.js
-@@ -49,0 +50,39 @@ const styles = {
-+const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
-+function createsLineBoundary(node) {
-+  return node instanceof HTMLBRElement || node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display);
-+}
-+function getTrailingContextCharacter(node) {
-+  if (node.nodeType === Node.TEXT_NODE) {
-+    return (node.textContent ?? '').slice(-1);
-+  }
-+  if (createsLineBoundary(node)) {
-+    return '\n';
-+  }
-+  for (let child = node.lastChild; child; child = child.previousSibling) {
-+    const character = getTrailingContextCharacter(child);
-+    if (character) {
-+      return character;
-+    }
-+  }
-+  return '';
-+}
-+function getCharacterBeforeNode(editable, node) {
-+  let current = node;
-+  while (current && current !== editable) {
-+    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
-+      const character = getTrailingContextCharacter(sibling);
-+      if (character) {
-+        return character;
-+      }
-+    }
-+    const parent = current.parentNode;
-+    if (!parent || parent === editable) {
-+      return '';
-+    }
-+    if (createsLineBoundary(parent)) {
-+      return '\n';
-+    }
-+    current = parent;
-+  }
-+  return '';
-+}
-@@ -64 +103,6 @@ function getTextBeforeCursor(editable) {
--    return (node.textContent ?? '').slice(0, range.startOffset);
-+    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
-+    const prefix = getCharacterBeforeNode(editable, node);
-+    return {
-+      text: prefix + nodeText,
-+      nodeStart: prefix.length
-+    };
-@@ -309,2 +353,2 @@ export function useTriggerMenu(options) {
--    const textBefore = getTextBeforeCursor(editable);
--    if (textBefore === null) {
-+    const cursorContext = getTextBeforeCursor(editable);
-+    if (cursorContext === null) {
-@@ -316,2 +360,2 @@ export function useTriggerMenu(options) {
--    const found = findActiveTrigger(textBefore, triggers);
--    if (!found) {
-+    const found = findActiveTrigger(cursorContext.text, triggers);
-+    if (!found || found.triggerStart < cursorContext.nodeStart) {
-@@ -322,9 +366,9 @@ export function useTriggerMenu(options) {
-     }
-     const {
-       trigger,
--      query,
--      triggerStart
-+      query
-     } = found;
-+    const triggerStart = found.triggerStart - cursorContext.nodeStart;
-     if (!state.isActive || state.activeTrigger !== trigger) {
-       triggerStartRef.current = triggerStart;
-       setState(prev => ({
-diff --git a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-index 6eefd4a59..17071f1b2 100644
---- a/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-+++ b/node_modules/@astryxdesign/core/src/Chat/useTriggerMenu.tsx
-@@ -170 +170,50 @@ const styles = stylex.create({
--function getTextBeforeCursor(editable: HTMLDivElement): string | null {
-+const blockDisplays = new Set(['block', 'flex', 'flow-root', 'grid', 'list-item', 'table']);
-+
-+function createsLineBoundary(node: Node): boolean {
-+  return (
-+    node instanceof HTMLBRElement ||
-+    (node instanceof HTMLElement && blockDisplays.has(window.getComputedStyle(node).display))
-+  );
-+}
-+
-+function getTrailingContextCharacter(node: Node): string {
-+  if (node.nodeType === Node.TEXT_NODE) {
-+    return (node.textContent ?? '').slice(-1);
-+  }
-+  if (createsLineBoundary(node)) {
-+    return '\n';
-+  }
-+  for (let child = node.lastChild; child; child = child.previousSibling) {
-+    const character = getTrailingContextCharacter(child);
-+    if (character) {
-+      return character;
-+    }
-+  }
-+  return '';
-+}
-+
-+function getCharacterBeforeNode(editable: HTMLDivElement, node: Node): string {
-+  let current: Node | null = node;
-+  while (current && current !== editable) {
-+    for (let sibling = current.previousSibling; sibling; sibling = sibling.previousSibling) {
-+      const character = getTrailingContextCharacter(sibling);
-+      if (character) {
-+        return character;
-+      }
-+    }
-+
-+    const parent = current.parentNode;
-+    if (!parent || parent === editable) {
-+      return '';
-+    }
-+    if (createsLineBoundary(parent)) {
-+      return '\n';
-+    }
-+    current = parent;
-+  }
-+  return '';
-+}
-+
-+function getTextBeforeCursor(
-+  editable: HTMLDivElement,
-+): {text: string; nodeStart: number} | null {
-@@ -186 +235,3 @@ function getTextBeforeCursor(editable: HTMLDivElement): string | null {
--    return (node.textContent ?? '').slice(0, range.startOffset);
-+    const nodeText = (node.textContent ?? '').slice(0, range.startOffset);
-+    const prefix = getCharacterBeforeNode(editable, node);
-+    return {text: prefix + nodeText, nodeStart: prefix.length};
-@@ -489,2 +540,2 @@ export function useTriggerMenu(
--    const textBefore = getTextBeforeCursor(editable);
--    if (textBefore === null) {
-+    const cursorContext = getTextBeforeCursor(editable);
-+    if (cursorContext === null) {
-@@ -497,2 +548,2 @@ export function useTriggerMenu(
--    const found = findActiveTrigger(textBefore, triggers);
--    if (!found) {
-+    const found = findActiveTrigger(cursorContext.text, triggers);
-+    if (!found || found.triggerStart < cursorContext.nodeStart) {
-@@ -505 +556,2 @@ export function useTriggerMenu(
--    const {trigger, query, triggerStart} = found;
-+    const {trigger, query} = found;
-+    const triggerStart = found.triggerStart - cursorContext.nodeStart;

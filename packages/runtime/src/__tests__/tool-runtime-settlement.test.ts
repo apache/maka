@@ -32,13 +32,14 @@ import { buildForegroundBashTool, buildManagedBashTool } from '../shell-tools.js
 import { ToolRuntime, type MakaTool, type ToolRuntimeInput } from '../tool-runtime.js';
 
 describe('ToolRuntime settlement', () => {
-  it('requires the bypass boundary before dispatching Client Capability tools', async () => {
+  it('rejects Client Capability Host admission without preparation in every boundary', async () => {
     let calls = 0;
     const clientTool: MakaTool = {
       name: 'client_browser',
       description: 'client browser',
       parameters: {},
       categoryHint: 'client_capability',
+      hostAdmission: 'client_capability',
       impl: () => {
         calls += 1;
         return { ok: true };
@@ -67,7 +68,7 @@ describe('ToolRuntime settlement', () => {
     assert.equal(calls, 0);
     assert.match(
       String((blocked.result as { error?: unknown }).error),
-      /require the Bypass execution boundary/,
+      /missing its Host admission/u,
     );
 
     const allowed = await settle(
@@ -76,8 +77,115 @@ describe('ToolRuntime settlement', () => {
       }),
       'call-bypass',
     );
-    assert.equal(calls, 1);
-    assert.deepEqual(allowed.result, { ok: true });
+    assert.equal(calls, 0);
+    assert.match(
+      String((allowed.result as { error?: unknown }).error),
+      /missing its Host admission/u,
+    );
+  });
+
+  it('prepares Bypass Client Capability work before T1 and admits only after T1', async () => {
+    const order: string[] = [];
+    const clientTool: MakaTool = {
+      name: 'client_browser',
+      description: 'client browser',
+      parameters: {},
+      categoryHint: 'custom_tool',
+      hostAdmission: 'client_capability',
+      prepareExecution: async () => {
+        order.push('prepare');
+        return {
+          execute: async () => {
+            order.push('admit');
+            return { ok: true };
+          },
+          cancel: () => {
+            order.push('cancel');
+          },
+        };
+      },
+      impl: () => assert.fail('Bypass must not use the direct implementation'),
+    };
+    const runtime = makeRuntime({
+      readExecutionBoundary: async () => createBypassExecutionBoundary(0),
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      runtimeCommitSink: {
+        commitToolPrepared: async () => {
+          order.push('T1');
+          return { created: true, runtimeEventSeq: 1 };
+        },
+        commitToolOutcome: async () => ({ created: true, runtimeEventSeq: 2 }),
+      },
+    });
+
+    const settlement = await runtime.settleToolCall({
+      tool: clientTool,
+      turnId: 'turn-1',
+      stepId: 'step-1',
+      toolCallId: 'call-bypass-prepared',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: {
+        push: () => undefined,
+        pushAndWaitUntilConsumed: async () => undefined,
+      },
+    });
+
+    assert.deepEqual(order, ['prepare', 'T1', 'admit']);
+    assert.deepEqual(settlement.result, { ok: true });
+  });
+
+  it('cancels prepared Client Capability work when T1 fails', async () => {
+    const order: string[] = [];
+    const clientTool: MakaTool = {
+      name: 'client_browser',
+      description: 'client browser',
+      parameters: {},
+      hostAdmission: 'client_capability',
+      prepareExecution: async () => {
+        order.push('prepare');
+        return {
+          execute: async () => {
+            order.push('admit');
+            return { ok: true };
+          },
+          cancel: () => {
+            order.push('cancel');
+          },
+        };
+      },
+      impl: () => assert.fail('T1 failure must not use the direct implementation'),
+    };
+    const runtime = makeRuntime({
+      readExecutionBoundary: async () => createBypassExecutionBoundary(0),
+      runId: 'run-1',
+      invocationId: 'invocation-1',
+      runtimeCommitSink: {
+        commitToolPrepared: async () => {
+          order.push('T1');
+          throw new Error('durable write failed');
+        },
+        commitToolOutcome: async () => assert.fail('T2 must not run'),
+      },
+    });
+
+    await assert.rejects(
+      runtime.settleToolCall({
+        tool: clientTool,
+        turnId: 'turn-1',
+        stepId: 'step-1',
+        toolCallId: 'call-bypass-t1-failure',
+        input: {},
+        abortSignal: new AbortController().signal,
+        eventSink: {
+          push: () => undefined,
+          pushAndWaitUntilConsumed: async () => undefined,
+        },
+      }),
+      /durable write failed/u,
+    );
+    assert.deepEqual(order, ['prepare', 'T1', 'cancel']);
   });
 
   it('keeps the durable Bash command while omitting it from the durable projection', async () => {
@@ -535,7 +643,10 @@ describe('ToolRuntime settlement', () => {
 
 function makeRuntime(
   overrides: Partial<
-    Pick<ToolRuntimeInput, 'readExecutionBoundary' | 'spawnChildSession' | 'runId'>
+    Pick<
+      ToolRuntimeInput,
+      'readExecutionBoundary' | 'spawnChildSession' | 'runId' | 'invocationId' | 'runtimeCommitSink'
+    >
   > = {},
 ): ToolRuntime {
   return createTestToolRuntime({

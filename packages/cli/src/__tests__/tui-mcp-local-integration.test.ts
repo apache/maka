@@ -38,6 +38,7 @@ import {
 import {
   HostClientCapabilityCoordinator,
   RuntimePolicyActivationGate,
+  clientCapabilityCoordinatorTestAdmission,
   type ClientCapabilitySnapshot,
 } from '@maka/runtime-host/test-only/client-capability-host';
 import { createMcpConfigStore } from '@maka/storage/mcp-config-store';
@@ -71,6 +72,7 @@ test('local TUI discovers, publishes, invokes, republishes, and closes one MCP c
       idleGraceMs: 60_000,
       composition: defineInteractiveRuntimeHostComposition(async () => {
         coordinator = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation: new RuntimePolicyActivationGate(),
           onModelToolsChanged: () => undefined,
         });

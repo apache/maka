@@ -151,8 +151,9 @@
      two different colours (10.51:1 vs 12.01:1 measured). One family, one
      colour space: derive every ink in oklch. */
   /* `--foreground-dimmed` is gone as of Visual System 2.0 (T4). It was an alias
-     of --foreground-secondary kept alive for five call sites in
-     task-ledger.css, which now name the tier directly. Two names for one ink
+     of --foreground-secondary kept alive for five call sites in the former
+     task-ledger.css (now session-todo-panel.css), which were migrated to name
+     the tier directly. Two names for one ink
      tier is how the original bug happened: both were written as "80% ink",
      one mixed in srgb and the other in oklch, and they resolved 10.51:1 against
      12.01:1. The contract test still runs — it now asserts the token has no

@@ -54,6 +54,10 @@ import {
   type ProjectCatalogChangedFrame,
 } from './project-catalog-change.js';
 import {
+  decodeConnectionCatalogChangedFrame,
+  type ConnectionCatalogChangedFrame,
+} from './connection-catalog-change.js';
+import {
   decodeRequestFrame,
   decodeResponseFrame,
   type HostLifecycleState,
@@ -68,6 +72,7 @@ export * from './interaction.js';
 export * from './daily-review.js';
 export * from './client-capability.js';
 export * from './configuration-change.js';
+export * from './connection-catalog-change.js';
 export * from './goal.js';
 export * from './hosted-execution.js';
 export * from './plan.js';
@@ -95,7 +100,31 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 83 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 90 as const;
+// 90: `session.create.mode` accepts the Bot session mode. A Host that predates
+// it rejects the value as an invalid Session start mode.
+// 89: The Host refreshes its models.dev catalog at startup and announces the
+// swap with a `connection.catalog.changed` frame, which an older client's
+// strict frame decoder rejects as an unknown kind.
+// 88: Catalog model modalities admit video on either side and pdf as output.
+// models.dev declares both, and the modality decoder rejects any value it does
+// not name, so a newer Host describing such a model fails an older client's
+// catalog decode outright rather than losing one field. The handshake keeps
+// that pairing from forming; a newer client simply never sees the new values
+// from an older Host.
+// 87: The connection catalog projects each model as the Host resolved it —
+// a `catalog_entry` item per model, counted by the connection header. Clients
+// render those entries instead of merging the stored row against their own
+// bundled model metadata, so a Desktop and a TUI attached to one Host cannot
+// describe the same model differently. An older client ignores the new items
+// but would still resolve locally; an older Host sends none, leaving a newer
+// client with an empty catalog. Both are rejected at the handshake.
+// 86: Client Capability accepted frames carry typed admission evidence used to
+// enforce Session Grant scopes. Older peers cannot preserve that boundary.
+// 85: Plugin package and Entry composition operations become Host-owned protocol
+// surfaces. Older peers cannot safely exchange these strict operation shapes.
+// 84: Message content carries Host-bound directory references. Older peers
+// reject this field and cannot preserve its identity through admission/replay.
 // 83: WorkHub Coordination actions add linked replacement proposals,
 // destructive user confirmation, and replacement results. Older peers reject
 // these closed action and result shapes.
@@ -303,6 +332,7 @@ export type HostFrame =
   | SubscriptionFrame
   | ClientCapabilityHostFrame
   | ConfigurationChangedFrame
+  | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
   | ScheduledTaskChangedFrame;
@@ -431,6 +461,9 @@ export function decodeHostFrame(value: unknown): HostFrame {
     return decodeClientCapabilityHostFrame(frame);
   }
   if (frame.kind === 'configuration.changed') return decodeConfigurationChangedFrame(frame);
+  if (frame.kind === 'connection.catalog.changed') {
+    return decodeConnectionCatalogChangedFrame(frame);
+  }
   if (frame.kind === 'project.catalog.changed') return decodeProjectCatalogChangedFrame(frame);
   if (frame.kind === 'session.catalog.changed') return decodeSessionCatalogChangedFrame(frame);
   if (frame.kind === 'scheduled-task.changed') return decodeScheduledTaskChangedFrame(frame);

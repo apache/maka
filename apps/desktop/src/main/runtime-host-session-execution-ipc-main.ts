@@ -42,6 +42,7 @@ import {
   normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
+  normalizeClientCapabilityResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
@@ -353,6 +354,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -474,6 +476,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -633,6 +636,22 @@ export function registerRuntimeHostSessionExecutionIpc(
         sessionId,
         interactionId: response.requestId,
         answer: { kind: "question", answers: response.answers },
+      });
+      deps.observer.publishInteractionAnswer(answered, pending);
+    },
+  );
+  ipcMain.handle(
+    "sessions:respondToClientCapability",
+    async (_event, sessionId: string, input: unknown) => {
+      const response = normalizeClientCapabilityResponse(input);
+      const pending = await requireInteraction(deps.observer, sessionId, response.requestId);
+      if (pending.request.kind !== "client_capability") {
+        throw new Error("Interaction is not a Client Capability request");
+      }
+      const answered = await deps.client.answerInteraction({
+        sessionId,
+        interactionId: response.requestId,
+        answer: { kind: "client_capability", decision: response.decision },
       });
       deps.observer.publishInteractionAnswer(answered, pending);
     },

@@ -32,7 +32,6 @@ import {
 } from "@maka/core/session-todo";
 
 import type {
-  ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
   CredentialStatus,
@@ -58,6 +57,7 @@ import {
   prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
+  type RuntimeHostConnectionCatalogSnapshot,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
@@ -356,6 +356,11 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeConfigurationChanges(listener);
   }
 
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConnectionCatalogChanges(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeProjectCatalogChanges(listener);
@@ -375,7 +380,7 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeScheduledTaskChanges(listener);
   }
 
-  async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
+  async loadConnectionCatalog(): Promise<RuntimeHostConnectionCatalogSnapshot> {
     this.#assertOpen();
     try {
       return await readRuntimeHostConnectionCatalog(this.connection);
@@ -494,6 +499,18 @@ export class DesktopRuntimeHostClient {
       connectionId,
       modelId: modelId ?? null,
     });
+  }
+
+  verifyConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
+  saveConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.save">,
+  ): Promise<OperationOutput<"connection.onboarding.save">> {
+    return this.request("connection.onboarding.save", input);
   }
 
   startOAuthLogin(

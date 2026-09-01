@@ -17,34 +17,14 @@
  * under the License.
  */
 
-import { normalizeOpenAiCodexConnection } from './connection-readiness.js';
-import { buildConnectionModelCatalogEntries } from './model-catalog.js';
-import { resolveModelVisionSupport } from './model-metadata.js';
+import { type ThinkingLevel } from './model-thinking.js';
 import {
-  relayModelProfile,
-  thinkingVariantsForConnection,
-  type ThinkingLevel,
-} from './model-thinking.js';
-import {
-  CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  connectionEnabledModelIds,
+  offerableCatalogEntries,
   providerDefaultsOf,
-  type IdentifiedLlmConnection,
+  providerMenuLabel,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from './llm-connections.js';
-
-const MODEL_MENU_PROVIDER_LABELS: Partial<Record<ProviderType, string>> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  deepseek: 'DeepSeek',
-  moonshot: 'Moonshot',
-  ollama: 'Ollama',
-  'kimi-coding-plan': 'Kimi',
-  'zai-coding-plan': 'Z.AI',
-  MiniMax: 'MiniMax',
-  'openai-codex': 'OpenAI OAuth',
-};
 
 export interface ChatModelChoice {
   connectionId: string;
@@ -63,43 +43,26 @@ export interface ChatModelChoice {
 }
 
 export function buildChatModelChoices(
-  connections: readonly IdentifiedLlmConnection[],
+  connections: readonly ProjectedLlmConnection[],
 ): ChatModelChoice[] {
   const choices: ChatModelChoice[] = [];
-  for (const rawConnection of connections) {
-    const connection = normalizeOpenAiCodexConnection(rawConnection);
+  for (const connection of connections) {
     const provider = providerDefaultsOf(connection.providerType);
-    if (!connection.enabled || !provider) {
-      continue;
-    }
-    const enabledModelIds = new Set(connectionEnabledModelIds(connection));
-    for (const entry of buildConnectionModelCatalogEntries({ connection })) {
-      if (
-        !entry.canUseAsChatDefault ||
-        !enabledModelIds.has(entry.id) ||
-        (connection.providerType === 'openai-codex' &&
-          CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id.trim()))
-      ) {
-        continue;
-      }
+    if (!provider) continue;
+    for (const entry of offerableCatalogEntries(connection)) {
       choices.push({
-        connectionId: rawConnection.connectionId,
+        connectionId: connection.connectionId,
         connectionSlug: connection.slug,
         providerType: connection.providerType,
-        providerLabel: MODEL_MENU_PROVIDER_LABELS[connection.providerType] ?? provider.label,
+        providerLabel: providerMenuLabel(connection.providerType) ?? connection.providerType,
         model: entry.id,
         label: entry.displayName?.trim() || entry.id,
         ...(entry.description !== undefined ? { description: entry.description } : {}),
         ...(entry.knowledgeCutoff !== undefined ? { knowledgeCutoff: entry.knowledgeCutoff } : {}),
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
-        thinkingLevels: thinkingVariantsForConnection(connection, entry.id),
-        supportsVision: resolveModelVisionSupport(
-          connection.providerType,
-          connection.models,
-          entry.id,
-          relayModelProfile(connection, entry.id)?.vision,
-        ),
+        thinkingLevels: entry.thinkingLevels,
+        supportsVision: entry.supportsVision,
       });
     }
   }

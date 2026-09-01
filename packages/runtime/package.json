@@ -32,6 +32,7 @@
     "./runtime-event-read-model": "./dist/runtime-event-read-model.js",
     "./runtime-resume": "./dist/runtime-resume.js",
     "./runtime-kernel": "./dist/runtime-kernel.js",
+    "./quiescent-session-snapshot": "./dist/quiescent-session-snapshot.js",
     "./session-event-runtime-mapper": "./dist/session-event-runtime-mapper.js",
     "./stream-graph-readiness": "./dist/stream-graph-readiness.js",
     "./stream-graph-admission": "./dist/stream-graph-admission.js",

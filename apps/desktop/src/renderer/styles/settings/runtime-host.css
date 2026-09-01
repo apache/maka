@@ -310,10 +310,40 @@
 .settingsPeerMeshConnectivity summary {
   display: flex;
   align-items: center;
-  width: fit-content;
-  gap: var(--space-1);
+  justify-content: space-between;
+  gap: var(--space-3);
   cursor: pointer;
-  font: var(--maka-text-supporting);
+  list-style: none;
+}
+
+.settingsPeerMeshConnectivity summary::-webkit-details-marker {
+  display: none;
+}
+
+.settingsPeerMeshConnectivitySummary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshConnectivitySummary > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshConnectivityChevron {
+  flex: 0 0 auto;
+  color: var(--foreground-secondary);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshConnectivity[open] .settingsPeerMeshConnectivityChevron {
+  transform: rotate(180deg);
 }
 
 .settingsPeerMeshConnectivityHelp {
@@ -324,7 +354,38 @@
 .settingsPeerMeshConnectivityBody {
   display: grid;
   gap: var(--space-3);
+  margin-top: var(--space-3);
   padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivitySection {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivityHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.settingsPeerMeshTechnicalIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshTechnicalIdentity > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .settingsPeerMeshIdentity,
@@ -457,6 +518,28 @@
   gap: var(--space-3);
 }
 
+.settingsPeerMeshFilter {
+  display: flex;
+  justify-content: flex-end;
+  padding-block: var(--space-1);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshFilteredEmpty {
+  display: flex;
+  min-height: 120px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.settingsPeerMeshFilteredEmpty > p {
+  max-width: 360px;
+}
+
 .settingsPeerMeshCard {
   display: flex;
   flex-direction: column;
@@ -492,9 +575,16 @@
   flex: 1;
 }
 
-.settingsPeerMeshCardTitle {
+.settingsPeerMeshCardTitleBlock {
+  display: flex;
   min-width: 0;
   flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshCardTitle {
+  min-width: 0;
   overflow: hidden;
   font: var(--maka-text-body);
   font-weight: 600;
@@ -502,12 +592,9 @@
   white-space: nowrap;
 }
 
-.settingsPeerMeshCardMeta {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+.settingsPeerMeshCardSubtitle {
+  color: var(--foreground-secondary);
+  font: var(--maka-text-supporting);
 }
 
 .settingsPeerMeshChevron {
@@ -611,6 +698,12 @@
 .settingsPeerMeshMembers {
   display: flex;
   flex-direction: column;
+}
+
+.settingsPeerMeshMeshId {
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
 }
 
 .settingsPeerMeshMember {
@@ -723,6 +816,11 @@
 
   .settingsPeerMeshTransitMetrics {
     grid-template-columns: 1fr;
+  }
+
+  .settingsPeerMeshTechnicalIdentity {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

@@ -30,13 +30,13 @@ import {
 } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from "@maka/core/llm-connections";
 import { BotRegistry, type BotIncomingMessage } from '@maka/runtime/bots';
@@ -77,8 +77,9 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
-import { readFileCapped } from "./attachment-ingest.js";
+import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
+import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
@@ -116,6 +117,7 @@ import {
 import {
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
+  showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
 import {
   resolveDesktopSessionWorkspace,
@@ -168,6 +170,11 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
+import {
+  canRepairManagedRuntimeHostStartup,
+  DesktopRuntimeHostStartupRecoveryCancelledError,
+  startDesktopRuntimeHostWithRecovery,
+} from "./runtime-host-startup-recovery.js";
 import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
@@ -850,8 +857,7 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
-await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
-runtimeHostManager = await startRuntimeHostDesktopManager(
+const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
@@ -875,6 +881,17 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     resizeImage: resizeImageForAttachment,
     nativeCapabilities: {
       browserTools: native.browserTools,
+      resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
+        if (toolName === "browser_navigate") {
+          if (typeof args.url !== "string") {
+            throw new Error("Browser navigation URL is unavailable");
+          }
+          return args.url;
+        }
+        const url = browserViewHost().currentUrl(sessionId);
+        if (!url) throw new Error("Browser session has no current URL");
+        return url;
+      },
       releaseBrowserSession,
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
@@ -1074,6 +1091,11 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
+      if (
+        !runtimeHostManager &&
+        target.profile.kind === "local" &&
+        canRepairManagedRuntimeHostStartup(error)
+      ) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;
@@ -1082,8 +1104,48 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       if (target.profile.kind === "local") app.quit();
     },
   },
-).catch((error: unknown) => {
-  if (error instanceof RuntimeHostUpgradeCancelledError) {
+);
+runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
+  start: async () => {
+    await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
+    return startLocalRuntimeHostManager();
+  },
+  repair: async ({ allowManualUpdate, allowInterruptActiveTasks }) => {
+    console.warn('[runtime-host] repairing the managed Local Host before startup');
+    const result = await localRuntimeHostRemoteAccess.repairManagedStartup({
+      allowManualUpdate,
+      allowInterruptActiveTasks,
+    });
+    console.log(`[runtime-host] managed Local Host repair result: ${result.kind}`);
+    return result;
+  },
+  prompt: async (input) => {
+    console.error('[runtime-host] managed Local Host startup recovery requires attention:', {
+      startupError: input.startupError,
+      repairError: input.repairError,
+      activeTasks: input.activeTasks,
+    });
+    return showRuntimeHostStartupRecoveryDialog(input, {
+      locale: desktopLocale.current(),
+      showMessageBox: (options) => dialog.showMessageBox(options),
+      copyDiagnostics: () =>
+        copyDesktopDiagnosticReport(
+          desktopDiagnostics,
+          createDesktopStartupDiagnosticInput({
+            title: 'Runtime Host startup recovery',
+            description: input.startupError.message,
+            details: [input.startupError.stack, input.repairError?.stack]
+              .filter(Boolean)
+              .join('\n\n'),
+          }),
+        ),
+    });
+  },
+}).catch((error: unknown) => {
+  if (
+    error instanceof RuntimeHostUpgradeCancelledError ||
+    error instanceof DesktopRuntimeHostStartupRecoveryCancelledError
+  ) {
     app.quit();
     return new Promise<never>(() => undefined);
   }
@@ -1235,6 +1297,11 @@ function registerHostClientIpc(
   const unsubscribeConfigurationChanges = client.subscribeConfigurationChanges(() => {
     emitTargetConnectionListChanged();
     sendToRenderer("settings:externalChanged", { ts: Date.now() });
+  });
+  // No `settings:externalChanged` here: the user's settings did not move, the
+  // Host just resolved the same connections against a newer model catalog.
+  const unsubscribeConnectionCatalogChanges = client.subscribeConnectionCatalogChanges(() => {
+    emitTargetConnectionListChanged();
   });
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitTargetSessionsChanged("updated", sessionId),
@@ -1449,7 +1516,7 @@ function registerHostClientIpc(
           ({ slug }) => slug === connection.slug,
         );
         if (!entry) return false;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const status = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
@@ -1481,7 +1548,7 @@ function registerHostClientIpc(
         }
         const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
         if (!entry) return { kind: "connection_missing", connectionSlug } as const;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
@@ -1494,6 +1561,7 @@ function registerHostClientIpc(
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
     unsubscribeConfigurationChanges();
+    unsubscribeConnectionCatalogChanges();
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
@@ -1627,6 +1695,19 @@ function registerPersistentClientIpc(): void {
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
+  ipcMain.handle('directories:pick', async () => {
+    const local = runtimeHostManager?.entries().find(
+      (state) => state.target.profile.kind === 'local',
+    );
+    if (!local || local.readiness !== 'ready') throw new Error('Local Runtime Host is unavailable');
+    const hostId = local.candidate.client.hostId;
+    const result = await mainWindowController.showOpenDialog({
+      title: 'Reference folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
+    return { ok: true, reference: { hostId, path: result.filePaths[0] } };
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",
@@ -1635,13 +1716,10 @@ function registerPersistentClientIpc(): void {
     if (result.canceled || !result.filePaths[0])
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
-    const chosen = await Promise.all(
-      result.filePaths.map(async (path) => ({
-        path,
-        name: basename(path),
-        size: (await stat(path)).size,
-      })),
-    );
+    // Route by content, not the extension: each picked path is staged under the
+    // kind its sniffed MIME implies, so a real image named `report.pdf` previews
+    // and triggers the vision notice, and a disguised file does neither.
+    const chosen = await resolvePickedAttachments(result.filePaths, (path) => stat(path));
     return {
       ok: true,
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),

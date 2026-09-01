@@ -2559,6 +2559,81 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
+  test('current and stored directory references expose paths without eager listings', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const currentReference = { hostId: 'host-a', path: '/workspace/current-source' };
+    const historicalReference = { hostId: 'host-a', path: '/workspace/prior-source' };
+
+    await drain(
+      backend.send({
+        turnId: 'turn-current',
+        text: 'inspect current',
+        directoryReferences: [currentReference],
+        context: [
+          {
+            type: 'user',
+            id: 'projection-u',
+            turnId: 'turn-prev',
+            ts: 1,
+            text: 'inspect prior',
+            directoryReferences: [historicalReference],
+          },
+          {
+            type: 'assistant',
+            id: 'projection-a',
+            turnId: 'turn-prev',
+            ts: 2,
+            text: 'projection assistant',
+            modelId: 'm',
+          },
+        ],
+        runtimeContext: [
+          {
+            id: 'rt-terminal',
+            invocationId: 'inv-1',
+            runId: 'run-prev',
+            sessionId: 'session-1',
+            turnId: 'turn-prev',
+            ts: 1,
+            partial: false,
+            role: 'model',
+            author: 'agent',
+            status: 'completed',
+            actions: { endInvocation: true },
+          },
+        ],
+      }),
+    );
+
+    const prompt = compactPrompt(model) as Array<{
+      role: string;
+      content: Array<{ type: string; text?: string }>;
+    }>;
+    const historicalText = prompt[0]?.content[0]?.text ?? '';
+    const currentText = prompt.at(-1)?.content[0]?.text ?? '';
+    assert.match(historicalText, /inspect prior/);
+    assert.match(historicalText, /\/workspace\/prior-source/);
+    assert.match(currentText, /inspect current/);
+    assert.match(currentText, /\/workspace\/current-source/);
+    for (const text of [historicalText, currentText]) {
+      assert.match(text, /<directory_references>/);
+      assert.equal(text.includes('"entries"'), false);
+      assert.equal(text.includes('"status"'), false);
+    }
+  });
+
   test('stored-message fallback renders image attachments as image parts when a reader is wired', async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4, 5, 6]);
     const model = completionModel();

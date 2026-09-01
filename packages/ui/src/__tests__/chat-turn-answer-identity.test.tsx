@@ -317,6 +317,39 @@ test('uses human conversation context instead of raw ids in action names', async
   );
 });
 
+test('does not edit and resend a message with folder references', async () => {
+  const { container, root } = domRoot();
+  let editCalls = 0;
+  const turn = {
+    ...turnWith([{ ...ANSWER, live: false }]),
+    status: 'completed' as const,
+    user: {
+      id: 'ask-with-folder',
+      role: 'user' as const,
+      text: 'Inspect this folder',
+      ts: 1,
+      directoryReferences: [{ hostId: 'host-a', path: '/workspace/source' }],
+    },
+  };
+
+  await act(() => {
+    root.render(
+      <LocaleProvider locale="en">
+        <TurnView turn={turn} onEditUserMessage={() => { editCalls += 1; }} />
+      </LocaleProvider>,
+    );
+  });
+
+  const editButton = container.querySelector('[data-action="edit"]');
+  assert.ok(editButton);
+  assert.match(
+    editButton.getAttribute('aria-label') ?? '',
+    /does not yet support messages with folder references/,
+  );
+  await act(() => editButton.dispatchEvent(new window.Event('click', { bubbles: true })));
+  assert.equal(editCalls, 0, 'folder references must not be silently dropped by revision');
+});
+
 test('keeps Astryx auto formatting live for user-message timestamps', async (context) => {
   const now = Date.UTC(2026, 7, 27, 12);
   context.mock.timers.enable({ apis: ['Date', 'setInterval'], now });

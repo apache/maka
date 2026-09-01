@@ -151,6 +151,23 @@ export interface ToolSettlement {
   providerError?: string;
 }
 
+export type MakaToolPreparationContext = Pick<
+  MakaToolContext,
+  | 'sessionId'
+  | 'runId'
+  | 'turnId'
+  | 'cwd'
+  | 'executionBoundary'
+  | 'permissionMode'
+  | 'toolCallId'
+  | 'abortSignal'
+>;
+
+export interface PreparedMakaToolExecution<R = unknown> {
+  execute(context: MakaToolContext): Promise<R> | R;
+  cancel(): Promise<void> | void;
+}
+
 export interface MakaTool<P = any, R = unknown> {
   /** Canonical (Claude-SDK-style) name. Pi adapter translates to canonical. */
   name: string;
@@ -164,6 +181,8 @@ export interface MakaTool<P = any, R = unknown> {
   activityKind?: ToolActivityKind;
   /** Optional trusted category override for custom tools. */
   categoryHint?: ToolCategory;
+  /** Host-owned admission contract, independent of model/UI tool categorization. */
+  hostAdmission?: 'client_capability';
   /** Optional trusted facts about the executor that runs this tool. */
   executionFacts?: ToolExecutionFacts;
   /**
@@ -193,6 +212,11 @@ export interface MakaTool<P = any, R = unknown> {
     args: P,
     context: Pick<MakaToolContext, 'sessionId' | 'turnId' | 'toolCallId'>,
   ) => unknown;
+  /** Optional preparation that settles before ToolRuntime crosses its durable T1 cut. */
+  prepareExecution?: (
+    args: P,
+    context: MakaToolPreparationContext,
+  ) => Promise<PreparedMakaToolExecution<R>>;
   /**
    * Real tool implementation. Implementations must observe `ctx.abortSignal` and
    * settle promptly after it aborts. Runtime-owned nested calls await this
@@ -311,6 +335,8 @@ const SUBAGENT_TOOL_LIMIT_MESSAGE =
   '子代理并发过多：同一轮最多 5 个子代理。请等待已有任务完成后再继续。';
 const CLIENT_CAPABILITY_BOUNDARY_MESSAGE =
   'Client Capability tools require the Bypass execution boundary because their client-side effects cannot be sandboxed by the Host. Switch this Session to Bypass and retry.';
+const CLIENT_CAPABILITY_PREPARATION_MESSAGE =
+  'Client Capability tool is missing its Host admission preparation contract.';
 
 function composeChildAbortSignal(
   invocationSignal: AbortSignal,
@@ -1383,7 +1409,8 @@ export class ToolRuntime {
     }
 
     let clientCapabilityBoundary: ExecutionBoundary | undefined;
-    if (tool.categoryHint === 'client_capability') {
+    let preparedExecution: PreparedMakaToolExecution | undefined;
+    if (tool.hostAdmission === 'client_capability') {
       try {
         clientCapabilityBoundary = await this.readExecutionBoundary();
       } catch (error) {
@@ -1398,8 +1425,13 @@ export class ToolRuntime {
         this.recordLoopGateOutcome(callSignature, true);
         return this.errorReturn(reason);
       }
-      if (clientCapabilityBoundary.kind !== 'bypass') {
-        await refuseBeforeDispatch(CLIENT_CAPABILITY_BOUNDARY_MESSAGE, {
+      const admissionFailure = !tool.prepareExecution
+        ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
+        : clientCapabilityBoundary.kind !== 'bypass' && this.input.header.permissionMode !== 'ask'
+          ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
+          : undefined;
+      if (admissionFailure) {
+        await refuseBeforeDispatch(admissionFailure, {
           reason: 'requires_bypass',
           source: 'client_capability',
         });
@@ -1410,7 +1442,37 @@ export class ToolRuntime {
           errorClass: 'ClientCapabilityBoundary',
         });
         this.recordLoopGateOutcome(callSignature, true);
-        return this.errorReturn(CLIENT_CAPABILITY_BOUNDARY_MESSAGE);
+        return this.errorReturn(admissionFailure);
+      }
+      // Narrowed by admissionFailure above; Bypass still prepares so the
+      // provider cannot regain a direct pre-T1 dispatch path.
+      const prepareExecution = tool.prepareExecution!;
+      const pauseTarget = this.input.getPermissionPauseTarget();
+      pauseTarget?.pause();
+      try {
+        preparedExecution = await prepareExecution(structuredClone(executionArgs) as never, {
+          sessionId: this.input.sessionId,
+          turnId,
+          ...(runId ? { runId } : {}),
+          cwd: this.input.header.cwd,
+          executionBoundary: clientCapabilityBoundary,
+          permissionMode: this.input.header.permissionMode,
+          toolCallId: toolUseId,
+          abortSignal: ctx.abortSignal,
+        });
+      } catch (error) {
+        const reason = formatSyntheticToolErrorText(error);
+        await refuseBeforeDispatch(reason);
+        trace?.emit('tool', 'tool_failed', 'Client Capability preparation failed', {
+          toolUseId,
+          toolName: tool.name,
+          status: 'error',
+          errorClass: 'ClientCapabilityPreparation',
+        });
+        this.recordLoopGateOutcome(callSignature, true);
+        return this.errorReturn(reason);
+      } finally {
+        pauseTarget?.resume();
       }
     }
 
@@ -1446,6 +1508,7 @@ export class ToolRuntime {
 
     const reservedSubagentSlot = this.reserveSubagentSlot(tool);
     if (!reservedSubagentSlot) {
+      await preparedExecution?.cancel();
       await disposeManagedMutationAdmission(managedMutationAdmission);
       trace?.emit('tool', 'tool_failed', 'Tool execution rejected by runtime limit', {
         toolUseId,
@@ -1473,6 +1536,7 @@ export class ToolRuntime {
         ...(runId ? { runId } : {}),
       });
     } catch (error) {
+      await preparedExecution?.cancel();
       if (reservedSubagentSlot) this.releaseSubagentSlot(tool);
       await disposeManagedMutationAdmission(managedMutationAdmission);
       throw error;
@@ -1514,82 +1578,85 @@ export class ToolRuntime {
       try {
         const runId = this.input.runId;
         const executionBoundary = clientCapabilityBoundary ?? (await this.readExecutionBoundary());
-        const invokeTool = () =>
-          tool.impl(structuredClone(executionArgs) as never, {
-            sessionId: this.input.sessionId,
-            turnId,
-            ...(runId ? { runId } : {}),
-            ...(this.input.orchestrationMode
-              ? { orchestrationMode: this.input.orchestrationMode }
-              : {}),
-            cwd: this.input.header.cwd,
-            executionBoundary,
-            permissionMode: this.input.header.permissionMode,
-            toolCallId: toolUseId,
-            // The id the call event actually carries, not the candidate: by here
-            // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
-            ...(callEvent?.operationId ? { operationId: callEvent.operationId } : {}),
-            abortSignal: ctx.abortSignal,
-            emitOutput: output.emit,
-            emitProgress: (current, total) => {
-              const chunk = encodeToolStepProgress({ current, total });
-              if (!chunk) return;
-              queue.push({
-                type: 'tool_progress',
-                id: this.input.newId(),
-                turnId,
-                ts: this.input.now(),
-                toolUseId,
-                chunk,
-                ...activityIdentity,
-              });
-            },
-            ...(trace
-              ? {
-                  emitRunTrace: (
-                    type:
-                      | 'tool_started'
-                      | 'tool_searched'
-                      | 'tool_completed'
-                      | 'tool_failed'
-                      | 'skill_searched'
-                      | 'skill_loaded'
-                      | 'skill_load_failed',
-                    message: string,
-                    data?: Record<string, unknown>,
-                  ) =>
-                    trace.emit(type.startsWith('skill_') ? 'skill' : 'tool', type, message, {
-                      toolUseId,
-                      toolName: tool.name,
-                      ...(data ?? {}),
-                    }),
-                }
-              : {}),
-            ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
-            ...(this.input.readChildAgentOutput
-              ? { readChildAgentOutput: this.input.readChildAgentOutput }
-              : {}),
-            ...this.buildChildAgentContext({
+        const toolContext: MakaToolContext = {
+          sessionId: this.input.sessionId,
+          turnId,
+          ...(runId ? { runId } : {}),
+          ...(this.input.orchestrationMode
+            ? { orchestrationMode: this.input.orchestrationMode }
+            : {}),
+          cwd: this.input.header.cwd,
+          executionBoundary,
+          permissionMode: this.input.header.permissionMode,
+          toolCallId: toolUseId,
+          // The id the call event actually carries, not the candidate: by here
+          // `prepareDurableToolAttempt` has pushed it on the dispatch lane.
+          ...(callEvent?.operationId ? { operationId: callEvent.operationId } : {}),
+          abortSignal: ctx.abortSignal,
+          emitOutput: output.emit,
+          emitProgress: (current, total) => {
+            const chunk = encodeToolStepProgress({ current, total });
+            if (!chunk) return;
+            queue.push({
+              type: 'tool_progress',
+              id: this.input.newId(),
               turnId,
-              abortSignal: ctx.abortSignal,
-              trace,
+              ts: this.input.now(),
               toolUseId,
-              toolName: tool.name,
+              chunk,
+              ...activityIdentity,
+            });
+          },
+          ...(trace
+            ? {
+                emitRunTrace: (
+                  type:
+                    | 'tool_started'
+                    | 'tool_searched'
+                    | 'tool_completed'
+                    | 'tool_failed'
+                    | 'skill_searched'
+                    | 'skill_loaded'
+                    | 'skill_load_failed',
+                  message: string,
+                  data?: Record<string, unknown>,
+                ) =>
+                  trace.emit(type.startsWith('skill_') ? 'skill' : 'tool', type, message, {
+                    toolUseId,
+                    toolName: tool.name,
+                    ...(data ?? {}),
+                  }),
+              }
+            : {}),
+          ...(this.input.listChildAgents ? { listChildAgents: this.input.listChildAgents } : {}),
+          ...(this.input.readChildAgentOutput
+            ? { readChildAgentOutput: this.input.readChildAgentOutput }
+            : {}),
+          ...this.buildChildAgentContext({
+            turnId,
+            abortSignal: ctx.abortSignal,
+            trace,
+            toolUseId,
+            toolName: tool.name,
+            queue,
+            activityIdentity,
+          }),
+          askUserQuestion: (questions) =>
+            this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
+          requestSandboxBoundary: (expansion, justification) =>
+            this.requestSandboxBoundary(
+              turnId,
+              toolUseId,
+              expansion,
+              justification,
+              ctx.abortSignal,
               queue,
-              activityIdentity,
-            }),
-            askUserQuestion: (questions) =>
-              this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
-            requestSandboxBoundary: (expansion, justification) =>
-              this.requestSandboxBoundary(
-                turnId,
-                toolUseId,
-                expansion,
-                justification,
-                ctx.abortSignal,
-                queue,
-              ),
-          });
+            ),
+        };
+        const invokeTool = () =>
+          preparedExecution
+            ? preparedExecution.execute(toolContext)
+            : tool.impl(structuredClone(executionArgs) as never, toolContext);
         const invokeManagedTransform = () =>
           tool.managedMutationTransform!(structuredClone(executionArgs) as never);
         const prepareOperationValue = async (

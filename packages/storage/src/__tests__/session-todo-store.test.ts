@@ -24,29 +24,15 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { createSqliteSessionTodoStore } from '../session-todo-store.js';
-import { createSqliteTaskLedgerStore } from '../task-ledger-store.js';
 
 const SESSION_ID = 'session-todo';
 
 describe('SQLite SessionTodo store', () => {
-  test('bootstraps active legacy Tasks once and persists the document', async () => {
+  test('persists an initialized-empty document on the first read', async () => {
     await withRoot(async (root) => {
-      const tasks = createSqliteTaskLedgerStore(root);
-      const created = await tasks.create(SESSION_ID, [
-        { subject: 'pending legacy work' },
-        { subject: 'completed legacy work' },
-      ]);
-      await tasks.update(SESSION_ID, created.created[1]!.id, { status: 'in_progress' });
-      await tasks.update(SESSION_ID, created.created[1]!.id, {
-        status: 'completed',
-        completionEvidence: 'done',
-      });
-      tasks.close();
-
       const todos = createSqliteSessionTodoStore(root);
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
-        items: [{ content: 'pending legacy work', status: 'pending' }],
-      });
+      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), { items: [] });
+      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), { items: [] });
       todos.close();
 
       const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
@@ -65,58 +51,8 @@ describe('SQLite SessionTodo store', () => {
     });
   });
 
-  test('keeps a blocked legacy Task visible as pending without importing workflow metadata', async () => {
-    await withRoot(async (root) => {
-      const tasks = createSqliteTaskLedgerStore(root);
-      const created = await tasks.create(SESSION_ID, [{ subject: 'waiting for approval' }]);
-      const taskId = created.created[0]!.id;
-      await tasks.update(SESSION_ID, taskId, { status: 'in_progress' });
-      await tasks.update(SESSION_ID, taskId, {
-        status: 'blocked',
-        blockedReason: 'approval has not arrived',
-      });
-      tasks.close();
-
-      const todos = createSqliteSessionTodoStore(root);
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
-        items: [{ content: 'waiting for approval', status: 'pending' }],
-      });
-      todos.close();
-    });
-  });
-
-  test('persists initialized-empty and never revives later legacy Tasks', async () => {
-    await withRoot(async (root) => {
-      const todos = createSqliteSessionTodoStore(root);
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), { items: [] });
-
-      const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create(SESSION_ID, [{ subject: 'too late for bootstrap' }]);
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), { items: [] });
-      tasks.close();
-      todos.close();
-    });
-  });
-
-  test('lets the first explicit replacement win without reading legacy state', async () => {
-    await withRoot(async (root) => {
-      const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create(SESSION_ID, [{ subject: 'legacy work' }]);
-      tasks.close();
-
-      const todos = createSqliteSessionTodoStore(root);
-      assert.deepEqual(await todos.replaceAll(SESSION_ID, []), { items: [] });
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), { items: [] });
-      todos.close();
-    });
-  });
-
   test('serializes a first explicit replacement ahead of a following bootstrap read', async () => {
     await withRoot(async (root) => {
-      const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create(SESSION_ID, [{ subject: 'legacy work' }]);
-      tasks.close();
-
       const todos = createSqliteSessionTodoStore(root);
       const [written, read] = await Promise.all([
         todos.replaceAll(SESSION_ID, [{ content: 'explicit work', status: 'in_progress' }]),
@@ -149,71 +85,6 @@ describe('SQLite SessionTodo store', () => {
       await reopened.purgeSessionState(SESSION_ID);
       assert.deepEqual(await reopened.readOrBootstrap(SESSION_ID), { items: [] });
       reopened.close();
-    });
-  });
-
-  test('fails closed on corrupt legacy events without writing an initialized marker', async () => {
-    await withRoot(async (root) => {
-      createSqliteTaskLedgerStore(root).close();
-      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
-      try {
-        database
-          .prepare(`
-            INSERT INTO workflow_task_ledger_events(session_id, sequence, event_id, record_json)
-            VALUES (?, 0, 'bad-event', '{not-json')
-          `)
-          .run(SESSION_ID);
-      } finally {
-        database.close();
-      }
-
-      const todos = createSqliteSessionTodoStore(root);
-      await assert.rejects(
-        () => todos.readOrBootstrap(SESSION_ID),
-        /Invalid legacy Task event JSON/,
-      );
-      todos.close();
-
-      const verified = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
-      try {
-        assert.equal(
-          verified
-            .prepare(
-              'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
-            )
-            .get(SESSION_ID)!.count,
-          0,
-        );
-      } finally {
-        verified.close();
-      }
-    });
-  });
-
-  test('explicit replacement recovers without decoding corrupt legacy state', async () => {
-    await withRoot(async (root) => {
-      createSqliteTaskLedgerStore(root).close();
-      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
-      try {
-        database
-          .prepare(`
-            INSERT INTO workflow_task_ledger_events(session_id, sequence, event_id, record_json)
-            VALUES (?, 0, 'bad-event', '{not-json')
-          `)
-          .run(SESSION_ID);
-      } finally {
-        database.close();
-      }
-
-      const todos = createSqliteSessionTodoStore(root);
-      assert.deepEqual(
-        await todos.replaceAll(SESSION_ID, [{ content: 'explicit recovery', status: 'pending' }]),
-        { items: [{ content: 'explicit recovery', status: 'pending' }] },
-      );
-      assert.deepEqual(await todos.readOrBootstrap(SESSION_ID), {
-        items: [{ content: 'explicit recovery', status: 'pending' }],
-      });
-      todos.close();
     });
   });
 
@@ -325,7 +196,7 @@ describe('SQLite SessionTodo store', () => {
     });
   });
 
-  test('writes an explicit empty copy marker that later legacy events cannot revive', async () => {
+  test('writes an explicit empty copy marker when the copy skips current state', async () => {
     await withRoot(async (root) => {
       const todos = createSqliteSessionTodoStore(root);
       assert.deepEqual(
@@ -336,22 +207,11 @@ describe('SQLite SessionTodo store', () => {
         }),
         { items: [] },
       );
-      const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create('historical-target', [{ subject: 'must not revive' }]);
-      tasks.close();
-      assert.deepEqual(await todos.readOrBootstrap('historical-target'), { items: [] });
       todos.close();
-    });
-  });
 
-  test('purges Todo and legacy bootstrap rows in one lifecycle operation', async () => {
-    await withRoot(async (root) => {
-      const tasks = createSqliteTaskLedgerStore(root);
-      await tasks.create(SESSION_ID, [{ subject: 'legacy' }]);
-      tasks.close();
-      const todos = createSqliteSessionTodoStore(root);
-      await todos.replaceAll(SESSION_ID, [{ content: 'current', status: 'pending' }]);
-      await todos.purgeSessionState(SESSION_ID);
+      // The copy must persist the marker itself: reading it back would return an
+      // empty document either way, so only the stored row separates "wrote an
+      // explicit empty copy" from "wrote nothing at all".
       const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
       try {
         assert.equal(
@@ -359,21 +219,35 @@ describe('SQLite SessionTodo store', () => {
             .prepare(
               'SELECT COUNT(*) AS count FROM workflow_session_todo_documents WHERE session_id = ?',
             )
-            .get(SESSION_ID)!.count,
-          0,
-        );
-        assert.equal(
-          database
-            .prepare(
-              'SELECT COUNT(*) AS count FROM workflow_task_ledger_events WHERE session_id = ?',
-            )
-            .get(SESSION_ID)!.count,
-          0,
+            .get('historical-target')!.count,
+          1,
         );
       } finally {
         database.close();
       }
+    });
+  });
+
+  test('copies an uninitialized source as empty without initializing the source', async () => {
+    await withRoot(async (root) => {
+      const todos = createSqliteSessionTodoStore(root);
+      const input = { sourceSessionId: 'source', targetSessionId: 'target', copyCurrent: true };
+      assert.deepEqual(await todos.initializeCopy(input), { items: [] });
+      assert.deepEqual(await todos.initializeCopy(input), { items: [] });
       todos.close();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        const rows = database
+          .prepare('SELECT session_id FROM workflow_session_todo_documents ORDER BY session_id')
+          .all() as Array<{ session_id: string }>;
+        assert.deepEqual(
+          rows.map((row) => row.session_id),
+          ['target'],
+        );
+      } finally {
+        database.close();
+      }
     });
   });
 

@@ -104,9 +104,7 @@ export interface ThinkingOptions {
  * `ThinkingLevel`) are dropped. Returns `[]` for models with no declared
  * options (miss → no thinking menu, fallback default).
  */
-export function deriveThinkingChoices(
-  options: ThinkingOptions | undefined,
-): readonly ThinkingLevel[] {
+function deriveThinkingChoices(options: ThinkingOptions | undefined): readonly ThinkingLevel[] {
   if (!options) return [];
   const choices = new Set<ThinkingLevel>();
   if (options.offBehavior) choices.add('off');

@@ -160,6 +160,11 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
     `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin status|list|inspect|failures [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin install|uninstall|reload <target> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin export <extension-id> <bundle-path> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin apply <operations.json> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin reconcile [--root <path>]`,
     `  ${cliCommand} runtime-host profile list`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
@@ -554,6 +559,7 @@ export async function runMakaCli(
           ...(command.operatorDeploymentId
             ? { operatorDeploymentId: command.operatorDeploymentId }
             : {}),
+          ...(command.allowManualUpdate ? { allowManualUpdate: true } : {}),
           ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
         });
       }
@@ -707,6 +713,18 @@ export async function runMakaCli(
             path: command.path,
             prefer: command.prefer,
           });
+    }
+    case 'runtime-host-plugin': {
+      const { runRuntimeHostPluginCli } = await import('./runtime-host-plugin-command.js');
+      return runRuntimeHostPluginCli({
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        action: command.action,
+        ...(command.subject ? { subject: command.subject } : {}),
+        ...(command.targetPath ? { targetPath: command.targetPath } : {}),
+        ...(command.rootId ? { rootId: command.rootId } : {}),
+        ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
+        ...(command.limit === undefined ? {} : { limit: command.limit }),
+      });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(

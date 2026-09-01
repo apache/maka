@@ -22,3 +22,23 @@ import { clsx, type ClassValue } from 'clsx';
 export function cn(...inputs: ClassValue[]): string {
   return clsx(inputs);
 }
+
+/**
+ * Plain shortcut display strings cannot lean on the design-system Kbd,
+ * whose `mod` token is already platform-aware (⌘ on Apple platforms, Ctrl
+ * elsewhere). Detect Apple platforms with the same navigator.platform
+ * fallback Kbd uses so hand-built hint strings agree with Kbd output
+ * rendered beside them.
+ */
+export function isAppleShortcutPlatform(platform: string | null | undefined): boolean {
+  return /mac|iphone|ipad|ipod/i.test(platform ?? '');
+}
+
+/** Prefer Chromium's current platform authority, falling back for older engines. */
+export function preferredShortcutPlatform(
+  userAgentDataPlatform: string | null | undefined,
+  legacyPlatform: string | null | undefined,
+): string {
+  const modern = userAgentDataPlatform?.trim();
+  return modern || legacyPlatform?.trim() || '';
+}

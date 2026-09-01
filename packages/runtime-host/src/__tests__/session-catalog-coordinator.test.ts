@@ -921,6 +921,40 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
+  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (request) => {
+        created = request;
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      mode: 'bot',
+      name: '飞书 任务',
+      labels: ['bot', 'feishu'],
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.ok(created);
+  assert.equal(created.input.name, '飞书 任务');
+  assert.deepEqual(created.input.labels, ['bot', 'feishu', 'mode:bot']);
+  assert.equal(created.input.permissionMode, 'explore');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 test('configuration update admits Plan mode through Runtime authority', async () => {
   const fixture = createFixture();
   const input = configurationInput(fixture.sessionId, fixture.revision());

@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 11 |
+| portable-candidate | 14 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **69**
+Total Windows-excluded declarations: **72**
 
 ## Inventory
 
@@ -30,6 +30,8 @@ Total Windows-excluded declarations: **69**
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` keeps the inherited PATH and does not log shell stderr when capture fails | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` kills login-shell descendants when capture times out | `process.platform === 'win32'` |
 | platform-contract | `apps/desktop/src/main/__tests__/shell-env.test.ts` bounds shell output instead of buffering until the global timeout | `process.platform === 'win32'` |
+| portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` shortens POSIX paths under the home directory | `process.platform === 'win32'` |
+| portable-candidate | `packages/cli/src/__tests__/pi-transcript.test.ts` keeps POSIX paths outside the home directory absolute | `process.platform === 'win32'` |
 | portable-candidate | `packages/cli/src/__tests__/runtime-host-setup.test.ts` managed operator binds its Client Data Root and routes deployment cleanup | `process.platform === 'win32'` |
 | portable-candidate | `packages/eval/src/__tests__/install-preflight.test.ts` rejects an unusable trials root before invoking external prerequisites | `process.platform === 'win32' \|\| process.geteuid?.() === 0` |
 | windows-backend-gap | `packages/runtime-host/src/__tests__/connection-effect-coordinator.test.ts` leaves canonical onboarding state unchanged when the durable intent cannot be published | `process.platform === 'win32'` |
@@ -78,6 +80,7 @@ Total Windows-excluded declarations: **69**
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/operational-state-store.test.ts` does not classify a SQLite write failure as a migration blocker | `process.platform === 'win32' ? 'POSIX permissions are required to make the SQLite database read-only' : false` |
 | platform-contract | `packages/storage/src/__tests__/pet-pack-store.test.ts` detects sprite sheets redirected outside the installed pack | `process.platform === 'win32' ? 'Windows file-symlink permissions are not guaranteed in CI' : false` |
+| portable-candidate | `packages/storage/src/__tests__/production-session-snapshot.test.ts` rejects a POSIX-only workspace name with a bounded portability diagnostic | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/quiescent-session-snapshot.test.ts` requires a private staging parent on POSIX | `process.platform === 'win32'` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` preserves unexpected marker I/O failures at the public authority boundary | `process.platform === 'win32' ? 'POSIX permissions are required to make the marker unreadable' : typeof process.getuid === 'function' && process.getuid() === 0` |
 | platform-contract | `packages/storage/src/__tests__/root-authority.test.ts` rejects FIFO marker paths without blocking root resolution | `process.platform === 'win32'` |
