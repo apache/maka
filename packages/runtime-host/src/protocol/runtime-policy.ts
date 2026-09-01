@@ -144,13 +144,10 @@ export type ConnectionCatalogHeaderItem = Omit<
 };
 
 /**
- * The seam between the Host, which owns the model catalog, and clients, which
- * only project it. Which models a connection has, what is true about each, and
- * which the user enabled are the Host's answers — never re-derived against a
- * registry or metadata copy a client bundles itself.
+ * The Host owns the model catalog. Clients show what these items say, and do
+ * not work out model facts from a registry or metadata they bundle.
  *
- * A field belongs here only if a client renders or acts on it. Host-side
- * bookkeeping does not: name the client-side reader, or leave it off.
+ * Only add a field some client shows. Host bookkeeping stays in the Host.
  *
  * Authored-by: AstroHan
  */
