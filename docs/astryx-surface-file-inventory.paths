@@ -201,6 +201,7 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
+packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/page-header.tsx

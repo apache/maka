@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 236 files — blocker 0, reimplementation 0, polish 1, aligned 235.
+**Totals:** 237 files — blocker 0, reimplementation 0, polish 1, aligned 236.
 
 ## Exclusions (explicit)
 
@@ -230,6 +230,7 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `packages/ui/src/module-hub-selector.tsx` | ui-composition | Tab, TabList | aligned — uses Astryx (Tab, TabList) | aligned |
 | `packages/ui/src/module-pages.tsx` | ui-composition | EmptyState, Spinner | aligned — uses Astryx (EmptyState, Spinner) | aligned |
 | `packages/ui/src/permission-mode-menu.tsx` | ui-composition | DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem, Selector, SelectorOption | aligned — uses Astryx (DropdownMenu, DropdownMenuRadioGroup, DropdownMenuRadioItem, Selector, SelectorOption) | aligned |
+| `packages/ui/src/platform-shortcut-text.tsx` | ui-composition | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/chat.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `packages/ui/src/primitives/module-page.tsx` | primitive | Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel, ResizeHandle, StackItem, Text, VStack | aligned — uses Astryx (Dialog, DialogHeader, HStack, Heading, Layout, LayoutContent, LayoutHeader, LayoutPanel) | aligned |
 | `packages/ui/src/primitives/page-header.tsx` | primitive | none | aligned — no raw controls; no Astryx JSX usage | aligned |
