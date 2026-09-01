@@ -257,6 +257,25 @@ function isAstryxSurfaceInventoryPath(path) {
   return isUiProductSourcePath(path);
 }
 
+/**
+ * The two app-icon drift tests read exactly this surface: the committed
+ * artwork, the generator that must still reproduce it, the `APP_ICONS` catalog
+ * they check it against, and the packaged-resource list that has to keep
+ * naming every file. Regenerating the artwork costs about a minute, which
+ * every unrelated code change used to pay.
+ */
+const APP_ICON_FILES = new Set([
+  'packages/core/src/settings.ts',
+  'scripts/generate-app-icons.py',
+  'scripts/generate-app-icons.test.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-packaged-app-icons.test.mjs',
+]);
+
+function isAppIconPath(path) {
+  return APP_ICON_FILES.has(path) || path.startsWith('apps/desktop/assets/app-icons/');
+}
+
 function isE2eProductPath(path) {
   if (E2E_DRIVING_SCRIPTS.has(path)) return true;
   if (isDocumentation(path)) return false;
@@ -363,6 +382,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      appIcons: true,
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
@@ -432,6 +452,7 @@ export function planTests(changedFiles, options = {}) {
 
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
+    appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
@@ -483,6 +504,7 @@ export function requiresHeavyValidation(plan) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,

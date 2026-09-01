@@ -491,6 +491,49 @@ test('contract checks run before dependency setup and can fail the job', () => {
   }
 });
 
+/** Every file the two app-icon drift tests read. */
+const APP_ICON_INPUTS = [
+  'apps/desktop/assets/app-icons/sky.png',
+  'packages/core/src/settings.ts',
+  'scripts/generate-app-icons.py',
+  'scripts/generate-app-icons.test.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-packaged-app-icons.test.mjs',
+];
+
+test('app icon drift selects the artwork and whatever derives or names it', () => {
+  for (const path of APP_ICON_INPUTS) {
+    assert.equal(planTests([path], { graph }).appIcons, true, path);
+  }
+
+  // Regenerating the artwork costs about a minute. Ordinary product code is
+  // exactly what must stop paying it.
+  for (const path of [
+    'apps/desktop/src/renderer/app-shell.tsx',
+    'packages/core/src/artifacts.ts',
+    'packages/runtime/src/edit-replace.ts',
+  ]) {
+    assert.equal(planTests([path], { graph }).appIcons, false, path);
+  }
+});
+
+test('an app icon selection always brings the build those tests need', () => {
+  // `generate-app-icons.test.mjs` imports `APP_ICONS` from built `@maka/core`
+  // and the step runs after Build, which gates on `code`. Every input above
+  // lives in a workspace or under `scripts/`, so `code` follows rather than
+  // needing its own gate — an entry that broke that would fail here.
+  for (const path of APP_ICON_INPUTS) {
+    assert.equal(planTests([path], { graph }).code, true, path);
+  }
+});
+
+test('core CI gates app icon drift on the artwork surface', () => {
+  assert.match(
+    readWorkflow('ci.yml'),
+    /- name: App icon artwork drift\n\s+if: steps\.plan\.outputs\.app_icons == 'true'/u,
+  );
+});
+
 test('core CI checks the Astryx inventory for every code change before building', () => {
   const workflow = readWorkflow('ci.yml');
   const inventoryStart = workflow.indexOf('      - name: Astryx surface inventory\n');

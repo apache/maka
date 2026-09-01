@@ -214,10 +214,12 @@ jobs:
       # Two drift contracts over the shipped app-icon artwork, sitting beside
       # the theme drift check for the same reason: the committed bytes are a
       # build output that nothing else re-derives, so without this a change to
-      # the generator, to DEFAULT_APP_ICON, or to the packaging config can go
-      # green while the artwork it names no longer matches.
+      # the generator, to the `APP_ICONS` catalog, or to the packaged-resource
+      # list can go green while the artwork it names no longer matches. Those
+      # are the inputs it selects on; regenerating the artwork costs about a
+      # minute, and every other code change used to pay it.
       - name: App icon artwork drift
-        if: steps.plan.outputs.code == 'true'
+        if: steps.plan.outputs.app_icons == 'true'
         run: node --test scripts/verify-packaged-app-icons.test.mjs scripts/generate-app-icons.test.mjs
 
       - name: Astryx theme drift
