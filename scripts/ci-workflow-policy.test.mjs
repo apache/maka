@@ -506,13 +506,6 @@ test('a filtered pull-request lane can still run when its filter misses', () => 
   assert.deepEqual(uncovered.sort(), [...LANES_WITHOUT_A_FILTER_ESCAPE].sort());
 });
 
-test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
-  const workflow = readWorkflow('release-windows-check.yml');
-
-  assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
-  assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
-});
-
 test('the packaged Windows gate triggers on release orchestration changes', () => {
   const workflow = readWorkflow('release-windows-check.yml');
 
@@ -527,21 +520,17 @@ test('the packaged Windows gate workflow is itself a release-contract input', ()
   );
 });
 
-test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
-  const workflow = readWorkflow('release-windows-check.yml');
-
-  for (const path of [
-    'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs',
-    'packages/runtime/scripts/build-filesystem-worker.mjs',
-    'packages/runtime/src/filesystem-worker/**',
-    'packages/runtime/src/sandbox/**',
-    'packages/runtime/src/path-containment.ts',
-    'packages/runtime/src/sandbox-boundary-path.ts',
-    'packages/core/src/permission-profile.ts',
-    'packages/core/src/permission-profile-compiler.ts',
-  ]) {
-    assert.ok(workflow.includes(`      - '${path}'`), path);
-  }
+test('the packaged Windows gate triggers on the worker copy step it cannot import', () => {
+  // The seven `packages/` entries this used to restate are held by
+  // `windows-package-source-closure.test.mjs`, which computes the filter's
+  // `packages/` half from the import closure and fails in both directions.
+  // This one is outside that half: the desktop app copies the built worker in,
+  // so no import reaches it and only naming it keeps it on the lane.
+  assert.ok(
+    readWorkflow('release-windows-check.yml').includes(
+      "      - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'",
+    ),
+  );
 });
 
 test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
