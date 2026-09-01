@@ -182,6 +182,15 @@ export const makaTheme = defineTheme({
     // the prose tiers hold, and that is the point: a disabled control read at
     // prose contrast stops reading as disabled. DESIGN.md §3 records it as the
     // one standing exemption (issue #3446 F6), not an omission.
+    //
+    // Deleting the five-selector seam in astryx-mount.css moved three values
+    // for the containers it used to cover (the composer's model picker, the
+    // workspace picker, the plus menu, permissionModeIcon and the inspector
+    // panel): --color-accent-muted goes 0.12 → 0.24, converging on the one
+    // status-tint rung (#4465 review); --color-accent goes from raw --accent to
+    // --accent-solid, the only accent tier that clears text contrast; and
+    // --color-text-disabled falls back to Astryx's literal, which is the F6
+    // exemption above rather than a regression.
     '--color-text-primary': 'var(--foreground)',
     '--color-text-secondary': 'var(--muted-foreground)',
     '--color-icon-primary': 'var(--foreground)',
@@ -201,13 +210,9 @@ export const makaTheme = defineTheme({
     '--radius-container': 'var(--radius-modal)',
     '--radius-full': 'var(--radius-pill)',
     // --radius-page has no Maka tier and no product consumer, so it is not an
-    // alias like its four siblings — but it is on the same ladder, and it
-    // shipped as `1.75rem` while every other rung is px. DESIGN.md §6 says the
-    // ladder cannot be half px and half rem: a rem rung silently tracks the
-    // root font-size, which is exactly the multiplier the type-scale note above
-    // exists to keep out of the geometry. 28px is the same number the rem
-    // resolves to at a 16px root, so this moves no pixel and removes the way it
-    // could later move on its own.
+    // alias — but it is on the same ladder, and a rem rung would track the root
+    // font-size the rest of the ladder keeps out (DESIGN.md §6). 28px is what
+    // its `1.75rem` resolves to at a 16px root: no pixel moves.
     '--radius-page': '28px',
   },
 });

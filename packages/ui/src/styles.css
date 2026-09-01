@@ -93,9 +93,8 @@
    plate, four tinted borders, four value inks, a dimmed zero — were reachable
    only from this package's own story; the product's single call site renders
    the plain outlined tile. The tinted borders were also the least defensible of
-   them: 0.24 alpha over an UNtinted plate measures about 1.2:1 in light, so the
-   edge stated a status the reader could not see while the value ink beside it
-   said the same thing legibly.
+   them: the value ink already carried the status, and a second tinted edge
+   repeating it is DESIGN.md §8's One Means Rule.
 
    Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
    depth comes from the ladder, then a line, then shadow only for something that
@@ -654,10 +653,9 @@
  margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
-/* No tinted edge on the panel: 0.24 alpha over an untinted plate measures about
-   1.2:1 in light, so the border said nothing the reader could see while the
-   note text above already said it in red or amber. `.maka-tool-output-panel`
-   keeps its --border hairline. */
+/* No tinted edge on the panel: the note text above already states the status in
+   red or amber, and a second tinted edge repeats it (DESIGN.md §8).
+   `.maka-tool-output-panel` keeps its --border hairline. */
 .maka-tool-output-warning { color: var(--warning-text); }
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
@@ -772,8 +770,8 @@
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
 .maka-sandbox-blocked-copy[data-copy-feedback="copied"] { color: var(--link); }
-/* The failed state is stated by the label ink; a 0.24-alpha tint on an
-   untinted button reads about 1.2:1 in light, so the edge stays --border. */
+/* The failed state is stated by the label ink, so the edge stays --border —
+   one status, one means (DESIGN.md §8). */
 .maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 

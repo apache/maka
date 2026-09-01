@@ -89,9 +89,8 @@
     cursor: progress;
   }
 
-/* Ink only. A 0.24-alpha status tint on an untinted control measures about
-   1.2:1 in light — an edge that states nothing the reader can see, next to a
-   label that states it legibly. */
+/* Ink only: the label already states the failure, and a second tinted edge
+   beside it is the One Means Rule (DESIGN.md §8). */
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
   }

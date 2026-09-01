@@ -146,15 +146,9 @@
      built on. zinc-family hue 286 at the same chroma reads clean and
      cool like the reference sidebar. */
   --foreground: oklch(0.17 0.005 286);
-  /* `--foreground-dimmed` and `--foreground-secondary` are both retired, and
-     the contract test keeps them out. They are the same lesson twice: dimmed
-     and secondary were both written as "80% ink", one mixed in srgb and the
-     other in oklch, so the identical words resolved 10.51:1 against 12.01:1;
-     then secondary itself turned out to be a tier nobody could hold apart from
-     muted without one of the two failing AA. Two names for one grey is how the
-     drift starts. Prose has exactly two rungs now — --foreground and
-     --muted-foreground — and everything below that is size, weight and case.
-     See the ink ladder note further down for the numbers. */
+  /* Prose has exactly two rungs — --foreground and --muted-foreground — and
+     everything below them is size, weight and case. The two retired middle
+     greys stay retired, enforced by ink-ladder-contract. See DESIGN.md §3. */
 
   /* Brand accent = logo blue (oklch L0.70 C0.135 h250), sampled from
      apps/desktop/assets/icon.png (owner decision 2026-07-03). --success stays

@@ -19,27 +19,14 @@
 
 // packages/ui/src/primitives/stat-tile.tsx
 //
-// The shared implementation for "big number + label (+ detail)" stat tiles. Before
-// this, four near-identical recipes lived in page CSS (permission summary,
-// health summary — literal twins — plus the filled MetricCard and the
-// daily-review totals cell).
+// The "big number + label (+ detail)" stat tile. One shape, no variants: a
+// hairline card at surface radius holding three lines — the label, the value
+// (tabular-nums ALWAYS, per the tabular-nums-converge contract) and an optional
+// detail. Settings' MetricCard (`settings-metric-card.tsx`) is its only
+// consumer.
 //
-// One shape, no variants. The value is tabular-nums ALWAYS (tabular-nums-converge
-// contract); the tile is a hairline card at surface radius; the label and detail
-// are supporting copy in muted ink.
-//
-// It used to carry `tone` (five values, painting the value ink and tinting the
-// border), `emphasis` (outline vs a filled compact plate), `zeroNeutral` and
-// `as`. Every one of them was reachable only from this package's own story: the
-// product has exactly one call site, `settings-metric-card.tsx`, and it passes
-// label, value and detail. The tinted borders were the worst of it — 0.24 alpha
-// on an untinted plate measures about 1.2:1 in light, so the four tones drew a
-// border the reader cannot see and a value colour that said the same thing
-// louder. A prop nobody sets is not an extension point; it is four rendering
-// paths nobody checks.
-//
-// Styled with package-owned semantic classes so the primitive is portable; wrapper
-// classes from call sites (grid placement, page pins) pass through.
+// Styled with package-owned semantic classes; wrapper classes from the call
+// site (grid placement, page pins) pass through.
 
 import type { ReactNode } from 'react';
 import { cn } from '../utils.js';
