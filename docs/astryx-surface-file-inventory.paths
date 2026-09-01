@@ -37,6 +37,10 @@ apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-prov
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
+apps/desktop/src/renderer/features/usage/services-context.tsx
+apps/desktop/src/renderer/features/usage/ui/metric-card.tsx
+apps/desktop/src/renderer/features/usage/ui/usage-settings-view.tsx
+apps/desktop/src/renderer/features/usage/ui/usage-stats-table.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-pane.tsx
 apps/desktop/src/renderer/features/workbar/tools/artifacts/artifact-preview-registry-shell.tsx
@@ -100,7 +104,6 @@ apps/desktop/src/renderer/settings/runtime-host-project-directory-editor.tsx
 apps/desktop/src/renderer/settings/runtime-host-settings-target.tsx
 apps/desktop/src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx
 apps/desktop/src/renderer/settings/settings-expandable-row.tsx
-apps/desktop/src/renderer/settings/settings-metric-card.tsx
 apps/desktop/src/renderer/settings/settings-modal.tsx
 apps/desktop/src/renderer/settings/settings-route-header.tsx
 apps/desktop/src/renderer/settings/settings-rows.tsx
