@@ -190,7 +190,16 @@ describe('permission response IPC boundary', () => {
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command', ignored: true },
         quotes: [
-          { text: 'the excerpt', label: '  Assistant  ', sourceTurnId: 'turn-9', extra: true },
+          {
+            text: 'the excerpt',
+            label: '  Assistant  ',
+            sourceTurnId: 'turn-9',
+            sourceSessionId: 'source-session',
+            sourceSessionName: 'Research',
+            sourceCapturedAt: 123,
+            sourceTruncated: false,
+            extra: true,
+          },
         ],
         workspaceFileReferences: [
           {
@@ -223,7 +232,15 @@ describe('permission response IPC boundary', () => {
           },
         ],
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
-        quotes: [{ text: 'the excerpt', label: 'Assistant', sourceTurnId: 'turn-9' }],
+        quotes: [{
+          text: 'the excerpt',
+          label: 'Assistant',
+          sourceTurnId: 'turn-9',
+          sourceSessionId: 'source-session',
+          sourceSessionName: 'Research',
+          sourceCapturedAt: 123,
+          sourceTruncated: false,
+        }],
         workspaceFileReferences: [
           {
             value: '@packages/ui/src/chat turn.tsx',
@@ -253,6 +270,7 @@ describe('permission response IPC boundary', () => {
       { type: 'send', text: 'hello', quotes: Array(17).fill({ text: 'x' }) },
       { type: 'send', text: 'hello', quotes: [{ text: '' }] },
       { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceTurnId: 1 }] },
+      { type: 'send', text: 'hello', quotes: [{ text: 'x', sourceSessionId: 'source-session' }] },
       { type: 'send', text: 'hello', workspaceFileReferences: {} },
       {
         type: 'send',

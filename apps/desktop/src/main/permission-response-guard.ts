@@ -45,6 +45,8 @@ const MAX_SESSION_SEND_TEXT_LENGTH = 128_000;
 const MAX_QUOTE_COUNT = 16;
 const MAX_QUOTE_TEXT_LENGTH = 32_000;
 const MAX_QUOTE_LABEL_LENGTH = 200;
+const MAX_QUOTE_SOURCE_SESSION_ID_LENGTH = 512;
+const MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH = 200;
 const MAX_INLINE_REFERENCE_COUNT = 32;
 const MAX_INLINE_REFERENCE_VALUE_LENGTH = 4_096;
 
@@ -321,10 +323,48 @@ function normalizeOptionalQuotes(input: unknown): { quotes?: QuoteRef[] } {
             'Invalid send quote sourceTurnId',
             MAX_TURN_ID_LENGTH,
           );
+    const sourceSessionId =
+      value.sourceSessionId === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionId,
+            'Invalid send quote sourceSessionId',
+            MAX_QUOTE_SOURCE_SESSION_ID_LENGTH,
+          );
+    const sourceSessionName =
+      value.sourceSessionName === undefined
+        ? undefined
+        : normalizeRequiredString(
+            value.sourceSessionName,
+            'Invalid send quote sourceSessionName',
+            MAX_QUOTE_SOURCE_SESSION_NAME_LENGTH,
+          );
+    const sourceCapturedAt = value.sourceCapturedAt;
+    const sourceTruncated = value.sourceTruncated;
+    const hasSourceMetadata =
+      sourceSessionId !== undefined ||
+      sourceSessionName !== undefined ||
+      sourceCapturedAt !== undefined ||
+      sourceTruncated !== undefined;
+    if (
+      hasSourceMetadata &&
+      (sourceSessionId === undefined ||
+        sourceSessionName === undefined ||
+        typeof sourceCapturedAt !== 'number' ||
+        !Number.isFinite(sourceCapturedAt) ||
+        sourceCapturedAt < 0 ||
+        typeof sourceTruncated !== 'boolean')
+    ) {
+      throw new Error('Invalid send quote Session provenance');
+    }
     return {
       text: normalizeRequiredString(value.text, 'Invalid send quote text', MAX_QUOTE_TEXT_LENGTH),
       ...(label ? { label } : {}),
       ...(sourceTurnId ? { sourceTurnId } : {}),
+      ...(sourceSessionId ? { sourceSessionId } : {}),
+      ...(sourceSessionName ? { sourceSessionName } : {}),
+      ...(hasSourceMetadata ? { sourceCapturedAt: sourceCapturedAt as number } : {}),
+      ...(hasSourceMetadata ? { sourceTruncated: sourceTruncated as boolean } : {}),
     };
   });
   return quotes.length > 0 ? { quotes } : {};
