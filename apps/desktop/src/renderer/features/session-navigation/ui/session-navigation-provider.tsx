@@ -156,26 +156,26 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [hasProjectActions, hasRelink],
   );
 
+  const sessionBadge = useMemo<SessionRailData['sessionBadge']>(() => {
+    const SessionBadge = props.SessionBadge;
+    return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
+  }, [props.SessionBadge]);
+
   const data = useMemo<SessionRailData>(
-    () => {
-      const SessionBadge = props.SessionBadge;
-      return {
-        sessions: props.rail.sessions,
-        activeId: props.workHubActive ? undefined : props.rail.activeRowId,
-        streamingSessionIds: props.streamingSessionIds,
-        staleSessionIds: props.staleSessionIds,
-        worktreeSessionIds: controller.selectors.worktreeSessionIds,
-        groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
-        groupVariant: controller.layout.viewMode,
-        sessionMeta: controller.selectors.sessionMeta,
-        sessionBadge: SessionBadge
-          ? (session) => <SessionBadge sessionId={session.id} />
-          : undefined,
-        onSelectSession: props.onSelectSession,
-        rowActions,
-        projectActions,
-      };
-    },
+    () => ({
+      sessions: props.rail.sessions,
+      activeId: props.workHubActive ? undefined : props.rail.activeRowId,
+      streamingSessionIds: props.streamingSessionIds,
+      staleSessionIds: props.staleSessionIds,
+      worktreeSessionIds: controller.selectors.worktreeSessionIds,
+      groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
+      groupVariant: controller.layout.viewMode,
+      sessionMeta: controller.selectors.sessionMeta,
+      sessionBadge,
+      onSelectSession: props.onSelectSession,
+      rowActions,
+      projectActions,
+    }),
     [
       controller.layout.viewMode,
       controller.selectors.groups,
@@ -184,11 +184,11 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onSelectSession,
       projectActions,
       props.rail,
-      props.SessionBadge,
       props.staleSessionIds,
       props.streamingSessionIds,
       props.workHubActive,
       rowActions,
+      sessionBadge,
     ],
   );
 
