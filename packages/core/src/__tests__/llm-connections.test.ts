@@ -42,6 +42,7 @@ import {
 import { isRealConnection } from '../connection-readiness.js';
 import { resolveConnectionModelCatalog } from '../model-catalog.js';
 import { buildChatModelChoices } from '../chat-model-choice.js';
+import { deriveProviderAuthContract } from '../provider-auth.js';
 
 /**
  * The Host resolves a connection's catalog and projects it; the menu is built
@@ -333,6 +334,12 @@ test('provider recognition does not resolve inherited object members', () => {
       [],
       inherited,
     );
+    // The auth contract has its own unknown-provider branch, and its comment
+    // says it mirrors `isRealConnection`. It only does so while it asks the
+    // same question the same way: indexing the registry directly handed it an
+    // inherited member instead of `undefined`, and the branch never ran.
+    assert.equal(deriveProviderAuthContract({ providerType }).setupMode, 'none', inherited);
+    assert.equal(deriveProviderAuthContract({ providerType }).state, 'not_configured', inherited);
   }
 });
 

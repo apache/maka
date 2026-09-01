@@ -18,8 +18,8 @@
  */
 
 import {
-  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
+  providerDefaultsOf,
   providerSupportsModelDiscovery,
   type ConnectionAuth,
   type ConnectionLastTestStatus,
@@ -79,7 +79,7 @@ export interface ProviderAuthContract {
 }
 
 export function deriveProviderAuthContract(input: ProviderAuthContractInput): ProviderAuthContract {
-  const defaults = PROVIDER_REGISTRY[input.providerType];
+  const defaults = providerDefaultsOf(input.providerType);
   const enabled = input.enabled ?? true;
   const hasSecret = Boolean(input.hasSecret);
   // Unknown providerType (legacy seed, or a connection persisted on a branch
@@ -267,14 +267,17 @@ function hiddenActions(): Record<ProviderAuthAction, ProviderAuthActionAvailabil
   };
 }
 
-function setupModeForAuthKind(authKind: ConnectionAuth['kind']): ProviderAuthSetupMode {
-  if (authKind === 'none') return 'none';
+function setupModeForAuthKind(authKind: ConnectionAuth['kind'] | undefined): ProviderAuthSetupMode {
+  // A provider this build does not register has no setup to offer. Reachable
+  // only through `setupModeForProvider`; the contract's own unknown-provider
+  // branch returns before that, so this is the belt to that braces.
+  if (authKind === undefined || authKind === 'none') return 'none';
   if (authKind === 'oauth_token') return 'oauth';
   return 'api_key';
 }
 
 function setupModeForProvider(providerType: ProviderType): ProviderAuthSetupMode {
-  return setupModeForAuthKind(PROVIDER_REGISTRY[providerType]?.authKind);
+  return setupModeForAuthKind(providerDefaultsOf(providerType)?.authKind);
 }
 
 function copyForApiKey(label: string, state: ProviderAuthState): ProviderAuthContract['copy'] {
