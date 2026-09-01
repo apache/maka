@@ -450,17 +450,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let model = input.model;
   let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
-  let modelContextWindow = input.modelContextWindow;
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  // The Host resolved these when it projected the choice — including a relay's
-  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
-  // describes offers none rather than a locally guessed list.
-  let thinkingLevels: readonly ThinkingLevel[] =
-    input.modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
-    )?.thinkingLevels ?? [];
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let connectionIdentityNotice: string | undefined;
   let busy = false;
@@ -619,11 +611,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode,
     orchestrationMode,
     thinkingLevel,
-    thinkingLevels,
+    thinkingLevels: currentThinkingLevels(),
     sessionId: input.driver.getSessionId(),
     busy,
     usage: state.usage,
-    modelContextWindow,
+    modelContextWindow: currentModelContextWindow(),
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
     uiLocale: locale,
@@ -1252,6 +1244,33 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // available — the single source the picker and connection/model lookups read.
   let modelChoices = input.modelChoices;
   let connectionIdentities = input.connectionIdentities;
+  // Derived, never mirrored: both the choices and the selected target move —
+  // the Host republishes its catalog, the user switches model — and a stored
+  // copy of what the two imply has to be resynchronized at every one of those
+  // points or go stale at the one that was missed.
+  // The slug and model identify the target; the id narrows it only once the
+  // caller or a session summary has supplied one, because two connections can
+  // share a slug across a rebind but a caller need not know either id.
+  const currentModelChoice = (): ModelChoice | undefined =>
+    modelChoices?.find(
+      (choice) =>
+        choice.connectionSlug === connectionSlug &&
+        choice.model === model &&
+        (connectionId === undefined || choice.connectionId === connectionId),
+    );
+  const onInitialTarget = (): boolean =>
+    connectionId === input.connectionId &&
+    connectionSlug === input.connectionSlug &&
+    model === input.model;
+  /** The caller's value stands only while no choice describes the target it came with. */
+  const currentModelContextWindow = (): number | undefined =>
+    currentModelChoice()?.contextWindow ??
+    (onInitialTarget() ? input.modelContextWindow : undefined);
+  // The Host resolved these when it projected the choice — including a relay's
+  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // describes offers none rather than a locally guessed list.
+  const currentThinkingLevels = (): readonly ThinkingLevel[] =>
+    currentModelChoice()?.thinkingLevels ?? [];
   unsubscribeModelCatalogChanges = input.subscribeModelCatalogChanges?.((refresh) => {
     if (closed) return;
     modelChoices = refresh.modelChoices;
@@ -1534,9 +1553,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
-    const previousModel = model;
-    const previousConnectionId = connectionId;
-    const previousConnectionSlug = connectionSlug;
     model = summary.model;
     connectionId = summary.llmConnectionId;
     connectionSlug = summary.llmConnectionSlug;
@@ -1549,25 +1565,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
     }
     connectionIdentityNotice = identityNotice;
-    const contextWindowMatch = modelChoices?.find(
-      (choice) =>
-        choice.connectionId === summary.llmConnectionId &&
-        choice.connectionSlug === summary.llmConnectionSlug &&
-        choice.model === summary.model,
-    );
-    if (contextWindowMatch) {
-      modelContextWindow = contextWindowMatch.contextWindow;
-    } else if (
-      previousConnectionId !== summary.llmConnectionId ||
-      previousConnectionSlug !== summary.llmConnectionSlug ||
-      previousModel !== summary.model
-    ) {
-      modelContextWindow = undefined;
-    }
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    thinkingLevels = contextWindowMatch?.thinkingLevels ?? [];
     refreshEditorCwd?.(cwd);
   };
 
@@ -1584,15 +1584,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousModel = transcriptLastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
-    // Same-connection switch: scope the choice lookup to the live connection
-    // (another connection may expose the same model id with different
-    // declared thinking levels).
-    const match = modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === nextModel,
-    );
-    if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels = match?.thinkingLevels ?? [];
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1618,9 +1610,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     model = choice.model;
     connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
-    modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels = choice.thinkingLevels;
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -2873,7 +2863,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showThinkingLevelList = () => {
-    const items = thinkingLevelPickerItems(thinkingLevels, thinkingLevel, locale);
+    const items = thinkingLevelPickerItems(currentThinkingLevels(), thinkingLevel, locale);
     showSelectPicker(
       pickerCopy.thinkingPickerTitle,
       thinkingLevel ?? 'default',
@@ -3526,6 +3516,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.thinking,
       midTurn: 'refuse',
       run: (parts: string[]) => {
+        const thinkingLevels = currentThinkingLevels();
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
             state.entries.push({
