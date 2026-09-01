@@ -411,7 +411,6 @@ function makeBackend(
     launchTookForeground?: boolean;
     windowOriginY?: number;
     physicalInputRecentlyActive?: MakaCuBackendOptions['physicalInputRecentlyActive'];
-    allowCompatibilityInputDispatch?: boolean;
     onTrace?: MakaCuBackendOptions['onTrace'];
   } = {},
 ): { backend: ReturnType<typeof createMakaCuBackend>; logPath: string; imageDir: string } {
@@ -456,9 +455,6 @@ function makeBackend(
     ...(opts.physicalInputRecentlyActive
       ? { physicalInputRecentlyActive: opts.physicalInputRecentlyActive }
       : {}),
-    ...(opts.allowCompatibilityInputDispatch === undefined
-      ? {}
-      : { allowCompatibilityInputDispatch: opts.allowCompatibilityInputDispatch }),
     ...(opts.onTrace ? { onTrace: opts.onTrace } : {}),
   });
   disposers.push(() => backend.dispose());
@@ -481,12 +477,12 @@ async function observeFixture(
   );
 }
 
-function boundCoordinate(observation: CuObservation): CuaBoundAction {
+function boundWindow(observation: CuObservation): CuaBoundAction {
   return {
     frameId: observation.observationId,
     epoch: 0,
-    actionFingerprint: 'left_click',
-    fingerprint: 'bound-coordinate',
+    actionFingerprint: 'key',
+    fingerprint: 'bound-window',
     target: {
       pid: observation.pid,
       windowId: observation.windowId,
@@ -494,9 +490,6 @@ function boundCoordinate(observation: CuObservation): CuaBoundAction {
       bounds: observation.windowBounds!,
       sourceBoundsPx: observation.sourceBoundsPx!,
     },
-    sourceCoordinate: { x: 400, y: 200 },
-    windowCoordinate: { x: 400, y: 200 },
-    coordinateSpace: 'window-screenshot-local',
   };
 }
 
@@ -776,69 +769,6 @@ describe('maka-cu backend', () => {
     assert.match(message, /restarted|another way/);
   });
 
-  it('treats a global-pointer path as a compromised session', async () => {
-    const traces: any[] = [];
-    const { backend } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_global',
-      allowCompatibilityInputDispatch: true,
-      onTrace: (event) => traces.push(event),
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    // §6.3: the executor states the path and the host verifies it. A path that
-    // was never permitted at handshake means the system cursor moved.
-    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
-    assert.ok(traces.some((event) => event.type === 'protocol_violation'));
-    assert.match(
-      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
-      /moves the system cursor/,
-    );
-  });
-
-  it('anchors a coordinate dispatch to the window digest in image pixels', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-      allowCompatibilityInputDispatch: true,
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(result.outcome.ok, true);
-    assert.equal(result.outcome.ok && result.outcome.tier, 'coordinate-background');
-
-    const dispatch = received(await readRecords(logPath), 'dispatch.point')[0];
-    assert.equal(dispatch?.snapshotId, observation.observationId);
-    // §6.3: a point has no element to anchor to, so the window is the anchor.
-    assert.equal(dispatch?.expectWindowDigest, observation.contentFingerprint);
-    assert.equal(dispatch?.space, 'image_px');
-    assert.equal(dispatch?.occlusionPolicy, 'any');
-    assert.deepEqual(dispatch?.point, { x: 400, y: 200 });
-  });
-
-  it('keeps coordinate dispatch closed unless the host policy opens it', async () => {
-    const { backend, logPath } = makeBackend({
-      tier: 'coordinate-background',
-      path: 'cg_event_pid',
-    });
-    const observation = await observeFixture(backend);
-    const result = await backend.run(
-      { type: 'left_click', coordinate: { x: 400, y: 200 } },
-      signal(),
-      { ...RUN_CONTEXT, boundAction: boundCoordinate(observation) },
-    );
-    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
-    assert.equal(received(await readRecords(logPath), 'dispatch.point').length, 0);
-  });
-
   it('lets an element action through while the user is physically active', async () => {
     // The guard protects the one pointer and the one keyboard the user also
     // has. An element action names an element and lets the accessibility API
@@ -858,13 +788,12 @@ describe('maka-cu backend', () => {
 
   it('still fences synthesized input while the user is physically active', async () => {
     const { backend, logPath } = makeBackend({
-      allowCompatibilityInputDispatch: true,
       physicalInputRecentlyActive: () => true,
     });
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(!result.outcome.ok && result.outcome.error, 'user_intervened');
     assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
@@ -1261,7 +1190,7 @@ describe('maka-cu backend', () => {
   // §6.4 — the host parses the key string.
 
   it('asks the executor to take focus when the model named the control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     // el_1 is the window, not the focused element — exactly the case the
     // promise covers: name a control and it is focused before the key lands.
@@ -1282,7 +1211,7 @@ describe('maka-cu backend', () => {
   });
 
   it('verifies rather than takes focus when the model named no control', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
@@ -1298,7 +1227,7 @@ describe('maka-cu backend', () => {
   });
 
   it('refuses a key aimed at a control outside the quoted frame', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.runSemantic!(
       {
@@ -1320,11 +1249,11 @@ describe('maka-cu backend', () => {
   });
 
   it('parses a key combination into the wire closed sets before sending it', async () => {
-    const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+    const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     const result = await backend.run({ type: 'key', text: 'cmd+a' }, signal(), {
       ...RUN_CONTEXT,
-      boundAction: boundCoordinate(observation),
+      boundAction: boundWindow(observation),
     });
     assert.equal(result.outcome.ok, true);
     const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
@@ -1335,7 +1264,7 @@ describe('maka-cu backend', () => {
 
   it('sends nothing for a key string it cannot parse', async () => {
     for (const key of ['delete', 'del', 'cmd+', 'a+b', 'hyper+a']) {
-      const { backend, logPath } = makeBackend({ allowCompatibilityInputDispatch: true });
+      const { backend, logPath } = makeBackend();
       const observation = await observeFixture(backend);
       const result = await backend.runSemantic!(
         { type: 'press_key', observationId: observation.observationId, key },

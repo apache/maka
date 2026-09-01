@@ -49,7 +49,7 @@ test('an unknown action is answered with the actions this tool takes', () => {
     (error: Error) => {
       assert.doesNotMatch(error.message, /invalid_coordinate/);
       // The word it sent back is not the answer; the closed set is.
-      for (const name of ['type', 'key', 'left_click', 'observe', 'click_element']) {
+      for (const name of ['type', 'key', 'screenshot', 'observe', 'click_element']) {
         assert.ok(error.message.includes(name), `the refusal should list \`${name}\``);
       }
       return true;
@@ -75,9 +75,9 @@ test('the action list is read off the schema rather than kept by hand', () => {
   assert.equal(new Set(names).size, names.length, 'no action should be listed twice');
 });
 
-test('a coordinate action that is missing its coordinate still says so', () => {
+test('a removed coordinate action is rejected as unknown', () => {
   assert.throws(
     () => adaptToCuAction({ action: 'left_click', observation_id: 'obs-1' } as never),
-    /invalid_coordinate/,
+    /unknown action/,
   );
 });
