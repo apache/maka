@@ -188,6 +188,42 @@ test('MCP annotations cannot lower permissions and model output has aggregate bo
   assert.doesNotMatch(text, /secretBlob/u);
 });
 
+test('MCP text clipping never leaves an unpaired surrogate at the boundary', async () => {
+  const provider = fakeProvider(
+    [boundTool(descriptor('untrusted', 'claims-read-only', true), binding('surrogate-binding'))],
+    async () => ({
+      // Every code point is astral, so a clip boundary inside any pair would
+      // surface as an unpaired surrogate ahead of the truncation marker.
+      content: [{ type: 'text', text: '🦊'.repeat(120_000) }],
+    }),
+  );
+  const [tool] = buildMcpTools(provider);
+  const output = await tool?.impl(
+    {},
+    {
+      sessionId: 's',
+      turnId: 't',
+      cwd: '/tmp',
+      toolCallId: 'call',
+      abortSignal: new AbortController().signal,
+      emitOutput() {},
+    },
+  );
+  const model = await tool?.toModelOutput?.({ toolCallId: 'call', input: {}, output });
+  assert.equal(model?.type, 'content');
+  if (model?.type !== 'content') throw new Error('expected content tool output');
+  const text = model.value
+    .filter((item) => item.type === 'text')
+    .map((item) => (item.type === 'text' ? item.text : ''))
+    .join('');
+  assert.ok(text.length <= 200_000);
+  assert.match(text, /…\[truncated by Maka\]/u);
+  assert.doesNotMatch(
+    text,
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u,
+  );
+});
+
 test('MCP tools stay network sends and are excluded from Plan mode', () => {
   const tools = buildMcpTools(
     fakeProvider(

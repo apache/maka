@@ -285,7 +285,12 @@ function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unkno
 function clipModelText(value: string, limit: number): string {
   if (value.length <= limit) return value;
   if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
-  return `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  const kept = value.slice(0, limit - TRUNCATION_MARKER.length);
+  // The cut can land inside a surrogate pair; an unpaired high surrogate must
+  // not reach the model request or durable storage, so it is dropped with the
+  // rest of the clipped tail.
+  const boundarySafe = /[\uD800-\uDBFF]$/u.test(kept) ? kept.slice(0, -1) : kept;
+  return `${boundarySafe}${TRUNCATION_MARKER}`;
 }
 
 function safeJsonStringify(value: unknown): string {
