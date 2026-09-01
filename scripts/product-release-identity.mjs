@@ -22,6 +22,7 @@ import { appendFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -119,23 +120,34 @@ export function resolveProductReleaseIdentity({
   }
 
   const toolchain = releaseToolchainFromManifest(rootManifest);
-  const dmg = `Maka-${version}-mac-arm64.dmg`;
-  const macZip = `Maka-${version}-mac-arm64.zip`;
+  const targets = desktopReleaseTargets(version, { nightly: false });
   const exe = `Maka-${version}-win-x64.exe`;
-  const windowsZip = `Maka-${version}-win-x64.zip`;
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
+  const cliGroup = [cliArchive, `${cliArchive}.sha256`];
+  const uploaded = (target) => [
+    ...target.payloads,
+    ...target.checksums.map((name) => `${name}.sha256`),
+  ];
+  // What each runner uploads, keyed by its staging group. The macOS runners
+  // upload their feeds under per-architecture names; the release publishes the
+  // one merged feed instead, so the staged set and the published set differ.
   const artifacts = {
-    'desktop-macos': [dmg, `${dmg}.sha256`, macZip, `${macZip}.blockmap`, 'latest-mac.yml'],
-    'desktop-windows': [
-      exe,
-      `${exe}.blockmap`,
-      `${exe}.sha256`,
-      windowsZip,
-      `${windowsZip}.sha256`,
-      'latest.yml',
-    ],
-    'cli-macos-arm64': [cliArchive, `${cliArchive}.sha256`],
+    ...Object.fromEntries(
+      targets.map((target) => [
+        `desktop-${target.name}`,
+        [...uploaded(target), target.feed].sort(),
+      ]),
+    ),
+    'cli-macos-arm64': cliGroup,
   };
+  const updateFeeds = desktopPublishedFeeds(version, { nightly: false }).map(
+    ({ name, advertised }) => ({ name, advertised }),
+  );
+  const releaseAssets = [
+    ...targets.flatMap(uploaded),
+    ...updateFeeds.map((feed) => feed.name),
+    ...cliGroup,
+  ].sort();
 
   return {
     ...toolchain,
@@ -143,10 +155,11 @@ export function resolveProductReleaseIdentity({
     tag: `v${version}`,
     sourceCommit: sha,
     sourceReferenceTag,
-    dmg,
     exe,
     cliArchive,
     artifacts,
+    releaseAssets,
+    updateFeeds,
   };
 }
 
@@ -188,7 +201,6 @@ function githubOutputEntries(identity) {
     tag: identity.tag,
     source_commit: identity.sourceCommit,
     source_reference_tag: identity.sourceReferenceTag,
-    dmg: identity.dmg,
     exe: identity.exe,
     cli_archive: identity.cliArchive,
     node_version: identity.nodeVersion,

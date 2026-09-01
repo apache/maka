@@ -20,7 +20,11 @@
 import { copyFile, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
+import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
+import {
+  mergeDesktopUpdateFeeds,
+  verifyDesktopUpdateArtifacts,
+} from './desktop-update-contract.mjs';
 import { assertProductNightlyVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -40,44 +44,68 @@ export function resolveRuntimeHostSetupPackage(productVersion, environment = pro
   return `maka-agent@${resolveDesktopBuildVersion(productVersion, environment)}`;
 }
 
-export function desktopNightlyReleaseAssetNames(version) {
-  const names = nightlyArtifactNames(version);
+export function desktopNightlyTargets(version) {
+  return desktopReleaseTargets(version, { nightly: true });
+}
+
+export function desktopNightlyPublishedFeeds(version) {
+  return desktopPublishedFeeds(version, { nightly: true });
+}
+
+/** Everything the provenance attestation covers: the assets minus the bundle. */
+export function desktopNightlyAttestedAssetNames(version) {
   return [
-    names.macDmg,
-    names.macZip,
-    `${names.macZip}.blockmap`,
-    names.windowsExe,
-    `${names.windowsExe}.blockmap`,
-    names.windowsZip,
-    `Maka-${version}-attestation.sigstore.json`,
-    'dev-mac.yml',
-    'dev.yml',
+    ...desktopNightlyTargets(version).flatMap((target) => target.payloads),
+    ...desktopNightlyPublishedFeeds(version).map((feed) => feed.name),
   ].sort();
 }
 
-function nightlyArtifactNames(version) {
-  return {
-    macZip: `Maka-${version}-mac-arm64.zip`,
-    macDmg: `Maka-${version}-mac-arm64.dmg`,
-    windowsExe: `Maka-${version}-win-x64.exe`,
-    windowsZip: `Maka-${version}-win-x64.zip`,
-  };
+export function desktopNightlyReleaseAssetNames(version) {
+  return [
+    ...desktopNightlyAttestedAssetNames(version),
+    `Maka-${version}-attestation.sigstore.json`,
+  ].sort();
+}
+
+/**
+ * Collects one packaging runner's uploads out of the build directory. The
+ * runner never names its own files: the target descriptor is the single place
+ * that knows what a target produces.
+ */
+export async function stageDesktopNightlyTarget({
+  targetName,
+  releaseDirectory,
+  stageDirectory,
+  version,
+}) {
+  const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+  assertDesktopNightlyVersion(version, productManifest.version);
+  const target = desktopNightlyTargets(version).find((entry) => entry.name === targetName);
+  if (!target) {
+    throw new Error(`Unknown Desktop Nightly target: ${targetName}`);
+  }
+  await mkdir(stageDirectory, { recursive: true });
+  const staged = [...target.payloads, target.feed];
+  await Promise.all(
+    staged.map(async (name) => {
+      const sourcePath = join(releaseDirectory, name);
+      const info = await stat(sourcePath);
+      if (!info.isFile()) {
+        throw new Error(`Desktop Nightly payload is not a file: ${sourcePath}`);
+      }
+      await copyFile(sourcePath, join(stageDirectory, name));
+    }),
+  );
+  return staged;
 }
 
 export async function stageDesktopNightly({ inputDirectory, outputDirectory, version }) {
   const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   assertDesktopNightlyVersion(version, productManifest.version);
-  const names = nightlyArtifactNames(version);
-  const payloads = [
-    names.macDmg,
-    names.macZip,
-    `${names.macZip}.blockmap`,
-    names.windowsExe,
-    `${names.windowsExe}.blockmap`,
-    names.windowsZip,
-  ];
-  const metadataNames = ['dev-mac.yml', 'dev.yml'];
-  const expected = [...payloads, ...metadataNames].sort();
+  const targets = desktopNightlyTargets(version);
+  const feeds = desktopNightlyPublishedFeeds(version);
+  const payloads = targets.flatMap((target) => target.payloads);
+  const expected = [...payloads, ...targets.map((target) => target.feed)].sort();
   const actual = (await readdir(inputDirectory)).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
@@ -85,31 +113,42 @@ export async function stageDesktopNightly({ inputDirectory, outputDirectory, ver
     );
   }
 
-  await Promise.all([
-    verifyDesktopUpdateArtifacts({
-      directory: inputDirectory,
-      metadataName: 'dev-mac.yml',
-      version,
-      artifactName: names.macZip,
-    }),
-    verifyDesktopUpdateArtifacts({
-      directory: inputDirectory,
-      metadataName: 'dev.yml',
-      version,
-      artifactName: names.windowsExe,
-    }),
-  ]);
-
   await rm(outputDirectory, { recursive: true, force: true });
   const releaseDirectory = join(outputDirectory, 'release');
   await mkdir(releaseDirectory, { recursive: true });
   await Promise.all(
-    [...payloads, ...metadataNames].map(async (name) => {
+    payloads.map(async (name) => {
       const source = join(inputDirectory, name);
       const info = await stat(source);
       if (!info.isFile()) throw new Error(`Desktop Nightly payload is not a file: ${source}`);
       await copyFile(source, join(releaseDirectory, name));
     }),
+  );
+  await Promise.all(
+    feeds.map(async (feed) => {
+      const output = join(releaseDirectory, feed.name);
+      if (feed.mergedFrom) {
+        await mergeDesktopUpdateFeeds({
+          sourcePaths: feed.mergedFrom.map((name) => join(inputDirectory, name)),
+          outputPath: output,
+        });
+        return;
+      }
+      await copyFile(join(inputDirectory, feed.name), output);
+    }),
+  );
+
+  // Verify what is about to be published, not what arrived: the macOS feed only
+  // becomes whole in the staging directory.
+  await Promise.all(
+    feeds.map((feed) =>
+      verifyDesktopUpdateArtifacts({
+        directory: releaseDirectory,
+        metadataName: feed.name,
+        version,
+        artifactNames: feed.advertised,
+      }),
+    ),
   );
 }
 
@@ -136,13 +175,25 @@ async function main(args) {
     });
     return;
   }
+  if (command === 'attested-assets' && rest.length === 1) {
+    const [version] = rest;
+    const productManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
+    assertDesktopNightlyVersion(version, productManifest.version);
+    process.stdout.write(`${desktopNightlyAttestedAssetNames(version).join('\n')}\n`);
+    return;
+  }
+  if (command === 'stage-target' && rest.length === 4) {
+    const [targetName, releaseDirectory, stageDirectory, version] = rest;
+    await stageDesktopNightlyTarget({ targetName, releaseDirectory, stageDirectory, version });
+    return;
+  }
   if (command === 'add-attestation' && rest.length === 3) {
     const [outputDirectory, version, bundlePath] = rest;
     await addDesktopNightlyAttestation({ outputDirectory, version, bundlePath });
     return;
   }
   throw new Error(
-    'usage: desktop-nightly.mjs stage <input-directory> <output-directory> <version> | add-attestation <output-directory> <version> <bundle-path>',
+    'usage: desktop-nightly.mjs stage <input-directory> <output-directory> <version> | stage-target <target> <release-directory> <stage-directory> <version> | add-attestation <output-directory> <version> <bundle-path>',
   );
 }
 

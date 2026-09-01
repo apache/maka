@@ -86,10 +86,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos
+          - target: macos-arm64
+            platform: macos
+            arch: arm64
             runner: macos-15
-          - platform: windows
+          - target: macos-x64
+            platform: macos
+            arch: x64
+            runner: macos-15-intel
+          - target: windows-x64
+            platform: windows
+            arch: x64
             runner: windows-2025
+          - target: linux-x64
+            platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     environment: nightly
     timeout-minutes: 75
@@ -145,7 +161,7 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run package:macos-arm64
+        run: npm run package:macos-${{ matrix.arch }}
 
       - name: Notarize and verify the macOS Nightly
         if: matrix.platform == 'macos'
@@ -153,7 +169,8 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-mac-arm64.dmg
+          DMG_PATH: >-
+            apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-mac-${{ matrix.arch }}.dmg
         run: |
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY" \
@@ -161,7 +178,7 @@ jobs:
             --issuer "$APPLE_API_ISSUER" \
             --wait
           xcrun stapler staple "$DMG_PATH"
-          npm run verify:macos-arm64 -- "$DMG_PATH"
+          npm run verify:macos -- "$DMG_PATH"
 
       - name: Package the Windows Nightly
         if: matrix.platform == 'windows'
@@ -173,32 +190,31 @@ jobs:
           npm run verify:windows-x64 --
           "apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-win-x64.exe"
 
+      - name: Package the Linux Nightly
+        if: matrix.platform == 'linux'
+        run: npm run package:linux
+
+      - name: Verify the Linux Nightly
+        if: matrix.platform == 'linux'
+        run: >-
+          npm run verify:linux --
+          "apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-linux-${{ matrix.arch }}.AppImage"
+
       - name: Stage the exact Nightly artifacts
         env:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
           STAGE_DIRECTORY: ${{ runner.temp }}/desktop-nightly
         run: |
-          mkdir -p "$STAGE_DIRECTORY"
-          if [[ "${{ matrix.platform }}" = macos ]]; then
-            cp -- \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.dmg" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip.blockmap" \
-              apps/desktop/release/dev-mac.yml \
-              "$STAGE_DIRECTORY/"
-          else
-            cp -- \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe.blockmap" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.zip" \
-              apps/desktop/release/dev.yml \
-              "$STAGE_DIRECTORY/"
-          fi
+          node scripts/desktop-nightly.mjs stage-target \
+            "${{ matrix.target }}" \
+            apps/desktop/release \
+            "$STAGE_DIRECTORY" \
+            "$NIGHTLY_VERSION"
 
       - name: Preserve the verified Nightly artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-nightly-${{ matrix.platform }}
+          name: desktop-nightly-${{ matrix.target }}
           path: ${{ runner.temp }}/desktop-nightly
           if-no-files-found: error
           compression-level: 0
@@ -263,20 +279,15 @@ jobs:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
           CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main
           GH_TOKEN: ${{ github.token }}
+          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
         run: |
-          verified=0
-          while IFS= read -r -d '' artifact; do
-            gh attestation verify "$artifact" \
+          while IFS= read -r asset; do
+            gh attestation verify "$GITHUB_WORKSPACE/.nightly-stage/release/$asset" \
               --bundle "$ATTESTATION_BUNDLE" \
               --repo "$GITHUB_REPOSITORY" \
               --cert-identity "$CERTIFICATE_IDENTITY" \
               --cert-oidc-issuer https://token.actions.githubusercontent.com
-            verified=$((verified + 1))
-          done < <(find "$GITHUB_WORKSPACE/.nightly-stage/release" -maxdepth 1 -type f -print0)
-          if (( verified != 8 )); then
-            echo "Expected 8 verified Desktop Nightly subjects, found $verified" >&2
-            exit 1
-          fi
+          done < <(node scripts/desktop-nightly.mjs attested-assets "$NIGHTLY_VERSION")
 
       - name: Add the one offline provenance bundle
         env:

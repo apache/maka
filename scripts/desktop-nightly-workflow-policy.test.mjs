@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import { desktopNightlyTargets } from './desktop-nightly.mjs';
 
 async function readWorkflow(name) {
   return parse(await readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
@@ -103,7 +104,7 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   const download = workflow.jobs.publish.steps.find(
     (step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern,
   );
-  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}');
+  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.target }}');
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
@@ -115,9 +116,30 @@ test('Desktop Nightly packages the GitHub dev feeds and grants write only to its
   const stage = workflow.jobs.desktop.steps.find(
     (step) => step.name === 'Stage the exact Nightly artifacts',
   );
-  assert.match(stage.run, /apps\/desktop\/release\/dev-mac\.yml/u);
-  assert.match(stage.run, /apps\/desktop\/release\/dev\.yml/u);
-  assert.doesNotMatch(stage.run, /latest-mac\.yml|latest\.yml/u);
+  // The runner never names its own uploads; the target descriptor does.
+  assert.match(stage.run, /desktop-nightly\.mjs stage-target/u);
+  assert.match(stage.run, /\$\{\{ matrix\.target \}\}/u);
+  assert.doesNotMatch(JSON.stringify(workflow), /latest-mac\.yml|latest\.yml/u);
+});
+
+test('every packaged Desktop target ships from a runner of its own architecture', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const targets = workflow.jobs.desktop.strategy.matrix.include;
+  assert.deepEqual(
+    targets.map((entry) => entry.target),
+    ['macos-arm64', 'macos-x64', 'windows-x64', 'linux-x64', 'linux-arm64'],
+  );
+  const nightlyTargets = desktopNightlyTargets('0.2.0-dev.42.20260829').map(
+    (target) => target.name,
+  );
+  assert.deepEqual(targets.map((entry) => entry.target).toSorted(), nightlyTargets.toSorted());
+  for (const entry of targets) {
+    assert.equal(entry.target, `${entry.platform}-${entry.arch}`);
+  }
+  assert.deepEqual(
+    targets.map((entry) => entry.runner),
+    ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],
+  );
 });
 
 test('the publisher verifies exact GitHub identity and assets before publishing last', async () => {

@@ -120,8 +120,8 @@ export async function productReleaseArtifactRecords(directory, names) {
 }
 
 export async function verifyProductReleaseArtifactIntegrity(directory, identity) {
-  await verifyProductReleaseArtifactDirectory(directory, allArtifactNames(identity));
-  const checksumNames = allArtifactNames(identity).filter((name) => name.endsWith('.sha256'));
+  await verifyProductReleaseArtifactDirectory(directory, identity.releaseAssets);
+  const checksumNames = identity.releaseAssets.filter((name) => name.endsWith('.sha256'));
   for (const checksumName of checksumNames) {
     const artifactName = checksumName.slice(0, -'.sha256'.length);
     const source = await readFile(join(directory, checksumName), 'utf8');
@@ -134,25 +134,17 @@ export async function verifyProductReleaseArtifactIntegrity(directory, identity)
       throw new Error(`Product release checksum does not match: ${artifactName}`);
     }
   }
-  await Promise.all([
-    verifyDesktopUpdateArtifacts({
-      directory,
-      metadataName: 'latest-mac.yml',
-      version: identity.version,
-      artifactName: `Maka-${identity.version}-mac-arm64.zip`,
-    }),
-    verifyDesktopUpdateArtifacts({
-      directory,
-      metadataName: 'latest.yml',
-      version: identity.version,
-      artifactName: identity.exe,
-    }),
-  ]);
-  return allArtifactNames(identity);
-}
-
-function allArtifactNames(identity) {
-  return Object.values(identity.artifacts).flat();
+  await Promise.all(
+    identity.updateFeeds.map((feed) =>
+      verifyDesktopUpdateArtifacts({
+        directory,
+        metadataName: feed.name,
+        version: identity.version,
+        artifactNames: feed.advertised,
+      }),
+    ),
+  );
+  return identity.releaseAssets;
 }
 
 function exactKeys(value, expected, label) {
@@ -259,7 +251,7 @@ export async function createProductReleasePublicationRecord({
     sourceCommit: identity.sourceCommit,
     tag: identity.tag,
     version: identity.version,
-    assets: await productReleaseArtifactRecords(artifactDirectory, allArtifactNames(identity)),
+    assets: await productReleaseArtifactRecords(artifactDirectory, identity.releaseAssets),
   });
 }
 

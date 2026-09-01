@@ -106,10 +106,12 @@ export async function smokePackagedFilesystemWorker(
   }
 }
 
-function assertSingleArchitecture(output, subject) {
+function assertSingleArchitecture(output, subject, expectedArch) {
   const architectures = output.trim().split(/\s+/).filter(Boolean);
-  if (architectures.length !== 1 || architectures[0] !== 'arm64') {
-    throw new Error(`${subject} must contain only arm64, found: ${architectures.join(', ')}`);
+  if (architectures.length !== 1 || architectures[0] !== expectedArch) {
+    throw new Error(
+      `${subject} must contain only ${expectedArch}, found: ${architectures.join(', ')}`,
+    );
   }
 }
 
@@ -128,6 +130,9 @@ export async function verifyPackagedMacApp(
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
     workingDirectory = dirname(appPath),
     environment = process.env,
+    // Verification runs the packaged binaries, so it only ever inspects a build
+    // for the host it is running on.
+    expectedArch = process.arch,
   } = {},
 ) {
   const product = await readProductManifestIdentity();
@@ -157,7 +162,7 @@ export async function verifyPackagedMacApp(
   await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
-  assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');
+  assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable', expectedArch);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
@@ -177,7 +182,7 @@ export async function verifyPackagedMacApp(
   await smokeRenderer(executable, { workingDirectory });
 }
 
-export async function verifyMacosArm64Dmg(
+export async function verifyMacosDmg(
   inputPath,
   { platform = process.platform, run = runCommandFromRepo, verifyApp = verifyPackagedMacApp } = {},
 ) {
@@ -185,7 +190,7 @@ export async function verifyMacosArm64Dmg(
     throw new Error('DMG verification requires macOS.');
   }
   if (!inputPath) {
-    throw new Error('Usage: npm run verify:macos-arm64 -- <path-to-dmg>');
+    throw new Error('Usage: npm run verify:macos -- <path-to-dmg>');
   }
 
   const dmgPath = resolve(inputPath);
@@ -222,7 +227,7 @@ export async function verifyMacosArm64Dmg(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyMacosArm64Dmg(process.argv[2]);
+  const result = await verifyMacosDmg(process.argv[2]);
   console.log(`Verified ${result.dmgPath}`);
   console.log(`SHA-256 ${result.sha256}`);
 }

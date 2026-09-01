@@ -41,7 +41,6 @@ jobs:
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
       source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
-      dmg: ${{ steps.identity.outputs.dmg }}
       exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
@@ -90,15 +89,33 @@ jobs:
   desktop:
     needs: release-identity
     strategy:
-      # Both platforms ship from one dispatch, so a failure on one still leaves
-      # the other artifact available for diagnosis.
+      # Every target ships from one dispatch, so a failure on one still leaves
+      # the other artifacts available for diagnosis. Each architecture builds on
+      # a runner of its own: the native Runtime Host peer and the packaged smoke
+      # probes are host binaries.
       fail-fast: false
       matrix:
         include:
-          - platform: macos
+          - target: macos-arm64
+            platform: macos
+            arch: arm64
             runner: macos-15
-          - platform: windows
+          - target: macos-x64
+            platform: macos
+            arch: x64
+            runner: macos-15-intel
+          - target: windows-x64
+            platform: windows
+            arch: x64
             runner: windows-2025
+          - target: linux-x64
+            platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     environment: release
     timeout-minutes: 75
@@ -156,7 +173,7 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run package:macos-arm64
+        run: npm run package:macos-${{ matrix.arch }}
 
       - name: Notarize and staple the signed final DMG
         if: matrix.platform == 'macos'
@@ -164,7 +181,8 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: apps/desktop/release/${{ needs.release-identity.outputs.dmg }}
+          DMG_PATH: >-
+            apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-${{ matrix.arch }}.dmg
         run: |
           codesign --verify --verbose=4 "$DMG_PATH"
           xcrun notarytool submit "$DMG_PATH" \
@@ -184,17 +202,22 @@ jobs:
 
       - name: Verify the final DMG
         if: matrix.platform == 'macos'
-        run: npm run verify:macos-arm64 -- "apps/desktop/release/${{ needs.release-identity.outputs.dmg }}"
+        run: >-
+          npm run verify:macos --
+          "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-${{ matrix.arch }}.dmg"
 
+      # The updater is one code path across both macOS architectures, so the
+      # end-to-end update proof runs once, on the architecture most installs
+      # use. package-macos-autoupdate-next.mjs enforces the same restriction.
       - name: Build the version-bumped macOS update
-        if: matrix.platform == 'macos'
+        if: matrix.target == 'macos-arm64'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npm run package:macos-autoupdate-next
 
       - name: Verify macOS automatic update end to end
-        if: matrix.platform == 'macos'
+        if: matrix.target == 'macos-arm64'
         run: |
           npm run verify:macos-autoupdate -- \
             "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-arm64.zip" \
@@ -245,17 +268,29 @@ jobs:
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
+      # Linux ships unsigned for the same reason Windows does: there is no
+      # certificate yet, so packaging and verification are adjacent.
+      - name: Package the Linux AppImage and deb
+        if: matrix.platform == 'linux'
+        run: npm run package:linux
+
+      - name: Verify the Linux release
+        if: matrix.platform == 'linux'
+        run: >-
+          npm run verify:linux --
+          "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-linux-${{ matrix.arch }}.AppImage"
+
       - name: Stage the exact product artifact group
         run: >-
           node scripts/product-release-artifacts.mjs stage
-          "desktop-${{ matrix.platform }}"
+          "desktop-${{ matrix.target }}"
           apps/desktop/release
           "${{ runner.temp }}/release-assets"
 
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-desktop-${{ matrix.platform }}-${{ github.run_attempt }}
+          name: release-desktop-${{ matrix.target }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 30

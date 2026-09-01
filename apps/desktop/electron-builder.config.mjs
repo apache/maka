@@ -217,8 +217,8 @@ const baseDesktopBuilderConfig = {
   ],
   mac: {
     target: [
-      { target: 'dmg', arch: ['arm64'] },
-      { target: 'zip', arch: ['arm64'] },
+      { target: 'dmg', arch: ['arm64', 'x64'] },
+      { target: 'zip', arch: ['arm64', 'x64'] },
     ],
     category: 'public.app-category.productivity',
     // The bundle icon is what Finder, Launchpad and the installer show, and
@@ -272,6 +272,22 @@ const baseDesktopBuilderConfig = {
     // certificate there is no publisher name to put in app-update.yml, and
     // electron-updater skips the check when there is none. Adding a certificate
     // is then the whole change — the verification follows it.
+  },
+  linux: {
+    target: [
+      { target: 'AppImage', arch: ['x64', 'arm64'] },
+      { target: 'deb', arch: ['x64', 'arm64'] },
+    ],
+    artifactName: 'Maka-${version}-linux-${arch}.${ext}',
+    // Same reason as `mac.icon` above: the launcher entry and the window
+    // decoration are drawn by the desktop environment from this file, not by
+    // the running app, so it cannot follow the user's icon choice.
+    icon: 'assets/app-icons/sky.png',
+    category: 'Development',
+    // fpm refuses to build a deb without a maintainer, and the field must
+    // carry an address. The project list is the only stable one; no individual
+    // owns the package.
+    maintainer: 'Apache Maka (incubating) <dev@maka.apache.org>',
   },
   nsis: {
     // Everything stays at the one-click per-user defaults; the include only

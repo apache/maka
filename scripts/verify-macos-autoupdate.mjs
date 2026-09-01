@@ -152,7 +152,7 @@ export async function verifyMacosAutoupdate(
     directory: nextDirectory,
     metadataName: 'latest-mac.yml',
     version: nextVersion,
-    artifactName: nextZipName,
+    artifactNames: [nextZipName],
   });
 
   const temporaryDirectory = await makeTemporaryDirectory();

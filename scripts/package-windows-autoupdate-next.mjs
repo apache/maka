@@ -94,7 +94,7 @@ export async function packageWindowsAutoupdateNext({
     directory: outputDirectory,
     metadataName: 'latest.yml',
     version: nextVersion,
-    artifactName: exeName,
+    artifactNames: [exeName],
   });
 
   return { version: nextVersion, exePath, latestYmlPath, blockmapPath, directory: outputDirectory };

@@ -77,7 +77,7 @@ export async function packageMacosAutoupdateNext({
     directory: outputDirectory,
     metadataName: 'latest-mac.yml',
     version: nextVersion,
-    artifactName: zipName,
+    artifactNames: [zipName],
   });
   await rm(join(outputDirectory, 'mac-arm64'), { recursive: true, force: true });
   return {

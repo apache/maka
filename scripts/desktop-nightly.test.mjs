@@ -25,7 +25,7 @@ import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
-import { packageMacosArm64 } from './package-macos-arm64.mjs';
+import { packageMacos } from './package-macos.mjs';
 import { packageWindowsX64 } from './package-windows-x64.mjs';
 import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
@@ -55,7 +55,8 @@ test('a nightly package embeds only the Apache GitHub dev update authority', () 
 
 test('the macOS Nightly wrapper accepts dev update metadata', async () => {
   const version = '0.2.0-dev.42.20260829';
-  await packageMacosArm64({
+  await packageMacos({
+    targetArch: 'arm64',
     platform: 'darwin',
     arch: 'arm64',
     env: {
@@ -68,6 +69,12 @@ test('the macOS Nightly wrapper accepts dev update metadata', async () => {
     },
     run: async () => {},
     remove: async () => {},
+    move: async (source, destination) => {
+      // The feed leaves packaging under its architecture so the two macOS
+      // uploads cannot overwrite each other.
+      assert.equal(basename(source), 'dev-mac.yml');
+      assert.equal(basename(destination), 'dev-mac-arm64.yml');
+    },
     assertFile: async (path) => {
       if (path.endsWith('.yml')) assert.equal(basename(path), 'dev-mac.yml');
     },

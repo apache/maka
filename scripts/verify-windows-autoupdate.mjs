@@ -146,7 +146,7 @@ export async function verifyWindowsAutoupdate(
     directory: nextDirectory,
     metadataName: 'latest.yml',
     version: nextVersion,
-    artifactName: nextInstallerName,
+    artifactNames: [nextInstallerName],
   });
 
   const temporaryDirectory = await makeTemporaryDirectory();

@@ -92,19 +92,25 @@ test('one root version defines every product artifact from one source commit', (
     'https://nodejs.org/download/release/v24.18.1/node-v24.18.1-darwin-arm64.tar.xz',
   );
   assert.equal(identity.npmVersion, '11.19.0');
-  assert.equal(identity.dmg, 'Maka-1.2.3-mac-arm64.dmg');
   assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(Object.hasOwn(identity, 'sourceArchive'), false);
   assert.deepEqual(identity.artifacts, {
-    'desktop-macos': [
+    'desktop-macos-arm64': [
       'Maka-1.2.3-mac-arm64.dmg',
       'Maka-1.2.3-mac-arm64.dmg.sha256',
       'Maka-1.2.3-mac-arm64.zip',
       'Maka-1.2.3-mac-arm64.zip.blockmap',
-      'latest-mac.yml',
+      'latest-mac-arm64.yml',
     ],
-    'desktop-windows': [
+    'desktop-macos-x64': [
+      'Maka-1.2.3-mac-x64.dmg',
+      'Maka-1.2.3-mac-x64.dmg.sha256',
+      'Maka-1.2.3-mac-x64.zip',
+      'Maka-1.2.3-mac-x64.zip.blockmap',
+      'latest-mac-x64.yml',
+    ],
+    'desktop-windows-x64': [
       'Maka-1.2.3-win-x64.exe',
       'Maka-1.2.3-win-x64.exe.blockmap',
       'Maka-1.2.3-win-x64.exe.sha256',
@@ -112,8 +118,29 @@ test('one root version defines every product artifact from one source commit', (
       'Maka-1.2.3-win-x64.zip.sha256',
       'latest.yml',
     ],
+    'desktop-linux-x64': [
+      'Maka-1.2.3-linux-x64.AppImage',
+      'Maka-1.2.3-linux-x64.AppImage.blockmap',
+      'Maka-1.2.3-linux-x64.AppImage.sha256',
+      'Maka-1.2.3-linux-x64.deb',
+      'Maka-1.2.3-linux-x64.deb.sha256',
+      'latest-linux.yml',
+    ],
+    'desktop-linux-arm64': [
+      'Maka-1.2.3-linux-arm64.AppImage',
+      'Maka-1.2.3-linux-arm64.AppImage.blockmap',
+      'Maka-1.2.3-linux-arm64.AppImage.sha256',
+      'Maka-1.2.3-linux-arm64.deb',
+      'Maka-1.2.3-linux-arm64.deb.sha256',
+      'latest-linux-arm64.yml',
+    ],
     'cli-macos-arm64': ['Maka-1.2.3-cli-mac-arm64.zip', 'Maka-1.2.3-cli-mac-arm64.zip.sha256'],
   });
+  // The two macOS runners upload per-architecture feeds; the release carries
+  // the one merged feed clients read.
+  assert.ok(identity.releaseAssets.includes('latest-mac.yml'));
+  assert.ok(!identity.releaseAssets.includes('latest-mac-arm64.yml'));
+  assert.ok(!identity.releaseAssets.includes('latest-mac-x64.yml'));
 });
 
 test('the standalone launcher identifies its installed Eval bundle root', async (t) => {
@@ -292,10 +319,7 @@ test('platform package verifiers keep Git checks out of every artifact', async (
     /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}/u,
   );
 
-  const macosSource = await readFile(
-    join(repoRoot, 'scripts', 'verify-macos-arm64-dmg.mjs'),
-    'utf8',
-  );
+  const macosSource = await readFile(join(repoRoot, 'scripts', 'verify-macos-dmg.mjs'), 'utf8');
   assert.doesNotMatch(macosSource, /requirePath\(join\(resources, ['"]git['"]/u);
 });
 
@@ -722,13 +746,14 @@ test('one product workflow gates one draft release on every required artifact', 
   for (const verifier of [
     'Verify the final DMG',
     'Verify the Windows release',
+    'Verify the Linux release',
     'Prove deterministic mid-install failure rollback',
   ]) {
     const verifierIndex = desktopStepNames.indexOf(verifier);
     assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
   }
   for (const [jobName, group] of [
-    ['desktop', 'desktop-${{ matrix.platform }}'],
+    ['desktop', 'desktop-${{ matrix.target }}'],
     ['cli-macos-arm64', 'cli-macos-arm64'],
   ]) {
     const stage = jobs[jobName].steps.find(
