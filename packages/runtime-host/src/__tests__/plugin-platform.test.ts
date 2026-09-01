@@ -22,6 +22,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 import { MakaCompositionLoader } from '@maka/runtime/plugin-composition-loader';
 import {
   decodePluginCompositionApplyInput,
@@ -565,6 +566,97 @@ test('package replacement recovery follows the durable Composition generation', 
       );
       await recovered.close();
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('package replacement fences and preserves recovery evidence when candidate publication fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-package-publication-'));
+  try {
+    const control = join(root, 'control');
+    const packages = new FailingCandidatePublishPackageStore(control);
+    const platform = createPlatform(control, { packages });
+    await platform.recover();
+    await platform.installPackage(await writeFixturePackage(root, 'publication-package', 'stable'));
+    packages.failNextCandidatePublication = true;
+
+    await assert.rejects(
+      async () =>
+        platform.installPackage(
+          await writeFixturePackage(root, 'publication-package', 'replacement', {
+            directorySuffix: 'replacement',
+          }),
+        ),
+      /publication outcome is unknown/u,
+    );
+    assert.equal((await platform.status()).phase, 'fenced');
+    assert.equal(
+      (await readdir(packages.root)).some((entry) => entry.startsWith('.install-')),
+      true,
+      'the install journal must survive for generation-based recovery',
+    );
+    await platform.close();
+
+    const recovered = createPlatform(control);
+    await recovered.recover();
+    assert.equal((await recovered.status()).phase, 'ready');
+    assert.equal(
+      internals(recovered).composition.package('publication-package').contributions?.[0]?.id,
+      'stable',
+    );
+    assert.equal(
+      (await readdir(internals(recovered).packages.root)).some((entry) =>
+        entry.startsWith('.install-'),
+      ),
+      false,
+    );
+    await recovered.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('automatic reconciliation retries after a transient exceptional failure', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-reconcile-retry-'));
+  try {
+    const control = join(root, 'control');
+    const packages = new TransientRecoveryPackageStore(control);
+    const source = await writeFixturePackage(root, 'reconcile-package', 'loaded');
+    const prepared = await packages.prepareInstall(source);
+    await prepared.publish(0, 1);
+    await prepared.commit();
+    const packageLoader = new FailOncePackageLoader(control, packages);
+    const platform = createPlatform(control, { packages, packageLoader });
+
+    await platform.recover();
+    assert.equal((await platform.status()).phase, 'degraded');
+    await waitFor(async () => (await platform.status()).phase === 'ready', {
+      timeoutMs: 3_000,
+      pollMs: 20,
+      message: 'automatic Plugin reconciliation did not retry after an exception',
+    });
+    assert.equal(packages.recoverCalls >= 3, true);
+    assert.equal(packageLoader.loadCalls >= 2, true);
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform recovery removes orphaned bundle import roots', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-bundle-import-recovery-'));
+  try {
+    const control = join(root, 'control');
+    const imports = join(control, 'bundle-imports-v1');
+    const orphan = join(imports, 'owner-died');
+    await mkdir(orphan, { recursive: true });
+    await writeFile(join(orphan, 'partial-package'), 'orphan');
+
+    const platform = createPlatform(control);
+    await platform.recover();
+    await assert.rejects(() => readdir(imports), isEnoent);
+    await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1433,6 +1525,38 @@ class FailingUninstallPackageStore extends PluginPackageStore {
   override async uninstall(extensionId: string): Promise<void> {
     if (this.failUninstall) throw new Error('injected package uninstall failure');
     await super.uninstall(extensionId);
+  }
+}
+
+class FailingCandidatePublishPackageStore extends PluginPackageStore {
+  failNextCandidatePublication = false;
+
+  protected override async publishCandidate(staging: string, target: string): Promise<void> {
+    if (this.failNextCandidatePublication) {
+      this.failNextCandidatePublication = false;
+      throw new Error('injected candidate publication failure');
+    }
+    await super.publishCandidate(staging, target);
+  }
+}
+
+class TransientRecoveryPackageStore extends PluginPackageStore {
+  recoverCalls = 0;
+
+  override async recover(authorityGeneration = 0): Promise<void> {
+    this.recoverCalls += 1;
+    if (this.recoverCalls === 2) throw new Error('injected transient recovery failure');
+    await super.recover(authorityGeneration);
+  }
+}
+
+class FailOncePackageLoader extends TrustedPluginPackageLoader {
+  loadCalls = 0;
+
+  override async load(extensionId: string) {
+    this.loadCalls += 1;
+    if (this.loadCalls === 1) throw new Error('injected initial package load failure');
+    return await super.load(extensionId);
   }
 }
 

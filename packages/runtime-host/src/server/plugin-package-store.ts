@@ -91,6 +91,10 @@ export class PluginPackageStore {
     this.root = join(controlDirectory, STORE_DIRECTORY);
   }
 
+  protected async publishCandidate(staging: string, target: string): Promise<void> {
+    await rename(staging, target);
+  }
+
   /** Repairs or removes package-store transaction remnants after owner death. */
   async recover(authorityGeneration = 0): Promise<void> {
     let entries: Dirent[];
@@ -203,7 +207,7 @@ export class PluginPackageStore {
                 .catch((error: NodeJS.ErrnoException) => {
                   if (error.code !== 'ENOENT') throw error;
                 });
-              await rename(staging, target);
+              await this.publishCandidate(staging, target);
               published = true;
               await syncDirectory(this.root);
             } catch (error) {

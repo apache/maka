@@ -25,6 +25,7 @@ import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
 const MAX_FILES = 256;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_BUNDLE_BYTES = 16 * 1024 * 1024;
+const BUNDLE_IMPORTS_DIRECTORY = 'bundle-imports-v1';
 
 interface BundleFile {
   readonly path: string;
@@ -106,7 +107,7 @@ export async function materializeExtensionPackage(
   } finally {
     await handle.close();
   }
-  const imports = join(controlDirectory, 'bundle-imports-v1');
+  const imports = join(controlDirectory, BUNDLE_IMPORTS_DIRECTORY);
   const root = join(imports, randomUUID());
   await mkdir(root, { recursive: true, mode: 0o700 });
   try {
@@ -124,6 +125,18 @@ export async function materializeExtensionPackage(
   } catch (error) {
     await rm(root, { recursive: true, force: true }).catch(() => undefined);
     throw invalid('Unable to materialize Extension bundle', error);
+  }
+}
+
+/** Removes bundle materializations left behind when the previous owner died. */
+export async function recoverExtensionBundleImports(controlDirectory: string): Promise<void> {
+  try {
+    await rm(join(controlDirectory, BUNDLE_IMPORTS_DIRECTORY), {
+      recursive: true,
+      force: true,
+    });
+  } catch (error) {
+    throw invalid('Unable to recover Extension bundle imports', error);
   }
 }
 

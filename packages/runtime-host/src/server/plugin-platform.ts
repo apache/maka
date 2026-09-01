@@ -34,6 +34,7 @@ import {
 } from '@maka/runtime/plugin-runtime';
 import type { ExtensionPackageManifest } from './extension-package-manifest.js';
 import { validateExtensionConfiguration } from './extension-package-manifest.js';
+import { recoverExtensionBundleImports } from './extension-bundle.js';
 import { loadPluginCompositionPatch } from './plugin-composition-patch.js';
 import {
   HostPluginCompositionStore,
@@ -149,6 +150,7 @@ export class HostPluginPlatform {
     await this.#serialize(async () => {
       try {
         const storedAuthority = (await this.#store.read()) ?? emptyCompositionAuthority();
+        await recoverExtensionBundleImports(this.controlDirectory);
         await this.#packages.recover(storedAuthority.generation);
         await this.#packageLoader.collectGarbage();
         const packageFailures: HostPluginPlatformFailure[] = [];
@@ -260,6 +262,10 @@ export class HostPluginPlatform {
             extensionId: prepared.installed.extensionId,
             ...this.#receipt(packageCommitted ? 'complete' : 'pending'),
           });
+        }
+        if (error instanceof PluginPackageStoreError && error.code === 'commit_outcome_unknown') {
+          if (loaded) await this.#packageLoader.release(loaded).catch(() => undefined);
+          throw this.#fenceUnknownPackageOutcome(error, 'publication');
         }
         if (error instanceof HostPluginPlatformError && error.code === 'commit_outcome_unknown') {
           if (loaded) await this.#packageLoader.release(loaded).catch(() => undefined);
@@ -1224,6 +1230,7 @@ export class HostPluginPlatform {
         await this.#reconcileNow();
       }).catch((error) => {
         this.#composition.root.logger.warn('Unable to reconcile Plugin Platform', error);
+        this.#scheduleReconcile();
       });
     }, delay);
     this.#reconcileTimer.unref?.();
