@@ -40,6 +40,7 @@ import { AgentRun } from '../agent-run.js';
 import {
   BackendRegistry,
   SessionManager,
+  workHubDirectStopAbortSource,
   type BackendFactoryContext,
   type SessionStore,
 } from '../session-manager.js';
@@ -280,6 +281,41 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(terminalEvents.length, 1);
     assert.strictEqual(terminalEvents[0]?.status, 'aborted');
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.abortSource, 'renderer.stop_button');
+  });
+
+  test('stopSession persists a WorkHub action-bound abort source', async () => {
+    const store = new TinySessionStore();
+    const runStore = new TinyAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(20_500),
+    });
+    const session = await manager.createSession(makeInput());
+    const iterator = manager
+      .sendMessage(session.id, { turnId: 'turn-workhub-stop', text: 'hello' })
+      [Symbol.asyncIterator]();
+    assert.strictEqual((await iterator.next()).value?.type, 'text_delta');
+
+    await manager.stopSession(session.id, {
+      source: 'workhub_direct_stop',
+      workHubActionId: 'workhub-stop-action',
+    });
+
+    const expected = workHubDirectStopAbortSource('workhub-stop-action');
+    const [run] = await runStore.listSessionRuns(session.id);
+    if (!run) throw new Error('run was not recorded');
+    assert.strictEqual(run.status, 'cancelled');
+    assert.strictEqual(run.abortSource, expected);
+    const [terminal] = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
+      isTerminalRuntimeEvent,
+    );
+    assert.strictEqual(terminal?.actions?.stateDelta?.abortSource, expected);
   });
 
   test('stopSession commits a terminal fact when the backend stream never ends', async () => {

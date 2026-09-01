@@ -106,6 +106,7 @@ import {
   normalizeProvenSteeringMessageHandoff,
   samePendingMessageAdmission,
   type MarkMessagesHandedOffInput,
+  type MessageAdmissionCancellationClaimOutcome,
   type PendingMessageAdmission,
   type ProvenRootMessageHandoff,
   type ProvenSteeringMessageHandoff,
@@ -1819,6 +1820,23 @@ export class SqliteSessionMetadataStore {
           .update(assignment.replacesDelegationId)
           .digest('hex')
           .slice(0, 48);
+        const stopRequest = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whq_${abortSuffix}`,
+        );
+        if (stopRequest) {
+          const stopResolution = this.readMessageByIdSync(
+            WORKHUB_COORDINATION_SESSION_ID,
+            `whz_${abortSuffix}`,
+          );
+          if (
+            stopResolution?.type !== 'workhub_coordination' ||
+            stopResolution.kind !== 'delegation_stop_resolved' ||
+            stopResolution.outcome !== 'not_owned'
+          ) {
+            throw new SessionMetadataConflictError('WorkHub delegation already has a stop claim');
+          }
+        }
         const existingAbort = this.readMessageByIdSync(
           WORKHUB_COORDINATION_SESSION_ID,
           `whb_${abortSuffix}`,
@@ -1952,6 +1970,68 @@ export class SqliteSessionMetadataStore {
         )
         .get(sessionId, messageId);
       return row !== undefined;
+    });
+  }
+
+  async claimMessageAdmissionCancellation(
+    sessionId: string,
+    messageId: string,
+    claimId: string,
+  ): Promise<MessageAdmissionCancellationClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(sessionId);
+    assertSafeSessionId(messageId);
+    assertSafeSessionId(claimId);
+    return this.transaction(() => {
+      const cancelled = this.db
+        .prepare(
+          'SELECT cancellation_claim_id FROM cancelled_message_admissions WHERE session_id = ? AND message_id = ?',
+        )
+        .get(sessionId, messageId) as { cancellation_claim_id?: unknown } | undefined;
+      if (cancelled) {
+        return cancelled.cancellation_claim_id === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      const admission = this.db
+        .prepare(
+          `
+          SELECT submitted_content_digest, submitted_placement
+          FROM message_admissions
+          WHERE session_id = ? AND message_id = ?
+        `,
+        )
+        .get(sessionId, messageId) as
+        | { submitted_content_digest?: unknown; submitted_placement?: unknown }
+        | undefined;
+      if (
+        typeof admission?.submitted_content_digest !== 'string' ||
+        (admission.submitted_placement !== 'current_turn' &&
+          admission.submitted_placement !== 'next_turn')
+      ) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO cancelled_message_admissions(
+            session_id, message_id, submitted_content_digest, submitted_placement,
+            cancellation_claim_id
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          sessionId,
+          messageId,
+          admission.submitted_content_digest,
+          admission.submitted_placement,
+          claimId,
+        );
+      const deleted = this.db
+        .prepare('DELETE FROM message_admissions WHERE session_id = ? AND message_id = ?')
+        .run(sessionId, messageId);
+      if (deleted.changes !== 1) {
+        throw new SessionMetadataConflictError('Message admission cancellation identity conflict');
+      }
+      return 'cancelled_by_claim';
     });
   }
 

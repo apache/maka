@@ -20,5 +20,6 @@
 export {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
+  workHubStopTargetsSession,
 } from '@maka/core/workhub-creation-intent';
 export type { WorkHubRequestIntent } from '@maka/core/workhub-creation-intent';

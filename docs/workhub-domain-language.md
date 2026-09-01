@@ -69,7 +69,7 @@ Coordination Session without guessing or creating.
 
 **delegation**: A bounded reference from a Coordination Turn to one target ordinary
 Session and Turn, including only its identity, disposition, and coordination-owned
-link status (`active`, `superseded`, or `aborted`). A link is `aborted` only when a
+link status (`active`, `superseded`, `aborted`, or `stopped`). A link is `aborted` only when a
 correction retired its source but the replacement target became unavailable or
 started waiting before admission; it is not the target Turn's execution status.
 Delegation links the separately authoritative transcripts; it does not copy the
@@ -104,6 +104,32 @@ cannot be admitted after source retirement,
 the Coordination transcript records an auditable replacement-aborted terminal
 fact and removes the retired source from active linkage.
 Correction never replaces either Session's transcript authority.
+
+**Direct stop**: A user's explicit, named imperative to retire one active durable
+delegation, such as `Stop Payments` or `停止支付任务`. Pronouns, pause/wait language,
+questions, advice, negation, malformed literals, and model-supplied Session, Turn,
+Run, or Message identities grant no Stop authority. WorkHub first records
+`delegation_stop_requested`, resolves the named source action to its durable
+delegation, and lets the target Session's Message authority observe one of four
+outcomes: `cancelled_pending`, `stop_delivered`, `already_terminal`, or `not_owned`.
+It then records the neutral `delegation_stop_resolved` fact. `stop_delivered` means
+the exact owning root accepted the Stop operation; the UI says that WorkHub asked
+it to stop rather than inventing an execution result. `not_owned` means the
+Message was consumed by a shared or user-owned Turn; WorkHub does not stop that
+Turn, preserves the active link, and navigates the user to the owning Session.
+An unresolved direct-stop claim and a replacement claim are mutually exclusive;
+the first durable destructive claim wins. A `not_owned` resolution releases that
+exclusion so a later explicit route correction can proceed.
+The pending-Message cancellation tombstone binds the durable stop action that
+created it, so a crash after cancellation but before resolution still replays
+`cancelled_pending` rather than degrading to `already_terminal`. Owning-root Stop
+likewise writes the direct-stop action identity into the exact root Turn's
+durable abort source. A retry recognizes only that matching proof; an earlier or
+concurrent manual Stop remains `already_terminal`. Stop admission holds the
+Coordination Session and every currently active target Session lane
+while it rechecks current names and active links; a concurrent rename or new
+delegation therefore cannot invalidate the named-one-target proof before the
+request record commits.
 
 **R2.4**: The deterministic context-continuity routing baseline. It remains useful
 as an experiment baseline or target resolver behind WorkHub's coordination layer;

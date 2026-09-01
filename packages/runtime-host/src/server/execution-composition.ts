@@ -37,6 +37,7 @@ import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-s
 import {
   BackendRegistry,
   SessionManager,
+  workHubDirectStopAbortSource,
   type BackendFactory,
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
@@ -1364,33 +1365,37 @@ export async function createExecutionRuntimeHostComposition(
             ? 'not_retired'
             : 'retired';
         },
-        retireDelegation: async (assignment) => {
+        retireDelegation: async (assignment, cancellationClaimId) => {
           const disposition = await messages.cancelMessageIfPending(
             assignment.targetSessionId,
             assignment.targetMessageId,
+            cancellationClaimId,
           );
           if (disposition.kind === 'recovering') {
-            throw new WorkHubActionEffectFailure(
-              'operation_unavailable',
-              'WorkHub is still resolving the delegated Message owner',
+            return { outcome: 'recovering' as const };
+          }
+          if (disposition.kind === 'cancelled') {
+            return { outcome: 'already_terminal' as const };
+          }
+          if (disposition.kind === 'cancelled_pending') {
+            return { outcome: 'cancelled_pending' as const };
+          }
+          if (disposition.kind === 'shared_turn') {
+            return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
+          }
+          if (disposition.kind === 'owned_root') {
+            return stopOwnedWorkHubRoot(
+              coordinator,
+              {
+                sessionId: assignment.targetSessionId,
+                turnId: disposition.turnId,
+                runId: disposition.runId,
+              },
+              cancellationClaimId,
             );
           }
-          if (disposition.kind === 'shared_turn') return;
-          if (disposition.kind === 'owned_root') {
-            const rootState = coordinator.readRootState(assignment.targetSessionId);
-            if (
-              rootState.kind !== 'active' ||
-              rootState.turnId !== disposition.turnId ||
-              rootState.runId !== disposition.runId
-            ) {
-              return;
-            }
-            await coordinator.stopRoot({
-              sessionId: assignment.targetSessionId,
-              turnId: disposition.turnId,
-              runId: disposition.runId,
-            });
-          }
+          disposition satisfies never;
+          throw new Error('Unhandled WorkHub Message retirement disposition');
         },
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
@@ -1989,6 +1994,32 @@ export async function createExecutionRuntimeHostComposition(
     if (errors.length === 1) throw error;
     throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
+}
+
+export async function stopOwnedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+  actionId: string,
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly targetTurnId: string;
+}> {
+  const rootState = coordinator.readRootState(identity.sessionId);
+  if (
+    rootState.kind === 'active' &&
+    rootState.turnId === identity.turnId &&
+    rootState.runId === identity.runId
+  ) {
+    await coordinator.stopRoot(identity, {
+      source: 'workhub_direct_stop',
+      workHubActionId: actionId,
+    });
+  }
+  const terminal = await coordinator.read(identity);
+  return terminal.status === 'cancelled' &&
+    terminal.abortSource === workHubDirectStopAbortSource(actionId)
+    ? { outcome: 'stop_delivered', targetTurnId: identity.turnId }
+    : { outcome: 'already_terminal', targetTurnId: identity.turnId };
 }
 
 function sessionExecutionConnectionRef(

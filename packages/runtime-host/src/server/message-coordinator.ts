@@ -178,14 +178,18 @@ export interface HostMessageStopFence {
   deliverStop(): Promise<void>;
 }
 
-export type HostMessageCancellationDisposition =
+type HostMessageResolvedDisposition =
   | { readonly kind: 'cancelled' }
   | { readonly kind: 'owned_root'; readonly turnId: string; readonly runId: string }
   | { readonly kind: 'shared_turn'; readonly turnId: string; readonly runId: string }
   | { readonly kind: 'recovering' };
 
+export type HostMessageCancellationDisposition =
+  | HostMessageResolvedDisposition
+  | { readonly kind: 'cancelled_pending' };
+
 export type HostMessageExecutionDisposition =
-  | HostMessageCancellationDisposition
+  | HostMessageResolvedDisposition
   | { readonly kind: 'pending' };
 
 /** Root execution operations that must share the message coordinator's Session gate. */
@@ -493,9 +497,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
   cancelMessageIfPending(
     sessionId: string,
     messageId: string,
+    cancellationClaimId?: string,
   ): Promise<HostMessageCancellationDisposition> {
     return this.#sessionAdmission.run(sessionId, async () => {
       const disposition = await this.#resolveMessageExecution(sessionId, messageId);
+      if (disposition.kind === 'cancelled' && cancellationClaimId) {
+        const outcome = await this.#admissions.claimMessageAdmissionCancellation(
+          sessionId,
+          messageId,
+          cancellationClaimId,
+        );
+        return outcome === 'same_claim'
+          ? { kind: 'cancelled_pending' as const }
+          : { kind: 'cancelled' as const };
+      }
       if (disposition.kind !== 'pending') return disposition;
 
       const state = this.#sessions.get(sessionId);
@@ -513,7 +528,16 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         return { kind: 'recovering' };
       }
 
-      await this.#admissions.cancelMessageAdmissions(sessionId, [messageId]);
+      const claimOutcome = cancellationClaimId
+        ? await this.#admissions.claimMessageAdmissionCancellation(
+            sessionId,
+            messageId,
+            cancellationClaimId,
+          )
+        : undefined;
+      if (!cancellationClaimId) {
+        await this.#admissions.cancelMessageAdmissions(sessionId, [messageId]);
+      }
       if (state && steeringIndex >= 0) {
         const [entry] = state.steering.splice(steeringIndex, 1);
         if (entry) this.#releaseEntry(entry);
@@ -527,7 +551,9 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
       } else {
         this.#onProjectionChanged(sessionId);
       }
-      return { kind: 'cancelled' };
+      return claimOutcome === 'already_cancelled'
+        ? { kind: 'cancelled' }
+        : { kind: 'cancelled_pending' };
     });
   }
 

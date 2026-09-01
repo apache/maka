@@ -86,6 +86,8 @@ import {
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationReplacementAbortedMessage,
   type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubDelegationStopRequestedMessage,
+  type WorkHubDelegationStopResolvedMessage,
   type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
@@ -430,6 +432,12 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubSupersession(
     delegationId: string,
   ): Promise<WorkHubDelegationSupersededMessage | undefined>;
+  readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -713,6 +721,28 @@ class SqliteSessionStore implements SessionAuthorityStore {
       `whx_${workHubIdentitySuffix(delegationId)}`,
     );
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopRequest(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whq_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whz_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
       ? message
       : undefined;
   }
@@ -1057,6 +1087,11 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean> {
     await this.ensureReady();
     return this.metadata.hasCancelledMessageAdmission(sessionId, messageId);
+  }
+
+  async claimMessageAdmissionCancellation(sessionId: string, messageId: string, claimId: string) {
+    await this.ensureReady();
+    return this.metadata.claimMessageAdmissionCancellation(sessionId, messageId, claimId);
   }
 
   async listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]> {

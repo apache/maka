@@ -184,6 +184,17 @@ waiting after the destructive retirement boundary, Coordination appends a
 retired source from active linkage and makes later retries return the same terminal
 outcome instead of displaying a stopped, unsuperseded link.
 
+Direct stop persists a distinct `delegation_stop_requested` claim before
+retirement and a `delegation_stop_resolved` observation afterward. The pending
+cancellation tombstone retains the destructive action identity, preserving
+`cancelled_pending` across a crash between those two Coordination records. Its
+owning-root Stop uses an action-derived abort source on the exact target Turn,
+so recovery cannot mistake a normal Session stop for WorkHub delivery. Its
+admission holds the Coordination Session together with every active target
+Session lane while re-reading the active links and current display names. A
+concurrent assignment or rename must therefore settle before the uniqueness
+proof, wait until after the stop claim, or cause admission to fail closed.
+
 ## Consequences, costs, and reevaluation
 
 - WorkHub gains persistent conversational continuity without adding another
@@ -206,7 +217,10 @@ outcome instead of displaying a stopped, unsuperseded link.
   that transcript; target lifecycle projection and the hybrid first-response
   contract are implemented as rebuildable reads. Linked correction, exact
   target-owned pending cancellation/Turn Stop, atomic supersession, and retry-based
-  replacement recovery are implemented. Broader stop/resume controls remain later
+  replacement recovery and explicit named direct-stop are implemented. Direct
+  stop uses durable `delegation_stop_requested` / `delegation_stop_resolved`
+  facts, exact Message ownership, and first-claim-wins arbitration with
+  replacement. Pause, resume, and pronoun-based stop controls remain later
   work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub

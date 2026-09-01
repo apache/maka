@@ -100,7 +100,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 103 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 104 as const;
+// 104: WorkHub Coordination actions add closed direct-stop proposals,
+// confirmations, expected-state preconditions, and outcomes. Older peers
+// reject these strict shapes.
 // 103: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`, the Host answers the
 // closed `oauth.enrollment.query`, and `connection.onboarding.save` admits
 // canonical OAuth material with an empty enable-all-discovered selection.

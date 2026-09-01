@@ -490,7 +490,7 @@ test('exact pending cancellation removes only the linked Message', async () => {
 
   assert.deepEqual(
     await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
-    { kind: 'cancelled' },
+    { kind: 'cancelled_pending' },
   );
   assert.deepEqual(
     fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
@@ -498,6 +498,37 @@ test('exact pending cancellation removes only the linked Message', async () => {
   );
   assert.deepEqual(
     await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    { kind: 'cancelled' },
+  );
+});
+
+test('a durable cancellation claim preserves cancelled_pending across restart-style replay', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'linked-message', 'wrong delegation', 'next_turn');
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
+    { kind: 'cancelled_pending' },
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
+    { kind: 'cancelled_pending' },
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'different-claim',
+    ),
     { kind: 'cancelled' },
   );
 });
@@ -3804,6 +3835,7 @@ function memoryMessageAdmissionStore(
   >,
   onMessagesHandedOff?: (input: MarkMessagesHandedOffInput) => void,
 ): MessageAdmissionStore {
+  const cancellationClaims = new Map<string, string>();
   return {
     commitMessageAdmission: async (admission) => {
       const existing = admissions.get(admission.messageId);
@@ -3814,6 +3846,16 @@ function memoryMessageAdmissionStore(
     readMessageAdmission: async (_sessionId, messageId) => admissions.get(messageId)?.admission,
     hasCancelledMessageAdmission: async (_sessionId, messageId) =>
       admissions.get(messageId)?.state === 'cancelled',
+    claimMessageAdmissionCancellation: async (_sessionId, messageId, claimId) => {
+      const existing = admissions.get(messageId);
+      if (existing?.state === 'cancelled') {
+        return cancellationClaims.get(messageId) === claimId ? 'same_claim' : 'already_cancelled';
+      }
+      if (!existing) throw new Error(`Missing admission ${messageId}`);
+      existing.state = 'cancelled';
+      cancellationClaims.set(messageId, claimId);
+      return 'cancelled_by_claim';
+    },
     listMessageAdmissions: async (sessionId) =>
       [...admissions.values()]
         .filter(({ admission, state }) => admission.sessionId === sessionId && state === 'accepted')

@@ -26,6 +26,9 @@ import type {
   WorkHubDelegationDisposition,
   WorkHubDelegationReplacementAbortedMessage,
   WorkHubDelegationReplacementRequestedMessage,
+  WorkHubDelegationStopRequestedMessage,
+  WorkHubDelegationStopResolvedMessage,
+  WorkHubDelegationStopOutcome,
   WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import {
@@ -36,6 +39,7 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
+  workHubStopTargetsSession,
 } from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
@@ -70,6 +74,7 @@ export type WorkHubActionGateSession = Pick<
 export interface WorkHubActionGateEffects {
   listSessions(): Promise<readonly WorkHubActionGateSession[]>;
   readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  listActiveAssignments(): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readReplacement(
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
@@ -77,6 +82,10 @@ export interface WorkHubActionGateEffects {
     delegationId: string,
   ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
   readSupersession(delegationId: string): Promise<WorkHubDelegationSupersededMessage | undefined>;
+  readStopRequest(delegationId: string): Promise<WorkHubDelegationStopRequestedMessage | undefined>;
+  readStopResolution(
+    delegationId: string,
+  ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
   answer(
     input: { readonly turnId: string; readonly text: string },
     context: ConnectionContext,
@@ -96,10 +105,22 @@ export interface WorkHubActionGateEffects {
   abortReplacement(
     input: WorkHubDelegationReplacementAbortInput,
   ): Promise<WorkHubDelegationReplacementAbortedMessage>;
+  prepareStop(input: WorkHubDelegationStopInput): Promise<WorkHubDelegationStopRequestedMessage>;
+  resolveStop(
+    input: WorkHubDelegationStopResolutionInput,
+  ): Promise<WorkHubDelegationStopResolvedMessage>;
   readDelegationRetirement(
     assignment: WorkHubDelegationAssignedMessage,
   ): Promise<'not_retired' | 'retired' | 'recovering'>;
-  retireDelegation(assignment: WorkHubDelegationAssignedMessage): Promise<void>;
+  retireDelegation(
+    assignment: WorkHubDelegationAssignedMessage,
+    cancellationClaimId: string,
+  ): Promise<WorkHubRetirementResult>;
+}
+
+export interface WorkHubRetirementResult {
+  readonly outcome: WorkHubDelegationStopOutcome | 'recovering';
+  readonly targetTurnId?: string;
 }
 
 export interface WorkHubDelegationAssignmentInput {
@@ -124,6 +145,23 @@ export interface WorkHubDelegationReplacementInput extends WorkHubDelegationAssi
 export interface WorkHubDelegationReplacementAbortInput {
   readonly replacement: WorkHubDelegationReplacementRequestedMessage;
   readonly reason: WorkHubDelegationReplacementAbortedMessage['reason'];
+}
+
+export interface WorkHubDelegationStopInput {
+  readonly actionId: string;
+  readonly actionFingerprint: `sha256:${string}`;
+  readonly stopsActionId: string;
+  readonly stopsDelegationId: string;
+  readonly targetSessionId: string;
+  readonly targetMessageId: string;
+  readonly targetSessionName: string;
+  readonly userText: string;
+}
+
+export interface WorkHubDelegationStopResolutionInput {
+  readonly request: WorkHubDelegationStopRequestedMessage;
+  readonly outcome: WorkHubDelegationStopOutcome;
+  readonly targetTurnId?: string;
 }
 
 export type WorkHubActionEffectFailureCode =
@@ -281,6 +319,93 @@ export class WorkHubCoordinationActionGate {
       });
       return { disposition: 'clarify', coordinationTurnId: turnId };
     }
+    if (proposal.disposition === 'stop_work') {
+      if (input.confirmation?.kind !== 'user_stop' || !requestIntent.stop.imperative) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub stop requires an explicit named command in trusted user text',
+        );
+      }
+      const source = await this.#effects.readAssignment(proposal.stopsActionId);
+      if (!source) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub can stop only the named durable delegation it owns',
+        );
+      }
+      const existing = await this.#effects.readStopRequest(source.delegationId);
+      if (existing) {
+        if (!workHubStopTargetsSession(requestIntent, existing.targetSessionName)) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub can stop only the named durable delegation it owns',
+          );
+        }
+        const fingerprint = stopActionFingerprint(input, source);
+        assertStopReplay(existing, input, source, fingerprint);
+        return this.#stop(existing, source);
+      }
+      const [sessions, activeAssignments] = await Promise.all([
+        this.#effects.listSessions(),
+        this.#effects.listActiveAssignments(),
+      ]);
+      const sessionNameById = new Map(sessions.map((session) => [session.id, session.name]));
+      if (
+        activeAssignments.some((assignment) => !sessionNameById.has(assignment.targetSessionId))
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub active delegation target is unavailable',
+        );
+      }
+      const matchingAssignments = activeAssignments.filter((assignment) =>
+        workHubStopTargetsSession(requestIntent, sessionNameById.get(assignment.targetSessionId)!),
+      );
+      if (
+        matchingAssignments.length !== 1 ||
+        matchingAssignments[0]?.actionId !== source.actionId ||
+        matchingAssignments[0]?.delegationId !== source.delegationId
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub stop target does not identify one active durable delegation',
+        );
+      }
+      const currentTargetName = sessionNameById.get(source.targetSessionId);
+      if (!currentTargetName) {
+        throw new WorkHubActionGateFailure('action_conflict', 'WorkHub stop target is unavailable');
+      }
+      if (!workHubStopTargetsSession(requestIntent, currentTargetName)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub can stop only the named durable delegation it owns',
+        );
+      }
+      const fingerprint = stopActionFingerprint(input, source);
+      if (await this.#effects.readSupersession(source.delegationId)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub delegation has already been superseded',
+        );
+      }
+      if (await this.#effects.readReplacement(source.delegationId)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub delegation already has a replacement claim',
+        );
+      }
+      const requested = await this.#effects.prepareStop({
+        actionId: input.actionId,
+        actionFingerprint: fingerprint,
+        stopsActionId: source.actionId,
+        stopsDelegationId: source.delegationId,
+        targetSessionId: source.targetSessionId,
+        targetMessageId: source.targetMessageId,
+        targetSessionName: currentTargetName,
+        userText: input.userText,
+      });
+      return this.#stop(requested, source);
+    }
     if (proposal.disposition === 'create_new') {
       if (!input.create || !workHubCreationAuthorizesTitle(requestIntent, proposal.title)) {
         throw new WorkHubActionGateFailure(
@@ -369,6 +494,27 @@ export class WorkHubCoordinationActionGate {
       delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
+  }
+
+  async #stop(
+    request: WorkHubDelegationStopRequestedMessage,
+    source: WorkHubDelegationAssignedMessage,
+  ): Promise<WorkHubCoordinationActResult> {
+    const resolved = await this.#effects.readStopResolution(source.delegationId);
+    if (resolved) return stopResultFromRecord(resolved, request);
+    const retirement = await this.#effects.retireDelegation(source, request.actionId);
+    if (retirement.outcome === 'recovering') {
+      throw new WorkHubActionEffectFailure(
+        'operation_unavailable',
+        'WorkHub is still resolving the delegated Message owner',
+      );
+    }
+    const resolution = await this.#effects.resolveStop({
+      request,
+      outcome: retirement.outcome,
+      ...(retirement.targetTurnId ? { targetTurnId: retirement.targetTurnId } : {}),
+    });
+    return stopResultFromRecord(resolution, request);
   }
 
   async #replacementAssignment(
@@ -502,7 +648,15 @@ export class WorkHubCoordinationActionGate {
     if (retirement === 'not_retired' && replacement.disposition === 'delegate_existing') {
       await this.#replacementTarget(replacement);
     }
-    if (retirement === 'not_retired') await this.#effects.retireDelegation(source);
+    if (retirement === 'not_retired') {
+      const result = await this.#effects.retireDelegation(source, replacement.actionId);
+      if (result.outcome === 'recovering') {
+        throw new WorkHubActionEffectFailure(
+          'operation_unavailable',
+          'WorkHub is still resolving the delegated Message owner',
+        );
+      }
+    }
     try {
       if (replacement.disposition === 'delegate_existing') {
         // Retirement can await cancellation or Stop long enough for display
@@ -796,6 +950,68 @@ function replacementActionFingerprint(
         : {}),
     },
   });
+}
+
+function stopActionFingerprint(
+  input: WorkHubCoordinationActInput,
+  source: WorkHubDelegationAssignedMessage,
+): `sha256:${string}` {
+  if (input.proposal.disposition !== 'stop_work') {
+    throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub stop replay');
+  }
+  return digest({
+    userText: input.userText,
+    disposition: 'stop_work',
+    stopsActionId: source.actionId,
+    stopsDelegationId: source.delegationId,
+    targetSessionId: source.targetSessionId,
+    targetMessageId: source.targetMessageId,
+  });
+}
+
+function assertStopReplay(
+  request: WorkHubDelegationStopRequestedMessage,
+  input: WorkHubCoordinationActInput,
+  source: WorkHubDelegationAssignedMessage,
+  fingerprint: `sha256:${string}`,
+): void {
+  if (
+    request.actionId !== input.actionId ||
+    request.actionFingerprint !== fingerprint ||
+    request.stopsActionId !== source.actionId ||
+    request.stopsDelegationId !== source.delegationId ||
+    request.targetSessionId !== source.targetSessionId ||
+    request.targetMessageId !== source.targetMessageId
+  ) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub delegation already has a different stop claim',
+    );
+  }
+}
+
+function stopResultFromRecord(
+  resolution: WorkHubDelegationStopResolvedMessage,
+  request: WorkHubDelegationStopRequestedMessage,
+): WorkHubCoordinationActResult {
+  if (
+    resolution.actionId !== request.actionId ||
+    resolution.actionFingerprint !== request.actionFingerprint ||
+    resolution.stopsActionId !== request.stopsActionId ||
+    resolution.stopsDelegationId !== request.stopsDelegationId ||
+    resolution.targetSessionId !== request.targetSessionId
+  ) {
+    throw new WorkHubActionGateFailure(
+      'action_conflict',
+      'WorkHub stop has a different durable resolution',
+    );
+  }
+  return {
+    disposition: 'stop_work',
+    outcome: resolution.outcome,
+    targetSessionId: resolution.targetSessionId,
+    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
+  };
 }
 
 function assignmentInputFromRecord(

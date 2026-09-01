@@ -99,6 +99,12 @@ const CREATION_REQUEST_PREFIX =
 const NAMED_CREATION_TITLE_INTRODUCER =
   /\b(?:new|brand[- ]new)\s+(?:session|work|task)[\s,，:：-]+(?:(?:called|named|titled)|with\s+(?:the\s+)?title)\s+|(?:新的?|全新的?)?\s*(?:Session|会话|工作|任务)[\s,，:：-]*(?:叫做?|名叫|名为|命名为|标题为|名称为|名字为)\s*/iu;
 const LEADING_CORRECTION_SEPARATOR = /^[\s,.;:!?，。；：！？—–-]+/u;
+const DIRECT_STOP_REQUEST =
+  /^\s*(?:(?:please|kindly)\s+)?(?:stop|cancel|terminate|halt)\s+(?:(?:the|this)\s+)?(?:(?:session|work|task|job)\s+)?(.+?)\s*[.!。！]?\s*$/iu;
+const DIRECT_CHINESE_STOP_REQUEST =
+  /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:停止|取消|终止|中止)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
+const UNSAFE_STOP_TARGET =
+  /^(?:it|this|that|one|everything|all|current|session|work|task|job|(?:this|that|current)\s+(?:session|work|task|job)|它|这个|那个|全部|当前|会话|工作|任务|(?:这个|那个|当前)(?:会话|工作|任务))$/iu;
 
 /** How much authority trusted user text carries for starting work. */
 export type WorkHubExecutionIntent = 'imperative' | 'ambiguous' | 'non_executable';
@@ -118,6 +124,13 @@ export interface WorkHubRequestIntent {
   readonly correction: {
     readonly cue: boolean;
     readonly existingTarget?: string;
+  };
+  readonly stop: {
+    /** A direct stop speech act was present, but its target may still be unsafe. */
+    readonly cue: boolean;
+    /** True only for a direct, explicitly named stop command. */
+    readonly imperative: boolean;
+    readonly target?: string;
   };
 }
 
@@ -276,6 +289,8 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       : { kind: 'unusable' };
   const correctionCue = hasWorkHubCorrectionCue(source);
   const existingTarget = affirmativeWorkHubExistingCorrectionTarget(source);
+  const stopCue = directWorkHubStopCue(source, literalMask.malformed);
+  const stopTarget = stopCue ? directWorkHubStopTarget(source, false) : undefined;
   const actions = allMatches(masked, EXECUTION_ACTION);
   const execution: WorkHubExecutionIntent =
     literalMask.malformed || naming.kind === 'unusable' || hasDominatingDeliberation(masked)
@@ -292,7 +307,24 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       cue: correctionCue,
       ...(existingTarget ? { existingTarget } : {}),
     },
+    stop: {
+      cue: stopCue,
+      imperative: Boolean(stopTarget),
+      ...(stopTarget ? { target: stopTarget } : {}),
+    },
   };
+}
+
+/** Whether a parsed direct-stop command names exactly this Session. */
+export function workHubStopTargetsSession(
+  intent: WorkHubRequestIntent,
+  sessionName: string,
+): boolean {
+  return Boolean(
+    intent.stop.imperative &&
+      intent.stop.target &&
+      stopTargetMatchesSession(intent.stop.target, sessionName),
+  );
 }
 
 /** Whether a parsed correction names exactly this Session. */
@@ -395,6 +427,61 @@ function correctionTargetMatchesSession(target: string, sessionName: string): bo
       ) &&
       readWorkHubRequestIntent(supplementalBody).execution === 'imperative',
   );
+}
+
+function directWorkHubStopTarget(value: string, malformedLiteral: boolean): string | undefined {
+  if (malformedLiteral || /[?？]\s*$/u.test(value)) return undefined;
+  const match = DIRECT_STOP_REQUEST.exec(value) ?? DIRECT_CHINESE_STOP_REQUEST.exec(value);
+  const rawTarget = match?.[1]?.trim();
+  if (!rawTarget) return undefined;
+  const target = stripMatchingStopQuotes(rawTarget.replace(/[.!。！]+\s*$/u, '').trim());
+  if (!target || UNSAFE_STOP_TARGET.test(target)) return undefined;
+  return target;
+}
+
+function stopTargetMatchesSession(target: string, sessionName: string): boolean {
+  const normalizedTarget = normalizeCorrectionIdentity(target);
+  const normalizedName = normalizeCorrectionIdentity(sessionName);
+  if (!normalizedName) return false;
+  const quotedNames = [
+    `"${normalizedName}"`,
+    `“${normalizedName}”`,
+    `'${normalizedName}'`,
+    `‘${normalizedName}’`,
+  ];
+  const matchedName = [normalizedName, ...quotedNames]
+    .sort((left, right) => right.length - left.length)
+    .find(
+      (candidate) =>
+        normalizedTarget.startsWith(candidate) &&
+        !/[\p{L}\p{N}]/u.test(normalizedTarget[candidate.length] ?? ''),
+    );
+  if (matchedName) {
+    if (matchedName === normalizedName && hasUnsafeUnquotedHardClauseBoundary(sessionName)) {
+      return false;
+    }
+    return /^[.!?。！？]*$/u.test(normalizedTarget.slice(matchedName.length).trim());
+  }
+  return (
+    /[.!。！]$/u.test(normalizedName) &&
+    normalizedTarget === normalizedName.replace(/[.!。！]+$/u, '').trim()
+  );
+}
+
+function directWorkHubStopCue(value: string, malformedLiteral: boolean): boolean {
+  if (malformedLiteral || /[?？]\s*$/u.test(value)) return false;
+  return Boolean(DIRECT_STOP_REQUEST.test(value) || DIRECT_CHINESE_STOP_REQUEST.test(value));
+}
+
+function stripMatchingStopQuotes(value: string): string {
+  const pairs = new Map([
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’'],
+  ]);
+  const closer = pairs.get(value[0] ?? '');
+  return closer && value.endsWith(closer) ? value.slice(1, -1).trim() : value;
 }
 
 function normalizeCorrectionIdentity(value: string): string {

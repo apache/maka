@@ -85,6 +85,11 @@ export interface MarkMessagesHandedOffInput {
   readonly provenSteeringMessages?: readonly ProvenSteeringMessageHandoff[];
 }
 
+export type MessageAdmissionCancellationClaimOutcome =
+  | 'cancelled_by_claim'
+  | 'same_claim'
+  | 'already_cancelled';
+
 export interface MessageAdmissionStore {
   commitMessageAdmission(admission: PendingMessageAdmission): Promise<PendingMessageAdmission>;
   readMessageAdmission(
@@ -97,6 +102,11 @@ export interface MessageAdmissionStore {
    * own columns never leave this layer.
    */
   hasCancelledMessageAdmission(sessionId: string, messageId: string): Promise<boolean>;
+  claimMessageAdmissionCancellation(
+    sessionId: string,
+    messageId: string,
+    claimId: string,
+  ): Promise<MessageAdmissionCancellationClaimOutcome>;
   listMessageAdmissions(sessionId: string): Promise<readonly PendingMessageAdmission[]>;
   markMessagesHandedOff(input: MarkMessagesHandedOffInput): Promise<void>;
   updateMessageAdmission(admission: PendingMessageAdmission): Promise<void>;

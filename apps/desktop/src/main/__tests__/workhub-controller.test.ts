@@ -185,6 +185,13 @@ function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
             ...(admitted.steered ? { steered: true as const } : {}),
           };
         }
+        if (input.proposal.disposition === 'stop_work') {
+          return {
+            disposition: 'stop_work',
+            outcome: 'cancelled_pending',
+            targetSessionId: input.proposal.stopsActionId,
+          };
+        }
         const target = candidateByRef.get(input.proposal.candidateRef);
         if (!target) throw new Error('unknown test candidate');
         const admitted = await sessions.submit(target.target, input.userText, input.actionId);
@@ -321,6 +328,118 @@ test('conversation feedback never lets an older refresh overwrite newer target s
 
   assert.equal(snapshots.at(-1), 'completed');
   assert.equal(snapshots.includes('failed'), false);
+  await handle.close();
+});
+
+test('direct stop bypasses routing candidates and preserves a not_owned delegation link', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const actions: WorkHubCoordinationActInput[] = [];
+  let candidateReads = 0;
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([coordinationAssignmentTurn()], [{
+          actionId: 'action-1',
+          targetSessionId: 'payments',
+          sequence: 0,
+        }]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => {
+        candidateReads += 1;
+        return { candidateSetId: `sha256:${'d'.repeat(64)}`, candidates: [] };
+      },
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'stop_work',
+          outcome: 'not_owned',
+          targetSessionId: 'payments',
+          targetTurnId: 'shared-turn',
+        };
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  const result = await controller.submit({ requestId: 'stop-1', text: 'Stop Payments' });
+  assert.deepEqual(result, {
+    kind: 'stop',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'stop-1',
+    target: { sessionId: 'payments' },
+    outcome: 'not_owned',
+    targetTurnId: 'shared-turn',
+  });
+  assert.deepEqual(actions, [{
+    actionId: 'stop-1',
+    userText: 'Stop Payments',
+    proposal: { disposition: 'stop_work', stopsActionId: 'action-1' },
+    confirmation: { kind: 'user_stop' },
+  }]);
+  assert.equal(candidateReads, 0);
+
+  const retry = await controller.submit({ requestId: 'stop-2', text: 'Stop Payments' });
+  assert.equal(retry.kind, 'stop');
+  assert.equal(actions.length, 2);
+  await handle.close();
+});
+
+test('an anaphoric stop asks for a fresh named imperative without offering a route choice', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([], [{ actionId: 'action-1', targetSessionId: 'payments', sequence: 0 }]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('stop clarification must not read route candidates'),
+      act: async () => assert.fail('anaphoric stop must not reach the Action Gate'),
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+  assert.deepEqual(await controller.submit({ requestId: 'stop-it', text: 'Stop it' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'stop-it',
+    text: 'Stop it',
+    options: [],
+    reason: 'stop_target_required',
+  });
+  await handle.close();
+});
+
+test('a named stop stays fail-closed when the Session has multiple active delegations', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([], [
+          { actionId: 'action-1', targetSessionId: 'payments', sequence: 0 },
+          { actionId: 'action-2', targetSessionId: 'payments', sequence: 1 },
+        ]);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('stop clarification must not read route candidates'),
+      act: async () => assert.fail('an ambiguous delegation stop must not reach the Action Gate'),
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'stop-payments', text: 'Stop Payments' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'stop-payments',
+    text: 'Stop Payments',
+    options: [],
+    reason: 'stop_target_required',
+  });
   await handle.close();
 });
 
