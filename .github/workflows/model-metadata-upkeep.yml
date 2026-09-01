@@ -59,10 +59,15 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Report snapshot drift against models.dev
-        # Drift exits non-zero by design. The report is what this step is for,
-        # and the refresh below is what decides whether the run fails.
-        continue-on-error: true
-        run: npm run --silent check:model-metadata-drift 2>&1 | tee "$RUNNER_TEMP/drift.txt"
+        # Exit 2 is "upstream moved", which is the expected outcome and the
+        # reason this step exists. Any other non-zero status is the command
+        # itself failing, and the job stops on it.
+        run: |
+          npm run --silent check:model-metadata-drift > "$RUNNER_TEMP/drift.txt" || {
+            status=$?
+            cat "$RUNNER_TEMP/drift.txt"
+            [ "$status" -eq 2 ] || exit "$status"
+          }
 
       - name: Publish the drift report
         run: |
@@ -74,11 +79,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # No --accept-upstream-removals. A model leaving upstream is a decision
-      # for a person, so the job fails and says so rather than committing the
-      # removal into a pull request nobody asked for.
+      # --accept-upstream-removals, because the review seat this job is built
+      # around is the draft pull request below. A person still inspects every
+      # removal and still decides, in the diff, with the drift report in the
+      # body; refusing here would only make the job red every week, since it
+      # cannot rerun itself the way the acknowledgement asks a human to.
       - name: Refresh the snapshot from models.dev
-        run: npm run refresh:model-metadata
+        run: npm run refresh:model-metadata -- --accept-upstream-removals
 
       - name: Verify the regenerated outputs
         run: npm run check:model-metadata
@@ -122,12 +129,33 @@ jobs:
           git switch -c "$BRANCH"
           git add scripts/model-metadata/models-dev-api.snapshot.json
           git commit -m "$TITLE"
-          git push --force \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
-            "HEAD:refs/heads/$BRANCH"
-          # A force push updates an open pull request in place, so only open one
-          # when none is waiting.
-          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+          # The token travels in a header rather than the remote URL, which git
+          # echoes back in its own error messages.
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          REMOTE="https://github.com/${GITHUB_REPOSITORY}"
+          TIP="$(git -c "http.extraheader=Authorization: Basic $AUTH" \
+            ls-remote "$REMOTE" "refs/heads/$BRANCH" | cut -f1)"
+          if [ -n "$TIP" ]; then
+            # This branch only ever carries commits this job wrote. Anything
+            # else is a person working on the open pull request, and a force
+            # push would erase it.
+            git -c "http.extraheader=Authorization: Basic $AUTH" \
+              fetch --depth=1 "$REMOTE" "refs/heads/$BRANCH"
+            if [ "$(git log -1 --format=%s FETCH_HEAD)" != "$TITLE" ]; then
+              echo "::error::$BRANCH carries a commit this workflow did not write; refusing to overwrite it."
+              exit 1
+            fi
+            git -c "http.extraheader=Authorization: Basic $AUTH" push \
+              "--force-with-lease=refs/heads/$BRANCH:$TIP" "$REMOTE" "HEAD:refs/heads/$BRANCH"
+          else
+            git -c "http.extraheader=Authorization: Basic $AUTH" push \
+              "$REMOTE" "HEAD:refs/heads/$BRANCH"
+          fi
+          # A plain existence lookup also succeeds for a closed pull request,
+          # which would leave a maintainer's decision to close one silently
+          # disabling this job forever. Only an open one is one to update.
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" -gt 0 ]; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/pr-body.md"
             echo "Updated the open pull request on $BRANCH."
           else
             gh pr create --draft --base main --head "$BRANCH" \

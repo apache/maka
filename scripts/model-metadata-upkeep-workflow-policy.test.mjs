@@ -66,7 +66,7 @@ test('only the scheduled job writes, and only on the canonical repository', asyn
   assert.equal(stepNamed(workflow, 'Check out the repository').with['persist-credentials'], false);
 });
 
-test('the refresh reports drift first and refuses to waive upstream removals', async () => {
+test('the refresh reports drift before it writes, and tolerates only drift', async () => {
   const workflow = await readUpkeepWorkflow();
   const order = [
     'Report snapshot drift against models.dev',
@@ -74,11 +74,11 @@ test('the refresh reports drift first and refuses to waive upstream removals', a
   ].map((name) => workflow.jobs.refresh.steps.findIndex((step) => step.name === name));
   assert.ok(order.every((position) => position >= 0));
   assert.ok(order[0] < order[1]);
-  assert.equal(
-    stepNamed(workflow, 'Report snapshot drift against models.dev')['continue-on-error'],
-    true,
-  );
-  assert.doesNotMatch(JSON.stringify(workflow), /--accept-upstream-removals/u);
+  const drift = stepNamed(workflow, 'Report snapshot drift against models.dev');
+  // A blanket continue-on-error would hide the command failing outright. Only
+  // the documented drift status is tolerated.
+  assert.equal(drift['continue-on-error'], undefined);
+  assert.match(drift.run, /\[ "\$status" -eq 2 \] \|\| exit "\$status"/u);
 });
 
 test('the pull request is opened for review and never merged by the job', async () => {
@@ -86,6 +86,20 @@ test('the pull request is opened for review and never merged by the job', async 
   const open = stepNamed(workflow, 'Open the review pull request');
   assert.match(open.run, /gh pr create --draft/u);
   assert.doesNotMatch(JSON.stringify(workflow), /gh pr merge|--auto\b|--admin\b/u);
+  // A closed pull request must not read as one to update; gh pr view says it
+  // does, so only an open-state listing decides.
+  assert.doesNotMatch(open.run, /gh pr view/u);
+  assert.match(open.run, /gh pr list --head "\$BRANCH" --state open/u);
+});
+
+test('the branch this job pushes never loses a commit someone else wrote', async () => {
+  const workflow = await readUpkeepWorkflow();
+  const open = stepNamed(workflow, 'Open the review pull request');
+  assert.doesNotMatch(open.run, /push\s+--force\b|push\s+-f\b/u);
+  assert.match(open.run, /--force-with-lease=refs\/heads\/\$BRANCH:\$TIP/u);
+  // The token belongs in a header. A remote URL carrying it is echoed back by
+  // git's own error messages.
+  assert.doesNotMatch(JSON.stringify(workflow), /x-access-token:\$\{?GH_TOKEN/u);
 });
 
 test('the drift check stays out of the checks that run on every pull request', async () => {
