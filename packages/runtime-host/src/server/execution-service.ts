@@ -99,6 +99,9 @@ export async function startExecutionRuntimeHostService(
           ...options.peer,
           dataRoot: options.peer.meshDataRoot,
           endpointKind: 'host',
+          onBackgroundReconcileError: (error) => {
+            console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+          },
         });
       } catch (error) {
         console.error(

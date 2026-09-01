@@ -71,6 +71,7 @@ const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PEER_ID_MAX_BYTES = 160;
 const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 const PEER_ROUTE_MAX = 16;
+const DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS = 5_000;
 const PROFILE_CREDENTIAL_RECORD_PREFIX = 'maka-runtime-host-profile-credential-v1:';
 const PROFILE_INCARNATION_ID_MAX_BYTES = 128;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
@@ -588,6 +589,7 @@ export async function connectPeerRuntimeHost(input: {
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
+  const handshakeTimeoutMs = input.handshakeTimeoutMs ?? DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS;
   const stream = await input.peerClient.connect(
     {
       peerId: input.transport.peerId,
@@ -608,7 +610,7 @@ export async function connectPeerRuntimeHost(input: {
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
       stream,
-      input.handshakeTimeoutMs,
+      handshakeTimeoutMs,
     );
     if (!authentication.accepted) {
       throw new RuntimeHostProfileConnectionError(
@@ -628,9 +630,7 @@ export async function connectPeerRuntimeHost(input: {
         max: RUNTIME_HOST_PROTOCOL_VERSION,
       },
       clientInstanceId: input.clientInstanceId,
-      ...(input.handshakeTimeoutMs === undefined
-        ? {}
-        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      handshakeTimeoutMs,
       ...(stream.path ? { peerPath: stream.path } : {}),
     });
     input.signal?.throwIfAborted();
@@ -699,6 +699,9 @@ export function remoteRuntimeHostUnavailableError(
       break;
     case 'unreachable':
       message = `${subject} could not reach its endpoint`;
+      break;
+    case 'handshake_timed_out':
+      message = `${subject} timed out while establishing its protocol session`;
       break;
     default:
       message = `${subject} is unavailable (${reason})`;

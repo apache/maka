@@ -226,6 +226,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal: AbortSignal | undefined,
   ): Promise<void> {
     if (!this.#routeResolver?.prepareRoutes) return;
+    // A freshly issued target with both direct hints and coordination relays is
+    // already self-contained. Cached Mesh state can still enrich the actual
+    // dial below, but a stale control plane must not delay this explicit path.
+    if (input.routeHints.length > 0 && (input.coordinationRelays?.length ?? 0) > 0) return;
     const deadline = AbortSignal.timeout(Math.min(10_000, input.directDeadlineMs));
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {

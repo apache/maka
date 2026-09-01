@@ -224,6 +224,7 @@ export async function openPeerMeshNode(input: {
   readonly peer: PeerMeshTransport;
   readonly endpointKind?: 'client' | 'host';
   readonly now?: () => number;
+  readonly onBackgroundReconcileError?: (error: unknown) => void;
 }): Promise<PeerMeshNode> {
   const store = await openPeerMeshStateStore(input.dataRoot, input.peer.identity().peerId);
   const node = new PeerMeshNodeImpl({ ...input, store });
@@ -241,6 +242,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #peer: PeerMeshTransport;
   readonly #endpointKind: 'client' | 'host' | undefined;
   readonly #now: () => number;
+  readonly #onBackgroundReconcileError: ((error: unknown) => void) | undefined;
   readonly #activeControlStreams = new Set<RuntimeHostPeerNativeStream>();
   readonly #lifetime = new AbortController();
   #admissionTail = Promise.resolve();
@@ -256,11 +258,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     readonly peer: PeerMeshTransport;
     readonly endpointKind?: 'client' | 'host';
     readonly now?: () => number;
+    readonly onBackgroundReconcileError?: (error: unknown) => void;
   }) {
     this.#store = input.store;
     this.#peer = input.peer;
     this.#endpointKind = input.endpointKind;
     this.#now = input.now ?? Date.now;
+    this.#onBackgroundReconcileError = input.onBackgroundReconcileError;
   }
 
   async initialize(): Promise<void> {
@@ -910,8 +914,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #runReconciliation(signal: AbortSignal): Promise<void> {
+    let failureReported = false;
     while (!signal.aborted) {
-      await this.reconcile(signal).catch(() => undefined);
+      try {
+        await this.reconcile(signal);
+        failureReported = false;
+      } catch (error) {
+        if (!signal.aborted && !failureReported) {
+          failureReported = true;
+          try {
+            this.#onBackgroundReconcileError?.(error);
+          } catch {
+            // Diagnostics cannot control Peer Mesh reconciliation.
+          }
+        }
+      }
       await delay(RECONCILE_INTERVAL_MS, undefined, { signal }).catch(() => undefined);
     }
   }

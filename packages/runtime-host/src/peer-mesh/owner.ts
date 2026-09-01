@@ -44,6 +44,7 @@ export async function openRuntimeHostPeerMeshOwner(input: {
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
   readonly webRtcStunUrls?: readonly string[];
+  readonly onBackgroundReconcileError?: (error: unknown) => void;
 }): Promise<RuntimeHostPeerMeshOwner> {
   let mesh: PeerMeshNode | undefined;
   let resolverMesh: PeerMeshNode | undefined;
@@ -77,6 +78,9 @@ export async function openRuntimeHostPeerMeshOwner(input: {
       dataRoot: join(input.dataRoot, client.identity().peerId),
       peer: client,
       endpointKind: input.endpointKind,
+      ...(input.onBackgroundReconcileError
+        ? { onBackgroundReconcileError: input.onBackgroundReconcileError }
+        : {}),
     });
     resolverMesh = mesh;
   } catch (error) {
