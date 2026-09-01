@@ -83,6 +83,22 @@ const STARTUP_RECOVERY_COPY = {
       buttons: ['Retry', 'Use Local', 'Keep Offline'],
     },
   },
+  ko: {
+    storageRoot: {
+      title: 'Maka 작업 공간을 복구해야 합니다',
+      message: 'Maka가 이 작업 공간을 확인할 수 없습니다.',
+      detail: (workspaceRoot) =>
+        `시스템의 디스크 식별자가 변경되었을 수 있습니다. 원본 Maka 작업 공간인 경우에만 복구하세요. 복사된 작업 공간이면 복구하지 마세요.\n\n${workspaceRoot}`,
+      buttons: ['작업 공간 복구', '종료'],
+    },
+    runtimeHost: {
+      title: '기본 Runtime Host에 연결할 수 없습니다',
+      message: (profileName) => `${profileName}에 연결할 수 없습니다`,
+      detail: (message) =>
+        `${message}\n\n다시 시도하거나 Local을 기본 Host로 사용하거나, 현재 선택을 유지한 뒤 나중에 설정에서 처리할 수 있습니다.`,
+      buttons: ['다시 시도', 'Local 사용', '오프라인 유지'],
+    },
+  },
 } satisfies UiCatalog<StartupRecoveryCopy>;
 
 export function getStartupRecoveryCopy(locale: UiLocale): StartupRecoveryCopy {

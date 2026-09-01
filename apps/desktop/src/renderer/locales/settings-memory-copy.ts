@@ -228,6 +228,53 @@ const SETTINGS_MEMORY_COPY = {
     },
     origins: { manual: 'Manual entry', imported: 'Imported entry', extracted: 'Confirmed extraction', unknown: 'Handwritten entry' }, entryStatuses: { draft: 'Draft', review_required: 'Needs review', active: 'Active', archived: 'Archived', rejected: 'Rejected', unknown: 'Unrecognized' }, backupKinds: { reset: 'Before reset', restore: 'Before restore', save: 'Before save' }, memoryStatuses: { ok: 'Local file ready', disabled: 'Off', safe_mode: 'Safe mode', incognito_blocked: 'Disabled in incognito', error: 'Read failed' }, promptBlocked: { disabled: 'Local memory is disabled.', incognito: 'Local memory is never added in incognito mode.', safeMode: 'MEMORY.md is too large and will not be added.', agentRead: 'Model context access is disabled.' }, backupOversize: 'Backup is too large to preview entries', previewOversize: 'The draft is too large, so entry preview is paused. Reduce MEMORY.md before saving.', previewTruncationMarker: '[Local memory truncated to the length limit]',
   },
+  ko: {
+    intlLocale: 'ko-KR',
+    text: enText,
+    countActive: (count, draft) => draft
+      ? `Draft · ${count} active ${count === 1 ? 'entry' : 'entries'}`
+      : `${count} active ${count === 1 ? 'entry' : 'entries'}`,
+    countArchived: (count, draft) => draft
+      ? `Draft · ${count} archived ${count === 1 ? 'entry' : 'entries'}`
+      : `${count} archived ${count === 1 ? 'entry' : 'entries'}`,
+    saveSummary: (active, archived) => archived > 0
+      ? `${active} active ${active === 1 ? 'entry' : 'entries'} / ${archived} archived ${archived === 1 ? 'entry' : 'entries'}; the previous version was backed up.`
+      : `${active} active ${active === 1 ? 'entry' : 'entries'}; the previous version was backed up.`,
+    backupSummary: (active, archived) => archived > 0
+      ? `${active} active ${active === 1 ? 'entry' : 'entries'} / ${archived} archived ${archived === 1 ? 'entry' : 'entries'}`
+      : `${active} active ${active === 1 ? 'entry' : 'entries'}`,
+    countEntries: (count) => count === 1 ? `${count} memory` : `${count} memories`,
+    countMatches: (filtered, total) => `${filtered} / ${total} matching`,
+    listAria: (title) => `${title} list`,
+    entryActionsAria: (title) => `${title} memory actions`,
+    entryActionAria: (action, identity) => `${action}: ${identity}`,
+    openBackupAria: (label) => `Open backup candidate ${label}`,
+    restoreBackupAria: (label) => `Restore backup candidate ${label}`,
+    copyBackupAria: (label) => `Copy backup candidate reference ${label}`,
+    draftStatusAria: (action) => `${action}; MEMORY.md is not written until you save`,
+    restoreLatestDescription: (label) => `The current MEMORY.md will be backed up before the latest backup replaces it. Restore: ${label}`,
+    restoreCandidateDescription: (label) => `The current MEMORY.md will be backed up before the selected backup replaces it. Restore: ${label}`,
+    redactedDetail: (summary) => `Suspected tokens, API keys, or passwords were redacted before writing; ${summary}`,
+    openBackupFailed: (kind) => `Failed to open ${kind}`,
+    previewTruncated: (limit) => `Preview truncated at the ${limit}-character limit`,
+    previewUsage: (length, limit) => `Preview ${length} / ${limit} characters`,
+    previewLimit: (limit) => `Prompt limit: ${limit} characters`,
+    results: {
+      no_backup: 'No MEMORY.md backup is available.', invalid_backup_kind: 'Unrecognized backup kind.',
+      memory_unavailable: 'Local memory is currently unavailable.', backup_not_found: 'The backup file was not found.',
+      remote_host_owned: 'Memory files are owned by the remote Runtime Host and cannot be opened locally.', not_regular_file: 'The memory path is not an allowed regular file.',
+      open_failed: 'The system could not open the memory file.', file_not_found: 'The memory file was not found.',
+      disabled: 'Local memory is disabled.', incognito_active: 'Unavailable in incognito mode.',
+      safe_mode: 'MEMORY.md is too large and entered safe mode.', oversize: 'MEMORY.md exceeds the safety limit. Remove older content first.',
+      revision_conflict: 'Memory was just changed by another operation. Try again.', backup_revision_conflict: 'The backup was just changed by another operation. Try again.',
+      invalid_state: 'The Runtime Host returned an invalid memory state.',
+      invalid_content: 'MEMORY.md content is invalid. Check its format and try again.', invalid_scope: 'The memory operation has an invalid scope.',
+      not_found: 'The memory entry was not found.', not_pending: 'The memory entry is not pending review.',
+      upload_not_found: 'The memory upload session does not exist or has expired.', upload_incomplete: 'The memory content has not finished uploading.',
+      upload_conflict: 'Another memory upload is in progress. Try again.',
+    },
+    origins: { manual: 'Manual entry', imported: 'Imported entry', extracted: 'Confirmed extraction', unknown: 'Handwritten entry' }, entryStatuses: { draft: 'Draft', review_required: 'Needs review', active: 'Active', archived: 'Archived', rejected: 'Rejected', unknown: 'Unrecognized' }, backupKinds: { reset: 'Before reset', restore: 'Before restore', save: 'Before save' }, memoryStatuses: { ok: 'Local file ready', disabled: 'Off', safe_mode: 'Safe mode', incognito_blocked: 'Disabled in incognito', error: 'Read failed' }, promptBlocked: { disabled: 'Local memory is disabled.', incognito: 'Local memory is never added in incognito mode.', safeMode: 'MEMORY.md is too large and will not be added.', agentRead: 'Model context access is disabled.' }, backupOversize: 'Backup is too large to preview entries', previewOversize: 'The draft is too large, so entry preview is paused. Reduce MEMORY.md before saving.', previewTruncationMarker: '[Local memory truncated to the length limit]',
+  },
 } satisfies UiCatalog<MemorySettingsCopy>;
 
 export function getMemorySettingsCopy(locale: UiLocale): MemorySettingsCopy { return SETTINGS_MEMORY_COPY[locale]; }

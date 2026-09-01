@@ -423,6 +423,7 @@ const BOT_SETTINGS_COPY = {
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
+  ko: enCopy,
 } satisfies UiCatalog<BotSettingsCopy>;
 
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
