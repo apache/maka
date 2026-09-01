@@ -846,6 +846,10 @@ export class RuntimeHostKernel {
   }
 
   #hasUpgradeBlockingActivity(): boolean {
+    // The request's own accepted transport is expected. Any other live
+    // connection arrived after discovery or remained attached and therefore
+    // requires explicit interruption authority before retirement.
+    if (this.#acceptedTransports.size > 1) return true;
     if (this.#activeCommandOperations > 1) return true;
     return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
   }

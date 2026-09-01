@@ -1984,8 +1984,8 @@ async function promptForDefaultRuntimeHostRecovery(input: {
   readonly profileName: string;
   readonly error: Error;
 }): Promise<"retry" | "use_local" | "keep_offline"> {
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = await desktopLocale.resolve();
+  const isChinese = locale === "zh";
   const { response } = await showStartupDiagnosticDialog(
     {
       type: "warning",
@@ -2005,7 +2005,7 @@ async function promptForDefaultRuntimeHostRecovery(input: {
       cancelId: 2,
       noLink: true,
     },
-    isChinese ? "zh" : "en",
+    locale,
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

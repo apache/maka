@@ -30,6 +30,14 @@ const bootSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
   'utf8',
 );
+const appIpcSource = readFileSync(
+  fileURLToPath(new URL('../../../src/main/app-ipc-main.ts', import.meta.url)),
+  'utf8',
+);
+const mainWindowSource = readFileSync(
+  fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url)),
+  'utf8',
+);
 
 test('retains process lifetime before a standalone startup dialog can close', () => {
   const retentionPolicy = mainSource.search(
@@ -53,9 +61,40 @@ test('resolves persisted locale before first post-settings recovery prompt', () 
     hostRecoveryStart,
     bootSource.indexOf('}).catch((error: unknown)', hostRecoveryStart),
   );
+  const defaultHostRecoveryStart = bootSource.indexOf(
+    'async function promptForDefaultRuntimeHostRecovery',
+  );
+  const defaultHostRecovery = bootSource.slice(defaultHostRecoveryStart);
 
   assert.match(rendererRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
   assert.match(hostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
+  assert.match(defaultHostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
   assert.doesNotMatch(rendererRecovery, /desktopLocale\.current\(\)/u);
   assert.doesNotMatch(hostRecovery, /desktopLocale\.current\(\)/u);
+  assert.doesNotMatch(defaultHostRecovery, /resolveSystemUiLocale/u);
+});
+
+test('routes the first-paint IPC only to the active Renderer recovery listener', () => {
+  const ipcHandlerStart = appIpcSource.indexOf(
+    "targetIpc.handle('window:notifyRendererReady'",
+  );
+  const ipcHandler = appIpcSource.slice(
+    ipcHandlerStart,
+    appIpcSource.indexOf("targetIpc.handle('window:setThemeSource'", ipcHandlerStart),
+  );
+  const readyHandlerStart = mainWindowSource.indexOf('notifyRendererReady(sender)');
+  const readyHandler = mainWindowSource.slice(
+    readyHandlerStart,
+    mainWindowSource.indexOf('setTitlebarControlsVisible(sender', readyHandlerStart),
+  );
+
+  assert.match(ipcHandler, /mainWindowController\.notifyRendererReady\(event\.sender\)/u);
+  assert.match(
+    readyHandler,
+    /sender !== mainWindow\.webContents\) return;/u,
+  );
+  assert.match(
+    readyHandler,
+    /if \(recovery\?\.contents === sender\) recovery\.listener\?\.\(\);/u,
+  );
 });
