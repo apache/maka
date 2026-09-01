@@ -121,6 +121,36 @@ const COPY = {
         "Check the credentials and network settings, then try again.",
     },
   },
+  ko: {
+    proxy: {
+      reachable: (endpoint, location) =>
+        ["The proxy is reachable", endpoint, location]
+          .filter(Boolean)
+          .join(" · "),
+      disabled: "Enable the proxy server before testing it.",
+      configurationMissing: "Enter a proxy host and port before testing it.",
+      timeout:
+        "The proxy test timed out. Check whether the proxy service is reachable.",
+      httpError: (status) =>
+        status === undefined
+          ? "The proxy test returned an error response. Check the proxy service and test URL."
+          : `The proxy test returned HTTP ${status}. Check the proxy service and test URL.`,
+      unreachable:
+        "The proxy is unreachable. Check its host, port, and authentication settings.",
+    },
+    bot: {
+      credentialsValid: (username) =>
+        username
+          ? `The credential check passed · ${username}. This does not mean the message listener is running.`
+          : "The credential check passed. This does not mean the message listener is running.",
+      tokenMissing: "Enter a Bot Token before testing the connection.",
+      tokenInvalid: "The Bot Token is invalid. Check it and try again.",
+      appCredentialsMissing:
+        "Enter an App ID and App Secret before testing the connection.",
+      connectionFailed:
+        "Check the credentials and network settings, then try again.",
+    },
+  }
 } satisfies UiCatalog<SettingsTestResultCopy>;
 
 export function settingsTestResultMessage(

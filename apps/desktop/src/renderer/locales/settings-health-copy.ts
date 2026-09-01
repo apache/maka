@@ -209,6 +209,25 @@ const SETTINGS_HEALTH_COPY = {
     signalMessage: englishSignalMessage,
     signalDetail: englishSignalDetail,
   },
+  ko: {
+    loading: 'Loading health snapshot', readFailed: 'Could not read health snapshot', noData: 'The health service returned no data.', readAgain: 'Read again',
+    title: 'Health center', subtitle: 'How each capability is currently doing.',
+    badge: 'Read-only snapshot', lastRead: 'Last read: ', refresh: 'Refresh', summaryAria: 'Filter health signals by status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all signals` : `Show only ${label.toLowerCase()} health signals, ${count}`,
+    blockers: {
+      send: (count, totalCount) => `Across all health signals, ${count} of ${totalCount} ${count === 1 ? 'blocks' : 'block'} sending`,
+      capability: (count, totalCount) => `Across all health signals, ${count} of ${totalCount} ${count === 1 ? 'blocks' : 'block'} capabilities`,
+    },
+    layerAria: (label) => `${label} health signals`, layerListAria: (label) => `${label} health signal list`,
+    footnote: 'This page does not run tests, repairs, or permission changes. It only summarizes recorded health signals. Open the relevant settings page or retry the related feature to address an issue.',
+    layers: layersEn,
+    statuses: { ok: { label: 'Healthy', tone: 'neutral' }, info: { label: 'Info', tone: 'neutral' }, warning: { label: 'Warning', tone: 'attention' }, error: { label: 'Error', tone: 'error' }, unknown: { label: 'Unknown', tone: 'neutral' } },
+    scopes: { app: 'App', llm_connection: 'LLM connection', bot: 'Bot', capability: 'Capability', storage: 'Storage' },
+    sources: { connection_test: 'Connection test', capability_snapshot: 'Capability snapshot', permission_snapshot: 'Permission snapshot', runtime_probe: 'Runtime probe', settings: 'Settings', storage: 'Local storage' },
+    source: 'Source: ', blocksSend: 'Blocks sending', blocksCapability: 'Blocks capability',
+    signalLabel: englishSignalLabel,
+    signalMessage: englishSignalMessage,
+    signalDetail: englishSignalDetail,
+  }
 } satisfies UiCatalog<HealthCenterCopy>;
 
 export function getHealthCenterCopy(locale: UiLocale): HealthCenterCopy {

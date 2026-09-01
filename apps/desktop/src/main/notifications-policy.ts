@@ -91,6 +91,11 @@ export function runNotificationCopy(
       ? { title: '任務發生錯誤', body: '本次回答未能完成，按一下以檢視詳細資料。' }
       : { title: '回答已產生', body: 'Maka 已完成本次回答，按一下以檢視。' };
   }
+  if (locale === 'ko') {
+    return kind === 'errored'
+      ? { title: '대화 오류', body: '이 응답이 완료되지 않았습니다. 클릭하여 자세히 보기.' }
+      : { title: '응답 준비됨', body: 'Maka가 이 응답을 완료했습니다. 클릭하여 보기.' };
+  }
   if (kind === 'errored') {
     return { title: '任务出错', body: '本轮回答未能完成，点击查看详情。' };
   }

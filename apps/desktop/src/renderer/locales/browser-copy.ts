@@ -117,6 +117,30 @@ const BROWSER_COPY = {
     title: 'Embedded browser',
     description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
   },
+  ko: {
+    unsupportedScheme: 'The embedded browser only supports HTTP and HTTPS addresses.',
+    invalidUrl: 'This address is not valid. Check it and try again.',
+    openFailed: 'Could not open address',
+    navigationFailed: 'Browser navigation failed',
+    navigationFailedDetail: 'The page could not be opened. Try again later.',
+    panelAria: 'Embedded browser',
+    panelAriaWithTitle: (title) => `Embedded browser: ${title}`,
+    insecure: 'This site is served over HTTP, so the connection is not encrypted.',
+    backAria: 'Go back in browser',
+    back: 'Back',
+    forwardAria: 'Go forward in browser',
+    forward: 'Forward',
+    stopAria: 'Stop loading page',
+    refreshAria: 'Reload page',
+    stop: 'Stop',
+    refresh: 'Reload',
+    addressAria: 'Browser address',
+    addressPlaceholder: 'Enter an address and press Enter',
+    closeAria: 'Close browser page',
+    close: 'Close page',
+    title: 'Embedded browser',
+    description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
+  }
 } satisfies UiCatalog<BrowserCopy>;
 
 export function getBrowserCopy(locale: UiLocale): BrowserCopy {

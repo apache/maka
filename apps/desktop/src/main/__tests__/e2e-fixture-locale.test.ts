@@ -21,8 +21,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { resolveE2eFixture } from '../e2e-fixture.js';
 
-test('preserves both canonical Chinese locale fixture flags', () => {
-  for (const locale of ['zh-CN', 'zh-TW', 'en'] as const) {
+test('preserves canonical Chinese and Korean locale fixture flags', () => {
+  for (const locale of ['zh-CN', 'zh-TW', 'en', 'ko'] as const) {
     const fixture = resolveE2eFixture(
       'settings-general',
       false,
@@ -38,6 +38,14 @@ test('normalizes locale fixture flag casing without widening the contract', () =
   assert.equal(
     resolveE2eFixture('settings-general', false, undefined, undefined, 'ZH-tw')?.locale,
     'zh-TW',
+  );
+  assert.equal(
+    resolveE2eFixture('settings-general', false, undefined, undefined, 'KO')?.locale,
+    'ko',
+  );
+  assert.equal(
+    resolveE2eFixture('settings-general', false, undefined, undefined, 'ko-kr')?.locale,
+    'ko',
   );
   assert.equal(
     resolveE2eFixture('settings-general', false, undefined, undefined, 'zh-Hant')?.locale,

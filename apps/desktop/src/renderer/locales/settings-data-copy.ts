@@ -121,6 +121,33 @@ const SETTINGS_DATA_COPY = {
     sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
     conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exportConfig: 'Export configuration…', importConfig: 'Import configuration…',
   },
+  ko: {
+    categories: {
+      connections: { label: 'Model connections', detail: 'Provider connections and default models (without secrets)' },
+      settings: { label: 'App settings', detail: 'General, search, bot, proxy, and other settings' },
+      memory: { label: 'Local memory', detail: 'Contents of the local MEMORY.md file' },
+      credentials: { label: 'Credentials (API keys and tokens)', detail: 'Sensitive model keys and subscription tokens', sensitive: true },
+    },
+    importSummary: {
+      connections: (created, overwritten, skipped) => `Connections: ${created} created · ${overwritten} overwritten · ${skipped} skipped`,
+      settings: 'Settings applied', credentials: (applied, skipped) => skipped > 0 ? `Credentials: ${applied} applied (${skipped} skipped)` : `Credentials: ${applied} applied`,
+      memory: 'Memory applied', empty: 'The file contains no importable data',
+    },
+    loadFailed: 'Failed to load data directory', openFailed: (label) => `Could not open ${label}`, pathCopied: 'Workspace path copied', copyFailed: 'Copy failed', copyFailedDetail: 'The clipboard is unavailable or access was denied by the system.',
+    historyCleared: 'Input history cleared', historyClearedDetail: 'Sent prompt history was removed from this device.', selectCategory: 'Select at least one category',
+    exported: 'Configuration exported', exportedDetail: (items) => `Included: ${items.join(', ')}`, exportFailed: 'Export failed', noCategories: 'No categories selected', tryAgain: 'Try again later',
+    imported: 'Configuration imported', importFailed: 'Import failed', invalidFile: 'The file is invalid or its version is unsupported.',
+    rows: {
+      workspace: 'Workspace path', workspaceDetail: 'Tasks, settings, credentials, and skill files are stored in this directory.', loadValueFailed: 'Failed to load', loading: 'Loading…',
+      history: 'Input history', historyDetail: 'Previously sent prompts recalled with the Up and Down arrows are kept on this machine and persist across restarts. Clearing them cannot be undone.',
+    },
+    actionsAria: 'Workspace data actions', opening: 'Opening…', openWorkspace: 'Open workspace folder', copying: 'Copying…', copyPath: 'Copy path', clearing: 'Clearing…', clearHistory: 'Clear input history',
+    backupTitle: 'Backup and restore', backupNotice: 'Local data is stored in the workspace. To back it up, quit Maka and copy the entire directory. To restore it, replace the same path and restart. Model credentials should be tested again after a restore, and subscription accounts usually need to sign in again.',
+    pathLoadFailed: (error) => `Could not load workspace path: ${error}`, configAria: 'Configuration import and export', configTitle: 'Configuration import and export',
+    configHelp: 'Select the content to export into a JSON backup. You can import it after moving devices or reinstalling. Secrets are excluded by default.', categoryAria: 'Select export content',
+    sensitiveWarning: '⚠️ Secrets will be written to the export file as plain text. Anyone with this file can use them. Store it securely and do not share it.',
+    conflictAria: 'How to handle connections with the same name during import', skip: 'Skip', overwrite: 'Overwrite', exportConfig: 'Export configuration…', importConfig: 'Import configuration…',
+  }
 } satisfies UiCatalog<DataSettingsCopy>;
 
 export function getDataSettingsCopy(locale: UiLocale): DataSettingsCopy {

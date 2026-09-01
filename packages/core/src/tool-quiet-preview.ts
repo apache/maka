@@ -82,6 +82,16 @@ const STRINGS_BY_LOCALE: Record<UiLocale, QuietPreviewStrings> = {
     bytes: (n) => `${n} bytes`,
     moreQuestions: (total) => (total > 1 ? ` +${total - 1} more` : ''),
   },
+  ko: {
+    backgroundTerminal: '백그라운드 터미널 상호작용',
+    empty: '(비어 있음)',
+    done: '완료',
+    notDone: '미완료',
+    replacements: (n) => `${n}곳`,
+    written: '기록됨',
+    bytes: (n) => `총 ${n}바이트`,
+    moreQuestions: (total) => (total > 1 ? ` 외 ${total}개` : ''),
+  },
 };
 
 function strings(locale: UiLocale): QuietPreviewStrings {

@@ -149,6 +149,41 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     emptyTitle: 'Nothing archived',
     emptyBody: 'Archive a task from the rail to restore or permanently delete it here.',
   },
+  ko: {
+    listAria: 'Archived tasks',
+    noProject: 'No project',
+    deletedParent: 'Parent task deleted',
+    searchLabel: 'Search archived tasks',
+    purgeAll: 'Clear all',
+    purgeMatches: (count: number) => (count === 1 ? 'Delete this 1' : `Delete these ${count}`),
+    purgeAllConfirmTitle: (count: number) =>
+      count === 1 ? 'Clear the 1 archived task?' : `Clear all ${count} archived tasks?`,
+    purgeMatchesConfirmTitle: (count: number) =>
+      count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
+    purgeConfirmBody:
+      'The tasks and all of their messages are removed permanently. This cannot be undone.',
+    purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
+    purgeConfirmAction: 'Delete permanently',
+    purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
+    purgedSubtaskNote: (count: number) =>
+      count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+    purgeKeptRestored: (count: number) =>
+      count === 1
+        ? '1 more was restored meanwhile and kept.'
+        : `${count} more were restored meanwhile and kept.`,
+    purgeFailedTitle: 'Could not delete the tasks',
+    purgeFailedBody: (count: number) =>
+      count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,
+    purgeUnverified: 'The tasks were deleted, but the list could not be read back to confirm. Reopen this page to check.',
+    noMatchTitle: 'No matching tasks',
+    noMatchBody: 'Try a different search.',
+    moreActions: (name: string) => `More actions for ${name}`,
+    restore: 'Restore',
+    restoreTask: (name: string) => `Restore ${name}`,
+    delete: 'Delete',
+    emptyTitle: 'Nothing archived',
+    emptyBody: 'Archive a task from the rail to restore or permanently delete it here.',
+  }
 } satisfies UiCatalog<SettingsTasksCopy>;
 
 export function getSettingsTasksCopy(locale: UiLocale): SettingsTasksCopy {

@@ -255,6 +255,7 @@ const COPY = {
   'zh-CN': zhCopy,
   'zh-TW': zhTwCopy,
   en: enCopy,
+  ko: enCopy,
 } satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {

@@ -204,6 +204,12 @@ const DIALOG_COPY = {
     copied: '診斷資訊已複製，可直接貼上到問題報告中。',
     copyFailed: '無法複製診斷資訊。',
   },
+  ko: {
+    copy: '진단 정보 복사',
+    copyAgain: '다시 복사',
+    copied: '진단 정보가 복사되었습니다. 이슈 보고서에 붙여넣을 수 있습니다.',
+    copyFailed: '진단 정보를 복사할 수 없습니다.',
+  },
 } as const;
 
 const FATAL_STARTUP_COPY = {
@@ -224,6 +230,12 @@ const FATAL_STARTUP_COPY = {
     message: 'Maka 無法完成啟動。',
     unknownError: '啟動時發生未知錯誤。',
     exit: '退出',
+  },
+  ko: {
+    title: 'Maka 시작 실패',
+    message: 'Maka가 시작을 완료하지 못했습니다.',
+    unknownError: '알 수 없는 시작 오류가 발생했습니다.',
+    exit: '종료',
   },
 } as const;
 
@@ -248,6 +260,13 @@ const MAIN_RENDERER_GONE_COPY = {
     detail: '重新啟動 Maka 以繼續，或退出後稍後再開啟。',
     relaunch: '重新啟動',
     exit: '退出',
+  },
+  ko: {
+    title: 'Maka 복구 필요',
+    message: 'Maka 인터페이스가 예기치 않게 중지되었습니다.',
+    detail: '계속하려면 Maka를 다시 시작하거나, 종료한 뒤 나중에 다시 여세요.',
+    relaunch: '다시 시작',
+    exit: '종료',
   },
 } as const;
 
@@ -285,5 +304,17 @@ const RUNTIME_HOST_STARTUP_RECOVERY_COPY = {
     repair: '修復 Runtime Host',
     repairAndRestart: '修復並重新啟動 Host',
     exit: '退出',
+  },
+  ko: {
+    title: 'Maka가 Runtime Host 복구가 필요합니다',
+    message: '이 작업 공간의 Runtime Host를 시작할 수 없습니다.',
+    detail:
+      'Maka가 이 Desktop이 선택한 관리형 Runtime Host를 복구할 수 있습니다. 작업 공간, Host ID, 자격 증명, 설정은 유지됩니다. 자동 업데이트 호환성을 확인할 수 없어도 복구 시 이 Desktop이 선택한 버전으로 Host가 교체될 수 있습니다.',
+    activeTasks:
+      'Host에 아직 실행 중인 작업이 있을 수 있습니다. 계속하면 Host가 다시 시작되기 전에 해당 작업이 중단될 수 있습니다.',
+    repairFailed: '이전 복구 시도가 완료되지 않았습니다:',
+    repair: 'Runtime Host 복구',
+    repairAndRestart: '복구 후 Host 다시 시작',
+    exit: '종료',
   },
 } as const;

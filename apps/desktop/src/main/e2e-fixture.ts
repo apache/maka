@@ -131,6 +131,7 @@ function parseLocaleFlag(raw: string | undefined): UiLocale | null {
   const normalized = raw?.trim().toLowerCase();
   if (normalized === 'zh-cn') return 'zh-CN';
   if (normalized === 'zh-tw') return 'zh-TW';
+  if (normalized === 'ko' || normalized === 'ko-kr') return 'ko';
   return normalized === 'en' ? 'en' : null;
 }
 

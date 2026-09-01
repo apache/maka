@@ -51,9 +51,10 @@ export const UNKNOWN_PROVIDER_DESCRIPTION = {
   'zh-CN': '该 provider 在当前版本未注册。',
   'zh-TW': '該 provider 在目前版本未註冊。',
   en: 'This provider is not registered in the current build.',
+  ko: 'This provider is not registered in the current build.',
 } satisfies UiCatalog<string>;
 
-export const PROVIDER_DISPLAY_COPY = {
+const RAW_PROVIDER_DISPLAY_COPY = {
   'kimi-coding-plan': {
     'zh-CN': { name: 'Kimi Coding Plan', description: '月之暗面 · Anthropic 兼容', badge: 'Coding' },
     'zh-TW': { name: 'Kimi Coding Plan', description: '月之暗面 · Anthropic 相容', badge: 'Coding' },
@@ -360,7 +361,14 @@ export const PROVIDER_DISPLAY_COPY = {
     'zh-TW': { name: 'xAI OAuth', description: '使用 SuperGrok 或 X Premium 帳號登入。', badge: 'Account' },
     en: { name: 'xAI OAuth', description: 'Sign in with SuperGrok or X Premium.', badge: 'Account' },
   },
-} satisfies Record<ProviderType, UiCatalog<ProviderCopy>>;
+} satisfies Record<ProviderType, Omit<UiCatalog<ProviderCopy>, 'ko'>>;
+
+export const PROVIDER_DISPLAY_COPY = Object.fromEntries(
+  Object.entries(RAW_PROVIDER_DISPLAY_COPY).map(([type, catalog]) => [
+    type,
+    { ...catalog, ko: catalog.en },
+  ]),
+) as Record<ProviderType, UiCatalog<ProviderCopy>>;
 
 export function providerDisplay(type: ProviderType, locale: UiLocale): ProviderCopy {
   const copy = (PROVIDER_DISPLAY_COPY as Partial<Record<string, UiCatalog<ProviderCopy>>>)[type]?.[locale];

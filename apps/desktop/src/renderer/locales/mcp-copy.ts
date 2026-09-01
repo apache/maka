@@ -248,6 +248,65 @@ const MCP_COPY = {
       stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
     },
   },
+  ko: {
+    errors: {
+      load: 'Failed to load MCP', install: (name) => `Failed to install ${name}`, cancelInstall: (name) => `Failed to cancel installation of ${name}`, save: 'Failed to save MCP',
+      import: 'Failed to import MCP', update: 'Failed to update MCP', test: 'MCP test failed', remove: 'Failed to delete MCP', unavailableStatus: 'The server did not return an available status.',
+      mapLine: (line) => `Line ${line} must use KEY=value`, importJson: 'MCP configuration must be valid JSON', importObject: 'MCP JSON must be an object',
+      importVersion: (version) => `Unsupported MCP config version ${version}; versions 1, 2, and 3 are supported`, importServersObject: 'mcpServers must be an object',
+      importProtocolVersion: 'Remote protocol preferences require version 2 or 3; stdio protocol preferences require version 3',
+    },
+    toast: {
+      templateInstalled: (name) => `${name} template installed`, templateInstalledDetail: 'Finish configuring credentials under Installed before enabling the connection.',
+      installed: (name) => `${name} installed`, installedDetail: 'Discovered tools take effect from the next agent turn.', installCancelled: (name) => `Cancelled installation of ${name}`,
+      saved: 'MCP saved', savedDetail: 'New tools take effect from the next agent turn.', imported: 'MCP imported', importedDetail: (count) => `Imported ${count} ${count === 1 ? 'server' : 'servers'}.`,
+      connectionOk: 'MCP connection healthy', toolLatency: (count, latencyMs) => `${count} ${count === 1 ? 'tool' : 'tools'} · ${latencyMs} ms`,
+      connectionFailed: 'MCP connection failed', removed: 'MCP deleted',
+    },
+    remove: { title: (id) => `Delete MCP “${id}”?`, description: 'Its tools will be removed from the next agent turn, and the configuration cannot be restored automatically.', confirm: 'Delete', cancel: 'Cancel' },
+    page: {
+      actionsAria: 'MCP actions', refreshing: 'Refreshing…', refresh: 'Refresh', add: 'Add MCP',
+      metaInstalled: (count) => `${count} installed`, metaErrors: (count) => `${count} ${count === 1 ? 'connection error' : 'connection errors'}`,
+      searchMatches: (count) => `${count} ${count === 1 ? 'match' : 'matches'}`,
+      workspaceAria: 'MCP marketplace and installed servers', toolbarAria: 'MCP browser controls', setupTitle: 'Connect Maka to your work environment', setupDescription: 'Start with a curated template, or add any stdio, Streamable HTTP, or SSE server.',
+      localStdio: 'Local stdio', categoriesAria: 'MCP categories', market: 'Marketplace', installed: 'Installed',
+      searchPlaceholder: 'Search MCP…', searchAria: 'Search MCP', noMarket: 'No matching MCP servers', noMarketDetail: (query) => `Try another keyword, or clear “${query}” to view every template.`,
+      clearSearch: 'Clear search', loading: 'Reading MCP configuration…', noInstalled: 'No MCP servers installed', noInstalledDetail: 'Choose a template from the marketplace, or add your own server manually.',
+      browseMarket: 'Browse marketplace', noInstalledMatch: 'No matching installed MCP servers', noInstalledMatchDetail: (query) => `Try another keyword, or clear “${query}” to view every installed server.`,
+    },
+    detail: {
+      label: 'Server details', enabled: 'Enabled', transport: 'Transport', endpoint: 'Endpoint',
+      toolsLabel: 'Tools', statusLabel: 'Status', protocolLabel: 'MCP protocol',
+      negotiatedProtocol: (era, revision) => `${era === 'modern' ? 'Modern' : 'Legacy'} · ${revision}`,
+      inspectorOpened: (id) => `${id} details opened`,
+    },
+    card: {
+      macOnly: 'macOS only', manage: 'Manage', cancellingAria: (name) => `Cancelling installation of ${name}`, cancelAria: (name) => `Cancel installation of ${name}`, installAria: (name) => `Install ${name}`,
+      cancelling: 'Cancelling…', cancel: 'Cancel installation', install: 'Install',
+    },
+    row: {
+      testing: 'Testing…', test: 'Test', edit: 'Edit',
+      delete: 'Delete', tools: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
+      disabled: 'Disabled', disconnected: 'Disconnected', connecting: 'Connecting', connected: (count) => `${count} ${count === 1 ? 'tool' : 'tools'}`, failed: 'Connection failed',
+    },
+    editor: {
+      importTitle: 'Import from JSON', editTitle: (id) => `Edit ${id}`, addTitle: 'Add MCP', importSubtitle: 'Paste an mcpServers configuration; servers with matching names will be updated.',
+      manualSubtitle: 'Configuration is saved in mcp.json for the current workspace.', modeAria: 'MCP add method', manual: 'Manual configuration', pasteJson: 'Paste JSON', jsonConfig: 'JSON configuration',
+      jsonHelp: 'Supports a complete mcpServers configuration or a server map. Existing MCP servers omitted from this import are preserved.', cancel: 'Cancel', importConnect: 'Import and connect',
+      transportAria: 'Connection method', localStdio: 'Local stdio', remoteUrl: 'Remote URL',
+      serverId: 'Server ID', command: 'Command',
+      commandPlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/folder',
+      commandHelp: 'Full command line; quote arguments containing spaces. Not interpreted by a shell.',
+      workingDirectory: 'Working directory', workingDirectoryPlaceholder: 'Optional, for example /path/to/project',
+      environment: 'Environment', environmentHelp: 'One KEY=value entry per line; complete the variables required by this MCP.', url: 'MCP URL', headers: 'HTTP headers', headersHelp: 'One Header=value entry per line.',
+      saveConnect: 'Save and connect',
+      required: 'This field is required.', invalidUrl: 'Enter a valid HTTP or HTTPS URL.', unbalancedQuote: 'Unclosed quote.',
+      transportLabel: 'Transport', transportAuto: 'Auto fallback', transportStreamableHttp: 'Streamable HTTP', transportLegacySse: 'Legacy SSE',
+      protocolLabel: 'Protocol preference', protocolLegacy: 'Legacy', protocolAuto: 'Auto-negotiate', protocolModern: '2026-07-28 only',
+      protocolHelp: 'Existing configurations default to legacy; auto-negotiation selects an era from the server response.', sseProtocolHelp: 'Legacy SSE supports only the legacy protocol era.', expandAdvanced: 'Show advanced settings', collapseAdvanced: 'Hide advanced settings',
+      stdioProtocolHelp: 'Auto-negotiate and “2026-07-28 only” first start a short-lived probe with the same command, arguments, working directory, and environment. The session process starts only after the probe exits. Existing configurations default to Legacy and start one process.',
+    },
+  }
 } satisfies UiCatalog<McpCopy>;
 
 export function getMcpCopy(locale: UiLocale): McpCopy {

@@ -201,4 +201,27 @@ const UPGRADE_COPY = {
       resource: 'Runtime 資源', graph: 'Agent Graph', other: '其他後臺活動',
     },
   },
+  ko: {
+    title: '이전 Runtime Host가 실행 중입니다',
+    message: '다른 Runtime Host 프로세스가 이 작업 공간을 사용 중입니다.',
+    restart: 'Runtime Host 다시 시작',
+    replace: 'Host 중지 후 계속',
+    wait: '대기',
+    cancel: '시작 취소',
+    uptime: (n: number) => `약 ${n}분 실행 중`,
+    connections: (n: number) => `다른 클라이언트 ${n}개가 아직 연결되어 있습니다`,
+    operations: (n: number) => `실행 중인 작업 ${n}개`,
+    unknownActivity: '이 Host 버전은 백그라운드 활동을 보고할 수 없습니다.',
+    processId: (pid: number) => `프로세스 ID (PID): ${pid}`,
+    restartWarning: '다시 시작해도 영구 상태는 유지되지만, 진행 중인 외부 작업이 중단될 수 있습니다.',
+    replaceWarning: '중지해도 영구 상태는 유지되지만, 진행 중인 외부 작업이 중단될 수 있습니다.',
+    replaceExplanation: 'Maka가 이 Host를 중지하고 안전하게 교체한 뒤 시작을 계속합니다.',
+    exitOwner: (pid: number) =>
+      `시스템 프로세스 관리 도구로 프로세스 ${pid}를 종료하면 이 Host를 안전하게 교체할 수 있습니다.`,
+    waitExplanation: '대기하면 이 Host가 종료된 뒤 Maka가 자동으로 계속합니다.',
+    activity: {
+      goal: '목표', scheduledTask: '예약 작업', dailyReview: '일일 리뷰', execution: '활성 실행',
+      resource: 'Runtime 리소스', graph: 'Agent Graph', other: '기타 백그라운드 활동',
+    },
+  },
 } as const;

@@ -105,6 +105,32 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       about: { label: 'About', description: 'Version, runtime environment, and privacy commitments.' },
     },
   },
+  ko: {
+    groups: {
+      preferences: 'Preferences',
+      capabilities: 'Capabilities',
+      activity: 'Activity',
+      system: 'System',
+    },
+    sections: {
+      general: { label: 'General', description: 'Display name and interface language, privacy and notifications, task defaults, and network proxy.' },
+      appearance: { label: 'Appearance', description: 'Interface theme and color palette.' },
+      projects: { label: 'Workspace', description: 'Manage Runtime Host connections and projects on the default Host.' },
+      models: { label: 'Models', description: 'Model connections, API keys, and OAuth subscriptions.' },
+      subagents: { label: 'Subagents', description: 'Configure the subagents, capability boundaries, and models the main agent may select.' },
+      usage: { label: 'Usage', description: 'Token, model, tool usage trends, and quota tracking.' },
+      'archived-tasks': { label: 'Archived tasks', description: 'Restore or permanently delete archived tasks.' },
+      'import-tasks': { label: 'Import tasks', description: 'Convert conversations from another local agent into Maka tasks.' },
+      memory: { label: 'Memory', description: 'What Maka remembers, and the local MEMORY.md file.' },
+      'daily-review': { label: 'Daily Review', description: 'Analyze local tasks for summaries, reminders, and suggestions.' },
+      'bot-chat': { label: 'Remote Access', description: 'Chat with Maka from other devices through Telegram, Feishu, or WeChat.' },
+      search: { label: 'Web Search', description: 'Credentials and privacy boundaries for providers such as Tavily.' },
+      data: { label: 'Data', description: 'Local workspace paths, backup, and restore.' },
+      permissions: { label: 'Permissions & Capabilities', description: 'System grants and runtime checks for Maka capabilities.' },
+      health: { label: 'Health', description: 'Runtime connections, model probes, and local health status.' },
+      about: { label: 'About', description: 'Version, runtime environment, and privacy commitments.' },
+    },
+  }
 } satisfies UiCatalog<SettingsNavigationCopy>;
 
 export function getSettingsNavigationCopy(locale: UiLocale): SettingsNavigationCopy {

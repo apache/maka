@@ -225,7 +225,7 @@ const EN = {
     dismissTurnRequest: 'Dismiss',
 } satisfies SessionCollaborationCopy;
 
-const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN, ko: EN } satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];

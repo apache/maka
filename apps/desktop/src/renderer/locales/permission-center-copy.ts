@@ -238,6 +238,53 @@ const PERMISSION_CENTER_COPY = {
     auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
     impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
   },
+  ko: {
+    readiness: {
+      not_configured: { label: 'Needs setup', detail: 'Enable the feature or complete its configuration first.', tone: 'neutral' },
+      denied: { label: 'Denied by system', detail: 'A required system permission was denied or is unsupported on this platform.', tone: 'error' },
+      enabled: { label: 'Available', detail: 'The current snapshot is available; see the layers below for details.', tone: 'success' },
+      degraded: { label: 'Partially available', detail: 'Some functionality is available, but runtime, permission, or sub-feature work remains.', tone: 'attention' },
+      paused: { label: 'Paused', detail: 'The feature was explicitly disabled while its configuration remains saved.', tone: 'neutral' },
+    },
+    osPermissions: {
+      accessibility: { label: 'Accessibility', purpose: 'Computer Use needs it to read window focus and simulate keyboard or mouse input.', impact: 'Computer Use · automated keyboard and mouse input' },
+      screen_recording: { label: 'Screen Recording', purpose: 'Computer Use needs it to read window contents; future screen activity recording will use it too.', impact: 'Computer Use · screenshot context' },
+      notifications: { label: 'Notifications', purpose: 'System alerts use it for permission requests and completed reviews.', impact: 'Permission alerts · Daily Review completion' },
+      automation: { label: 'Automation (Apple Events)', purpose: 'Computer Use needs per-target authorization to control other apps.', impact: 'Computer Use · cross-app automation' },
+    },
+    osStates: {
+      unsupported: { label: 'Unsupported on this platform', tone: 'neutral' }, unknown: { label: 'Status unavailable', tone: 'neutral' },
+      not_determined: { label: 'Waiting for permission', tone: 'attention' }, denied: { label: 'Denied', tone: 'error' }, granted: { label: 'Granted', tone: 'success' },
+    },
+    loading: 'Loading permission snapshot', readFailed: 'Could not read permission snapshot', noData: 'The permission service returned no data.', readAgain: 'Read again',
+    actionFailed: 'Permission action failed',
+    actionFailures: {
+      invalid_id: 'Internal error: the permission ID was not recognized.',
+      unsupported_platform: 'This operating system does not support the permission action.',
+      unsupported_permission: 'This platform does not provide a direct entry point for the permission.',
+      denied: 'Permission was not granted. You can enable it in System Settings.',
+      already_open: 'Another permission guide is still open. Finish or close it first.',
+      open_settings_failed: 'Could not open System Settings. Open Privacy & Security manually.',
+      failed: 'The permission action did not succeed. Try again later.',
+    },
+    title: 'Permissions and capabilities', subtitle: 'Review the system permissions Maka needs and their current state. Open the matching Privacy & Security section directly to grant or revoke access.',
+    lastRead: 'Last read: ', detectAgain: 'Check again', summaryAria: 'Filter system permissions by authorization status', summaryFilterAria: (label, count, selected) => selected ? `${label}, ${count}; filter selected. Press again to show all permissions` : `Show only ${label.toLowerCase()} permissions, ${count}`, granted: 'Granted', pending: 'Waiting', denied: 'Denied', other: 'Unknown / unsupported',
+    osSection: 'System permissions', osSectionHelp: 'OS-level permission states reported to Maka. Use the action on the right to open the matching Privacy & Security section in System Settings.', osListAria: 'System permission list',
+    capabilitiesSection: 'Feature capabilities', capabilitiesHelp: 'Each readiness state combines the feature toggle, configuration, system permissions, and runtime probe.',
+    capabilityListAria: 'Feature capability list',
+    footnote: 'Maka never grants Accessibility, Automation, or Screen Recording automatically. High-risk automation must remain individually approved, auditable, and revocable. This page only reads the current snapshot; permission changes still happen in System Settings under Privacy & Security.',
+    layers: {
+      aria: (label) => `${label} capability state details`, feature: 'Feature toggle', configuration: 'Configuration', approval: 'Action approval', memory: 'Memory writes', runtime: 'Runtime probe',
+      featureStates: { enabled: 'Enabled', partial: 'Partially available', disabled: 'Disabled', not_available: 'Unavailable' },
+      configurationStates: { not_required: 'No configuration needed', missing: 'Configuration required', present: 'Configured' },
+      approvalStates: { not_required: 'No approval needed', required_per_action: 'Approval required for every call', required_scoped_lease: 'Authorized by target and action category', pending: 'Approval pending', approved: 'Approved for this task', denied: 'Denied for this task' },
+      memoryStates: { not_applicable: 'No memory writes', disabled: 'Memory writes disabled', draft_required: 'Draft a memory protocol first', accepted: 'Memory writes accepted' },
+      runtimeStates: { not_available: 'No runtime probe available', not_run: 'Probe not run', healthy: 'Probe passed', degraded: 'Probe degraded' },
+    },
+    requiredPermissions: 'Required system permissions', requiredPermissionsAria: (label) => `${label} required system permissions`, guidance: 'Suggested actions', guidanceAria: (label) => `${label} suggested actions`,
+    auditSection: 'Audit records', noAudit: 'No audit records', auditAria: (label) => `${label} audit records`,
+    impact: 'Affects', opening: 'Opening…', openSettings: 'Open System Settings', requesting: 'Requesting…', request: 'Request permission', dragGrant: 'Guide me', dragGranting: 'Opening…',
+  }
 } satisfies UiCatalog<PermissionCenterCopy>;
 
 export function getPermissionCenterCopy(locale: UiLocale): PermissionCenterCopy {

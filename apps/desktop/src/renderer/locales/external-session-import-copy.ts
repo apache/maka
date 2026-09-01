@@ -261,6 +261,61 @@ const COPY = {
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
   },
+  ko: {
+    sourceLabel: 'Source',
+    sourceNames: { codex: 'Codex', 'claude-code': 'Claude Code' },
+    includeArchived: 'Include archived conversations',
+    searchLabel: 'Search',
+    searchHelp: 'Matches the conversation title and the project path. Empty shows everything.',
+    searchPlaceholder: 'Part of a title or path',
+    searchEmpty: (term) => `No conversation has "${term}" in its title or path.`,
+    loading: 'Reading external conversations…',
+    listAria: 'Conversations available to import',
+    emptyTitle: 'No conversations to import',
+    emptyDescription: 'No matching root conversations were found in this source.',
+    unavailableTitle: 'No supported Agent detected',
+    unavailableDescription:
+      'Once Codex has been used on this machine, its conversations appear here. Maka only reads those files and never modifies them.',
+    loadFailedTitle: 'Could not read external conversations',
+    loadFailedFallback: 'The external session directory is temporarily unavailable. Try again.',
+    retry: 'Retry',
+    archived: 'Archived',
+    loadMore: 'Load more',
+    loadingMore: 'Loading…',
+    duplicateNote: 'Importing the same conversation again creates an independent task.',
+    importedCount: (count) => (count === 1 ? 'Imported once' : `Imported ${count} times`),
+    openLatestImportedTask: 'Open latest imported task',
+    openLatestImportedTaskFor: (name) => `Open the latest task imported from ${name}`,
+    import: 'Import',
+    importAgain: 'Import again',
+    importTask: (name) => `Import ${name}`,
+    importTaskAgain: (name) => `Import ${name} again`,
+    importing: 'Importing…',
+    importingTask: (name) => `Importing ${name}`,
+    importInProgressTitle: 'Import in progress',
+    importInProgressDescription: (name) =>
+      `Importing “${name}”. Maka opens the task as soon as it lands.`,
+    importFailedTitle: 'Import failed',
+    importFailedFallback: 'This conversation could not be converted or saved. Check the source and try again.',
+    importRecoveredTitle: 'Import confirmed',
+    importRecoveredDescription: (name) =>
+      `The imported task is available now for “${name}”.`,
+    importNotRecordedTitle: 'No new task found',
+    importNotRecordedDescription: 'No new task was recorded, so it is safe to retry.',
+    importOutcomeUnknownTitle: 'Check the import result',
+    selectAllAriaLabel: 'Select all or none',
+    selectedCount: (selected, listed) => `${selected} / ${listed} selected`,
+    selectRowAriaLabel: (name) => `Select ${name}`,
+    importSelected: 'Import selected',
+    batchProgress: (done, total) => `Importing ${done} / ${total}`,
+    batchDoneTitle: (imported) => `Imported ${imported} conversations`,
+    batchDuplicated: (count) =>
+      `${count} of them had been imported before and now exist twice.`,
+    batchFailed: (count) => `${count} more could not be imported.`,
+    batchNothingImported: 'No conversation was imported.',
+    importOutcomeUnknownDescription: (names) =>
+      `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
+  }
 } satisfies UiCatalog<ExternalSessionImportCopy>;
 
 export function getExternalSessionImportCopy(locale: UiLocale): ExternalSessionImportCopy {

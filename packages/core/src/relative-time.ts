@@ -51,6 +51,7 @@ const JUST_NOW: UiCatalog<string> = {
   'zh-CN': '刚刚',
   'zh-TW': '剛剛',
   en: 'just now',
+  ko: '방금',
 };
 
 /** Future timestamps are treated as age zero and therefore display as just now. */

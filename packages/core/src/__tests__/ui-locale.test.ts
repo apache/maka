@@ -34,9 +34,9 @@ import {
 
 describe('UI locale', () => {
   it('accepts only the supported resolved locales and preferences', () => {
-    assert.equal(['zh-CN', 'zh-TW', 'en'].every(isUiLocale), true);
+    assert.equal(['zh-CN', 'zh-TW', 'en', 'ko'].every(isUiLocale), true);
     assert.equal(isUiLocale('zh'), false);
-    assert.equal(['auto', 'zh-CN', 'zh-TW', 'en'].every(isUiLocalePreference), true);
+    assert.equal(['auto', 'zh-CN', 'zh-TW', 'en', 'ko'].every(isUiLocalePreference), true);
   });
 
   it('normalizes the legacy persisted preference without widening the locale contract', () => {
@@ -54,6 +54,9 @@ describe('UI locale', () => {
     [['zh-HK'], 'zh-TW'],
     [['zh_MO'], 'zh-TW'],
     [['zh_TW.UTF-8'], 'zh-TW'],
+    [['ko-KR'], 'ko'],
+    [['ko_KR'], 'ko'],
+    [['en-US', 'ko-KR'], 'en'],
     [['fr-FR', 'en-US'], 'en'],
     [[], 'en'],
   ] as const) {
@@ -64,6 +67,7 @@ describe('UI locale', () => {
 
   it('resolves explicit preferences and overrides before the system locale', () => {
     assert.equal(resolveUiLocale('auto', 'zh-TW'), 'zh-TW');
+    assert.equal(resolveUiLocale('auto', 'ko'), 'ko');
     assert.equal(resolveUiLocale('zh-CN', 'zh-TW'), 'zh-CN');
     assert.equal(resolveUiLocale('zh-CN', 'zh-CN', 'en'), 'en');
   });
@@ -72,7 +76,10 @@ describe('UI locale', () => {
     for (const locale of UI_LOCALES) {
       assert.ok(isUiLocale(locale), locale);
       assert.equal(resolveSystemUiLocale([locale]), locale);
-      assert.equal(uiLocaleToIntlLocale(locale), locale);
+      assert.equal(
+        uiLocaleToIntlLocale(locale),
+        locale === 'ko' ? 'ko-KR' : locale,
+      );
     }
     const intlLocales = UI_LOCALES.map(uiLocaleToIntlLocale);
     assert.equal(new Set(intlLocales).size, UI_LOCALES.length);
@@ -93,6 +100,7 @@ describe('UI message catalogs', () => {
       en: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
       'zh-CN': { title: '状态', detail: { ready: '就绪', waiting: 'Waiting' } },
       'zh-TW': { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
+      ko: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
     });
   });
 

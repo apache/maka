@@ -198,6 +198,9 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
     skip: 'Skip onboarding',
     snapshotErrorFallback: 'First-run status is temporarily unavailable. Try again later.',
   },
+  get ko() {
+    return this.en;
+  },
 };
 
 export function getOnboardingCopy(locale: UiLocale): OnboardingCatalog {
