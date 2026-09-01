@@ -22,7 +22,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import { resolveAttachmentRefs, resolveIngestItems } from '../attachment-ingest.js';
+import {
+  type AttachmentSnapshotInput,
+  resolveAttachmentRefs,
+  resolveIngestItems,
+} from '../attachment-ingest.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
 
 describe('resolveIngestItems (pre-read validation)', () => {
@@ -235,6 +239,143 @@ describe('resolveIngestItems (pre-read validation)', () => {
 });
 
 describe('resolveAttachmentRefs', () => {
+  test('uses PDF magic bytes instead of a spoofed PNG extension', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'att-sniff-'));
+    const path = join(dir, 'report.png');
+    await writeFile(path, Buffer.from('%PDF-1.4\nfixture'));
+    let resizeCalls = 0;
+    let captured: AttachmentSnapshotInput | undefined;
+    try {
+      await resolveAttachmentRefs({
+        files: [{ path, size: 16 }],
+        resizeImage: async (bytes) => {
+          resizeCalls += 1;
+          return bytes;
+        },
+        snapshot: async (input) => {
+          captured = input;
+          return {
+            kind: input.attachmentKind,
+            name: input.name,
+            mimeType: input.mimeType,
+            bytes: input.content.byteLength,
+            ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+          };
+        },
+      });
+      assert.equal(resizeCalls, 0);
+      assert.equal(captured?.mimeType, 'application/pdf');
+      assert.equal(captured?.attachmentKind, 'pdf');
+      assert.equal(captured?.artifactKind, 'pdf');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('uses PNG magic bytes instead of conflicting renderer metadata', async () => {
+    const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    let resizeCalls = 0;
+    let captured: AttachmentSnapshotInput | undefined;
+
+    await resolveAttachmentRefs({
+      files: [{ name: 'report.pdf', mimeType: 'application/pdf', size: content.byteLength, content }],
+      resizeImage: async (bytes) => {
+        resizeCalls += 1;
+        return bytes;
+      },
+      snapshot: async (input) => {
+        captured = input;
+        return {
+          kind: input.attachmentKind,
+          name: input.name,
+          mimeType: input.mimeType,
+          bytes: input.content.byteLength,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        };
+      },
+    });
+
+    assert.equal(resizeCalls, 1);
+    assert.equal(captured?.mimeType, 'image/png');
+    assert.equal(captured?.attachmentKind, 'image');
+    assert.equal(captured?.artifactKind, 'image');
+  });
+
+  test('recognises an image with no extension from its bytes', async () => {
+    const content = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    let captured: AttachmentSnapshotInput | undefined;
+
+    await resolveAttachmentRefs({
+      files: [{ name: 'clipboard-image', size: content.byteLength, content }],
+      snapshot: async (input) => {
+        captured = input;
+        return {
+          kind: input.attachmentKind,
+          name: input.name,
+          mimeType: input.mimeType,
+          bytes: input.content.byteLength,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        };
+      },
+    });
+
+    assert.equal(captured?.mimeType, 'image/jpeg');
+    assert.equal(captured?.attachmentKind, 'image');
+  });
+
+  test('updates the MIME when image resizing changes the encoded format', async () => {
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    const resizedPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    let captured: AttachmentSnapshotInput | undefined;
+
+    await resolveAttachmentRefs({
+      files: [{ name: 'photo.jpg', size: jpeg.byteLength, content: jpeg }],
+      resizeImage: async () => resizedPng,
+      snapshot: async (input) => {
+        captured = input;
+        return {
+          kind: input.attachmentKind,
+          name: input.name,
+          mimeType: input.mimeType,
+          bytes: input.content.byteLength,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        };
+      },
+    });
+
+    assert.equal(captured?.mimeType, 'image/png');
+    assert.deepEqual(captured?.content, resizedPng);
+  });
+
+  test('does not decode unknown bytes merely because the renderer calls them an image', async () => {
+    const content = Buffer.from('not an image');
+    let resizeCalls = 0;
+    let captured: AttachmentSnapshotInput | undefined;
+
+    await resolveAttachmentRefs({
+      files: [{ name: 'payload.svg', mimeType: 'image/svg+xml', size: content.byteLength, content }],
+      resizeImage: async (bytes) => {
+        resizeCalls += 1;
+        return bytes;
+      },
+      snapshot: async (input) => {
+        captured = input;
+        return {
+          kind: input.attachmentKind,
+          name: input.name,
+          mimeType: input.mimeType,
+          bytes: input.content.byteLength,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        };
+      },
+    });
+
+    assert.equal(resizeCalls, 0);
+    assert.equal(captured?.mimeType, 'application/octet-stream');
+    assert.equal(captured?.attachmentKind, 'other');
+    assert.equal(captured?.artifactKind, 'file');
+  });
+
   test('rejects a path grown beyond the cap before creating a Host artifact', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'att-cap-'));
     const path = join(dir, 'grew.bin');

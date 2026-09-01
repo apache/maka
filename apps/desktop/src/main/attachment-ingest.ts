@@ -25,6 +25,7 @@ import {
   guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
+  sniffAttachmentMimeType,
 } from '@maka/core/attachments';
 import type { ArtifactKind } from '@maka/core/artifacts';
 import type { AttachmentRef } from '@maka/core/events';
@@ -57,12 +58,13 @@ export async function resolveAttachmentRefs(input: {
   const refs: AttachmentRef[] = [];
   for (const file of input.files) {
     const name = attachmentFileName(file);
-    const mimeType = file.mimeType && file.mimeType.length > 0 ? file.mimeType : guessMimeFromName(name);
+    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
+    let mimeType = resolveAttachmentMimeType(bytes, file.mimeType, name);
     const kind = attachmentKindFromMimeType(mimeType, name);
 
-    let bytes: Uint8Array = isPathAttachment(file) ? await readFileCapped(file.path, maxBytes) : file.content;
     if (kind === 'image' && input.resizeImage) {
       bytes = await input.resizeImage(bytes);
+      mimeType = sniffAttachmentMimeType(bytes) ?? mimeType;
     }
     const artifactKind: ArtifactKind =
       kind === 'image' ? 'image' : kind === 'pdf' ? 'pdf' : 'file';
@@ -77,6 +79,17 @@ export async function resolveAttachmentRefs(input: {
     );
   }
   return refs;
+}
+
+function resolveAttachmentMimeType(bytes: Uint8Array, supplied: string | undefined, name: string): string {
+  const sniffed = sniffAttachmentMimeType(bytes);
+  if (sniffed) return sniffed;
+
+  const fallback = supplied && supplied.length > 0 ? supplied : guessMimeFromName(name);
+  const normalized = fallback.toLowerCase();
+  return normalized.startsWith('image/') || normalized === 'application/pdf'
+    ? 'application/octet-stream'
+    : fallback;
 }
 
 function isPathAttachment(file: AttachmentIngestFile): file is Extract<AttachmentIngestFile, { path: string }> {

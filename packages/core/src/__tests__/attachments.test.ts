@@ -19,7 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { formatAttachmentResourceRef, parseAttachmentResourceRef } from '../attachments.js';
+import {
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  formatAttachmentResourceRef,
+  parseAttachmentResourceRef,
+  sniffAttachmentMimeType,
+} from '../attachments.js';
 
 describe('attachment resource refs', () => {
   test('round-trips one canonical Session Artifact without embedding Session authority', () => {
@@ -49,5 +54,32 @@ describe('attachment resource refs', () => {
     );
     assert.equal(parseAttachmentResourceRef('maka://runtime/attachments/a?session=other'), null);
     assert.equal(parseAttachmentResourceRef('maka://runtime/attachments/a/b'), null);
+  });
+});
+
+describe('attachment content sniffing', () => {
+  test('recognises supported image and PDF signatures', () => {
+    const fixtures: Array<[Uint8Array, string]> = [
+      [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), 'image/png'],
+      [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg'],
+      [Buffer.from('GIF89a', 'ascii'), 'image/gif'],
+      [Buffer.from('RIFF0000WEBP', 'ascii'), 'image/webp'],
+      [Buffer.from('BM', 'ascii'), 'image/bmp'],
+      [Buffer.from('%PDF-1.7', 'ascii'), 'application/pdf'],
+    ];
+
+    for (const [bytes, expected] of fixtures) {
+      assert.equal(sniffAttachmentMimeType(bytes), expected);
+    }
+  });
+
+  test('does not infer a type from an extension-like payload or bytes after the sniffing prefix', () => {
+    assert.equal(sniffAttachmentMimeType(Buffer.from('report.png')), undefined);
+    assert.equal(
+      sniffAttachmentMimeType(
+        Buffer.concat([Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES), Buffer.from('%PDF-1.7')]),
+      ),
+      undefined,
+    );
   });
 });

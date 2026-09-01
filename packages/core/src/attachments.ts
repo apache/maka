@@ -93,6 +93,50 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   ppt: 'application/vnd.ms-powerpoint',
 };
 
+export const ATTACHMENT_MIME_SNIFF_BYTES = 16;
+
+export type SniffedAttachmentMimeType =
+  | 'image/png'
+  | 'image/jpeg'
+  | 'image/gif'
+  | 'image/webp'
+  | 'image/bmp'
+  | 'application/pdf';
+
+/**
+ * Identify the attachment formats whose bytes affect how Maka processes them.
+ * Only a fixed prefix is inspected, so callers can apply this before handing
+ * untrusted input to an image decoder without turning sniffing into another
+ * unbounded read.
+ */
+export function sniffAttachmentMimeType(bytes: Uint8Array): SniffedAttachmentMimeType | undefined {
+  const prefix = bytes.subarray(0, ATTACHMENT_MIME_SNIFF_BYTES);
+  if (startsWithBytes(prefix, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return 'image/png';
+  }
+  if (startsWithBytes(prefix, [0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (startsWithAscii(prefix, 'GIF87a') || startsWithAscii(prefix, 'GIF89a')) return 'image/gif';
+  if (startsWithAscii(prefix, 'RIFF') && startsWithAscii(prefix, 'WEBP', 8)) return 'image/webp';
+  if (startsWithAscii(prefix, 'BM')) return 'image/bmp';
+  if (startsWithAscii(prefix, '%PDF-')) return 'application/pdf';
+  return undefined;
+}
+
+function startsWithBytes(bytes: Uint8Array, signature: readonly number[], offset = 0): boolean {
+  return (
+    bytes.length >= offset + signature.length &&
+    signature.every((value, index) => bytes[offset + index] === value)
+  );
+}
+
+function startsWithAscii(bytes: Uint8Array, signature: string, offset = 0): boolean {
+  if (bytes.length < offset + signature.length) return false;
+  for (let index = 0; index < signature.length; index += 1) {
+    if (bytes[offset + index] !== signature.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
 /**
  * Best-effort MIME from a file name, used when the picker gives no MIME
  * (Electron's openDialog only returns paths). Falls back to
