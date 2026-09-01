@@ -77,9 +77,13 @@ describe('copyToClipboard', () => {
   });
 
   test('measures the limit in UTF-8 bytes, not JS string length', () => {
-    // A multibyte char counts as its encoded bytes: 8193 '€' = 24579 bytes.
+    // 2000 '€' is 2000 JS chars (under the limit) but 6000 UTF-8 bytes (over it),
+    // so a length-based check would wrongly accept it.
     const writes: string[] = [];
-    const result = copyToClipboard({ write: (d) => writes.push(d) }, '€'.repeat(8193));
+    const text = '€'.repeat(2000);
+    assert.ok(text.length <= MAX_CLIPBOARD_TEXT_BYTES);
+    assert.ok(Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_TEXT_BYTES);
+    const result = copyToClipboard({ write: (d) => writes.push(d) }, text);
     assert.equal(result.ok, false);
     assert.deepEqual(writes, []);
   });

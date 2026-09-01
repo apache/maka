@@ -27,17 +27,18 @@
  * whether the terminal honoured it, ignored it (e.g. macOS Terminal.app), or
  * silently dropped it.
  *
- * Payload size is the sharp edge. A terminal whose OSC-string buffer is smaller
- * than the sequence does not echo the overflow to the screen — it *discards*
- * silently: kitty logs `OSC sequence too long, truncating` and keeps a prefix,
- * st (pre-0.8.3) returns once its buffer fills. Those limits vary widely (kitty
- * a few KB, Tabby ~1 KB, xterm ~1 MB) and are undetectable from here, so a large
- * payload is copied only in part with nothing to signal the cut. We do two
- * things about it: refuse above {@link MAX_CLIPBOARD_TEXT_BYTES} so an oversized
- * `/copy all` fails with a readable error instead of a half-written clipboard,
- * and — because even a below-limit copy can be dropped by an unusually small
- * buffer — word the confirmation as best-effort rather than a promise of
- * success (see `tui-copy-catalog.ts`).
+ * Payload size is the sharp edge. Past a terminal's OSC-string buffer the
+ * sequence is not parsed to completion, so the clipboard is never set to the
+ * intended text: kitty logs `OSC sequence too long, truncating` and drops the
+ * write, st (pre-0.8.3) returns once its buffer fills. Nothing is echoed to the
+ * screen, so the failure is silent. Those buffers vary widely (kitty ~8 KB,
+ * Tabby ~1 KB, xterm ~1 MB) and are undetectable from here. We do two things
+ * about it: refuse above {@link MAX_CLIPBOARD_TEXT_BYTES}, sized so the emitted
+ * sequence clears the ~8 KB buffer of mainstream terminals like kitty and an
+ * oversized `/copy all` fails on a readable error rather than a silent drop;
+ * and — because a terminal with a smaller buffer (e.g. Tabby) can still drop a
+ * below-limit write — word the confirmation as best-effort rather than a promise
+ * of success (see `tui-copy-catalog.ts`).
  *
  * Under tmux the bare sequence is still the right primitive to emit, but note
  * it does not land on a default tmux: `set-clipboard` has defaulted to
@@ -51,14 +52,15 @@
  */
 
 /**
- * Upper bound on the source text of a single OSC 52 write, in UTF-8 bytes. The
- * base64 payload the terminal parses is ~4/3 of this; the ceiling sits above any
- * plausible single reply yet bounds a whole-transcript `/copy all` so it cannot
- * emit an unbounded sequence. It is deliberately not tuned to the smallest known
- * terminal buffer — that would refuse ordinary replies — so a copy at or below
- * it is likely, not guaranteed, to land.
+ * Upper bound on the source text of a single OSC 52 write, in UTF-8 bytes. Its
+ * base64 encoding (~4/3) plus the 8-byte `ESC ] 52 ; c ; … BEL` framing has to
+ * fit a terminal's OSC-string buffer: at 4 KiB the sequence is ~5.5 KB, under
+ * the ~8 KB buffer terminals like kitty use (kitty drops a ~6.1 KB reply, whose
+ * sequence just tops 8 KB), so an emitted copy lands there. Larger content is
+ * refused rather than emitted and silently truncated; the residual variance
+ * below this (e.g. Tabby ~1 KB) is what keeps the confirmation best-effort.
  */
-export const MAX_CLIPBOARD_TEXT_BYTES = 16_384;
+export const MAX_CLIPBOARD_TEXT_BYTES = 4096;
 
 /** OSC 52 targets the system clipboard selection (`c`). */
 const CLIPBOARD_SELECTION = 'c';

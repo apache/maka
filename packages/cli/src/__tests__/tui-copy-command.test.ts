@@ -26,7 +26,12 @@ function stateWith(entries: MakaPiTranscriptEntry[]): MakaPiTranscriptState {
   return { entries } as MakaPiTranscriptState;
 }
 
-const LABELS = { user: 'You:', assistant: 'Maka:' };
+const LABELS = {
+  user: 'You:',
+  assistant: 'Maka:',
+  goalContinuation: 'Goal:',
+  legacyAutomation: 'Automation:',
+};
 
 describe('lastAssistantText', () => {
   test('returns the text of the most recent assistant entry', () => {
@@ -123,9 +128,10 @@ describe('serializeTranscriptText', () => {
     );
   });
 
-  test('serializes goal_continuation and legacy_automation as user turns', () => {
-    // Both are user-authored driving turns stored as `user` messages and shown
-    // as visible blocks; dropping them would erase the prompts that drove a run.
+  test('labels goal_continuation and legacy_automation by provenance, not as the user', () => {
+    // Both are non-user-triggered driving turns (TurnOrigin); they get their own
+    // labels — never `You:` — and, being their own blocks, keep the assistant
+    // turns on either side from merging into one answer.
     const state = stateWith([
       { kind: 'user', messageId: 'u1', text: 'start the goal' },
       { kind: 'assistant', messageId: 'a1', text: 'Step one done.' },
@@ -136,8 +142,8 @@ describe('serializeTranscriptText', () => {
     ]);
     assert.equal(
       serializeTranscriptText(state, LABELS),
-      'You:\nstart the goal\n\nMaka:\nStep one done.\n\nYou:\nkeep going\n\n' +
-        'Maka:\nStep two done.\n\nYou:\nautomated nudge\n\nMaka:\nStep three done.',
+      'You:\nstart the goal\n\nMaka:\nStep one done.\n\nGoal:\nkeep going\n\n' +
+        'Maka:\nStep two done.\n\nAutomation:\nautomated nudge\n\nMaka:\nStep three done.',
     );
   });
 

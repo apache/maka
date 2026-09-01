@@ -3273,6 +3273,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ? serializeTranscriptText(state, {
               user: copyCopy.roleUser,
               assistant: copyCopy.roleAssistant,
+              goalContinuation: copyCopy.roleGoalContinuation,
+              legacyAutomation: copyCopy.roleLegacyAutomation,
             })
           : lastAssistantText(state);
         if (!text) {

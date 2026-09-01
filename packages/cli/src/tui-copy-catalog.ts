@@ -25,21 +25,25 @@ export const TUI_COPY_RESOURCES = {
       copiedAll:
         'Sent the conversation to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
       tooLarge:
-        'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; terminals silently truncate past their own limit.',
+        'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; a larger payload is silently dropped by the terminal.',
       nothingToCopy: 'Nothing to copy yet.',
       roleUser: 'You:',
       roleAssistant: 'Maka:',
+      roleGoalContinuation: 'Goal continuation (autonomous):',
+      roleLegacyAutomation: 'Legacy automation (history only):',
     },
     zh: {
       copiedLast:
-        '已通过 OSC 52 将最后一条回复发送到终端 · {count} 个字符——仅当终端(以及 tmux,如使用)允许 OSC 52 写入时才会真正复制。',
+        '已将最后一条回复发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
       copiedAll:
-        '已通过 OSC 52 将整段对话发送到终端 · {count} 个字符——仅当终端(以及 tmux,如使用)允许 OSC 52 写入时才会真正复制。',
+        '已将整段对话发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
       tooLarge:
-        '内容过大,无法通过 OSC 52 复制 · {bytes} 字节超过 {limit} 字节上限;终端超限会静默截断。',
+        '内容过大，无法复制 · {bytes} 字节超过 {limit} 字节上限；更大的内容会被终端静默丢弃。',
       nothingToCopy: '暂无可复制的内容。',
       roleUser: '你：',
       roleAssistant: 'Maka：',
+      roleGoalContinuation: '目标续跑（自主）：',
+      roleLegacyAutomation: '旧版自动化（仅历史）：',
     },
   },
   'mcp-status': {
