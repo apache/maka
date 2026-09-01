@@ -75,6 +75,26 @@ test('CLI validation qualifies exact published State Roots without weakening art
     /"\$PREDECESSOR_TARBALL_URL" '' "\$PREDECESSOR_INTEGRITY" \\\n\s+candidate/u,
   );
 
+  // The env those two names come from. Without this the third transition would
+  // still be spelled correctly while pointing at nothing, which is how the
+  // `tarball_url` binding lost its only assertion when the predecessor moved
+  // off its own job. `release_predecessor_tarball_url` is also a declared
+  // `workflow_call` output, so callers hold it too.
+  assert.match(
+    workflow,
+    /release_predecessor_tarball_url:[\s\S]*?value: \$\{\{ jobs\.build\.outputs\.release_predecessor_tarball_url \}\}/u,
+  );
+  for (const name of ['tarball_url', 'integrity']) {
+    assert.match(
+      workflow,
+      new RegExp(
+        `PREDECESSOR_${name.toUpperCase()}: \\$\\{\\{ needs\\.build\\.outputs\\.release_predecessor_${name} \\}\\}`,
+        'u',
+      ),
+      name,
+    );
+  }
+
   const steps = workflowSteps(workflow);
   const sandbox = namedStep(steps, 'Require the account-isolation sandbox');
   assert.match(sandbox, /apt-get install --yes bubblewrap/u);

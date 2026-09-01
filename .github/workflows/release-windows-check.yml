@@ -106,8 +106,12 @@ on:
 permissions:
   contents: read
 
+# Keyed on the pull request number rather than the ref, because `github.ref` is
+# refs/heads/main for the nightly and for a dispatch alike: one shared group
+# would let a dispatch queue behind the nightly and then be discarded while
+# still pending. Same fix the other two Windows lanes already carry.
 concurrency:
-  group: release-windows-check-${{ github.ref }}
+  group: release-windows-check-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

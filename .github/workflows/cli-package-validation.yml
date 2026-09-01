@@ -401,7 +401,14 @@ jobs:
           qualify current-nightly-predecessor-to-candidate \
             "$PREDECESSOR_TARBALL_URL" '' "$PREDECESSOR_INTEGRITY" \
             candidate '' '' any
+      # The three transitions used to be three matrix jobs, so one failing left
+      # the others to upload their own reports. Folded into one step they share
+      # a `set -e`, and the reports are wanted most on the run that failed —
+      # `tee` has already written the failing transition's own output by then.
+      # `if-no-files-found` stays `error` so a broken path is still caught on a
+      # green run.
       - name: Preserve the qualification reports
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: released-state-root

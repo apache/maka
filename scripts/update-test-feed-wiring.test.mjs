@@ -41,7 +41,13 @@ test('the packaged boot path hands the harness feed to the update service', () =
   const boot = read('apps/desktop/src/main/runtime-host-boot.ts');
 
   assert.match(boot, /const updateTestFeed = process\.env\.MAKA_UPDATE_TEST_FEED;/u);
-  assert.match(boot, /createAppUpdateService\(\{[\s\S]*?testFeedUrl: updateTestFeed,/u);
+  // Bounded to the call's own argument object — the span may not cross a `});`
+  // — because an unbounded `[\s\S]*?` would accept a `testFeedUrl` belonging to
+  // some later call several hundred lines away.
+  assert.match(
+    boot,
+    /createAppUpdateService\(\{(?:(?!\}\);)[\s\S])*?testFeedUrl: updateTestFeed,/u,
+  );
 });
 
 test('the harness feed still redirects packaged user data away from the real root', () => {
