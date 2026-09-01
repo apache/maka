@@ -102,6 +102,15 @@
   color: var(--muted-foreground);
 }
 
+.maka-agent-graph-heartbeat {
+  flex: 0 0 auto;
+}
+
+.maka-agent-graph-elapsed {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .maka-agent-graph-empty {
   margin: var(--space-2) 0 0;
 }
@@ -143,9 +152,21 @@
   background: var(--muted-foreground);
 }
 
+@keyframes maka-agent-graph-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .maka-agent-graph-operators li[data-status="running"] .maka-agent-graph-status-dot,
 .maka-agent-graph-operators li[data-status="runnable"] .maka-agent-graph-status-dot {
   background: var(--status-running);
+  animation: maka-agent-graph-dot-pulse 1.6s ease-in-out infinite;
 }
 
 .maka-agent-graph-operators li[data-status="completed"] .maka-agent-graph-status-dot {
@@ -221,5 +242,11 @@
 
   .maka-agent-graph-operator-status {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .maka-agent-graph-operators .maka-agent-graph-status-dot {
+    animation: none;
   }
 }

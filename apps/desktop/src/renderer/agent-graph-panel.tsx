@@ -25,7 +25,7 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
-import { IconButton, Selector, type SelectorOptionType } from '@maka/ui';
+import { AgentGraphLiveStatus, IconButton, Selector, type SelectorOptionType } from '@maka/ui';
 import { ICON_SIZE, ChevronDown, X } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -49,6 +49,13 @@ const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
   isCurrent: () => false,
   dispose() {},
 };
+
+/** Snapshot statuses during which the panel must keep signaling liveness. */
+const GRAPH_LIVE_STATUSES: ReadonlySet<AgentGraphClientSnapshot['status']> = new Set([
+  'active',
+  'waiting',
+  'closing',
+]);
 
 type GraphPanelCopy = {
   title: string;
@@ -204,6 +211,7 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
+  const graphLive = snapshot !== undefined && GRAPH_LIVE_STATUSES.has(snapshot.status);
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -393,12 +401,18 @@ export function AgentGraphPanel(props: {
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
-              {copy.status(snapshot.status)} ·{' '}
-              {copy.progress(
-                progress.settled,
-                progress.total,
-                snapshot.omitted.operators > 0,
-              )}
+              <AgentGraphLiveStatus
+                live={graphLive}
+                resetKey={snapshot.graphId}
+                label={copy.status(snapshot.status)}
+              >
+                {copy.status(snapshot.status)} ·{' '}
+                {copy.progress(
+                  progress.settled,
+                  progress.total,
+                  snapshot.omitted.operators > 0,
+                )}
+              </AgentGraphLiveStatus>
             </span>
           ) : null}
         </div>
