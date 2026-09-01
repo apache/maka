@@ -227,6 +227,17 @@ export interface MakaPiTuiInput {
   };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
+  /**
+   * The Host re-resolved its model catalog and handed back the new projection.
+   * Adopt it wholesale — the picker shows what the Host says, never a local
+   * merge of it.
+   */
+  subscribeModelCatalogChanges?: (
+    listener: (refresh: {
+      readonly modelChoices: readonly ModelChoice[];
+      readonly connectionIdentities: readonly ConnectionIdentity[];
+    }) => void,
+  ) => () => void;
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
@@ -919,8 +930,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     process.off('unhandledRejection', handleUnhandledRejection);
   };
 
+  let unsubscribeModelCatalogChanges: (() => void) | undefined;
   const restoreTerminal = () => {
     removeProcessHandlers();
+    unsubscribeModelCatalogChanges?.();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
     void sideConversation?.stopParentObserver?.();
@@ -1239,6 +1252,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // available — the single source the picker and connection/model lookups read.
   let modelChoices = input.modelChoices;
   let connectionIdentities = input.connectionIdentities;
+  unsubscribeModelCatalogChanges = input.subscribeModelCatalogChanges?.((refresh) => {
+    if (closed) return;
+    modelChoices = refresh.modelChoices;
+    connectionIdentities = refresh.connectionIdentities;
+    requestRender();
+  });
   // Monotonic attempt id: each setup submit captures one, and any transition
   // that abandons the in-flight attempt (back, re-pick, close) increments it so
   // a late verify/save settlement cannot clobber a newer attempt.

@@ -165,6 +165,7 @@ import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
 import { notifySandboxBoundaryGraphWake } from './sandbox-boundary-graph-wake.js';
 import { HostRuntimePolicyCoordinator } from './runtime-policy-coordinator.js';
+import { startHostModelMetadataRefresh } from './model-metadata-refresh.js';
 import { HostRuntimeResourceCoordinator } from './runtime-resource-coordinator.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import { HostSessionCatalogCoordinator } from './session-catalog-coordinator.js';
@@ -450,6 +451,13 @@ export async function createExecutionRuntimeHostComposition(
         ) => Promise<string[]>)
       | undefined;
     const hostChanges = new HostChangeFeed();
+    // Startup, once, in the background: the Host owns the model catalog, so it
+    // is the one process that gets to ask models.dev what is true today. On any
+    // failure the build's committed snapshot stands.
+    const modelMetadataRefresh = startHostModelMetadataRefresh({
+      policy: runtimePolicyStores.operations,
+      publish: () => hostChanges.publishConnectionCatalog(),
+    });
     const projectMembership = new HostProjectMembershipGate();
     const workspaceResolver = new HostWorkspaceResolver(
       openedProjectCatalog,
@@ -1706,6 +1714,7 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.beginDrain(),
         ],
         close: [
+          () => modelMetadataRefresh.close(),
           () => connectionEffects.close(),
           () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
           () => skills.close(),

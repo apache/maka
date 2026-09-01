@@ -1298,6 +1298,11 @@ function registerHostClientIpc(
     emitTargetConnectionListChanged();
     sendToRenderer("settings:externalChanged", { ts: Date.now() });
   });
+  // No `settings:externalChanged` here: the user's settings did not move, the
+  // Host just resolved the same connections against a newer model catalog.
+  const unsubscribeConnectionCatalogChanges = client.subscribeConnectionCatalogChanges(() => {
+    emitTargetConnectionListChanged();
+  });
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitTargetSessionsChanged("updated", sessionId),
   );
@@ -1556,6 +1561,7 @@ function registerHostClientIpc(
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
     unsubscribeConfigurationChanges();
+    unsubscribeConnectionCatalogChanges();
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
