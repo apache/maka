@@ -340,7 +340,13 @@ test('drift finds nothing when the snapshot still matches upstream', async () =>
     const { report } = await drift(['--snapshot', snapshot, '--refresh-input', input]);
     assert.equal(report.drifted, false);
     assert.deepEqual(
-      [report.added, report.removed, report.changed, report.unprojectable, report.missingProviders],
+      [
+        report.added,
+        report.removed,
+        report.changed,
+        report.rejectedModels,
+        report.rejectedProviders,
+      ],
       [[], [], [], [], []],
     );
   } finally {
@@ -382,10 +388,52 @@ test('drift separates a rejected shape from a real upstream difference', async (
     assert.equal(report.drifted, true);
     assert.deepEqual(report.added, ['anthropic/added']);
     assert.deepEqual(report.removed, ['anthropic/legacy']);
-    assert.deepEqual(report.changed, ['anthropic/model: displayName, pricing']);
-    assert.deepEqual(report.missingProviders, ['openai (models.dev openai)']);
-    assert.equal(report.unprojectable.length, 1);
-    assert.match(report.unprojectable[0], /^groq\/model: .*unsupported modalities/u);
+    assert.deepEqual(report.changed, [
+      'anthropic/model: metadata.displayName, pricing.inputUsdPer1M, pricing.outputUsdPer1M',
+    ]);
+    assert.equal(report.rejectedProviders.length, 1);
+    assert.match(report.rejectedProviders[0], /^openai: .*provider openai is missing/u);
+    assert.equal(report.rejectedModels.length, 1);
+    assert.match(report.rejectedModels[0], /^groq\/model: .*unsupported modalities/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift reports the projection sections that carry no model metadata', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-sections-'));
+  try {
+    const committed = join(root, 'api.json');
+    const upstream = join(root, 'upstream.json');
+    const snapshot = join(root, 'snapshot.json');
+    const before = fixtureCatalog();
+    before.anthropic.models.model.provider = { npm: '@example/before' };
+    await writeFile(committed, JSON.stringify(before));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      committed,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    // Neither a renamed provider nor a swapped npm package touches a model's
+    // metadata or its pricing, which is all the report used to compare.
+    const after = JSON.parse(JSON.stringify(before));
+    after.anthropic.name = 'Anthropic Renamed';
+    after.anthropic.models.model.provider = { npm: '@example/after' };
+    await writeFile(upstream, JSON.stringify(after));
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', upstream]);
+    assert.equal(report.drifted, true);
+    assert.deepEqual(report.changed, [
+      'anthropic: providerFacts.name',
+      'anthropic/model: providerOverrides.npm',
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -480,55 +528,6 @@ test('refresh rejects a partial provider shrink until it is explicitly accepted'
     await main([...refreshArgs, '--accept-upstream-removals']);
     const accepted = JSON.parse(await readFile(snapshot, 'utf8'));
     assert.equal(accepted.projection.metadata.anthropic['model-two'], undefined);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('accepting upstream removals still refuses a truncated catalog', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-truncated-'));
-  try {
-    const committed = join(root, 'api.json');
-    const outage = join(root, 'outage.json');
-    const snapshot = join(root, 'snapshot.json');
-    const metadata = join(root, 'metadata.ts');
-    const full = fixtureCatalog();
-    for (const provider of Object.values(full)) {
-      const [model] = Object.values(provider.models);
-      if (!model) continue;
-      for (const suffix of ['b', 'c', 'd']) provider.models[`model-${suffix}`] = { ...model };
-    }
-    await writeFile(committed, JSON.stringify(full));
-    await writeFile(outage, JSON.stringify(fixtureCatalog()));
-    await main([
-      'node',
-      'sync-model-metadata.mjs',
-      '--refresh',
-      '--refresh-input',
-      committed,
-      '--snapshot',
-      snapshot,
-      '--output',
-      metadata,
-    ]);
-    const committedSnapshot = await readFile(snapshot, 'utf8');
-
-    await assert.rejects(
-      main([
-        'node',
-        'sync-model-metadata.mjs',
-        '--refresh',
-        '--accept-upstream-removals',
-        '--refresh-input',
-        outage,
-        '--snapshot',
-        snapshot,
-        '--output',
-        metadata,
-      ]),
-      /more than the 100 --accept-upstream-removals acknowledges/u,
-    );
-    assert.equal(await readFile(snapshot, 'utf8'), committedSnapshot);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -25,9 +25,10 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
-// Must stay in step with ModelInfo['modalities'] in packages/core. A value
-// that reaches the projection but not the wire type fails the build; a value
-// missing here drops the whole refresh, not just the model that declares it.
+// This script runs before packages/core is built, so it cannot read
+// ModelModality itself. The build keeps the two in step: a value that reaches
+// the projection but not that type fails to compile. A value missing here
+// drops the whole refresh, not just the model that declares it.
 const MODALITIES = new Set(['text', 'image', 'audio', 'pdf', 'video']);
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
@@ -191,30 +192,25 @@ export async function main(argv = process.argv) {
   await replaceFilesTransactionally(writes);
 }
 
-function buildProjection(catalog) {
+// `options.onReject` decides what an unprojectable provider or model costs. A
+// refresh has none, so the first bad shape aborts the whole snapshot rather
+// than silently committing a catalog with a hole in it. The drift report
+// passes one, because there a bad shape is the finding it exists to print and
+// must not stop it comparing everything else.
+function buildProjection(catalog, options = {}) {
+  const onReject = options.onReject;
   const metadata = {};
   const pricing = [];
   const providerFacts = {};
   const providerOverrides = {};
   for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
     const provider = catalog[sourceId];
-    if (!provider) {
-      throw new Error(`models.dev provider ${sourceId} is missing`);
-    }
-    if (
-      !provider.models ||
-      typeof provider.models !== 'object' ||
-      Array.isArray(provider.models) ||
-      Object.keys(provider.models).length === 0
-    ) {
-      throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
-    }
-    if (
-      typeof provider.id !== 'string' ||
-      typeof provider.name !== 'string' ||
-      typeof provider.doc !== 'string'
-    ) {
-      throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+    try {
+      assertProviderShape(sourceId, provider);
+    } catch (error) {
+      if (!onReject) throw error;
+      onReject('provider', providerType, error);
+      continue;
     }
     providerFacts[providerType] = {
       id: provider.id,
@@ -222,28 +218,57 @@ function buildProjection(catalog) {
       ...(typeof provider.api === 'string' ? { api: provider.api } : {}),
       doc: provider.doc,
     };
-    metadata[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([id, model]) => [id, toMetadata(sourceId, id, provider, model)]),
+    metadata[providerType] = {};
+    providerOverrides[providerType] = {};
+    const priced = !PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType);
+    const models = Object.entries(provider.models).sort(([left], [right]) =>
+      left.localeCompare(right),
     );
-    providerOverrides[providerType] = Object.fromEntries(
-      Object.entries(provider.models)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .filter(([, model]) => model.provider !== undefined)
-        .map(([id, model]) => [id, toModelProviderOverride(sourceId, id, model.provider)]),
-    );
-    if (!PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType)) {
-      pricing.push(
-        ...Object.entries(provider.models)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([id, model]) => toPricing(providerType, id, model))
-          .filter((pricing) => pricing !== undefined),
-      );
+    for (const [id, model] of models) {
+      let projected;
+      try {
+        projected = {
+          metadata: toMetadata(sourceId, id, provider, model),
+          override:
+            model.provider === undefined
+              ? undefined
+              : toModelProviderOverride(sourceId, id, model.provider),
+          pricing: priced ? toPricing(providerType, id, model) : undefined,
+        };
+      } catch (error) {
+        if (!onReject) throw error;
+        onReject('model', `${providerType}/${id}`, error);
+        continue;
+      }
+      metadata[providerType][id] = projected.metadata;
+      if (projected.override !== undefined)
+        providerOverrides[providerType][id] = projected.override;
+      if (projected.pricing !== undefined) pricing.push(projected.pricing);
     }
   }
 
   return { metadata, pricing, providerFacts, providerOverrides };
+}
+
+function assertProviderShape(sourceId, provider) {
+  if (!provider) {
+    throw new Error(`models.dev provider ${sourceId} is missing`);
+  }
+  if (
+    !provider.models ||
+    typeof provider.models !== 'object' ||
+    Array.isArray(provider.models) ||
+    Object.keys(provider.models).length === 0
+  ) {
+    throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
+  }
+  if (
+    typeof provider.id !== 'string' ||
+    typeof provider.name !== 'string' ||
+    typeof provider.doc !== 'string'
+  ) {
+    throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
+  }
 }
 
 async function readUpstream(refreshInputPath) {
@@ -266,9 +291,9 @@ async function readUpstream(refreshInputPath) {
 async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   const { text: sourceText, etag: sourceEtag, retrievedAt } = await readUpstream(refreshInputPath);
   const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
-  const previous = await loadSnapshotIfPresent(snapshotPath);
-  if (previous) {
-    assertAcceptableRemovals(previous.projection, projection, options.acceptUpstreamRemovals);
+  if (!options.acceptUpstreamRemovals) {
+    const previous = await loadSnapshotIfPresent(snapshotPath);
+    if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
   }
   const projectionText = JSON.stringify(projection);
   const snapshot = {
@@ -292,25 +317,14 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   };
 }
 
-// What --accept-upstream-removals is for: a handful of models the provider
-// retired. An upstream outage serving a truncated catalog removes paths the
-// same way, so the acknowledgement stops here.
-const MAXIMUM_ACKNOWLEDGED_REMOVALS = 100;
-
-function assertAcceptableRemovals(previous, next, acknowledged) {
+function assertProjectionDoesNotShrink(previous, next) {
   const removals = [];
   collectProjectionRemovals(previous, next, [], removals);
   if (removals.length === 0) return;
-  if (!acknowledged) {
-    throw new Error(
-      `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
-    );
-  }
-  if (removals.length > MAXIMUM_ACKNOWLEDGED_REMOVALS) {
-    throw new Error(
-      `models.dev refresh would remove ${removals.length} committed projection paths, more than the ${MAXIMUM_ACKNOWLEDGED_REMOVALS} --accept-upstream-removals acknowledges; treat a change this size as an upstream outage`,
-    );
-  }
+
+  throw new Error(
+    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+  );
 }
 
 function collectProjectionRemovals(previous, next, path, removals) {
@@ -374,57 +388,100 @@ function projectionPath(path) {
 // instead of aborting the whole comparison the way a refresh does.
 const DRIFT_LIST_LIMIT = 20;
 
+// Every section of the projection, flattened to one value per entity. The
+// report reads sections through this table instead of naming them itself,
+// which is how it went out comparing only two of the four. A section added to
+// buildProjection is compared here without touching the comparison.
+const PROJECTION_SECTIONS = {
+  metadata: entitiesByProviderAndModel,
+  // modelKey is `${providerType}:${id}`, so replacing the first colon yields
+  // the label every other section already uses.
+  pricing: (section) => new Map(section.map((entry) => [entry.modelKey.replace(':', '/'), entry])),
+  providerFacts: (section) => new Map(Object.entries(section)),
+  providerOverrides: entitiesByProviderAndModel,
+};
+
 async function collectDrift(snapshot, refreshInputPath) {
-  const catalog = JSON.parse((await readUpstream(refreshInputPath)).text);
-  const previousMetadata = snapshot.projection.metadata;
-  const previousPricing = new Map(
-    snapshot.projection.pricing.map((entry) => [entry.modelKey, entry]),
-  );
-  const report = { missingProviders: [], unprojectable: [], added: [], removed: [], changed: [] };
-  for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
-    const provider = catalog[sourceId];
-    const previousModels = previousMetadata[providerType] ?? {};
-    const models = provider?.models;
-    if (!models || typeof models !== 'object' || Array.isArray(models)) {
-      report.missingProviders.push(`${providerType} (models.dev ${sourceId})`);
+  const rejectedProviders = [];
+  const rejectedModels = [];
+  const rejected = new Set();
+  // The raw catalog, not selectCatalog's: a provider that vanished upstream is
+  // the report's most important finding, and selectCatalog throws on it.
+  const upstream = buildProjection(JSON.parse((await readUpstream(refreshInputPath)).text), {
+    onReject: (kind, label, error) => {
+      rejected.add(label);
+      (kind === 'provider' ? rejectedProviders : rejectedModels).push(`${label}: ${error.message}`);
+    },
+  });
+  const previous = projectionEntities(snapshot.projection);
+  const next = projectionEntities(upstream);
+  const report = { rejectedProviders, rejectedModels, added: [], removed: [], changed: [] };
+  for (const label of [...new Set([...previous.keys(), ...next.keys()])].sort()) {
+    const before = previous.get(label);
+    const after = next.get(label);
+    if (before === undefined) {
+      report.added.push(label);
       continue;
     }
-    const priced = !PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType);
-    const ids = [...new Set([...Object.keys(previousModels), ...Object.keys(models)])].sort();
-    for (const id of ids) {
-      const model = models[id];
-      const previous = previousModels[id];
-      if (model === undefined) {
-        report.removed.push(`${providerType}/${id}`);
-        continue;
-      }
-      let metadata;
-      let pricing;
-      try {
-        metadata = toMetadata(sourceId, id, provider, model);
-        pricing = priced ? toPricing(providerType, id, model) : undefined;
-      } catch (error) {
-        report.unprojectable.push(`${providerType}/${id}: ${error.message}`);
-        continue;
-      }
-      if (previous === undefined) {
-        report.added.push(`${providerType}/${id}`);
-        continue;
-      }
-      const fields = driftedFields(previous, metadata);
-      if (priced && !sameValue(previousPricing.get(`${providerType}:${id}`), pricing)) {
-        fields.push('pricing');
-      }
-      if (fields.length > 0) report.changed.push(`${providerType}/${id}: ${fields.join(', ')}`);
+    if (after === undefined) {
+      // A shape the projector rejected already has its own finding above. It
+      // is not upstream saying the entity is gone.
+      if (!isRejected(label, rejected)) report.removed.push(label);
+      continue;
     }
+    const fields = driftedFields(before, after);
+    if (fields.length > 0) report.changed.push(`${label}: ${fields.join(', ')}`);
   }
   const drifted = Object.values(report).some((entries) => entries.length > 0);
   return { ...report, drifted };
 }
 
+function entitiesByProviderAndModel(section) {
+  const entities = new Map();
+  for (const [providerType, models] of Object.entries(section)) {
+    for (const [id, value] of Object.entries(models)) entities.set(`${providerType}/${id}`, value);
+  }
+  return entities;
+}
+
+function projectionEntities(projection) {
+  const entities = new Map();
+  for (const [section, flatten] of Object.entries(PROJECTION_SECTIONS)) {
+    for (const [label, value] of flatten(projection[section])) {
+      const entity = entities.get(label);
+      if (entity) entity[section] = value;
+      else entities.set(label, { [section]: value });
+    }
+  }
+  return entities;
+}
+
+function isRejected(label, rejected) {
+  if (rejected.has(label)) return true;
+  const slash = label.indexOf('/');
+  return slash !== -1 && rejected.has(label.slice(0, slash));
+}
+
 function driftedFields(previous, next) {
-  const keys = [...new Set([...Object.keys(previous), ...Object.keys(next)])].sort();
-  return keys.filter((key) => !sameValue(previous[key], next[key]));
+  const fields = [];
+  for (const section of Object.keys(PROJECTION_SECTIONS)) {
+    const before = previous[section];
+    const after = next[section];
+    if (sameValue(before, after)) continue;
+    if (isPlainObject(before) && isPlainObject(after)) {
+      const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
+      for (const key of keys) {
+        if (!sameValue(before[key], after[key])) fields.push(`${section}.${key}`);
+      }
+      continue;
+    }
+    fields.push(section);
+  }
+  return fields;
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // Both sides are projector output, so their keys are already in one order.
@@ -435,11 +492,11 @@ function sameValue(left, right) {
 function formatDrift(report) {
   const lines = [];
   for (const [label, entries] of [
-    ['providers missing upstream', report.missingProviders],
-    ['models the projector rejects', report.unprojectable],
-    ['models upstream has and the snapshot does not', report.added],
-    ['models the snapshot has and upstream does not', report.removed],
-    ['models whose projection changed', report.changed],
+    ['providers the projector rejects', report.rejectedProviders],
+    ['models the projector rejects', report.rejectedModels],
+    ['entries upstream has and the snapshot does not', report.added],
+    ['entries the snapshot has and upstream does not', report.removed],
+    ['entries whose projection changed', report.changed],
   ]) {
     if (entries.length === 0) continue;
     lines.push(`${label}: ${entries.length}`);
@@ -818,9 +875,10 @@ function buildPricingModule(pricing, source) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  // Drift is a finding, not a crash: the report has already been printed, and
-  // the exit code is what a scheduled job branches on.
-  if ((await main())?.drifted) process.exitCode = 1;
+  // Drift is a finding, not a crash. Exit 2 so a caller can tell "upstream
+  // moved" from "this command failed"; both reported 1 before, which made the
+  // difference unreadable to the one job that has to act on it.
+  if ((await main())?.drifted) process.exitCode = 2;
 }
 
 function option(name, argv) {
