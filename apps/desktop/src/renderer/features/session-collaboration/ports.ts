@@ -42,6 +42,7 @@ export interface SessionCollaborationServices {
     readonly operationId: string;
   }, onProgress?: (phase: SessionCollaborationImportPhase) => void): Promise<SessionCollaborationImportResult>;
   cancelImport(operationId: string): Promise<SessionCollaborationCancelResult>;
+  readInvitationClipboard(): Promise<string>;
   listMounts(): Promise<readonly SessionCollaborationMountSummary[]>;
   removeMount(mountId: string): Promise<void>;
   getPendingTurnRequests(): Promise<readonly SessionTurnAccessRequest[]>;

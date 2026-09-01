@@ -756,6 +756,8 @@ export interface MakaBridge {
       readonly operationId: string;
     }, onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void): Promise<DesktopSessionCollaborationImportResult>;
     cancelImport(operationId: string): Promise<DesktopSessionCollaborationCancelResult>;
+    /** Reads only after the user invokes the invitation paste action. */
+    readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     removeMount(mountId: string): Promise<void>;
     requestTurn(

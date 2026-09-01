@@ -29,6 +29,7 @@ export function createDesktopSessionCollaborationServices(
     importInvitation: (input, onProgress) =>
       bridge.sessionCollaboration.importInvitation(input, onProgress),
     cancelImport: (operationId) => bridge.sessionCollaboration.cancelImport(operationId),
+    readInvitationClipboard: () => bridge.sessionCollaboration.readInvitationClipboard(),
     listMounts: () => bridge.sessionCollaboration.listMounts(),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
     getPendingTurnRequests: () => bridge.sessionCollaboration.getPendingTurnRequests(),
