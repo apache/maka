@@ -46,3 +46,34 @@ test('selector has a Windows platform seam and does not select Windows on macOS'
   });
   assert.equal(mac.backendId, 'maka-cu');
 });
+
+test('Windows tools expose only helper actions to the model', () => {
+  const selected = selectComputerUseBackend({
+    platform: 'win32',
+    binaryPath: 'helper.exe',
+    expectedBinarySha256: '0'.repeat(64),
+    createWindowsBackend: () => backend,
+  });
+  const parameters = selected.tools[0]?.parameters as {
+    shape?: { action?: { options?: readonly string[] } };
+    safeParse?: (value: unknown) => { success: boolean };
+  };
+  assert.deepEqual(parameters.shape?.action?.options, [
+    'list_apps',
+    'observe',
+    'screenshot',
+    'click_element',
+    'set_value',
+    'wait',
+  ]);
+  assert.equal(parameters.safeParse?.({ action: 'left_click' }).success, false);
+  assert.equal(parameters.safeParse?.({ action: 'key', text: 'Enter' }).success, false);
+  assert.equal(
+    parameters.safeParse?.({ action: 'scroll', scroll_direction: 'down' }).success,
+    false,
+  );
+  assert.doesNotMatch(
+    selected.tools[0]?.description ?? '',
+    /coordinate scroll|press_key|scroll_element/,
+  );
+});

@@ -18,6 +18,7 @@
  */
 
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type { CuToolActionType } from '@maka/core/computer-use';
 import { type CuOverlayHook, type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { createMakaCuBackend } from './maka-cu-backend.js';
 import type { MakaCuBackendOptions } from './maka-cu-backend.js';
@@ -40,6 +41,16 @@ export type CuBackendId = (typeof CU_BACKEND_IDS)[number];
 
 export const DEFAULT_CU_BACKEND_ID: CuBackendId =
   process.platform === 'win32' ? 'windows-native' : 'maka-cu';
+
+/** The private Windows helper has no coordinate, key, or scroll dispatch. */
+const WINDOWS_NATIVE_ACTIONS = [
+  'list_apps',
+  'observe',
+  'screenshot',
+  'click_element',
+  'set_value',
+  'wait',
+] as const satisfies readonly CuToolActionType[];
 
 type DisposableBackend = CuDispatchBackend & {
   clearSession?: (sessionId: string) => void;
@@ -157,6 +168,7 @@ export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComput
           });
     tools = buildComputerUseTools({
       backend,
+      ...(backendId === 'windows-native' ? { supportedActions: WINDOWS_NATIVE_ACTIONS } : {}),
       ...(deps.overlay ? { overlay: deps.overlay } : {}),
       ...(deps.screenLocked ? { screenLocked: deps.screenLocked } : {}),
     });
