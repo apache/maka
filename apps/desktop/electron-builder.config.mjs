@@ -289,6 +289,13 @@ const baseDesktopBuilderConfig = {
     // not a name a desktop entry's `Exec=` can launch. Only Linux derives an
     // executable name this way, which is why macOS and Windows never showed it.
     executableName: 'maka',
+    // Electron takes its app_id — the window's WM_CLASS — from `desktopName` in
+    // the manifest, while the desktop entry's `StartupWMClass` falls back to the
+    // product name when that field is absent. `Maka` and `maka` never match, so
+    // the desktop environment cannot link a running window to the installed
+    // launcher: generic icon, and pinning it does nothing. Setting both keeps
+    // the entry's filename and the app_id derived from the same string.
+    syncDesktopName: true,
     // fpm refuses to build a deb without a maintainer, and the field must
     // carry an address. The project list is the only stable one; no individual
     // owns the package.

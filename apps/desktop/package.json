@@ -6,6 +6,7 @@
   "author": "The Maka Authors",
   "license": "Apache-2.0",
   "homepage": "https://github.com/apache/maka",
+  "desktopName": "maka.desktop",
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
