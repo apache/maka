@@ -289,7 +289,8 @@ test('renders collapsible project navigation and row actions as sibling controls
   assert.ok(controlledGroup);
   assert.equal(navigation.contains(metadata), true);
   assert.equal(navigation.contains(action), false);
-  assert.equal(metadata.textContent, '1');
+  assert.equal(metadata.textContent, '');
+  assert.equal(navigation.textContent, 'Maka', 'project navigation omits the task-count badge');
   assert.equal(controlledGroup.getAttribute('aria-hidden'), 'false');
   const projectButtons = [...projectRow.querySelectorAll('button')];
   assert.equal(
