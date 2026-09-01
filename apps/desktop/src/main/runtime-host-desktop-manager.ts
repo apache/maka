@@ -36,7 +36,7 @@ import {
   type RuntimeHostRetirementMode,
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
-import type { HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostRegistration, HostStatusResult } from '@maka/runtime-host/protocol';
 import type { DesktopTargetSessionRef } from '../shared/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
@@ -72,6 +72,7 @@ export interface RuntimeHostDesktopManager {
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void>;
   finalizeGuestAccess(mountId: string, signal?: AbortSignal): Promise<void>;
   unmountGuest(mountId: string): Promise<void>;
@@ -503,12 +504,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void> {
     if (!isSessionGuestProfile(profileTarget.profile)) {
       return Promise.reject(new Error('A Session Guest target is required'));
     }
     return this.#mutateTarget(profileTarget.profile.id, () =>
-      this.#enable(profileTarget, true, signal, onConnectionPhase),
+      this.#enable(profileTarget, true, signal, onConnectionPhase, onHostStatus),
     );
   }
 
@@ -517,6 +519,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     allowSameRoot: boolean,
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void> {
     signal?.throwIfAborted();
     if (this.#closed) throw new Error('Desktop Runtime Host manager is closed');
@@ -547,6 +550,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const target = this.#createTarget({
       ...withRuntimeHostTarget(this.#baseInput, profileTarget),
       ...(onConnectionPhase ? { onConnectionPhase } : {}),
+      ...(onHostStatus ? { onHostStatus } : {}),
     });
     this.#targets.set(profileId, target);
     this.#publishState(target, {

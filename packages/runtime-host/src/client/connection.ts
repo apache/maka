@@ -111,6 +111,8 @@ export interface ConnectRuntimeHostInput {
    * connection health.
    */
   onLivenessProbe?: () => void;
+  /** Receives each identity-validated Host status observation. */
+  onHostStatus?: (status: HostStatusResult) => void;
 }
 
 export type RuntimeHostUnavailableReason =
@@ -164,6 +166,7 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly handshakeTimeoutMs?: number;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
 }
 
@@ -176,6 +179,7 @@ export interface ConnectRuntimeHostMessageTransportInput {
   readonly handshakeTimeoutMs?: number;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
@@ -355,6 +359,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   #terminalError: Error | undefined;
   readonly #livenessIntervalMs: number;
   readonly #onLivenessProbe: (() => void) | undefined;
+  readonly #onHostStatus: ((status: HostStatusResult) => void) | undefined;
 
   constructor(
     transport: RuntimeHostMessageTransport,
@@ -371,12 +376,14 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     options?: {
       livenessIntervalMs?: number;
       onLivenessProbe?: () => void;
+      onHostStatus?: (status: HostStatusResult) => void;
       connectionResource?: RuntimeHostConnectionResource;
       peerPath?: RuntimeHostPeerConnectionPath;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
     this.#onLivenessProbe = options?.onLivenessProbe;
+    this.#onHostStatus = options?.onHostStatus;
     this.#transport = transport;
     this.rootId = accepted.rootId;
     this.hostEpoch = accepted.hostEpoch;
@@ -549,6 +556,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       const error = new Error('Runtime Host returned status for a different Host identity');
       this.#fail(error);
       throw error;
+    }
+    try {
+      this.#onHostStatus?.(status);
+    } catch {
+      // Observation cannot control the authenticated connection it watches.
     }
     return status;
   }
@@ -811,6 +823,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   #resetLivenessCheck(): void {
+    // A status observer needs periodic route observations even while other
+    // Session traffic keeps the connection active.
+    if (this.#onHostStatus) return;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
     this.#livenessTimer = undefined;
     this.#scheduleLivenessCheck();
@@ -1021,6 +1036,7 @@ export async function connectRemoteRuntimeHost(
       handshakeTimeoutMs: normalized.handshakeTimeoutMs,
       livenessIntervalMs: normalized.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
     });
   } catch (error) {
@@ -1051,6 +1067,7 @@ export async function connectRuntimeHostMessageTransport(
       expectedRootId,
       livenessIntervalMs: normalized.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
       ...(input.peerPath ? { peerPath: input.peerPath } : {}),
     });
@@ -1262,6 +1279,7 @@ export async function connectResolvedRuntimeHost(
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
     });
     if (result.kind === 'connected') {
       if (
@@ -1359,6 +1377,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
   readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
@@ -1439,6 +1458,7 @@ async function exchangeRuntimeHostHandshake(
     connection: new RuntimeHostConnectionImpl(input.transport, handshake, {
       livenessIntervalMs: input.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
       ...(input.peerPath ? { peerPath: input.peerPath } : {}),
     }),

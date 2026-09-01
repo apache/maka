@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { encodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
+import type { ResolvedRuntimeHostProfile } from '@maka/runtime-host/client';
+import {
+  encodeCollaborationInvitationCode,
+  type HostPeerEndpoint,
+} from '@maka/runtime-host/protocol';
 import { encodeDesktopCollaborationInvitation } from '../runtime-host-collaboration-invitation.js';
 import {
   createDesktopGuestSessionMountService,
@@ -55,6 +59,49 @@ test('retains a successful Guest mount and rehydrates the same authority after r
   assert.equal(await rehydrated, `${result.mountId}:guest-one`);
   assert.deepEqual(activated, [`${result.mountId}:guest-one`]);
   await second!.close();
+});
+
+test('persists authenticated route rotation for reconnect and restart', async () => {
+  const store = memoryStore();
+  let observePeerEndpoint!: (endpoint: HostPeerEndpoint) => void;
+  const first = service(store, {
+    mount: async (target, _signal, _onConnectionPhase, onPeerEndpoint) => {
+      assert.deepEqual(
+        target.profile.kind === 'remote' ? target.profile.transport : undefined,
+        {
+          kind: 'libp2p-direct',
+          peerId: '12D3KooWpeer',
+          routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRelays: ['/memory/stale-relay'],
+        },
+      );
+      assert.ok(onPeerEndpoint);
+      observePeerEndpoint = onPeerEndpoint;
+    },
+  });
+
+  const imported = await first.importInvitation(peerInvitation('guest-routes'), false, 'routes');
+  assert.equal(imported.kind, 'connected');
+  observePeerEndpoint({
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    coordinationRelays: ['/memory/fresh-relay'],
+  });
+  await first.close();
+
+  let restarted!: ReturnType<typeof service>;
+  const restartedTarget = new Promise<ResolvedRuntimeHostProfile>((resolve) => {
+    restarted = service(store, { mount: async (target) => resolve(target) });
+    void restarted.start();
+  });
+  const target = await restartedTarget;
+  assert.deepEqual(target.profile.kind === 'remote' ? target.profile.transport : undefined, {
+    kind: 'libp2p-direct',
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    coordinationRelays: ['/memory/fresh-relay'],
+  });
+  await restarted.close();
 });
 
 test('removes failed activation desire instead of creating recoverable profile state', async () => {
@@ -357,6 +404,25 @@ function invitation(credential: string): string {
     target: {
       name: 'Shared Host',
       transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
+    },
+  });
+}
+
+function peerInvitation(credential: string): string {
+  return encodeDesktopCollaborationInvitation({
+    invitationCode: encodeCollaborationInvitationCode({
+      schemaVersion: 1,
+      rootId: ROOT_ID,
+      credential,
+    }),
+    target: {
+      name: 'Shared Host',
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: '12D3KooWpeer',
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: ['/memory/stale-relay'],
+      },
     },
   });
 }
