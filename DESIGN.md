@@ -5,7 +5,7 @@ colors:
   brand-mark: "#71a8fd"
   accent-light: "oklch(0.70 0.135 250)"
   accent-dark: "oklch(0.74 0.15 250)"
-  primary: "oklch(0.52 0.135 250)"
+  primary: "oklch(0.48 0.135 250)"
   accent-solid-dark: "oklch(0.76 0.15 250)"
   on-accent-light: "#ffffff"
   on-accent-dark: "#171717"

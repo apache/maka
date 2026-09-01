@@ -166,11 +166,20 @@
      accent-colored text/icons on a plain surface. --action (L0.85 chip) is too
      light to clear 1.4.3's 4.5:1 for text, so it cannot back a solid button
      label.
-     L0.52 is the lowest lightness that clears 4.5:1 against white for EVERY
-     palette (weakest is tokyo-night at 4.78:1); chroma and hue follow --accent
-     so palettes still read as themselves. This is the token the Astryx bridge
-     below hands to --color-accent. */
-  --accent-solid: oklch(from var(--accent) 0.52 c h);
+     L0.48; chroma and hue follow --accent so palettes still read as
+     themselves. This is the token the Astryx bridge below hands to
+     --color-accent.
+
+     It was L0.52, picked as the lowest lightness clearing 4.5:1 against WHITE.
+     That is the wrong reading surface: only two of the eleven palettes have a
+     white --background, and the tinted ones sit brighter (tokyo-night #f2f6f8,
+     nord #f2f6f7, coral #fffbfa), which lowers the ratio rather than raising
+     it. Measured against each palette's own light --background, L0.52 gave
+     tokyo-night 4.39:1 — under AA — with onedark 4.62:1 and nord 4.64:1 barely
+     over. L0.48 puts all eleven at 5.15:1 or better (tokyo-night 5.15, onedark
+     5.37, nord 5.46, default 6.51). Dark stays at L0.76, which already ranges
+     6.98-9.76:1 against the dark backgrounds. */
+  --accent-solid: oklch(from var(--accent) 0.48 c h);
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
@@ -289,18 +298,20 @@
      which is Astryx's own shape. One mix serves both modes.
 
      Three tiers standing on a 4.5:1 AA floor never had room to space
-     themselves: 54% muted measured 4.21:1 light and 3.89:1 dark on the default
-     palette, and across the eleven palettes it failed AA in nine of them in
-     light — onedark 3.4, nord 3.6, catppuccin 3.6. That is the direct reason
-     the middle rung goes: a ladder whose bottom rung is illegible on most
-     palettes is not a hierarchy, it is a bug with a token name.
+     themselves. 54% muted cleared AA on the default palette (4.84:1 light) and
+     failed it on nine of the other ten in light — onedark 3.4, catppuccin 3.6,
+     nord 3.7, tokyo-night 3.9, dusk 4.2, forest 4.2, sand 4.3, coral 4.3,
+     azure 4.4 — because it only sat that low to stay a visible step below the
+     tier above it. That is the direct reason the middle rung goes: a ladder
+     whose bottom rung is illegible on nine palettes out of eleven is not a
+     hierarchy, it is a bug with a token name.
 
      68% is chosen so the DEFAULT palette lands on Astryx's own
      --color-text-secondary (#525252 light / #a3a3a3 dark, 7.8:1 / 7.1:1):
      68% ink measures #525153 / #a2a2a4, 7.9:1 / 7.0:1. Every one of the eleven
-     palettes then clears AA in both modes; the worst is onedark light at
-     5.0:1. Hierarchy below these two rungs comes from size, weight and case —
-     never a third grey. */
+     palettes then clears AA in both modes — worst light is onedark 5.0:1,
+     worst dark is onedark 6.1:1. Hierarchy below these two rungs comes from
+     size, weight and case — never a third grey. */
   --muted-foreground: color-mix(in oklch, var(--foreground) 68%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
