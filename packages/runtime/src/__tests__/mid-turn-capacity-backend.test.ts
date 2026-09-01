@@ -62,6 +62,7 @@ const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
 const ROLLING_TAIL = 'ROLLING_TAIL_'.repeat(740);
 const HUGE_RESULT = 'HUGE_RESULT_'.repeat(670);
 const ANCHOR_TEXT = 'compact this very long turn but keep my exact words';
+const BIG_ACTIVE_TOOL_SCHEMA_CHARS = 12_000;
 
 interface MidTurnFixture {
   backend: AiSdkBackend;
@@ -160,6 +161,16 @@ interface MidTurnFixtureOptions {
   priorRunHeaders?: readonly AgentRunHeader[];
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
+  /** Lower the pre-turn history-shaping threshold so that gate can be exercised. */
+  maxHistoryEstimatedTokens?: number;
+  /** An always-active tool whose schema dominates the request payload. */
+  bigActiveTool?: boolean;
+  /**
+   * Run as a child agent with a two-step budget, so the turn's LAST request is
+   * the child-summary finalization step: it adds a prompt fragment and sends no
+   * tool schemas at all.
+   */
+  childFinalization?: boolean;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
   captureMemoryExtraction?: boolean;
   memoryGate?:
@@ -423,7 +434,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
-    header: header(),
+    header: options.childFinalization
+      ? { ...header(), collaborationMode: 'agent' as const }
+      : header(),
+    ...(options.childFinalization ? { maxSteps: 2 } : {}),
     appendMessage: async (message) => {
       messages.push(message);
     },
@@ -461,6 +475,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           return { body: RAW_SPAN_TWO };
         },
       },
+      ...(options.bigActiveTool
+        ? [
+            {
+              name: 'BigActive',
+              description: `BIG_ACTIVE_SCHEMA ${'A'.repeat(BIG_ACTIVE_TOOL_SCHEMA_CHARS)}`,
+              parameters: z.object({ q: z.string() }),
+              impl: async () => ({ ok: true }),
+            },
+          ]
+        : []),
       ...(options.bigToolGroup
         ? [
             {
@@ -493,7 +517,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
         )
       : {
           name: 'mid-turn-test',
-          maxHistoryEstimatedTokens: 100_000,
+          maxHistoryEstimatedTokens: options.maxHistoryEstimatedTokens ?? 100_000,
           historyCompact: {
             enabled: true,
             midTurn: { enabled: true, reserveTokens },
@@ -1543,66 +1567,120 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal((anchor?.payloadChars ?? 0) > 0, true);
   });
 
-  test('a turn seeded with the previous turn’s anchor compacts its FIRST request', async () => {
-    // End to end: turn one really runs, the backend writes the anchor, the
-    // fixture's own mapper puts it in the durable ledger, and turn two reads
-    // it back as prior context. Nothing here hand-builds the anchor.
-    const previous = buildFixture({
-      priorChars: 2_000,
+  /**
+   * Turn start has exactly ONE trigger. These rows differ only in what the
+   * prior context offers — a persisted anchor, an armed pre-turn gate, both,
+   * neither — and each names the one thing that may act on it. The gate weighs
+   * a subset of the payload with a cruder ruler, so it is a fallback, never a
+   * parallel authority.
+   */
+  for (const row of [
+    {
+      name: 'a persisted anchor compacts the turn’s FIRST request',
+      priorAnchor: 'previous_turn',
+      armGate: false,
+      foldedBy: 'anchored_estimate',
+    },
+    {
+      name: 'neither armed leaves the first request alone',
+      priorAnchor: 'none',
+      armGate: false,
+      foldedBy: 'nothing',
+    },
+    {
+      name: 'the anchored estimate acts while the armed gate stands down',
+      priorAnchor: 'previous_turn',
+      armGate: true,
+      foldedBy: 'anchored_estimate',
+    },
+    {
+      name: 'without an anchor the armed gate shapes the oversized history',
+      priorAnchor: 'none',
+      armGate: true,
+      foldedBy: 'pre_turn_gate',
+    },
+    {
+      // A manual /compact writes `input: 0, output: 0` without going through
+      // the provider send, so it carries no anchor: the reverse scan skips it
+      // and still finds the last real request.
+      name: 'a synthetic /compact usage row does not shadow the real anchor',
+      priorAnchor: 'behind_compact_row',
+      armGate: false,
+      foldedBy: 'anchored_estimate',
+    },
+  ] as const) {
+    test(`turn start: ${row.name}`, async () => {
+      // High water 20k: the whole payload at chars/4 is nowhere near it, so
+      // without an anchor step 0 has nothing to act on. The anchor says the
+      // request really costs 30k.
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 40_000,
+        reserveTokens: 20_000,
+        finalAtSecondCall: true,
+        ...(row.armGate ? { maxHistoryEstimatedTokens: 400 } : {}),
+        extraPriorEvents: await priorAnchorEvents(row.priorAnchor),
+        ...(row.priorAnchor === 'none' ? {} : { priorRunHeaders: [priorRunHeader()] }),
+      });
+      await runFixtureTurn(fixture);
+
+      const decisions = compactionDecisions(fixture);
+      const anchoredFold = decisions.find(
+        (decision) => decision.stage === 'activeStep' && decision.decision === 'replaced',
+      );
+      assert.equal(anchoredFold !== undefined, row.foldedBy === 'anchored_estimate');
+      assert.equal(
+        decisions.some((decision) => decision.stage === 'priorReplay'),
+        row.foldedBy === 'pre_turn_gate',
+      );
+      assert.equal(fixture.recorded.length, row.foldedBy === 'nothing' ? 0 : 1);
+
+      const firstPrompt = promptJson(fixture, 0);
+      if (row.foldedBy === 'nothing') {
+        assert.equal(firstPrompt.includes('PRIOR_FACT'), true);
+        return;
+      }
+      assert.match(firstPrompt, /maka_history_compact_checkpoint/);
+      assert.equal(firstPrompt.includes('PRIOR_FACT'), false);
+      assert.equal(firstPrompt.includes(ANCHOR_TEXT), true);
+      if (row.foldedBy !== 'anchored_estimate') return;
+      // The first request folds on the pre_turn boundary: the head anchor stays
+      // verbatim in the successor tail instead of being covered.
+      assert.equal(anchoredFold?.phase, 'pre_turn');
+      assert.match(firstPrompt, /MID_TURN_SUMMARY_SENTINEL/);
+    });
+  }
+
+  test('the anchor a finalization step writes excludes the tool schemas it cleared', async () => {
+    // The child-summary finalization step sends no tools at all. Measuring the
+    // pre-dispatch tool set would pair the provider's real input count with a
+    // payload 12k chars larger than the request it counted.
+    const finalization = buildFixture({
       contextWindow: 1_000_000,
       finalAtSecondCall: true,
-      // A dense (CJK-shaped) request: real input tokens well above chars/4.
-      finalStepUsage: { input: 30_000, output: 10 },
+      bigActiveTool: true,
+      childFinalization: true,
     });
-    await runFixtureTurn(previous);
-    const persisted = priorTurnUsageEvents(previous);
-    assert.equal(persisted.length, 1);
-    assert.equal(
-      (persisted[0]?.actions?.tokenUsage?.lastRequestAnchor as { inputTokens: number } | undefined)
-        ?.inputTokens,
-      30_000,
-    );
-
-    // High water 20k: the whole payload at chars/4 is nowhere near it, so
-    // without the anchor step 0 has nothing to act on. The anchor says the
-    // request really costs 30k, and the first request is compacted.
-    const seeded = buildFixture({
-      priorChars: 2_000,
-      contextWindow: 40_000,
-      reserveTokens: 20_000,
+    await runFixtureTurn(finalization);
+    const control = buildFixture({
+      contextWindow: 1_000_000,
       finalAtSecondCall: true,
-      extraPriorEvents: persisted,
-      priorRunHeaders: [priorRunHeader()],
+      bigActiveTool: true,
     });
-    await runFixtureTurn(seeded);
+    await runFixtureTurn(control);
 
-    assert.equal(seeded.recorded.length, 1);
-    // The first request folds on the pre_turn boundary: the head anchor stays
-    // verbatim in the successor tail instead of being covered.
     assert.equal(
-      compactionDecisions(seeded).find((decision) => decision.decision === 'replaced')?.phase,
-      'pre_turn',
+      promptJson(finalization, 1).includes('BIG_ACTIVE_SCHEMA'),
+      false,
+      'the finalization request itself carries no tool schema',
     );
-    const firstPrompt = promptJson(seeded, 0);
-    assert.match(firstPrompt, /maka_history_compact_checkpoint/);
-    assert.match(firstPrompt, /MID_TURN_SUMMARY_SENTINEL/);
-    assert.equal(firstPrompt.includes('PRIOR_FACT'), false);
-    assert.equal(firstPrompt.includes(ANCHOR_TEXT), true);
-    const complete = seeded.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-  });
-
-  test('the same turn without an anchor leaves its first request alone', async () => {
-    const fixture = buildFixture({
-      priorChars: 2_000,
-      contextWindow: 40_000,
-      reserveTokens: 20_000,
-      finalAtSecondCall: true,
-    });
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.recorded.length, 0);
-    assert.equal(promptJson(fixture, 0).includes('PRIOR_FACT'), true);
+    assert.equal(anchorOf(control) !== undefined, true);
+    assert.equal(
+      (anchorOf(control)?.payloadChars ?? 0) > BIG_ACTIVE_TOOL_SCHEMA_CHARS,
+      true,
+      'an ordinary last request does carry the schema',
+    );
+    assert.equal((anchorOf(finalization)?.payloadChars ?? 0) < BIG_ACTIVE_TOOL_SCHEMA_CHARS, true);
   });
 
   test('an anchor is discarded unless a run header proves it came from this model', async () => {
@@ -1621,35 +1699,6 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
 
       assert.equal(fixture.recorded.length, 0);
     }
-  });
-
-  test('a synthetic /compact usage row does not shadow the real anchor', async () => {
-    // A manual /compact writes `input: 0, output: 0` without going through the
-    // provider send, so it carries no anchor. The reverse scan skips it and
-    // still finds the last real request.
-    const fixture = buildFixture({
-      priorChars: 2_000,
-      contextWindow: 40_000,
-      reserveTokens: 20_000,
-      finalAtSecondCall: true,
-      extraPriorEvents: [
-        priorUsageEvent({ inputTokens: 30_000, payloadChars: 4_000 }),
-        {
-          ...runtimeTextEvent('prior-compact-usage', 'turn-0', 'model', ''),
-          id: 'prior-compact-usage',
-          runId: 'run-0',
-          role: 'system' as const,
-          author: 'system' as const,
-          content: undefined,
-          actions: { tokenUsage: { input: 0, output: 0 } },
-        },
-      ],
-      priorRunHeaders: [priorRunHeader()],
-    });
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.recorded.length, 1);
-    assert.match(promptJson(fixture, 0), /maka_history_compact_checkpoint/);
   });
 
   test('an unrescuable turn under the shipped default still dispatches', async () => {
@@ -1678,6 +1727,58 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
  * so the next fixture turn sees them the way `prior-run-context` serves them
  * back after a restart.
  */
+/** The `lastRequestAnchor` the fixture's turn persisted on its usage message. */
+function anchorOf(
+  fixture: MidTurnFixture,
+): { inputTokens: number; payloadChars: number } | undefined {
+  const usage = fixture.messages.find(
+    (message): message is { type: 'token_usage'; lastRequestAnchor?: unknown } =>
+      (message as { type?: string }).type === 'token_usage',
+  );
+  return usage?.lastRequestAnchor as { inputTokens: number; payloadChars: number } | undefined;
+}
+
+/**
+ * The prior-turn events one turn-start row starts from. `previous_turn` runs a
+ * whole turn first and takes what the backend actually persisted, so nothing
+ * hand-builds the anchor it then reads back.
+ */
+async function priorAnchorEvents(
+  kind: 'none' | 'previous_turn' | 'behind_compact_row',
+): Promise<readonly RuntimeEvent[]> {
+  if (kind === 'none') return [];
+  if (kind === 'behind_compact_row') {
+    return [
+      priorUsageEvent({ inputTokens: 30_000, payloadChars: 4_000 }),
+      {
+        ...runtimeTextEvent('prior-compact-usage', 'turn-0', 'model', ''),
+        id: 'prior-compact-usage',
+        runId: 'run-0',
+        role: 'system' as const,
+        author: 'system' as const,
+        content: undefined,
+        actions: { tokenUsage: { input: 0, output: 0 } },
+      },
+    ];
+  }
+  const previous = buildFixture({
+    priorChars: 2_000,
+    contextWindow: 1_000_000,
+    finalAtSecondCall: true,
+    // A dense (CJK-shaped) request: real input tokens well above chars/4.
+    finalStepUsage: { input: 30_000, output: 10 },
+  });
+  await runFixtureTurn(previous);
+  const persisted = priorTurnUsageEvents(previous);
+  assert.equal(persisted.length, 1);
+  assert.equal(
+    (persisted[0]?.actions?.tokenUsage?.lastRequestAnchor as { inputTokens: number } | undefined)
+      ?.inputTokens,
+    30_000,
+  );
+  return persisted;
+}
+
 function priorTurnUsageEvents(fixture: MidTurnFixture): RuntimeEvent[] {
   return fixture.ledger
     .filter((event) => event.actions?.tokenUsage !== undefined)

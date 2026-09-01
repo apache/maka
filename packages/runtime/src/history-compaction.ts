@@ -56,7 +56,8 @@ export interface EstimateNextRequestTokensInput {
    * input+output, because `appendedChars` is a delta against that request's
    * payload and already carries the step's freshly generated output.
    * Undefined on cold start or when the sample is unusable (no positive
-   * input count), which falls back to a whole-payload char estimate.
+   * input count); the baseline is then zero and `appendedChars` carries the
+   * whole payload.
    */
   priorUsageTokens?: number;
   /**
@@ -68,30 +69,22 @@ export interface EstimateNextRequestTokensInput {
   appendedChars: number;
   /** Estimate conversion; defaults to 4 chars/token. */
   charsPerToken?: number;
-  /** Whole-payload chars, used only when `priorUsageTokens` is undefined. */
-  coldStartChars?: number;
 }
 
 /**
- * Estimate the token size of the next provider request. Anchors on the last
- * step's real usage plus a signed char/4 payload delta for content the provider
- * has not yet counted (or no longer carries); cold-start (no usage) is a pure
- * char/4 estimate of the whole payload. This mirrors how surveyed peers avoid
- * pure character guessing.
+ * Estimate the token size of the next provider request: the last request's real
+ * usage plus a signed char/4 payload delta for content the provider has not yet
+ * counted (or no longer carries). Without a usable usage sample the caller
+ * passes the whole payload as the delta against a zero baseline, so this stays
+ * one formula. This mirrors how surveyed peers avoid pure character guessing.
  */
 export function estimateNextRequestTokens(input: EstimateNextRequestTokensInput): number {
   const charsPerToken = Math.max(1, input.charsPerToken ?? 4);
-  if (input.priorUsageTokens !== undefined && Number.isFinite(input.priorUsageTokens)) {
-    return Math.max(
-      0,
-      Math.max(0, Math.floor(input.priorUsageTokens)) +
-        estimateSignedChars(input.appendedChars, charsPerToken),
-    );
-  }
-  return Math.max(
-    0,
-    estimateSignedChars(input.coldStartChars ?? input.appendedChars, charsPerToken),
-  );
+  const prior =
+    input.priorUsageTokens !== undefined && Number.isFinite(input.priorUsageTokens)
+      ? Math.max(0, Math.floor(input.priorUsageTokens))
+      : 0;
+  return Math.max(0, prior + estimateSignedChars(input.appendedChars, charsPerToken));
 }
 
 /** Proactive threshold: the next request would cross `contextWindow - reserve`. */
@@ -102,11 +95,6 @@ export function exceedsHighWater(
 ): boolean {
   const highWater = Math.max(1, contextWindow - Math.max(0, reserveTokens));
   return estimatedTokens > highWater;
-}
-
-/** Hard cap: the estimate exceeds the raw context window even before the reserve. */
-export function exceedsContextWindow(estimatedTokens: number, contextWindow: number): boolean {
-  return estimatedTokens > contextWindow;
 }
 
 export interface SafePrefixOptions {
@@ -423,7 +411,7 @@ export interface HistoryCompactionPolicy {
   enabled: boolean;
   checkpoint?: HistoryCompactCheckpoint;
   highWaterName?: string;
-  midTurn?: { enabled: true; reserveTokens?: number; reserveTailEvents?: number };
+  midTurn?: { enabled: true; reserveTokens?: number };
 }
 
 export interface HistoryCompactionReplayOptions {

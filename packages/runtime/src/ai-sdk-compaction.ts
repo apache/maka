@@ -850,7 +850,7 @@ export class AiSdkCompaction {
     // of guessing the whole payload at char/4.
     const persisted = persistedRequestAnchor(
       input.runtimeContext ?? [],
-      input.runtimeContextRunHeaders ?? [],
+      state.priorRunHeaders,
       this.input.modelId,
       this.targetConnectionId,
     );
@@ -880,8 +880,6 @@ export class AiSdkCompaction {
     state: MidTurnCapacityCompactState | undefined,
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
-    fallbackActiveTools: () => readonly string[],
-    systemPromptChars: number,
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
     origin: ProviderRequestOrigin,
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision,
@@ -978,12 +976,15 @@ export class AiSdkCompaction {
       // over-trigger; that is the recoverable direction, and the verdict owner
       // re-measures the post-shaping payload.
       const measuredMessages = projectedMessages ?? incomingMessages;
-      const activeToolsForStep = options.activeTools ?? fallbackActiveTools();
+      // Price the request dispatch will actually build, not the pre-dispatch
+      // inputs: a finalization step adds prompt fragments and sends no tools.
+      const dispatch = options.resolveDispatch(options.activeTools);
+      const activeToolsForStep = dispatch.activeTools;
       const payloadChars = midTurnRequestPayloadChars(
         measuredMessages,
         providerTools,
         activeToolsForStep,
-        systemPromptChars,
+        dispatch.systemPromptChars,
         charsPerToken,
       );
       const forcedEstimate = state.forcedTriggerEstimate;
@@ -1001,13 +1002,7 @@ export class AiSdkCompaction {
       ) {
         return keepProjection();
       }
-      const estimate =
-        forcedEstimate ??
-        estimateNextRequestTokens({
-          ...anchored,
-          charsPerToken,
-          coldStartChars: payloadChars,
-        });
+      const estimate = forcedEstimate ?? estimateNextRequestTokens({ ...anchored, charsPerToken });
       if (
         forcedEstimate === undefined &&
         (state.capacity === undefined || !exceedsHighWater(estimate, state.capacity, reserveTokens))
@@ -1029,7 +1024,7 @@ export class AiSdkCompaction {
         referencePayloadChars: payloadChars,
         providerTools,
         activeToolsForStep,
-        systemPromptChars,
+        systemPromptChars: dispatch.systemPromptChars,
         memoryCompactionDecision,
         onMemoryCompaction,
         abortSignal,
@@ -1181,7 +1176,7 @@ export class AiSdkCompaction {
       phase: input.phase ?? 'mid_turn',
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
-      reserveTailEvents: midTurn.reserveTailEvents ?? 1,
+      reserveTailEvents: 1,
       charsPerToken,
       now: this.now(),
       ...(compactPolicy.highWaterName !== undefined
@@ -1480,19 +1475,9 @@ export class AiSdkCompaction {
     reentry: RequestProjectionStage;
     state: MidTurnCapacityCompactState;
     providerTools: readonly MakaTool[];
-    fallbackActiveTools: () => readonly string[];
     charsPerToken: number;
-    systemPromptChars: number;
   }): RequestProjectionStage {
-    const {
-      shaped,
-      reentry,
-      state,
-      providerTools,
-      fallbackActiveTools,
-      charsPerToken,
-      systemPromptChars,
-    } = input;
+    const { shaped, reentry, state, providerTools, charsPerToken } = input;
     return async (options) => {
       let result = await Promise.resolve(shaped(options));
       const omissionProjection = projectHistoricalImageOmissions(
@@ -1502,14 +1487,18 @@ export class AiSdkCompaction {
       if (omissionProjection) {
         result = { ...(result ?? {}), messages: omissionProjection };
       }
-      const finalPayloadChars = (): number =>
-        midTurnRequestPayloadChars(
+      const finalPayloadChars = (): number => {
+        // Measure the dispatched shape, so the payload recorded as the anchor's
+        // pair describes the same request the provider counts.
+        const dispatch = options.resolveDispatch(result?.activeTools ?? options.activeTools);
+        return midTurnRequestPayloadChars(
           result?.messages ?? options.messages,
           providerTools,
-          result?.activeTools ?? options.activeTools ?? fallbackActiveTools(),
-          systemPromptChars,
+          dispatch.activeTools,
+          dispatch.systemPromptChars,
           charsPerToken,
         );
+      };
       let payloadChars = finalPayloadChars();
       // Same rule as the trigger: the turn's first request is measured only
       // when a previous turn left a usable anchor to measure it against.
@@ -1520,7 +1509,6 @@ export class AiSdkCompaction {
           estimateNextRequestTokens({
             ...requestEstimateAnchor(state, payloadChars),
             charsPerToken,
-            coldStartChars: payloadChars,
           });
         const estimate = estimateFinal();
         const capacityAttemptedThisStep =
@@ -1817,12 +1805,8 @@ function persistedRequestAnchor(
  * The estimate inputs for the request about to go out: the paired anchor and
  * the signed char delta against the payload that anchor was reported for.
  *
- * A delta wider than the whole payload is the pairing's own alarm — it takes a
- * baseline more than twice the current payload, which within a send cannot
- * happen without a restructuring that already resets the baseline, and across a
- * turn boundary means the prior tail was re-materialized down a different path
- * than the request the anchor was reported for. A pairing that far off
- * estimates worse than none, so drop it and let the cold start answer.
+ * A delta wider than the whole payload means the pairing has already failed, so
+ * drop it and cold start: the whole payload against a zero anchor.
  */
 function requestEstimateAnchor(
   state: MidTurnCapacityCompactState,
@@ -1830,9 +1814,9 @@ function requestEstimateAnchor(
 ): { priorUsageTokens?: number; appendedChars: number } {
   const anchor = state.lastRequestInputTokens;
   const baseline = state.lastRequestPayloadChars;
-  if (anchor === undefined || baseline === undefined) return { appendedChars: 0 };
+  if (anchor === undefined || baseline === undefined) return { appendedChars: payloadChars };
   const appendedChars = payloadChars - baseline;
-  if (Math.abs(appendedChars) > payloadChars) return { appendedChars: 0 };
+  if (Math.abs(appendedChars) > payloadChars) return { appendedChars: payloadChars };
   return { priorUsageTokens: anchor, appendedChars };
 }
 
