@@ -18,42 +18,10 @@
  */
 
 import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
-import type {
-  KnownModelCapabilities,
-  ModelCatalogEntry,
-  ModelCatalogLifecycle,
-  ModelCatalogPricing,
-} from '../model-catalog.js';
-import { decodeConnectionModel, decodeProviderType } from './connection-catalog-codec.js';
-import {
-  booleanValue,
-  domainError,
-  exactRecord,
-  integerValue,
-  nonEmptyStringValue,
-  stringValue,
-} from './domain-codec.js';
+import type { ModelCatalogEntry, ModelCatalogPricing } from '../model-catalog.js';
+import { decodeConnectionModel } from './connection-catalog-codec.js';
+import { booleanValue, domainError, exactRecord, stringValue } from './domain-codec.js';
 
-const ENTRY_SOURCES = ['provider_api', 'static_catalog', 'unknown'] as const;
-const UNAVAILABLE_REASONS = [
-  'none',
-  'not_in_live_list',
-  'unsupported_for_chat',
-  'provider_removed',
-  'auth',
-  'stale',
-] as const;
-const LIFECYCLES = ['active', 'beta', 'alpha', 'deprecated', 'retired', 'unknown'] as const;
-const CAPABILITY_KEYS = [
-  'chat',
-  'vision',
-  'reasoning',
-  'functionCalling',
-  'parallelToolCalls',
-  'imageGeneration',
-  'webSearch',
-] as const satisfies readonly (keyof KnownModelCapabilities)[];
-const MODEL_SOURCES = ['fetched', 'fallback'] as const;
 const PRICING_SOURCES = ['builtin', 'user_override'] as const;
 
 /**
@@ -70,89 +38,31 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'id',
       'displayName',
       'description',
-      'providerType',
-      'connectionSlug',
-      'source',
-      'unavailableReason',
       'canUseAsChatDefault',
       'isDefault',
-      'capabilities',
+      'supportsVision',
       'thinkingLevels',
-      'lifecycle',
-      'docsUrl',
       'contextWindow',
-      'inputLimit',
-      'maxOutputTokens',
       'knowledgeCutoff',
-      'structuredOutput',
-      'lastUpdated',
-      'modalities',
       'pricing',
-      'provenance',
     ],
-    [
-      'id',
-      'providerType',
-      'source',
-      'unavailableReason',
-      'canUseAsChatDefault',
-      'isDefault',
-      'capabilities',
-      'thinkingLevels',
-      'lifecycle',
-      'provenance',
-    ],
+    ['id', 'canUseAsChatDefault', 'isDefault', 'supportsVision', 'thinkingLevels'],
   );
   // The fields an entry shares with a stored model row keep one decoder, so a
   // bound that moves moves for both. `decodeConnectionModel` rejects unknown
   // fields, so it is handed exactly the subset it owns.
   const shared = decodeConnectionModel({
     id: item.id,
-    ...pick(item, [
-      'displayName',
-      'description',
-      'contextWindow',
-      'inputLimit',
-      'maxOutputTokens',
-      'knowledgeCutoff',
-      'structuredOutput',
-      'lastUpdated',
-      'modalities',
-    ]),
+    ...pick(item, ['displayName', 'description', 'contextWindow', 'knowledgeCutoff']),
   });
   return {
     ...shared,
-    providerType: decodeProviderType(item.providerType),
-    ...(item.connectionSlug === undefined
-      ? {}
-      : { connectionSlug: nonEmptyStringValue(item.connectionSlug, 'entry connection slug', 128) }),
-    source: oneOf(item.source, ENTRY_SOURCES, 'entry source'),
-    unavailableReason: oneOf(
-      item.unavailableReason,
-      UNAVAILABLE_REASONS,
-      'entry unavailable reason',
-    ),
     canUseAsChatDefault: booleanValue(item.canUseAsChatDefault, 'entry chat default eligibility'),
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
-    capabilities: decodeKnownCapabilities(item.capabilities),
+    supportsVision: booleanValue(item.supportsVision, 'entry vision support'),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
-    lifecycle: oneOf<ModelCatalogLifecycle>(item.lifecycle, LIFECYCLES, 'entry lifecycle'),
-    ...(item.docsUrl === undefined
-      ? {}
-      : { docsUrl: nonEmptyStringValue(item.docsUrl, 'entry docs URL', 2048) }),
     ...(item.pricing === undefined ? {} : { pricing: decodePricing(item.pricing) }),
-    provenance: decodeProvenance(item.provenance),
   };
-}
-
-function decodeKnownCapabilities(value: unknown): KnownModelCapabilities {
-  const raw = exactRecord(value, 'entry capabilities', CAPABILITY_KEYS, []);
-  const capabilities: Record<string, true> = {};
-  for (const key of Object.keys(raw)) {
-    if (raw[key] !== true) throw domainError(`entry capability ${key} must be true when present`);
-    capabilities[key] = true;
-  }
-  return capabilities;
 }
 
 function decodeThinkingLevels(value: unknown): readonly ThinkingLevel[] {
@@ -184,35 +94,6 @@ function decodePricing(value: unknown): ModelCatalogPricing {
       ? {}
       : { cacheWriteUsdPer1M: priceValue(item.cacheWriteUsdPer1M, 'entry cache write price') }),
     source: oneOf(item.source, PRICING_SOURCES, 'entry pricing source'),
-  };
-}
-
-function decodeProvenance(value: unknown): ModelCatalogEntry['provenance'] {
-  const item = exactRecord(
-    value,
-    'entry provenance',
-    ['modelSource', 'modelsFetchedAt', 'pricingModelKey'],
-    [],
-  );
-  return {
-    ...(item.modelSource === undefined
-      ? {}
-      : { modelSource: oneOf(item.modelSource, MODEL_SOURCES, 'entry model source') }),
-    ...(item.modelsFetchedAt === undefined
-      ? {}
-      : {
-          modelsFetchedAt: integerValue(
-            item.modelsFetchedAt,
-            'entry models fetched at',
-            0,
-            Number.MAX_SAFE_INTEGER,
-          ),
-        }),
-    ...(item.pricingModelKey === undefined
-      ? {}
-      : {
-          pricingModelKey: nonEmptyStringValue(item.pricingModelKey, 'entry pricing key', 512),
-        }),
   };
 }
 

@@ -25,13 +25,11 @@ import type {
   ProviderType,
 } from './llm-connections.js';
 import {
-  classifyConnectionModelInventory,
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   connectionEnabledModelIds,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   providerSupportsModelDiscovery,
-  type ConnectionModelInventory,
   type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
@@ -48,32 +46,6 @@ import {
 } from './model-thinking.js';
 import { pricingModelKey } from './usage-stats/pricing.js';
 
-export type ModelUnavailableReason =
-  | 'none'
-  | 'not_in_live_list'
-  | 'unsupported_for_chat'
-  | 'provider_removed'
-  | 'auth'
-  | 'stale';
-
-export type ModelCatalogLifecycle =
-  | 'active'
-  | 'beta'
-  | 'alpha'
-  | 'deprecated'
-  | 'retired'
-  | 'unknown';
-
-export interface KnownModelCapabilities {
-  chat?: true;
-  vision?: true;
-  reasoning?: true;
-  functionCalling?: true;
-  parallelToolCalls?: true;
-  imageGeneration?: true;
-  webSearch?: true;
-}
-
 export interface ModelCatalogPricing {
   inputUsdPer1M: number;
   outputUsdPer1M: number;
@@ -82,17 +54,28 @@ export interface ModelCatalogPricing {
   source: 'builtin' | 'user_override';
 }
 
+/**
+ * One model as the Host resolved it for one connection.
+ *
+ * Every field here has a reader. The entry crosses the wire and then the
+ * desktop IPC boundary, so a field nothing renders is paid for on every
+ * catalog read by every attached client — and the ones that were here
+ * (`providerType`, `connectionSlug`, `source`, `unavailableReason`,
+ * `lifecycle`, `docsUrl`, `inputLimit`, `maxOutputTokens`, `structuredOutput`,
+ * `lastUpdated`, `modalities`, `provenance`, and every capability but vision)
+ * had none. They are not needed today; when a surface actually asks for one,
+ * add it back with the reader that wants it. `makeEntry` still consults all of
+ * those facts to decide `canUseAsChatDefault` — they simply stop being shipped.
+ */
 export interface ModelCatalogEntry {
   id: string;
   displayName?: string;
   description?: string;
-  providerType: ProviderType;
-  connectionSlug?: string;
-  source: 'provider_api' | 'static_catalog' | 'unknown';
-  unavailableReason: ModelUnavailableReason;
+  /** False when this connection cannot hold a chat on this model. */
   canUseAsChatDefault: boolean;
   isDefault: boolean;
-  capabilities: KnownModelCapabilities;
+  /** Exact capability projection used by model-facing attachment composition. */
+  supportsVision: boolean;
   /**
    * Reasoning levels this model offers on this connection, in display order;
    * empty for a non-reasoning model. Part of the entry rather than a second
@@ -102,21 +85,17 @@ export interface ModelCatalogEntry {
    * thinking projection honoured.
    */
   thinkingLevels: readonly ThinkingLevel[];
-  lifecycle: ModelCatalogLifecycle;
-  docsUrl?: string;
   contextWindow?: number;
-  inputLimit?: number;
-  maxOutputTokens?: number;
   knowledgeCutoff?: string;
-  structuredOutput?: boolean;
-  lastUpdated?: string;
-  modalities?: ModelInfo['modalities'];
+  /**
+   * Per-1M rates for this model. The only field kept without a producer: no
+   * caller passes `pricing` yet, so it is always absent today. Cost accounting
+   * itself does not depend on it — `record-llm-call.ts` prices a call from
+   * `pricingModelKey` when the call is recorded. This is the seam for showing
+   * a rate beside a model in a picker, and stays until that surface exists or
+   * is ruled out.
+   */
   pricing?: ModelCatalogPricing;
-  provenance: {
-    modelSource?: ModelDiscoverySource;
-    modelsFetchedAt?: number;
-    pricingModelKey?: string;
-  };
 }
 
 export interface BuildConnectionModelCatalogInput {
@@ -128,32 +107,20 @@ export interface BuildConnectionModelCatalogInput {
     | 'enabledModelIds'
     | 'models'
     | 'modelSource'
-    | 'modelsFetchedAt'
     | 'relayModelProfiles'
   >;
-  /** Ids the catalog must list even when no inventory describes them (#1584). */
-  savedModelIds?: Iterable<string | undefined | null>;
-  fallbackModels?: string[];
-  now?: number;
-  staleAfterMs?: number;
-  providerAvailable?: boolean;
-  authOk?: boolean;
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
 }
 
 export interface BuildModelCatalogInput {
   providerType: ProviderType;
-  connectionSlug?: string;
   defaultModel?: string;
   models?: ModelInfo[];
   modelSource?: ModelDiscoverySource;
-  modelsFetchedAt?: number;
   fallbackModels?: string[];
-  now?: number;
-  staleAfterMs?: number;
-  providerAvailable?: boolean;
-  authOk?: boolean;
+  /** A provider Maka has retired: its models list but can no longer be chosen. */
+  providerRetired?: boolean;
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
   /** Ids the catalog must list even when no inventory describes them (#1584). */
@@ -162,22 +129,12 @@ export interface BuildModelCatalogInput {
   relayModelProfiles?: RelayModelProfiles;
 }
 
-const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
-
 export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCatalogEntry[] {
   const liveModels = input.models;
   const modelSource =
     input.modelSource ??
     (liveModels !== undefined && liveModels.length > 0 ? 'fetched' : 'fallback');
-  // The RAW `modelSource`, not a source inferred from the array, distinguishes
-  // a failed discovery from an explicit empty provider response.
-  const inventory = classifyConnectionModelInventory({
-    providerType: input.providerType,
-    models: input.models,
-    modelSource: input.modelSource,
-  });
   const normalizedDefaultModel = input.defaultModel?.trim();
-  const source = inventory === 'live' ? 'provider_api' : 'static_catalog';
   // An empty array without a successful discovery source is the persisted
   // shape of a failed or not-yet-run discovery. It must not hide the static
   // fallback catalog from the picker. An empty fetched array is different: it
@@ -190,11 +147,7 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
           ...displayNameForKnownModel(input.providerType, id),
         }));
   const savedModelIds = normalizedIdSet(input.savedModelIds);
-  const ctx: EntryContext = {
-    input,
-    modelSource,
-    normalizedDefaultModel,
-  };
+  const ctx: EntryContext = { input, normalizedDefaultModel };
   const seen = new Set<string>();
   const entries = rawModels
     .filter((model) => {
@@ -203,17 +156,17 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
       seen.add(id);
       return true;
     })
-    .map((model) => makeEntry(ctx, model, source));
+    .map((model) => makeEntry(ctx, model));
 
   if (normalizedDefaultModel && !seen.has(normalizedDefaultModel)) {
-    entries.unshift(makeMissingEntry(ctx, normalizedDefaultModel, inventory, { isDefault: true }));
+    entries.unshift(makeEntry(ctx, { id: normalizedDefaultModel }, { isDefault: true }));
     seen.add(normalizedDefaultModel);
   }
 
   for (const id of savedModelIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    entries.push(makeMissingEntry(ctx, id, inventory));
+    entries.push(makeEntry(ctx, { id }));
   }
 
   return entries;
@@ -293,7 +246,7 @@ export function buildConnectionModelCatalogEntries(
   // Fallback providers have no live inventory, but a projected connection can
   // still carry enabled model-facts entries that are absent from the static
   // list. Keep both sets in the catalog so those user-declared models retain
-  // their metadata and provenance.
+  // their metadata.
   const models = supportsModelDiscovery
     ? connection.models?.filter(({ id }) => !broken.has(id))
     : [
@@ -310,22 +263,15 @@ export function buildConnectionModelCatalogEntries(
       ];
   return buildModelCatalogEntries({
     providerType: connection.providerType,
-    connectionSlug: connection.slug,
     defaultModel,
     models,
     modelSource: supportsModelDiscovery ? connection.modelSource : 'fallback',
-    modelsFetchedAt: supportsModelDiscovery ? connection.modelsFetchedAt : undefined,
-    fallbackModels: supportsModelDiscovery
-      ? (input.fallbackModels ?? fallbackModels)
-      : fallbackModels,
-    now: input.now,
-    staleAfterMs: input.staleAfterMs,
+    fallbackModels,
     // A retired provider's models stay listed so an existing connection still
-    // renders, but they resolve to `provider_removed` and stop being selectable.
-    // Without this the pickers would keep offering models that can no longer
-    // send — `runtimeAdapter: 'unavailable'` blocks the send, not the choice.
-    providerAvailable: defaults.retired === true ? false : input.providerAvailable,
-    authOk: input.authOk,
+    // renders, but they stop being selectable. Without this the pickers would
+    // keep offering models that can no longer send — `runtimeAdapter:
+    // 'unavailable'` blocks the send, not the choice.
+    providerRetired: defaults.retired === true,
     pricing: input.pricing,
     pricingSource: input.pricingSource,
     ...(connection.relayModelProfiles ? { relayModelProfiles: connection.relayModelProfiles } : {}),
@@ -336,9 +282,7 @@ export function buildConnectionModelCatalogEntries(
     // (#1584), and fixing it at one call site left the others broken. The raw
     // array, not `connectionEnabledModelIds`: that one folds in `defaultModel`,
     // which the builder already lists on its own.
-    savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])].filter(
-      (id) => !broken.has(id ?? ''),
-    ),
+    savedModelIds: (connection.enabledModelIds ?? []).filter((id) => !broken.has(id)),
   });
 }
 
@@ -451,9 +395,10 @@ function draftMatchesConnection(
 }
 
 /**
- * Every stored field a catalog entry can be built from. Comparing ids alone
+ * Every stored field `makeEntry` reads, and only those. Comparing ids alone
  * would keep showing the Host's entries for rows the user just re-fetched,
- * whose facts may differ under the same id.
+ * whose facts may differ under the same id; comparing fields no entry is built
+ * from would throw the Host's entries away over a change nothing can render.
  */
 function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[]): boolean {
   if (left.length !== right.length) return false;
@@ -462,17 +407,27 @@ function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[])
     return (
       model.id === other.id &&
       model.displayName === other.displayName &&
+      model.description === other.description &&
       model.contextWindow === other.contextWindow &&
-      model.inputLimit === other.inputLimit &&
-      model.maxOutputTokens === other.maxOutputTokens &&
+      model.knowledgeCutoff === other.knowledgeCutoff &&
+      modalitiesEqual(model.modalities, other.modalities) &&
       model.capabilities?.chat === other.capabilities?.chat &&
       model.capabilities?.vision === other.capabilities?.vision &&
       model.capabilities?.reasoning === other.capabilities?.reasoning &&
       model.capabilities?.functionCalling === other.capabilities?.functionCalling &&
-      model.capabilities?.parallelToolCalls === other.capabilities?.parallelToolCalls &&
       model.capabilities?.imageGeneration === other.capabilities?.imageGeneration
     );
   });
+}
+
+function modalitiesEqual(left: ModelInfo['modalities'], right: ModelInfo['modalities']): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.input.length === right.input.length &&
+    left.input.every((value, index) => value === right.input[index]) &&
+    left.output.length === right.output.length &&
+    left.output.every((value, index) => value === right.output[index])
+  );
 }
 
 /**
@@ -482,38 +437,32 @@ function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[])
  */
 interface EntryContext {
   readonly input: BuildModelCatalogInput;
-  readonly modelSource: ModelDiscoverySource;
   readonly normalizedDefaultModel: string | undefined;
 }
 
-/**
- * The facts an entry cannot derive from its model row. A model the catalog
- * never listed has no row to derive them from: its unavailability is a
- * property of the inventory rather than of the model, and a missing default
- * is default by construction.
- */
+/** The one fact an entry cannot derive: a missing default is default by construction. */
 interface EntryOverrides {
-  readonly unavailableReason?: ModelUnavailableReason;
   readonly isDefault?: boolean;
 }
 
+/**
+ * One entry, from a model row or from a bare id no inventory describes. The
+ * bare-id case is the same construction: every field then resolves from the
+ * bundled metadata alone, which is what those entries carried when they were
+ * built by a separate function.
+ */
 function makeEntry(
   ctx: EntryContext,
   model: ModelInfo,
-  source: ModelCatalogEntry['source'],
   overrides: EntryOverrides = {},
 ): ModelCatalogEntry {
-  const { input, modelSource, normalizedDefaultModel } = ctx;
+  const { input, normalizedDefaultModel } = ctx;
   const normalizedModel = { ...model, id: model.id.trim() };
   const pricing = findPricing(input, normalizedModel.id);
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
   const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
-  const inputLimit = normalizedModel.inputLimit ?? metadata.inputLimit;
-  const maxOutputTokens = normalizedModel.maxOutputTokens ?? metadata.maxOutputTokens;
   const description = normalizedModel.description ?? metadata.description;
   const knowledgeCutoff = normalizedModel.knowledgeCutoff ?? metadata.knowledgeCutoff;
-  const structuredOutput = normalizedModel.structuredOutput ?? metadata.structuredOutput;
-  const lastUpdated = normalizedModel.lastUpdated ?? metadata.lastUpdated;
   const modalities = normalizedModel.modalities ?? metadata.modalities;
   // The user's per-model declaration outranks every catalog source, so both
   // capability reads that honour it — vision and thinking — resolve here
@@ -536,9 +485,14 @@ function makeEntry(
   // reads the modality. Passing the unmerged `normalizedModel.modalities`
   // meant a bundled image-only model reached the guard with no output
   // declaration at all.
-  const unavailableReason =
-    overrides.unavailableReason ??
-    deriveModelUnavailableReason(input, {
+  // Retirement and an explicit "cannot chat" are the only two vetoes. Absence
+  // from a live list is NOT one: a provider that did not mention a model has
+  // not refused it, and only the provider can refuse, when the request goes
+  // out (#1584). So an id the user enabled that no inventory describes stays
+  // selectable, and reaches here as a bare row whose metadata says nothing.
+  const canUseAsChatDefault =
+    input.providerRetired !== true &&
+    !isModelExplicitlyUnsupportedForChat({
       ...normalizedModel,
       capabilities,
       ...(modalities !== undefined ? { modalities } : {}),
@@ -547,49 +501,14 @@ function makeEntry(
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
     ...(description !== undefined ? { description } : {}),
-    providerType: input.providerType,
-    ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
-    source,
-    unavailableReason,
-    canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
+    canUseAsChatDefault,
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
-    capabilities: normalizeCapabilities(capabilities),
+    supportsVision: capabilities.vision === true,
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
-    lifecycle: metadata.lifecycle ?? 'unknown',
-    ...(metadata.docsUrl ? { docsUrl: metadata.docsUrl } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
-    ...(inputLimit !== undefined ? { inputLimit } : {}),
-    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
-    ...(structuredOutput !== undefined ? { structuredOutput } : {}),
-    ...(lastUpdated !== undefined ? { lastUpdated } : {}),
-    ...(modalities !== undefined ? { modalities } : {}),
     ...(pricing ? { pricing } : {}),
-    provenance: {
-      modelSource,
-      ...(input.modelsFetchedAt ? { modelsFetchedAt: input.modelsFetchedAt } : {}),
-      ...(pricing
-        ? { pricingModelKey: pricingModelKey(input.providerType, normalizedModel.id) }
-        : {}),
-    },
   };
-}
-
-/**
- * An entry for an id no catalog row describes. It is `makeEntry` over a bare
- * model row: every field then resolves from the bundled metadata alone, which
- * is exactly what these entries carried when they were built separately.
- */
-function makeMissingEntry(
-  ctx: EntryContext,
-  id: string,
-  inventory: ConnectionModelInventory,
-  overrides: Omit<EntryOverrides, 'unavailableReason'> = {},
-): ModelCatalogEntry {
-  return makeEntry(ctx, { id }, 'unknown', {
-    unavailableReason: missingEntryUnavailableReason(ctx.input, inventory),
-    ...overrides,
-  });
 }
 
 function mergeCapabilities(
@@ -627,61 +546,6 @@ function displayNameForKnownModel(
   return displayName ? { displayName } : {};
 }
 
-function deriveModelUnavailableReason(
-  input: Pick<
-    BuildModelCatalogInput,
-    | 'providerType'
-    | 'providerAvailable'
-    | 'authOk'
-    | 'models'
-    | 'modelSource'
-    | 'modelsFetchedAt'
-    | 'now'
-    | 'staleAfterMs'
-  >,
-  model: ModelInfo,
-): ModelUnavailableReason {
-  const providerOrAuthReason = providerOrAuthUnavailableReason(input);
-  if (providerOrAuthReason) return providerOrAuthReason;
-  if (isModelExplicitlyUnsupportedForChat(model)) return 'unsupported_for_chat';
-  if (isStale(input)) return 'stale';
-  return 'none';
-}
-
-function providerOrAuthUnavailableReason(
-  input: Pick<BuildModelCatalogInput, 'providerAvailable' | 'authOk'>,
-): Extract<ModelUnavailableReason, 'provider_removed' | 'auth'> | null {
-  if (input.providerAvailable === false) return 'provider_removed';
-  if (input.authOk === false) return 'auth';
-  return null;
-}
-
-function missingEntryUnavailableReason(
-  input: Pick<BuildModelCatalogInput, 'providerAvailable' | 'authOk' | 'models'>,
-  inventory: ConnectionModelInventory,
-): ModelUnavailableReason {
-  const providerOrAuthReason = providerOrAuthUnavailableReason(input);
-  if (providerOrAuthReason) return providerOrAuthReason;
-  // Only a live list can say a model is absent. A snapshot describes the
-  // provider at release, so a model missing from it is simply one Maka has
-  // never heard of — not one this account cannot run (#1584).
-  return inventory === 'live' ? 'not_in_live_list' : 'none';
-}
-
-function isStale(
-  input: Pick<
-    BuildModelCatalogInput,
-    'providerType' | 'models' | 'modelSource' | 'modelsFetchedAt' | 'now' | 'staleAfterMs'
-  >,
-): boolean {
-  if (input.modelsFetchedAt === undefined) return false;
-  // Only a live list can go stale. A snapshot is as current as the build.
-  if (classifyConnectionModelInventory(input) !== 'live') return false;
-  const now = input.now ?? Date.now();
-  const staleAfterMs = input.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
-  return now - input.modelsFetchedAt > staleAfterMs;
-}
-
 /**
  * Whether a declared output modality rules the model out of chat.
  *
@@ -716,27 +580,6 @@ export function isModelExplicitlyUnsupportedForChat(model: ModelInfo): boolean {
     caps.reasoning !== true &&
     caps.functionCalling !== true
   );
-}
-
-function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapabilities {
-  if (!caps) return {};
-  return {
-    ...(caps.chat === true ? { chat: true as const } : {}),
-    ...(caps.vision === true ? { vision: true as const } : {}),
-    ...(caps.reasoning === true ? { reasoning: true as const } : {}),
-    ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
-    ...(caps.parallelToolCalls === true ? { parallelToolCalls: true as const } : {}),
-    ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
-    ...(caps.webSearch === true ? { webSearch: true as const } : {}),
-  };
-}
-
-function canUseUnavailableReasonAsDefault(reason: ModelUnavailableReason): boolean {
-  // `stale` and `not_in_live_list` are both things worth saying and neither is
-  // a fact about what the account can run. A provider that did not mention a
-  // model in its last response has not refused it; only the provider itself
-  // can do that, when the request goes out (#1584).
-  return reason === 'none' || reason === 'stale' || reason === 'not_in_live_list';
 }
 
 function normalizedIdSet(ids: Iterable<string | undefined | null> | undefined): Set<string> {

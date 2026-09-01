@@ -160,16 +160,10 @@ describe('retired provider contract', () => {
           defaultModel: PROVIDER_REGISTRY[type].fallbackModels[0] ?? '',
           models: undefined,
           modelSource: 'fallback',
-          modelsFetchedAt: undefined,
         },
-        // The caller would pass `true` for a live connection; retirement must
-        // win over it rather than depend on the caller getting it right.
-        providerAvailable: true,
-        authOk: true,
       });
       assert.ok(entries.length > 0, `${type} should still list its stored models`);
       for (const entry of entries) {
-        assert.equal(entry.unavailableReason, 'provider_removed');
         assert.equal(entry.canUseAsChatDefault, false);
       }
     }

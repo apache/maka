@@ -43,13 +43,7 @@ function verdict(input: BuildModelCatalogInput) {
   const entry = defaultModel
     ? buildModelCatalogEntries(input).find((candidate) => candidate.id === defaultModel)
     : undefined;
-  if (!entry) return { ok: false, reason: 'not_in_live_list' };
-  if (entry.canUseAsChatDefault) return { ok: true };
-  const reason =
-    entry.unavailableReason === 'stale' || entry.unavailableReason === 'none'
-      ? 'unsupported_for_chat'
-      : entry.unavailableReason;
-  return { ok: false, reason };
+  return { ok: entry?.canUseAsChatDefault === true };
 }
 
 test('a live inventory annotates a model it omits and preserves higher-priority failures', () => {
@@ -65,13 +59,12 @@ test('a live inventory annotates a model it omits and preserves higher-priority 
   // what the account can run (#1584). It stays selectable and the provider
   // gets to answer for itself.
   assert.equal(missing?.canUseAsChatDefault, true);
-  assert.equal(missing?.unavailableReason, 'not_in_live_list');
   assert.deepEqual(verdict(input), { ok: true });
 
-  assert.equal(buildModelCatalogEntries({ ...input, authOk: false })[0]?.unavailableReason, 'auth');
+  // Retirement is the one provider-level veto left.
   assert.equal(
-    buildModelCatalogEntries({ ...input, providerAvailable: false })[0]?.unavailableReason,
-    'provider_removed',
+    buildModelCatalogEntries({ ...input, providerRetired: true })[0]?.canUseAsChatDefault,
+    false,
   );
 });
 
@@ -82,7 +75,7 @@ test('chat-default validation blocks image-only models but accepts merged partia
     models: [{ id: 'gpt-image-1', capabilities: { imageGeneration: true, chat: false } }],
     modelSource: 'fetched' as const,
   };
-  assert.deepEqual(verdict(imageOnly), { ok: false, reason: 'unsupported_for_chat' });
+  assert.deepEqual(verdict(imageOnly), { ok: false });
 
   const partial = {
     providerType: 'openai' as const,
@@ -92,12 +85,7 @@ test('chat-default validation blocks image-only models but accepts merged partia
   };
   const [entry] = buildModelCatalogEntries(partial);
   assert.equal(entry?.canUseAsChatDefault, true);
-  assert.deepEqual(entry?.capabilities, {
-    reasoning: true,
-    functionCalling: true,
-    imageGeneration: true,
-    vision: true,
-  });
+  assert.equal(entry?.supportsVision, true);
   assert.deepEqual(verdict(partial), { ok: true });
 });
 
@@ -112,7 +100,7 @@ test('a declared output modality without text rules a model out of chat', () => 
     models: [{ id: 'gpt-image-2' }],
     modelSource: 'fetched' as const,
   };
-  assert.deepEqual(verdict(imageOnly), { ok: false, reason: 'unsupported_for_chat' });
+  assert.deepEqual(verdict(imageOnly), { ok: false });
 
   // Audio-only too, and a stray `reasoning: true` on a TTS model does not
   // rescue it: reasoning describes how it composes speech, not that it can
@@ -123,7 +111,7 @@ test('a declared output modality without text rules a model out of chat', () => 
     models: [{ id: 'gemini-3.1-flash-tts-preview' }],
     modelSource: 'fetched' as const,
   };
-  assert.deepEqual(verdict(audioOnly), { ok: false, reason: 'unsupported_for_chat' });
+  assert.deepEqual(verdict(audioOnly), { ok: false });
 });
 
 test('an empty output modality list is not evidence against chat', () => {
@@ -155,40 +143,6 @@ test('an explicit chat capability outranks the declared output modality', () => 
     modelSource: 'fetched' as const,
   };
   assert.deepEqual(verdict(contradictory), { ok: true });
-});
-
-test('catalog entries preserve advertised parallel tool-call support', () => {
-  const [entry] = buildModelCatalogEntries({
-    providerType: 'openai-compatible',
-    defaultModel: 'relay-model',
-    models: [
-      {
-        id: 'relay-model',
-        capabilities: { functionCalling: true, parallelToolCalls: true },
-      },
-    ],
-    modelSource: 'fetched',
-  });
-  assert.deepEqual(entry?.capabilities, {
-    functionCalling: true,
-    parallelToolCalls: true,
-  });
-});
-
-test('stale provider inventory warns without blocking sends', () => {
-  const input = {
-    providerType: 'anthropic' as const,
-    defaultModel: 'claude-sonnet-4-5-20250929',
-    models: [{ id: 'claude-sonnet-4-5-20250929' }],
-    modelSource: 'fetched' as const,
-    modelsFetchedAt: 1_700_000_000_000,
-    now: 1_800_000_000_000,
-    staleAfterMs: 1,
-  };
-  const [entry] = buildModelCatalogEntries(input);
-  assert.equal(entry?.unavailableReason, 'stale');
-  assert.equal(entry?.canUseAsChatDefault, true);
-  assert.deepEqual(verdict(input), { ok: true });
 });
 
 test('the catalog and the readiness gate agree that no catalog is a veto', () => {
@@ -224,13 +178,6 @@ test('the catalog and the readiness gate agree that no catalog is a veto', () =>
     assert.deepEqual(verdict(catalog(modelSource)), { ok: true }, modelSource);
     assert.deepEqual(readiness(modelSource), { ready: true, model: 'custom-default' }, modelSource);
   }
-  // They still differ on what they SAY: a live list that omits the model has
-  // something to report, a shipped snapshot has nothing.
-  assert.equal(
-    buildModelCatalogEntries(catalog('fetched'))[0]?.unavailableReason,
-    'not_in_live_list',
-  );
-  assert.equal(buildModelCatalogEntries(catalog('fallback'))[0]?.unavailableReason, 'none');
 });
 
 test('failed or pending discovery keeps the static fallback catalog visible', () => {
@@ -242,10 +189,10 @@ test('failed or pending discovery keeps the static fallback catalog visible', ()
   });
 
   assert.deepEqual(
-    entries.map(({ id, source, unavailableReason }) => [id, source, unavailableReason]),
+    entries.map(({ id, canUseAsChatDefault }) => [id, canUseAsChatDefault]),
     [
-      ['gpt-5.4', 'static_catalog', 'none'],
-      ['gpt-5-mini', 'static_catalog', 'none'],
+      ['gpt-5.4', true],
+      ['gpt-5-mini', true],
     ],
   );
 });
@@ -260,8 +207,8 @@ test('an explicitly fetched empty inventory remains authoritative', () => {
   });
 
   assert.deepEqual(
-    entries.map(({ id, unavailableReason }) => [id, unavailableReason]),
-    [['gpt-5.4', 'not_in_live_list']],
+    entries.map(({ id }) => id),
+    ['gpt-5.4'],
   );
 });
 
@@ -277,24 +224,14 @@ test('a persisted empty discovery result preserves the connection fallback throu
     updatedAt: 1,
   };
 
-  const entries = buildConnectionModelCatalogEntries({
-    connection,
-    fallbackModels: ['gpt-5.4', 'gpt-5-mini'],
-    providerAvailable: true,
-    authOk: true,
-  });
+  const entries = buildConnectionModelCatalogEntries({ connection });
 
-  assert.deepEqual(
-    entries.map(({ id, unavailableReason, provenance }) => [
-      id,
-      unavailableReason,
-      provenance.modelSource,
-    ]),
-    [
-      ['gpt-5.4', 'none', 'fallback'],
-      ['gpt-5-mini', 'none', 'fallback'],
-    ],
-  );
+  // The provider's own offerable list stands in for the empty stored one, and
+  // every id in it is selectable — including the persisted default, which the
+  // empty array would otherwise have left as the connection's only entry.
+  assert.ok(entries.length > 1);
+  assert.ok(entries.some(({ id }) => id === 'gpt-5.4'));
+  assert.ok(entries.every(({ canUseAsChatDefault }) => canUseAsChatDefault));
 });
 
 test('connection catalogs list every model the user saved without inventing availability', () => {
@@ -310,24 +247,17 @@ test('connection catalogs list every model the user saved without inventing avai
     updatedAt: 1,
   };
   const entries = buildConnectionModelCatalogEntries({
-    connection,
-    savedModelIds: ['session-model', 'glm-4.7', ' '],
+    connection: { ...connection, enabledModelIds: ['session-model', 'glm-4.7', ' '] },
   });
 
-  // All three are selectable; what differs is what the catalog knows about
-  // them. The two the live response omitted carry `not_in_live_list` so the
-  // picker can say so, but saying so is not refusing (#1584).
+  // All three are listed and all three are selectable: a live response that
+  // omitted two of them has not refused them (#1584). The blank id is dropped.
   assert.deepEqual(
-    entries.map(({ id, source, canUseAsChatDefault, unavailableReason }) => [
-      id,
-      source,
-      canUseAsChatDefault,
-      unavailableReason,
-    ]),
+    entries.map(({ id, canUseAsChatDefault }) => [id, canUseAsChatDefault]),
     [
-      ['saved-default', 'unknown', true, 'not_in_live_list'],
-      ['glm-4.7', 'provider_api', true, 'none'],
-      ['session-model', 'unknown', true, 'not_in_live_list'],
+      ['saved-default', true],
+      ['glm-4.7', true],
+      ['session-model', true],
     ],
   );
 });
@@ -353,7 +283,6 @@ test('every picker sees a model the user enabled but no catalog describes', () =
   });
   const declared = entries.find(({ id }) => id === 'deepseek-v4-pro-beta');
   assert.equal(declared?.canUseAsChatDefault, true);
-  assert.equal(declared?.unavailableReason, 'none');
 });
 
 test('catalog provenance follows the projected model facts marker used in production', () => {
@@ -416,7 +345,6 @@ test('fallback provider catalogs apply facts to known fallback models', () => {
   });
   const entry = entries.find((candidate) => candidate.id === 'nemotron-3-ultra-free');
   assert.equal(entry?.contextWindow, 200_000);
-  assert.equal(entry?.inputLimit, 200_000);
 });
 
 test('unknown persisted provider ids return an empty catalog', () => {
@@ -450,14 +378,7 @@ test('Alibaba Token Plan catalogs the formal Qwen3.8 model instead of its retire
     const model = entries.find((entry) => entry.id === modelId);
     assert.equal(model?.displayName, 'Qwen3.8 Max', providerType);
     assert.equal(model?.contextWindow, 1_000_000, providerType);
-    assert.equal(model?.maxOutputTokens, 131_072, providerType);
-    assert.equal(model?.structuredOutput, true, providerType);
-    assert.deepEqual(
-      model?.capabilities,
-      { vision: true, reasoning: true, functionCalling: true },
-      providerType,
-    );
-    assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+    assert.equal(model?.supportsVision, true, providerType);
     assert.equal(model?.canUseAsChatDefault, true, providerType);
   }
 });
@@ -479,10 +400,7 @@ test('Alibaba (China) catalogs Qwen3.8 Max as the default model on the China end
   const model = entries.find((entry) => entry.id === 'qwen3.8-max');
   assert.equal(model?.displayName, 'Qwen3.8 Max');
   assert.equal(model?.contextWindow, 1_000_000);
-  assert.equal(model?.maxOutputTokens, 131_072);
-  assert.equal(model?.structuredOutput, true);
-  assert.deepEqual(model?.capabilities, { vision: true, reasoning: true, functionCalling: true });
-  assert.deepEqual(model?.modalities, { input: ['text', 'image', 'pdf'], output: ['text'] });
+  assert.equal(model?.supportsVision, true);
   assert.equal(model?.canUseAsChatDefault, true);
 });
 
@@ -503,18 +421,8 @@ test('DeepSeek catalogs the V4 vision model display metadata from a bare provide
     model?.description,
     'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
   );
-  assert.equal(model?.docsUrl, 'https://api-docs.deepseek.com/guides/vision/');
   assert.equal(model?.contextWindow, 1_000_000);
-  assert.equal(model?.maxOutputTokens, 384_000);
-  assert.equal(model?.structuredOutput, true);
-  assert.equal(model?.lastUpdated, '2026-08-21');
-  assert.deepEqual(model?.capabilities, {
-    reasoning: true,
-    functionCalling: true,
-    vision: true,
-    webSearch: true,
-  });
-  assert.deepEqual(model?.modalities, { input: ['text', 'image'], output: ['text'] });
+  assert.equal(model?.supportsVision, true);
   assert.equal(model?.canUseAsChatDefault, true);
 });
 

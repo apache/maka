@@ -1142,9 +1142,6 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
       enabledModelIds: [...enabledModelIds],
       models: [...models],
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(connection.modelsFetchedAt === undefined
-        ? {}
-        : { modelsFetchedAt: connection.modelsFetchedAt }),
       ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
     });
     items.push({

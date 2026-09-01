@@ -88,7 +88,7 @@ export function buildChatModelChoices(
         ...(provider.authKind === 'oauth_token' ? {} : { connectionName: connection.name }),
         isDefault: entry.isDefault,
         thinkingLevels: entry.thinkingLevels,
-        supportsVision: entry.capabilities.vision === true,
+        supportsVision: entry.supportsVision,
       });
     }
   }
