@@ -167,7 +167,7 @@ composite replay 存在时，它是 tool-state 与 provider suffix 的唯一 gat
 
 最终同时冻结：
 
-- `providerProjectionVersion = 1`；
+- `providerProjectionVersion`（PR B 时冻结为 1；#4286 起为 2）；
 - composite `providerReplayDigest`；
 - segment boundary manifest。
 
