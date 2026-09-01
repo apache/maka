@@ -123,9 +123,14 @@ test('publishes the real Computer Use schema through the Client Capability proto
     }),
   );
   const coordinateSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
-    | Record<string, { items?: unknown }>
+    | Record<string, { type?: string; items?: unknown; minItems?: number; maxItems?: number }>
     | undefined;
-  assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
+  assert.equal(coordinateSchema?.coordinate?.type, 'array');
+  assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), false);
+  assert.equal(typeof coordinateSchema?.coordinate?.items, 'object');
+  assert.notEqual(coordinateSchema?.coordinate?.items, null);
+  assert.equal(coordinateSchema?.coordinate?.minItems, 2);
+  assert.equal(coordinateSchema?.coordinate?.maxItems, 2);
 });
 
 test('publishes every production Desktop-owned tool schema through the protocol', () => {
