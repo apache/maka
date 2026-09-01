@@ -28,7 +28,7 @@
  * this file asserts exactly that, for every suite the install-free steps run.
  */
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
@@ -407,6 +407,33 @@ test('no lane asks for the one runner label that queues', () => {
   }
 });
 
+test('a lane that filters both triggers filters them on the same paths', () => {
+  // These lists decide what a lane looks at, and a lane that looks at one set
+  // on a pull request and another on main reports a verdict about a tree
+  // nobody validated: green before the merge, or silence after it. Editing
+  // one list and not its twin is the way that happens, and it is invisible in
+  // a diff that shows only the list being edited.
+  //
+  // Only when both triggers filter. Dropping the filter from one side is a
+  // different and legitimate decision — `windows-recovery.yml` leaves `push`
+  // unfiltered on purpose, because `strict: false` lets a pull request go
+  // green against a stale base and only the merged tree proves two
+  // independently green halves still agree. That choice is deliberate and
+  // visible in a diff; a list edited on one side only is neither.
+  let checked = 0;
+
+  for (const name of readdirSync(WORKFLOW_DIR).filter((file) => file.endsWith('.yml'))) {
+    const pullRequest = pathFilter(name, 'pull_request');
+    const push = pathFilter(name, 'push');
+    if (!pullRequest?.length || !push?.length) continue;
+
+    assert.deepEqual(push, pullRequest, `${name}: pull_request and push filter different paths`);
+    checked += 1;
+  }
+
+  assert.ok(checked > 0, 'no lane filters both triggers; this rule now checks nothing');
+});
+
 test('installed-package validation discards superseded pull request runs', () => {
   const workflow = readWorkflow('cli-package-validation.yml');
 
@@ -757,13 +784,23 @@ const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
  * `paths-ignore`, under another trigger, or out of `on:` altogether.
  */
 function pullRequestPathFilter(name) {
-  // Reads the `on:` block with comments already stripped, so a comment between
-  // the trigger and its list cannot end the scan, and accepts the quoting and
-  // spacing YAML allows, so a legal rewrite reports the entries it really has
-  // instead of an empty list that reads as a missing filter.
+  const paths = pathFilter(name, 'pull_request');
+  assert.ok(paths !== null, `${name}: no pull_request trigger`);
+
+  return paths;
+}
+// Returns the trigger's `paths:` entries in order, or null when the workflow
+// does not carry that trigger at all — which is what lets a caller tell "no
+// such trigger" apart from "this trigger runs on everything".
+//
+// Reads the `on:` block with comments already stripped, so a comment between
+// the trigger and its list cannot end the scan, and accepts the quoting and
+// spacing YAML allows, so a legal rewrite reports the entries it really has
+// instead of an empty list that reads as a missing filter.
+function pathFilter(name, trigger) {
   const lines = triggerBlock(name).split('\n');
-  const start = lines.findIndex((line) => /^ {2}pull_request:\s*$/u.test(line));
-  assert.ok(start >= 0, `${name}: no pull_request trigger`);
+  const start = lines.findIndex((line) => new RegExp(`^ {2}${trigger}:\\s*$`, 'u').test(line));
+  if (start < 0) return null;
 
   const paths = [];
   let inPaths = false;
