@@ -256,8 +256,7 @@ function inspectArchive(
   }
   if (isRecord(value)) {
     const items = Array.isArray(value.items) ? value.items : undefined;
-    const manifestItems = items ? fitManifestItems(base, items) : undefined;
-    const result = {
+    const objectBase = {
       ...base,
       valueType: 'object',
       totalChars: serializedResult.length,
@@ -266,6 +265,21 @@ function inspectArchive(
         .map((key) => boundedString(key)),
       ...(typeof value.kind === 'string' ? { archivedKind: boundedString(value.kind) } : {}),
       ...(typeof value.status === 'string' ? { status: boundedString(value.status) } : {}),
+    };
+    const manifestItems = items
+      ? fitManifestItems(
+          {
+            ...objectBase,
+            itemCount: items.length,
+            queryHint:
+              'Call ArchiveRead with operation "query" and one of the listed itemId values.',
+            readHint,
+          },
+          items,
+        )
+      : undefined;
+    const result = {
+      ...objectBase,
       ...(items
         ? {
             itemCount: items.length,

@@ -106,6 +106,29 @@ describe('tool-result archive resources', () => {
     assert.equal((result as { itemsTruncated: boolean }).itemsTruncated, true);
   });
 
+  test('keeps mixed keys and manifest metadata below the response budget', async () => {
+    const body = JSON.stringify({
+      kind: 'agent_swarm',
+      status: 'completed',
+      ...Object.fromEntries(
+        Array.from({ length: 24 }, (_, index) => ['key_' + index + '_' + 'K'.repeat(120), 'v']),
+      ),
+      items: Array.from({ length: 20 }, (_, index) => ({
+        itemId: 'worker-' + index + '-' + 'I'.repeat(120),
+        profile: 'P'.repeat(120),
+        agentName: 'N'.repeat(120),
+        summary: 'S'.repeat(120),
+      })),
+    });
+    const { ref, reader } = fixture(body);
+    const result = await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    });
+
+    assert.ok(JSON.stringify(result).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
+  });
+
   test('query selects one swarm item and paginates below the prune threshold', async () => {
     const body = JSON.stringify({
       kind: 'agent_swarm',
