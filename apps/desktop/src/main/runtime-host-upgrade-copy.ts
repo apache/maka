@@ -28,10 +28,7 @@ import type {
 type Conflict = RuntimeHostRestartableConflict | RuntimeHostWaitConflict;
 export type RuntimeHostUpgradeDialogDecision = 'restart' | 'replace' | 'wait' | 'cancel';
 
-type RuntimeHostUpgradeAvailability =
-  | RuntimeHostNonRestartableAction
-  | 'restart'
-  | 'restart_or_wait';
+type RuntimeHostUpgradeAvailability = RuntimeHostNonRestartableAction | 'restart';
 
 export interface RuntimeHostUpgradeDialog {
   readonly options: MessageBoxOptions;
@@ -53,19 +50,21 @@ export function buildRuntimeHostUpgradeDialog(
 ): RuntimeHostUpgradeDialog {
   const activity = conflict.handshake?.activity;
   const hasWork =
-    availability === 'replace_active_work' ||
+    availability === 'replace_may_interrupt_work' ||
     (activity?.activeOperations ?? 0) > 0 ||
     (activity?.residencies.length ?? 0) > 0;
   const copy = UPGRADE_COPY[locale];
   const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
     [];
   const action =
-    availability === 'restart' || availability === 'restart_or_wait'
+    availability === 'restart'
       ? 'restart'
-      : availability === 'replace_active_work'
+      : availability === 'replace_may_interrupt_work'
         ? 'replace'
         : undefined;
-  const canWait = availability === 'restart_or_wait' || availability === 'wait';
+  const canWait =
+    availability === 'wait' ||
+    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service');
   if (action) {
     choices.push({
       label: action === 'restart' ? copy.restart : copy.replace,
@@ -85,7 +84,7 @@ export function buildRuntimeHostUpgradeDialog(
       type: 'warning',
       title: copy.title,
       message: copy.message,
-      detail: formatActivity(conflict, availability, locale),
+      detail: formatActivity(conflict, availability, canWait, locale),
       buttons: choices.map((choice) => choice.label),
       defaultId: choices.findIndex((choice) => choice.decision === defaultDecision),
       cancelId: choices.findIndex((choice) => choice.decision === 'cancel'),
@@ -98,6 +97,7 @@ export function buildRuntimeHostUpgradeDialog(
 function formatActivity(
   conflict: Conflict,
   availability: RuntimeHostUpgradeAvailability,
+  canWait: boolean,
   locale: UiLocale,
 ): string {
   const activity = conflict.handshake?.activity;
@@ -112,17 +112,18 @@ function formatActivity(
     for (const residency of activity.residencies) {
       lines.push(`${copy.activity[activityKey(residency.label)]}: ${residency.count}`);
     }
-  } else if (availability === 'replace_active_work') lines.push(copy.activeTasksDetected);
-  else lines.push(copy.unknownActivity);
-  if (availability === 'replace_active_work') {
+  } else if (availability === 'replace_may_interrupt_work') {
+    lines.push(copy.idleNotVerified);
+  } else lines.push(copy.unknownActivity);
+  if (availability === 'replace_may_interrupt_work') {
     lines.push('', copy.replaceWarning, copy.replaceExplanation);
-  } else if (availability === 'restart' || availability === 'restart_or_wait') {
+  } else if (availability === 'restart') {
     lines.push('', copy.restartWarning);
   } else if (conflict.kind !== 'upgrade_required' || !conflict.restartable) {
     lines.push('');
     lines.push(copy.exitOwner(conflict.registration.pid));
   }
-  if (availability === 'restart_or_wait' || availability === 'wait') {
+  if (canWait) {
     lines.push(copy.waitExplanation);
   }
   return lines.join('\n');
@@ -152,7 +153,7 @@ const UPGRADE_COPY = {
     uptime: (n: number) => `Running for about ${n} ${n === 1 ? 'minute' : 'minutes'}`,
     connections: (n: number) => `${n} other client(s) are still connected`,
     operations: (n: number) => `${n} operation(s) are running`,
-    activeTasksDetected: 'This Host reported active background work during the safe replacement check.',
+    idleNotVerified: 'Maka could not verify that this Host is idle during the safe replacement check.',
     unknownActivity: 'This Host version cannot report its background activity.',
     processId: (pid: number) => `Process ID (PID): ${pid}`,
     restartWarning:
@@ -179,7 +180,7 @@ const UPGRADE_COPY = {
     uptime: (n: number) => `已运行约 ${n} 分钟`,
     connections: (n: number) => `仍有 ${n} 个其他客户端连接`,
     operations: (n: number) => `有 ${n} 个操作正在运行`,
-    activeTasksDetected: '安全替换检查发现此 Host 仍有后台任务在运行。',
+    idleNotVerified: '安全替换检查无法确认此 Host 是否处于空闲状态。',
     unknownActivity: '此 Host 版本无法报告后台活动。',
     processId: (pid: number) => `进程 ID (PID)：${pid}`,
     restartWarning: '重启会保留持久化状态，但可能中断正在进行的外部工作。',

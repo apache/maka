@@ -147,7 +147,7 @@ export class DesktopLocalHostRetirementError extends Error {
 export type RuntimeHostRestartDecision = 'restart' | 'wait' | 'cancel';
 export type RuntimeHostNonRestartableDecision = 'replace' | 'wait' | 'cancel';
 export type RuntimeHostNonRestartableAction =
-  | 'replace_active_work'
+  | 'replace_may_interrupt_work'
   | 'wait'
   | 'cancel_only';
 
@@ -952,11 +952,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             continue;
           }
         }
+        // The retirement waiter observes a local PID. Remote targets cannot
+        // use it to prove that a Host on another machine has exited.
         const action: RuntimeHostNonRestartableAction = replacement
-          ? 'replace_active_work'
-          : result.registration.lifecycleMode !== 'service'
-            ? 'wait'
-            : 'cancel_only';
+          ? 'replace_may_interrupt_work'
+          : target.input.profileTarget
+            ? 'cancel_only'
+            : 'wait';
         const decision = await this.#resolveNonRestartable(result, action);
         if (decision === 'cancel') throw new RuntimeHostUpgradeCancelledError();
         if (decision === 'replace') {

@@ -83,12 +83,13 @@ test('reports reload success only after the main document finishes loading', asy
   assert.equal(source.listenerCount('render-process-gone'), 0);
 });
 
-test('keeps recovery active when a Renderer reload fails or exits', async () => {
+test('keeps recovery active when a Renderer reload fails, exits, or stops responding', async () => {
   for (const fail of [
     (source: ReturnType<typeof reloadSource>) =>
       source.emit('did-fail-load', {}, -105, 'name not resolved', 'https://bad.test', true, 1, 2),
     (source: ReturnType<typeof reloadSource>) =>
       source.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 11 }),
+    (source: ReturnType<typeof reloadSource>) => source.emit('unresponsive'),
   ]) {
     const source = reloadSource();
     let observed = false;
@@ -104,7 +105,24 @@ test('keeps recovery active when a Renderer reload fails or exits', async () => 
     assert.equal(await result, false);
     assert.equal(observed, false);
     assert.equal(source.listenerCount('did-finish-load'), 0);
+    assert.equal(source.listenerCount('unresponsive'), 0);
   }
+});
+
+test('bounds a Renderer reload that emits no terminal event', async () => {
+  const source = reloadSource();
+  const result = reloadMainRendererProcess({
+    source,
+    shutdownSignal: new AbortController().signal,
+    onLoaded: () => assert.fail('timed-out reload must not report success'),
+    timeoutMs: 1,
+  });
+
+  assert.equal(await result, false);
+  assert.equal(source.listenerCount('did-finish-load'), 0);
+  assert.equal(source.listenerCount('did-fail-load'), 0);
+  assert.equal(source.listenerCount('unresponsive'), 0);
+  assert.equal(source.listenerCount('render-process-gone'), 0);
 });
 
 function reloadSource(): EventEmitter & {

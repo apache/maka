@@ -28,6 +28,7 @@ interface RenderProcessGoneSource {
 
 interface MainRendererReloadSource {
   once(event: 'did-finish-load', listener: () => void): void;
+  once(event: 'unresponsive', listener: () => void): void;
   once(
     event: 'render-process-gone',
     listener: (event: Event, details: RenderProcessGoneDetails) => void,
@@ -46,6 +47,7 @@ interface MainRendererReloadSource {
     ) => void,
   ): void;
   off(event: 'did-finish-load', listener: () => void): void;
+  off(event: 'unresponsive', listener: () => void): void;
   off(
     event: 'render-process-gone',
     listener: (event: Event, details: RenderProcessGoneDetails) => void,
@@ -87,15 +89,19 @@ export function reloadMainRendererProcess(deps: {
   readonly source: MainRendererReloadSource;
   readonly shutdownSignal: AbortSignal;
   readonly onLoaded: () => void;
+  readonly timeoutMs?: number;
 }): Promise<boolean> {
   if (deps.shutdownSignal.aborted || deps.source.isDestroyed()) {
     return Promise.resolve(false);
   }
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const cleanup = (): void => {
+      if (timeout) clearTimeout(timeout);
       deps.source.off('did-finish-load', onLoaded);
       deps.source.off('did-fail-load', onFailed);
+      deps.source.off('unresponsive', onUnresponsive);
       deps.source.off('render-process-gone', onGone);
       deps.source.off('destroyed', onDestroyed);
       deps.shutdownSignal.removeEventListener('abort', onAborted);
@@ -123,15 +129,18 @@ export function reloadMainRendererProcess(deps: {
     ): void => {
       if (isMainFrame) settle(false);
     };
+    const onUnresponsive = (): void => settle(false);
     const onGone = (_event: Event, _details: RenderProcessGoneDetails): void => settle(false);
     const onDestroyed = (): void => settle(false);
     const onAborted = (): void => settle(false);
 
     deps.source.once('did-finish-load', onLoaded);
     deps.source.on('did-fail-load', onFailed);
+    deps.source.once('unresponsive', onUnresponsive);
     deps.source.once('render-process-gone', onGone);
     deps.source.once('destroyed', onDestroyed);
     deps.shutdownSignal.addEventListener('abort', onAborted, { once: true });
+    timeout = setTimeout(() => settle(false), deps.timeoutMs ?? 30_000);
     try {
       deps.source.reload();
     } catch {

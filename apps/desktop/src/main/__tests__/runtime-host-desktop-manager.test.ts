@@ -562,6 +562,36 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
   await manager.close();
 });
 
+test('does not poll a remote service PID when the Host cannot be replaced', async () => {
+  const local = candidateHarness({ hostId: 'host-local' });
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) =>
+        input.profileTarget ? conflict : ready(local.candidate),
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          assert.equal(action, 'cancel_only');
+          return 'cancel';
+        },
+      },
+      waitForHostRetirement: async () => assert.fail('remote PID must not be polled locally'),
+    },
+  );
+
+  await assert.rejects(
+    manager.enable(remoteTarget('legacy-service')),
+    RuntimeHostUpgradeCancelledError,
+  );
+  await manager.close();
+});
+
 test('keeps independent shared-session credentials active for the same Host', async () => {
   const candidates = [
     candidateHarness({ hostId: 'host-local' }).candidate,
@@ -1206,7 +1236,11 @@ test('prompts when a restartable Host has no activity snapshot', async () => {
 });
 
 test('waits passively for a Host that cannot be taken over', async () => {
-  const conflict = upgradeRequired(false);
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
   let starts = 0;
   let finishRetirement!: () => void;
   const retirement = new Promise<void>((resolve) => {
@@ -1220,7 +1254,10 @@ test('waits passively for a Host that cannot be taken over', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('wait-only conflict used restart prompt'),
-      nonRestartable: async () => 'wait',
+      nonRestartable: async (_conflict, action) => {
+        assert.equal(action, 'wait');
+        return 'wait';
+      },
     },
     waitForHostRetirement: async (registration) => {
       assert.equal(registration.hostEpoch, conflict.registration.hostEpoch);
@@ -1292,7 +1329,7 @@ test('prompts only after a non-restartable Local Host reports active tasks', asy
         restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
         nonRestartable: async (_conflict, action) => {
           prompts += 1;
-          assert.equal(action, 'replace_active_work');
+          assert.equal(action, 'replace_may_interrupt_work');
           return 'replace';
         },
       },
