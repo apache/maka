@@ -44,11 +44,14 @@ on:
       - 'package-lock.json'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-linux-check.yml'
-  # The list above is a pre-filter, not this lane's import closure, so a
-  # transitive edit it cannot match would otherwise first be observed on
-  # release day. Same pairing as the Windows lane.
-  schedule:
-    - cron: '43 5 * * *'
+  # No `schedule` here, unlike the Windows lane. That list is a pre-filter
+  # rather than an import closure, so something has to catch a transitive edit
+  # it cannot match — but for these two commands the Nightly already is that
+  # something: its matrix runs this exact packaging and verification for both
+  # Linux architectures on every npm Nightly publication, which is more often
+  # than a daily cron. The Windows lane earns its cron by also exercising the
+  # installer lifecycle, automatic update and rollback, none of which the
+  # Nightly runs. A cron here would only buy a second copy of the same run.
   workflow_dispatch:
 
 permissions:
