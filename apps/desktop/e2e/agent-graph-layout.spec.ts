@@ -66,82 +66,13 @@ test('production AgentGraphPanel keeps its heading visible without covering scro
   expect(Math.abs(after.headingTop - before.headingTop)).toBeLessThanOrEqual(1);
   expect(Math.abs(after.contentTop - before.contentTop)).toBeLessThanOrEqual(1);
   expect(after.contentTop).toBeGreaterThanOrEqual(after.headingBottom);
-});
-
-test('Agent Graph CSS contract keeps its heading visible without covering scrolled content', async ({ window: page }) => {
-  const geometry = await page.evaluate(() => {
-    const panel = document.createElement('section');
-    panel.className = 'maka-agent-graph-panel';
-
-    const heading = document.createElement('header');
-    heading.className = 'maka-agent-graph-heading';
-    heading.textContent = 'Agent Graph';
-
-    const content = document.createElement('div');
-    content.className = 'maka-agent-graph-content';
-
-    const operators = document.createElement('ul');
-    operators.className = 'maka-agent-graph-operators';
-    for (let index = 0; index < 24; index += 1) {
-      const operator = document.createElement('li');
-      operator.textContent = `operator-${index + 1}`;
-      operators.append(operator);
-    }
-    content.append(operators);
-    panel.append(heading, content);
-    // Give the fixture the bounded viewport production gets from max-height.
-    // The explicit height keeps the overflow contract deterministic when the
-    // surrounding E2E shell has an unconstrained body height.
-    panel.style.height = '295px';
-    document.body.append(panel);
-
-    const panelStyle = getComputedStyle(panel);
-    const panelOverflow = panelStyle.overflow;
-    const contentStyle = getComputedStyle(content);
-    const headingStyle = getComputedStyle(heading);
-    const panelMaxHeight = panelStyle.maxHeight;
-    const panelRectBefore = panel.getBoundingClientRect();
-    const headingRectBefore = heading.getBoundingClientRect();
-    const contentRectBefore = content.getBoundingClientRect();
-    content.scrollTop = content.scrollHeight;
-    const panelRectAfter = panel.getBoundingClientRect();
-    const headingRectAfter = heading.getBoundingClientRect();
-    const contentRectAfter = content.getBoundingClientRect();
-    const beforeOffset = headingRectBefore.top - panelRectBefore.top;
-    const afterOffset = headingRectAfter.top - panelRectAfter.top;
-    panel.dataset.collapsed = 'true';
-    const collapsedStyle = getComputedStyle(panel);
-
-    return {
-      panelOverflow,
-      contentOverflow: contentStyle.overflow,
-      panelMaxHeight,
-      headingPosition: headingStyle.position,
-      panelScrollTop: panel.scrollTop,
-      contentScrollTop: content.scrollTop,
-      panelScrollHeight: panel.scrollHeight,
-      panelClientHeight: panel.clientHeight,
-      contentScrollHeight: content.scrollHeight,
-      contentClientHeight: content.clientHeight,
-      headingOffsetBefore: beforeOffset,
-      headingOffsetAfter: afterOffset,
-      contentTopBefore: contentRectBefore.top,
-      contentTopAfter: contentRectAfter.top,
-      headingBottom: headingRectAfter.bottom,
-      collapsedOverflow: collapsedStyle.overflow,
-      collapsedMaxHeight: collapsedStyle.maxHeight,
-    };
+  const collapse = page.getByRole('button', { name: '收起 Agent Graph', exact: true });
+  await collapse.click();
+  await expect(panel).toHaveAttribute('data-collapsed', 'true');
+  const collapsedHeading = await panel.locator('.maka-agent-graph-heading').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { paddingBottom: style.paddingBottom, borderBottomWidth: style.borderBottomWidth };
   });
-  expect(geometry.panelOverflow).toBe('hidden');
-  expect(geometry.contentOverflow).toBe('auto');
-  expect(geometry.headingPosition).toBe('static');
-  expect(geometry.panelScrollTop).toBe(0);
-  expect(geometry.contentScrollTop).toBeGreaterThan(0);
-  expect(geometry.contentScrollHeight).toBeGreaterThan(geometry.contentClientHeight);
-  expect(geometry.panelScrollHeight).toBe(geometry.panelClientHeight);
-  expect(Math.abs(geometry.headingOffsetAfter - geometry.headingOffsetBefore)).toBeLessThanOrEqual(1);
-  expect(Math.abs(geometry.contentTopAfter - geometry.contentTopBefore)).toBeLessThanOrEqual(1);
-  expect(geometry.contentTopAfter).toBeGreaterThanOrEqual(geometry.headingBottom);
-  expect(geometry.collapsedOverflow).toBe('visible');
-  expect(geometry.collapsedMaxHeight).toBe('none');
+  expect(collapsedHeading.paddingBottom).toBe('0px');
+  expect(collapsedHeading.borderBottomWidth).toBe('0px');
 });
