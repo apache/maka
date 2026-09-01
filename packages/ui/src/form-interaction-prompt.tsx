@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import type { FormRequestEvent } from '@maka/core/events';
 import type { InteractionFormField, InteractionFormResponse } from '@maka/core/interaction';
 import { Button, CheckboxInput, RadioList, RadioListItem, TextInput } from '@astryxdesign/core';
@@ -35,6 +35,13 @@ export function FormInteractionPrompt(props: {
   request: FormRequestEvent;
   onRespond(response: InteractionFormResponse): void | Promise<void>;
 }) {
+  return <ActiveFormInteractionPrompt key={props.request.requestId} {...props} />;
+}
+
+function ActiveFormInteractionPrompt(props: {
+  request: FormRequestEvent;
+  onRespond(response: InteractionFormResponse): void | Promise<void>;
+}) {
   const copy = getConversationCopy(useUiLocale()).forms;
   const titleId = useId();
   const [drafts, setDrafts] = useState<InteractionFormFieldDraft[]>(
@@ -43,16 +50,7 @@ export function FormInteractionPrompt(props: {
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [responsePending, setResponsePending] = useState(false);
   const responsePendingRef = useRef(false);
-  const activeRequestIdRef = useRef(props.request.requestId);
   const mountedRef = useMountedRef();
-
-  useEffect(() => {
-    activeRequestIdRef.current = props.request.requestId;
-    setDrafts(createInteractionFormDrafts(props.request.fields));
-    setSubmitAttempted(false);
-    responsePendingRef.current = false;
-    setResponsePending(false);
-  }, [props.request.fields, props.request.requestId]);
 
   function updateDraft(index: number, next: InteractionFormFieldDraft) {
     setDrafts((current) => current.map((draft, candidateIndex) => candidateIndex === index ? next : draft));
@@ -60,16 +58,13 @@ export function FormInteractionPrompt(props: {
 
   async function respond(response: InteractionFormResponse) {
     if (responsePendingRef.current) return;
-    const requestId = props.request.requestId;
     responsePendingRef.current = true;
     setResponsePending(true);
     try {
       await props.onRespond(response);
     } finally {
-      if (activeRequestIdRef.current === requestId) {
-        responsePendingRef.current = false;
-        if (mountedRef.current) setResponsePending(false);
-      }
+      responsePendingRef.current = false;
+      if (mountedRef.current) setResponsePending(false);
     }
   }
 
@@ -103,13 +98,26 @@ export function FormInteractionPrompt(props: {
             const draft = drafts[index];
             if (!draft) return null;
             const invalid = submitAttempted && !interactionFormFieldDraftIsValid(field, draft);
+            const constraint = formFieldConstraint(field, copy);
+            const constraintId = constraint ? `${titleId}-field-${index}-constraint` : undefined;
             return (
-              <div className="maka-form-interaction-field" key={field.name}>
+              <div
+                className="maka-form-interaction-field"
+                key={field.name}
+                role="group"
+                aria-label={field.label}
+                aria-describedby={constraintId}
+              >
                 <div className="maka-form-interaction-field-heading">
                   <span>{field.label}</span>
                   <span>{field.required ? copy.required : copy.optional}</span>
                 </div>
                 {field.description ? <p className="maka-form-interaction-field-description">{field.description}</p> : null}
+                {constraint ? (
+                  <p className="maka-form-interaction-field-description" id={constraintId}>
+                    {constraint}
+                  </p>
+                ) : null}
                 {!field.required ? (
                   <CheckboxInput
                     label={copy.include(field.label)}
@@ -158,6 +166,28 @@ export function FormInteractionPrompt(props: {
       </div>
     </section>
   );
+}
+
+function formFieldConstraint(
+  field: InteractionFormField,
+  copy: ReturnType<typeof getConversationCopy>['forms'],
+): string | undefined {
+  const parts: string[] = [];
+  if (field.kind === 'string') {
+    if (field.minLength !== undefined || field.maxLength !== undefined) {
+      parts.push(copy.lengthConstraint(field.minLength, field.maxLength));
+    }
+    if (field.format !== undefined) parts.push(copy.formatConstraint[field.format]);
+  } else if (field.kind === 'number' || field.kind === 'integer') {
+    if (field.minimum !== undefined || field.maximum !== undefined) {
+      parts.push(copy.numberConstraint(field.minimum, field.maximum));
+    }
+  } else if (field.kind === 'multi_select') {
+    if (field.minItems !== undefined || field.maxItems !== undefined) {
+      parts.push(copy.itemConstraint(field.minItems, field.maxItems));
+    }
+  }
+  return parts.length === 0 ? undefined : parts.join(copy.constraintSeparator);
 }
 
 function renderFormControl(props: {
