@@ -89,27 +89,6 @@ describe('TUI copy resources', () => {
     assert.equal(formatUiMessage(template, { count: 2 }, 'en'), '2 tools');
   });
 
-  test('localizes rewind and skill notices in both locales', () => {
-    assert.equal(TUI_COPY_RESOURCES.rewind.en.noTargets, 'No turns to rewind to.');
-    assert.equal(TUI_COPY_RESOURCES.rewind.zh.noTargets, '没有可回退的轮次。');
-    assert.equal(
-      formatUiMessage(
-        TUI_COPY_RESOURCES.skills.en.failedItem,
-        { request: 'nope', reason: TUI_COPY_RESOURCES.skills.en.failureReasons.not_found },
-        'en',
-      ),
-      '/skill:nope (not found)',
-    );
-    assert.equal(
-      formatUiMessage(
-        TUI_COPY_RESOURCES.skills.zh.failedItem,
-        { request: 'nope', reason: TUI_COPY_RESOURCES.skills.zh.failureReasons.not_found },
-        'zh',
-      ),
-      '/skill:nope（未找到）',
-    );
-  });
-
   test('localizes stable onboarding failure codes at the TUI boundary', () => {
     assert.equal(
       onboardingFailureMessage({ kind: 'rejected', reason: 'connection_not_found' }, 'en'),

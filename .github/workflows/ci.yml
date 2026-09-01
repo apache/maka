@@ -175,6 +175,12 @@ jobs:
         if: needs.plan.outputs.code == 'true' || needs.plan.outputs.astryx_surface == 'true' || needs.plan.outputs.asf_source == 'true' || needs.plan.outputs.cli_package == 'true' || needs.plan.outputs.release_contract == 'true'
         run: npm ci
 
+      - name: Check localized TUI copy boundaries
+        if: needs.plan.outputs.code == 'true'
+        run: |
+          npm run check:tui-copy
+          node --test scripts/check-tui-copy.test.mjs
+
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
       # dependency is installed, matching the source-candidate workflow.

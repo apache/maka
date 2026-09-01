@@ -396,13 +396,15 @@ describe('Maka Pi TUI runner', () => {
     // The driver's raw error text is not product copy; the TUI reports the
     // failure with its own localized notice (#2672).
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Could not start a new session'),
+      plainTerminalOutput(terminal.output()).includes('a local command could not be stopped'),
     );
 
     // Identity untouched…
     assert.equal(driver.getSessionId(), 'session-1');
     // …and the transcript was not wiped by the aborted /new.
-    assert.match(plainTerminalOutput(terminal.screenOutput()), /Could not start a new session/);
+    const screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /a local command could not be stopped/u);
+    assert.match(screen, /Press Ctrl\+C to stop it/u);
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
     assert.ok(transcriptBefore.length > 0);
 

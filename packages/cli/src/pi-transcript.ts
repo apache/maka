@@ -1889,8 +1889,8 @@ const TUI_PENDING_QUEUE_COPY = resolveUiMessageCatalog(
 export function renderMakaPiPendingQueue(
   state: MakaPiTranscriptState,
   width: number,
-  platform: NodeJS.Platform = process.platform,
-  locale: UiLocale = 'en',
+  platform: NodeJS.Platform,
+  locale: UiLocale,
 ): string[] {
   if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
