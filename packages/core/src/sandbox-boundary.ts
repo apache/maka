@@ -305,6 +305,11 @@ export function projectSandboxBoundaryNegotiation(
       if (decision.status === 'denied') {
         denied = true;
       } else if (decision.status === 'approved') {
+        if (denied || finalizationRequested) {
+          return invalid(
+            `sandbox boundary approval ${decision.requestId} reopens a closed negotiation`,
+          );
+        }
         denied = false;
         invalidRounds = 0;
         unresolvedRounds = 0;
@@ -331,7 +336,12 @@ export function projectSandboxBoundaryNegotiation(
       }
       const call = {
         name: content.name,
-        step: event.refs?.stepId ?? event.refs?.toolCallId ?? content.id,
+        step:
+          event.refs?.stepId ??
+          event.refs?.parentToolCallId ??
+          event.refs?.parentOperationId ??
+          event.refs?.toolCallId ??
+          content.id,
       };
       if (toolCalls.has(content.id)) {
         return invalid(`tool call ${content.id} is duplicated`);
@@ -430,6 +440,11 @@ export function projectSandboxBoundaryNegotiation(
       if (request.status === 'denied') {
         denied = true;
       } else if (request.status === 'approved') {
+        if (denied || finalizationRequested) {
+          return invalid(
+            `sandbox boundary approval ${request.requestId} reopens a closed negotiation`,
+          );
+        }
         denied = false;
         invalidRounds = 0;
         unresolvedRounds = 0;

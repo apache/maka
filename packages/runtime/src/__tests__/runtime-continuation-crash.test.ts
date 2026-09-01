@@ -32,6 +32,10 @@ import {
   buildInvocationOpenedEvent,
   runtimeInvocationOutcome,
 } from '@maka/core/runtime-invocation';
+import {
+  projectSandboxBoundaryNegotiation,
+  type SandboxBoundaryRequest,
+} from '@maka/core/sandbox-boundary';
 import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
@@ -55,6 +59,91 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
   await runCrashChild();
 } else {
   describe('runtime resume phase 1 process crash harness', () => {
+    test('reopens and reconstructs a denied sandbox negotiation from the durable ledger', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'maka-runtime-boundary-restart-'));
+      const sessionId = 'session-1';
+      const runId = 'source-run';
+      const turnId = 'source-turn';
+      const runtimeEventStore = createCrashRuntimeStore(root);
+      try {
+        const identity = {
+          sessionId,
+          invocationId: 'source-invocation',
+          runId,
+          turnId,
+        };
+        await runtimeEventStore.appendRuntimeEvent(sessionId, runId, {
+          ...identity,
+          id: 'boundary-request-event',
+          ts: 1,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          refs: { toolCallId: 'boundary-tool' },
+          actions: {
+            stateDelta: {
+              sandboxBoundaryRequest: {
+                requestId: 'boundary-1',
+                toolUseId: 'boundary-tool',
+                justification: 'Need network access.',
+                expansion: { network: { enabled: true } },
+              },
+            },
+          },
+        });
+        await runtimeEventStore.appendRuntimeEvent(sessionId, runId, {
+          ...identity,
+          id: 'boundary-decision-event',
+          ts: 2,
+          partial: false,
+          role: 'system',
+          author: 'user',
+          refs: { toolCallId: 'boundary-tool' },
+          actions: {
+            stateDelta: {
+              sandboxBoundaryDecision: {
+                requestId: 'boundary-1',
+                decision: 'deny',
+                status: 'denied',
+                revision: 0,
+              },
+            },
+          },
+        });
+        const durableRequest: SandboxBoundaryRequest = {
+          sessionId,
+          requestId: 'boundary-1',
+          status: 'denied',
+          baseRevision: 0,
+          expansion: { network: { enabled: true } },
+          justification: 'Need network access.',
+          createdAt: 1,
+          settledAt: 2,
+          turnId,
+          runId,
+        };
+
+        runtimeEventStore.close();
+        const reopened = createCrashRuntimeStore(root);
+        try {
+          const events = await reopened.readRuntimeEvents(sessionId, runId);
+          assert.deepEqual(projectSandboxBoundaryNegotiation(events, [durableRequest]), {
+            kind: 'valid',
+            state: {
+              denied: true,
+              invalidRounds: 0,
+              unresolvedRounds: 0,
+              finalizationRequested: false,
+            },
+          });
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+
     test('reopens and repairs every committed continuation prefix after SIGKILL', {
       timeout: CRASH_HARNESS_TIMEOUT_MS,
     }, async () => {

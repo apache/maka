@@ -502,6 +502,88 @@ describe('projectSandboxBoundaryNegotiation', () => {
     });
   });
 
+  test('counts nested Code Mode boundary failures once per parent tool step', () => {
+    const events = ['one', 'two', 'three'].flatMap((id) => {
+      const toolCallId = `nested-${id}`;
+      const refs = { toolCallId, parentToolCallId: 'code-cell-1' };
+      return [
+        base(`${id}-call`, {
+          role: 'model',
+          author: 'agent',
+          modelVisibility: 'hidden',
+          refs,
+          content: {
+            kind: 'function_call',
+            id: toolCallId,
+            name: 'Bash',
+            args: { boundary_intent: 'expand' },
+          },
+        }),
+        base(`${id}-response`, {
+          role: 'tool',
+          author: 'tool',
+          modelVisibility: 'hidden',
+          refs,
+          content: {
+            kind: 'function_response',
+            id: toolCallId,
+            name: 'Bash',
+            isError: true,
+            result: {
+              kind: 'text',
+              text: 'Sandbox boundary correction failed.',
+              sandboxFailure: { reason: 'invalid_boundary_declaration' },
+            },
+          },
+        }),
+      ];
+    });
+
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 1,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
+  });
+
+  test('fails closed when approval reopens a denied or finalized negotiation', () => {
+    const deniedThenApproved = [
+      request('request-1', 'boundary-1', 'tool-1'),
+      decision('decision-1', 'boundary-1', 'tool-1', 'denied'),
+      request('request-2', 'boundary-2', 'tool-2'),
+      decision('decision-2', 'boundary-2', 'tool-2', 'approved'),
+    ];
+    assert.equal(projectSandboxBoundaryNegotiation(deniedThenApproved).kind, 'invalid');
+
+    const finalizedThenApproved = [
+      ...failurePair(
+        'invalid-1',
+        'request_sandbox_boundary',
+        'tool-1',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-2',
+        'request_sandbox_boundary',
+        'tool-2',
+        'invalid_boundary_declaration',
+      ),
+      ...failurePair(
+        'invalid-3',
+        'request_sandbox_boundary',
+        'tool-3',
+        'invalid_boundary_declaration',
+      ),
+      request('request-1', 'boundary-1', 'tool-4'),
+      decision('decision-1', 'boundary-1', 'tool-4', 'approved'),
+    ];
+    assert.equal(projectSandboxBoundaryNegotiation(finalizedThenApproved).kind, 'invalid');
+  });
+
   test('approved requests reset prior correction state', () => {
     const events = [
       ...failurePair(
