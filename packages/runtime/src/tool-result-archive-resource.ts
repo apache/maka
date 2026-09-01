@@ -41,6 +41,8 @@ export const TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES = 50;
 const SEARCH_SNIPPET_RADIUS = 80;
 /** Longest search snippet retained, so many matches still fit one response. */
 const MAX_SEARCH_SNIPPET_CHARS = 240;
+/** Maximum pattern length accepted by the ArchiveRead tool schema. */
+const MAX_SEARCH_PATTERN_CHARS = 256;
 /** Preview length surfaced by inspect for text/object payloads. */
 const INSPECT_PREVIEW_CHARS = 600;
 
@@ -420,7 +422,7 @@ function searchArchive(
     kind: 'tool_result_archive' as const,
     operation: 'search' as const,
     ref,
-    pattern: boundedString(pattern),
+    pattern: boundedString(pattern, MAX_SEARCH_PATTERN_CHARS),
     totalChars: text.length,
   };
   const buildResponse = (
@@ -458,13 +460,19 @@ function searchArchive(
       foldedIndex,
       needle.length,
     );
-    const snippetStart = Math.max(0, index - SEARCH_SNIPPET_RADIUS);
-    const snippetEnd = Math.min(text.length, matchEnd + SEARCH_SNIPPET_RADIUS);
+    // Keep the complete match representable when the accepted pattern is
+    // longer than the normal snippet budget; trim surrounding context first.
+    const snippetLimit = Math.max(MAX_SEARCH_SNIPPET_CHARS, matchEnd - index);
+    const contextBudget = Math.max(0, snippetLimit - (matchEnd - index));
+    const before = Math.min(SEARCH_SNIPPET_RADIUS, Math.floor(contextBudget / 2));
+    const after = Math.min(SEARCH_SNIPPET_RADIUS, contextBudget - before);
+    const snippetStart = Math.max(0, index - before);
+    const snippetEnd = Math.min(text.length, matchEnd + after);
     const candidate = {
       offset: index,
       line: lineAt(index),
       snippetStart,
-      snippet: boundedString(text.slice(snippetStart, snippetEnd), MAX_SEARCH_SNIPPET_CHARS),
+      snippet: text.slice(snippetStart, snippetEnd),
     };
     if (
       JSON.stringify(buildResponse([...matches, candidate], index)).length >

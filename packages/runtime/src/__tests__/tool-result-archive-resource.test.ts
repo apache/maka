@@ -371,6 +371,20 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal(match.offset, 1);
     assert.equal(match.snippet, 'İA');
   });
+
+  test('preserves accepted long search patterns and complete matching snippets', async () => {
+    const pattern = 'A'.repeat(256);
+    const { ref, reader } = textFixture('prefix ' + pattern + ' suffix');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern,
+    })) as Record<string, unknown>;
+    const match = (result.matches as Array<Record<string, unknown>>)[0]!;
+
+    assert.equal(result.pattern, pattern);
+    assert.match(match.snippet as string, new RegExp(pattern));
+  });
 });
 
 function textFixture(text: string): { ref: string; reader: ToolResultArchiveResourceReader } {
