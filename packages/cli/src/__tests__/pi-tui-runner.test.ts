@@ -922,7 +922,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai-1',
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'bypass',
       terminal,
       onboarding: fakeOnboardingSurface({
@@ -3619,7 +3618,6 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'gpt-5',
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'ask',
       modelChoices: [
         {
@@ -3664,7 +3662,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5',
       models: ['gpt-5', 'gpt-5-mini'],
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'ask',
       locale: 'zh',
       terminal,
@@ -3687,7 +3684,6 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'gpt-5',
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'ask',
       locale: 'zh',
       modelChoices: [
@@ -3783,7 +3779,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai',
       connectionSlug: 'openai',
-      providerType: 'openai',
       locale: 'en',
       modelChoices: [
         {
@@ -3861,7 +3856,6 @@ describe('Maka Pi TUI runner', () => {
       // up in the status line — a dropped choice truly leaves the visible list.
       model: 'legacy-curated-out',
       connectionSlug: 'ghost',
-      providerType: 'openai',
       modelChoices: [
         {
           connectionSlug: 'alpha',
@@ -3959,7 +3953,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai',
       connectionSlug: 'openai',
-      providerType: 'openai',
       modelChoices: [
         {
           connectionId: 'connection-openai',
@@ -4019,7 +4012,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'shared-model',
       connectionId: 'connection-primary',
       connectionSlug: 'primary',
-      providerType: 'openai',
       modelChoices: [
         {
           connectionId: 'connection-primary',
@@ -4125,7 +4117,6 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'shared-model',
       connectionSlug: 'openai',
-      providerType: 'openai',
       modelChoices,
       permissionMode: 'ask',
       terminal,
@@ -7901,7 +7892,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionId: 'connection-a',
       connectionSlug: 'existing-account',
-      providerType: 'anthropic',
       connectionIdentities: [
         { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
       ],

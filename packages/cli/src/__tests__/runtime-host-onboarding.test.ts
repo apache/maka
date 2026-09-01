@@ -88,7 +88,6 @@ describe('createRuntimeHostOnboardingSurface', () => {
         target: { kind: 'existing', connectionId: 'live-id' },
         apiKey: 'sk-test',
         enabledModelIds: ['gpt-5-mini'],
-        models: [{ id: 'gpt-5-mini' }],
       }),
       { kind: 'failed', errorClass: 'network' },
     );
@@ -133,7 +132,6 @@ describe('createRuntimeHostOnboardingSurface', () => {
       target: { kind: 'create', providerType: 'openai' },
       apiKey: 'sk-test',
       enabledModelIds: ['gpt-5-mini'],
-      models: [{ id: 'gpt-5-mini' }],
     });
 
     assert.deepEqual(result, {

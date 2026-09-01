@@ -58,9 +58,7 @@ export type ConnectionIdentity = {
 export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
-  authKind: 'api_key' | 'optional_api_key';
   requiresBaseUrl: boolean;
-  fallbackModels: readonly string[];
 }
 
 export type OnboardingProviderEntry = OnboardableProvider &
@@ -116,7 +114,6 @@ export interface OnboardingSaveInput {
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
   enabledModelIds: readonly string[];
-  models: readonly ModelInfo[];
 }
 
 export interface OnboardingSavedConnection {

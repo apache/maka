@@ -185,7 +185,6 @@ export interface MakaPiTuiInput {
   connectionId?: string;
   connectionIdentities?: readonly ConnectionIdentity[];
   connectionSlug: string;
-  providerType?: ProviderType;
   permissionMode: PermissionMode;
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
@@ -383,9 +382,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let model = input.model;
   let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
-  // Mutable: a cross-connection /model switch rebinds the provider, which changes
-  // both the connection and the thinking variants the new model supports.
-  let providerType = input.providerType;
   let modelContextWindow = input.modelContextWindow;
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
@@ -1461,17 +1457,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
     }
     connectionIdentityNotice = identityNotice;
-    const matchingChoice = modelChoices?.find(
-      (choice) =>
-        choice.connectionId === summary.llmConnectionId &&
-        choice.connectionSlug === summary.llmConnectionSlug,
-    );
-    providerType =
-      matchingChoice?.providerType ??
-      (previousConnectionId === summary.llmConnectionId &&
-      previousConnectionSlug === summary.llmConnectionSlug
-        ? providerType
-        : undefined);
     const contextWindowMatch = modelChoices?.find(
       (choice) =>
         choice.connectionId === summary.llmConnectionId &&
@@ -1544,7 +1529,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     model = choice.model;
     connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
-    providerType = choice.providerType;
     modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
     thinkingLevels = choice.thinkingLevels;
@@ -2154,7 +2138,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         apiKey: wizardApiKey,
         baseUrl: wizardBaseUrl,
         enabledModelIds,
-        models: wizardModels,
       })
       .then(
         (result) => {

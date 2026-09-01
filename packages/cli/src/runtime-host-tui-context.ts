@@ -81,7 +81,6 @@ export interface RuntimeHostTuiContext {
   readonly connectionId?: string;
   readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
-  readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
@@ -205,9 +204,6 @@ export async function createRuntimeHostTuiContext(
         : { connectionId: selectedTarget.connectionId }),
       connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
-      ...(selectedTarget.connection
-        ? { providerType: selectedTarget.connection.providerType }
-        : {}),
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,
