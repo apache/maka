@@ -21,8 +21,8 @@ import type { SessionSummary } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
+import type { RefObject } from 'react';
 import type {
-  SessionNavigationRef,
   SessionNavigationRemoveOutcome,
   SessionNavigationSessionService,
   SessionNavigationToastApi,
@@ -89,13 +89,13 @@ export interface SessionNavigationRowActions {
 
 export function createSessionNavigationRowActions(deps: {
   uiLocale: UiLocale;
-  activeIdRef: SessionNavigationRef<string | undefined>;
+  activeIdRef: RefObject<string | undefined>;
   clearActiveMessages: () => void;
   clearSessionRendererState: (sessionId: string) => void;
-  pendingSessionRowActionsRef: SessionNavigationRef<Set<string>>;
+  pendingSessionRowActionsRef: RefObject<Set<string>>;
   refreshSessions: () => Promise<ReadonlyArray<SessionSummary>>;
   service: SessionNavigationSessionService;
-  sessionsRef: SessionNavigationRef<ReadonlyArray<SessionSummary>>;
+  sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
   setActiveId: (sessionId: string | undefined) => void;
   toastApi: SessionNavigationToastApi;
 }): SessionNavigationRowActions {

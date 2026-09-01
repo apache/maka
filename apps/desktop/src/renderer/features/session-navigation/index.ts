@@ -27,4 +27,8 @@ export type {
   SessionNavigationRowActions,
   SessionPurgeOutcome,
 } from './controller/session-row-actions.js';
-export type { SessionNavigationPorts, SessionNavigationServices } from './ports.js';
+export type {
+  SessionNavigationPorts,
+  SessionNavigationServices,
+  SessionNavigationToastApi,
+} from './ports.js';

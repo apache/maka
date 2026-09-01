@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { RefObject } from 'react';
 import type { SessionSummary } from '@maka/core/session';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 
@@ -32,8 +33,10 @@ export interface SessionNavigationRemoveOutcome {
   readonly archivedSubtaskCount: number;
 }
 
-export type SessionNavigationRef<T> = { current: T };
-
+/**
+ * The slice of the shell toast surface the rail uses. Structural typing checks
+ * it against the real `ToastApi` where the shell wires it in.
+ */
 export type SessionNavigationToastApi = {
   success(title: string, description?: string): void;
   error(
@@ -99,15 +102,17 @@ export interface SessionNavigationServices {
  *
  * Switching a session also clears the active messages and leaves the Work Hub.
  * Those are commands the shell issues, and they stay commands: the rail calls
- * them, it does not subscribe to them. Nothing here has to be identity-stable —
- * the controller reads them through a ref published on commit — so the shell
- * may build this object inline, and no ordinary `function` declaration upstream
- * can quietly put the rail back on every AppShell render (#4109).
+ * them, it does not subscribe to them. The function fields need no identity
+ * stability — the controller reads them through a ref published on commit — so
+ * the shell may rebuild this object inline, and no ordinary `function`
+ * declaration upstream can quietly put the rail back on every AppShell render
+ * (#4109). The ref boxes themselves must be stable (`useRef` results): row
+ * actions capture them once and dereference at call time.
  */
 export interface SessionNavigationPorts {
-  activeIdRef: SessionNavigationRef<string | undefined>;
-  sessionsRef: SessionNavigationRef<ReadonlyArray<SessionSummary>>;
-  pendingSessionRowActionsRef: SessionNavigationRef<Set<string>>;
+  activeIdRef: RefObject<string | undefined>;
+  sessionsRef: RefObject<ReadonlyArray<SessionSummary>>;
+  pendingSessionRowActionsRef: RefObject<Set<string>>;
   activateSession(sessionId: string | undefined): void;
   clearActiveMessages(): void;
   clearSessionRendererState(sessionId: string): void;
