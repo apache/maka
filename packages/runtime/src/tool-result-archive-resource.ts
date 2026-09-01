@@ -585,12 +585,7 @@ function collectLineWindow(
  * line count is trimmed by binary search so the response never exceeds
  * TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS, and `nextLineOffset` resumes paging.
  */
-function pagedLines(
-  ref: string,
-  text: string,
-  lineOffset: number,
-  lineLimit: number,
-): Record<string, unknown> {
+function pagedLines(ref: string, text: string, lineOffset: number, lineLimit: number): unknown {
   const totalLines = countLines(text);
   const { lines } = collectLineWindow(text, lineOffset, lineLimit);
   const buildPage = (count: number): Record<string, unknown> => {
