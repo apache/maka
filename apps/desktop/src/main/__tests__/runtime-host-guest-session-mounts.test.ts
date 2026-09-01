@@ -25,6 +25,7 @@ import {
   createDesktopGuestSessionMountService,
   type GuestSessionMount,
   type GuestSessionMountStore,
+  registerDesktopGuestSessionMountIpc,
 } from '../runtime-host-guest-session-mounts.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from '../runtime-host-desktop-manager.js';
 
@@ -270,6 +271,45 @@ test('cancels an in-flight import and removes its durable mount desire', async (
 
   assert.equal((await importing).kind, 'error');
   assert.deepEqual(await store.read(), []);
+  await mounts.close();
+});
+
+test('reads an invitation from the clipboard only on explicit IPC invocation', async () => {
+  type IpcHandler = Parameters<Pick<Electron.IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboardReads = 0;
+  let clipboardText = '  invitation-code  ';
+  const mounts = service(memoryStore());
+  const dispose = registerDesktopGuestSessionMountIpc(
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+      removeHandler(channel) {
+        handlers.delete(channel);
+      },
+    },
+    mounts,
+    () => {
+      clipboardReads += 1;
+      return clipboardText;
+    },
+  );
+
+  assert.equal(clipboardReads, 0);
+  const handler = handlers.get('session-collaboration:invitation:read-clipboard');
+  assert.ok(handler);
+  assert.equal(await handler({} as never), 'invitation-code');
+  assert.equal(clipboardReads, 1);
+
+  clipboardText = 'x'.repeat(32 * 1024 + 1);
+  assert.throws(
+    () => handler({} as never),
+    /Clipboard content is too large to be a shared Session invitation/,
+  );
+
+  dispose();
+  assert.equal(handlers.size, 0);
   await mounts.close();
 });
 

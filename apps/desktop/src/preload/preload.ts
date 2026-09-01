@@ -1341,6 +1341,9 @@ const makaBridge = {
     cancelImport(operationId) {
       return ipcRenderer.invoke('session-collaboration:import:cancel', operationId);
     },
+    readInvitationClipboard() {
+      return ipcRenderer.invoke('session-collaboration:invitation:read-clipboard');
+    },
     listMounts() {
       return ipcRenderer.invoke('session-collaboration:mount:list');
     },

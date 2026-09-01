@@ -33,7 +33,10 @@ import type {
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../shared/session-collaboration.js';
-import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
+import {
+  decodeDesktopCollaborationInvitation,
+  DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES,
+} from './runtime-host-collaboration-invitation.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
 
 const STORE_SCHEMA_VERSION = 1;
@@ -419,12 +422,14 @@ export function createDesktopGuestSessionMountService(input: {
 export function registerDesktopGuestSessionMountIpc(
   ipcMain: Pick<Electron.IpcMain, 'handle' | 'removeHandler'>,
   service: DesktopGuestSessionMountService,
+  readClipboardText: () => string,
 ): () => void {
   const channels = [
     'session-collaboration:import',
     'session-collaboration:import:cancel',
     'session-collaboration:mount:list',
     'session-collaboration:mount:remove',
+    'session-collaboration:invitation:read-clipboard',
   ] as const;
   ipcMain.handle(
     channels[0],
@@ -441,6 +446,13 @@ export function registerDesktopGuestSessionMountIpc(
     service.cancelImport(requireOperationId(operationIdValue)));
   ipcMain.handle(channels[2], () => service.list());
   ipcMain.handle(channels[3], (_event, mountId: string) => service.remove(mountId));
+  ipcMain.handle(channels[4], () => {
+    const value = readClipboardText().trim();
+    if (Buffer.byteLength(value, 'utf8') > DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES) {
+      throw new Error('Clipboard content is too large to be a shared Session invitation');
+    }
+    return value;
+  });
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };

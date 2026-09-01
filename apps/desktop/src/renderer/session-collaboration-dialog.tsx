@@ -306,7 +306,6 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
                       />
                     )
                   ) : null}
-                  <Button variant="secondary" label={copy.copy} onClick={() => void copyInvitation()} />
                 </FormLayout>
               ) : (
                 <Button
@@ -403,7 +402,24 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
             </div>
           </LayoutContent>
         )}
-        footer={<LayoutFooter><Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} /></LayoutFooter>}
+        footer={(
+          <LayoutFooter>
+            <Button
+              variant="secondary"
+              label={copy.close}
+              isDisabled={working}
+              onClick={props.onClose}
+            />
+            {invitation ? (
+              <Button
+                variant="primary"
+                label={copy.copy}
+                isDisabled={working}
+                onClick={() => void copyInvitation()}
+              />
+            ) : null}
+          </LayoutFooter>
+        )}
       />
     </Dialog>
   );

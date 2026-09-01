@@ -45,6 +45,9 @@ export interface SessionCollaborationJoinCopy {
   readonly invalidCode: string;
   readonly directPathUnavailable: string;
   readonly code: string;
+  readonly pasteInvitation: string;
+  readonly clipboardEmpty: string;
+  readonly clipboardUnavailable: string;
   readonly join: string;
   readonly validatingInvitation: string;
   readonly discoveringHost: string;
@@ -66,6 +69,7 @@ export function SessionCollaborationJoinDialog(props: {
   const services = useSessionCollaborationServices();
   const toast = useToast();
   const [code, setCode] = useState('');
+  const [readingClipboard, setReadingClipboard] = useState(false);
   const [mounts, setMounts] = useState<readonly SessionCollaborationMountSummary[]>([]);
   const [removingMountId, setRemovingMountId] = useState<string>();
   const activeOperationId = useRef<string | undefined>(undefined);
@@ -198,6 +202,27 @@ export function SessionCollaborationJoinDialog(props: {
     }
   }
 
+  async function pasteInvitation(): Promise<void> {
+    if (working || readingClipboard) return;
+    setReadingClipboard(true);
+    try {
+      const invitation = await services.readInvitationClipboard();
+      if (!open.current) return;
+      if (!invitation) {
+        toast.info(props.copy.joinTitle, props.copy.clipboardEmpty);
+        return;
+      }
+      setCode(invitation);
+      setJoinState({ kind: 'idle' });
+    } catch {
+      if (open.current) {
+        toast.error(props.copy.joinTitle, props.copy.clipboardUnavailable);
+      }
+    } finally {
+      if (open.current) setReadingClipboard(false);
+    }
+  }
+
   return (
     <Dialog
       isOpen
@@ -235,9 +260,22 @@ export function SessionCollaborationJoinDialog(props: {
                 value={code}
                 rows={6}
                 hasSpellCheck={false}
-                isDisabled={working}
-                onChange={setCode}
+                isDisabled={working || readingClipboard}
+                onChange={(value) => {
+                  setCode(value);
+                  if (joinState.kind === 'failed') setJoinState({ kind: 'idle' });
+                }}
               />
+              <div className="sessionCollaborationInvitationAction">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  label={props.copy.pasteInvitation}
+                  isDisabled={working}
+                  isLoading={readingClipboard}
+                  onClick={() => void pasteInvitation()}
+                />
+              </div>
               {mounts.length > 0 ? (
                 <List density="compact" hasDividers aria-label={props.copy.retainedTasks}>
                   {mounts.map((mount) => (
@@ -272,7 +310,7 @@ export function SessionCollaborationJoinDialog(props: {
             <Button
               variant="primary"
               label={props.copy.join}
-              isDisabled={working || !code.trim()}
+              isDisabled={working || readingClipboard || !code.trim()}
               isLoading={working}
               onClick={() => void join()}
             />
