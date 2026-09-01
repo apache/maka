@@ -134,11 +134,13 @@ export function statusFromEvent(
     case 'sandbox_boundary_request':
       return { status: 'waiting_for_user', blockedReason: 'permission_required' };
     case 'user_question_request':
+    case 'form_request':
       return { status: 'waiting_for_user' };
     case 'sandbox_boundary_decision_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
     case 'user_question_answer_ack':
+    case 'form_answer_ack':
       if (options.allowInteractionResume === false) return undefined;
       return { status: 'running' };
     case 'error':

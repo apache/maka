@@ -24,6 +24,7 @@ import type {
   FormRequestEvent,
   SandboxBoundaryDecisionAckEvent,
   SandboxBoundaryRequestEvent,
+  SessionEvent,
   UserQuestionAnswerAckEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
@@ -207,6 +208,26 @@ type HostedInteractionSettlementAckEvent =
   | UserQuestionAnswerAckEvent
   | FormAnswerAckEvent
   | SandboxBoundaryDecisionAckEvent;
+
+export function isHostedInteractionRequestEvent(
+  event: SessionEvent,
+): event is HostedInteractionRequestEvent {
+  return (
+    event.type === 'user_question_request' ||
+    event.type === 'form_request' ||
+    event.type === 'sandbox_boundary_request'
+  );
+}
+
+export function isHostedInteractionSettlementAckEvent(
+  event: SessionEvent,
+): event is HostedInteractionSettlementAckEvent {
+  return (
+    event.type === 'user_question_answer_ack' ||
+    event.type === 'form_answer_ack' ||
+    event.type === 'sandbox_boundary_decision_ack'
+  );
+}
 type RuntimeHostedInteractionOutcome =
   | RuntimeUserQuestionOutcome
   | RuntimeFormOutcome

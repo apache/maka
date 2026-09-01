@@ -1368,6 +1368,23 @@ describe('Interaction decoding and validity', () => {
         ],
       }),
     );
+
+    assert.throws(
+      () =>
+        projectInteractionFormRequest({
+          toolUseId: 'tool-form',
+          message: 'Optional values still consume the persisted answer envelope',
+          requester: { name: 'deploy' },
+          fields: Array.from({ length: 4 }, (_, index) => ({
+            kind: 'string' as const,
+            name: `optional-${index}`,
+            label: `Optional ${index}`,
+            required: false,
+            maxLength: 2_048,
+          })),
+        }),
+      /Interaction form (answer|outcome) exceeds serialized byte limit/,
+    );
   });
 
   test('compares canonical accepted form values structurally', () => {

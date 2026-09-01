@@ -146,6 +146,8 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
+  isHostedInteractionRequestEvent,
+  isHostedInteractionSettlementAckEvent,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
@@ -1590,10 +1592,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     binding: RuntimeInteractionRunBinding | undefined,
     event: SessionEvent,
   ): void {
-    if (
-      binding &&
-      (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request')
-    ) {
+    if (binding && isHostedInteractionRequestEvent(event)) {
       binding.assertPendingAdmission(event);
     }
   }
@@ -3337,10 +3336,7 @@ async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
 ): Promise<boolean> {
-  if (
-    !interactionRun ||
-    (event.type !== 'user_question_answer_ack' && event.type !== 'sandbox_boundary_decision_ack')
-  ) {
+  if (!interactionRun || !isHostedInteractionSettlementAckEvent(event)) {
     return true;
   }
   return await interactionRun.canResumeAfterSettlementAck(event);

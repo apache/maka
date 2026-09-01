@@ -731,8 +731,22 @@ function projectInteractionFormField(field: InteractionFormField): InteractionFo
         }),
   };
   if (field.kind !== 'single_select' && field.kind !== 'multi_select') {
+    // `name` is a protocol identity returned to the tool; a string default is
+    // rendered into an input the user reads and accepts.
+    if (field.kind === 'string' && field.default !== undefined) {
+      return {
+        ...field,
+        ...display,
+        default: projectInteractionReviewText(
+          field.default,
+          INTERACTION_FORM_VALUE_MAX_BYTES,
+          true,
+        ),
+      };
+    }
     return { ...field, ...display };
   }
+  // Select values are protocol identities; labels are their display text.
   const options = field.options.map((option) => ({
     ...option,
     label: projectInteractionReviewText(option.label, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
@@ -1248,6 +1262,45 @@ function assertFormHasAcceptedAnswer(request: InteractionFormRequest): void {
   }
   serializedLimit(answer, INTERACTION_ANSWER_SERIALIZED_MAX_BYTES, 'Interaction form answer');
   assertAcceptedFormAnswerFitsCanonicalOutcome(answer);
+  assertEveryFormAnswerFitsCanonicalOutcome(request);
+}
+
+/**
+ * Admission must reserve the whole legal answer envelope, not only a smallest
+ * witness. This intentionally over-approximates format-constrained strings:
+ * rejecting an over-large form is safe, whereas accepting one that can later
+ * reject a valid user answer strands the interaction.
+ */
+function assertEveryFormAnswerFitsCanonicalOutcome(request: InteractionFormRequest): void {
+  const values = Object.fromEntries(
+    request.fields.map((field) => [field.name, formFieldMaximumEnvelope(field)]),
+  );
+  const answer = { kind: 'form' as const, action: 'accept' as const, values };
+  serializedLimit(answer, INTERACTION_ANSWER_SERIALIZED_MAX_BYTES, 'Interaction form answer');
+  assertAcceptedFormAnswerFitsCanonicalOutcome(answer);
+}
+
+function formFieldMaximumEnvelope(field: InteractionFormField): InteractionFormValue {
+  if (field.kind === 'string') {
+    const maximumCodePoints = Math.min(
+      field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES,
+      Math.floor(INTERACTION_FORM_VALUE_MAX_BYTES / 4),
+    );
+    return '😀'.repeat(maximumCodePoints);
+  }
+  if (field.kind === 'number' || field.kind === 'integer') return -1.7976931348623157e308;
+  if (field.kind === 'boolean') return false;
+  if (field.kind === 'single_select') {
+    return field.options.reduce(
+      (longest, option) =>
+        Buffer.byteLength(option.value) > Buffer.byteLength(longest) ? option.value : longest,
+      field.options[0]!.value,
+    );
+  }
+  return [...field.options]
+    .sort((left, right) => Buffer.byteLength(right.value) - Buffer.byteLength(left.value))
+    .slice(0, field.maxItems ?? field.options.length)
+    .map((option) => option.value);
 }
 
 function assertAcceptedFormAnswerFitsCanonicalOutcome(
