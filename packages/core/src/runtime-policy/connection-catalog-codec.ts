@@ -26,7 +26,11 @@ import {
   type ModelModality,
   type ProviderType,
 } from '../llm-connections.js';
-import { MAX_PREPENDED_FALLBACK_MODELS } from '../model-catalog.js';
+import {
+  CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+  CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+  MAX_PREPENDED_FALLBACK_MODELS,
+} from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -548,10 +552,22 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
-      : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+      : {
+          displayName: stringValue(
+            item.displayName,
+            'model display name',
+            CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH,
+          ),
+        }),
     ...(item.description === undefined
       ? {}
-      : { description: stringValue(item.description, 'model description', 2048) }),
+      : {
+          description: stringValue(
+            item.description,
+            'model description',
+            CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH,
+          ),
+        }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
