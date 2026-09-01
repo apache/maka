@@ -170,6 +170,7 @@ import {
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
 import {
+  canRepairManagedRuntimeHostStartup,
   DesktopRuntimeHostStartupRecoveryCancelledError,
   startDesktopRuntimeHostWithRecovery,
 } from "./runtime-host-startup-recovery.js";
@@ -1078,7 +1079,11 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     resolveLocalHostReplacement: (registration, signal) =>
       localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
-      if (!runtimeHostManager && target.profile.kind === "local") return;
+      if (
+        !runtimeHostManager &&
+        target.profile.kind === "local" &&
+        canRepairManagedRuntimeHostStartup(error)
+      ) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;

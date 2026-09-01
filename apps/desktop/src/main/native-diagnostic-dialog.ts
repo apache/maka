@@ -237,7 +237,7 @@ const RUNTIME_HOST_STARTUP_RECOVERY_COPY = {
     title: 'Maka needs to repair Runtime Host',
     message: 'The Runtime Host for this workspace could not start.',
     detail:
-      'Maka can repair the managed Runtime Host selected by this Desktop. Your workspace, Host identity, credentials, and settings will be preserved.',
+      'Maka can repair the managed Runtime Host selected by this Desktop. Your workspace, Host identity, credentials, and settings will be preserved. Repair may replace the installed Host with the version selected for this Desktop even when automatic update compatibility cannot be confirmed.',
     activeTasks:
       'The Host may still own active work. Continuing can interrupt that work before the Host restarts.',
     repairFailed: 'The previous repair attempt did not finish:',
@@ -249,7 +249,7 @@ const RUNTIME_HOST_STARTUP_RECOVERY_COPY = {
     title: 'Maka 需要修复 Runtime Host',
     message: '管理此工作区的 Runtime Host 无法启动。',
     detail:
-      'Maka 可以修复此 Desktop 选择的托管 Runtime Host。工作区、Host 身份、凭证和设置都会保留。',
+      'Maka 可以修复此 Desktop 选择的托管 Runtime Host。工作区、Host 身份、凭证和设置都会保留。即使无法确认自动更新兼容性，修复也可能使用此 Desktop 选择的版本替换当前 Host。',
     activeTasks: 'Host 可能仍有正在运行的任务。继续会先中断这些任务，再重启 Host。',
     repairFailed: '上一次修复未能完成：',
     repair: '修复 Runtime Host',
