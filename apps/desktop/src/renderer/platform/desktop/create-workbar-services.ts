@@ -156,6 +156,7 @@ export function createDesktopWorkbarServices(
       },
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),
+      setModel: (sessionId, input) => bridge.sessions.setModel(sessionId, input),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>

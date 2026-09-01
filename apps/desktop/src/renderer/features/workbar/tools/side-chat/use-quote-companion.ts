@@ -135,8 +135,10 @@ export interface UseQuoteCompanionResult {
   regeneratePendingTurnId: string | null;
   /** A localized, retryable error (fork setup, run error, or a rejected send). */
   error: string | null;
-  /** The model the companion inherited from the source (shown read-only). */
+  /** The companion's current model: inherited from the source until changed
+   *  independently via {@link setModel}. */
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
+  modelChangePending: boolean;
   /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
   activeClientCapability: ClientCapabilityRequestEvent | undefined;
@@ -147,6 +149,11 @@ export interface UseQuoteCompanionResult {
   /** Insert text into the active companion turn at the next model step. */
   steer: (text: string) => Promise<boolean>;
   setPermissionMode: (mode: PermissionMode) => Promise<boolean>;
+  setModel: (input: {
+    llmConnectionId: string;
+    llmConnectionSlug: string;
+    model: string;
+  }) => Promise<boolean>;
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
@@ -231,6 +238,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const turnInFlight = streaming;
   const [preparing, setPreparing] = useState(Boolean(sourceSession));
   const [permissionModePending, setPermissionModePending] = useState(false);
+  const [modelChangePending, setModelChangePending] = useState(false);
   const [regeneratePendingTurnId, setRegeneratePendingTurnId] = useState<string | null>(
     null,
   );
@@ -792,7 +800,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
         if ((await admission.stopPromise) === 'confirmed') return false;
         setHasContent(true);
         // Surface the just-sent user message immediately, and reflect any
-        // automatic connection/model rebound in the read-only model label.
+        // automatic connection/model rebound the runtime made for this turn.
         void sideChat.readSettledMessages(result.forkId)
           .then(({ messages: next }) => {
             if (mountedRef.current) {
@@ -971,6 +979,32 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, permissionModePending, sideChat, turnInFlight],
   );
 
+  const setModel = useCallback(
+    async (input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): Promise<boolean> => {
+      const id = companionIdRef.current;
+      if (!id || turnInFlight || modelChangePending) return false;
+      setModelChangePending(true);
+      try {
+        const next = await sideChat.setModel(id, input);
+        if (!mountedRef.current) return false;
+        companionRef.current = next;
+        setCompanion(next);
+        setError(null);
+        return true;
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+        return false;
+      } finally {
+        if (mountedRef.current) setModelChangePending(false);
+      }
+    },
+    [mountedRef, modelChangePending, sideChat, turnInFlight],
+  );
+
   const regenerate = useCallback(
     async (turnId: string): Promise<boolean> => {
       const id = companionIdRef.current;
@@ -1047,7 +1081,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const messages = allMessages.filter(
     (message) => message.turnId !== undefined && ownTurnIdsRef.current.has(message.turnId),
   );
-  // Inherited model (read-only): the fork's once created, else the source's.
+  // The fork's own model once created (independently selectable via setModel),
+  // else the source's while the fork is still being prepared.
   const activeModel = companion
     ? { llmConnectionSlug: companion.llmConnectionSlug, model: companion.model }
     : sourceSession
@@ -1079,12 +1114,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     regeneratePendingTurnId,
     error,
     activeModel,
+    modelChangePending,
     activeSandboxBoundary,
     activeClientCapability,
     activeQuestion,
     send,
     steer,
     setPermissionMode,
+    setModel,
     regenerate,
     stop,
     respondToSandboxBoundary,

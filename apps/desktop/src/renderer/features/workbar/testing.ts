@@ -134,6 +134,9 @@ export function createFakeWorkbarServices(
       setPermissionMode: async () => {
         throw new Error('Fake sideChat.setPermissionMode is not configured');
       },
+      setModel: async () => {
+        throw new Error('Fake sideChat.setModel is not configured');
+      },
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
       respondToClientCapability: async () => undefined,

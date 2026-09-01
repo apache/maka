@@ -25,9 +25,11 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from 'react';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { QuoteRef } from '@maka/core/events';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
 import { Composer, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
@@ -93,6 +95,9 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
+  /** Renders the provider brand mark beside each model option, matching the
+   *  main composer's picker; injected by the desktop app. */
+  renderProviderMark?: (type: ProviderType) => ReactNode;
   reportError(title: string, description: string, sessionId: string): void;
 }
 
@@ -747,6 +752,7 @@ export function useWorkbarController(
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
       modelChoices: input.modelChoices,
+      renderProviderMark: input.renderProviderMark,
       closeConfirmation: {
         key:
           pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed',

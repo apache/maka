@@ -75,6 +75,7 @@ import { Section } from '@astryxdesign/core/Section';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { SessionSummary } from '@maka/core/session';
+import type { ProviderType } from '@maka/core/llm-connections';
 import { QuoteCompanionPanel } from '../tools/side-chat/quote-companion-panel';
 import {
   type SessionWorkbarTab,
@@ -717,6 +718,7 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  renderProviderMark?: (type: ProviderType) => ReactNode;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
@@ -879,6 +881,7 @@ export function WorkbarSurface(props: {
                 initialPrompt={quote.initialPrompt}
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
+                renderProviderMark={props.renderProviderMark}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}

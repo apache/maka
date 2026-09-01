@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
+import { useCallback, useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
@@ -29,10 +29,12 @@ import {
   UserQuestionPrompt,
   useToast,
   useUiLocale,
+  deriveComposerModelSwitchAvailability,
   type ChatModelChoice,
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
+import type { ProviderType } from '@maka/core/llm-connections';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
@@ -53,9 +55,10 @@ import { useWorkbarServices } from '../../services-context.js';
  * The side-conversation workbar tab: a transient read-only fork of the main session.
  * It renders with the SAME surface as the main conversation — the real
  * `ChatView` transcript (markdown, tool activity, token streaming) and the real
- * `Composer` — bound to a read-only companion fork of the main session (see
+ * `Composer` — bound to a companion fork of the main session (see
  * useQuoteCompanion). The fork KNOWS the main conversation's context and inherits
- * its model (shown read-only — no independent picker). It explains and explores;
+ * its model at creation, but can select a different enabled model afterward
+ * without affecting the source session. It explains and explores;
  * writes/shell are blocked, and web/custom tools prompt here. Selecting more text
  * in the main transcript adds another quote chip to THIS thread.
  */
@@ -66,8 +69,12 @@ export function QuoteCompanionPanel(props: {
   quotes: readonly StagedCompanionQuote[];
   initialPrompt?: string;
   sourceSession: SessionSummary | undefined;
-  /** Shared global choice list, only used to render the inherited model's label. */
+  /** Shared global choice list, used for the inherited model's label and, once
+   *  the fork is committed, as the companion's own model-picker options. */
   modelChoices: readonly ChatModelChoice[];
+  /** Renders the provider brand mark beside each model option, matching the
+   *  main composer's picker; injected by the desktop app. */
+  renderProviderMark?: (type: ProviderType) => ReactNode;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -165,8 +172,9 @@ export function QuoteCompanionPanel(props: {
     companion.modelReady,
   ]);
 
-  // The companion inherits the source model and does not switch it; look up a
-  // friendly label from the shared choice list purely for a read-only display.
+  // Before the fork commits there is no companion Session to target a model
+  // change at, so the picker stays a read-only label inherited from the
+  // source; once committed the real picker binds to the companion Session.
   const activeModel = companion.activeModel;
   const activeModelLabel =
     (activeModel
@@ -297,9 +305,25 @@ export function QuoteCompanionPanel(props: {
                   });
                 }
               }}
-              // No activeSession / onModelChange → the model shows as a read-only chip
-              // (the companion has no independent picker; it inherits the source model).
+              // Once the fork is committed, `activeSession` + `onModelChange` turn the
+              // chip into a real picker scoped to the companion Session; until then
+              // there is no fork to target, so it stays the inherited read-only label.
               modelLabel={activeModelLabel}
+              activeSession={companion.companionSession}
+              activeModelLabel={activeModelLabel}
+              modelChoices={[...props.modelChoices]}
+              renderProviderMark={props.renderProviderMark}
+              onModelChange={
+                companion.companionSession
+                  ? (input) => {
+                      void companion.setModel(input);
+                    }
+                  : undefined
+              }
+              modelSwitchAvailability={deriveComposerModelSwitchAvailability({
+                streaming: companion.streaming,
+                pending: companion.modelChangePending,
+              })}
               permissionMode={companion.permissionMode}
               permissionModePending={companion.permissionModePending}
               permissionModeDisabledReason={

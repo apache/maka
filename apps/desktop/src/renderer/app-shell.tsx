@@ -1685,6 +1685,7 @@ function AppShellContent({
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
+    renderProviderMark: (type) => <ProviderBrandMark type={type} />,
     reportError: reportWorkbarError,
   });
 
