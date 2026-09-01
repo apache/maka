@@ -18,10 +18,8 @@
  */
 
 import { useEffect, useRef, type ReactNode } from 'react';
-import {
-  resolveConnectionModelCatalog,
-  type ProjectedLlmConnection,
-} from '@maka/core/model-catalog';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, userEvent, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';

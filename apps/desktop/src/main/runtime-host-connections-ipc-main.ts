@@ -26,7 +26,7 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
-import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,

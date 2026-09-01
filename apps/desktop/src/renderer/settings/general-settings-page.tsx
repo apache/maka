@@ -18,7 +18,6 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import { PersonalizationSettingsSection } from "./personalization-settings-section";
 import {
   SettingsActions,
@@ -35,7 +34,10 @@ import type {
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {

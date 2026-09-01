@@ -19,13 +19,13 @@
 
 import {
   resolveConnectionModelCatalog,
-  type HostResolvedConnectionCatalog,
   type ModelCatalogEntry,
 } from '@maka/core/model-catalog';
 import {
   PROVIDER_REGISTRY,
   connectionEnabledModelIds,
   providerDefaultsOf,
+  type HostResolvedConnectionCatalog,
 } from '@maka/core/llm-connections';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';

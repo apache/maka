@@ -42,7 +42,10 @@ import {
   type SubagentProfile,
 } from '@maka/core/subagent-settings';
 import { type AppSettings, type UpdateAppSettingsResult } from '@maka/core/settings';
-import { type LlmConnection } from '@maka/core/llm-connections';
+import {
+  type HostResolvedConnectionCatalog,
+  type LlmConnection,
+} from '@maka/core/llm-connections';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { connectionEnabledModelIds } from '@maka/core/llm-connections';
 import {
@@ -78,7 +81,6 @@ import {
   subagentPresetAvailability,
   type SubagentPageRoute,
 } from './subagent-preset-presentation.js';
-import type { HostResolvedConnectionCatalog } from '@maka/core/model-catalog';
 import { statusBadgeVariant } from './settings-status-badge.js';
 import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 

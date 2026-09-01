@@ -387,7 +387,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 4376
+        "nonTriviaTokens": 4278
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 5,
@@ -711,7 +711,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 23,
-        "nonTriviaTokens": 3042
+        "nonTriviaTokens": 3041
       },
       "src/renderer/app-shell-session-settings-actions.ts": {
         "importDeclarations": 9,
@@ -1061,7 +1061,7 @@
           "react": 1
         },
         "importSpecifiers": 187,
-        "nonTriviaTokens": 15905
+        "nonTriviaTokens": 15882
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -4361,7 +4361,7 @@
           "./subagent-preset-presentation.js": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 2,
-          "@maka/core/model-thinking": 2,
+          "@maka/core/model-thinking": 1,
           "@maka/core/settings": 1,
           "@maka/core/subagent-settings": 1,
           "@maka/ui": 1,

@@ -30,6 +30,7 @@
 import type {
   AttachmentRef,
   ContextCompactionOutcome,
+  DirectoryReference,
   MessageContent,
   QuoteRef,
   SessionEvent,
@@ -74,6 +75,8 @@ export interface BackendSendInput {
   headAnchorRuntimeEvent?: RuntimeEvent;
   text: string;
   attachments?: AttachmentRef[];
+  /** Live Host-bound directories folded into model text without eager filesystem reads. */
+  directoryReferences?: DirectoryReference[];
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**

@@ -1627,6 +1627,19 @@ function registerPersistentClientIpc(): void {
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
+  ipcMain.handle('directories:pick', async () => {
+    const local = runtimeHostManager?.entries().find(
+      (state) => state.target.profile.kind === 'local',
+    );
+    if (!local || local.readiness !== 'ready') throw new Error('Local Runtime Host is unavailable');
+    const hostId = local.candidate.client.hostId;
+    const result = await mainWindowController.showOpenDialog({
+      title: 'Reference folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
+    return { ok: true, reference: { hostId, path: result.filePaths[0] } };
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",

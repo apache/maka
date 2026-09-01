@@ -25,6 +25,10 @@
  */
 
 import type { BackendKind } from './session.js';
+// Type-only, and the one edge back to the catalog: a connection is what holds
+// a catalog, so the projected-connection shape belongs here beside the stored
+// one rather than in the module that computes entries.
+import type { ModelCatalogEntry } from './model-catalog.js';
 import type { RelayModelProfiles } from './model-thinking.js';
 import type {
   JsonObject,
@@ -195,6 +199,19 @@ export interface LlmConnection extends RuntimeExecutionConnection {
 export interface IdentifiedLlmConnection extends LlmConnection {
   connectionId: string;
 }
+
+/**
+ * What a client adds to a stored connection: the catalog the Host resolved for
+ * it. Clients render from this rather than calling `buildModelCatalogEntries`
+ * against their own bundled metadata, so a Desktop and a TUI attached to one
+ * Host describe the same model the same way even at different versions.
+ */
+export interface HostResolvedConnectionCatalog {
+  readonly catalogEntries: readonly ModelCatalogEntry[];
+}
+
+/** A connection as a client holds it: stored fields plus the Host's catalog. */
+export type ProjectedLlmConnection = IdentifiedLlmConnection & HostResolvedConnectionCatalog;
 
 /**
  * Read-time normalizer: the model ids a stored connection exposes.

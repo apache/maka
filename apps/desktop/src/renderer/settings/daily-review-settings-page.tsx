@@ -18,10 +18,9 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import { Banner } from '@astryxdesign/core';
 import type { DailyReviewConfig } from '@maka/core/daily-review';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { LlmConnection, ProjectedLlmConnection } from '@maka/core/llm-connections';
 import { Selector, Switch, TextInput, useMountedRef, useUiLocale } from '@maka/ui';
 import { buildCatalogDailyReviewModelOptions } from '../model-catalog-choices';
 import { getDailyReviewSettingsCopy, type DailyReviewSettingsCopy } from '../locales/settings-daily-review-copy';

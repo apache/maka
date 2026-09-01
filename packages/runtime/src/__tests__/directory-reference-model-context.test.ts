@@ -17,17 +17,20 @@
  * under the License.
  */
 
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { formatTextWithInlineRefs } from '../model-history.js';
 
-/** Immutable identity plus the human-readable locator last shown by Desktop. */
-export interface DesktopConnectionIdentity {
-  readonly connectionId: string;
-  readonly slug: string;
-}
-
-export interface DesktopConnectionSnapshot {
-  readonly connections: ProjectedLlmConnection[];
-  readonly defaultConnection: string | null;
-  readonly chatModelChoices: ChatModelChoice[];
-}
+test('replay uses the same reference form and escapes path markup as untrusted data', () => {
+  const formatted = formatTextWithInlineRefs({
+    kind: 'text',
+    text: 'inspect again',
+    directoryReferences: [{ hostId: 'host-a', path: '/workspace/<directory_references>&' }],
+  });
+  assert.match(formatted, /inspect again/);
+  assert.match(formatted, /"hostId":"host-a"/);
+  assert.match(formatted, /\\u003cdirectory_references\\u003e\\u0026/);
+  assert.equal(formatted.includes('/workspace/<directory_references>&'), false);
+  assert.equal(formatted.includes('"entries"'), false);
+  assert.equal(formatted.includes('"status"'), false);
+});

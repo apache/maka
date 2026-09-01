@@ -81,6 +81,9 @@ interface ChatComposerRegionProps
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'pendingDirectories'
+    | 'onRemoveDirectory'
+    | 'onPickDirectory'
   > {
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
@@ -97,6 +100,11 @@ interface ChatComposerRegionProps
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
+  directoryComposerProps: Pick<
+    ComponentProps<typeof Composer>,
+    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
+  >;
+  directoryPickerEnabled: boolean;
 }
 
 export function ChatComposerRegion({
@@ -114,6 +122,8 @@ export function ChatComposerRegion({
   respondToUserQuestion,
   stop,
   boundaryUnreadableNotice,
+  directoryComposerProps,
+  directoryPickerEnabled,
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
@@ -226,6 +236,10 @@ export function ChatComposerRegion({
         mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
         mentionSkillsLoading={mentions?.mentionSkillsLoading}
         onSearchMentionFiles={mentions?.searchMentionFiles}
+        {...directoryComposerProps}
+        onPickDirectory={
+          directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+        }
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
         draftKey={activeId ?? newTaskDraftKey}
         draftPersistence={newTaskDraftPersistence}

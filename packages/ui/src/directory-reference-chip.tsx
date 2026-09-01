@@ -17,17 +17,26 @@
  * under the License.
  */
 
-import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
+import type { DirectoryReference } from '@maka/core/events';
+import { Token, Tooltip } from '@astryxdesign/core';
+import { FolderOpen, ICON_SIZE } from './icons.js';
 
-/** Immutable identity plus the human-readable locator last shown by Desktop. */
-export interface DesktopConnectionIdentity {
-  readonly connectionId: string;
-  readonly slug: string;
-}
-
-export interface DesktopConnectionSnapshot {
-  readonly connections: ProjectedLlmConnection[];
-  readonly defaultConnection: string | null;
-  readonly chatModelChoices: ChatModelChoice[];
+/** The same reference chip before and after send; a path is not a saved attachment. */
+export function DirectoryReferenceChip(props: {
+  reference: DirectoryReference;
+  onRemove?(): void;
+}) {
+  const path = props.reference.path;
+  const label = path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+  return (
+    <Tooltip content={path} focusTrigger="always">
+      <Token
+        size="sm"
+        className="maka-composer-attachment-token"
+        icon={<FolderOpen size={ICON_SIZE.meta} aria-hidden="true" />}
+        label={label}
+        onRemove={props.onRemove}
+      />
+    </Tooltip>
+  );
 }

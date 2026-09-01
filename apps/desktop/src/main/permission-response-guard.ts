@@ -23,7 +23,12 @@ import type {
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
-import type { QuoteRef } from '@maka/core/events';
+import {
+  isDirectoryReference,
+  DIRECTORY_REFERENCE_MAX_COUNT,
+  type DirectoryReference,
+  type QuoteRef,
+} from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
@@ -60,6 +65,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
+  directoryReferences?: DirectoryReference[];
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
@@ -189,6 +195,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
+    ...normalizeOptionalDirectoryReferences(value.directoryReferences),
     ...normalizeOptionalQuotes(value.quotes),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
@@ -386,4 +393,18 @@ function normalizeOptionalSendTurnId(input: unknown): { turnId?: string } {
   return {
     turnId: normalizeRequiredString(input, 'Invalid send turnId', MAX_TURN_ID_LENGTH),
   };
+}
+
+function normalizeOptionalDirectoryReferences(
+  input: unknown,
+): { directoryReferences?: DirectoryReference[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > DIRECTORY_REFERENCE_MAX_COUNT ||
+    !input.every(isDirectoryReference)
+  ) {
+    throw new Error('Invalid directory references');
+  }
+  return input.length ? { directoryReferences: input.map((ref) => ({ ...ref })) } : {};
 }

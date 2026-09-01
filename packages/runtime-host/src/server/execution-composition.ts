@@ -1155,6 +1155,7 @@ export async function createExecutionRuntimeHostComposition(
           ).graphId,
       },
       (input) => sessionEffectCoordinator.nameSessionFromRootMessage(input),
+      context.owner.capability.rootId,
     );
     const coordinator = rootCoordinator;
     const contextOperations = new HostContextCoordinator({

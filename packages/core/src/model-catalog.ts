@@ -18,7 +18,6 @@
  */
 
 import type {
-  IdentifiedLlmConnection,
   LlmConnection,
   ModelDiscoverySource,
   ModelInfo,
@@ -116,19 +115,6 @@ export interface ModelCatalogEntry {
     pricingModelKey?: string;
   };
 }
-
-/**
- * What a client adds to a stored connection: the catalog the Host resolved for
- * it. Clients render from this rather than calling `buildModelCatalogEntries`
- * against their own bundled metadata, so a Desktop and a TUI attached to one
- * Host describe the same model the same way even at different versions.
- */
-export interface HostResolvedConnectionCatalog {
-  readonly catalogEntries: readonly ModelCatalogEntry[];
-}
-
-/** A connection as a client holds it: stored fields plus the Host's catalog. */
-export type ProjectedLlmConnection = IdentifiedLlmConnection & HostResolvedConnectionCatalog;
 
 export interface BuildConnectionModelCatalogInput {
   connection: Pick<

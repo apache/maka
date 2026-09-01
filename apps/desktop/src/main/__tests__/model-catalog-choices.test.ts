@@ -19,18 +19,18 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
-import {
-  resolveConnectionModelCatalog,
-  type HostResolvedConnectionCatalog,
-} from '@maka/core/model-catalog';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
 
 function connection(
   overrides: Partial<IdentifiedLlmConnection> &
     Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
-): IdentifiedLlmConnection & HostResolvedConnectionCatalog {
+): ProjectedLlmConnection {
   const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,

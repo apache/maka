@@ -17,16 +17,13 @@
  * under the License.
  */
 
-import {
-  normalizeOpenAiCodexConnection,
-  type HostResolvedConnectionCatalog,
-} from './model-catalog.js';
+import { normalizeOpenAiCodexConnection } from './model-catalog.js';
 import { type ThinkingLevel } from './model-thinking.js';
 import {
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
   connectionEnabledModelIds,
   providerDefaultsOf,
-  type IdentifiedLlmConnection,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from './llm-connections.js';
 
@@ -60,7 +57,7 @@ export interface ChatModelChoice {
 }
 
 export function buildChatModelChoices(
-  connections: readonly (IdentifiedLlmConnection & HostResolvedConnectionCatalog)[],
+  connections: readonly ProjectedLlmConnection[],
 ): ChatModelChoice[] {
   const choices: ChatModelChoice[] = [];
   for (const rawConnection of connections) {

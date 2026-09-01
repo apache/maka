@@ -1927,6 +1927,9 @@ const makaBridge = {
     },
     async send(sessionId, command) {
       const session = await runtimeHostSessionRef(sessionId);
+      if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
+        throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
+      }
       const encoded =
         'attachmentItems' in command && command.attachmentItems
           ? { ...command, attachmentItems: await encodeIngestItems(command.attachmentItems) }
@@ -1962,6 +1965,9 @@ const makaBridge = {
     },
     async submitMessage(sessionId, placement, command) {
       const session = await runtimeHostSessionRef(sessionId);
+      if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
+        throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
+      }
       const attachmentItems = command.attachmentItems
         ? await encodeIngestItems(command.attachmentItems)
         : undefined;
@@ -2779,6 +2785,7 @@ const makaBridge = {
     },
   },
   attachments: {
+    pickDirectory: () => ipcRenderer.invoke('directories:pick'),
     pickFiles(): Promise<
       | {
           ok: true;

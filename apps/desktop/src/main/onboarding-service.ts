@@ -60,7 +60,7 @@ import { projectSessionSendOutcome, type SessionSendProjection } from '@maka/cor
 
 import { type SessionSummary } from '@maka/core/session';
 import { buildChatModelChoices, type ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { LlmConnection } from '@maka/core/llm-connections';
 
 export interface OnboardingSnapshot {

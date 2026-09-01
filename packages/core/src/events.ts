@@ -89,6 +89,26 @@ export interface AttachmentRef {
   ref: StorageRef;
 }
 
+/** A live directory on the originating Host, not a saved file or an access grant. */
+export interface DirectoryReference {
+  hostId: string;
+  path: string;
+}
+
+export const DIRECTORY_REFERENCE_MAX_COUNT = 4;
+
+export function isDirectoryReference(value: unknown): value is DirectoryReference {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    typeof value.hostId === 'string' &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(value.hostId) &&
+    typeof value.path === 'string' &&
+    value.path.length <= 4096 &&
+    isCanonicalAbsolutePath(value.path)
+  );
+}
+
 /**
  * An inline quoted excerpt attached to a user message — e.g. text selected in
  * the transcript and carried into a follow-up. Unlike {@link AttachmentRef}
@@ -130,6 +150,7 @@ export interface MessageContent {
   displayText?: string;
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
+  directoryReferences?: DirectoryReference[];
   /** Ordered inline excerpts; omit when empty. Provenance remains part of content identity. */
   quotes?: QuoteRef[];
   /** Sent inline tokens; an empty array marks a current-format plain message. Never model-visible. */
@@ -138,7 +159,7 @@ export interface MessageContent {
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'quotes', 'inlineReferences'],
+  ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
@@ -171,6 +192,9 @@ const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'e
 export function normalizeMessageContent(content: MessageContent): MessageContent {
   return {
     text: content.text,
+    ...(content.directoryReferences?.length
+      ? { directoryReferences: content.directoryReferences.map((ref) => ({ ...ref })) }
+      : {}),
     ...(content.displayText !== undefined && content.displayText !== content.text
       ? { displayText: content.displayText }
       : {}),
@@ -204,6 +228,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
   const text = contents.map((content) => content.text).join('\n\n');
   const displayText = contents.map((content) => content.displayText ?? content.text).join('\n\n');
   const attachments = contents.flatMap((content) => content.attachments ?? []);
+  const directoryReferences = contents.flatMap((content) => content.directoryReferences ?? []);
   const quotes = contents.flatMap((content) => content.quotes ?? []);
   const inlineReferences: InlineReference[] = [];
   const hasInlineReferenceMarker = contents.some(
@@ -221,6 +246,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
     text,
     ...(displayText !== text ? { displayText } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(directoryReferences.length > 0 ? { directoryReferences } : {}),
     ...(quotes.length > 0 ? { quotes } : {}),
     ...(hasInlineReferenceMarker ? { inlineReferences } : {}),
   });
@@ -236,6 +262,9 @@ export function isMessageContent(value: unknown): value is MessageContent {
     isRecord(value) &&
     hasExactShape(value, MESSAGE_CONTENT_SHAPE) &&
     typeof value.text === 'string' &&
+    (value.directoryReferences === undefined ||
+      (Array.isArray(value.directoryReferences) &&
+        value.directoryReferences.every(isDirectoryReference))) &&
     (value.displayText === undefined || typeof value.displayText === 'string') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
@@ -396,6 +425,12 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
+    (left.directoryReferences?.length ?? 0) === (right.directoryReferences?.length ?? 0) &&
+    (left.directoryReferences ?? []).every(
+      (ref, index) =>
+        ref.hostId === right.directoryReferences?.[index]?.hostId &&
+        ref.path === right.directoryReferences?.[index]?.path,
+    ) &&
     ((leftAttachments === undefined && rightAttachments === undefined) ||
       (leftAttachments !== undefined &&
         rightAttachments !== undefined &&

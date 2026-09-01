@@ -660,6 +660,9 @@ export class AgentRun {
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
+          : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         ...(this.input.userInput.inlineReferences
           ? { inlineReferences: this.input.userInput.inlineReferences }
@@ -702,6 +705,9 @@ export class AgentRun {
         text: this.input.userInput.text,
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
+          : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
           : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         context: projectionContext,
@@ -815,6 +821,7 @@ export class AgentRun {
         ...(input.attachments !== undefined && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
+        ...(input.directoryReferences ? { directoryReferences: input.directoryReferences } : {}),
         ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
         ...(input.inlineReferences !== undefined
           ? { inlineReferences: input.inlineReferences }

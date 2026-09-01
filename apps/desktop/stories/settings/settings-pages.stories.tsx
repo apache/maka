@@ -42,11 +42,13 @@ import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
-import type { IdentifiedLlmConnection, LlmConnection, ProviderType } from '@maka/core/llm-connections';
-import {
-  resolveConnectionModelCatalog,
-  type ProjectedLlmConnection,
-} from '@maka/core/model-catalog';
+import type {
+  IdentifiedLlmConnection,
+  LlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import type { LocalMemoryBackupInfo, LocalMemoryEntryPreview, LocalMemoryState } from '@maka/core/local-memory';
 import { buildHealthSnapshot } from '@maka/core/health';

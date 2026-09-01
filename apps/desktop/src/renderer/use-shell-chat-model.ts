@@ -18,9 +18,11 @@
  */
 
 import { useMemo } from 'react';
-import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
 import type { SessionSendProjection } from '@maka/core/session-send-projection';
 import type { SessionSummary } from '@maka/core/session';
 import type { SettingsSection } from '@maka/core/settings';

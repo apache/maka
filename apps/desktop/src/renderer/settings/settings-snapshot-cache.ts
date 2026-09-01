@@ -18,8 +18,10 @@
  */
 
 import type { AppSettings } from '@maka/core/settings';
-import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
 import type {
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostRef,

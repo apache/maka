@@ -25,7 +25,6 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import type { ProjectedLlmConnection } from "@maka/core/model-catalog";
 import {
   Badge,
   Button,
@@ -50,7 +49,11 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
-import type { IdentifiedLlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,

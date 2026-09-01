@@ -23,7 +23,7 @@ import { parseHTML } from 'linkedom';
 import { act, createElement, Fragment, useCallback, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { ProjectedLlmConnection } from '@maka/core/model-catalog';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
 import {
   Composer,
