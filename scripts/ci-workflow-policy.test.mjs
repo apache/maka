@@ -375,6 +375,38 @@ test('the recovery lane pairs its path filter with a nightly run and a main push
   assert.match(readWorkflow('windows-recovery.yml'), /\n {4}name: windows_recovery/u);
 });
 
+test('no lane asks for the one runner label that queues', () => {
+  // `ubuntu-latest` is the only label here whose wait for a runner is not
+  // predictable: its median is as good as any pinned label's, but its tail
+  // reaches tens of minutes, and the required context is paid at the tail
+  // rather than the median. Naming the image instead costs no coverage,
+  // because the two resolve to the same image; it costs the automatic image
+  // upgrade, which becomes a deliberate commit rather than a silent one.
+  // That is the trade this rule makes. To take it back for one lane, change
+  // this test — an exemption is worth as much as the review it passes, and
+  // no lane needs one today.
+  //
+  // The literal is banned outright rather than only where a runner is named.
+  // `runs-on` reaches a runner through matrix values, inline sequences and
+  // `include` objects, so any shape-aware matcher is a second authority that
+  // can disagree with GitHub's; under this rule the literal has no legitimate
+  // use anywhere, which makes its mere presence the honest contract.
+  const workflows = readdirSync(WORKFLOW_DIR).filter(
+    (file) => file.endsWith('.yml') || file.endsWith('.yaml'),
+  );
+
+  assert.ok(workflows.length > 0, 'no workflows found to check');
+
+  for (const name of workflows) {
+    // Comments stripped, so explaining the rule in a workflow cannot break it.
+    assert.doesNotMatch(
+      readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, ''),
+      /\bubuntu-latest\b/u,
+      `${name}: ubuntu-latest queues for a runner; name the image instead`,
+    );
+  }
+});
+
 test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 

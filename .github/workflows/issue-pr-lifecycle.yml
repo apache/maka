@@ -46,7 +46,7 @@ concurrency:
 jobs:
   lifecycle:
     if: github.repository == 'apache/maka'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
