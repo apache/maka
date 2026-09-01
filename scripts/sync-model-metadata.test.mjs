@@ -302,6 +302,104 @@ test('refresh rejects unknown model modalities instead of dropping them', async 
   }
 });
 
+// The drift report goes to stdout for the scheduled job's summary; tests read
+// the returned buckets instead of the printed text.
+async function drift(argv) {
+  const written = [];
+  const original = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    return { report: await main(['node', 'sync-model-metadata.mjs', '--drift', ...argv]) };
+  } finally {
+    process.stdout.write = original;
+    assert.ok(written.join('').length > 0, 'drift must print a report');
+  }
+}
+
+test('drift finds nothing when the snapshot still matches upstream', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-clean-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    await writeFile(input, JSON.stringify(fixtureCatalog()));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', input]);
+    assert.equal(report.drifted, false);
+    assert.deepEqual(
+      [report.added, report.removed, report.changed, report.unprojectable, report.missingProviders],
+      [[], [], [], [], []],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift separates a rejected shape from a real upstream difference', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-drift-'));
+  try {
+    const committed = join(root, 'api.json');
+    const upstream = join(root, 'upstream.json');
+    const snapshot = join(root, 'snapshot.json');
+    const before = fixtureCatalog();
+    before.anthropic.models.legacy = { ...before.anthropic.models.model, name: 'Legacy' };
+    await writeFile(committed, JSON.stringify(before));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      committed,
+      '--snapshot',
+      snapshot,
+      '--output',
+      join(root, 'metadata.ts'),
+    ]);
+
+    const after = JSON.parse(JSON.stringify(before));
+    delete after.anthropic.models.legacy;
+    after.anthropic.models.added = { ...after.anthropic.models.model, name: 'Added' };
+    after.anthropic.models.model.name = 'Renamed';
+    after.anthropic.models.model.cost = { input: 9, output: 9 };
+    after.groq.models.model.modalities = { input: ['text', 'hologram'], output: ['text'] };
+    delete after.openai;
+    await writeFile(upstream, JSON.stringify(after));
+
+    const { report } = await drift(['--snapshot', snapshot, '--refresh-input', upstream]);
+    assert.equal(report.drifted, true);
+    assert.deepEqual(report.added, ['anthropic/added']);
+    assert.deepEqual(report.removed, ['anthropic/legacy']);
+    assert.deepEqual(report.changed, ['anthropic/model: displayName, pricing']);
+    assert.deepEqual(report.missingProviders, ['openai (models.dev openai)']);
+    assert.equal(report.unprojectable.length, 1);
+    assert.match(report.unprojectable[0], /^groq\/model: .*unsupported modalities/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('drift refuses to combine with the modes that write', async () => {
+  for (const mode of ['--refresh', '--check']) {
+    await assert.rejects(
+      main(['node', 'sync-model-metadata.mjs', '--drift', mode]),
+      /--drift reports without writing/u,
+    );
+  }
+});
+
 test('refresh carries the video and pdf modalities models.dev declares', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-video-'));
   try {

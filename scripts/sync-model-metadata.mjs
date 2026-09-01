@@ -117,10 +117,21 @@ export async function main(argv = process.argv) {
     (outputPath === DEFAULT_OUTPUT ? DEFAULT_PRICING_OUTPUT : undefined);
   const refresh = argv.includes('--refresh');
   const check = argv.includes('--check');
+  const drift = argv.includes('--drift');
   const acceptUpstreamRemovals = argv.includes('--accept-upstream-removals');
-  if (refreshInputPath && !refresh) throw new Error('--refresh-input requires --refresh');
+  if (drift && (refresh || check)) {
+    throw new Error('--drift reports without writing and cannot combine with --refresh or --check');
+  }
+  if (refreshInputPath && !refresh && !drift) {
+    throw new Error('--refresh-input requires --refresh or --drift');
+  }
   if (acceptUpstreamRemovals && !refresh) {
     throw new Error('--accept-upstream-removals requires --refresh');
+  }
+  if (drift) {
+    const report = await collectDrift(await loadSnapshot(snapshotPath), refreshInputPath);
+    process.stdout.write(`${formatDrift(report)}\n`);
+    return report;
   }
 
   const source = refresh
@@ -235,19 +246,25 @@ function buildProjection(catalog) {
   return { metadata, pricing, providerFacts, providerOverrides };
 }
 
-async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
-  let sourceText;
-  let sourceEtag = null;
-  let retrievedAt = new Date().toISOString();
+async function readUpstream(refreshInputPath) {
   if (refreshInputPath) {
-    sourceText = await readFile(refreshInputPath, 'utf8');
-  } else {
-    const response = await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
-    sourceText = await response.text();
-    sourceEtag = response.headers.get('etag');
-    retrievedAt = new Date(response.headers.get('date') ?? Date.now()).toISOString();
+    return {
+      text: await readFile(refreshInputPath, 'utf8'),
+      etag: null,
+      retrievedAt: new Date().toISOString(),
+    };
   }
+  const response = await fetch(SOURCE_URL, { signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`models.dev returned HTTP ${response.status}`);
+  return {
+    text: await response.text(),
+    etag: response.headers.get('etag'),
+    retrievedAt: new Date(response.headers.get('date') ?? Date.now()).toISOString(),
+  };
+}
+
+async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
+  const { text: sourceText, etag: sourceEtag, retrievedAt } = await readUpstream(refreshInputPath);
   const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
   if (!options.acceptUpstreamRemovals) {
     const previous = await loadSnapshotIfPresent(snapshotPath);
@@ -337,6 +354,91 @@ function collectProjectionRemovals(previous, next, path, removals) {
 
 function projectionPath(path) {
   return `/${path.map((segment) => String(segment).replaceAll('~', '~0').replaceAll('/', '~1')).join('/')}`;
+}
+
+// `--check` only proves the generated modules match the committed snapshot.
+// Nothing compared that snapshot against models.dev, which is how it stayed
+// weeks behind upstream without anything reporting it. This walks the two one
+// model at a time, so a shape the projector rejects becomes its own finding
+// instead of aborting the whole comparison the way a refresh does.
+const DRIFT_LIST_LIMIT = 20;
+
+async function collectDrift(snapshot, refreshInputPath) {
+  const catalog = JSON.parse((await readUpstream(refreshInputPath)).text);
+  const previousMetadata = snapshot.projection.metadata;
+  const previousPricing = new Map(
+    snapshot.projection.pricing.map((entry) => [entry.modelKey, entry]),
+  );
+  const report = { missingProviders: [], unprojectable: [], added: [], removed: [], changed: [] };
+  for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
+    const provider = catalog[sourceId];
+    const previousModels = previousMetadata[providerType] ?? {};
+    const models = provider?.models;
+    if (!models || typeof models !== 'object' || Array.isArray(models)) {
+      report.missingProviders.push(`${providerType} (models.dev ${sourceId})`);
+      continue;
+    }
+    const priced = !PRICING_EXCLUDED_PROVIDER_TYPES.has(providerType);
+    const ids = [...new Set([...Object.keys(previousModels), ...Object.keys(models)])].sort();
+    for (const id of ids) {
+      const model = models[id];
+      const previous = previousModels[id];
+      if (model === undefined) {
+        report.removed.push(`${providerType}/${id}`);
+        continue;
+      }
+      let metadata;
+      let pricing;
+      try {
+        metadata = toMetadata(sourceId, id, provider, model);
+        pricing = priced ? toPricing(providerType, id, model) : undefined;
+      } catch (error) {
+        report.unprojectable.push(`${providerType}/${id}: ${error.message}`);
+        continue;
+      }
+      if (previous === undefined) {
+        report.added.push(`${providerType}/${id}`);
+        continue;
+      }
+      const fields = driftedFields(previous, metadata);
+      if (priced && !sameValue(previousPricing.get(`${providerType}:${id}`), pricing)) {
+        fields.push('pricing');
+      }
+      if (fields.length > 0) report.changed.push(`${providerType}/${id}: ${fields.join(', ')}`);
+    }
+  }
+  const drifted = Object.values(report).some((entries) => entries.length > 0);
+  return { ...report, drifted };
+}
+
+function driftedFields(previous, next) {
+  const keys = [...new Set([...Object.keys(previous), ...Object.keys(next)])].sort();
+  return keys.filter((key) => !sameValue(previous[key], next[key]));
+}
+
+// Both sides are projector output, so their keys are already in one order.
+function sameValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function formatDrift(report) {
+  const lines = [];
+  for (const [label, entries] of [
+    ['providers missing upstream', report.missingProviders],
+    ['models the projector rejects', report.unprojectable],
+    ['models upstream has and the snapshot does not', report.added],
+    ['models the snapshot has and upstream does not', report.removed],
+    ['models whose projection changed', report.changed],
+  ]) {
+    if (entries.length === 0) continue;
+    lines.push(`${label}: ${entries.length}`);
+    for (const entry of entries.slice(0, DRIFT_LIST_LIMIT)) lines.push(`  ${entry}`);
+    if (entries.length > DRIFT_LIST_LIMIT) {
+      lines.push(`  ... and ${entries.length - DRIFT_LIST_LIMIT} more`);
+    }
+  }
+  if (!report.drifted) return `${SOURCE_URL} matches the committed snapshot.`;
+  return [`${SOURCE_URL} has drifted from the committed snapshot.`, ...lines].join('\n');
 }
 
 async function replaceFilesTransactionally(writes) {
@@ -705,7 +807,9 @@ function buildPricingModule(pricing, source) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main();
+  // Drift is a finding, not a crash: the report has already been printed, and
+  // the exit code is what a scheduled job branches on.
+  if ((await main())?.drifted) process.exitCode = 1;
 }
 
 function option(name, argv) {
