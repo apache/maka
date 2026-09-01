@@ -18,6 +18,7 @@
  */
 
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
+import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { Banner, Button } from '@maka/ui';
 import {
   useSessionTurnRequestInboxContext,
@@ -55,10 +56,28 @@ export function SessionTurnRequestApproval(props: {
   return (
     <div className="sessionTurnRequestApproval">
       <Banner
+        className="sessionTurnRequestApprovalBanner"
         status="warning"
         role="status"
         title={copy.ownerTurnRequestTitle}
-        description={request.intent.content.text}
+        description={(
+          <HoverCard
+            content={(
+              <div className="sessionTurnRequestApprovalDetails">
+                {request.intent.content.text}
+              </div>
+            )}
+            label={copy.ownerTurnRequestTitle}
+            placement="above"
+            alignment="start"
+            focusTrigger="always"
+            hasHoverIndication={false}
+          >
+            <span className="sessionTurnRequestApprovalIntent" tabIndex={0}>
+              {request.intent.content.text}
+            </span>
+          </HoverCard>
+        )}
         endContent={(
           <div className="sessionTurnRequestApprovalActions">
             <Button
