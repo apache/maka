@@ -159,6 +159,11 @@ test('folds completed reasoning and tool activity into one collapsed work log', 
   assert.ok(processingHeader);
   assert.ok(workLogContent);
   assert.ok(finalAnswer);
+  assert.ok(workLogHeader.querySelector('.maka-work-log-icon'));
+  assert.equal(
+    workLogHeader.querySelector('.maka-work-log-label')?.textContent,
+    '用时 4 分钟 33 秒',
+  );
   assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
   assert.equal(processingHeader.getAttribute('aria-expanded'), 'false');
   assert.equal(workLogContent.textContent.includes('package name 是 maka'), false);
@@ -355,7 +360,7 @@ test('keeps the last completed text outside earlier imported progress', () => {
   assert.equal(workLogContent.contains(finalAnswer), false);
 });
 
-test('uses the last text as the final reply when a completed turn ends after tool activity', () => {
+test('keeps progress in the work log when a completed turn ends after tool activity', () => {
   const turn = {
     ...fixtureTurn([
       {
@@ -387,12 +392,13 @@ test('uses the last text as the final reply when a completed turn ends after too
   );
   const { document } = parseHTML(markup);
   const workLogContent = document.querySelector('.maka-work-log-content');
-  const finalAnswer = [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
-    .find((element) => element.textContent.includes('先检查一下。'));
   assert.ok(workLogContent);
-  assert.ok(finalAnswer);
-  assert.equal(workLogContent.textContent.includes('先检查一下。'), false);
-  assert.equal(workLogContent.contains(finalAnswer), false);
+  assert.equal(workLogContent.textContent.includes('先检查一下。'), true);
+  assert.equal(
+    [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
+      .some((element) => !workLogContent.contains(element)),
+    false,
+  );
   assert.equal(workLogContent.textContent.includes('读取 1 个文件'), true);
 });
 

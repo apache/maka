@@ -19,7 +19,7 @@
 
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, Ban, BookOpen, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, BookOpen, Check, Clock, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -57,7 +57,7 @@ import type { TransientUserMessageProjection } from './chat-view.js';
 import { type LiveProviderRetry } from './live-turn-projection.js';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
-  assistantFinalAnswerIndex,
+  assistantFinalReply,
   finalAssistantReplyText,
   type TurnTimelineItem,
   type TurnViewModel,
@@ -648,7 +648,8 @@ export const TurnView = memo(function TurnView(props: {
         );
         const turnCompleted =
           ownsTurnChrome && turn.status === 'completed' && !props.liveStreaming;
-        const finalAnswerIndex = assistantFinalAnswerIndex(segment.items, turnCompleted);
+        const finalReply = assistantFinalReply(segment.items, turnCompleted);
+        const finalAnswerIndex = finalReply?.index ?? -1;
         const workItems = segment.items.filter((_, index) => index !== finalAnswerIndex);
         const finalAnswer =
           finalAnswerIndex >= 0 ? segment.items[finalAnswerIndex] : undefined;
@@ -971,7 +972,9 @@ function TurnFooterActions(props: {
   }
 
   async function handleClick(action: TurnFooterActionMeta) {
-    if (!action.enabled) return;
+    const enabled =
+      action.enabled && (action.id !== 'copy' || Boolean(props.assistantText));
+    if (!enabled) return;
     if (action.id === 'copy') {
       await copyAssistantText();
       return;
@@ -990,6 +993,8 @@ function TurnFooterActions(props: {
             // Keep the action label under pending (a11y); do not swap to spinner-only.
             const isPending = action.tooltip === copy.processing;
             const isCopyAction = action.id === 'copy';
+            const isEnabled =
+              action.enabled && (!isCopyAction || Boolean(props.assistantText));
             const copyIsPending = isCopyAction && copyPhase === 'pending';
             const copyFeedbackLabel = copyPhase === 'pending'
               ? `${copy.copying}…`
@@ -1020,7 +1025,7 @@ function TurnFooterActions(props: {
                 data-action={action.id}
                 data-pending={isActionPending || undefined}
                 data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                aria-disabled={!action.enabled || copyIsPending}
+                isDisabled={!isEnabled || copyIsPending}
                 aria-busy={isActionPending || undefined}
                 onClick={() => void handleClick(action)}
               />
@@ -1384,7 +1389,12 @@ function TurnWorkLog(props: {
       data-work-log="true"
       isOpen={expanded}
       onOpenChange={setExpanded}
-      trigger={<span className="maka-work-log-label">{label}</span>}
+      trigger={(
+        <span className="maka-work-log-trigger">
+          <Clock className="maka-work-log-icon" size={ICON_SIZE.control} aria-hidden="true" />
+          <span className="maka-work-log-label">{label}</span>
+        </span>
+      )}
     >
       <div className="maka-work-log-content">{props.children}</div>
     </Collapsible>

@@ -130,10 +130,9 @@
   justify-content: flex-start;
   gap: var(--space-1);
   padding: var(--space-0-5) 0;
-  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-element);
   color: var(--muted-foreground);
   background: transparent;
-  font: var(--maka-text-body);
 }
 
 .maka-work-log > .astryx-collapsible-trigger > span:first-child {
@@ -141,9 +140,24 @@
   flex: 0 1 auto;
 }
 
+.maka-work-log-trigger {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1-5);
+  font: var(--maka-text-body);
+}
+
+.maka-work-log-icon {
+  width: var(--icon-control);
+  height: var(--icon-control);
+  flex: 0 0 auto;
+}
+
 .maka-work-log-label {
   display: block;
   overflow: hidden;
+  font: var(--maka-text-body);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -151,6 +165,7 @@
 @media (hover: hover) {
   .maka-work-log > .astryx-collapsible-trigger:hover {
     color: var(--foreground-secondary);
+    background: var(--foreground-5);
   }
 }
 
@@ -314,6 +329,14 @@
 .maka-turn .astryx-chat-tool-calls [role="button"] {
   --text-supporting-size: var(--text-body-size);
   --text-supporting-leading: var(--maka-line-body);
+}
+
+/* ChatReasoning's stock leading icon wrapper is 16px while Maka's work-log
+   and processing rows use the 14px control-icon rung. Normalize the wrapper,
+   not the glyph, so all three headers share the same icon and text columns. */
+.maka-turn .astryx-chat-reasoning [data-slot="activity-card-header"] > span:first-child {
+  width: var(--icon-control);
+  height: var(--icon-control);
 }
 
 /* These boxes need no !important to beat Astryx: its StyleX atoms live in the

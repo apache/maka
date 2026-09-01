@@ -62,6 +62,7 @@ import type {
 import type {
   StoredMessage,
   AssistantMessage,
+  AssistantStepContentKind,
   AssistantThinkingPart,
   ToolCallMessage,
   ToolResultMessage,
@@ -1461,8 +1462,12 @@ export class AiSdkBackend implements AgentBackend {
     let stepTextPartStartOffset = 0;
     let stepThinkingParts: AssistantThinkingPart[] = [];
     let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
+    let stepContentOrder: AssistantStepContentKind[] = [];
     const startedAt = this.now();
 
+    const recordStepContent = (kind: AssistantStepContentKind): void => {
+      if (!stepContentOrder.includes(kind)) stepContentOrder.push(kind);
+    };
     // Flush the current step's AssistantMessage (text + thinking) and the paired
     // terminal thinking/text events, then clear the per-step accumulators.
     // Persist when the step produced text OR reasoning — a thinking-only step
@@ -1478,6 +1483,7 @@ export class AiSdkBackend implements AgentBackend {
       stepTextPartStartOffset = 0;
       stepThinkingParts = [];
       stepThinkingPartsById = new Map();
+      stepContentOrder = [];
     };
     const flushStep = async (): Promise<void> => {
       const hasThinking = stepThinkingParts.length > 0;
@@ -1496,6 +1502,7 @@ export class AiSdkBackend implements AgentBackend {
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
+        ...(stepContentOrder.length > 0 ? { contentOrder: stepContentOrder } : {}),
         modelId: this.input.modelId,
         ...(hasThinking
           ? {
@@ -2228,6 +2235,7 @@ export class AiSdkBackend implements AgentBackend {
                   );
                 }
               } else if (event.kind === 'text') {
+                if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;
                 if (event.text.length > 0) attemptSawText = true;
                 queue.push({
@@ -2268,6 +2276,7 @@ export class AiSdkBackend implements AgentBackend {
                   stepThinkingPartsById.set(event.reasoningPartId, part);
                 }
               } else if (event.kind === 'thinking') {
+                if (event.text.length > 0) recordStepContent('thinking');
                 if (event.text.length > 0) attemptSawThinking = true;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
@@ -2353,6 +2362,7 @@ export class AiSdkBackend implements AgentBackend {
                 attemptSawToolActivity = true;
               } else if (event.kind === 'tool-call') {
                 attemptSawToolActivity = true;
+                recordStepContent('tools');
                 if (event.toolCall.providerExecuted) {
                   providerToolActivityCount += 1;
                   providerToolInputs.set(event.toolCall.toolCallId, event.toolCall.input);

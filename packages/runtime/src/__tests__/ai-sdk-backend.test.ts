@@ -15575,6 +15575,7 @@ describe('AiSdkBackend steering durability and identity', () => {
     const assistant = appended.find(
       (message): message is AssistantMessage => message.type === 'assistant',
     );
+    assert.deepEqual(assistant?.contentOrder, ['tools', 'text']);
     assert.deepEqual(assistant?.providerOptions, {
       openai: {
         itemId: 'message-1',

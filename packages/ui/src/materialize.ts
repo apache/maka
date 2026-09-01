@@ -830,32 +830,39 @@ export function materializeTurns(
 }
 
 /**
- * The turn's final reply: the last answer step on the timeline. Intermediate
- * steps (text emitted between tool calls) narrate the work in progress; the
- * clipboard wants only the answer the turn settled on (#2407), not the
- * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
- * turns with no timeline text entry.
+ * The turn's final reply is present only when the last meaningful item in the
+ * completed timeline segment is non-empty assistant text. Intermediate text
+ * narrates work in progress; if thinking or tool activity follows it, the turn
+ * did not settle on a final reply. The clipboard therefore must not use the
+ * `\n\n`-joined `assistant.text` aggregate (#2407). Turns with no timeline text
+ * entry retain the legacy aggregate fallback.
  */
-export function assistantFinalAnswerIndex<T extends { kind: string; text?: string }>(
+export interface AssistantFinalReply {
+  index: number;
+  text: string;
+}
+
+export function assistantFinalReply<T extends { kind: string; text?: string }>(
   items: readonly T[],
   completed: boolean,
-): number {
-  if (!completed) return -1;
+): AssistantFinalReply | undefined {
+  if (!completed) return undefined;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (item?.kind === "text" && item.text?.length === 0) continue;
-    if (item?.kind === "text") return index;
+    if (item?.kind === "text" && item.text?.trim().length === 0) continue;
+    return item?.kind === "text" && item.text !== undefined
+      ? { index, text: item.text }
+      : undefined;
   }
-  return -1;
+  return undefined;
 }
 
 export function finalAssistantReplyText(turn: TurnViewModel): string {
   if (turn.status !== "completed") return "";
   const lastSteeringIndex = turn.timeline.findLastIndex((item) => item.kind === "user");
   const latestAnswer = turn.timeline.slice(lastSteeringIndex + 1);
-  const answerIndex = assistantFinalAnswerIndex(latestAnswer, true);
-  const answer = latestAnswer[answerIndex];
-  if (answer?.kind === "text") return answer.text;
+  const answer = assistantFinalReply(latestAnswer, true);
+  if (answer) return answer.text;
   return turn.timeline.some((item) => item.kind === "text")
     ? ""
     : (turn.assistant?.text ?? "");

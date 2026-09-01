@@ -193,6 +193,96 @@ describe("assistant reply selection", () => {
     assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "");
   });
 
+  test("does not treat progress text as final when a completed turn ends with tool activity", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "assistant",
+        id: "legacy-progress",
+        turnId: "t1",
+        ts: 2,
+        text: "I will inspect it.",
+        modelId: "fixture",
+      },
+      {
+        type: "tool_call",
+        id: "read-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "Read",
+        args: { path: "README.md" },
+      },
+      {
+        type: "tool_result",
+        id: "read-result-1",
+        turnId: "t1",
+        ts: 4,
+        toolUseId: "read-1",
+        isError: false,
+        content: { kind: "text", text: "README" },
+      },
+      {
+        type: "turn_state",
+        id: "state-completed",
+        turnId: "t1",
+        ts: 5,
+        status: "completed",
+        partialOutputRetained: false,
+      },
+    ]);
+
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "");
+  });
+
+  test("keeps provider tool activity before the final text recorded for the same step", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "tool_call",
+        id: "search-1",
+        turnId: "t1",
+        ts: 2,
+        toolName: "WebSearch",
+        args: { query: "Maka" },
+        stepId: "answer-step",
+        providerExecuted: true,
+      },
+      {
+        type: "tool_result",
+        id: "search-result-1",
+        turnId: "t1",
+        ts: 3,
+        toolUseId: "search-1",
+        isError: false,
+        content: { kind: "text", text: "result" },
+        providerExecuted: true,
+      },
+      {
+        type: "assistant",
+        id: "answer-step",
+        turnId: "t1",
+        ts: 4,
+        text: "The search is complete.",
+        modelId: "fixture",
+        contentOrder: ["tools", "text"],
+      },
+      {
+        type: "turn_state",
+        id: "state-completed",
+        turnId: "t1",
+        ts: 5,
+        status: "completed",
+        partialOutputRetained: false,
+      },
+    ]);
+
+    assert.deepEqual(
+      turn?.timeline.map((item) => item.kind),
+      ["tools", "text"],
+    );
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "The search is complete.");
+  });
+
   test("measures terminal duration to the recorded turn state after tool work", () => {
     const [turn] = materializeTurns([
       originalUser,
