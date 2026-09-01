@@ -565,8 +565,6 @@ export const test = base.extend<{
       e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
-  // A real project with several sessions. Shown because the contract under
-  // test is native focus order across independently interactive row controls.
   // Seeded connection so the composer is ready, plus one registered Project so
   // the workspace picker under it has a second target to move to.
   newTaskTargetWindow: async ({}, use) => {
@@ -578,13 +576,16 @@ export const test = base.extend<{
       showWindow: true,
     }, use);
   },
+  // A real project with several sessions. Hidden: a shown key window receives
+  // the physical cursor's mouse-moved events, which cancel the delayed hover
+  // card mid-test. CDP input needs no visible window, and the focus-order
+  // test drives synthetic Tab that never reaches native focus either way.
   projectSidebarWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       readinessSelector: '[data-maka-contract="search-modal"][open]',
       e2eFixtureScenario: 'sidebar-search-modal-open',
       locale: 'zh',
-      showWindow: true,
     }, use);
   },
   parentRemovalWindow: async ({}, use) => {
