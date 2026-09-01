@@ -485,6 +485,55 @@ test('refresh rejects a partial provider shrink until it is explicitly accepted'
   }
 });
 
+test('accepting upstream removals still refuses a truncated catalog', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-truncated-'));
+  try {
+    const committed = join(root, 'api.json');
+    const outage = join(root, 'outage.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const full = fixtureCatalog();
+    for (const provider of Object.values(full)) {
+      const [model] = Object.values(provider.models);
+      if (!model) continue;
+      for (const suffix of ['b', 'c', 'd']) provider.models[`model-${suffix}`] = { ...model };
+    }
+    await writeFile(committed, JSON.stringify(full));
+    await writeFile(outage, JSON.stringify(fixtureCatalog()));
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      committed,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+    ]);
+    const committedSnapshot = await readFile(snapshot, 'utf8');
+
+    await assert.rejects(
+      main([
+        'node',
+        'sync-model-metadata.mjs',
+        '--refresh',
+        '--accept-upstream-removals',
+        '--refresh-input',
+        outage,
+        '--snapshot',
+        snapshot,
+        '--output',
+        metadata,
+      ]),
+      /more than the 100 --accept-upstream-removals acknowledges/u,
+    );
+    assert.equal(await readFile(snapshot, 'utf8'), committedSnapshot);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('refresh rejects lost pricing coverage from an otherwise valid model', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-pricing-shrink-'));
   try {

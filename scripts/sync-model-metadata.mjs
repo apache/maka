@@ -266,9 +266,9 @@ async function readUpstream(refreshInputPath) {
 async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   const { text: sourceText, etag: sourceEtag, retrievedAt } = await readUpstream(refreshInputPath);
   const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
-  if (!options.acceptUpstreamRemovals) {
-    const previous = await loadSnapshotIfPresent(snapshotPath);
-    if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
+  const previous = await loadSnapshotIfPresent(snapshotPath);
+  if (previous) {
+    assertAcceptableRemovals(previous.projection, projection, options.acceptUpstreamRemovals);
   }
   const projectionText = JSON.stringify(projection);
   const snapshot = {
@@ -292,14 +292,25 @@ async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   };
 }
 
-function assertProjectionDoesNotShrink(previous, next) {
+// What --accept-upstream-removals is for: a handful of models the provider
+// retired. An upstream outage serving a truncated catalog removes paths the
+// same way, so the acknowledgement stops here.
+const MAXIMUM_ACKNOWLEDGED_REMOVALS = 100;
+
+function assertAcceptableRemovals(previous, next, acknowledged) {
   const removals = [];
   collectProjectionRemovals(previous, next, [], removals);
   if (removals.length === 0) return;
-
-  throw new Error(
-    `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
-  );
+  if (!acknowledged) {
+    throw new Error(
+      `models.dev refresh would remove committed projection paths: ${removals.sort().join(', ')}; inspect the upstream change and rerun with --accept-upstream-removals to acknowledge it`,
+    );
+  }
+  if (removals.length > MAXIMUM_ACKNOWLEDGED_REMOVALS) {
+    throw new Error(
+      `models.dev refresh would remove ${removals.length} committed projection paths, more than the ${MAXIMUM_ACKNOWLEDGED_REMOVALS} --accept-upstream-removals acknowledges; treat a change this size as an upstream outage`,
+    );
+  }
 }
 
 function collectProjectionRemovals(previous, next, path, removals) {
