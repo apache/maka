@@ -1517,6 +1517,7 @@ describe('Maka Pi TUI runner', () => {
     resolveFirstSave(
       savedOnboardingResult([
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3621,6 +3622,7 @@ describe('Maka Pi TUI runner', () => {
       permissionMode: 'ask',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3688,6 +3690,7 @@ describe('Maka Pi TUI runner', () => {
       locale: 'zh',
       modelChoices: [
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
@@ -3858,6 +3861,7 @@ describe('Maka Pi TUI runner', () => {
       connectionSlug: 'ghost',
       modelChoices: [
         {
+          connectionId: 'connection-alpha',
           connectionSlug: 'alpha',
           connectionName: 'Aurora',
           providerType: 'openai',
@@ -3867,6 +3871,7 @@ describe('Maka Pi TUI runner', () => {
           thinkingLevels: [],
         },
         {
+          connectionId: 'connection-beta',
           connectionSlug: 'beta',
           connectionName: 'Boreal',
           providerType: 'zai',
@@ -3876,6 +3881,7 @@ describe('Maka Pi TUI runner', () => {
           thinkingLevels: [],
         },
         {
+          connectionId: 'connection-gamma',
           connectionSlug: 'gamma',
           connectionName: 'Crest',
           providerType: 'google',
@@ -4154,6 +4160,7 @@ describe('Maka Pi TUI runner', () => {
       [
         ...modelChoiceConnectionLabels([
           {
+            connectionId: 'connection-a',
             connectionSlug: 'openai',
             connectionName: 'openai-2',
             providerType: 'openai',
@@ -4162,6 +4169,7 @@ describe('Maka Pi TUI runner', () => {
             thinkingLevels: [],
           },
           {
+            connectionId: 'connection-b',
             connectionSlug: 'openai-2',
             connectionName: '   ',
             providerType: 'openai',

@@ -1519,9 +1519,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       return;
     }
-    if (!choice.connectionId) {
-      throw new Error('Model choice is missing its exact Connection identity');
-    }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const connectionLabels = modelChoiceConnectionLabels(modelChoices ?? [choice]);

@@ -29,8 +29,11 @@ import type {
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
-  /** Immutable account identity; required for a cross-connection selection. */
-  connectionId?: string;
+  /**
+   * Immutable account identity. The slug is renameable, so this is what a
+   * cross-connection selection rebinds the session to.
+   */
+  connectionId: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;

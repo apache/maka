@@ -704,12 +704,12 @@ export function modelChoiceConnectionLabels(choices: readonly ModelChoice[]): Ma
   const labels = new Map<string, string>();
   for (const connection of connections) {
     let label = connection.base;
-    if (used.has(label) && connection.connectionId) {
+    if (used.has(label)) {
       label = `${connection.base} · ${connection.connectionId}`;
     }
     let suffix = 2;
     while (used.has(label)) {
-      label = `${connection.base} · ${connection.connectionId ?? connection.connectionSlug} · ${suffix}`;
+      label = `${connection.base} · ${connection.connectionId} · ${suffix}`;
       suffix += 1;
     }
     used.add(label);
