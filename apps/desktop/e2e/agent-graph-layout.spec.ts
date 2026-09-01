@@ -20,7 +20,7 @@
 import { expect, test } from './fixtures';
 
 test('production AgentGraphPanel keeps its heading visible without covering scrolled content', async ({ agentGraphWindow: page }) => {
-  const panel = page.getByRole('region', { name: 'Agent Graph' });
+  const panel = page.getByRole('region', { name: 'Agent Graph', exact: true });
   await expect(panel).toBeVisible();
   await expect(panel.locator('.maka-agent-graph-operators > li')).toHaveCount(24);
   const content = panel.locator('.maka-agent-graph-content');
