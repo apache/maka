@@ -18,9 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import { acquireProcessLifetimeOwner } from '../process-lifetime-owner.js';
@@ -34,7 +34,7 @@ import {
   type SessionSnapshotWorkspaceConfirmationAuthority,
 } from '../quiescent-session-snapshot.js';
 import type { PackQuiescentSessionBundleInput } from '../production-session-snapshot.js';
-import type { SessionBundleLimits } from '../session-bundle-contract.js';
+import type { SessionBundleFileService, SessionBundleLimits } from '../session-bundle-contract.js';
 import { createSessionBundleFileService } from '../session-bundle-file-service.js';
 import { createSessionStore } from '../session-store.js';
 
@@ -73,6 +73,7 @@ test('prepares real Session state and a policy-filtered workspace, then packs an
     const service = await fixture.createService();
     const archivePath = join(fixture.root, 'bundle.tar.zst');
     const artifact = await service.pack({ destination: archivePath });
+    assert.deepEqual(artifact.snapshotCleanup, { state: 'released' });
 
     const hydratedRoot = join(fixture.root, 'hydrated');
     const hydrated = await createSessionBundleFileService().hydrate({
@@ -227,6 +228,67 @@ test('reserves state entries before admitting workspace entries', async () => {
   }
 });
 
+test('returns the written Bundle and reports recoverable staging cleanup failure', async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.workspaceRoot, 'README.md'), 'durable artifact\n');
+    const codec = createSessionBundleFileService();
+    const bundleFileService: SessionBundleFileService = {
+      async pack(input) {
+        const artifact = await codec.pack(input);
+        const snapshotRoot = dirname(input.snapshot.stateRoot);
+        await rename(snapshotRoot, `${snapshotRoot}.displaced`);
+        await mkdir(snapshotRoot, { mode: 0o700 });
+        await writeFile(join(snapshotRoot, 'unrelated.txt'), 'do not remove\n');
+        return artifact;
+      },
+      inspect: codec.inspect.bind(codec),
+      hydrate: codec.hydrate.bind(codec),
+      cleanupHydrationStaging: codec.cleanupHydrationStaging.bind(codec),
+    };
+    const service = await fixture.createService({ bundleFileService });
+    const archivePath = join(fixture.root, 'bundle-with-pending-cleanup.tar.zst');
+
+    const artifact = await service.pack({ destination: archivePath });
+
+    assert.equal((await readFile(archivePath)).byteLength > 0, true);
+    const inspection = await codec.inspect({
+      source: { path: archivePath, expectedArchiveDigest: artifact.archiveDigest },
+      limits,
+    });
+    assert.equal(inspection.verified, true);
+    assert.equal(artifact.snapshotCleanup.state, 'pending_recovery');
+    if (artifact.snapshotCleanup.state === 'pending_recovery') {
+      assert.equal(artifact.snapshotCleanup.error.code, 'cleanup_failed');
+      assert.deepEqual(artifact.snapshotCleanup.error.details, { phase: 'cleanup' });
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('rejects a POSIX-only workspace name with a bounded portability diagnostic', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const fixture = await createFixture();
+  try {
+    await writeFile(join(fixture.workspaceRoot, 'name.'), 'not portable\n');
+    const service = await fixture.createService();
+    await assert.rejects(service.prepare({}), (error) => {
+      assert.ok(error instanceof SessionSnapshotError);
+      assert.equal(error.code, 'unsafe_source');
+      assert.deepEqual(error.details, {
+        phase: 'workspace',
+        policyCategory: 'unsupported_portable_path',
+        observed: 1,
+      });
+      return true;
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(): Promise<{
   readonly root: string;
   readonly stateRoot: string;
@@ -242,6 +304,7 @@ async function createFixture(): Promise<{
     readonly cleanupStateRoot?: string;
     readonly limits?: SessionBundleLimits;
     readonly confirmationAuthority?: SessionSnapshotWorkspaceConfirmationAuthority;
+    readonly bundleFileService?: SessionBundleFileService;
   }) => ReturnType<typeof createFileProductionSessionSnapshotService>;
   close(): Promise<void>;
 }> {
@@ -289,6 +352,7 @@ async function createFixture(): Promise<{
         quiescence: immediateQuiescence,
         limits: overrides.limits ?? limits,
         confirmationAuthority: overrides.confirmationAuthority,
+        bundleFileService: overrides.bundleFileService,
       }),
     async close(): Promise<void> {
       await owner.close();
