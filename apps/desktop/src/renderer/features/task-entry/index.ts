@@ -18,6 +18,9 @@
  */
 
 export { TaskEntryHost } from './ui/task-entry-host.js';
+export {
+  TaskEntryRoot,
+  TaskEntryWorkspacePickerConsumer,
+} from './ui/task-entry-provider.js';
 export { TaskEntryServicesProvider } from './services-context.js';
-export { useTaskEntryController } from './controller/use-task-entry-controller.js';
 export type { TaskEntryServices } from './ports.js';
