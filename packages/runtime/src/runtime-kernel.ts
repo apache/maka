@@ -2273,6 +2273,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     | 'recordRunTrace'
     | 'recordModelCallAttempt'
     | 'recordRunComposition'
+    | 'recordRequestComposition'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
     | 'loadModelProjectionTransitions'
@@ -2303,6 +2304,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
                 return Promise.reject(new Error('No active AgentRun for Run Composition'));
               }
               return run.recordRunComposition(snapshot);
+            },
+            recordRequestComposition: (runId, snapshot) => {
+              const run = this.active.get(sessionId)?.activeRuns.get(runId);
+              if (!run) {
+                return Promise.reject(new Error('No active AgentRun for Request Composition'));
+              }
+              return run.recordRequestComposition(snapshot);
             },
             loadHistoryCompactCheckpoint: () => this.historyCompactCoordinator.load(sessionId),
             recordHistoryCompactCheckpoint: (

@@ -41,8 +41,7 @@ import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
 } from '@maka/runtime/network/scoped-fetch-transport';
-import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
-import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import { stableHash } from '@maka/runtime/request-shape';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   type BackendFactoryContext,
@@ -327,23 +326,17 @@ async function buildHostAiSdkBackend(
     });
   };
   const recordRunComposition = input.context.recordRunComposition;
+  const recordRequestComposition = input.context.recordRequestComposition;
   const resolveModelTools = (): readonly MakaTool[] =>
     modelComposition.resolveTools?.() ?? modelComposition.tools;
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
-        const resolved = await resolveRunPrompt(context);
-        const tools = resolveModelTools();
         await recordRunComposition(
           context.runId,
           createRunCompositionSnapshot({
             composerId: modelComposition.composerId,
             composerRevision: modelComposition.composerRevision,
-            sourceRevisions: resolved.sourceRevisions,
-            baseSystemPromptHash: stableHash(resolved.text ?? ''),
-            toolCatalogHash: toolCatalogHash(tools),
-            toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
             baseProviderOptionsHash: stableHash(providerOptions),
-            toolNames: tools.map(({ name }) => name),
             contextWindow: contextWindow ?? null,
           }),
         );
@@ -460,6 +453,12 @@ async function buildHostAiSdkBackend(
               beforeRunProviderDispatch: commitRunComposition,
             }
           : {}),
+        ...(recordRequestComposition
+          ? {
+              recordRequestComposition: (runId, snapshot) =>
+                recordRequestComposition(runId, snapshot),
+            }
+          : {}),
         systemPrompt: async (context) => {
           const resolved = await resolveRunPrompt({
             turnId: context.turnId,
@@ -467,7 +466,7 @@ async function buildHostAiSdkBackend(
               ? { emitSkillCatalogTrace: context.emitSkillCatalogTrace }
               : {}),
           });
-          return resolved.text;
+          return { text: resolved.text, sourceRevisions: resolved.sourceRevisions };
         },
         lookupPricing: pricing,
         recordModelCallAttempt,

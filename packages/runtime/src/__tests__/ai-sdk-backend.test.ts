@@ -37,6 +37,7 @@ import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RequestCompositionSnapshotInput } from '@maka/core/run-composition';
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
@@ -3996,6 +3997,7 @@ describe('AiSdkBackend model history', () => {
       packageId: 'inventory-plugin',
     });
     let calls = 0;
+    const requestCompositions: RequestCompositionSnapshotInput[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
         calls += 1;
@@ -4053,11 +4055,18 @@ describe('AiSdkBackend model history', () => {
       tools: [...pluginTools.resolve('session-1', []).tools],
       resolveTools: () => pluginTools.resolve('session-1', []).tools,
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordRequestComposition: async (_runId, snapshot) => {
+        requestCompositions.push(snapshot);
+        return snapshot.compositionId;
+      },
       newId: idGenerator(),
       now: monotonicClock(),
     });
 
-    await drainDurably(backend.send(durable.input()), durable);
+    await drainDurably(
+      backend.send(durable.input({ runId: 'run-1', invocationId: 'invocation-1' })),
+      durable,
+    );
 
     const namesForRequest = (index: number): string[] => {
       const tools = model.doStreamCalls[index]?.tools ?? [];
@@ -4071,6 +4080,11 @@ describe('AiSdkBackend model history', () => {
     assert.equal(namesForRequest(1).includes(inventoryTool.name), true);
     assert.equal(namesForRequest(2).includes(inventoryTool.name), true);
     assert.equal(namesForRequest(3).includes(inventoryTool.name), false);
+    assert.equal(requestCompositions.length, 4);
+    assert.equal(requestCompositions[0]?.toolNames.includes(inventoryTool.name), false);
+    assert.equal(requestCompositions[1]?.toolNames.includes(inventoryTool.name), true);
+    assert.equal(requestCompositions[2]?.toolNames.includes(inventoryTool.name), true);
+    assert.equal(requestCompositions[3]?.toolNames.includes(inventoryTool.name), false);
     const fourthPrompt = model.doStreamCalls[3]?.prompt as Array<{
       role: string;
       content: Array<{ output?: { value?: unknown } }>;
@@ -9956,6 +9970,7 @@ describe('AiSdkBackend RunTrace', () => {
     const retryOnlyTool = testTool('retry_only_tool', z.object({}));
     let surface: readonly MakaTool[] = [stableTool];
     let calls = 0;
+    const requestCompositions: RequestCompositionSnapshotInput[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
         calls += 1;
@@ -10007,6 +10022,10 @@ describe('AiSdkBackend RunTrace', () => {
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
+      recordRequestComposition: async (_runId, snapshot) => {
+        requestCompositions.push(snapshot);
+        return snapshot.compositionId;
+      },
       providerRetrySleep: async () => {},
     });
 
@@ -10024,6 +10043,12 @@ describe('AiSdkBackend RunTrace', () => {
       true,
     );
     assert.equal(captures.length, 1);
+    assert.equal(requestCompositions.length, 1);
+    assert.ok(
+      attempts.every(
+        (attempt) => attempt.requestCompositionId === requestCompositions[0]?.compositionId,
+      ),
+    );
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),
       [

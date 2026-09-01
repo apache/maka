@@ -20,39 +20,57 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  createRequestCompositionSnapshot,
+  decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
+  REQUEST_COMPOSITION_SCHEMA_VERSION,
   RUN_COMPOSITION_SCHEMA_VERSION,
 } from '../run-composition.js';
 
-test('Run Composition snapshots reject ambiguous toolsets and malformed hashes', () => {
+test('Run Composition snapshots contain only immutable bootstrap facts', () => {
   const valid = {
     schemaVersion: RUN_COMPOSITION_SCHEMA_VERSION,
     composerId: 'maka.interactive',
     composerRevision: '1',
-    sourceRevisions: [{ id: 'skill-catalog', revision: 'skills-0' }],
-    baseSystemPromptHash: hash('1'),
-    toolCatalogHash: hash('2'),
-    toolAvailabilityHash: hash('3'),
     baseProviderOptionsHash: hash('4'),
-    toolNames: ['Read'],
     contextWindow: null,
   };
 
   for (const candidate of [
-    { ...valid, baseSystemPromptHash: 'sha256:short' },
-    { ...valid, toolNames: ['Write', 'Read'] },
-    { ...valid, toolNames: ['Read', 'Read'] },
-    {
-      ...valid,
-      sourceRevisions: [
-        { id: 'skill-catalog', revision: 'skills-0' },
-        { id: 'runtime-policy', revision: '1' },
-      ],
-    },
-    { ...valid, sourceRevisions: [{ id: 'skill-catalog', revision: '' }] },
+    { ...valid, baseProviderOptionsHash: 'sha256:short' },
+    { ...valid, toolNames: ['Read'] },
   ]) {
     assert.throws(() => decodeRunCompositionSnapshot(candidate));
   }
+});
+
+test('Request Composition snapshots canonicalize complete model-visible tool surfaces', () => {
+  const snapshot = createRequestCompositionSnapshot(
+    {
+      compositionId: 'composition-1',
+      step: 1,
+      sourceRevisions: [{ id: 'skill-catalog', revision: 'skills-1' }],
+      systemPromptHash: hash('1'),
+      toolCatalogHash: hash('2'),
+      toolAvailabilityHash: hash('3'),
+      providerOptionsHash: hash('4'),
+      toolNames: ['Write', 'Read'],
+      toolSchemas: [
+        { name: 'Write', description: 'write', inputSchema: { type: 'object' } },
+        { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
+      ],
+    },
+    'change',
+  );
+  assert.equal(snapshot.schemaVersion, REQUEST_COMPOSITION_SCHEMA_VERSION);
+  assert.deepEqual(snapshot.toolNames, ['Read', 'Write']);
+  assert.deepEqual(
+    snapshot.toolSchemas.map((schema) => schema.name),
+    ['Read', 'Write'],
+  );
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({ ...snapshot, toolNames: ['Read', 'Read'] }),
+  );
 });
 
 function hash(seed: string): `sha256:${string}` {

@@ -123,6 +123,10 @@ import type {
   UserContent,
 } from './model-protocol.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
+import type {
+  RequestCompositionSnapshotInput,
+  RunCompositionSourceRevision,
+} from '@maka/core/run-composition';
 import Ajv, { type AnySchema, type ErrorObject, type ValidateFunction } from 'ajv';
 import Ajv2019 from 'ajv/dist/2019.js';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -222,7 +226,12 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import { toolSchemaCharsForDiagnostics } from './request-shape.js';
+import {
+  requestCompositionToolSchemas,
+  stableHash,
+  toolCatalogHash,
+  toolSchemaCharsForDiagnostics,
+} from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
@@ -235,6 +244,7 @@ import {
   ToolAvailabilityRuntime,
   type ToolAvailabilityConfig,
   type ToolAvailabilityPlan,
+  toolAvailabilityHash,
 } from './tool-availability.js';
 import { renderSwarmModePrompt } from './swarm-mode.js';
 import { renderGraphModePrompt } from './graph-mode.js';
@@ -740,7 +750,13 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Optional system prompt (skills + workspace AGENTS.md merged upstream). */
   systemPrompt?:
     | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
+    | ((
+        context: SystemPromptContext,
+      ) =>
+        | string
+        | undefined
+        | ResolvedSystemPrompt
+        | Promise<string | undefined | ResolvedSystemPrompt>);
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -783,6 +799,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
     turnId: string;
     runId: string;
   }) => void | Promise<void>;
+  /** Durable DSH-style request/header epoch written once per changed logical step surface. */
+  recordRequestComposition?: (
+    runId: string,
+    snapshot: RequestCompositionSnapshotInput,
+  ) => Promise<string>;
   /**
    * Optional artifact recorder. Runtime derives only deterministic candidates
    * from structured tool results / explicit redirects; desktop main owns
@@ -813,6 +834,11 @@ export interface SystemPromptContext {
   cwd: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
+}
+
+export interface ResolvedSystemPrompt {
+  text?: string;
+  sourceRevisions: readonly RunCompositionSourceRevision[];
 }
 
 function isImageToolResult(
@@ -1710,30 +1736,10 @@ export class AiSdkBackend implements AgentBackend {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
-    // Resolve the stable Provider envelope before automatic Compaction freezes
-    // its source. The same value is reused by the primary request; Memory does
-    // not resolve or mutate Agent configuration after the checkpoint commits.
+    // Resolved at every logical step below. A physical retry reuses the frozen
+    // value, while a Tool result may change Context before the next step.
+    let resolvedSystemPrompt: ResolvedSystemPrompt = { sourceRevisions: [] };
     let systemPrompt: string | undefined;
-    try {
-      systemPrompt = joinPromptFragments([
-        await this.resolveSystemPrompt(scope),
-        scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
-        scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-      ]);
-    } catch (err) {
-      trace.modelStreamFailed(this.modelAdapter.classifyError(err), err);
-      queue.push(this.makeErrorEvent(turnId, err));
-      queue.push({
-        type: 'complete',
-        id: this.newId(),
-        turnId,
-        ts: this.now(),
-        stopReason: 'error',
-      } satisfies CompleteEvent);
-      queue.close();
-      yield* this.drain(queue);
-      return;
-    }
 
     // --- Build messages from RuntimeEvent history and its compatibility projection. ---
     const priorReplayResult = await this.buildPriorMessages(
@@ -1978,7 +1984,6 @@ export class AiSdkBackend implements AgentBackend {
             patch,
           );
         };
-        const midTurnSystemPromptChars = systemPrompt?.length ?? 0;
         // When mid-turn capacity compaction is active, the prune must also cover
         // the newest completed step; see collectPrunableCompletedStepToolCallIds.
         const activeToolResultPruneIncludesNewestStep = midTurnState !== undefined;
@@ -1992,7 +1997,7 @@ export class AiSdkBackend implements AgentBackend {
             );
           },
         );
-        const buildRequestProjection = () => {
+        const buildRequestProjection = (midTurnSystemPromptChars: number) => {
           const midTurnCapacityHook = this.compaction.buildMidTurnCapacityCompactProjection(
             turnId,
             midTurnState,
@@ -2045,7 +2050,14 @@ export class AiSdkBackend implements AgentBackend {
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
           ({ plan, providerTools, modelTools } = snapshotStepTools());
-          const requestProjection = buildRequestProjection();
+          resolvedSystemPrompt = await this.resolveSystemPrompt(scope);
+          systemPrompt = joinPromptFragments([
+            resolvedSystemPrompt.text,
+            scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
+            scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
+          ]);
+          const midTurnSystemPromptChars = systemPrompt?.length ?? 0;
+          const requestProjection = buildRequestProjection(midTurnSystemPromptChars);
           await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();
@@ -2095,7 +2107,21 @@ export class AiSdkBackend implements AgentBackend {
             toolRuntime.hasSandboxBoundaryDenial() ? SANDBOX_BOUNDARY_DENIED_FOR_TURN : undefined,
             sandboxBoundaryFinalizationStep ? SANDBOX_BOUNDARY_FINALIZATION_PROMPT : undefined,
           ]);
-          providerRequestTracker?.setStep(runtimeSteps);
+          const requestCompositionId =
+            scope.runId && this.input.recordRequestComposition
+              ? await this.input.recordRequestComposition(scope.runId, {
+                  compositionId: this.newId(),
+                  step: runtimeSteps,
+                  sourceRevisions: resolvedSystemPrompt.sourceRevisions,
+                  systemPromptHash: stableHash(requestSystemPrompt ?? ''),
+                  toolCatalogHash: toolCatalogHash(providerTools),
+                  toolAvailabilityHash: toolAvailabilityHash(this.input.toolAvailability),
+                  providerOptionsHash: stableHash(this.input.providerOptions ?? {}),
+                  toolNames: activeToolsForRequest,
+                  toolSchemas: requestCompositionToolSchemas(providerTools, activeToolsForRequest),
+                })
+              : undefined;
+          providerRequestTracker?.setStep(runtimeSteps, requestCompositionId);
           let attemptMessages = projectedMessages;
           let providerAttempt = 1;
           let idleWatchdogRetryCount = 0;
@@ -4505,18 +4531,24 @@ export class AiSdkBackend implements AgentBackend {
     );
   }
 
-  private async resolveSystemPrompt(scope: TurnScope): Promise<string | undefined> {
+  private async resolveSystemPrompt(scope: TurnScope): Promise<ResolvedSystemPrompt> {
     const turnId = scope.turnId;
     if (typeof this.input.systemPrompt === 'function') {
-      return await this.input.systemPrompt({
+      const resolved = await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
         cwd: this.input.header.cwd,
         emitSkillCatalogTrace: (message, data) =>
           scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
+      return typeof resolved === 'string' || resolved === undefined
+        ? { ...(resolved === undefined ? {} : { text: resolved }), sourceRevisions: [] }
+        : resolved;
     }
-    return this.input.systemPrompt;
+    return {
+      ...(this.input.systemPrompt === undefined ? {} : { text: this.input.systemPrompt }),
+      sourceRevisions: [],
+    };
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {

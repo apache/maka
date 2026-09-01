@@ -25,8 +25,15 @@ import type {
 } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { RunCompositionSnapshot } from '@maka/core/run-composition';
-import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import type {
+  RequestCompositionSnapshot,
+  RequestCompositionSnapshotInput,
+  RunCompositionSnapshot,
+} from '@maka/core/run-composition';
+import {
+  createRequestCompositionSnapshot,
+  decodeRunCompositionSnapshot,
+} from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import { isSessionInlineRun } from '@maka/core/agent-run';
 import {
@@ -242,6 +249,7 @@ export class AgentRun {
   private traceWriteError: string | undefined;
   private runComposition: RunCompositionSnapshot | undefined;
   private runCompositionWrite: Promise<void> | undefined;
+  private requestComposition: RequestCompositionSnapshot | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -454,6 +462,46 @@ export class AgentRun {
       if (this.runCompositionWrite === write) this.runCompositionWrite = undefined;
       throw error;
     });
+  }
+
+  /**
+   * Durably binds one logical model step to its effective request surface.
+   * Unchanged steps reuse the latest snapshot; a changed surface appends a full
+   * replacement before provider dispatch, matching DSH request/header epochs.
+   */
+  async recordRequestComposition(input: RequestCompositionSnapshotInput): Promise<string> {
+    if (!this.input.runStore) {
+      throw new Error('AgentRun store is not configured');
+    }
+    if (!this.runStoreAvailable) throw new Error('AgentRun store is unavailable');
+    const snapshot = createRequestCompositionSnapshot(
+      input,
+      this.requestComposition ? 'change' : 'initial',
+    );
+    if (
+      this.requestComposition &&
+      sameRequestCompositionSurface(this.requestComposition, snapshot)
+    ) {
+      return this.requestComposition.compositionId;
+    }
+    await this.enqueueRequiredRunStoreWrite('append request composition', async () => {
+      await this.input.runStore?.appendEvent(
+        this.sessionId,
+        this.runId,
+        {
+          type: 'request_composition_resolved',
+          id: snapshot.compositionId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: this.input.now(),
+          data: { snapshot },
+        },
+        { durable: true },
+      );
+    });
+    this.requestComposition = snapshot;
+    return snapshot.compositionId;
   }
 
   /**
@@ -1875,6 +1923,27 @@ function redactTraceString(value: string): string {
 
 function errorMessage(error: unknown): string {
   return redactTraceString(error instanceof Error ? error.message : String(error));
+}
+
+function sameRequestCompositionSurface(
+  current: RequestCompositionSnapshot,
+  candidate: RequestCompositionSnapshot,
+): boolean {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...currentSurface
+  } = current;
+  const {
+    schemaVersion: _candidateSchemaVersion,
+    compositionId: _candidateCompositionId,
+    step: _candidateStep,
+    reason: _candidateReason,
+    ...candidateSurface
+  } = candidate;
+  return isDeepStrictEqual(currentSurface, candidateSurface);
 }
 
 async function appendUserMessageOnce(

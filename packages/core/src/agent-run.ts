@@ -183,7 +183,7 @@ export interface AgentRunHeader {
   agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
   /** Effective tool protocol for this run. Optional on legacy runs. */
   toolMode?: ToolMode;
-  /** Immutable composer-owned prompt and tool-surface snapshot committed before provider dispatch. */
+  /** Immutable composer and provider bootstrap baseline committed before provider dispatch. */
   runComposition?: RunCompositionSnapshot;
   createdAt: number;
   updatedAt: number;
@@ -424,6 +424,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'sandbox_denial_detected',
   'provider_request_captured',
   'provider_request_attempt_recorded',
+  'request_composition_resolved',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'model_projection_transition_recorded',
