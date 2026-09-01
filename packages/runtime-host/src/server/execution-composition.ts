@@ -274,6 +274,7 @@ export async function createExecutionRuntimeHostComposition(
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
   let pluginPlatform: HostPluginPlatform | undefined;
+  let modelMetadataRefresh: ReturnType<typeof startHostModelMetadataRefresh> | undefined;
   try {
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory);
     const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
@@ -454,7 +455,7 @@ export async function createExecutionRuntimeHostComposition(
     // Startup, once, in the background: the Host owns the model catalog, so it
     // is the one process that gets to ask models.dev what is true today. On any
     // failure the build's committed snapshot stands.
-    const modelMetadataRefresh = startHostModelMetadataRefresh({
+    modelMetadataRefresh = startHostModelMetadataRefresh({
       policy: runtimePolicyStores.operations,
       publish: () => hostChanges.publishConnectionCatalog(),
     });
@@ -1714,7 +1715,7 @@ export async function createExecutionRuntimeHostComposition(
           () => oauth?.beginDrain(),
         ],
         close: [
-          () => modelMetadataRefresh.close(),
+          () => modelMetadataRefresh?.close(),
           () => connectionEffects.close(),
           () => (backendInvalidationPoisoned ? undefined : manager.refreshIdleBackends()),
           () => skills.close(),
@@ -1914,6 +1915,11 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    try {
+      await modelMetadataRefresh?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
     try {
       await pluginPlatform?.close();
     } catch (closeError) {
