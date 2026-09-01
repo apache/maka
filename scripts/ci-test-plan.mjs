@@ -77,6 +77,22 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-package-source-closure.test.mjs',
 ]);
 
+// What decides whether a build can read durable state an earlier release wrote.
+// `operations.ts` is here because it owns the operation vocabulary: the rename
+// that stranded workspaces holding an older credential (#4420) changed that file
+// and none of the decoders, so a trigger listing only decoders would not have
+// run on the very change it exists to catch.
+const DURABLE_STATE_DECODER_FILES = new Set([
+  'packages/runtime-host/src/protocol/operations.ts',
+  'packages/runtime-host/src/server/access-authority.ts',
+  'packages/runtime-host/src/server/access-credential-store.ts',
+  'packages/storage/src/operational-state-store.ts',
+  'packages/storage/src/root-authority.ts',
+  'packages/storage/src/state-root-composition.ts',
+  'scripts/qualify-released-cli-state-root.mjs',
+  'scripts/released-cli-state-root-fixture.mjs',
+]);
+
 const TYPECHECK_ONLY_FILES = new Set([
   'biome.jsonc',
   'components.json',
@@ -359,6 +375,7 @@ export function planTests(changedFiles, options = {}) {
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
       // every unrelated merge into a 10K-chunk pressure run.
+      stateRootCompat: true,
       storageStress: false,
       storybook: true,
       workspaces,
@@ -430,6 +447,14 @@ export function planTests(changedFiles, options = {}) {
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
     runtimeSandbox: workspaces.includes('packages/cli'),
+    // The released forward roll: a build under test reads durable state a
+    // published predecessor wrote. Selected by the decoders and the operation
+    // vocabulary they decode against, plus the SQLite schemas.
+    stateRootCompat: files.some(
+      (path) =>
+        DURABLE_STATE_DECODER_FILES.has(path) ||
+        /^packages\/storage\/src\/sqlite-[^/]*schema[^/]*\.ts$/u.test(path),
+    ),
     storageStress,
     // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
@@ -450,6 +475,7 @@ export function requiresHeavyValidation(plan) {
       plan.releaseContract ||
       plan.runtimeHost ||
       plan.runtimeSandbox ||
+      plan.stateRootCompat ||
       plan.storybook ||
       plan.standardWorkspaces.length > 0,
   );
@@ -466,6 +492,7 @@ export function formatGitHubOutputs(plan) {
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
+    `state_root_compat=${plan.stateRootCompat}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,
