@@ -23,6 +23,7 @@ import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import {
   collectRuntimeHostSessionCatalogs,
   collectRuntimeHostSessionCatalogsWithCoverage,
+  reconcileRuntimeHostSessionCatalog,
 } from '../../preload/runtime-host-session-catalog.js';
 
 function session(id: string, activityAt: number): DesktopSessionSummary {
@@ -63,6 +64,40 @@ test('collapses overlapping Guest catalogs in favor of the Owner authority', asy
   ]);
 
   assert.deepEqual(sessions, [owner]);
+});
+
+test('retains a Guest catalog row only while its Runtime Host profile remains known', () => {
+  const shared = {
+    ...session('shared-session', 2),
+    runtimeHostId: 'host-guest',
+    profileId: 'guest-profile',
+    shared: true as const,
+  };
+
+  const reconnecting = reconcileRuntimeHostSessionCatalog([shared], {
+    sessions: [],
+    completeHostIds: [],
+    knownProfileIds: ['guest-profile'],
+  });
+  assert.deepEqual(reconnecting, [shared]);
+
+  assert.deepEqual(
+    reconcileRuntimeHostSessionCatalog(reconnecting, {
+      sessions: [{ ...shared, activityAt: 3 }],
+      completeHostIds: ['host-guest'],
+      knownProfileIds: ['guest-profile'],
+    }),
+    [{ ...shared, activityAt: 3 }],
+  );
+
+  assert.deepEqual(
+    reconcileRuntimeHostSessionCatalog(reconnecting, {
+      sessions: [],
+      completeHostIds: [],
+      knownProfileIds: [],
+    }),
+    [],
+  );
 });
 
 test('fails when every Host catalog rejects', async () => {

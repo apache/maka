@@ -216,6 +216,16 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
     notifyPhase(onPhase, 'discovering');
+    if (input.routeHints.length > 0 && (input.coordinationRelays?.length ?? 0) > 0) {
+      // Reserve the application-connect lane before refreshing Mesh control.
+      // A fresh invitation therefore dials immediately, while a persisted
+      // invitation still refreshes routes for the next reconnect if its
+      // advertised reservation has rotated.
+      notifyPhase(onPhase, 'connecting');
+      const connection = this.#connect(input, signal, 'application');
+      void this.#prepareRoutes(input, signal).catch(() => undefined);
+      return connection;
+    }
     await this.#prepareRoutes(input, signal);
     notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
@@ -226,10 +236,6 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal: AbortSignal | undefined,
   ): Promise<void> {
     if (!this.#routeResolver?.prepareRoutes) return;
-    // A freshly issued target with both direct hints and coordination relays is
-    // already self-contained. Cached Mesh state can still enrich the actual
-    // dial below, but a stale control plane must not delay this explicit path.
-    if (input.routeHints.length > 0 && (input.coordinationRelays?.length ?? 0) > 0) return;
     const deadline = AbortSignal.timeout(Math.min(10_000, input.directDeadlineMs));
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {

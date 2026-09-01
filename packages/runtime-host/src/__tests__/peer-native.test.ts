@@ -101,6 +101,10 @@ module.exports = {
     );
     let routesPrepared = false;
     const preparedPeerIds: string[] = [];
+    let releaseSelfContainedPreparation!: () => void;
+    const selfContainedPreparation = new Promise<void>((resolve) => {
+      releaseSelfContainedPreparation = resolve;
+    });
     const client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
@@ -109,6 +113,7 @@ module.exports = {
           preparedPeerIds.push(peerId);
           routesPrepared = true;
           if (peerId === 'fallback') throw new Error('Mesh refresh failed');
+          if (peerId === 'self-contained') await selfContainedPreparation;
         },
         resolveRoutes: () =>
           routesPrepared
@@ -153,11 +158,14 @@ module.exports = {
     await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
       return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';
     });
-    await client.connect({
+    const selfContained = client.connect({
       ...peerConnectInput('self-contained'),
       coordinationRelays: ['/memory/explicit-relay'],
     });
-    assert.equal(preparedPeerIds.includes('self-contained'), false);
+    await waitForRequestCount(native.default.stats, 7);
+    assert.equal(preparedPeerIds.includes('self-contained'), true);
+    releaseSelfContainedPreparation();
+    await selfContained;
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,

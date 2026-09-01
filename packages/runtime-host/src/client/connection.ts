@@ -98,9 +98,9 @@ export interface ConnectRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   /**
-   * Interval between liveness probes while a domain request is outstanding.
-   * Injectable so tests exercise requests that outlive a probe cycle without
-   * waiting the real cadence; defaults to DEFAULT_LIVENESS_INTERVAL_MS (2s).
+   * Maximum quiet interval before an end-to-end Host liveness probe.
+   * Any valid inbound frame restarts the interval. Injectable so tests can
+   * exercise the cadence without waiting the real default (2s).
    */
   livenessIntervalMs?: number;
   /**
@@ -422,6 +422,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       onFailure: (error) => this.#fail(error),
     });
     void this.#readResponses();
+    this.#scheduleLivenessCheck();
   }
 
   request<K extends DirectRequestOperationKey>(
@@ -821,16 +822,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   #scheduleLivenessCheck(): void {
-    if (
-      this.#terminalError ||
-      this.#livenessTimer ||
-      this.#livenessProbePending ||
-      !this.#hasOutstandingDomainRequest()
-    ) {
-      if (!this.#hasOutstandingDomainRequest() && this.#livenessTimer) {
-        clearTimeout(this.#livenessTimer);
-        this.#livenessTimer = undefined;
-      }
+    if (this.#terminalError || this.#livenessTimer || this.#livenessProbePending) {
       return;
     }
     this.#livenessTimer = setTimeout(() => {
@@ -839,18 +831,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }, this.#livenessIntervalMs);
   }
 
-  #hasOutstandingDomainRequest(): boolean {
-    if (this.#retiredRequests.size > 0) return true;
-    for (const pending of this.#pendingRequests.values()) {
-      if (pending.operation !== 'host.status') return true;
-    }
-    return false;
-  }
-
   #startLivenessProbe(): void {
-    if (this.#terminalError || this.#livenessProbePending || !this.#hasOutstandingDomainRequest()) {
-      return;
-    }
+    if (this.#terminalError || this.#livenessProbePending) return;
     this.#livenessProbePending = true;
     void this.#requestOperation(
       'host.status',

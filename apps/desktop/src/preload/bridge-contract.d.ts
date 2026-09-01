@@ -1045,6 +1045,7 @@ export interface MakaBridge {
     listWithCoverage(): Promise<{
       sessions: DesktopSessionSummary[];
       completeHostIds: string[];
+      knownProfileIds: string[];
     }>;
     create(input?: CreateSessionRequestInput): Promise<DesktopSessionSummary>;
     send(
