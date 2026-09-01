@@ -135,6 +135,49 @@ test('buildMcpTools carries the Runtime-owned form callback to the provider', as
   );
 });
 
+test('prepared MCP execution receives the Runtime-owned form callback after admission', async () => {
+  const toolBinding = binding('prepared-form-binding');
+  const provider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [boundTool(descriptor('client', 'deploy'), toolBinding)],
+    }),
+    prepareTool: async () => ({
+      execute: async (options) => {
+        assert.ok(options?.requestInteraction);
+        const answer = await options.requestInteraction({
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+        });
+        assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+        return { content: [] };
+      },
+      cancel: () => undefined,
+    }),
+    callTool: async () => assert.fail('Prepared provider must not use direct callTool'),
+  };
+  const [tool] = buildMcpTools(provider);
+  assert.ok(tool?.prepareExecution);
+  const controller = new AbortController();
+  const prepared = await tool.prepareExecution({}, {
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'tool-call',
+    abortSignal: controller.signal,
+  });
+  await prepared.execute({
+    sessionId: 'session',
+    turnId: 'turn',
+    cwd: '/workspace',
+    toolCallId: 'tool-call',
+    abortSignal: controller.signal,
+    emitOutput: () => undefined,
+    requestUserForm: async () => ({ action: 'accept', values: { target: 'staging' } }),
+  });
+});
+
 test('Direct-mode MCP calls request managed network expansion before provider dispatch', async () => {
   const sequence: string[] = [];
   const boundary = createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0);

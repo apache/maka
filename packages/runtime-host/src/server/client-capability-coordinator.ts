@@ -1055,8 +1055,6 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.context,
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
-          undefined,
-          options.requestInteraction,
         );
         try {
           const evidence = await prepared.waitUntilAccepted();
@@ -1074,7 +1072,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             );
             if (!target) {
               return {
-                execute: ({ emitProgress } = {}) => prepared.admit(emitProgress),
+                execute: ({ emitProgress, requestInteraction } = {}) =>
+                  prepared.admit(emitProgress, requestInteraction),
                 cancel: () => prepared.cancel(),
               };
             }
@@ -1095,7 +1094,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             }
           }
           return {
-            execute: ({ emitProgress } = {}) => prepared.admit(emitProgress),
+            execute: ({ emitProgress, requestInteraction } = {}) =>
+              prepared.admit(emitProgress, requestInteraction),
             cancel: () => prepared.cancel(),
           };
         } catch (error) {

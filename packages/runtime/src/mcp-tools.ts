@@ -58,6 +58,7 @@ export interface McpToolProvider {
 export interface McpPreparedToolCall {
   execute(options?: {
     readonly emitProgress?: (current: number, total: number) => void;
+    readonly requestInteraction?: McpToolCallOptions['requestInteraction'];
   }): Promise<McpCallResult>;
   cancel(): Promise<void> | void;
 }
@@ -141,6 +142,12 @@ export function buildMcpTools(
                   prepared.execute({
                     ...(executionContext.emitProgress
                       ? { emitProgress: executionContext.emitProgress }
+                      : {}),
+                    ...(executionContext.requestUserForm
+                      ? {
+                          requestInteraction: (form, interactionOptions) =>
+                            executionContext.requestUserForm!(form, interactionOptions),
+                        }
                       : {}),
                   }),
                 cancel: () => prepared.cancel(),

@@ -82,7 +82,7 @@ interface InvocationState<Registration extends ClientCapabilityInvocationRegistr
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
   onProgress?: (current: number, total: number) => void;
-  readonly requestInteraction?: ClientCapabilityInteractionHandler;
+  requestInteraction?: ClientCapabilityInteractionHandler;
   readonly timeoutMs: number;
   readonly providerAvailability: AbortController;
   cancelTimer?: () => void;
@@ -122,7 +122,10 @@ export interface PreparedClientCapabilityInvocation {
   /** Resolves once the provider has parsed the call and is waiting at its admission cut. */
   waitUntilAccepted(): Promise<ClientCapabilityAdmissionEvidence>;
   /** Crosses the admission cut and returns the provider result. */
-  admit(onProgress?: (current: number, total: number) => void): Promise<ClientCapabilityCallResult>;
+  admit(
+    onProgress?: (current: number, total: number) => void,
+    requestInteraction?: ClientCapabilityInteractionHandler,
+  ): Promise<ClientCapabilityCallResult>;
   /** Cancels an accepted call that will not cross the admission cut. */
   cancel(): void;
   /** Aborts when the provider connection disappears before this call is admitted. */
@@ -351,12 +354,13 @@ export class ClientCapabilityInvocationBroker<
       providerSignal:
         this.#invocations.get(invocationId)?.providerAvailability.signal ?? AbortSignal.abort(),
       waitUntilAccepted: () => accepted,
-      admit: async (onProgress) => {
+      admit: async (onProgress, requestInteraction) => {
         await accepted;
         const invocation = this.#invocations.get(invocationId);
         if (!invocation) return result;
         if (invocation.phase === 'accepted') {
           invocation.onProgress = onProgress ?? invocation.onProgress;
+          invocation.requestInteraction = requestInteraction ?? invocation.requestInteraction;
           invocation.phase = 'admitted';
           this.#armTimer(invocation);
           const currentSender = this.#senderFor(invocation.registration.connectionId);
