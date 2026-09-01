@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
@@ -30,6 +30,7 @@ import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
 import {
+  type MainRendererFrameIdentity,
   observeMainRendererProcessGone,
   reloadMainRendererProcess,
 } from './main-renderer-process-gone.js';
@@ -54,7 +55,10 @@ export interface MainWindowController {
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
-  notifyRendererReady(sender: Electron.WebContents): void;
+  notifyRendererReady(
+    sender: Electron.WebContents,
+    senderFrame: Electron.WebFrameMain | null,
+  ): void;
   setTitlebarControlsVisible(sender: Electron.WebContents, visible: unknown): void;
   setThemeSource(sender: Electron.WebContents, themePref: unknown): void;
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
@@ -181,7 +185,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   let rendererRecoveryReadiness:
     | {
         readonly contents: Electron.WebContents;
-        listener?: () => void;
+        listener?: (frame: MainRendererFrameIdentity) => boolean;
       }
     | undefined;
   let mainWindowShutdownSignal: AbortSignal | undefined;
@@ -553,7 +557,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       const contents = target.webContents;
       const readiness: {
         readonly contents: Electron.WebContents;
-        listener?: () => void;
+        listener?: (frame: MainRendererFrameIdentity) => boolean;
       } = { contents };
       rendererRecoveryReadiness = readiness;
       let loaded = false;
@@ -561,6 +565,23 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         loaded = await reloadMainRendererProcess({
           source: contents,
           shutdownSignal: signal,
+          subscribeMainFrameCommitted: (listener) => {
+            const onFrameNavigated = (
+              _event: Electron.Event,
+              _url: string,
+              _httpResponseCode: number,
+              _httpStatusText: string,
+              isMainFrame: boolean,
+              frameProcessId: number,
+              frameRoutingId: number,
+            ): void => {
+              if (!isMainFrame) return;
+              const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+              if (frame) listener(rendererFrameIdentity(frame));
+            };
+            contents.on('did-frame-navigate', onFrameNavigated);
+            return () => contents.off('did-frame-navigate', onFrameNavigated);
+          },
           subscribeRendererReady: (listener) => {
             readiness.listener = listener;
             return () => {
@@ -583,14 +604,13 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       }
     },
     send: safeSendToRenderer,
-    notifyRendererReady(sender) {
+    notifyRendererReady(sender, senderFrame) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;
       if (recovery?.contents === sender) {
-        // A failed attempt stays as a tombstone so a late ready signal cannot
-        // reveal an unobserved Renderer behind the next recovery prompt.
-        if (!recovery.listener) return;
-        recovery.listener();
+        // A failed attempt stays as a tombstone, and a retry accepts ready only
+        // from the main frame committed by that exact reload navigation.
+        if (!senderFrame || !recovery.listener?.(rendererFrameIdentity(senderFrame))) return;
       }
       // PR-SHOW-AFTER-FIRST-COMMIT: the renderer finished its first React
       // commit. Cancel the fallback timer and reveal the window through the
@@ -678,6 +698,14 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     isFocused() {
       return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
     },
+  };
+}
+
+function rendererFrameIdentity(frame: Electron.WebFrameMain): MainRendererFrameIdentity {
+  return {
+    processId: frame.processId,
+    routingId: frame.routingId,
+    frameToken: frame.frameToken,
   };
 }
 

@@ -22,6 +22,7 @@ import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import type { RenderProcessGoneDetails } from 'electron';
 import {
+  type MainRendererFrameIdentity,
   observeMainRendererProcessGone,
   reloadMainRendererProcess,
 } from '../main-renderer-process-gone.js';
@@ -63,13 +64,16 @@ test('ignores clean exits and app shutdown', () => {
   }
 });
 
-test('reports reload success only after the Renderer commits its first paint', async () => {
+test('accepts first-paint readiness only from the frame committed by this reload', async () => {
   const source = reloadSource();
   const readiness = rendererReadiness();
+  const previousFrame = frameIdentity(1, 10, 'previous');
+  const currentFrame = frameIdentity(2, 20, 'current');
   let observed = false;
   const result = reloadMainRendererProcess({
     source,
     shutdownSignal: new AbortController().signal,
+    subscribeMainFrameCommitted: readiness.subscribeCommit,
     subscribeRendererReady: readiness.subscribe,
     onReady: () => {
       observed = true;
@@ -78,7 +82,11 @@ test('reports reload success only after the Renderer commits its first paint', a
 
   assert.equal(source.reloadCalls, 1);
   source.emit('did-fail-load', {}, -3, 'subframe failed', 'https://example.test/frame', false, 1, 2);
-  readiness.notify();
+  assert.equal(readiness.notify(previousFrame), false);
+  readiness.commit(currentFrame);
+  assert.equal(readiness.notify(previousFrame), false);
+  assert.equal(observed, false);
+  assert.equal(readiness.notify(currentFrame), true);
   assert.equal(await result, true);
   assert.equal(observed, true);
   assert.equal(source.listenerCount('did-fail-load'), 0);
@@ -100,6 +108,7 @@ test('keeps recovery active when a Renderer reload fails, exits, or stops respon
     const result = reloadMainRendererProcess({
       source,
       shutdownSignal: new AbortController().signal,
+      subscribeMainFrameCommitted: readiness.subscribeCommit,
       subscribeRendererReady: readiness.subscribe,
       onReady: () => {
         observed = true;
@@ -120,6 +129,7 @@ test('bounds a Renderer reload that emits no terminal event', async () => {
   const result = reloadMainRendererProcess({
     source,
     shutdownSignal: new AbortController().signal,
+    subscribeMainFrameCommitted: readiness.subscribeCommit,
     subscribeRendererReady: readiness.subscribe,
     onReady: () => assert.fail('timed-out reload must not report success'),
     timeoutMs: 1,
@@ -133,11 +143,14 @@ test('bounds a Renderer reload that emits no terminal event', async () => {
 });
 
 function rendererReadiness(): {
-  subscribe(listener: () => void): () => void;
-  notify(): void;
+  subscribe(listener: (frame: MainRendererFrameIdentity) => boolean): () => void;
+  subscribeCommit(listener: (frame: MainRendererFrameIdentity) => void): () => void;
+  notify(frame: MainRendererFrameIdentity): boolean;
+  commit(frame: MainRendererFrameIdentity): void;
   subscribed(): boolean;
 } {
-  let listener: (() => void) | undefined;
+  let listener: ((frame: MainRendererFrameIdentity) => boolean) | undefined;
+  let commitListener: ((frame: MainRendererFrameIdentity) => void) | undefined;
   return {
     subscribe(next) {
       listener = next;
@@ -145,13 +158,30 @@ function rendererReadiness(): {
         if (listener === next) listener = undefined;
       };
     },
-    notify() {
-      listener?.();
+    subscribeCommit(next) {
+      commitListener = next;
+      return () => {
+        if (commitListener === next) commitListener = undefined;
+      };
+    },
+    notify(frame) {
+      return listener?.(frame) ?? false;
+    },
+    commit(frame) {
+      commitListener?.(frame);
     },
     subscribed() {
-      return listener !== undefined;
+      return listener !== undefined || commitListener !== undefined;
     },
   };
+}
+
+function frameIdentity(
+  processId: number,
+  routingId: number,
+  frameToken: string,
+): MainRendererFrameIdentity {
+  return { processId, routingId, frameToken };
 }
 
 function reloadSource(): EventEmitter & {

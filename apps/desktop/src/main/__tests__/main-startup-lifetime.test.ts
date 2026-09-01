@@ -96,7 +96,9 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     ipcHandlerStart,
     appIpcSource.indexOf("targetIpc.handle('window:setThemeSource'", ipcHandlerStart),
   );
-  const readyHandlerStart = mainWindowSource.indexOf('notifyRendererReady(sender)');
+  const readyHandlerStart = mainWindowSource.indexOf(
+    'notifyRendererReady(sender, senderFrame)',
+  );
   const readyHandler = mainWindowSource.slice(
     readyHandlerStart,
     mainWindowSource.indexOf('setTitlebarControlsVisible(sender', readyHandlerStart),
@@ -107,19 +109,24 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     mainWindowSource.indexOf('    send: safeSendToRenderer', reloadStart),
   );
 
-  assert.match(ipcHandler, /mainWindowController\.notifyRendererReady\(event\.sender\)/u);
+  assert.match(
+    ipcHandler,
+    /mainWindowController\.notifyRendererReady\(event\.sender, event\.senderFrame\)/u,
+  );
   assert.match(
     reloadHandler,
     /clearShowFallbackTimer\(\);\s*revealGate\.reset\(\);\s*target\.hide\(\);/u,
   );
   assert.match(reloadHandler, /reloadMainRendererProcess\(/u);
+  assert.match(reloadHandler, /subscribeMainFrameCommitted:/u);
+  assert.match(reloadHandler, /webFrameMain\.fromId\(frameProcessId, frameRoutingId\)/u);
   assert.match(
     readyHandler,
     /sender !== mainWindow\.webContents\) return;/u,
   );
   assert.match(
     readyHandler,
-    /if \(recovery\?\.contents === sender\) \{\s*[^}]*if \(!recovery\.listener\) return;\s*recovery\.listener\(\);\s*\}/u,
+    /if \(recovery\?\.contents === sender\) \{\s*[^}]*if \(!senderFrame \|\| !recovery\.listener\?\.\(rendererFrameIdentity\(senderFrame\)\)\) return;\s*\}/u,
   );
   assert.match(
     reloadHandler,

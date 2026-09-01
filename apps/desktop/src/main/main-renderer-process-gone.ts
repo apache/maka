@@ -67,6 +67,12 @@ interface MainRendererReloadSource {
   reload(): void;
 }
 
+export interface MainRendererFrameIdentity {
+  readonly processId: number;
+  readonly routingId: number;
+  readonly frameToken: string;
+}
+
 export function observeMainRendererProcessGone(deps: {
   readonly source: RenderProcessGoneSource;
   readonly shutdownSignal: AbortSignal;
@@ -86,7 +92,12 @@ export function observeMainRendererProcessGone(deps: {
 export function reloadMainRendererProcess(deps: {
   readonly source: MainRendererReloadSource;
   readonly shutdownSignal: AbortSignal;
-  readonly subscribeRendererReady: (listener: () => void) => () => void;
+  readonly subscribeMainFrameCommitted: (
+    listener: (frame: MainRendererFrameIdentity) => void,
+  ) => () => void;
+  readonly subscribeRendererReady: (
+    listener: (frame: MainRendererFrameIdentity) => boolean,
+  ) => () => void;
   readonly onReady: () => void;
   readonly timeoutMs?: number;
 }): Promise<boolean> {
@@ -96,9 +107,12 @@ export function reloadMainRendererProcess(deps: {
   return new Promise<boolean>((resolve) => {
     let settled = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let committedFrame: MainRendererFrameIdentity | undefined;
+    let unsubscribeMainFrameCommitted = (): void => {};
     let unsubscribeRendererReady = (): void => {};
     const cleanup = (): void => {
       if (timeout) clearTimeout(timeout);
+      unsubscribeMainFrameCommitted();
       unsubscribeRendererReady();
       deps.source.off('did-fail-load', onFailed);
       deps.source.off('unresponsive', onUnresponsive);
@@ -112,12 +126,15 @@ export function reloadMainRendererProcess(deps: {
       cleanup();
       resolve(loaded);
     };
-    const onRendererReady = (): void => {
+    const onRendererReady = (frame: MainRendererFrameIdentity): boolean => {
+      if (!sameFrame(frame, committedFrame)) return false;
       try {
         deps.onReady();
         settle(true);
+        return true;
       } catch {
         settle(false);
+        return false;
       }
     };
     const onFailed = (
@@ -134,6 +151,9 @@ export function reloadMainRendererProcess(deps: {
     const onDestroyed = (): void => settle(false);
     const onAborted = (): void => settle(false);
 
+    unsubscribeMainFrameCommitted = deps.subscribeMainFrameCommitted((frame) => {
+      committedFrame = frame;
+    });
     unsubscribeRendererReady = deps.subscribeRendererReady(onRendererReady);
     deps.source.on('did-fail-load', onFailed);
     deps.source.once('unresponsive', onUnresponsive);
@@ -147,4 +167,16 @@ export function reloadMainRendererProcess(deps: {
       settle(false);
     }
   });
+}
+
+function sameFrame(
+  actual: MainRendererFrameIdentity,
+  expected: MainRendererFrameIdentity | undefined,
+): boolean {
+  if (!expected) return false;
+  return (
+    actual.processId === expected.processId &&
+    actual.routingId === expected.routingId &&
+    actual.frameToken === expected.frameToken
+  );
 }
