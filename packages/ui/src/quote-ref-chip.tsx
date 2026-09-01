@@ -20,7 +20,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { IconButton } from '@astryxdesign/core/IconButton';
-import { BookOpen, TextQuote, X } from './icons.js';
+import { MessagesSquare, TextQuote, X } from './icons.js';
 import { cn } from './utils.js';
 import type { QuoteRef } from '@maka/core/events';
 import { useUiLocale } from './locale-context.js';
@@ -57,7 +57,7 @@ export function QuoteRefChip(props: {
   const a11yLabel = canExpand
     ? (expanded ? copy.quoteCollapseAriaLabel : copy.quoteExpandAriaLabel)
     : full;
-  const SourceIcon = props.quote.sourceSessionId ? BookOpen : TextQuote;
+  const SourceIcon = props.quote.sourceSessionId ? MessagesSquare : TextQuote;
 
   return (
     <span
