@@ -177,12 +177,33 @@ export async function readToolResultArchiveResource(
 }
 
 /**
- * The text an archive should page/search over. String payloads (terminal output,
- * plain text) decode to their raw content; everything else pages its canonical
- * JSON serialization, matching the shape `inspect` and `read` already reported.
+ * The text an archive should page/search over. String payloads decode to their
+ * raw content, and terminal/shell-run payloads project their stdout/stderr;
+ * everything else pages its canonical JSON serialization.
  */
 function resolveArchiveText(parsed: unknown, serializedResult: string): string {
-  return typeof parsed === 'string' ? parsed : serializedResult;
+  if (typeof parsed === 'string') return parsed;
+  if (!isTerminalArchivePayload(parsed)) return serializedResult;
+
+  // Bash archives retain the canonical terminal/shell-run object. Search and
+  // line reads should operate on the human-readable streams, not JSON-escaped
+  // `\\n` sequences in that object.
+  const output = isRecord(parsed.output) ? parsed.output : undefined;
+  const stdout = output && typeof output.stdout === 'string' ? output.stdout : undefined;
+  const stderr = output && typeof output.stderr === 'string' ? output.stderr : undefined;
+  if (stdout !== undefined || stderr !== undefined) {
+    if (stdout && stderr) return `${stdout}\n${stderr}`;
+    return stdout ?? stderr ?? '';
+  }
+  return serializedResult;
+}
+
+function isTerminalArchivePayload(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    (value.kind === 'terminal' || value.kind === 'shell_run') &&
+    isRecord(value.output)
+  );
 }
 
 export const TOOL_RESULT_ARCHIVE_READ_INSTRUCTIONS =
@@ -204,6 +225,17 @@ function inspectArchive(
   };
   const readHint =
     'Call ArchiveRead with operation "read" (unit "char" or "line"), offset, and limit for bounded pages, or operation "search" with a pattern to locate text.';
+  if (isTerminalArchivePayload(value)) {
+    const text = resolveArchiveText(value, serializedResult);
+    return {
+      ...base,
+      valueType: 'terminal',
+      totalChars: text.length,
+      totalLines: countLines(text),
+      preview: boundedString(text, INSPECT_PREVIEW_CHARS),
+      readHint,
+    };
+  }
   if (typeof value === 'string') {
     // A plain-text/terminal payload: report the char/line coordinate space plus
     // a short preview so the model can page or search without a blind first read.
@@ -360,7 +392,7 @@ function searchArchive(
   offset: number,
 ): unknown {
   if (!pattern) return archiveFailure(ref, 'pattern_required');
-  const haystack = text.toLowerCase();
+  const folded = foldArchiveText(text);
   const needle = pattern.toLowerCase();
   const step = Math.max(1, needle.length);
   const base = {
@@ -395,12 +427,19 @@ function searchArchive(
     return scanLine;
   };
 
-  let from = Math.min(Math.max(0, offset), text.length);
+  let from = foldedIndexAtOrAfter(folded.sourceOffsets, Math.min(Math.max(0, offset), text.length));
   while (matches.length < TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES) {
-    const index = haystack.indexOf(needle, from);
-    if (index === -1) return buildResponse(matches, null);
+    const foldedIndex = folded.value.indexOf(needle, from);
+    if (foldedIndex === -1) return buildResponse(matches, null);
+    const index = folded.sourceOffsets[foldedIndex] ?? text.length;
+    const matchEnd = sourceEndForFoldedMatch(
+      text,
+      folded.sourceOffsets,
+      foldedIndex,
+      needle.length,
+    );
     const snippetStart = Math.max(0, index - SEARCH_SNIPPET_RADIUS);
-    const snippetEnd = Math.min(text.length, index + needle.length + SEARCH_SNIPPET_RADIUS);
+    const snippetEnd = Math.min(text.length, matchEnd + SEARCH_SNIPPET_RADIUS);
     const candidate = {
       offset: index,
       line: lineAt(index),
@@ -415,11 +454,55 @@ function searchArchive(
       return buildResponse(matches, index);
     }
     matches.push(candidate);
-    from = index + step;
+    from = foldedIndex + step;
   }
   // Hit the per-page match cap; report where an unread match still waits.
-  const more = haystack.indexOf(needle, from);
-  return buildResponse(matches, more === -1 ? null : more);
+  const more = folded.value.indexOf(needle, from);
+  return buildResponse(matches, more === -1 ? null : (folded.sourceOffsets[more] ?? text.length));
+}
+
+interface FoldedArchiveText {
+  value: string;
+  /** For each UTF-16 unit in `value`, the source UTF-16 offset it came from. */
+  sourceOffsets: number[];
+}
+
+function foldArchiveText(text: string): FoldedArchiveText {
+  let value = '';
+  const sourceOffsets: number[] = [];
+  for (let sourceIndex = 0; sourceIndex < text.length; ) {
+    const codePoint = text.codePointAt(sourceIndex)!;
+    const sourceChar = String.fromCodePoint(codePoint);
+    const folded = sourceChar.toLowerCase();
+    value += folded;
+    for (let index = 0; index < folded.length; index++) sourceOffsets.push(sourceIndex);
+    sourceIndex += sourceChar.length;
+  }
+  return { value, sourceOffsets };
+}
+
+function foldedIndexAtOrAfter(sourceOffsets: readonly number[], sourceOffset: number): number {
+  let low = 0;
+  let high = sourceOffsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((sourceOffsets[middle] ?? Number.POSITIVE_INFINITY) < sourceOffset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function sourceEndForFoldedMatch(
+  text: string,
+  sourceOffsets: readonly number[],
+  foldedStart: number,
+  foldedLength: number,
+): number {
+  const lastSourceStart =
+    sourceOffsets[Math.min(sourceOffsets.length - 1, foldedStart + foldedLength - 1)];
+  if (lastSourceStart === undefined) return text.length;
+  const lastCodePoint = text.codePointAt(lastSourceStart)!;
+  return lastSourceStart + (lastCodePoint > 0xffff ? 2 : 1);
 }
 
 /** Count 1-based lines in text (an empty string has zero lines). */
@@ -442,6 +525,7 @@ function collectLineWindow(
   lineOffset: number,
   maxLines: number,
 ): { lines: string[]; startChar: number } {
+  if (text.length === 0) return { lines: [], startChar: 0 };
   let cursor = 0;
   let line = 0;
   while (line < lineOffset && cursor <= text.length) {
@@ -504,6 +588,15 @@ function pagedLines(
     } else {
       high = candidate - 1;
     }
+  }
+  if (low === 0 && lines.length > 0) {
+    return archiveFailure(ref, 'line_too_large', {
+      unit: 'line',
+      lineOffset,
+      totalLines,
+      lineChars: lines[0]!.length,
+      readHint: 'Retry with operation "read" and unit "char" to page this oversized line.',
+    });
   }
   return buildPage(low);
 }

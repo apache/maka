@@ -185,6 +185,69 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal((result.content as string).includes('\\n'), false);
   });
 
+  test('read and search project terminal streams instead of JSON-escaped output', async () => {
+    const { ref, reader } = fixture(
+      JSON.stringify({
+        kind: 'terminal',
+        output: { mode: 'pipes', stdout: 'out\nNEEDLE', stderr: 'err' },
+      }),
+    );
+    const inspected = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    })) as Record<string, unknown>;
+    assert.equal(inspected.valueType, 'terminal');
+    assert.equal(inspected.totalLines, 3);
+
+    const page = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 1,
+      limit: 1,
+    })) as Record<string, unknown>;
+    assert.equal(page.content, 'NEEDLE');
+
+    const searched = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'needle',
+    })) as Record<string, unknown>;
+    assert.equal((searched.matches as Array<Record<string, unknown>>)[0]!.line, 2);
+  });
+
+  test('line paging reports an oversized line instead of returning a stuck empty page', async () => {
+    const { ref, reader } = textFixture('x'.repeat(8_000));
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 0,
+      limit: 1,
+    })) as Record<string, unknown>;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'line_too_large');
+    assert.equal(result.lineOffset, 0);
+    assert.equal(result.lineChars, 8_000);
+  });
+
+  test('empty text has no phantom line in line pagination', async () => {
+    const { ref, reader } = textFixture('');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 0,
+      limit: 1,
+    })) as Record<string, unknown>;
+
+    assert.equal(result.totalLines, 0);
+    assert.equal(result.lineLimit, 0);
+    assert.equal(result.nextLineOffset, null);
+    assert.equal(result.content, '');
+  });
+
   test('read by line range returns whole lines and resumes with nextLineOffset', async () => {
     const text = Array.from({ length: 10 }, (_, index) => `L${index}`).join('\n');
     const { ref, reader } = textFixture(text);
@@ -247,6 +310,19 @@ describe('ArchiveRead retrieval ergonomics', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'pattern_required');
+  });
+
+  test('search preserves source offsets when Unicode lowercasing expands a character', async () => {
+    const { ref, reader } = textFixture('İA');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'A',
+    })) as Record<string, unknown>;
+    const match = (result.matches as Array<Record<string, unknown>>)[0]!;
+
+    assert.equal(match.offset, 1);
+    assert.equal(match.snippet, 'İA');
   });
 });
 
