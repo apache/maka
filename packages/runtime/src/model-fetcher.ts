@@ -222,7 +222,10 @@ async function fetchProviderModelsStrict(
     return fetchOpenAiCodexModels(baseUrl, apiKey, fetchFn);
   }
 
-  switch (definition.protocol) {
+  // The wire is the Runtime adapter's, not a second field beside it. Only four
+  // adapter kinds reach here: every other one returned above on its own
+  // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
+  switch (definition.runtimeAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),
@@ -238,7 +241,8 @@ async function fetchProviderModelsStrict(
         .filter((model): model is ModelInfo => model !== null);
       return filterDiscoveredModels(models, discovery.filter);
     }
-    case 'openai': {
+    case 'openai':
+    case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),
@@ -292,8 +296,11 @@ async function fetchProviderModelsStrict(
         },
       );
     }
-    case 'cohere':
-      throw new Error('Cohere requires native model discovery');
+    default:
+      // Every other adapter kind returned above on its own discovery branch;
+      // an adapter that reaches here has a `protocol` discovery declaration it
+      // has no wire to serve.
+      throw new Error(`Provider type "${connection.providerType}" has no model discovery wire`);
   }
 }
 
