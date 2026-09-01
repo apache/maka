@@ -55,6 +55,11 @@
   border-bottom: var(--border-width-hairline) solid var(--border-soft);
 }
 
+.maka-agent-graph-panel[data-collapsed="true"] .maka-agent-graph-heading {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
 .maka-agent-graph-content {
   min-height: 0;
   overflow: auto;
