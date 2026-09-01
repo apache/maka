@@ -236,9 +236,7 @@ export function ProviderSetupPage(props: {
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
   onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
   onOnboardingOutcomeUnknown?(): Promise<void>;
-  managedSaveDispatched?: boolean;
-  onManagedSaveDispatched?(): number | undefined;
-  onManagedSaveSettled?(attemptId: number | undefined): void;
+  hasSaveUncertainty?: boolean;
   onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
   labelledBy?: string;
 }) {
@@ -261,9 +259,7 @@ export function ProviderSetupPage(props: {
         onCreated={props.onCreated}
         onOnboarded={props.onOnboarded}
         onOnboardingOutcomeUnknown={props.onOnboardingOutcomeUnknown}
-        managedSaveDispatched={props.managedSaveDispatched}
-        onManagedSaveDispatched={props.onManagedSaveDispatched}
-        onManagedSaveSettled={props.onManagedSaveSettled}
+        hasSaveUncertainty={props.hasSaveUncertainty}
       />
     </div>
   );

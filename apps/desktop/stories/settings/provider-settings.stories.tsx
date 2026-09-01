@@ -384,18 +384,24 @@ function createApiKeyOnboardingFixture(options: {
   };
   let uncertainAttemptId: number | undefined;
   let nextAttemptId = 1;
+  const uncertaintyListeners = new Set<() => void>();
+  const settleUncertainty = (attemptId: number) => {
+    if (uncertainAttemptId !== attemptId) return;
+    uncertainAttemptId = undefined;
+    for (const listener of [...uncertaintyListeners]) listener();
+  };
   const apiKeyOnboardingBridge: ApiKeyOnboardingBridge = {
     saveUncertainty: {
-      isUncertain: () => uncertainAttemptId !== undefined,
-      markDispatched: () => {
-        const attemptId = nextAttemptId++;
-        uncertainAttemptId = attemptId;
-        return attemptId;
+      getSnapshot: () => uncertainAttemptId !== undefined,
+      subscribe: (listener) => {
+        uncertaintyListeners.add(listener);
+        return () => uncertaintyListeners.delete(listener);
       },
-      settle: (attemptId) => {
-        if (uncertainAttemptId === attemptId) uncertainAttemptId = undefined;
+      restart: () => {
+        if (uncertainAttemptId === undefined) return;
+        uncertainAttemptId = undefined;
+        for (const listener of [...uncertaintyListeners]) listener();
       },
-      restart: () => { uncertainAttemptId = undefined; },
     },
     async verify() {
       return {
@@ -407,8 +413,15 @@ function createApiKeyOnboardingFixture(options: {
       };
     },
     async save() {
+      const attemptId = nextAttemptId++;
+      const wasUncertain = uncertainAttemptId !== undefined;
+      uncertainAttemptId = attemptId;
+      if (!wasUncertain) {
+        for (const listener of [...uncertaintyListeners]) listener();
+      }
       if (options.save === 'outcome_unknown') return { kind: 'outcome_unknown' };
       if (options.save === 'auth_failed') {
+        settleUncertainty(attemptId);
         return {
           kind: 'result',
           result: { kind: 'failed', errorClass: 'auth' },
@@ -427,6 +440,7 @@ function createApiKeyOnboardingFixture(options: {
       });
       bridge.addFixtureConnection(connection);
       failNextSnapshot = options.failRefreshAfterSave === true;
+      settleUncertainty(attemptId);
       return {
         kind: 'result',
         result: {

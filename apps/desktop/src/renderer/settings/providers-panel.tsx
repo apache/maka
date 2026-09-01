@@ -58,6 +58,7 @@ import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  ConnectionSaveUncertaintyObserver,
   type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
   type DesktopConnectionOnboardingIdentity,
@@ -93,7 +94,6 @@ type PanelRoute =
       kind: 'setup';
       target: SetupTarget;
       origin: 'list' | 'catalog';
-      managedSaveDispatched?: true;
     }
   | {
       kind: 'adopting-connection';
@@ -106,7 +106,7 @@ function backTarget(route: PanelRoute): PanelRoute {
   return { kind: 'list' };
 }
 
-export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
+type ProvidersPanelProps = {
   bridge: ConnectionsBridge;
   apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   initialPage?: 'connections' | 'catalog';
@@ -124,6 +124,23 @@ export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = '
   onInitialCatalogConsumed?: () => void;
   /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
+};
+
+export function ProvidersPanel(props: ProvidersPanelProps) {
+  return (
+    <ConnectionSaveUncertaintyObserver store={props.apiKeyOnboardingBridge?.saveUncertainty}>
+      {(hasOnboardingUncertainty) => (
+        <ProvidersPanelContent
+          {...props}
+          hasOnboardingUncertainty={hasOnboardingUncertainty}
+        />
+      )}
+    </ConnectionSaveUncertaintyObserver>
+  );
+}
+
+function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed, hasOnboardingUncertainty }: ProvidersPanelProps & {
+  hasOnboardingUncertainty: boolean;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   // Projected, not merely identified: the detail editor renders the Host's
@@ -132,8 +149,6 @@ export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = '
   const [connections, setConnections] = useState<ProjectedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
-  const hasOnboardingUncertainty =
-    apiKeyOnboardingBridge?.saveUncertainty.isUncertain() === true;
   // Browsing state, not navigation state: it outlives the catalog so that
   // backing out of a provider returns the user to the search they typed.
   const [catalogFilter, setCatalogFilter] = useState<CatalogFilter>(CATALOG_INITIAL_FILTER);
@@ -427,7 +442,7 @@ export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = '
         <VStack gap={5}>
           <SettingsRouteHeader
             onBack={goBack}
-            isBackDisabled={route.managedSaveDispatched === true}
+            isBackDisabled={hasOnboardingUncertainty}
             backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
             logo={<ProviderLogo type={route.target.providerType} compact />}
             titleId={setupTitleId}
@@ -445,22 +460,7 @@ export function ProvidersPanel({ bridge, apiKeyOnboardingBridge, initialPage = '
               target={route.target}
               existingSlugs={connections.map((connection) => connection.slug)}
               labelledBy={setupTitleId}
-              managedSaveDispatched={route.managedSaveDispatched}
-              onManagedSaveDispatched={() => {
-                const attemptId = apiKeyOnboardingBridge?.saveUncertainty.markDispatched();
-                setRoute((current) => current.kind === 'setup'
-                  ? { ...current, managedSaveDispatched: true }
-                  : current);
-                return attemptId;
-              }}
-              onManagedSaveSettled={(attemptId) => {
-                if (attemptId !== undefined) {
-                  apiKeyOnboardingBridge?.saveUncertainty.settle(attemptId);
-                }
-                setRoute((current) => current.kind === 'setup'
-                  ? { kind: 'setup', target: current.target, origin: current.origin }
-                  : current);
-              }}
+              hasSaveUncertainty={hasOnboardingUncertainty}
               onCancel={goBack}
               onAccountCreated={async (identity) => {
                 if (!identity) return;

@@ -39,10 +39,11 @@ export type ApiKeyOnboardingRoute =
         | 'request_body';
     };
 
-export function initialManagedOnboardingPhase(
-  saveDispatched: boolean,
-): 'input' | 'outcome_unknown' {
-  return saveDispatched ? 'outcome_unknown' : 'input';
+export function shouldShowManagedOnboardingOutcomeUnknown(
+  hasSaveUncertainty: boolean,
+  busy: boolean,
+): boolean {
+  return hasSaveUncertainty && !busy;
 }
 
 /** Decide the only writer before either writer performs a side effect. */

@@ -20,6 +20,7 @@
 export {
   ConnectionSettingsServicesProvider,
   ConnectionSettingsServicesConsumer,
+  ConnectionSaveUncertaintyObserver,
 } from './services-context.js';
 export type {
   ApiKeyOnboardingBridge,

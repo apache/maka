@@ -71,9 +71,8 @@ export interface RuntimeHostSettingsConnectionsBridge extends ConnectionsBridge 
 
 export interface ApiKeyOnboardingBridge {
   readonly saveUncertainty: {
-    isUncertain(): boolean;
-    markDispatched(): number;
-    settle(attemptId: number): void;
+    getSnapshot(): boolean;
+    subscribe(listener: () => void): () => void;
     restart(): void;
   };
   verify(input: ConnectionOnboardingVerifyInput): Promise<ConnectionOnboardingVerifyResult>;

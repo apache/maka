@@ -18,18 +18,24 @@
  */
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { afterEach, test } from 'node:test';
+import { act, createElement } from 'react';
 import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
-  initialManagedOnboardingPhase,
+  shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
   validateAddProviderDraft,
   type AddProviderDraft,
   type AddProviderField,
 } from '../../renderer/settings/provider-add-submission.js';
 import { createDesktopConnectionSettingsServices } from '../../renderer/platform/desktop/create-connection-settings-services.js';
+import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
+import {
+  ConnectionSaveUncertaintyObserver,
+  type ApiKeyOnboardingBridge,
+} from '../../renderer/features/connection-settings/index.js';
 import {
   PROVIDER_REGISTRY,
   providerSupportsModelDiscovery,
@@ -43,6 +49,23 @@ import {
 type NoModelRule = 'defaultModel' extends AddProviderField ? never : true;
 const _fieldGateHasNoModelRule: NoModelRule = true;
 void _fieldGateHasNoModelRule;
+
+afterEach(cleanupFakeDom);
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
+const onboardingSaveInput: Parameters<ApiKeyOnboardingBridge['save']>[0] = {
+  target: { kind: 'create', providerType: 'openai' },
+  apiKey: 'test-key',
+  baseUrl: null,
+  enabledModelIds: ['gpt-5'],
+};
 
 const RELAY_TYPES: readonly ProviderType[] = ['openai-compatible', 'openai-responses-compatible'];
 
@@ -271,47 +294,115 @@ test('uses a stable discovered-model order and prefers the registered recommenda
   assert.deepEqual(initialOnboardingModelIds([], 'missing'), []);
 });
 
-test('a remounted setup becomes uncertain only after save dispatch', () => {
-  assert.equal(initialManagedOnboardingPhase(false), 'input');
-  assert.equal(initialManagedOnboardingPhase(true), 'outcome_unknown');
+test('only an idle form projects a dispatched save as outcome unknown', () => {
+  assert.equal(shouldShowManagedOnboardingOutcomeUnknown(false, false), false);
+  assert.equal(shouldShowManagedOnboardingOutcomeUnknown(true, true), false);
+  assert.equal(shouldShowManagedOnboardingOutcomeUnknown(true, false), true);
 });
 
-test('a late old save cannot clear the uncertainty lease for a newer attempt', () => {
+test('a late old save cannot clear the uncertainty lease for a newer attempt', async () => {
+  const saves = [
+    deferred<{ kind: 'not_saved' }>(),
+    deferred<{ kind: 'not_saved' }>(),
+  ];
+  let saveIndex = 0;
   const services = createDesktopConnectionSettingsServices(() => ({
-    // This test exercises only the in-process attempt lease. Transport calls
-    // remain behind the adapter and are intentionally unavailable here.
-    connections: {},
+    connections: {
+      saveOnboarding: () => saves[saveIndex++]!.promise,
+    },
   } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
   const firstView = services.forHost({
     profileId: 'local',
     hostId: 'same-host',
   }).apiKeyOnboarding;
-  const oldAttempt = firstView.saveUncertainty.markDispatched();
+  const oldSave = firstView.save(onboardingSaveInput);
   firstView.saveUncertainty.restart();
 
   const replacementView = services.forHost({
     profileId: 'local',
     hostId: 'same-host',
   }).apiKeyOnboarding;
-  const newAttempt = replacementView.saveUncertainty.markDispatched();
-  firstView.saveUncertainty.settle(oldAttempt);
-  assert.equal(replacementView.saveUncertainty.isUncertain(), true);
+  const newSave = replacementView.save(onboardingSaveInput);
+  saves[0]!.resolve({ kind: 'not_saved' });
+  await oldSave;
+  assert.equal(replacementView.saveUncertainty.getSnapshot(), true);
 
-  replacementView.saveUncertainty.settle(newAttempt);
-  assert.equal(firstView.saveUncertainty.isUncertain(), false);
+  saves[1]!.resolve({ kind: 'not_saved' });
+  await newSave;
+  assert.equal(firstView.saveUncertainty.getSnapshot(), false);
 });
 
-test('save uncertainty is isolated between Runtime Host targets', () => {
+test('save uncertainty is isolated between Runtime Host targets', async () => {
+  const pending = deferred<{ kind: 'outcome_unknown' }>();
   const services = createDesktopConnectionSettingsServices(() => ({
-    connections: {},
+    connections: { saveOnboarding: () => pending.promise },
   } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
   const firstHost = services.forHost({ profileId: 'local', hostId: 'host-a' }).apiKeyOnboarding;
   const secondHost = services.forHost({ profileId: 'local', hostId: 'host-b' }).apiKeyOnboarding;
 
-  firstHost.saveUncertainty.markDispatched();
+  const save = firstHost.save(onboardingSaveInput);
 
-  assert.equal(firstHost.saveUncertainty.isUncertain(), true);
-  assert.equal(secondHost.saveUncertainty.isUncertain(), false);
+  assert.equal(firstHost.saveUncertainty.getSnapshot(), true);
+  assert.equal(secondHost.saveUncertainty.getSnapshot(), false);
+  pending.resolve({ kind: 'outcome_unknown' });
+  await save;
+});
+
+test('a definitive save settlement reaches a generation-remounted React consumer', async () => {
+  const pending = deferred<{ kind: 'not_saved' }>();
+  const services = createDesktopConnectionSettingsServices(() => ({
+    connections: { saveOnboarding: () => pending.promise },
+  } as unknown as ReturnType<NonNullable<Parameters<typeof createDesktopConnectionSettingsServices>[0]>>));
+  const onboarding = services.forHost({
+    profileId: 'local',
+    hostId: 'same-host',
+  }).apiKeyOnboarding;
+  const { root } = installReactRenderer();
+  let showsUnknown = false;
+
+  function Probe(props: {
+    uncertainty: ApiKeyOnboardingBridge['saveUncertainty'];
+    busy: boolean;
+  }) {
+    return createElement(
+      ConnectionSaveUncertaintyObserver,
+      {
+        store: props.uncertainty,
+        children: (uncertain: boolean) => {
+          showsUnknown = shouldShowManagedOnboardingOutcomeUnknown(uncertain, props.busy);
+          return null;
+        },
+      },
+    );
+  }
+
+  let save!: ReturnType<ApiKeyOnboardingBridge['save']>;
+  await act(async () => {
+    root.render(createElement(Probe, {
+      key: 'generation-a',
+      uncertainty: onboarding.saveUncertainty,
+      busy: true,
+    }));
+    save = onboarding.save(onboardingSaveInput);
+  });
+  assert.equal(onboarding.saveUncertainty.getSnapshot(), true);
+  assert.equal(showsUnknown, false, 'the form that owns the pending save keeps showing progress');
+
+  await act(async () => {
+    root.render(createElement(Probe, {
+      key: 'generation-b',
+      uncertainty: onboarding.saveUncertainty,
+      busy: false,
+    }));
+  });
+  assert.equal(showsUnknown, true, 'a generation-remounted form fails closed');
+
+  await act(async () => {
+    pending.resolve({ kind: 'not_saved' });
+    await save;
+  });
+  assert.equal(onboarding.saveUncertainty.getSnapshot(), false);
+  assert.equal(showsUnknown, false, 'definitive settlement actively restores the remounted form');
 });
 
 test('onboarding transport forwards the selected Runtime Host target', async () => {

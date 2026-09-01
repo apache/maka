@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
-import type { ConnectionSettingsServices } from './ports.js';
+import { createContext, useContext, useSyncExternalStore, type ReactNode } from 'react';
+import type { ApiKeyOnboardingBridge, ConnectionSettingsServices } from './ports.js';
 
 const ConnectionSettingsServicesContext = createContext<ConnectionSettingsServices | null>(null);
 
@@ -43,4 +43,19 @@ export function ConnectionSettingsServicesConsumer(props: {
   readonly children: (services: ConnectionSettingsServices) => ReactNode;
 }) {
   return props.children(useConnectionSettingsServices());
+}
+
+const noSaveUncertainty = () => false;
+const subscribeNoSaveUncertainty = () => () => {};
+
+export function ConnectionSaveUncertaintyObserver(props: {
+  readonly store?: ApiKeyOnboardingBridge['saveUncertainty'];
+  readonly children: (hasSaveUncertainty: boolean) => ReactNode;
+}) {
+  const hasSaveUncertainty = useSyncExternalStore(
+    props.store?.subscribe ?? subscribeNoSaveUncertainty,
+    props.store?.getSnapshot ?? noSaveUncertainty,
+    noSaveUncertainty,
+  );
+  return props.children(hasSaveUncertainty);
 }

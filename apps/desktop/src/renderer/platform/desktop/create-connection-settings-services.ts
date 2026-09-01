@@ -24,7 +24,12 @@ export function createDesktopConnectionSettingsServices(
   bridge: () => Pick<MakaBridge, 'connections'> = () => window.maka,
 ): ConnectionSettingsServices {
   const uncertainTargets = new Map<string, number>();
+  const uncertaintyListeners = new Map<string, Set<() => void>>();
   let nextAttemptId = 1;
+
+  const notifyUncertaintyChanged = (targetKey: string) => {
+    for (const listener of [...(uncertaintyListeners.get(targetKey) ?? [])]) listener();
+  };
 
   return {
     forHost: (host) => {
@@ -47,21 +52,35 @@ export function createDesktopConnectionSettingsServices(
         },
         apiKeyOnboarding: {
           saveUncertainty: {
-            isUncertain: () => uncertainTargets.has(targetKey),
-            markDispatched: () => {
-              const attemptId = nextAttemptId++;
-              uncertainTargets.set(targetKey, attemptId);
-              return attemptId;
+            getSnapshot: () => uncertainTargets.has(targetKey),
+            subscribe: (listener) => {
+              const listeners = uncertaintyListeners.get(targetKey) ?? new Set<() => void>();
+              listeners.add(listener);
+              uncertaintyListeners.set(targetKey, listeners);
+              return () => {
+                listeners.delete(listener);
+                if (listeners.size === 0) uncertaintyListeners.delete(targetKey);
+              };
             },
-            settle: (attemptId) => {
-              if (uncertainTargets.get(targetKey) === attemptId) {
-                uncertainTargets.delete(targetKey);
-              }
+            restart: () => {
+              if (uncertainTargets.delete(targetKey)) notifyUncertaintyChanged(targetKey);
             },
-            restart: () => uncertainTargets.delete(targetKey),
           },
           verify: (input) => bridge().connections.verifyOnboarding(input, host),
-          save: (input) => bridge().connections.saveOnboarding(input, host),
+          save: async (input) => {
+            const attemptId = nextAttemptId++;
+            const wasUncertain = uncertainTargets.has(targetKey);
+            uncertainTargets.set(targetKey, attemptId);
+            if (!wasUncertain) notifyUncertaintyChanged(targetKey);
+            const outcome = await bridge().connections.saveOnboarding(input, host);
+            if (outcome.kind !== 'outcome_unknown') {
+              if (uncertainTargets.get(targetKey) === attemptId) {
+                uncertainTargets.delete(targetKey);
+                notifyUncertaintyChanged(targetKey);
+              }
+            }
+            return outcome;
+          },
         },
       };
     },

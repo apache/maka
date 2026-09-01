@@ -56,7 +56,7 @@ import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
-  initialManagedOnboardingPhase,
+  shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
   validateAddProviderDraft,
   type AddProviderIssue,
@@ -79,8 +79,7 @@ type ManagedOnboardingPhase =
       readonly kind: 'models';
       readonly models: ReturnType<typeof stableOnboardingModels>;
       readonly selectedIds: readonly string[];
-    }
-  | { readonly kind: 'outcome_unknown' };
+    };
 
 export function AddProviderForm(props: {
   bridge: ConnectionsBridge;
@@ -91,9 +90,7 @@ export function AddProviderForm(props: {
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
   onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
   onOnboardingOutcomeUnknown?(): Promise<void>;
-  managedSaveDispatched?: boolean;
-  onManagedSaveDispatched?(): number | undefined;
-  onManagedSaveSettled?(attemptId: number | undefined): void;
+  hasSaveUncertainty?: boolean;
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).add;
@@ -115,7 +112,7 @@ export function AddProviderForm(props: {
     readonly managedPhase: ManagedOnboardingPhase;
     readonly error: ProviderFormError | null;
   }>(() => ({
-    managedPhase: { kind: initialManagedOnboardingPhase(props.managedSaveDispatched === true) },
+    managedPhase: { kind: 'input' },
     error: null,
   }));
   const { managedPhase, error } = formState;
@@ -198,12 +195,6 @@ export function AddProviderForm(props: {
     return copy.onboardingUnavailable;
   }
 
-  function enterOutcomeUnknown() {
-    setApiKey('');
-    setBusy(false);
-    setManagedPhase({ kind: 'outcome_unknown' });
-  }
-
   async function verifyManagedApiKey(normalizedApiKey: string) {
     const onboarding = props.apiKeyOnboardingBridge;
     if (!onboarding) return;
@@ -261,7 +252,6 @@ export function AddProviderForm(props: {
       stableIds.unshift(recommendedDefaultModel);
     }
     submitGuard.begin('submit');
-    const attemptId = props.onManagedSaveDispatched?.();
     setBusy(true);
     try {
       const outcome = await onboarding.save({
@@ -270,10 +260,9 @@ export function AddProviderForm(props: {
         baseUrl: null,
         enabledModelIds: stableIds,
       });
-      if (outcome.kind !== 'outcome_unknown') props.onManagedSaveSettled?.(attemptId);
       if (!addProviderMountedRef.current) return;
       if (outcome.kind === 'outcome_unknown') {
-        enterOutcomeUnknown();
+        setApiKey('');
         return;
       }
       if (outcome.kind === 'not_saved') {
@@ -300,10 +289,10 @@ export function AddProviderForm(props: {
         message: onboardingFailureMessage(result),
       });
     } catch {
-      if (addProviderMountedRef.current) enterOutcomeUnknown();
+      if (addProviderMountedRef.current) setApiKey('');
     } finally {
       submitGuard.finish();
-      if (addProviderMountedRef.current && managedPhase.kind !== 'outcome_unknown') setBusy(false);
+      if (addProviderMountedRef.current) setBusy(false);
     }
   }
 
@@ -437,7 +426,10 @@ export function AddProviderForm(props: {
       }).kind === 'host',
   );
 
-  if (usesApiKeyDialog && managedPhase.kind === 'outcome_unknown') {
+  if (
+    usesApiKeyDialog &&
+    shouldShowManagedOnboardingOutcomeUnknown(props.hasSaveUncertainty === true, busy)
+  ) {
     return (
       <VStack gap={3} data-maka-contract="api-key-onboarding-outcome-unknown">
         <Banner
