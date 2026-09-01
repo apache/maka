@@ -834,6 +834,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
       this.releaseConnection(connectionId),
     );
     await Promise.allSettled(releases);
+    await Promise.allSettled([...this.#pendingConnectionReleases]);
     this.#invocations.close();
     this.#sessions.clear();
   }

@@ -1963,6 +1963,9 @@ test('close waits for nested Client Capability interaction cleanup', async () =>
   await started;
   snapshot.release();
 
+  const connectionClosing = connection.close();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
   let closed = false;
   const closing = coordinator.close().then(() => {
     closed = true;
@@ -1970,7 +1973,7 @@ test('close waits for nested Client Capability interaction cleanup', async () =>
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(closed, false);
   finishCleanup();
-  await closing;
+  await Promise.all([connectionClosing, closing]);
   await assert.rejects(call, ToolOutcomeUnknownError);
 });
 
