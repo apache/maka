@@ -108,6 +108,32 @@ function assertNoNestedButtons(markup: string): void {
   }
 }
 
+function assertDescriptionReferencesResolve(markup: string): void {
+  const { document } = parseHTML(markup);
+  for (const element of document.querySelectorAll<HTMLElement>(
+    'button.astryx-side-nav-item[aria-describedby]',
+  )) {
+    const describedBy = element.getAttribute('aria-describedby');
+    assert.ok(describedBy);
+    for (const id of describedBy.split(/\s+/)) {
+      const description = document.getElementById(id);
+      assert.ok(
+        description,
+        `aria-describedby token ${JSON.stringify(id)} must resolve while the card is closed`,
+      );
+      assert.equal(
+        description.textContent,
+        '',
+        'the stable description must not duplicate session or project content into DOM text queries',
+      );
+      assert.ok(
+        description.getAttribute('aria-label'),
+        'the stable description keeps its accessible text through aria-label',
+      );
+    }
+  }
+}
+
 test('renders session navigation and row actions as sibling controls', () => {
   const markup = renderToStaticMarkup(
     <LocaleProvider locale="en">
@@ -143,6 +169,25 @@ test('renders a scan-friendly compact timestamp in the session rail', () => {
   } finally {
     Date.now = originalDateNow;
   }
+});
+
+test('wires the session navigation control to its hover card description', () => {
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[session]}
+        onSelectSession={() => undefined}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const navigation = document.querySelector<HTMLButtonElement>(
+    '.maka-session-row .astryx-side-nav-item',
+  );
+
+  assert.ok(navigation);
+  assert.ok(navigation.getAttribute('aria-describedby'));
+  assertDescriptionReferencesResolve(markup);
 });
 
 test('renders Runtime Host live runs without requiring renderer-local streaming', () => {
@@ -253,5 +298,42 @@ test('renders collapsible project navigation and row actions as sibling controls
     'project navigation precedes its auxiliary action',
   );
   assert.equal(projectButtons.indexOf(action), 1, 'project action precedes nested tasks');
+  assert.ok(navigation.getAttribute('aria-describedby'));
+  assertDescriptionReferencesResolve(markup);
   assertNoNestedButtons(markup);
+});
+
+test('keeps project running totals aligned with renderer-local task streaming', () => {
+  const locallyStreaming = {
+    ...session,
+    status: 'active' as const,
+    runningTurnIds: [] as string[],
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[locallyStreaming]}
+        groups={[
+          {
+            id: project.id,
+            label: project.name,
+            project,
+            sessions: [locallyStreaming],
+          },
+        ]}
+        groupVariant="project"
+        streamingSessionIds={new Set([locallyStreaming.id])}
+      />
+    </LocaleProvider>,
+  );
+  const { document } = parseHTML(markup);
+  const projectNavigation = document.querySelector<HTMLButtonElement>(
+    '.maka-project-row > div > .astryx-side-nav-item',
+  );
+  const descriptionId = projectNavigation?.getAttribute('aria-describedby');
+  const description = descriptionId ? document.getElementById(descriptionId) : null;
+
+  assert.match(markup, /aria-label="Responding"/);
+  assert.ok(description);
+  assert.match(description.getAttribute('aria-label') ?? '', /1 running/);
 });

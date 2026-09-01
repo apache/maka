@@ -28,6 +28,7 @@ import {
   showFatalStartupError,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
+  showRuntimeHostStartupRecoveryDialog,
 } from '../native-diagnostic-dialog.js';
 
 const diagnosticEnvironment = () => ({
@@ -148,4 +149,34 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
   assert.match(clipboard, /Exit code: 137/);
   assert.match(clipboard, /Recent main-process logs \(1\)/);
   assert.doesNotMatch(clipboard, /very-secret-token/);
+});
+
+test('managed Host recovery preserves the workspace and confirms active-work interruption', async () => {
+  let shown: MessageBoxOptions | undefined;
+  const decision = await showRuntimeHostStartupRecoveryDialog(
+    {
+      startupError: new Error('managed service unavailable'),
+      repairError: new Error('service update failed'),
+      activeTasks: true,
+    },
+    {
+      locale: 'en',
+      copyDiagnostics() {},
+      showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
+        shown = options;
+        return { response: 0, checkboxChecked: false };
+      },
+    },
+  );
+
+  assert.equal(decision, 'repair');
+  assert.deepEqual(shown?.buttons, [
+    'Repair and Restart Host',
+    'Exit',
+    'Copy Diagnostics',
+  ]);
+  assert.match(shown?.detail ?? '', /workspace, Host identity, credentials, and settings/);
+  assert.match(shown?.detail ?? '', /automatic update compatibility cannot be confirmed/);
+  assert.match(shown?.detail ?? '', /interrupt that work/);
+  assert.match(shown?.detail ?? '', /service update failed/);
 });

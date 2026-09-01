@@ -828,7 +828,10 @@ test('eight-arm spec and wrappers freeze the working provider contracts', async 
   };
   // The DeepSeek Harness arm copies its checked-in profile out of the repo
   // mount, so the wrapper needs to find it under the fake system root.
-  const profileSource = join(root, 'opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+  const profileSource = join(
+    root,
+    'opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-harness-profile',
+  );
   await mkdir(profileSource, { recursive: true });
   for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
     await copyFile(
@@ -998,8 +1001,8 @@ test('eight-arm spec adds Pi with the same pinned DeepSeek execution contract', 
   );
   assert.deepEqual(spec.executor.config.egressProxy, {
     composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
-    composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
-    networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+    composeRelativePath: 'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
+    networkPolicyRelativePath: 'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
     proxyUrl: 'http://maka-eval-mitmproxy:8080',
     allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
@@ -1310,8 +1313,8 @@ function experiment(): ExperimentSpec {
 test('pier cannot declare an egress proxy it never enforces', () => {
   const egressProxy = {
     composeSourceEnv: 'MAKA_TEST_BUNDLE',
-    composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
-    networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+    composeRelativePath: 'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
+    networkPolicyRelativePath: 'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
     proxyUrl: 'http://maka-eval-mitmproxy:8080',
     allowedHost: 'maka-eval-mitmproxy',
     containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',

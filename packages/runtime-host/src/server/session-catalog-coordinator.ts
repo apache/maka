@@ -247,6 +247,7 @@ export class HostSessionCatalogCoordinator {
           ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
           name: prepared.name,
           labels: [...prepared.labels],
+          llmConnectionId: model.connectionId,
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
           ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),

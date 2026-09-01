@@ -26,6 +26,7 @@ import {
   Tab,
   TabList,
   Table,
+  Tooltip,
   type TableColumn,
   type TablePlugin,
   pixel,
@@ -466,7 +467,12 @@ function usageRequestKindLabel(kind: UsageStats['logs'][number]['kind'], copy: U
 }
 
 function usageRequestTarget(row: UsageStats['logs'][number]) {
-  return row.kind === 'tool' ? row.toolName || row.model || row.provider || '-' : row.model || row.provider || '-';
+  const target = row.kind === 'tool' ? row.toolName || row.model || row.provider || '-' : row.model || row.provider || '-';
+  return (
+    <Tooltip content={target}>
+      <span className="settingsUsageTargetCell" title={target}>{target}</span>
+    </Tooltip>
+  );
 }
 
 function usageRequestSessionCell(row: UsageStats['logs'][number], copy: UsageSettingsCopy, onOpenSession?: (sessionId: string) => void) {

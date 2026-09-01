@@ -30,6 +30,7 @@ import { ChatSurfaceLayout, Composer } from '@maka/ui';
 import type {
   WorkHubController,
   WorkHubCoordinationTurn,
+  WorkHubDelegationLinkState,
   WorkHubProjection,
   WorkHubSessionSummary,
   WorkHubSubmission,
@@ -110,7 +111,7 @@ export function workHubSurfaceFailure(error: unknown): WorkHubSurfaceFailure {
   ) {
     return 'candidates_changed';
   }
-  if (/linked correction requires persistent delegation support/iu.test(message)) {
+  if (/linked correction requires (?:persistent delegation support|an active durable delegation)/iu.test(message)) {
     return 'linked_correction_unavailable';
   }
   if (/waiting for user input/iu.test(message)) return 'target_waiting';
@@ -129,13 +130,18 @@ export function visibleWorkHubConversation(
 } {
   const localByRequestId = new Map(local.map((turn) => [turn.requestId, turn]));
   const visibleCoordination = coordination.filter(
-    (turn) =>
-      localByRequestId.get(turn.turnId)?.outcome?.kind === 'discussion' ||
-      !localByRequestId.has(turn.turnId),
+    (turn) => {
+      const localTurn = localByRequestId.get(turn.turnId);
+      return !localTurn ||
+        localTurn.outcome?.kind === 'discussion' ||
+        localTurn.outcome?.kind === 'submitted';
+    },
   );
   const coordinationTurnIds = new Set(coordination.map(({ turnId }) => turnId));
   const visibleLocal = local.filter(
-    (turn) => turn.outcome?.kind !== 'discussion' || !coordinationTurnIds.has(turn.requestId),
+    (turn) =>
+      !coordinationTurnIds.has(turn.requestId) ||
+      (turn.outcome?.kind !== 'discussion' && turn.outcome?.kind !== 'submitted'),
   );
   return { coordination: visibleCoordination, local: visibleLocal };
 }
@@ -374,7 +380,7 @@ export function WorkHubSurface(props: {
         />
       )}
     >
-      <main className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline" aria-label="WorkHub">
+      <section className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline" aria-label="WorkHub">
         <header className="workhub-header">
           <div>
             <h1>WorkHub</h1>
@@ -448,7 +454,7 @@ export function WorkHubSurface(props: {
             )}
           </ChatMessageList>
         </div>
-      </main>
+      </section>
     </ChatSurfaceLayout>
   );
 }
@@ -484,7 +490,7 @@ export function WorkHubCoordinationStatus(props: {
         />
       )}
     >
-      <main
+      <section
         className="maka-main agents-chat-panel agents-chat-view-root workhub-timeline"
         aria-label="WorkHub"
       >
@@ -518,7 +524,7 @@ export function WorkHubCoordinationStatus(props: {
             )}
           </ChatMessageList>
         </div>
-      </main>
+      </section>
     </ChatSurfaceLayout>
   );
 }
@@ -561,7 +567,10 @@ export function WorkHubCoordinationTurnView(props: {
   return (
     <WorkHubMessageFrame
       text={props.turn.text}
-      state={assignment?.feedbackState ?? props.turn.state}
+      state={assignment?.linkState === 'active'
+        ? assignment.feedbackState
+        : assignment?.linkState ?? props.turn.state}
+      linkState={assignment?.linkState}
       projected
     >
       {assignment ? (
@@ -569,8 +578,10 @@ export function WorkHubCoordinationTurnView(props: {
           session={session}
           targetSessionId={assignment.targetSessionId}
           fallbackName={assignment.targetSessionName}
-          heading={copy.sentTo}
-          state={copy.delegationStates[assignment.feedbackState]}
+          heading={assignment.createdNew ? copy.createdWork : copy.sentTo}
+          state={assignment.linkState === 'active'
+            ? copy.assignmentLinkStates.active(copy.delegationStates[assignment.feedbackState])
+            : copy.assignmentLinkStates[assignment.linkState]}
           result={undefined}
           copy={copy}
           onOpenSession={props.onOpenSession}
@@ -594,6 +605,7 @@ export function workHubCoordinationSummary(
   copy: ReturnType<typeof workHubCopy>,
 ): string {
   if (result.kind === 'clarification') {
+    if (result.reason === 'ambiguous_command') return copy.confirmCommand;
     return `${copy.chooseWork} ${result.options.map(({ sessionName }) => sessionName).join('、')}`;
   }
   if (result.kind === 'waiting') {
@@ -635,23 +647,27 @@ function WorkHubTurnView(props: {
             </p>
           ) : turn.outcome?.kind === 'clarification' ? (
             <>
-              <p>{copy.chooseWork}</p>
-              <div className="workhub-clarification" aria-label={copy.clarification}>
-                {turn.outcome.options.map((option) => (
-                  <Button
-                    key={option.target.sessionId}
-                    label={`${option.sessionName}, ${option.projectName}`}
-                    variant="ghost"
-                    width="100%"
-                    isDisabled={props.pending}
-                    onClick={() => props.onChoose(option.target)}
-                    endContent={
-                      <small className="workhub-option-project">{option.projectName}</small>
-                    }>
-                    <strong>{option.sessionName}</strong>
-                  </Button>
-                ))}
-              </div>
+              <p>{turn.outcome.reason === 'ambiguous_command'
+                ? copy.confirmCommand
+                : copy.chooseWork}</p>
+              {turn.outcome.options.length > 0 ? (
+                <div className="workhub-clarification" aria-label={copy.clarification}>
+                  {turn.outcome.options.map((option) => (
+                    <Button
+                      key={option.target.sessionId}
+                      label={`${option.sessionName}, ${option.projectName}`}
+                      variant="ghost"
+                      width="100%"
+                      isDisabled={props.pending}
+                      onClick={() => props.onChoose(option.target)}
+                      endContent={
+                        <small className="workhub-option-project">{option.projectName}</small>
+                      }>
+                      <strong>{option.sessionName}</strong>
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </>
           ) : turn.outcome?.kind === 'discussion' ? (
             <>
@@ -667,7 +683,7 @@ function WorkHubTurnView(props: {
             <SubmittedWorkView
               session={target}
               targetSessionId={submitted.target.sessionId}
-              heading={copy.sentTo}
+              heading={submitted.evidence === 'new_session' ? copy.createdWork : copy.sentTo}
               state={target
                 ? (target.archived ? copy.archived : copy.states[target.state])
                 : copy.accepted}
@@ -683,6 +699,7 @@ function WorkHubTurnView(props: {
 function WorkHubMessageFrame(props: {
   text: string;
   state: string;
+  linkState?: WorkHubDelegationLinkState;
   projected?: boolean;
   children: ReactNode;
 }) {
@@ -690,6 +707,7 @@ function WorkHubMessageFrame(props: {
     <section
       className={`workhub-turn${props.projected ? ' workhub-projected-turn' : ''}`}
       data-state={props.state}
+      data-link-state={props.linkState}
     >
       <ChatMessage sender="user" density="compact" className="workhub-message">
         <ChatMessageBubble className="maka-chat-message-bubble maka-chat-message-bubble-user workhub-user-bubble">
@@ -740,6 +758,16 @@ function SubmittedWorkView(props: {
   );
 }
 
+export function workHubAmbiguousCommandPrompt(locale: UiLocale): string {
+  if (locale === 'zh-CN') {
+    return '没有开始新工作。如果需要我直接执行，请给出明确指令，例如“修复登录”。';
+  }
+  if (locale === 'zh-TW') {
+    return '沒有開始新工作。如果需要我直接執行，請給出明確指令，例如「修復登入」。';
+  }
+  return 'I did not start new work. If you want me to do it, give a direct instruction, for example “Fix login”.';
+}
+
 function workHubCopy(locale: UiLocale) {
   if (locale === 'zh-CN') {
     return {
@@ -751,11 +779,12 @@ function workHubCopy(locale: UiLocale) {
         : '提出一个明确目标，WorkHub 会创建普通 Session 并把结果带回这里。',
       workCount: (count: number) => `${count} 项工作`, clarification: '选择工作',
       chooseWork: '这条输入可能与多项工作有关，请选择目标：',
+      confirmCommand: workHubAmbiguousCommandPrompt(locale),
       discussionStayed: '这条内容暂时保留在 WorkHub，没有创建或改动 Session。',
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
       choseWork: (name: string) => `选择“${name}”`,
-      sentTo: '已交给：', accepted: '已接收', sessionFallback: '普通 Session',
+      sentTo: '已交给：', createdWork: '已创建新工作：', accepted: '已接收', sessionFallback: '普通 Session',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -766,7 +795,7 @@ function workHubCopy(locale: UiLocale) {
       retry: '重试',
       submitFailures: {
         candidates_changed: '工作列表已变化，请重新发送以使用最新目标。',
-        linked_correction_unavailable: '跨 Session 更正将在持久委托关联完成后开放；请先打开原 Session 停止当前工作。',
+        linked_correction_unavailable: '找不到可更正的有效委托关联；请重新发送，或打开原 Session 确认当前工作。',
         target_waiting: '目标 Session 正在等待你的处理；请先打开并完成该交互。',
         action_changed: '这次操作已发生变化，请重新发送。',
         delivery_failed: '输入未能送达，请重试。',
@@ -781,6 +810,11 @@ function workHubCopy(locale: UiLocale) {
         aborted: '已中止',
         recovering: '正在恢复',
       },
+      assignmentLinkStates: {
+        active: (execution: string) => `关联有效 · ${execution}`,
+        superseded: '已被更正',
+        aborted: '更正已中止',
+      },
       turnStates: { running: '进行中', completed: '已完成', aborted: '已中止', failed: '失败' },
     } as const;
   }
@@ -794,12 +828,13 @@ function workHubCopy(locale: UiLocale) {
         : '提出一個明確目標，WorkHub 會建立一般 Session 並將結果帶回這裡。',
       workCount: (count: number) => `${count} 項工作`, clarification: '選擇工作',
       chooseWork: '這則輸入可能與多項工作有關，請選擇目標：',
+      confirmCommand: workHubAmbiguousCommandPrompt(locale),
       discussionStayed: '這則內容暫時保留在 WorkHub，沒有建立或變更 Session。',
       discussionHint: '提出明確的執行目標後，我會將它交給對應的 Session。',
       answering: '正在回答…',
       choseWork: (name: string) => `選擇「${name}」`,
       correctedWork: (name: string) => `將目標更正為「${name}」`,
-      sentTo: '已交給：', accepted: '已接收', sessionFallback: '一般 Session',
+      sentTo: '已交給：', createdWork: '已建立新工作：', accepted: '已接收', sessionFallback: '一般 Session',
       correctTarget: '更正目標',
       correctedFrom: (name: string) => `已從「${name}」更正`,
       waitingForDecision: '這項工作正在等待你的決定。',
@@ -829,6 +864,11 @@ function workHubCopy(locale: UiLocale) {
         aborted: '已中止',
         recovering: '正在恢復',
       },
+      assignmentLinkStates: {
+        active: (execution: string) => `關聯有效 · ${execution}`,
+        superseded: '已被更正',
+        aborted: '更正已中止',
+      },
       turnStates: { running: '進行中', completed: '已完成', aborted: '已中止', failed: '失敗' },
     } as const;
   }
@@ -841,11 +881,12 @@ function workHubCopy(locale: UiLocale) {
       : 'State a clear goal and WorkHub will create an ordinary Session and bring its result back here.',
     workCount: (count: number) => `${count} work item${count === 1 ? '' : 's'}`, clarification: 'Choose work',
     chooseWork: 'This input may relate to more than one task. Choose a target:',
+    confirmCommand: workHubAmbiguousCommandPrompt(locale),
     discussionStayed: 'This stayed in WorkHub without creating or changing a Session.',
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',
     choseWork: (name: string) => `Choose “${name}”`,
-    sentTo: 'Sent to:', accepted: 'Accepted', sessionFallback: 'Ordinary Session',
+    sentTo: 'Sent to:', createdWork: 'Created new work:', accepted: 'Accepted', sessionFallback: 'Ordinary Session',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',
@@ -856,7 +897,7 @@ function workHubCopy(locale: UiLocale) {
     retry: 'Retry',
     submitFailures: {
       candidates_changed: 'The work list changed. Send again to use the latest targets.',
-      linked_correction_unavailable: 'Cross-Session correction will be available with persistent delegation. Open the original Session to stop its current work first.',
+      linked_correction_unavailable: 'No active delegation link is available to correct. Send again, or open the original Session to confirm its current work.',
       target_waiting: 'The target Session needs your input. Open it and resolve that interaction first.',
       action_changed: 'This action changed. Send it again.',
       delivery_failed: 'The input could not be delivered. Try again.',
@@ -870,6 +911,11 @@ function workHubCopy(locale: UiLocale) {
       failed: 'Failed',
       aborted: 'Aborted',
       recovering: 'Recovering',
+    },
+    assignmentLinkStates: {
+      active: (execution: string) => `Active link · ${execution}`,
+      superseded: 'Superseded link',
+      aborted: 'Aborted replacement',
     },
     turnStates: { running: 'Running', completed: 'Completed', aborted: 'Aborted', failed: 'Failed' },
   } as const;

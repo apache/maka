@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -93,6 +94,7 @@ import {
   waitFor,
   waitForTuiPaint,
 } from './tui-terminal-mock.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 // Deadline for `Promise.race([run, …])` close watchdogs. A passing race
 // resolves the moment `run` settles, so this only bounds how long a FAILING
@@ -137,15 +139,6 @@ function createTestTurnActivity(
 ): MakaPiTuiTurnActivitySurface {
   return { activities };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
-
 function historicalGraphSnapshot(graphId: string): AgentGraphClientSnapshot {
   return {
     schemaVersion: 1,
@@ -223,7 +216,7 @@ function savedOnboardingResult(
       slug: 'openai',
       providerType: 'openai',
     },
-    refresh: { kind: 'ok', modelChoices },
+    refresh: { kind: 'ok', modelChoices, connectionIdentities: [] },
   };
 }
 
@@ -400,12 +393,17 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/new');
     terminal.input('\r');
     await waitFor(() => attempted === 1);
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    // The driver's raw error text is not product copy; the TUI reports the
+    // failure with its own localized notice (#2672).
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Could not start a new session'),
+    );
 
     // Identity untouched…
     assert.equal(driver.getSessionId(), 'session-1');
     // …and the transcript was not wiped by the aborted /new.
-    assert.match(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
+    assert.match(plainTerminalOutput(terminal.screenOutput()), /Could not start a new session/);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
     assert.ok(transcriptBefore.length > 0);
 
     exitMaka(terminal);
@@ -4431,7 +4429,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     // The scan failure is surfaced, not swallowed into an empty list.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('读取外部对话失败：corrupt index'),
+      plainTerminalOutput(terminal.output()).includes(
+        'Could not read external conversations: corrupt index',
+      ),
     );
 
     exitMaka(terminal);
@@ -4875,7 +4875,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
     await waitFor(() => hydrationAttempts === 1);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('refilled: turn-2'));
@@ -5098,7 +5100,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/rewind');
     terminal.input('\r');
 
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('second question'));
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
 
@@ -5106,7 +5110,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => driver.rewound.length === 1);
     assert.deepEqual(driver.rewound, ['turn-2']);
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewound to before this turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first answer'));
     // The rewound turn's prompt is refilled into the editor for an edit-and-resend.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-2'));
@@ -5146,15 +5152,21 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     // The branch switch is still in flight, but the selection must already be
     // visibly accepted — control-busy otherwise renders nothing (#3383).
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
     assert.deepEqual(driver.rewound, []);
 
     driver.gate.resolve();
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewound to before this turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-1'));
     // The in-progress notice is wiped together with the transcript it announced.
     await waitFor(
-      () => plainTerminalOutput(terminal.screenOutput()).includes('正在回退到该轮之前') === false,
+      () =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Rewinding to before this turn') ===
+        false,
     );
 
     exitMaka(terminal);
@@ -5183,7 +5195,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
 
     // Typed while the branch switch is in flight: this is newer user work and
     // must win over the prompt refill (#3383). Enter stays swallowed by
@@ -5197,7 +5211,7 @@ describe('Maka Pi TUI runner', () => {
     // The notice wraps across screen lines at 80 columns, so match against a
     // whitespace-collapsed copy instead of the raw output.
     const collapsedOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, '');
-    await waitFor(() => collapsedOutput().includes('未覆盖'));
+    await waitFor(() => collapsedOutput().includes('untouched'));
     await waitFor(() => editorInputText(terminal) === 'my draft');
     assert.equal(plainTerminalOutput(terminal.output()).includes('refilled: turn-1'), false);
     // The ↑ recovery promise must hold even though nothing was submitted in
@@ -5235,7 +5249,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
 
     // A bracketed paste starts while the branch switch is in flight and its end
     // marker has not arrived: getText() still reports empty, but the buffered
@@ -5246,7 +5262,7 @@ describe('Maka Pi TUI runner', () => {
     // The completion notice wraps across screen lines at 80 columns, so match a
     // whitespace-collapsed copy.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('未覆盖'),
+      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('untouched'),
     );
 
     // Only now does the paste complete — after the refill decision was made.
@@ -5287,7 +5303,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('无法回退'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Cannot rewind'));
     assert.deepEqual(driver.rewound, []);
 
     driver.turnGate.resolve();
@@ -5369,7 +5385,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
 
     await waitFor(() => hydrationAttempts === 1);
@@ -5534,7 +5552,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
     await waitFor(() => hydrationAttempts === 1);
     assert.ok(listener);
@@ -5672,18 +5692,28 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b');
     terminal.input('z');
     await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.output()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+      false,
+    );
     terminal.input('\x7f');
     await waitFor(() => editorInputText(terminal) === '');
 
     // A consecutive Escape pair completes the gesture and opens the picker.
     terminal.input('\x1b');
     terminal.input('\x1b');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
 
     // Cancel the picker so Ctrl-C reaches the runner rather than the overlay.
     terminal.input('\x1b');
-    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'));
+    await waitFor(
+      () =>
+        !plainTerminalOutput(terminal.screenOutput()).includes(
+          'Return to before the selected turn',
+        ),
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -5724,7 +5754,10 @@ describe('Maka Pi TUI runner', () => {
     // the typed char paints.
     terminal.input('z');
     await waitFor(() => editorInputText(terminal)?.endsWith('z') === true);
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('Return to before the selected turn'),
+      false,
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -5766,7 +5799,10 @@ describe('Maka Pi TUI runner', () => {
     // the typed char paints.
     terminal.input('z');
     await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('Return to before the selected turn'),
+      false,
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -6033,7 +6069,7 @@ describe('Maka Pi TUI runner', () => {
 
       // The transcript render trails the send by a tick — wait for it.
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('/skill:alpha 帮我整理'));
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('已加载技能：Alpha'));
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Skills loaded: Alpha'));
 
       exitMaka(terminal);
       await Promise.race([
@@ -6043,6 +6079,85 @@ describe('Maka Pi TUI runner', () => {
         }),
       ]);
     }
+  });
+
+  test('shows partial Skill feedback when the Host queues the Message', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HostSkillDriver(
+      {
+        loaded: [{ id: 'alpha', name: 'Alpha' }],
+        failed: [{ request: 'typo', reason: 'not_found' }],
+        receipts: [],
+      },
+      'steering',
+    );
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      listSkills: async () => [],
+    });
+
+    terminal.input('/skill:alpha /skill:typo 帮我整理');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1);
+    await waitFor(() => {
+      const output = plainTerminalOutput(terminal.output());
+      return output.includes('Skills loaded: Alpha') && output.includes('/skill:typo (not found)');
+    });
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('localizes runner notices in Chinese mode', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HostSkillDriver({
+      loaded: [],
+      failed: [{ request: 'nope', reason: 'not_found' }],
+      receipts: [],
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      locale: 'zh-CN',
+      listSkills: async () => [],
+    });
+
+    terminal.input('/skill');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('当前没有可调用的技能。'));
+
+    terminal.input('/skill:nope hi');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output())
+        .replace(/\s+/g, '')
+        .includes('未能加载技能/skill:nope（未找到）；未发起模型请求。'),
+    );
+    assert.equal(driver.prompts.length, 0);
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
   });
 
   test('does not create a turn when every skill token fails to resolve', async () => {
@@ -6066,10 +6181,12 @@ describe('Maka Pi TUI runner', () => {
 
       terminal.input('/skill:nope hi');
       terminal.input('\r');
+      // The notice wraps across screen lines at 80 columns, so match against a
+      // whitespace-collapsed copy instead of the raw output.
       await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes(
-          '未能加载技能 /skill:nope（未找到）；未发起模型请求。',
-        ),
+        plainTerminalOutput(terminal.output())
+          .replace(/\s+/g, ' ')
+          .includes('Could not load skills /skill:nope (not found); no model request was made.'),
       );
       assert.equal(driver.prompts.length, 0);
 
@@ -6109,10 +6226,14 @@ describe('Maka Pi TUI runner', () => {
 
       terminal.input(prompt);
       terminal.input('\r');
+      // The notice wraps across screen lines at 80 columns, so match against a
+      // whitespace-collapsed copy instead of the raw output.
       await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes(
-          '请求超过 50 个上限（调用请求过多）；未发起模型请求。',
-        ),
+        plainTerminalOutput(terminal.output())
+          .replace(/\s+/g, ' ')
+          .includes(
+            'more than the 50-request limit (too many requests); no model request was made.',
+          ),
       );
       assert.equal(driver.prompts.length, 0);
 
@@ -7764,6 +7885,109 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('refreshes connection identities after setup before adopting the new model', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    driver.hostSummary = {
+      llmConnectionId: 'connection-b',
+      llmConnectionSlug: 'new-account',
+      model: 'gpt-5.5',
+    };
+    const newConnectionChoice: ModelChoice = {
+      connectionId: 'connection-b',
+      connectionSlug: 'new-account',
+      connectionName: 'New account',
+      providerType: 'openai',
+      model: 'gpt-5.5',
+      isDefaultConnection: true,
+    };
+    const saveCalls: OnboardingSaveInput[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionId: 'connection-a',
+      connectionSlug: 'existing-account',
+      providerType: 'anthropic',
+      connectionIdentities: [
+        { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
+      ],
+      modelChoices: [
+        {
+          connectionId: 'connection-a',
+          connectionSlug: 'existing-account',
+          connectionName: 'Existing account',
+          providerType: 'anthropic',
+          model: 'claude-sonnet-4-5',
+          isDefaultConnection: true,
+        },
+      ],
+      permissionMode: 'ask',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        verify: async () => ({ kind: 'ok', models: [{ id: 'gpt-5.5' }] }),
+        save: async (input) => {
+          saveCalls.push(input);
+          const refresh = {
+            kind: 'ok' as const,
+            modelChoices: [newConnectionChoice],
+            connectionIdentities: [
+              { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
+              { connectionId: 'connection-b', connectionSlug: 'new-account', enabled: true },
+            ],
+          };
+          return {
+            kind: 'ok' as const,
+            connection: {
+              connectionId: 'connection-b',
+              revision: 1,
+              slug: 'new-account',
+              providerType: 'openai' as const,
+            },
+            refresh,
+          };
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-test');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Models enabled'));
+    terminal.input('\r');
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Models enabled'));
+
+    terminal.input('/model');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('New account'));
+    terminal.input('\r');
+    await waitFor(() => driver.modelConnectionIds.length === 1);
+    assert.deepEqual(driver.modelConnectionIds, ['connection-b']);
+
+    terminal.input('hello');
+    terminal.input('\r');
+    await waitFor(() => driver.prompts.length === 1 && driver.streamPulls === 1);
+    await waitForTuiPaint(terminal);
+    assert.doesNotMatch(
+      plainTerminalOutput(terminal.screenOutput()),
+      /The original account was deleted/,
+    );
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('resumes an active Host turn from its atomic transcript and continues live output', async () => {
     const terminal = new FakeTerminal();
     const driver = new ActiveResumeDriver();
@@ -7895,12 +8119,7 @@ function editorInputText(terminal: FakeTerminal): string | undefined {
 
 /** Like waitFor, but with a caller-chosen deadline for slower convergence. */
 async function waitForUpTo(predicate: () => boolean, ms: number): Promise<void> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await delay(10);
-  }
-  assert.equal(predicate(), true);
+  await pollFor(predicate, { timeoutMs: ms, pollMs: 10 });
 }
 
 function exitMaka(_terminal: FakeTerminal): void {
@@ -8982,7 +9201,10 @@ class RejectingUserCommandStopDriver extends RunningUserCommandDriver {
 }
 
 class HostSkillDriver extends SlashCommandDriver {
-  constructor(private readonly skillInvocation: SkillInvocationResult) {
+  constructor(
+    private readonly skillInvocation: SkillInvocationResult,
+    private readonly admittedDisposition: 'turn_started' | 'steering' = 'turn_started',
+  ) {
     super();
   }
 
@@ -9003,6 +9225,9 @@ class HostSkillDriver extends SlashCommandDriver {
     // Admitted: the receipt for what was resolved rides the answer, which is
     // the client's only sight of it.
     const admitted = await super.submitMessage(text, options);
+    if (this.admittedDisposition === 'steering') {
+      return { disposition: 'steering', queueRevision: 1, skillInvocation: this.skillInvocation };
+    }
     return admitted?.disposition === 'turn_started'
       ? { ...admitted, skillInvocation: this.skillInvocation }
       : admitted;
@@ -9801,7 +10026,11 @@ async function admitMessageAsTurn(
       summary: { ...fakeSessionSummary(turn.sessionId), ...driver.hostSummary },
     }),
   );
-  return { disposition: 'turn_started', turnId: turn.turnId };
+  return {
+    disposition: 'turn_started',
+    turnId: turn.turnId,
+    skillInvocation: { loaded: [], failed: [], receipts: [] },
+  };
 }
 
 function fakeSessionSummary(

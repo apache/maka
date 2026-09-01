@@ -119,10 +119,14 @@ module.exports = {
       },
     });
     const native = await import(nativePath);
+    const phases: string[] = [];
     const abort = new AbortController();
-    const pending = client.connect(peerConnectInput('pending'), abort.signal);
+    const pending = client.connect(peerConnectInput('pending'), abort.signal, (phase) => {
+      phases.push(phase);
+    });
     await waitForRequestCount(native.default.stats, 1);
     assert.equal(routesPrepared, true);
+    assert.deepEqual(phases, ['discovering', 'connecting']);
     abort.abort();
     await assert.rejects(pending, /aborted/u);
 
@@ -234,11 +238,15 @@ test('rejects an incomplete endpoint API and loads a compatible relative native 
     await writeFile(
       modulePath,
       `const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
+const starts = [];
 module.exports = {
+  starts,
   ensurePeerIdentity: async () => 'peer',
   signPeerIdentity: async () => ({ publicKey: Buffer.from('public'), signature: Buffer.from('signature') }),
   verifyPeerIdentity: () => true,
-  startPeerEndpoint: () => ({
+  startPeerEndpoint: (options) => {
+    starts.push(options);
+    return ({
     peerId: 'peer',
     listenAddresses: [],
     activeCoordinationRelays: [],
@@ -250,15 +258,19 @@ module.exports = {
     accept: async () => null,
     acceptMeshControl: async () => null,
     close: async () => {},
-  }),
+  });
+  },
 };
 `,
     );
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: relative(process.cwd(), modulePath),
       keyPath: 'unused',
+      webRtcStunUrls: [],
     });
     assert.equal(endpoint.peerId, 'peer');
+    const native = await import(modulePath);
+    assert.deepEqual(native.default.starts, [{ keyPath: 'unused', webRtcStunUrls: [] }]);
     assert.equal(
       await ensureRuntimeHostPeerIdentity({ nativePath: modulePath, keyPath: 'unused' }),
       'peer',

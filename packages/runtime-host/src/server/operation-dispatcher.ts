@@ -125,17 +125,18 @@ export type SessionRevisionOperationKey = Extract<
 >;
 export type SessionRetirementOperationKey = Extract<
   OperationKey,
-  'session.lifecycle.set' | 'session.remove'
+  'session.lifecycle.set' | 'session.remove' | 'session.remove.preview'
 >;
 export type SessionEffectOperationKey = Extract<OperationKey, 'session.recap.generate'>;
+export type SessionTodoOperationKey = Extract<OperationKey, 'session.todo.query'>;
 export type SessionCatalogOperationKey = Exclude<
   Extract<OperationKey, `session.${string}`>,
   | SessionContinuityOperationKey
   | SessionRevisionOperationKey
   | SessionRetirementOperationKey
   | SessionEffectOperationKey
+  | SessionTodoOperationKey
 >;
-export type TaskLedgerOperationKey = Extract<OperationKey, 'task.ledger.query'>;
 export type ArtifactOperationKey = Extract<OperationKey, `artifact.${string}`>;
 export type SkillCatalogOperationKey = Extract<OperationKey, `skill.catalog.${string}`>;
 export type UsagePricingOperationKey = Extract<OperationKey, 'usage.query' | `pricing.${string}`>;
@@ -152,6 +153,7 @@ export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`
 export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
 export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
 export type WorkHubCoordinationOperationKey = Extract<OperationKey, `workhub.${string}`>;
+export type PluginPlatformOperationKey = Extract<OperationKey, `plugin.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -193,7 +195,7 @@ export type SessionRetirementOperationHandlerMap = Pick<
   SessionRetirementOperationKey
 >;
 export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
-export type TaskLedgerOperationHandlerMap = Pick<OperationHandlerMap, TaskLedgerOperationKey>;
+export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTodoOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;
 export type UsagePricingOperationHandlerMap = Pick<OperationHandlerMap, UsagePricingOperationKey>;
@@ -221,6 +223,10 @@ export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, Configu
 export type WorkHubCoordinationOperationHandlerMap = Pick<
   OperationHandlerMap,
   WorkHubCoordinationOperationKey
+>;
+export type PluginPlatformOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  PluginPlatformOperationKey
 >;
 export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,

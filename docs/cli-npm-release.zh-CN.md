@@ -116,12 +116,12 @@ authentication and disallow tokens**，然后撤销不再使用的 publish token
 1. 要求候选 npm run number 大于当前 `nightly` tag；
 2. 使用 provenance 将精确 npm tarball 发布到 `nightly`；
 3. 要求公共 registry 中的精确版本和 `nightly` tag 都已可读；
-4. 要求候选 Desktop run number 大于所有现有平台 feed；
-5. 向 `nightlies.apache.org` 追加 immutable Desktop payload；
-6. 最后推进可变的 Desktop update feed。
+4. 构建、验证并 attest 精确的 Desktop 安装包和 GitHub `dev` metadata；
+5. 将受保护的 `v<version>` tag 绑定到精确 source commit，并验证 Draft 中全部九项资产；
+6. 仅在 Draft 完整后发布 Latest 关闭的 GitHub prerelease。
 
-这个顺序既避免 Desktop 指向 npm 中不存在的 Runtime Host，也允许 npm Nightly 在 Desktop Infra
-就绪前独立运行。npm 或 Desktop run 失败后都不得原地 rerun；应启动新的 npm Nightly：
+这个顺序既避免 Desktop 指向 npm 中不存在的 Runtime Host，也让 npm Nightly 与 Desktop 打包彼此
+独立。npm 或 Desktop run 失败后都不得原地 rerun；应启动新的 npm Nightly：
 
 ```sh
 gh workflow run npm-publication.yml --ref main -f channel=nightly

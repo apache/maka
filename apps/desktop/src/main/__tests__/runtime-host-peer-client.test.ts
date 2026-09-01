@@ -22,7 +22,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { configureDesktopRuntimeHostPeerClient } from '../runtime-host-peer-client.js';
+import {
+  configureDesktopRuntimeHostPeerClient,
+  readDesktopRuntimeHostWebRtcStunPolicy,
+  writeDesktopRuntimeHostWebRtcStunPolicy,
+} from '../runtime-host-peer-client.js';
 
 test('development uses the native peer addon only for the peer-enabled launch', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-peer-client-'));
@@ -63,6 +67,52 @@ test('development uses the native peer addon only for the peer-enabled launch', 
     nativePath,
     keyPath: join(clientDataRoot, 'runtime-host-client.peer.key'),
     automaticRelayDiscovery: true,
+    webRtcStunUrls: ['stun:stun.cloudflare.com:3478'],
+    webRtcStunPolicy: { kind: 'default' },
   });
   assert.equal(peerEnvironment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH, nativePath);
+});
+
+test('persists one closed Desktop STUN policy and rejects TURN endpoints', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-peer-connectivity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  assert.deepEqual(await readDesktopRuntimeHostWebRtcStunPolicy(root), { kind: 'default' });
+  await writeDesktopRuntimeHostWebRtcStunPolicy(root, {
+    kind: 'custom',
+    urls: [
+      'stun:one.example:3478',
+      'stun:one.example:3478',
+      'stun:[2001:db8::1]:3478',
+    ],
+  });
+  assert.deepEqual(await readDesktopRuntimeHostWebRtcStunPolicy(root), {
+    kind: 'custom',
+    urls: ['stun:one.example:3478', 'stun:[2001:db8::1]:3478'],
+  });
+  await assert.rejects(
+    writeDesktopRuntimeHostWebRtcStunPolicy(root, {
+      kind: 'custom',
+      urls: ['turn:turn.example:3478'],
+    }),
+    /must use stun:host/u,
+  );
+  await assert.rejects(
+    writeDesktopRuntimeHostWebRtcStunPolicy(root, {
+      kind: 'custom',
+      urls: ['stun:one.example:not-a-port'],
+    }),
+    /numeric port/u,
+  );
+});
+
+test('repairs a malformed Desktop STUN policy through the normal writer', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-desktop-peer-connectivity-repair-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, 'runtime-host-peer-connectivity.json'), '{ malformed');
+
+  await assert.rejects(readDesktopRuntimeHostWebRtcStunPolicy(root), SyntaxError);
+  await writeDesktopRuntimeHostWebRtcStunPolicy(root, { kind: 'default' });
+  assert.deepEqual(await readDesktopRuntimeHostWebRtcStunPolicy(root), { kind: 'default' });
 });

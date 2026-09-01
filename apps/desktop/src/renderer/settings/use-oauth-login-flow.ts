@@ -62,13 +62,26 @@ export interface SubscriptionSnapshot {
   errorMessage?: string;
 }
 
-export interface OAuthLoginFlowBridge {
+export interface OAuthConnectionIdentity {
+  connectionId: string;
+  slug: string;
+  providerType: 'openai-codex' | 'xai-oauth';
+}
+
+export interface OAuthAuthorizationFlowBridge {
   getAuthUrl(): Promise<
-    { authRequestId: string; stateHint: string } | { ok: boolean; reason?: string; message: string }
+    { authRequestId: string; stateHint: string; connection: OAuthConnectionIdentity }
+    | { ok: boolean; reason?: string; message: string }
   >;
   openAuthUrl(authRequestId: string): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
-  completeAuthorization(authRequestId: string): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
+  completeAuthorization(authRequestId: string): Promise<
+    { ok: true; connection: OAuthConnectionIdentity }
+    | { ok: false; reason: string; message: string }
+  >;
   cancelAuthorization(authRequestId?: string): Promise<{ ok: true }>;
+}
+
+export interface OAuthAccountFlowBridge {
   getAccountState(): Promise<unknown>;
   logout(): Promise<{ ok: true } | { ok: false; reason: string; message: string }>;
 }
@@ -104,30 +117,43 @@ export interface OAuthLoginFlowController {
   errorMessage: string | null;
   actionBusy: boolean;
   startLogin(): Promise<void>;
-  logout(): Promise<void>;
+  logout: (() => Promise<void>) | undefined;
   refresh(): Promise<boolean>;
   // Direct account flows only (GitHub Copilot 重新验证); undefined for the
   // browser-assisted services so they cannot render a dead action.
   refreshTokens: (() => Promise<void>) | undefined;
 }
 
-export function useOAuthLoginFlow(params: {
-  bridge: OAuthLoginFlowBridge;
-  display: OAuthLoginFlowDisplay;
-  // Fired after a successful completeAuthorization (browser handoff done).
-  // The detail sheet uses it to re-probe hasSecret + reload connection status;
-  // catalog modals use it to refresh both their account card and the shared
-  // model connection list without waiting for the modal to close.
-  onLoginSuccess?: () => void | Promise<void>;
-  // When present, startLogin runs this one-shot import instead of the
-  // getAuthUrl -> openAuthUrl -> completeAuthorization handoff, and the
-  // controller exposes the extra `refreshTokens` action.
-  direct?: OAuthDirectAccountFlow;
-}): OAuthLoginFlowController {
-  const { bridge, display } = params;
+type OAuthLoginFlowParams =
+  | {
+      mode: 'create';
+      authorizationBridge: OAuthAuthorizationFlowBridge;
+      display: OAuthLoginFlowDisplay;
+      onLoginSuccess(connection: OAuthConnectionIdentity): void | Promise<void>;
+    }
+  | {
+      mode: 'existing';
+      authorizationBridge: OAuthAuthorizationFlowBridge;
+      accountBridge: OAuthAccountFlowBridge;
+      display: OAuthLoginFlowDisplay;
+      onLoginSuccess?: (connection: OAuthConnectionIdentity) => void | Promise<void>;
+      onAccountChanged?: () => void | Promise<void>;
+    }
+  | {
+      mode: 'direct';
+      accountBridge: OAuthAccountFlowBridge;
+      display: OAuthLoginFlowDisplay;
+      onLoginSuccess?: () => void | Promise<void>;
+      direct: OAuthDirectAccountFlow;
+    };
+
+export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowController {
+  const { display } = params;
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthFlow;
-  const direct = params.direct;
+  const direct = params.mode === 'direct' ? params.direct : undefined;
+  const authorizationBridge = params.mode === 'direct' ? undefined : params.authorizationBridge;
+  const accountBridge = params.mode === 'create' ? undefined : params.accountBridge;
   const toast = useToast();
   const reportHostError = useRuntimeHostSettingsErrorReporter();
   const [state, setState] = useState<SubscriptionSnapshot | null>(null);
@@ -140,8 +166,9 @@ export function useOAuthLoginFlow(params: {
   const oauthLoginFlowMountedRef = useMountedRef();
 
   async function refresh(): Promise<boolean> {
+    if (!accountBridge) return true;
     try {
-      const next = (await bridge.getAccountState()) as SubscriptionSnapshot;
+      const next = (await accountBridge.getAccountState()) as SubscriptionSnapshot;
       if (!oauthLoginFlowMountedRef.current) return false;
       setState(next);
       setErrorMessage(null);
@@ -156,10 +183,15 @@ export function useOAuthLoginFlow(params: {
   }
 
   useEffect(() => {
-    void refresh();
+    if (accountBridge) void refresh();
     return () => {
       pendingGuard.finish();
-      teardownPendingAuthorization(authRequestIdRef, (id) => void bridge.cancelAuthorization(id));
+      if (authorizationBridge) {
+        teardownPendingAuthorization(
+          authRequestIdRef,
+          (id) => void authorizationBridge.cancelAuthorization(id),
+        );
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -192,7 +224,9 @@ export function useOAuthLoginFlow(params: {
         }
         await refresh();
         if (!oauthLoginFlowMountedRef.current) return;
-        if (result.ok && params.onLoginSuccess) await params.onLoginSuccess();
+        if (result.ok && params.mode === 'direct' && params.onLoginSuccess) {
+          await params.onLoginSuccess();
+        }
       } catch (error) {
         if (!oauthLoginFlowMountedRef.current) return;
         reportHostError(
@@ -205,7 +239,8 @@ export function useOAuthLoginFlow(params: {
       return;
     }
     try {
-      const payload = await bridge.getAuthUrl();
+      if (!authorizationBridge || params.mode === 'direct') return;
+      const payload = await authorizationBridge.getAuthUrl();
       if ('ok' in payload) {
         if (!oauthLoginFlowMountedRef.current) return;
         const failureMessage = payload.ok ? copy.retry : subscriptionResultMessage(payload.message, copy.startFailedRetry, locale);
@@ -216,18 +251,18 @@ export function useOAuthLoginFlow(params: {
       authRequestIdRef.current = payload.authRequestId;
       if (!oauthLoginFlowMountedRef.current) {
         authRequestIdRef.current = null;
-        void bridge.cancelAuthorization(payload.authRequestId);
+        void authorizationBridge.cancelAuthorization(payload.authRequestId);
         return;
       }
       setAuthRequestId(payload.authRequestId);
       setStateHint(payload.stateHint);
-      const opened = await bridge.openAuthUrl(payload.authRequestId);
+      const opened = await authorizationBridge.openAuthUrl(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       if (!opened.ok) {
         const message = subscriptionResultMessage(opened.message, copy.openFailedRetry, locale);
         reportHostError(copy.openFailed, message);
         setErrorMessage(message);
-        void bridge.cancelAuthorization(payload.authRequestId);
+        void authorizationBridge.cancelAuthorization(payload.authRequestId);
         authRequestIdRef.current = null;
         setAuthRequestId(null);
         setStateHint(null);
@@ -236,7 +271,7 @@ export function useOAuthLoginFlow(params: {
       const refreshed = await refresh();
       if (!oauthLoginFlowMountedRef.current || !refreshed) return;
       // Wait for the backend to finish polling the provider.
-      const result = await bridge.completeAuthorization(payload.authRequestId);
+      const result = await authorizationBridge.completeAuthorization(payload.authRequestId);
       if (!oauthLoginFlowMountedRef.current) return;
       authRequestIdRef.current = null;
       setAuthRequestId(null);
@@ -245,7 +280,7 @@ export function useOAuthLoginFlow(params: {
         toast.success(copy.loginSuccess, copy.bound(display.name));
         await refresh();
         if (!oauthLoginFlowMountedRef.current) return;
-        if (params.onLoginSuccess) await params.onLoginSuccess();
+        if (params.onLoginSuccess) await params.onLoginSuccess(result.connection);
       } else {
         const message = subscriptionResultMessage(result.message, copy.incompleteRetry, locale);
         reportHostError(copy.incomplete, message);
@@ -255,7 +290,9 @@ export function useOAuthLoginFlow(params: {
       if (!oauthLoginFlowMountedRef.current) return;
       const pendingAuthRequestId = authRequestIdRef.current;
       authRequestIdRef.current = null;
-      if (pendingAuthRequestId) void bridge.cancelAuthorization(pendingAuthRequestId);
+      if (pendingAuthRequestId && authorizationBridge) {
+        void authorizationBridge.cancelAuthorization(pendingAuthRequestId);
+      }
       setAuthRequestId(null);
       setStateHint(null);
       const message = subscriptionActionErrorMessage(error, locale);
@@ -267,6 +304,7 @@ export function useOAuthLoginFlow(params: {
   }
 
   async function logout() {
+    if (!accountBridge) return;
     if (!beginPendingAction('logout')) return;
     try {
       // Direct-import flows keep their original no-confirm, silent-success
@@ -282,13 +320,16 @@ export function useOAuthLoginFlow(params: {
         });
         if (!ok) return;
       }
-      const result = await bridge.logout();
+      const result = await accountBridge.logout();
       if (!oauthLoginFlowMountedRef.current) return;
       if (result.ok) {
         if (!direct) {
           toast.success(copy.loggedOut, copy.credentialsCleared);
         }
         await refresh();
+        if (params.mode === 'existing' && params.onAccountChanged) {
+          await params.onAccountChanged();
+        }
       } else if (direct) {
         reportHostError(
           copy.accountActionFailed(display.name),
@@ -356,7 +397,7 @@ export function useOAuthLoginFlow(params: {
     errorMessage,
     actionBusy,
     startLogin,
-    logout,
+    logout: accountBridge ? logout : undefined,
     refresh,
     refreshTokens: direct ? refreshTokens : undefined,
   };

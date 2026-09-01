@@ -22,13 +22,14 @@
  * from AiSdkBackend (issue #1084, runtime/compaction lane, slice 2).
  *
  * Owns the compaction planning and persistence paths that AiSdkBackend's
- * Runtime request projection drives. Behavior-neutral collaborator: methods move
- * verbatim, turn-scoped state (abortSignal, requestShapeHashBefore) is passed
- * per call, and replay/telemetry capabilities that stay on AiSdkBackend are
- * injected as host callbacks.
+ * Runtime request projection drives. Behavior-neutral collaborator: methods
+ * move verbatim, turn-scoped state (such as abortSignal) is passed per call,
+ * and replay/telemetry capabilities that stay on AiSdkBackend are injected as
+ * host callbacks.
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type {
   BackendCompactHistoryInput,
   BackendCompactHistoryResult,
@@ -43,13 +44,10 @@ import type {
 } from './ai-sdk-compaction-contract.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import {
-  ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
   buildContextBudgetDiagnosticShell,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
-  type ActiveArchivedToolResultPlaceholder,
   type ContextBudgetPolicy,
-  type ToolResultArchiveRef,
 } from './context-budget.js';
 import {
   evaluateHistoryCompactCheckpointReplay,
@@ -79,10 +77,23 @@ import type {
 } from './request-projection.js';
 import {
   rewriteActiveToolResultsInMessages,
-  type ActiveToolResultArchiveCandidate,
+  type ActiveToolResultProjectionSource,
   type ActiveToolResultPruneDiagnosticPatch,
 } from './active-tool-result-prune.js';
-import { collectStaleToolResultArchiveCandidates } from './tool-result-archive.js';
+import {
+  archiveToolResultAsTransition,
+  collectStaleToolResultArchiveCandidates,
+  serializedToolResultProjection,
+  type ToolResultArchiveTransitionServices,
+} from './tool-result-archive-transition.js';
+import { estimateTokens } from './context-budget-helpers.js';
+import {
+  baseToolResultProjection,
+  reduceEffectiveModelProjections,
+  type LoadedModelProjectionTransitions,
+} from './model-projection-transition-ledger.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
 import type { ContextBudgetExhaustedDetail, SessionEvent } from '@maka/core/events';
 import type { AsyncEventQueue } from './async-queue.js';
@@ -90,6 +101,7 @@ import type { MakaTool } from './tool-runtime.js';
 import {
   buildRuntimeEventModelReplayPlan,
   collectToolActivityTurnIds,
+  compatibleProviderReasoningReplayEventIds,
   type RuntimeEventModelReplayPlan,
 } from './model-history.js';
 import { toolSchemaCharsForDiagnostics } from './request-shape.js';
@@ -152,6 +164,8 @@ export interface AutomaticMemoryCompactionDecision {
 export interface AiSdkCompactionDeps {
   input: AiSdkCompactionCapabilities;
   sessionId: string;
+  targetConnectionId: string | undefined;
+  targetProviderStateIdentity: `sha256:${string}` | undefined;
   now: () => number;
   modelAdapter: ModelAdapter;
   /**
@@ -174,18 +188,17 @@ export interface AiSdkCompactionDeps {
   materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
     imageBudget: ProviderImageBudget,
-    checkpoint?: HistoryCompactCheckpoint,
+    checkpoint: HistoryCompactCheckpoint | undefined,
+    providerReasoningReplayEventIds: ReadonlySet<string>,
   ) => Promise<ModelMessage[]>;
   canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
 }
 
 export class AiSdkCompaction {
   private readonly input: AiSdkCompactionCapabilities;
   private readonly sessionId: string;
+  private readonly targetConnectionId: string | undefined;
+  private readonly targetProviderStateIdentity: `sha256:${string}` | undefined;
   private readonly now: () => number;
   private readonly modelAdapter: ModelAdapter;
   private readonly createProviderRequestTracker: (input: {
@@ -198,13 +211,10 @@ export class AiSdkCompaction {
   private readonly materializeRuntimeReplayPlan: (
     plan: RuntimeEventModelReplayPlan,
     imageBudget: ProviderImageBudget,
-    checkpoint?: HistoryCompactCheckpoint,
+    checkpoint: HistoryCompactCheckpoint | undefined,
+    providerReasoningReplayEventIds: ReadonlySet<string>,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  private readonly appendTurnTailPrompt: (
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ) => ModelMessage['content'];
   private historyCompactAbortController: AbortController | null = null;
   /**
    * Session-scoped circuit for exact malformed compaction inputs. A retry or
@@ -219,12 +229,60 @@ export class AiSdkCompaction {
   constructor(deps: AiSdkCompactionDeps) {
     this.input = deps.input;
     this.sessionId = deps.sessionId;
+    this.targetConnectionId = deps.targetConnectionId;
+    this.targetProviderStateIdentity = deps.targetProviderStateIdentity;
     this.now = deps.now;
     this.modelAdapter = deps.modelAdapter;
     this.createProviderRequestTracker = deps.createProviderRequestTracker;
     this.materializeRuntimeReplayPlan = deps.materializeRuntimeReplayPlan;
     this.canReplayProviderNative = deps.canReplayProviderNative;
-    this.appendTurnTailPrompt = deps.appendTurnTailPrompt;
+  }
+
+  /**
+   * Every transition this session has committed.
+   *
+   * Read from the durable ledger rather than remembered: a Turn that pruned and
+   * a Turn that replays it may be different processes. A read that fails or that
+   * this build cannot fully decode is reported, never smoothed into "there are
+   * no transitions" — a caller that cannot see the whole chain may still show
+   * what it folded, but it may not append a successor onto a state it only
+   * partly knows.
+   */
+  private async loadModelProjectionTransitions(): Promise<LoadedModelProjectionTransitions> {
+    const loaded = await this.input.loadModelProjectionTransitions?.();
+    const resolved = {
+      transitions: [],
+      unreadableTargets: new Set<string>(),
+      unscopedUnreadable: 0,
+      ...loaded,
+    };
+    if (resolved.unscopedUnreadable > 0) {
+      // The record names no target, so nothing can be confined and nothing can
+      // be shown: replaying raw history here would show whatever that record
+      // removed. Failing is recoverable; showing it again is not.
+      throw new Error('model projection transition ledger contains an unscoped unreadable record');
+    }
+    return resolved;
+  }
+
+  /**
+   * The archive-and-commit writer, or `undefined` when this session cannot make
+   * a lossy model-history change durable. Without both halves — an archive to
+   * put the body in and a ledger to record the replacement — no prune may run.
+   */
+  private toolResultArchiveTransitionServices(
+    turnId: string,
+  ): ToolResultArchiveTransitionServices | undefined {
+    const archive = this.input.toolResultArchive?.services.archiveToolResult;
+    const record = this.input.recordModelProjectionTransition;
+    if (!archive || !record) return undefined;
+    return {
+      sessionId: this.sessionId,
+      archiveToolResult: (candidate) => archive(candidate),
+      recordTransition: (transition) => record(transition, turnId),
+      loadTransitions: () => this.loadModelProjectionTransitions(),
+      now: this.now,
+    };
   }
 
   /** Abort an in-flight manual history compaction (called by AiSdkBackend.stop). */
@@ -234,7 +292,6 @@ export class AiSdkCompaction {
 
   public async compactHistory(
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
-    requestShapeHashBefore?: string,
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
     const historyCompactAbortController = new AbortController();
@@ -266,6 +323,7 @@ export class AiSdkCompaction {
           canContinueHistoryCompactCheckpointForModel(
             loaded,
             this.input.connection,
+            this.targetConnectionId,
             this.input.modelId,
           )
         ) {
@@ -337,14 +395,19 @@ export class AiSdkCompaction {
           await this.summarizeWithFailureCircuit(summarizer, {
             sessionId: this.sessionId,
             turnId: input.turnId,
-            source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+            runId: input.runId,
+            source: {
+              foldedRuntimeEvents: [...coveredRuntimeEvents],
+              ...(input.runtimeContextRunHeaders
+                ? { runHeaders: input.runtimeContextRunHeaders }
+                : {}),
+            },
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
             ...(previousCheckpoint ? { previousCheckpoint } : {}),
             inputBudget: {
               maxEstimatedTokens: policy.maxHistoryEstimatedTokens ?? estimatedTokensBefore,
               charsPerToken,
             },
-            ...(requestShapeHashBefore ? { requestShapeHashBefore } : {}),
             abortSignal: historyCompactAbortController.signal,
             ...(tracker ? { providerRequestTracker: tracker } : {}),
           }),
@@ -452,17 +515,32 @@ export class AiSdkCompaction {
     summarizer: HistoryCompactSummarizer,
     input: HistoryCompactSummaryInput,
   ): Promise<string | HistoryCompactProviderState | undefined> {
+    const foldedRunIds = new Set(input.source.foldedRuntimeEvents.map((event) => event.runId));
+    const sourceRunRoutes = input.source.runHeaders
+      ?.filter((run) => foldedRunIds.has(run.runId))
+      .map((run) => ({
+        runId: run.runId,
+        connectionId: run.llmConnectionId,
+        modelId: run.modelId,
+      }))
+      .sort((left, right) => left.runId.localeCompare(right.runId));
     const fingerprint = sha256(
       stableStringifyForSignature({
-        version: 1,
+        version: 2,
         connection: this.input.connection,
         modelId: this.input.modelId,
         historyCompactRoute: this.input.historyCompactRoute,
         contextBudget: this.input.contextBudget,
         inputBudget: input.inputBudget,
-        requestShapeHashBefore: input.requestShapeHashBefore,
-        previousCheckpointId: input.previousCheckpoint?.checkpointId,
+        previousCheckpoint: input.previousCheckpoint,
+        currentRunEventIds: input.runId
+          ? input.source.foldedRuntimeEvents
+              .filter((event) => event.runId === input.runId)
+              .map((event) => event.id)
+          : [],
+        sourceRunRoutes,
         foldedRuntimeEvents: input.source.foldedRuntimeEvents,
+        newlyFoldedRuntimeEvents: input.newlyFoldedRuntimeEvents,
       }),
     );
     const priorFailure = this.malformedSummaryFailures.get(fingerprint);
@@ -487,58 +565,116 @@ export class AiSdkCompaction {
     }
   }
 
-  public async prepareContextBudgetPolicy(runtimeContext: readonly RuntimeEvent[]): Promise<{
+  /**
+   * Fold the durable transition ledger onto any slice of model-visible history.
+   *
+   * The current Turn's own events go through here on every provider step, for
+   * the same reason prior Turns do: what the model sees is the folded ledger,
+   * not the raw one. A ledger this build cannot read in full leaves the slice
+   * untouched — the content is then merely unpruned, never wrongly replaced.
+   */
+  public async foldEffectiveModelHistory(events: readonly RuntimeEvent[]): Promise<RuntimeEvent[]> {
+    const loaded = await this.loadModelProjectionTransitions();
+    if (loaded.transitions.length === 0) return [...events];
+    return reduceEffectiveModelProjections(events, loaded.transitions).events;
+  }
+
+  /**
+   * Fold the durable transition ledger onto this session's prior history, and
+   * commit any new stale-result transition the prune policy calls for.
+   *
+   * This is the one seam where raw RuntimeEvents become effective model
+   * history: the caller uses the returned events for replay, budgeting and
+   * compaction alike, so no later stage can read content a transition removed.
+   */
+  public async prepareContextBudgetPolicy(
+    runtimeContext: readonly RuntimeEvent[],
+    turnId: string,
+  ): Promise<{
     policy: ContextBudgetPolicy | undefined;
+    events: RuntimeEvent[];
     diagnosticPatch?: Partial<ContextBudgetDiagnostic>;
   }> {
     const policy = this.input.contextBudget;
-    if (!policy) return { policy };
+    const loaded = await this.loadModelProjectionTransitions();
+    let transitions = loaded.transitions;
+    let effective = reduceEffectiveModelProjections(
+      runtimeContext,
+      transitions,
+      loaded.unreadableTargets,
+    );
+    if (!policy) return { policy, events: effective.events };
     let nextPolicy = policy;
+    let diagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
 
-    if (policy.staleToolResultPrune?.enabled === true) {
+    // A chain this reader cannot see in full is a chain it must not extend: a
+    // successor built on a partly known state would name the wrong predecessor
+    // and be permanently inert, losing the content it archived.
+    const services =
+      loaded.unreadableTargets.size === 0
+        ? this.toolResultArchiveTransitionServices(turnId)
+        : undefined;
+    if (policy.staleToolResultPrune?.enabled === true && services) {
+      // The decision is taken over EFFECTIVE history, so a result an earlier
+      // Turn already replaced is never re-measured — or re-archived — at the
+      // size it used to have.
       const candidates = collectStaleToolResultArchiveCandidates(
-        runtimeContext,
-        policy?.staleToolResultPrune,
-        policy?.charsPerToken ?? 4,
+        effective.events,
+        policy.staleToolResultPrune,
+        policy.charsPerToken ?? 4,
       );
-      if (candidates.length > 0) {
-        const archiveRefs = new Map<string, ToolResultArchiveRef>();
-        const existingArchiveRefs = nextPolicy.staleToolResultPrune?.archiveRefs;
-        if (Array.isArray(existingArchiveRefs)) {
-          for (const ref of existingArchiveRefs) archiveRefs.set(ref.runtimeEventId, ref);
-        } else if (existingArchiveRefs) {
-          for (const ref of Object.values(existingArchiveRefs))
-            archiveRefs.set(ref.runtimeEventId, ref);
+      const committed: ModelProjectionTransition[] = [];
+      let archiveFailures = 0;
+      let estimatedTokensBefore = 0;
+      let estimatedTokensAfter = 0;
+      for (const candidate of candidates) {
+        const outcome = await archiveToolResultAsTransition(services, {
+          runtimeEventId: candidate.runtimeEventId,
+          turnId: candidate.turnId,
+          toolCallId: candidate.toolCallId,
+          toolName: candidate.toolName,
+          sourceProjection: candidate.sourceProjection,
+          serializedResult: candidate.serializedResult,
+          originalBytes: candidate.originalBytes,
+          originalEstimatedTokens: candidate.originalEstimatedTokens,
+          reason: candidate.reason,
+          result: candidate.result,
+        });
+        if (!outcome) {
+          archiveFailures += 1;
+          continue;
         }
-        for (const candidate of candidates) {
-          const bodySha256 = sha256(candidate.serializedResult);
-          const archived = await Promise.resolve(
-            this.input.toolResultArchive?.services.archiveToolResult({
-              ...candidate,
-              sessionId: this.sessionId,
-              bodySha256,
-            }),
-          ).catch(() => undefined);
-          if (!archived?.artifactId) continue;
-          archiveRefs.set(candidate.runtimeEventId, {
-            runtimeEventId: candidate.runtimeEventId,
-            toolCallId: candidate.toolCallId,
-            toolName: candidate.toolName,
-            artifactId: archived.artifactId,
-            bodySha256,
-            originalEstimatedTokens: candidate.originalEstimatedTokens,
-            originalBytes: candidate.originalBytes,
-            rewriteVersion: ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
-            reason: candidate.reason,
-          });
-        }
-
-        nextPolicy = {
-          ...nextPolicy,
-          staleToolResultPrune: {
-            ...nextPolicy.staleToolResultPrune!,
-            archiveRefs: [...archiveRefs.values()],
-          },
+        committed.push(outcome.transition);
+        estimatedTokensBefore += candidate.originalEstimatedTokens;
+        estimatedTokensAfter += estimateTokens(
+          serializedToolResultProjection(outcome.transition.replacement).length,
+          policy.charsPerToken ?? 4,
+        );
+      }
+      if (committed.length > 0) {
+        transitions = [...transitions, ...committed];
+        effective = reduceEffectiveModelProjections(
+          runtimeContext,
+          transitions,
+          loaded.unreadableTargets,
+        );
+      }
+      if (committed.length > 0 || archiveFailures > 0) {
+        diagnosticPatch = {
+          ...(committed.length > 0
+            ? {
+                prunedToolResults: committed.length,
+                prunedToolResultEstimatedTokensBefore: estimatedTokensBefore,
+                prunedToolResultEstimatedTokensAfter: estimatedTokensAfter,
+                archivePlaceholders: committed.length,
+                archivePlaceholderReasonCounts: {
+                  stale_tool_result_pruned_before_compact: committed.length,
+                },
+              }
+            : {}),
+          ...(archiveFailures > 0
+            ? { archiveWriteFailures: archiveFailures, unarchivedToolResults: archiveFailures }
+            : {}),
         };
       }
     }
@@ -554,6 +690,7 @@ export class AiSdkCompaction {
       canReplayHistoryCompactCheckpointForModel(
         loadedCheckpoint,
         this.input.connection,
+        this.targetConnectionId,
         this.input.modelId,
       )
     ) {
@@ -562,7 +699,11 @@ export class AiSdkCompaction {
         historyCompact: { ...nextPolicy.historyCompact!, checkpoint: loadedCheckpoint },
       };
     }
-    return { policy: nextPolicy };
+    return {
+      policy: nextPolicy,
+      events: effective.events,
+      ...(diagnosticPatch ? { diagnosticPatch } : {}),
+    };
   }
 
   public buildActiveToolResultPruneProjection(
@@ -572,14 +713,67 @@ export class AiSdkCompaction {
   ): RequestProjectionStage | undefined {
     const policy = this.input.contextBudget?.activeToolResultPrune;
     if (policy?.enabled !== true) return undefined;
+    const services = this.toolResultArchiveTransitionServices(turnId);
+    // No durable ledger, no lossy rewrite. The old per-Turn placeholder map let
+    // this run prune content that the NEXT request would have shown again.
+    if (!services || !this.input.loadTurnRuntimeEvents) return undefined;
 
-    const archivedPlaceholders = new Map<string, ActiveArchivedToolResultPlaceholder>();
+    // The current Turn reads the same folded history as every other consumer.
+    // Nothing here remembers what this run already archived: the ledger says it,
+    // and a step that measures the raw body again would archive it again.
+    let effective: { events: RuntimeEvent[]; lastApplied: Map<string, string> } | undefined;
+    const loadEffectiveTurnEvents = async (): Promise<typeof effective> => {
+      if (effective) return effective;
+      const loaded = await this.loadModelProjectionTransitions();
+      if (loaded.unreadableTargets.size > 0) return undefined;
+      let turnEvents: RuntimeEvent[];
+      try {
+        turnEvents = await this.input.loadTurnRuntimeEvents!(turnId);
+      } catch {
+        return undefined;
+      }
+      const reduction = reduceEffectiveModelProjections(turnEvents, loaded.transitions);
+      const lastApplied = new Map<string, string>();
+      for (const transition of reduction.applied) {
+        lastApplied.set(transition.target.runtimeEventId, transition.transitionId);
+      }
+      effective = { events: reduction.events, lastApplied };
+      return effective;
+    };
+
+    const resolveProjection = async (
+      toolCallId: string,
+    ): Promise<ActiveToolResultProjectionSource | undefined> => {
+      const current = await loadEffectiveTurnEvents();
+      if (!current) return undefined;
+      const event = current.events.find(
+        (candidate) =>
+          candidate.partial !== true &&
+          candidate.content?.kind === 'function_response' &&
+          candidate.content.id === toolCallId,
+      );
+      if (!event || event.content?.kind !== 'function_response') return undefined;
+      const projection = baseToolResultProjection(event);
+      if (!projection) return undefined;
+      const previousTransitionId = current.lastApplied.get(event.id);
+      return {
+        runtimeEventId: event.id,
+        turnId: event.turnId,
+        toolName: event.content.name,
+        projection,
+        ...(previousTransitionId ? { previousTransitionId } : {}),
+      };
+    };
+
     return async (options) => {
       const eligibleToolCallIds = collectPrunableCompletedStepToolCallIds(
         options.completedSteps,
         includeNewestStep,
       );
       if (eligibleToolCallIds.size === 0) return undefined;
+      // Each provider step rebuilds its messages from the durable Turn ledger,
+      // so each step must re-fold it too.
+      effective = undefined;
       const rewritten = await rewriteActiveToolResultsInMessages({
         messages: options.messages,
         policy,
@@ -595,16 +789,8 @@ export class AiSdkCompaction {
             stepNumber,
           })),
         ),
-        archivedPlaceholders,
-        archiveToolResult: async (candidate) => {
-          return await Promise.resolve(
-            this.input.toolResultArchive?.services.archiveToolResult({
-              ...candidate,
-              sessionId: this.sessionId,
-              runtimeEventId: candidate.runtimeEventId ?? activeToolResultArchiveKey(candidate),
-            }),
-          );
-        },
+        resolveProjection,
+        transitions: services,
       });
       if (hasActiveToolResultPruneDiagnosticPatch(rewritten.diagnosticPatch)) {
         onDiagnosticPatch?.(rewritten.diagnosticPatch);
@@ -657,7 +843,12 @@ export class AiSdkCompaction {
     const priorContentEvents = (input.runtimeContext ?? [])
       .filter((event) => event.turnId !== input.turnId)
       .filter(isHistoryCompactContentEvent);
-    return new MidTurnCapacityCompactState(headAnchor, priorContentEvents, capacity);
+    return new MidTurnCapacityCompactState(
+      headAnchor,
+      priorContentEvents,
+      input.runtimeContextRunHeaders ?? [],
+      capacity,
+    );
   }
 
   /**
@@ -666,7 +857,7 @@ export class AiSdkCompaction {
    * usage + a signed char/4 payload delta, tool schemas included) against
    * `contextWindow - reserve`; over the high-water, fold a safe completed
    * prefix into a durable mid_turn checkpoint and continue the same turn on
-   * `[compact block, verbatim head anchor, preserved tail]`.
+   * `[compact block, verbatim head anchor]`.
    *
    * This hook never terminates the turn: every failure fails open with a
    * diagnostic and records itself for the final-request estimate owner, which
@@ -683,7 +874,6 @@ export class AiSdkCompaction {
     queue: AsyncEventQueue<SessionEvent>,
     providerTools: readonly MakaTool[],
     fallbackActiveTools: () => readonly string[],
-    turnTailPrompt: string | undefined,
     systemPromptChars: number,
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void,
     origin: ProviderRequestOrigin,
@@ -822,7 +1012,6 @@ export class AiSdkCompaction {
         providerTools,
         activeToolsForStep,
         systemPromptChars,
-        turnTailPrompt,
         memoryCompactionDecision,
         onMemoryCompaction,
         abortSignal,
@@ -869,7 +1058,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeToolsForStep: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     memoryCompactionDecision?: () => AutomaticMemoryCompactionDecision;
     onMemoryCompaction?: (input: AutomaticMemoryCompactionDispatch) => void;
     phase?: 'pre_turn' | 'mid_turn';
@@ -882,7 +1070,6 @@ export class AiSdkCompaction {
       providerTools,
       activeToolsForStep,
       systemPromptChars,
-      turnTailPrompt,
       abortSignal,
     } = input;
     if (state.malformedSummaryFailure) {
@@ -1002,7 +1189,11 @@ export class AiSdkCompaction {
         return await this.summarizeWithFailureCircuit(summarizer, {
           sessionId: this.sessionId,
           turnId,
-          source: { foldedRuntimeEvents: [...coveredRuntimeEvents] },
+          ...(input.origin.runId ? { runId: input.origin.runId } : {}),
+          source: {
+            foldedRuntimeEvents: [...coveredRuntimeEvents],
+            runHeaders: state.priorRunHeaders,
+          },
           ...(previousCheckpoint ? { previousCheckpoint } : {}),
           newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
           inputBudget: {
@@ -1049,22 +1240,17 @@ export class AiSdkCompaction {
         diagnosticReason: 'replacement_unmaterializable',
       };
     }
-    // The head anchor must render exactly like the raw projection's current
-    // user message: the initial request decorates it with the volatile turn
-    // tail (cwd, shell context, task state — see send()), which is not part
-    // of the durable anchor bytes. Reuse the same decoration owner
-    // (appendTurnTailPrompt) on the anchor's replay item so a replacement
-    // never silently drops that context — and never counts the drop as
-    // shrinkage in the guard below.
-    const replayItemsWithAnchorTail = replayPlan.items.map((item) =>
-      item.kind === 'text' && item.role === 'user' && item.eventId === state.headAnchor.id
-        ? { ...item, content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string }
-        : item,
-    );
     const replacementMessages = await this.materializeRuntimeReplayPlan(
-      { ...replayPlan, items: replayItemsWithAnchorTail },
+      replayPlan,
       input.origin.imageBudget,
       plan.checkpoint,
+      compatibleProviderReasoningReplayEventIds(
+        plan.replacementEvents,
+        state.priorRunHeaders,
+        this.targetProviderStateIdentity,
+        this.input.modelId,
+        input.origin.runId,
+      ),
     );
     // Apply the shape only when it actually shrinks the request versus the
     // reference payload (the incoming request for the proactive hook, the
@@ -1156,7 +1342,6 @@ export class AiSdkCompaction {
     providerTools: readonly MakaTool[];
     activeTools: readonly string[];
     systemPromptChars: number;
-    turnTailPrompt: string | undefined;
     queue: AsyncEventQueue<SessionEvent>;
     onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void;
     origin: ProviderRequestOrigin;
@@ -1212,7 +1397,6 @@ export class AiSdkCompaction {
       providerTools: input.providerTools,
       activeToolsForStep: input.activeTools,
       systemPromptChars: input.systemPromptChars,
-      turnTailPrompt: input.turnTailPrompt,
       memoryCompactionDecision: input.memoryCompactionDecision,
       onMemoryCompaction: input.onMemoryCompaction,
       abortSignal: input.abortSignal,
@@ -1422,12 +1606,6 @@ function mergeCountsInto(
 
 // -- moved helpers (prepare-step / signature / prune) ------------------------
 
-function activeToolResultArchiveKey(
-  candidate: ActiveToolResultArchiveCandidate & { bodySha256: string },
-): string {
-  return `active:${candidate.turnId}:${candidate.toolCallId}:${candidate.bodySha256}`;
-}
-
 /**
  * Tool results from the newest completed step have not crossed the provider
  * boundary yet: projection is invoked immediately before the first request
@@ -1591,6 +1769,7 @@ export class MidTurnCapacityCompactState {
   constructor(
     readonly headAnchor: RuntimeEvent,
     readonly priorContentEvents: readonly RuntimeEvent[],
+    readonly priorRunHeaders: readonly AgentRunHeader[],
     readonly capacity: ContextBudgetCapacity,
   ) {}
 }

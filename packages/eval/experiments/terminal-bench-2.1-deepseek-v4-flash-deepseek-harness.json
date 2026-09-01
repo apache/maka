@@ -34,8 +34,8 @@
       ],
       "egressProxy": {
         "composeSourceEnv": "MAKA_EVAL_MAKA_BUNDLE_PATH",
-        "composeRelativePath": "packages/eval/harbor/docker-compose-egress-proxy.yaml",
-        "networkPolicyRelativePath": "packages/eval/harbor/egress-proxy/network-policy",
+        "composeRelativePath": "node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml",
+        "networkPolicyRelativePath": "node_modules/@maka/eval/harbor/egress-proxy/network-policy",
         "proxyUrl": "http://maka-eval-mitmproxy:8080",
         "allowedHost": "maka-eval-mitmproxy",
         "containerCaPath": "/opt/maka-egress/mitmproxy-ca-cert.pem"
@@ -73,7 +73,7 @@
           "DEEPSEEK_API_KEY": "DEEPSEEK_API_KEY"
         },
         "args": [
-          "/opt/maka-agent/packages/eval/dist/harbor-external-subject.js",
+          "/opt/maka-agent/node_modules/@maka/eval/dist/harbor-external-subject.js",
           "deepseek-harness",
           "https://api.deepseek.com/v1",
           "/",

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -238,17 +239,6 @@ function findButton(document: Document, label: string): HTMLButtonElement {
   assert.ok(button, `missing button: ${label}`);
   return button;
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((accept, decline) => {
-    resolve = accept;
-    reject = decline;
-  });
-  return { promise, resolve, reject };
-}
-
 function goalState() {
   return {
     id: 'goal-1',

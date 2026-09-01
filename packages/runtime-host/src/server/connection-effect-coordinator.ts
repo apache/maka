@@ -573,6 +573,7 @@ function storeFailure<
       return operationFailure('persistence_failed', 'Connection effect persistence failed');
     case 'invalid_policy_input':
     case 'invalid_connection_input':
+    case 'revision_conflict':
       return operationFailure('invalid_request', 'Connection effect request is invalid');
     case 'invalid_credential_input':
       throw new Error('Connection effect admitted an invalid credential operation');

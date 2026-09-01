@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createReadOnlyPermissionProfile, createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
@@ -179,15 +180,6 @@ describe('A boundary read that fails (#1629)', () => {
   });
 
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolveValue) => {
-    resolve = resolveValue;
-  });
-  return { promise, resolve };
-}
-
 /** Let every pending microtask chain run to completion. */
 async function settle(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));

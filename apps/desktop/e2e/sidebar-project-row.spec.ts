@@ -147,6 +147,58 @@ test('task row action menu accepts pointer selection', async ({
   await expect(page.getByRole('dialog', { name: '重命名任务' })).toBeVisible();
 });
 
+test('project and task rows show contextual hover details', async ({
+  projectSidebarWindow: page,
+}) => {
+  await page.keyboard.press('Escape');
+  await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  const taskSessionId = `${LONG_SIDEBAR_SESSION_PREFIX}00`;
+  const taskRow = sessionRow(sidebar, taskSessionId);
+  const taskNavigation = taskRow.locator('.astryx-side-nav-item');
+  await expect(taskNavigation).toHaveAccessibleDescription(
+    /已归档第 00 条研究记录。.*glm-5\.1/,
+  );
+  // A new Electron window can open under the cursor left by the prior test;
+  // force a real leave → enter transition so the delayed hover trigger fires.
+  await page.mouse.move(800, 400);
+  await taskNavigation.hover();
+
+  const taskCard = page.locator('.maka-sidebar-hover-card[data-kind="session"]');
+  await expect(taskCard).toBeVisible();
+  await expect(taskCard.locator('.maka-sidebar-hover-card-title')).toHaveText('任务 00');
+  await expect(taskCard.locator('.maka-sidebar-hover-card-preview')).toHaveText(
+    '已归档第 00 条研究记录。',
+  );
+  await expect(taskCard.locator('.maka-sidebar-hover-card-path')).toContainText(
+    'e2e-fixture-sidebar-search-modal-open',
+  );
+  await expect(taskCard.locator('.maka-sidebar-hover-card-meta')).toContainText('glm-5.1');
+
+  await sidebar.getByRole('radio', { name: '按项目', exact: true }).click();
+  const projectRow = sidebar.locator(
+    `[data-project-id="project:${LONG_SIDEBAR_PROJECT_ID}"]`,
+  );
+  const projectNavigation = projectRow.locator(':scope > div > .astryx-side-nav-item');
+  await expect(projectNavigation).toHaveAccessibleDescription(/3 个任务.*目录可用/);
+  await projectNavigation.hover();
+
+  const projectCard = page.locator('.maka-sidebar-hover-card[data-kind="project"]');
+  await expect(projectCard).toBeVisible();
+  await expect(projectCard.locator('.maka-sidebar-hover-card-title')).toHaveText(
+    LONG_SIDEBAR_PROJECT_NAME,
+  );
+  await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('3 个任务');
+  await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('目录可用');
+
+  const ungroupedRow = sidebar.locator('[data-project-id="__ungrouped__"]');
+  await ungroupedRow.locator(':scope > div > .astryx-side-nav-item').focus();
+  await expect(
+    page.getByRole('dialog', { name: '未归属项目 分组详情', exact: true }),
+  ).toBeVisible();
+});
+
 test('rail grouping survives a renderer reload', async ({ projectSidebarWindow: page }) => {
   await page.keyboard.press('Escape');
   await expect(page.locator('[data-maka-contract="search-modal"]')).not.toBeVisible();

@@ -43,6 +43,7 @@ import {
   type RuntimeHostManagedDeploymentConfig,
 } from '../operator/managed-deployment.js';
 import { resolveRuntimeHostNpmDeploymentLayout } from '../operator/update-package-evidence.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const ROOT_ID = 'a'.repeat(64);
 const config: RuntimeHostManagedDeploymentConfig = {
@@ -202,9 +203,9 @@ function processExists(pid: number): boolean {
 }
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition did not become true');
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 25,
+    message: 'condition did not become true',
+  });
 }

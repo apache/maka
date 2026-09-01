@@ -27,7 +27,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -44,6 +44,7 @@ import {
   type HistoryCompactCheckpoint,
   type HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
+import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import {
   createTestAiSdkBackend,
   testToolResultArchive,
@@ -61,6 +62,7 @@ function reactiveStructuredSummary(foldedRuntimeEvents: RuntimeEvent[]): string 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const ANCHOR_TEXT = 'reactive overflow recovery keep my exact words';
 const OVERFLOW_MESSAGE = 'prompt is too long: 213462 tokens > 200000 maximum';
+const PROVIDER_STATE_IDENTITY = `sha256:${'1'.repeat(64)}` as const;
 
 /**
  * Per-provider-request script. Each entry drives one `doStream` invocation:
@@ -130,13 +132,17 @@ interface ReactiveFixtureOptions {
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
   bigPriors?: boolean;
+  /** Leave same-route and cross-route signed thinking in a reduced pre-turn tail. */
+  reasoningReplayTail?: boolean;
   /** Add one hydrated historical image that fits the proactive capacity estimate. */
   imagePrior?: boolean;
   /** Put one image attachment on the durable current-turn user anchor. */
   currentImage?: boolean;
   /** Make Read return a newly produced image during this turn. */
   liveImageResult?: boolean;
-  summarize?: () =>
+  summarize?: (input: {
+    source: { foldedRuntimeEvents: RuntimeEvent[] };
+  }) =>
     | Promise<string | HistoryCompactProviderState | undefined>
     | string
     | HistoryCompactProviderState
@@ -193,6 +199,7 @@ interface ReactiveFixture {
   summarizerCalls: () => number;
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
+  priorRunHeaders: AgentRunHeader[];
   events: SessionEvent[];
   llmCalls: ReactiveLlmCall[];
   /** Canonical settlements, whole, when `canonicalAccounting` is on. */
@@ -457,7 +464,37 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
             'model',
             `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
           ),
+          ...(options.reasoningReplayTail
+            ? [
+                {
+                  ...runtimeTextEvent('same-route-reasoning', 'turn-0', 'model', ''),
+                  runId: 'same-route-prior-run',
+                  invocationId: 'same-route-prior-run',
+                  content: {
+                    kind: 'thinking' as const,
+                    text: 'SAME_ROUTE_PRIVATE_REASONING',
+                    signature: 'same-route-signature',
+                  },
+                },
+                {
+                  ...runtimeTextEvent('prior-reasoning', 'turn-0', 'model', ''),
+                  runId: 'prior-run',
+                  invocationId: 'prior-run',
+                  content: {
+                    kind: 'thinking' as const,
+                    text: 'CROSS_ROUTE_PRIVATE_REASONING',
+                    signature: 'cross-route-signature',
+                  },
+                },
+              ]
+            : []),
         ];
+  const priorRunHeaders: AgentRunHeader[] = options.reasoningReplayTail
+    ? [
+        priorRunHeader('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
+        priorRunHeader('prior-run', 'source-connection-id', 'source-model-id'),
+      ]
+    : [];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
     ...(options.currentImage
@@ -517,13 +554,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
           return options.providerNative
             ? ({
                 kind: 'openai_codex_remote_v2',
-                connectionSlug: 'codex-subscription',
+                connectionId: 'test-connection-id',
                 modelId: 'mock-model-id',
                 itemId: 'cmp_reactive',
                 encryptedContent: 'REACTIVE_ENCRYPTED_STATE',
               } satisfies HistoryCompactProviderState)
             : options.summarize
-              ? await options.summarize()
+              ? await options.summarize(input)
               : reactiveStructuredSummary(input.source.foldedRuntimeEvents);
         },
         recordHistoryCompactCheckpoint: (checkpoint: HistoryCompactCheckpoint) => {
@@ -548,6 +585,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       models: [{ id: 'mock-model-id', contextWindow }],
     },
     apiKey: 'sk-test',
+    ...(options.reasoningReplayTail ? { providerStateIdentity: PROVIDER_STATE_IDENTITY } : {}),
     modelId: 'mock-model-id',
     modelFactory: () => model,
     ...(options.imagePrior || options.currentImage || options.liveImageResult
@@ -574,7 +612,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ref: {
                 kind: 'session_file' as const,
                 sessionId: 'session-1',
-                relativePath: 'live.png',
+                relativePath: 'live_image',
               },
             };
           }
@@ -659,6 +697,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     summarizerCalls: () => counters.summarizerCalls,
     anchor,
     priorEvents,
+    priorRunHeaders,
     events,
     llmCalls,
     commits,
@@ -680,6 +719,7 @@ async function runTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
+    runtimeContextRunHeaders: fixture.priorRunHeaders,
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -1115,6 +1155,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
       assert.equal(prompt.includes('PRIOR_FACT'), false);
     }
     assert.equal(successorPrompt.includes(RAW_SPAN_ONE), true);
+  });
+
+  test('step-0 overflow recovery gates reasoning on retry and durable reload', async () => {
+    let summarizeCalls = 0;
+    const fixture = buildReactiveFixture({
+      script: ['overflow', 'tool', 'done'],
+      bigPriors: true,
+      reasoningReplayTail: true,
+      summarize: (input) => {
+        summarizeCalls += 1;
+        if (summarizeCalls <= 2) {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        }
+        return reactiveStructuredSummary(input.source.foldedRuntimeEvents);
+      },
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.summarizerCalls(), 3);
+    for (const call of fixture.model.doStreamCalls.slice(1)) {
+      const prompt = JSON.stringify(call.prompt);
+      assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
+      assert.match(prompt, new RegExp(ANCHOR_TEXT));
+      assert.match(prompt, /SAME_ROUTE_PRIVATE_REASONING/);
+      assert.match(prompt, /same-route-signature/);
+      assert.doesNotMatch(prompt, /CROSS_ROUTE_PRIVATE_REASONING/);
+      assert.doesNotMatch(prompt, /cross-route-signature/);
+    }
+    assert.match(JSON.stringify(fixture.model.doStreamCalls[2]?.prompt), new RegExp(RAW_SPAN_ONE));
   });
 
   test('the resend seals the fold recovery made for it, and the request before it seals none', async () => {
@@ -1825,11 +1895,32 @@ function header(): SessionHeader {
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model-id',
     permissionMode: 'ask',
     schemaVersion: 1,
+  };
+}
+
+function priorRunHeader(runId: string, llmConnectionId: string, modelId: string): AgentRunHeader {
+  return {
+    runId,
+    sessionId: 'session-1',
+    turnId: 'turn-0',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionId,
+    llmConnectionSlug: 'anthropic-source',
+    modelId,
+    providerStateIdentity:
+      runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
+    cwd: '/tmp/maka',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 2,
+    completedAt: 2,
   };
 }
 

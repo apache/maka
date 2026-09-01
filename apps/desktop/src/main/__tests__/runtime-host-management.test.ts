@@ -19,12 +19,15 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+  RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
   runtimeHostAccessCredentialFingerprint,
   type RuntimeHostServiceManagementFrame,
 } from '@maka/runtime-host/operator';
 import { createDesktopRuntimeHostManagement } from '../runtime-host-management.js';
+import { createDesktopRuntimeHostPeerMeshManagement } from '../runtime-host-peer-mesh-management.js';
 import type { DesktopRuntimeHostManagementProvider } from '../runtime-host-management-provider.js';
 import type {
   DesktopRuntimeHostSshAccessInput,
@@ -34,8 +37,99 @@ import type {
   DesktopRuntimeHostSshUpdatePolicyInput,
   DesktopRuntimeHostSshUpdateReconciliationInput,
 } from '../runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostWslManagementInput } from '../runtime-host-wsl-controller.js';
 
 const DEPLOYMENT_ID = '11111111-1111-4111-8111-111111111111';
+
+test('cancels a live Runtime Host Mesh status query', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const pending = new Promise<never>(() => undefined);
+  const management = createDesktopRuntimeHostPeerMeshManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    localHost: {
+      getSnapshot: async () => assert.fail('status must use the live Host'),
+      inspectManaged: async () => assert.fail('status must use the live Host'),
+    },
+    runLocal: async () => assert.fail('status must use the live Host'),
+    liveHost: () => ({
+      request: ((operation: string) => {
+        assert.equal(operation, 'peer.mesh.query');
+        markStarted();
+        return pending;
+      }) as never,
+    }),
+    profiles: {
+      resolveManagedService: async () => assert.fail('status must use the live Host'),
+    },
+    runRemote: async () => assert.fail('status must use the live Host'),
+    readConnectivityPolicy: async () => ({ kind: 'default' }),
+    writeConnectivityPolicy: async () => ({ kind: 'default' }),
+  });
+  const execute = handlers.get('runtime-host-peer-mesh:execute');
+  const cancel = handlers.get('runtime-host-peer-mesh:cancel');
+  assert.ok(execute && cancel);
+
+  const status = execute(
+    {},
+    { kind: 'local_host' },
+    'status',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'status-1',
+  ) as Promise<unknown>;
+  await started;
+  cancel({}, 'status-1');
+  await assert.rejects(status, /cancelled/u);
+  management.close();
+});
+
+test('projects an unknown live Mesh mutation outcome across IPC', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const management = createDesktopRuntimeHostPeerMeshManagement({
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    localHost: {
+      getSnapshot: async () => assert.fail('mutation must use the live Host'),
+      inspectManaged: async () => assert.fail('mutation must use the live Host'),
+    },
+    runLocal: async () => assert.fail('mutation must use the live Host'),
+    liveHost: () => ({
+      request: (() =>
+        Promise.reject(
+          new RuntimeHostOperationError(
+            'peer.mesh.close',
+            'commit_outcome_unknown',
+            'Mesh close outcome is unknown',
+          ),
+        )) as never,
+    }),
+    profiles: {
+      resolveManagedService: async () => assert.fail('mutation must use the live Host'),
+    },
+    runRemote: async () => assert.fail('mutation must use the live Host'),
+    readConnectivityPolicy: async () => ({ kind: 'default' }),
+    writeConnectivityPolicy: async () => ({ kind: 'default' }),
+  });
+  const execute = handlers.get('runtime-host-peer-mesh:execute');
+  assert.ok(execute);
+
+  assert.deepEqual(
+    await execute({}, { kind: 'local_host' }, 'close', 'mesh-1', undefined, undefined, undefined, 'close-1'),
+    { kind: 'outcome_unknown' },
+  );
+  management.close();
+});
 
 test('requires explicit interruption authority before a provider restarts active work', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -86,6 +180,100 @@ test('requires explicit interruption authority before a provider restarts active
     () => run({}, 'local', 'status', true),
     /authority is not valid for this action/u,
   );
+});
+
+test('routes WSL status and directory configuration through the persisted operator route', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const calls: DesktopRuntimeHostWslManagementInput[] = [];
+  const profile = {
+    id: 'ubuntu',
+    name: 'Ubuntu',
+    kind: 'environment' as const,
+    provider: { kind: 'wsl' as const, distribution: 'Ubuntu-24.04' },
+    rootId: 'a'.repeat(64),
+    operatorPath: '/home/operator/.local/share/maka/operator',
+  };
+  const binding = {
+    profile,
+    deployment: {
+      id: 'a'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      deploymentId: DEPLOYMENT_ID,
+    },
+    state: 'active' as const,
+  };
+  let reconnects = 0;
+  createDesktopRuntimeHostManagement({
+    ...unusedUpdateDependencies(),
+    ipcMain: {
+      handle: (channel, handler) => handlers.set(channel, handler as (...args: unknown[]) => unknown),
+      removeHandler: (channel) => handlers.delete(channel),
+    },
+    profiles: {
+      ...unusedDirectPeerProfileDependencies(),
+      resolveManagedService: async () => binding,
+      resolveManagedAccess: async () => undefined,
+      rotateManagedCredential: async () => assert.fail('credential rotation is not expected'),
+      markManagedServiceUninstalling: async () => assert.fail('uninstall is not expected'),
+      markManagedServiceCleanupPending: async () => assert.fail('uninstall is not expected'),
+      clearManagedServiceBinding: async () => assert.fail('uninstall is not expected'),
+    },
+    runServiceManagement: async () => assert.fail('WSL must not use SSH management'),
+    runWslManagement: async (input) => {
+      calls.push(input);
+      return serviceResult(input.action);
+    },
+    runAccessManagement: async () => assert.fail('access management is not expected'),
+    cleanupManagedDeployment: async () => assert.fail('cleanup is not expected'),
+    currentHostEpoch: () => 'before-configure',
+    awaitUpdatedConnection: async () => {
+      reconnects += 1;
+    },
+  });
+
+  const run = handlers.get('runtime-host-management:run');
+  const configure = handlers.get('runtime-host-management:configure-project-directories');
+  assert.ok(run);
+  assert.ok(configure);
+  await run({}, profile.id, 'status');
+  await configure(
+    {},
+    profile.id,
+    [{ label: 'Work', path: '/srv/work' }],
+    `sha256:${'b'.repeat(64)}`,
+    false,
+  );
+
+  assert.deepEqual(calls.map(({ action, distribution, operatorPath, expectedTarget }) => ({
+    action,
+    distribution,
+    operatorPath,
+    expectedTarget,
+  })), [
+    {
+      action: 'status',
+      distribution: 'Ubuntu-24.04',
+      operatorPath: profile.operatorPath,
+      expectedTarget: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+        deploymentId: DEPLOYMENT_ID,
+      },
+    },
+    {
+      action: 'configure',
+      distribution: 'Ubuntu-24.04',
+      operatorPath: profile.operatorPath,
+      expectedTarget: {
+        serviceId: 'a'.repeat(64),
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
+        rootId: 'a'.repeat(64),
+        deploymentId: DEPLOYMENT_ID,
+      },
+    },
+  ]);
+  assert.equal(reconnects, 0);
 });
 
 test('identifies, rotates, and revokes managed credentials without exposing secrets', async () => {
@@ -450,6 +638,7 @@ test('publishes update progress and waits for the managed profile to reconnect',
       clearManagedServiceBinding: async () => undefined,
     },
     runServiceManagement: async () => assert.fail('ordinary management is not expected'),
+    runWslManagement: async () => assert.fail('WSL management is not expected'),
     runPeerManagement: async () => assert.fail('direct peer management is not expected'),
     directPeerClientAvailable: false,
     runUpdate: async (input, onProgress) => {
@@ -989,16 +1178,20 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
       assert.equal(input.action, 'status');
       assert.equal(
         input.capabilityRequest,
-        RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
+        RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
       );
       return {
         ...serviceResult('status'),
-        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY],
+        operatorCapabilities: [RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY],
       };
     },
     runAccessManagement: async () => assert.fail('access management is not expected'),
     runPeerManagement: async (input) => {
       actions.push(input.action);
+      assert.equal(input.webRtcStunStatus, true);
+      if (input.action === 'enable') {
+        assert.deepEqual(input.webRtcStunPolicy, { kind: 'disabled' });
+      }
       const status = input.action === 'disable'
           ? {
               state: 'not_configured' as const,
@@ -1013,6 +1206,7 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
               rootId: profile.rootId,
               routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
               coordinationRelays: [],
+              webRtcStunPolicy: { kind: 'disabled' as const },
             };
       return input.action === 'status'
         ? { kind: 'result', action: input.action, status }
@@ -1023,8 +1217,12 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
 
   const configure = handlers.get('runtime-host-management:configure-direct-peer');
   assert.ok(configure);
-  const enabled = await configure({}, profile.id, true, [], true);
+  const enabled = await configure({}, profile.id, true, [], true, { kind: 'disabled' });
   assert.equal((enabled as { profilePresent: boolean }).profilePresent, true);
+  assert.deepEqual(
+    (enabled as { webRtcStunPolicy: unknown }).webRtcStunPolicy,
+    { kind: 'disabled' },
+  );
   const disabled = await configure({}, profile.id, false, [], true);
   assert.equal((disabled as { profilePresent: boolean }).profilePresent, false);
   assert.deepEqual(actions, ['enable', 'disable']);
@@ -1224,6 +1422,8 @@ function serviceSummary(installedVersion: string) {
 
 function unusedUpdateDependencies() {
   return {
+    runWslManagement: async (): Promise<never> =>
+      assert.fail('WSL management is not expected'),
     runUpdate: async (): Promise<never> => assert.fail('update is not expected'),
     runUpdatePolicy: async (): Promise<never> => assert.fail('update policy is not expected'),
     runUpdateReconciliation: async (): Promise<never> =>

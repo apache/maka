@@ -56,10 +56,11 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
   'scripts/generate-third-party-notices.test.mjs',
-  'scripts/prepare-windows-upgrade-baseline.test.mjs',
   'scripts/product-release.test.mjs',
+  'scripts/qualify-released-cli-state-root.test.mjs',
   'scripts/release-eval-smoke-sitecustomize.py',
   'scripts/release-version.mjs',
+  'scripts/third-party-closure.test.mjs',
   'scripts/verify-macos-arm64-cli.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
   'scripts/verify-macos-autoupdate.mjs',
@@ -67,6 +68,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/product-nightly.mjs',
   'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
+  'scripts/verify-packaged-app.test.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
@@ -138,6 +140,7 @@ const CLI_PACKAGE_WORKSPACES = [
 
 function isCliPackagePath(path) {
   if (CLI_PACKAGE_FILES.has(path) || path.startsWith('patches/')) return true;
+  if (isDocumentation(path)) return false;
   if (path.startsWith('scripts/release-cli-')) return true;
   if (path.startsWith('tsconfig') && path.endsWith('.json')) return true;
   return CLI_PACKAGE_WORKSPACES.some(
@@ -207,6 +210,7 @@ function isUiProductSourcePath(path) {
 
 function isStorybookPath(path) {
   if (STORYBOOK_DRIVING_SCRIPTS.has(path) || path === STORYBOOK_CORE_SETTINGS) return true;
+  if (isDocumentation(path)) return false;
   if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
     // Renderer unit tests do not change Storybook mount code.
     return !isPackageTestPath(path);
@@ -230,6 +234,7 @@ function isAstryxSurfaceInventoryPath(path) {
   ) {
     return true;
   }
+  if (isDocumentation(path)) return false;
   if (path === 'apps/desktop/src/renderer' || path.startsWith('apps/desktop/src/renderer/')) {
     return !isPackageTestPath(path);
   }
@@ -238,6 +243,7 @@ function isAstryxSurfaceInventoryPath(path) {
 
 function isE2eProductPath(path) {
   if (E2E_DRIVING_SCRIPTS.has(path)) return true;
+  if (isDocumentation(path)) return false;
   if (path === 'apps/desktop' || path.startsWith('apps/desktop/')) {
     // Storybook catalog under desktop never needs a real Electron window.
     if (isStorybookCatalogPath(path)) return false;
@@ -258,7 +264,6 @@ const STORAGE_STRESS_FILES = new Set([
   'packages/storage/src/sqlite-session-metadata-schema.ts',
   'packages/storage/src/sqlite-usage-schema.ts',
   'packages/storage/src/sqlite-workflow-schema.ts',
-  'packages/storage/src/__tests__/agent-run-store.test.ts',
   'packages/storage/src/__tests__/root-authority.test.ts',
   'packages/storage/src/__tests__/sqlite-recovery-concurrency.test.ts',
   'packages/storage/src/__tests__/fixtures/sqlite-recovery-concurrency-child.ts',
@@ -365,6 +370,10 @@ export function planTests(changedFiles, options = {}) {
   let code = false;
   let unknownCode = false;
   for (const path of files) {
+    // Documentation can live inside a workspace. Classify it before generic
+    // workspace and product-surface membership; dedicated legal, release, and
+    // generated-authority gates still inspect the complete file list below.
+    if (isDocumentation(path)) continue;
     // Catalog/config changes are fully exercised by Storybook's build + render
     // smoke. They do not change the shipped Electron app, so do not route them
     // through workspace tests or real-window E2E merely because they live
@@ -392,7 +401,7 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
-    if (path.startsWith('.github/') || isDocumentation(path)) continue;
+    if (path.startsWith('.github/')) continue;
     code = true;
     unknownCode = true;
   }
@@ -431,6 +440,21 @@ export function planTests(changedFiles, options = {}) {
   };
 }
 
+export function requiresHeavyValidation(plan) {
+  return Boolean(
+    plan.asfSource ||
+      plan.astryxSurface ||
+      plan.cliPackage ||
+      plan.code ||
+      plan.e2e ||
+      plan.releaseContract ||
+      plan.runtimeHost ||
+      plan.runtimeSandbox ||
+      plan.storybook ||
+      plan.standardWorkspaces.length > 0,
+  );
+}
+
 export function formatGitHubOutputs(plan) {
   return [
     `asf_source=${plan.asfSource}`,
@@ -438,6 +462,7 @@ export function formatGitHubOutputs(plan) {
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
+    `heavy=${requiresHeavyValidation(plan)}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
@@ -463,10 +488,16 @@ function parseArgs(args) {
 }
 
 export function changedFilesBetween(base, head, exec = execFileSync) {
-  return exec('git', ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRD', base, head], {
+  const options = {
     cwd: defaultRepoRoot,
     encoding: 'utf8',
-  })
+  };
+  const mergeBase = exec('git', ['merge-base', base, head], options).trim();
+  return exec(
+    'git',
+    ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRDT', mergeBase, head],
+    options,
+  )
     .split('\n')
     .filter(Boolean);
 }

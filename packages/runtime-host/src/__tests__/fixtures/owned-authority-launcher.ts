@@ -20,9 +20,11 @@
 import { openSync } from 'node:fs';
 import { launchOwnedRuntimeHostCandidate } from '../../client/launcher.js';
 
-const [rootPath, expectedRootId, leasePath] = process.argv.slice(2);
-if (!rootPath || !expectedRootId || !leasePath) {
-  throw new Error('usage: owned-authority-launcher <root> <expected-root-id> <lease-path>');
+const [rootPath, expectedRootId, leasePath, clientInstanceId] = process.argv.slice(2);
+if (!rootPath || !expectedRootId || !leasePath || !clientInstanceId) {
+  throw new Error(
+    'usage: owned-authority-launcher <root> <expected-root-id> <lease-path> <client-id>',
+  );
 }
 
 const leaseFd = openSync(leasePath, 'a+');
@@ -32,6 +34,10 @@ const attempt = await launchOwnedRuntimeHostCandidate({
   entrypoint: new URL('../../execution-candidate-main.js', import.meta.url),
   idleGraceMs: 10_000,
   inheritableAuthorityLeaseFd: leaseFd,
+  launchOwnerClientInstanceId: clientInstanceId,
 }).spawned;
 process.send?.({ type: 'launched', pid: attempt.pid });
+process.on('message', (message) => {
+  if (message === 'release') attempt.releaseToEnvironment();
+});
 await new Promise(() => undefined);

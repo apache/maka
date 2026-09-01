@@ -161,6 +161,14 @@ export interface ConversationArtifactCopyInput {
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
   readonly excludeArtifactIds?: readonly string[];
+  /**
+   * Source-Session artifact ids to copy in addition to the turn-scoped
+   * selection, regardless of their `turnId`. Used to carry user-uploaded
+   * attachments (whose `turnId` is the upload id sentinel, not a conversation
+   * turn) that the copied transcript still references. Lenient: an id with no
+   * matching source record is a no-op.
+   */
+  readonly includeArtifactIds?: readonly string[];
   readonly linkedArtifacts?: readonly {
     readonly sessionId: string;
     readonly artifactIds: readonly string[];
@@ -391,6 +399,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     }
     const turnIds = new Set(input.turnIds);
     const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
+    const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
     const linkedArtifacts = input.linkedArtifacts ?? [];
     const requestedLinkedArtifactIds = new Map<string, Set<string>>();
@@ -426,6 +435,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           );
           if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
           selected.push({ ...record });
+        }
+      }
+      const selectedIds = new Set(selected.map((record) => record.id));
+      for (const record of this.records) {
+        if (
+          record.sessionId === input.sourceSessionId &&
+          includedArtifactIds.has(record.id) &&
+          !excludedArtifactIds.has(record.id) &&
+          !selectedIds.has(record.id)
+        ) {
+          selected.push({ ...record });
+          selectedIds.add(record.id);
         }
       }
       return selected;

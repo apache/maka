@@ -100,6 +100,10 @@ export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
   submittedContentDigest?: `sha256:${string}`;
+  /** The original placement before queue promotion; absent legacy records use `placement`. */
+  submittedPlacement?: 'current_turn' | 'next_turn';
+  /** The admission-time Skill outcome for this exact source Message. */
+  skillInvocation?: SkillInvocationResult;
   /**
    * The exact-Turn intent this Message was submitted with — the Skill ids and
    * the orchestration override. Content and placement do not describe it, so
@@ -232,11 +236,12 @@ export interface DurableAgentRunStore
     sessionId: string,
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
+  readEventLedgerRevision(sessionId: string): Promise<string>;
   repairEventProjection(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
   ready?(): Promise<void>;
   close?(): void;
@@ -556,12 +561,13 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       const type = normalized.type as AgentRunEventType;
       const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
       const projection = projectsCheckpoint
-        ? readSqliteAgentRunProjection(this.#lease.database, sessionId, type)
+        ? inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type)
         : undefined;
       insertAgentRunEvent(this.#lease.database, normalized);
-      if (projectsCheckpoint) {
-        const row = shouldPreserveCheckpointProjectionDuringAppend(projection, normalized)
-          ? projection!
+      if (projection && projection.state !== 'malformed') {
+        const current = projectionValue(projection);
+        const row = shouldPreserveCheckpointProjectionDuringAppend(current, normalized)
+          ? current!
           : normalized;
         writeSqliteAgentRunProjection(this.#lease.database, sessionId, type, row);
       }
@@ -593,11 +599,16 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     event: AgentRunEvent,
     latest: LatestContextProjectionInput,
   ): void {
-    const existing = readSqliteAgentRunProjection(
+    const inspected = inspectSqliteAgentRunProjection(
       this.#lease.database,
       sessionId,
       LATEST_CONTEXT_PROJECTION_TYPE,
     );
+    // The canonical append must survive a damaged derived row, but the row's
+    // ordering is unknowable. Leave it untouched until a ledger rebuild can
+    // select the real latest attempt and repair it without guessing.
+    if (inspected.state === 'malformed') return;
+    const existing = projectionValue(inspected);
     // Compared against the stored row's own completion, which the snapshot
     // carries — not against an ordering field the row does not have, which is
     // how the first version of this guard silently never fired. The rule
@@ -667,19 +678,35 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
   }
 
+  async readEventLedgerRevision(sessionId: string): Promise<string> {
+    assertSafeId(sessionId, 'Invalid session id');
+    return readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId);
+  }
+
   async repairEventProjection(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options: { replaceEventId?: string } = {},
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void> {
     assertSafeId(sessionId, 'Invalid session id');
+    if (!options || typeof options.ifLedgerRevision !== 'string') {
+      throw new Error('AgentRun projection repair requires a canonical ledger revision');
+    }
     if (event !== null && !isProjectedAgentRunEvent(event, sessionId, type)) {
       throw new Error(`Invalid AgentRun event projection repair for ${type}`);
     }
     this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRunProjection(this.#lease.database, sessionId, type);
       if (
+        readSqliteAgentRunLedgerRevision(this.#lease.database, sessionId) !==
+        options.ifLedgerRevision
+      ) {
+        return;
+      }
+      const inspected = inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type);
+      const current = projectionValue(inspected);
+      if (
+        inspected.state !== 'malformed' &&
         current?.id !== options.replaceEventId &&
         shouldPreserveProjectionDuringRepair(current, event, type)
       ) {
@@ -860,6 +887,39 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
   close(): void {
     this.#lease.close();
   }
+}
+
+function readSqliteAgentRunLedgerRevision(db: DatabaseSync, sessionId: string): string {
+  const rows = db
+    .prepare(`
+      SELECT run.run_id, COUNT(event.sequence) AS event_count,
+             COALESCE(MAX(event.sequence), -1) AS high_water
+      FROM core_agent_runs AS run
+      LEFT JOIN core_agent_run_events AS event
+        ON event.session_id = run.session_id AND event.run_id = run.run_id
+      WHERE run.session_id = ?
+      GROUP BY run.run_id
+      ORDER BY run.run_id
+    `)
+    .all(sessionId) as Array<{
+    run_id?: unknown;
+    event_count?: unknown;
+    high_water?: unknown;
+  }>;
+  return JSON.stringify(
+    rows.map((row) => {
+      if (
+        typeof row.run_id !== 'string' ||
+        typeof row.event_count !== 'number' ||
+        !Number.isSafeInteger(row.event_count) ||
+        typeof row.high_water !== 'number' ||
+        !Number.isSafeInteger(row.high_water)
+      ) {
+        throw new Error('Invalid SQLite AgentRun ledger revision');
+      }
+      return [row.run_id, row.event_count, row.high_water];
+    }),
+  );
 }
 
 function normalizeCurrentAgentRunHeader(
@@ -1068,6 +1128,24 @@ function readSqliteAgentRunProjection(
   // derived row nothing ever appends under (#2323).
   type: string,
 ): AgentRunEvent | null | undefined {
+  const inspected = inspectSqliteAgentRunProjection(db, sessionId, type);
+  if (inspected.state === 'malformed') {
+    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  }
+  return projectionValue(inspected);
+}
+
+type SqliteAgentRunProjectionInspection =
+  | { state: 'missing' }
+  | { state: 'empty' }
+  | { state: 'malformed' }
+  | { state: 'valid'; event: AgentRunEvent };
+
+function inspectSqliteAgentRunProjection(
+  db: DatabaseSync,
+  sessionId: string,
+  type: string,
+): SqliteAgentRunProjectionInspection {
   const row = db
     .prepare(`
       SELECT event_json
@@ -1075,16 +1153,26 @@ function readSqliteAgentRunProjection(
       WHERE session_id = ? AND event_type = ?
     `)
     .get(sessionId, type) as { event_json?: unknown } | undefined;
-  if (!row) return undefined;
-  if (row.event_json === null) return null;
-  if (typeof row.event_json !== 'string') {
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
+  if (!row) return { state: 'missing' };
+  if (row.event_json === null) return { state: 'empty' };
+  if (typeof row.event_json !== 'string') return { state: 'malformed' };
+  let event: unknown;
+  try {
+    event = JSON.parse(row.event_json);
+  } catch {
+    return { state: 'malformed' };
   }
-  const event = JSON.parse(row.event_json);
   if (!isProjectedAgentRunEvent(event, sessionId, type)) {
-    throw new Error(`Invalid AgentRun event projection for ${type}`);
+    return { state: 'malformed' };
   }
-  return event;
+  return { state: 'valid', event };
+}
+
+function projectionValue(
+  inspected: SqliteAgentRunProjectionInspection,
+): AgentRunEvent | null | undefined {
+  if (inspected.state === 'valid') return inspected.event;
+  return inspected.state === 'empty' ? null : undefined;
 }
 
 function writeSqliteAgentRunProjection(
@@ -1247,6 +1335,16 @@ function normalizeAdmitRootTurnInput(input: AdmitRootTurnInput): RootTurnAdmissi
   assertRootTurnAdmissionContract(admission);
   assertRootTurnAdmissionRecordSize(admission);
   return deepFreezeRootTurnAdmission(admission);
+}
+
+/** Whether a proposed admission satisfies the complete durable record contract and size bound. */
+export function rootTurnAdmissionRecordFits(input: AdmitRootTurnInput): boolean {
+  try {
+    normalizeAdmitRootTurnInput(input);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
@@ -1658,13 +1756,23 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'placement',
         'disposition',
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
+        ...(Object.hasOwn(item, 'submittedPlacement') ? ['submittedPlacement'] : []),
         ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
+        ...(Object.hasOwn(item, 'skillInvocation') ? ['skillInvocation'] : []),
       ])
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
     }
-    const { messageId, content, submittedContentDigest, submittedIntent, placement, disposition } =
-      item;
+    const {
+      messageId,
+      content,
+      submittedContentDigest,
+      submittedPlacement,
+      submittedIntent,
+      skillInvocation,
+      placement,
+      disposition,
+    } = item;
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1674,6 +1782,9 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
+      (submittedPlacement !== undefined &&
+        submittedPlacement !== 'current_turn' &&
+        submittedPlacement !== 'next_turn') ||
       (submittedContentDigest !== undefined && !isSha256Digest(submittedContentDigest))
     ) {
       throw new Error(`Invalid root turn source message at index ${index}`);
@@ -1690,8 +1801,12 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         MAX_ATTACHMENT_COUNT,
       ),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
+      ...(submittedPlacement !== undefined ? { submittedPlacement } : {}),
       ...(submittedIntent !== undefined
         ? { submittedIntent: normalizeSubmittedTurnIntent(submittedIntent) }
+        : {}),
+      ...(skillInvocation !== undefined
+        ? { skillInvocation: decodeSkillInvocationResult(skillInvocation) }
         : {}),
       placement,
       disposition,
@@ -1721,7 +1836,10 @@ function rootTurnAdmissionPayloadsEqual(
         source.placement === other.placement &&
         source.disposition === other.disposition &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
         submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
         messageContentsEqual(source.content, other.content)
       );
     })
@@ -2140,6 +2258,8 @@ function deepFreezeRootTurnMessageContent(content: MessageContent): void {
     Object.freeze(attachment);
   }
   if (content.attachments) Object.freeze(content.attachments);
+  for (const reference of content.directoryReferences ?? []) Object.freeze(reference);
+  if (content.directoryReferences) Object.freeze(content.directoryReferences);
   for (const quote of content.quotes ?? []) Object.freeze(quote);
   if (content.quotes) Object.freeze(content.quotes);
   Object.freeze(content);

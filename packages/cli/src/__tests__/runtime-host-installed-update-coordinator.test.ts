@@ -134,8 +134,8 @@ test('retires with the current package, activates with the target, then switches
         assert.deepEqual(input.target, target);
         return {
           kind: 'ready',
-          settle: async (outcome) => {
-            events.push(`settle-target:${outcome}`);
+          settle: async () => {
+            events.push('settle-target');
           },
         };
       },
@@ -183,7 +183,7 @@ test('retires with the current package, activates with the target, then switches
     'switch-global-package',
     'verify-new-installation',
     'commit-owner',
-    'settle-target:committed',
+    'settle-target',
   ]);
 });
 
@@ -253,8 +253,8 @@ test('crash-retry observes its own staged target and never retires or re-activat
         events.push('activate-target');
         return {
           kind: 'ready',
-          settle: async (outcome) => {
-            events.push(`settle-target:${outcome}`);
+          settle: async () => {
+            events.push('settle-target');
           },
         };
       },
@@ -300,7 +300,7 @@ test('crash-retry observes its own staged target and never retires or re-activat
     'activate-target',
     'switch-global-package',
     'commit-owner',
-    'settle-target:committed',
+    'settle-target',
   ]);
 });
 
@@ -357,8 +357,8 @@ test('crash-retry with the global package already switched skips the second inst
         events.push('activate-target');
         return {
           kind: 'ready',
-          settle: async (outcome) => {
-            events.push(`settle-target:${outcome}`);
+          settle: async () => {
+            events.push('settle-target');
           },
         };
       },
@@ -399,11 +399,11 @@ test('crash-retry with the global package already switched skips the second inst
     'close-observed-target',
     'activate-target',
     'commit-owner',
-    'settle-target:committed',
+    'settle-target',
   ]);
 });
 
-test('aborts the short-lived target activator when durable ownership cannot commit', async () => {
+test('asks the target activator to adjudicate an uncertain durable commit', async () => {
   const events: string[] = [];
   const installation = {
     owner: OWNER,
@@ -444,8 +444,8 @@ test('aborts the short-lived target activator when durable ownership cannot comm
       connectExisting: async () => ({ kind: 'unavailable', reason: 'not_registered' }),
       activateTarget: async () => ({
         kind: 'ready',
-        settle: async (outcome) => {
-          events.push(`settle-target:${outcome}`);
+        settle: async () => {
+          events.push('settle-target');
         },
       }),
       reconcile: (async (_request: unknown, lifecycle: RuntimeHostLocalProcessLifecycleAdapter) => {
@@ -468,7 +468,7 @@ test('aborts the short-lived target activator when durable ownership cannot comm
     },
   );
   assert.equal(exitCode, 1);
-  assert.deepEqual(events, ['settle-target:abort']);
+  assert.deepEqual(events, ['settle-target']);
 });
 
 test('rejects extended tar headers before the final global npm switch can spawn', async (t) => {

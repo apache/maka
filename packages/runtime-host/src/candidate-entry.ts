@@ -68,7 +68,12 @@ export async function runExecutionCandidateEntry(
     const { startupAttemptId: parsedStartupAttemptId, ...options } = parsed;
     startupAttemptId = parsedStartupAttemptId;
     result = await startExecutionRuntimeHostCandidate(
-      hooks.overrideOptions ? hooks.overrideOptions(options) : options,
+      {
+        ...(hooks.overrideOptions ? hooks.overrideOptions(options) : options),
+        ...(launchOwnerGuard?.admission
+          ? { initialClientAdmission: launchOwnerGuard.admission }
+          : {}),
+      },
       {
         ...hooks.dependencies,
         processLaunch: {

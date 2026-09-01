@@ -140,6 +140,213 @@ describe('SQLite core execution stores', () => {
     });
   });
 
+  test('commits canonical authority without guessing a malformed projection order', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent(
+        'session-1',
+        'run-1',
+        {
+          ...runEvent(),
+          id: 'model-call-newer',
+          type: 'model_call_attempt_recorded',
+          ts: 100,
+          data: {
+            ...modelCallAttempt({
+              attemptId: 'attempt-newer',
+              completedAt: 100,
+              latencyMs: 99,
+            }),
+          },
+        },
+        {
+          latestContext: {
+            attemptId: 'attempt-newer',
+            orderedAt: 100,
+            snapshot: {
+              schemaVersion: 2,
+              attemptId: 'attempt-newer',
+              providerId: 'openai',
+              modelId: 'gpt-5',
+              completedAt: 100,
+            },
+          },
+        },
+      );
+      store.close?.();
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare(`
+            UPDATE core_agent_run_projections
+            SET event_json = '{malformed'
+            WHERE session_id = 'session-1' AND event_type = 'latest_context'
+          `)
+          .run();
+      } finally {
+        database.close();
+      }
+
+      const reopened = createSqliteAgentRunStore(root);
+      try {
+        await reopened.appendEvent(
+          'session-1',
+          'run-1',
+          {
+            ...runEvent(),
+            id: 'model-call-older',
+            type: 'model_call_attempt_recorded',
+            ts: 50,
+            data: {
+              ...modelCallAttempt({
+                logicalCallId: 'call-older',
+                attemptId: 'attempt-older',
+                traceId: 'trace-older',
+                completedAt: 50,
+                latencyMs: 49,
+              }),
+            },
+          },
+          {
+            latestContext: {
+              attemptId: 'attempt-older',
+              orderedAt: 50,
+              snapshot: {
+                schemaVersion: 2,
+                attemptId: 'attempt-older',
+                providerId: 'openai',
+                modelId: 'gpt-5',
+                completedAt: 50,
+              },
+            },
+          },
+        );
+
+        assert.ok(
+          (await reopened.readEvents('session-1', 'run-1')).some(
+            (event) => event.id === 'model-call-older',
+          ),
+        );
+      } finally {
+        reopened.close?.();
+      }
+
+      const inspected = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          inspected
+            .prepare(`
+              SELECT event_json AS eventJson
+              FROM core_agent_run_projections
+              WHERE session_id = 'session-1' AND event_type = 'latest_context'
+            `)
+            .get()?.eventJson,
+          '{malformed',
+          'unknown incumbent ordering stays untouched until a ledger rebuild can repair it',
+        );
+      } finally {
+        inspected.close();
+      }
+    });
+  });
+
+  test('does not repair a malformed projection from a stale ledger revision', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      await store.repairEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+        {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        },
+        { ifLedgerRevision: await store.readEventLedgerRevision('session-1') },
+      );
+
+      const database = new DatabaseSync(join(root, 'runtime.sqlite'));
+      try {
+        database
+          .prepare(`
+            UPDATE core_agent_run_projections
+            SET event_json = '{malformed'
+            WHERE session_id = 'session-1'
+              AND event_type = 'history_compact_checkpoint_recorded'
+          `)
+          .run();
+      } finally {
+        database.close();
+      }
+
+      const staleRevision = await store.readEventLedgerRevision('session-1');
+      await store.appendEvent('session-1', 'run-1', {
+        ...runEvent(),
+        id: 'event-2',
+        ts: 2,
+      });
+      await store.repairEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+        {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        },
+        { ifLedgerRevision: staleRevision },
+      );
+
+      const inspected = new DatabaseSync(join(root, 'runtime.sqlite'), { readOnly: true });
+      try {
+        assert.equal(
+          inspected
+            .prepare(`
+              SELECT event_json AS eventJson
+              FROM core_agent_run_projections
+              WHERE session_id = 'session-1'
+                AND event_type = 'history_compact_checkpoint_recorded'
+            `)
+            .get()?.eventJson,
+          '{malformed',
+        );
+      } finally {
+        inspected.close();
+        store.close?.();
+      }
+    });
+  });
+
+  test('rejects a projection repair without a canonical ledger revision', async () => {
+    await withRoot(async (root) => {
+      const store = createSqliteAgentRunStore(root);
+      await store.createRun(runHeader());
+      await store.appendEvent('session-1', 'run-1', runEvent());
+      const before = await store.readEventProjection(
+        'session-1',
+        'history_compact_checkpoint_recorded',
+      );
+
+      await assert.rejects(
+        // @ts-expect-error A repair must prove which canonical ledger revision it rebuilt.
+        store.repairEventProjection('session-1', 'history_compact_checkpoint_recorded', {
+          ...runEvent(),
+          id: 'checkpoint-a',
+          type: 'history_compact_checkpoint_recorded',
+        }),
+        /ledger revision/i,
+      );
+
+      assert.equal(
+        await store.readEventProjection('session-1', 'history_compact_checkpoint_recorded'),
+        before,
+      );
+      store.close?.();
+    });
+  });
+
   test('backfills the model-call high-water when upgrading existing AgentRun rows', async () => {
     await withRoot(async (root) => {
       const store = createSqliteAgentRunStore(root);

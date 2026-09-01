@@ -50,6 +50,12 @@ export interface ModelChoice {
   thinkingLevels?: readonly ThinkingLevel[];
 }
 
+export type ConnectionIdentity = {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly enabled: boolean;
+};
+
 export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
@@ -126,7 +132,11 @@ export type OnboardingSaveResult =
       kind: 'ok';
       connection: OnboardingSavedConnection;
       refresh:
-        | { kind: 'ok'; modelChoices: ModelChoice[] }
+        | {
+            kind: 'ok';
+            modelChoices: ModelChoice[];
+            connectionIdentities: readonly ConnectionIdentity[];
+          }
         | { kind: 'failed'; reason: 'catalog_unavailable' };
     }
   | OnboardingFailure;

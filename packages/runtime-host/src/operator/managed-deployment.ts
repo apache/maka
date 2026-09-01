@@ -37,6 +37,7 @@ import {
 } from '@maka/storage/stable-storage';
 import { z } from 'zod';
 import { isCanonicalRuntimeHostWebSocketPath } from '../protocol/websocket-path.js';
+import { runtimeHostWebRtcStunPolicySchema } from '../webrtc-stun-policy.js';
 import {
   isProductReleaseVersion,
   isSha512PackageIntegrity,
@@ -177,6 +178,7 @@ const managedDeploymentConfigSchema = z
             listenAddresses: z.array(boundedText(2_048)).min(1).max(16),
             coordinationRelays: z.array(boundedText(2_048)).max(16),
             automaticRelayDiscovery: z.boolean().default(true),
+            webRtcStunPolicy: runtimeHostWebRtcStunPolicySchema.default({ kind: 'default' }),
           })
           .strict()
           .optional(),

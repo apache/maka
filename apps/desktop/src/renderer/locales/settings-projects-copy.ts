@@ -131,6 +131,17 @@ export type SettingsProjectsCopy = {
     directPeerCoordinationRelays: string;
     directPeerCoordinationRelaysPlaceholder: string;
     directPeerAdvancedCoordination: string;
+    directPeerAdvancedNatTraversal: string;
+    directPeerStunPolicy: string;
+    directPeerStunPolicyOptions: {
+      default: string;
+      disabled: string;
+      custom: string;
+    };
+    directPeerStunUrls: string;
+    directPeerStunDefaultHelp: string;
+    directPeerStunDisabledHelp: string;
+    directPeerStunCustomHelp: string;
     directPeerAutomaticRelayDiscovery: string;
     directPeerAutomaticRelayDiscoveryHelp: string;
     directPeerEnable: string;
@@ -426,6 +437,20 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerCoordinationRelays: '连接协调节点（可选）',
       directPeerCoordinationRelaysPlaceholder: '多个地址用逗号分隔',
       directPeerAdvancedCoordination: '手动设置协调节点',
+      directPeerAdvancedNatTraversal: 'NAT 穿透（高级）',
+      directPeerStunPolicy: '公网地址发现',
+      directPeerStunPolicyOptions: {
+        default: '公共 STUN（推荐）',
+        disabled: '不使用公共 STUN',
+        custom: '自定义 STUN',
+      },
+      directPeerStunUrls: 'STUN 地址',
+      directPeerStunDefaultHelp:
+        '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不转发 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
+      directPeerStunDisabledHelp:
+        '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
+      directPeerStunCustomHelp:
+        '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
       directPeerAutomaticRelayDiscovery: '自动发现协调节点',
       directPeerAutomaticRelayDiscoveryHelp:
         '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
@@ -716,6 +741,20 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerCoordinationRelays: '連線協調節點（可選）',
       directPeerCoordinationRelaysPlaceholder: '多個位址請以逗號分隔',
       directPeerAdvancedCoordination: '手動設定協調節點',
+      directPeerAdvancedNatTraversal: 'NAT 穿透（進階）',
+      directPeerStunPolicy: '公網位址探索',
+      directPeerStunPolicyOptions: {
+        default: '公共 STUN（建議）',
+        disabled: '不使用公共 STUN',
+        custom: '自訂 STUN',
+      },
+      directPeerStunUrls: 'STUN 位址',
+      directPeerStunDefaultHelp:
+        '使用 Cloudflare 公共 STUN 盡力探索公網對映。它不轉送 Maka 流量，但提供者可觀察來源 IP 和請求時間；Maka 不保證其可用性。',
+      directPeerStunDisabledHelp:
+        '僅嘗試本機位址和其他已知直接連線路徑；跨 NAT 的直接連線成功率可能降低。',
+      directPeerStunCustomHelp:
+        '使用逗號分隔的 stun: 位址。STUN 只探索網路位址，不承載 Session 內容。',
       directPeerAutomaticRelayDiscovery: '自動探索協調節點',
       directPeerAutomaticRelayDiscoveryHelp:
         '協調節點使用 Circuit Relay v2 通訊協定，只協助建立端對端直接連線，不承載應用程式流量。Maka 會透過公用 IPFS 網路盡力探索可用節點；手動設定的節點優先。',
@@ -1010,6 +1049,20 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerCoordinationRelays: 'Connection coordination peers (optional)',
       directPeerCoordinationRelaysPlaceholder: 'Separate multiple addresses with commas',
       directPeerAdvancedCoordination: 'Set coordination peers manually',
+      directPeerAdvancedNatTraversal: 'NAT traversal (advanced)',
+      directPeerStunPolicy: 'Public address discovery',
+      directPeerStunPolicyOptions: {
+        default: 'Public STUN (recommended)',
+        disabled: 'No public STUN',
+        custom: 'Custom STUN',
+      },
+      directPeerStunUrls: 'STUN addresses',
+      directPeerStunDefaultHelp:
+        'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
+      directPeerStunDisabledHelp:
+        'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
+      directPeerStunCustomHelp:
+        'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
       directPeerAutomaticRelayDiscovery: 'Discover coordination peers automatically',
       directPeerAutomaticRelayDiscoveryHelp:
         'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',

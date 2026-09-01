@@ -46,6 +46,75 @@ test('validation consumers download the artifact produced by the build job', () 
   }
 });
 
+test('CLI validation qualifies exact published State Roots without weakening artifact identity', () => {
+  const workflow = readWorkflow('cli-package-validation.yml');
+  assert.match(
+    workflow,
+    /release_predecessor_version:[\s\S]*?value: \$\{\{ jobs\.release-predecessor\.outputs\.version \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /release-predecessor:[\s\S]*?resolve-nightly-predecessor "\$GITHUB_OUTPUT"/u,
+  );
+  assert.match(
+    workflow,
+    /release_predecessor_integrity:[\s\S]*?jobs\.release-predecessor\.outputs\.integrity/u,
+  );
+  assert.match(
+    workflow,
+    /state-root-qualification:\n[\s\S]*?needs: \[build, release-predecessor\]/u,
+  );
+  assert.match(workflow, /source_sha256: [a-f0-9]{64}/u);
+  assert.match(workflow, /target_sha256: [a-f0-9]{64}/u);
+  assert.match(workflow, /epoch_relation: different/u);
+  assert.match(workflow, /epoch_relation: same/u);
+  const steps = workflowSteps(workflow);
+  const sandbox = namedStep(steps, 'Require the account-isolation sandbox');
+  assert.match(sandbox, /apt-get install --yes bubblewrap/u);
+  const qualify = namedStep(steps, 'Qualify the released State Root transition');
+  assert.match(qualify, /release:cli:qualify-state-root/u);
+  assert.match(qualify, /MAKA_QUALIFICATION_BWRAP_USE_SUDO:\s*'1'/u);
+  assert.match(qualify, /--source-sha256/u);
+  assert.match(qualify, /--target-sha256/u);
+  assert.match(qualify, /--expect-epoch-relation/u);
+  assert.match(qualify, /set -o pipefail/u);
+  assert.match(qualify, /npm run --silent/u);
+  const prepare = namedStep(steps, 'Prepare exact source and target artifacts');
+  assert.match(prepare, /--max-filesize 67108864/gu);
+  assert.match(prepare, /SOURCE_INTEGRITY/u);
+  assert.match(prepare, /createHash\('sha512'\)/u);
+  assert.match(prepare, /source_sha256="\$\(sha256sum/u);
+  const preserve = namedStep(steps, 'Preserve the qualification report');
+  assert.match(preserve, /if-no-files-found: error/u);
+  const freshness = namedStep(steps, 'Require the qualified Nightly predecessor to remain current');
+  assert.match(freshness, /assert-nightly-predecessor/u);
+  assert.match(freshness, /needs\.release-predecessor\.outputs\.version/u);
+  assert.ok(steps.indexOf(freshness) > steps.indexOf(preserve));
+  assert.match(
+    workflow,
+    /source_url: \$\{\{ needs\.release-predecessor\.outputs\.tarball_url \}\}/u,
+  );
+});
+
+test('npm mutations revalidate the exact qualified Nightly predecessor', () => {
+  const nightly = readWorkflow('npm-publication.yml');
+  const nightlyFence = namedStep(
+    workflowSteps(nightly),
+    'Require the qualified predecessor and Nightly channel advance',
+  );
+  assert.match(nightlyFence, /needs\.cli\.outputs\.release_predecessor_version/u);
+  assert.match(nightlyFence, /needs\.cli\.outputs\.release_predecessor_integrity/u);
+  assert.match(nightlyFence, /assert-nightly-predecessor/u);
+  assert.ok(nightly.indexOf(nightlyFence) < nightly.indexOf('npm publish'));
+
+  const stage = readWorkflow('release-cli-stage.yml');
+  const submit = namedStep(workflowSteps(stage), 'Submit the candidate to npm staging');
+  assert.match(submit, /needs\.validate\.outputs\.release_predecessor_version/u);
+  assert.match(submit, /needs\.validate\.outputs\.release_predecessor_integrity/u);
+  assert.match(submit, /assert-nightly-predecessor/u);
+  assert.ok(submit.indexOf('assert-nightly-predecessor') < submit.indexOf('npm stage publish'));
+});
+
 test('stage consumes the validated artifact and makes provenance staging the final step', () => {
   const workflow = readWorkflow('release-cli-stage.yml');
   assert.match(workflow, /environment:\n\s+name: npm-publication/u);

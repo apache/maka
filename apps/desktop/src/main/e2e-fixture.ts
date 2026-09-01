@@ -28,6 +28,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
 import {
   E2E_FIXTURE_NOW,
@@ -229,6 +230,25 @@ export async function seedE2eFixture(input: {
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
   await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
+
+  if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
+    const owner = await tryAcquireInteractiveRootOwner(storageRoot);
+    if (!owner) throw new Error('Unable to acquire the E2E fixture SessionTodo root');
+    try {
+      const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+      try {
+        await todos.replaceAll(TURN_SESSION_ID, [
+          { content: '补齐桌面端无障碍覆盖', status: 'in_progress' },
+          { content: '核对模型选择器的键盘路径', status: 'pending' },
+          { content: '确认工具结果可以展开阅读', status: 'completed' },
+        ]);
+      } finally {
+        todos.close();
+      }
+    } finally {
+      await owner.close();
+    }
+  }
 
   if (scenario === 'chat-prompt-rail') {
     await writeSession(input.workspaceRoot, promptRailSession(now), promptRailMessages(now));

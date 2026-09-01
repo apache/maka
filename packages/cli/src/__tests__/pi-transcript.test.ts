@@ -152,8 +152,12 @@ describe('Maka Pi TUI transcript', () => {
     const renderFor = (platform: NodeJS.Platform) =>
       renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
 
-    assert.equal(renderFor('darwin').at(-1), '⌥+↑ 取回队列以重新编辑');
-    assert.equal(renderFor('linux').at(-1), 'Alt+↑ 取回队列以重新编辑');
+    assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
+    assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
+    assert.equal(
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh-CN').map(stripAnsi).at(-1),
+      'Alt+↑ 取回队列以重新编辑',
+    );
   });
 
   test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {
@@ -4284,6 +4288,102 @@ describe('Maka Pi TUI transcript', () => {
     assert.match(rendered, /\$ git status --porcelain/);
     // Once the row names the call, the quiet-success disclaimer is noise.
     assert.doesNotMatch(rendered, /\(no output\)/);
+  });
+
+  test('keeps todo_write arguments quiet and shows only its settled snapshot', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'todo-write',
+        toolName: 'todo_write',
+        displayName: 'Todo Write',
+        args: undefined,
+        argsPreview: undefined,
+      }),
+    );
+
+    const running = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(running, /Todo Write/);
+    assert.doesNotMatch(running, /uncommitted item/);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'todo-write',
+        isError: false,
+        content: {
+          kind: 'text',
+          text: 'Todo list updated.\n1. [in_progress] committed item',
+        },
+      }),
+    );
+
+    const settled = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(settled, /Todo Write/);
+    assert.match(settled, /2 lines/);
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
+      /committed item/,
+    );
+  });
+
+  test('never restores todo_write arguments from durable transcript reconciliation', () => {
+    const messages = [
+      {
+        type: 'tool_call',
+        id: 'todo-write',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'todo_write',
+        displayName: 'Todo Write',
+        args: { todos: [{ content: 'uncommitted item', status: 'pending' }] },
+      },
+      {
+        type: 'tool_result',
+        id: 'todo-result',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'todo-write',
+        isError: false,
+        content: {
+          kind: 'text',
+          text: 'Todo list updated (1 items):\n1. [in_progress] "committed item"',
+        },
+      },
+    ] satisfies StoredMessage[];
+
+    for (const reconcile of [
+      (state: ReturnType<typeof createMakaPiTranscriptState>) =>
+        replaceTranscriptWithStoredMessages(state, messages),
+      (state: ReturnType<typeof createMakaPiTranscriptState>) => {
+        applyMakaSessionEventToTranscript(
+          state,
+          event({
+            type: 'tool_start',
+            toolUseId: 'todo-write',
+            toolName: 'todo_write',
+            displayName: 'Todo Write',
+            args: undefined,
+          }),
+        );
+        hydrateToolsWithStoredMessages(state, 'turn-1', messages);
+      },
+    ]) {
+      const state = createMakaPiTranscriptState();
+      reconcile(state);
+      const tool = state.entries.find(
+        (entry) => entry.kind === 'tool' && entry.toolUseId === 'todo-write',
+      );
+      assert.deepEqual(tool?.kind === 'tool' ? tool.input : undefined, {});
+      assert.equal(toggleAllToolExpansion(state), true);
+      const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+      assert.match(rendered, /committed item/);
+      assert.doesNotMatch(rendered, /uncommitted item/);
+    }
   });
 
   test('prefers a redacted runtime intent for a live compact row', () => {

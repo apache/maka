@@ -95,7 +95,7 @@ test('Client Capability channel runs a self-described Host service through admis
     callService: async (frame, options) => {
       assert.equal(frame.method, 'present');
       assert.equal(accepted, false);
-      await options.accept();
+      await options.accept({ kind: 'none' });
       accepted = true;
       return { kind: 'presented' };
     },
@@ -134,7 +134,11 @@ test('Client Capability channel runs a self-described Host service through admis
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(accepted, true);
   assert.deepEqual(written, [
-    { kind: 'client.capability.accepted', invocationId: 'service_invocation' },
+    {
+      kind: 'client.capability.accepted',
+      invocationId: 'service_invocation',
+      admissionEvidence: { kind: 'none' },
+    },
     {
       kind: 'client.capability.result',
       invocationId: 'service_invocation',
@@ -227,7 +231,7 @@ test('Client Capability channel forwards admitted tool progress before the resul
       },
     ],
     call: async (_frame, options) => {
-      await options.accept();
+      await options.accept({ kind: 'none' });
       options.progress?.(1, 3);
       options.progress?.(2, 3);
       return { content: [] };
@@ -272,7 +276,11 @@ test('Client Capability channel forwards admitted tool progress before the resul
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(written, [
-    { kind: 'client.capability.accepted', invocationId: 'progress-invocation' },
+    {
+      kind: 'client.capability.accepted',
+      invocationId: 'progress-invocation',
+      admissionEvidence: { kind: 'none' },
+    },
     {
       kind: 'client.capability.progress',
       invocationId: 'progress-invocation',

@@ -25,6 +25,7 @@ import {
 } from '@maka/core/agent-run';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import {
+  foldPromptComposition,
   PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE,
   readPromptCompositionEvent,
 } from './prompt-composition.js';
@@ -87,15 +88,13 @@ export type ContextDiagnostics =
       inputTokens?: number;
       contextWindow?: number;
       /**
-       * What the latest request was made of, or absent when the durable
-       * metering record has no capture to match.
+       * What the latest request was made of, or absent when its canonical
+       * attempt has no prepared-request observation.
        *
-       * Absence is a state a reader must be able to see. Metering is durable
-       * because lost spend is unreconstructable; the capture carrying the
-       * segments is appended best-effort. Reporting the composition of an
-       * *older* request under a current heading would be the quiet lie this
-       * separation exists to prevent — so a mismatch reports nothing rather
-       * than the wrong request (#2323).
+       * Absence is a state a reader must be able to see. Reporting the
+       * composition of an *older* request under a current heading would be the
+       * quiet lie this separation exists to prevent, so readers never join an
+       * independent capture stream (#2323).
        */
       composition?: ContextDiagnosticsComposition;
       compaction?: ContextDiagnosticsCompaction;
@@ -113,7 +112,11 @@ export interface ContextDiagnosticsComposition {
 
 type ContextRunStore = Pick<
   AgentRunStore,
-  'listSessionRuns' | 'readEvents' | 'readEventProjection' | 'repairEventProjection'
+  | 'listSessionRuns'
+  | 'readEvents'
+  | 'readEventProjection'
+  | 'readEventLedgerRevision'
+  | 'repairEventProjection'
 >;
 
 /**
@@ -122,17 +125,15 @@ type ContextRunStore = Pick<
  * One sealed row answers this. The `latest_context` projection is written by
  * the same storage transaction that commits a completed MAIN call's canonical
  * attempt, freezing that request's identity, its provider-reported numbers,
- * the folded composition of its own capture, and the compaction boundary its
+ * the folded composition of its own observation, and the compaction boundary its
  * prompt was built under — all at one moment, so no two fields here can
  * describe different requests. It is a projection, not an event: nothing
  * appends a record under that name.
  *
- * That sealing is the whole design. The facts come from appends with different
- * guarantees (durable metering, best-effort capture) and different owners (the
- * compaction boundary belongs to recovery), so reading "the newest of each
- * kind" and joining them produces a snapshot whose parts drift apart: a failed
- * call replaces the newest metering record, an unmatched capture hides a
- * matching one, and the boundary moves on its own.
+ * That sealing is the whole design. The request facts live on one canonical
+ * attempt; the compaction boundary remains recovery-owned. Reading "the newest
+ * of each kind" and joining independent histories would recreate the retired
+ * second authority and let the snapshot's parts drift apart.
  *
  * Warm reads are O(1) — one projection row. The ledger scan below is the cold
  * path, for a session written before this record existed.
@@ -142,6 +143,7 @@ export async function readLatestContextDiagnostics(
   sessionId: string,
 ): Promise<ContextDiagnostics> {
   try {
+    let replaceProjectionId: string | undefined;
     if (runStore.readEventProjection) {
       // Three states, three answers. `undefined` is an uninitialized
       // projection — nothing has been decided about this session, so the
@@ -157,8 +159,13 @@ export async function readLatestContextDiagnostics(
       if (projected === null) return { status: 'unavailable', reason: 'no_completed_request' };
       const snapshot = readLatestContextSnapshot(projected ?? undefined);
       if (snapshot) return availableFrom(snapshot);
+      if (projected) replaceProjectionId = projected.id;
     }
-    return await rebuildContextFromLedger(runStore, sessionId);
+    const ledgerRevision =
+      runStore.readEventLedgerRevision && runStore.repairEventProjection
+        ? await runStore.readEventLedgerRevision(sessionId)
+        : undefined;
+    return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId, ledgerRevision);
   } catch {
     return { status: 'unavailable', reason: 'trace_unavailable' };
   }
@@ -167,8 +174,9 @@ export async function readLatestContextDiagnostics(
 /**
  * The cold path, and the compatibility path.
  *
- * A ledger written before sealed snapshots existed still has the two records
- * they were sealed from, so the reader assembles one — but only here, only
+ * A ledger written before sealed snapshots existed can still be reconstructed
+ * from its canonical attempts (or, for legacy sessions only, provider events),
+ * so the reader assembles one — but only here, only
  * once, and only when no sealed record is present at all. Nothing is repaired
  * into another owner's projection: the compaction boundary is read from the
  * events of this session's own runs, never from recovery's derived row.
@@ -176,6 +184,8 @@ export async function readLatestContextDiagnostics(
 async function rebuildContextFromLedger(
   runStore: ContextRunStore,
   sessionId: string,
+  replaceProjectionId?: string,
+  ledgerRevision?: string,
 ): Promise<ContextDiagnostics> {
   const runs = (await runStore.listSessionRuns(sessionId)).filter(isSessionInlineRun);
   let anchor: MeteringAnchor | undefined;
@@ -191,7 +201,10 @@ async function rebuildContextFromLedger(
   // legacy provider rows answer for it would resurrect the very request the
   // canonical rule declined to report.
   let sawCanonicalRecord = false;
-  const captures = new Map<string, AgentRunEvent>();
+  // Historical provider rows never select a canonical-era request. They may
+  // only restore composition for the exact physical attempt selected above
+  // when that transitional canonical record predates request observations.
+  const historicalAttempts: LegacyProviderAnchor[] = [];
   const checkpoints: CheckpointCandidate[] = [];
 
   for (const run of runs) {
@@ -203,10 +216,11 @@ async function rebuildContextFromLedger(
         continue;
       }
       if (event.type === PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE) {
-        const attemptId = event.data?.attemptId;
-        if (typeof attemptId === 'string') captures.set(attemptId, event);
         const candidate = legacyProviderAnchor(event);
-        if (candidate && supersedesLatestContext(candidate, legacy)) legacy = candidate;
+        if (candidate) {
+          historicalAttempts.push(candidate);
+          if (supersedesLatestContext(candidate, legacy)) legacy = candidate;
+        }
         continue;
       }
       if (event.type !== CHECKPOINT_EVENT_TYPE) continue;
@@ -222,12 +236,17 @@ async function rebuildContextFromLedger(
   // authority for data written since canonical metering shipped.
   const resolved = anchor ?? (sawCanonicalRecord ? undefined : legacy);
   if (!resolved) {
-    await repairLatestContext(runStore, sessionId, null);
+    await repairLatestContext(runStore, sessionId, null, replaceProjectionId, ledgerRevision);
     return { status: 'unavailable', reason: 'no_completed_request' };
   }
-  const capture = captures.get(resolved.attemptId);
-  const read = capture ? readPromptCompositionEvent(capture) : undefined;
   const boundary = latestCheckpointBefore(checkpoints, resolved);
+  // Selection stays canonical. This is a one-field compatibility join, not a
+  // fallback for provider/model/status/timing/usage or for a different attempt.
+  const composition =
+    resolved.composition ??
+    (anchor && !anchor.hasRequestObservation
+      ? exactHistoricalComposition(anchor, historicalAttempts)
+      : undefined);
   const snapshot: LatestContextSnapshot = {
     schemaVersion: LATEST_CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     attemptId: resolved.attemptId,
@@ -239,13 +258,13 @@ async function rebuildContextFromLedger(
       ? { cacheReadInputTokens: resolved.cacheReadInputTokens }
       : {}),
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
-    ...(read?.attemptId === resolved.attemptId ? { composition: read.composition } : {}),
+    ...(composition ? { composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
   // and a later cold read can retry the derived write.
-  await repairLatestContext(runStore, sessionId, snapshot);
+  await repairLatestContext(runStore, sessionId, snapshot, replaceProjectionId, ledgerRevision);
   return availableFrom(snapshot);
 }
 
@@ -260,9 +279,11 @@ async function repairLatestContext(
   runStore: ContextRunStore,
   sessionId: string,
   snapshot: LatestContextSnapshot | null,
+  replaceProjectionId?: string,
+  ledgerRevision?: string,
 ): Promise<void> {
   const repair = runStore.repairEventProjection;
-  if (!repair) return;
+  if (!repair || ledgerRevision === undefined) return;
   await repair
     .call(
       runStore,
@@ -279,6 +300,10 @@ async function repairLatestContext(
             data: snapshot as unknown as Record<string, unknown>,
           } as AgentRunEvent)
         : null,
+      {
+        ifLedgerRevision: ledgerRevision,
+        ...(replaceProjectionId ? { replaceEventId: replaceProjectionId } : {}),
+      },
     )
     .catch(() => {});
 }
@@ -292,23 +317,28 @@ async function repairLatestContext(
 function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
   const data = event.data;
   if (!data || data.status !== 'completed') return undefined;
-  const { attemptId, providerId, modelId, completedAt, startedAt } = data;
+  const { attemptId, traceId, providerId, modelId, completedAt, startedAt } = data;
   if (
     typeof attemptId !== 'string' ||
+    typeof traceId !== 'string' ||
     typeof providerId !== 'string' ||
     typeof modelId !== 'string' ||
     typeof completedAt !== 'number'
   ) {
     return undefined;
   }
+  const composition = readPromptCompositionEvent(event)?.composition;
   return {
     attemptId,
+    traceId,
     providerId,
     modelId,
     startedAt: typeof startedAt === 'number' ? startedAt : completedAt,
     completedAt,
+    hasRequestObservation: false,
     ...(typeof data.inputTokens === 'number' ? { inputTokens: data.inputTokens } : {}),
     ...(typeof data.contextWindow === 'number' ? { contextWindow: data.contextWindow } : {}),
+    ...(composition ? { composition } : {}),
   };
 }
 
@@ -335,6 +365,7 @@ const CHECKPOINT_EVENT_TYPE = 'history_compact_checkpoint_recorded';
 
 interface MeteringAnchor {
   attemptId: string;
+  traceId: string;
   providerId: string;
   modelId: string;
   startedAt: number;
@@ -342,6 +373,8 @@ interface MeteringAnchor {
   inputTokens?: number;
   cacheReadInputTokens?: number;
   contextWindow?: number;
+  composition?: ContextDiagnosticsComposition;
+  hasRequestObservation: boolean;
 }
 
 interface CheckpointCandidate {
@@ -359,18 +392,41 @@ function meteringAnchor(event: AgentRunEvent): MeteringAnchor | undefined {
     return undefined;
   }
   if (attempt.callKind !== 'main' || attempt.status !== 'completed') return undefined;
+  const composition = attempt.requestObservation
+    ? foldPromptComposition(attempt.requestObservation.segments)
+    : undefined;
   return {
     attemptId: attempt.attemptId,
+    traceId: attempt.traceId,
     providerId: attempt.providerId,
     modelId: attempt.modelId,
     startedAt: attempt.startedAt,
     completedAt: attempt.completedAt,
+    hasRequestObservation: attempt.requestObservation !== undefined,
     ...(attempt.inputTokens !== undefined ? { inputTokens: attempt.inputTokens } : {}),
     ...(attempt.cacheReadInputTokens !== undefined
       ? { cacheReadInputTokens: attempt.cacheReadInputTokens }
       : {}),
     ...(attempt.contextWindow !== undefined ? { contextWindow: attempt.contextWindow } : {}),
+    ...(composition ? { composition } : {}),
   };
+}
+
+function exactHistoricalComposition(
+  anchor: MeteringAnchor,
+  candidates: readonly LegacyProviderAnchor[],
+): ContextDiagnosticsComposition | undefined {
+  const matches = candidates.filter(
+    (candidate) =>
+      candidate.composition !== undefined &&
+      candidate.attemptId === anchor.attemptId &&
+      candidate.traceId === anchor.traceId &&
+      candidate.providerId === anchor.providerId &&
+      candidate.modelId === anchor.modelId &&
+      candidate.startedAt === anchor.startedAt &&
+      candidate.completedAt === anchor.completedAt,
+  );
+  return matches.length === 1 ? matches[0]!.composition : undefined;
 }
 
 function latestCheckpointBefore(

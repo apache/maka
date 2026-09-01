@@ -81,7 +81,10 @@ const executionStoresReaderKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
-export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
+export {
+  normalizeRootTurnAdmissionPayload,
+  rootTurnAdmissionRecordFits,
+} from './agent-run-store.js';
 export {
   isSessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,
@@ -360,6 +363,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readWorkHubReplacement: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacement(delegationId)),
+      readWorkHubReplacementAbort: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
+      readWorkHubSupersession: (delegationId) =>
+        run(() => sessionStore.readWorkHubSupersession(delegationId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
@@ -498,6 +507,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.readEventsForEvidence(sessionId, runId)),
       readEventProjection: (sessionId, type) =>
         run(() => agentRunStore.readEventProjection(sessionId, type)),
+      readEventLedgerRevision: (sessionId) =>
+        run(() => agentRunStore.readEventLedgerRevision(sessionId)),
       repairEventProjection: (sessionId, type, event, options) =>
         run(() => agentRunStore.repairEventProjection(sessionId, type, event, options)),
       admitRootTurn: (input: AdmitRootTurnInput): Promise<AdmitRootTurnResult> =>

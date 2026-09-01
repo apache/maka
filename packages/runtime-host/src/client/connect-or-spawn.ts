@@ -467,7 +467,10 @@ export async function connectOrSpawnRuntimeHostWithDependencies(
             ...(input.onExit === undefined ? {} : { onExit: input.onExit }),
             ...(input.inheritableAuthorityLeaseFd === undefined
               ? {}
-              : { inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd }),
+              : {
+                  inheritableAuthorityLeaseFd: input.inheritableAuthorityLeaseFd,
+                  launchOwnerClientInstanceId: clientInstanceId,
+                }),
             ...(input.closeOnLauncherExit === undefined
               ? {}
               : { closeOnLauncherExit: input.closeOnLauncherExit }),

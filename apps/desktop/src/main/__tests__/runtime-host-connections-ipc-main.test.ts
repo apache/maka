@@ -93,7 +93,7 @@ test('retries connection delete after a stale revision instead of failing perman
     emitConnectionListChanged() {},
   });
 
-  await handlers.get('connections:delete')?.({}, 'openrouter');
+  await handlers.get('connections:delete')?.({}, connectionIdentity());
   assert.equal(removals, 2);
 });
 
@@ -123,12 +123,41 @@ test('treats a missing connection as a successful delete without calling remove'
     },
   });
 
-  await handlers.get('connections:delete')?.({}, 'already-gone');
+  await handlers.get('connections:delete')?.({}, {
+    connectionId: 'already-gone',
+    slug: 'already-gone',
+  });
   assert.equal(removals, 0);
   assert.equal(listChanged, 1);
 });
 
-test('rejects invalid connection slug input instead of treating it as already deleted', async () => {
+test('does not delete a replacement Connection that reused the stale detail slug', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let removals = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      loadConnectionCatalog: async (): Promise<ConnectionCatalogSnapshot> => ({
+        ...catalog(),
+        connections: [{ ...catalog().connections[0]!, connectionId: 'connection-2' }],
+      }),
+      removeConnection: async () => {
+        removals += 1;
+        return { kind: 'committed', catalogRevision: 8 };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  await handlers.get('connections:delete')?.({}, connectionIdentity());
+  assert.equal(removals, 0);
+});
+
+test('rejects invalid connection identity input instead of treating it as already deleted', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   registerRuntimeHostConnectionsIpc({
     ipcMain: {
@@ -149,7 +178,7 @@ test('rejects invalid connection slug input instead of treating it as already de
 
   await assert.rejects(
     async () => handlers.get('connections:delete')?.({}, 42),
-    /Invalid connection slug|connection slug/i,
+    /Invalid Connection identity/i,
   );
 });
 
@@ -176,7 +205,7 @@ test('reports an existing but unconfigured credential as missing', async () => {
   });
 
   assert.equal(
-    await handlers.get('connections:hasSecret')?.({}, 'openrouter'),
+    await handlers.get('connections:hasSecret')?.({}, connectionIdentity()),
     false,
   );
 });
@@ -205,16 +234,16 @@ test('keeps saved custom header values out of the renderer and preserves them by
   });
 
   assert.deepEqual(
-    await handlers.get('connections:getRequestHeaders')?.({}, 'openrouter'),
+    await handlers.get('connections:getRequestHeaders')?.({}, connectionIdentity()),
     { names: ['HTTP-Referer'] },
   );
   assert.equal(
-    JSON.stringify(await handlers.get('connections:getRequestHeaders')?.({}, 'openrouter')).includes('private.example'),
+    JSON.stringify(await handlers.get('connections:getRequestHeaders')?.({}, connectionIdentity())).includes('private.example'),
     false,
   );
 
   assert.deepEqual(
-    await handlers.get('connections:setRequestHeaders')?.({}, 'openrouter', [
+    await handlers.get('connections:setRequestHeaders')?.({}, connectionIdentity(), [
       { name: 'HTTP-Referer' },
       { name: 'X-Title', value: 'Maka' },
     ]),
@@ -370,4 +399,8 @@ function catalog(): ConnectionCatalogSnapshot {
       },
     ],
   };
+}
+
+function connectionIdentity() {
+  return { connectionId: 'connection-1', slug: 'openrouter' } as const;
 }

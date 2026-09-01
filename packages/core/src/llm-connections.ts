@@ -115,7 +115,26 @@ export interface ModelInfo {
     input: Array<'text' | 'image' | 'audio' | 'pdf'>;
     output: Array<'text' | 'image' | 'audio'>;
   };
+  /**
+   * Read-time provenance for values overlaid from model-facts.json. This is
+   * never persisted in a provider inventory; it lets catalog consumers show
+   * where a projected value came from.
+   */
+  factOverriddenFields?: readonly ModelFactField[];
 }
+
+export type ModelFactField =
+  | 'displayName'
+  | 'description'
+  | 'apiProtocol'
+  | 'contextWindow'
+  | 'inputLimit'
+  | 'maxOutputTokens'
+  | 'knowledgeCutoff'
+  | 'structuredOutput'
+  | 'lastUpdated'
+  | 'capabilities'
+  | 'modalities';
 
 export type ModelDiscoverySource = 'fetched' | 'fallback';
 
@@ -154,6 +173,8 @@ export interface RuntimeExecutionConnection {
 }
 
 export interface LlmConnection extends RuntimeExecutionConnection {
+  /** Immutable Runtime Host entity identity. Legacy non-Host projections may omit it. */
+  connectionId?: string;
   name: string;
   enabled: boolean;
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
@@ -411,7 +432,6 @@ export function reconcileConnectionAfterModelFetch(
       ),
     ),
   ];
-
   // Seed a first choice only for a connection that has never had a list to
   // pick from: four providers ship no `fallbackModels`, so for them discovery
   // is the only place a first default can come from.
@@ -555,6 +575,33 @@ export function deriveConnectionSlug(
   const base = providerType.toLowerCase().replace(/[^a-z0-9-]/g, '-');
   if (!existingSlugs.includes(base)) return base;
 
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!existingSlugs.includes(candidate)) return candidate;
+  }
+}
+
+export type InteractiveOAuthProviderType = Extract<ProviderType, 'openai-codex' | 'xai-oauth'>;
+
+/** Stable human-facing slug base for one interactive OAuth Connection. */
+export function interactiveOAuthConnectionSlugBase(
+  providerType: InteractiveOAuthProviderType,
+): string {
+  switch (providerType) {
+    case 'openai-codex':
+      return 'codex-subscription';
+    case 'xai-oauth':
+      return 'xai-oauth';
+  }
+}
+
+/** Derive an unused OAuth Connection slug without moving allocation into a surface. */
+export function deriveInteractiveOAuthConnectionSlug(
+  providerType: InteractiveOAuthProviderType,
+  existingSlugs: readonly string[] = [],
+): string {
+  const base = interactiveOAuthConnectionSlugBase(providerType);
+  if (!existingSlugs.includes(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base}-${suffix}`;
     if (!existingSlugs.includes(candidate)) return candidate;

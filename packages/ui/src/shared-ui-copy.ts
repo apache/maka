@@ -17,8 +17,6 @@
  * under the License.
  */
 
-import type { TaskStatus } from '@maka/core/task-ledger';
-
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 
 export interface SharedUiCopy {
@@ -97,17 +95,12 @@ export interface SharedUiCopy {
     close: string;
     resizeHandle: string;
   };
-  taskLedger: {
-    status: Record<TaskStatus, string>;
+  sessionTodo: {
     ariaLabel: string;
     retry: string;
     loading: string;
     activeAriaLabel: string;
     empty: string;
-    recent: string;
-    recentAriaLabel: string;
-    childAgent: (agentId?: string) => string;
-    mainAgent: string;
   };
   toast: {
     notifications: string;
@@ -199,17 +192,12 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端数据桥当前未连接。',
     },
     primitives: { loading: '加载中', close: '关闭', resizeHandle: '调整宽度' },
-    taskLedger: {
-      status: { pending: '待处理', in_progress: '进行中', blocked: '已阻塞', completed: '已完成', failed: '失败', cancelled: '已取消' },
+    sessionTodo: {
       ariaLabel: '任务待办',
       retry: '重新载入待办',
       loading: '正在载入待办…',
       activeAriaLabel: '进行中的待办',
       empty: '这个任务还没有待办',
-      recent: '最近结束',
-      recentAriaLabel: '最近结束的待办',
-      childAgent: (agentId) => `子代理${agentId ? ` ${agentId}` : ''}`,
-      mainAgent: '主代理',
     },
     toast: { notifications: '通知', closeNotification: '关闭通知', confirm: '确定', cancel: '取消' },
     stream: { assistantChunkTruncated: '\n[…单条 delta 已截断]\n', assistantTailTruncated: '\n\n[…后续已截断]', thinkingHeadTruncated: '[…已截断早期 reasoning]\n', thinkingChunkTruncated: '\n[…单条 delta 已截断]\n', toolChunkTruncated: '\n[…已截断]\n' },
@@ -288,17 +276,12 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: '桌面端資料橋目前未連線。',
     },
     primitives: { loading: '載入中', close: '關閉', resizeHandle: '調整寬度' },
-    taskLedger: {
-      status: { pending: '待處理', in_progress: '進行中', blocked: '已阻塞', completed: '已完成', failed: '失敗', cancelled: '已取消' },
+    sessionTodo: {
       ariaLabel: '任務待辦',
       retry: '重新載入待辦',
       loading: '正在載入待辦…',
       activeAriaLabel: '進行中的待辦',
       empty: '這個任務還沒有待辦',
-      recent: '最近結束',
-      recentAriaLabel: '最近結束的待辦',
-      childAgent: (agentId) => `子代理${agentId ? ` ${agentId}` : ''}`,
-      mainAgent: '主代理',
     },
     toast: { notifications: '通知', closeNotification: '關閉通知', confirm: '確定', cancel: '取消' },
     stream: { assistantChunkTruncated: '\n[…單條 delta 已截斷]\n', assistantTailTruncated: '\n\n[…後續已截斷]', thinkingHeadTruncated: '[…已截斷早期 reasoning]\n', thinkingChunkTruncated: '\n[…單條 delta 已截斷]\n', toolChunkTruncated: '\n[…已截斷]\n' },
@@ -377,17 +360,12 @@ const SHARED_UI_COPY = {
       dailyReviewDisconnectedBody: 'The desktop data bridge is not connected.',
     },
     primitives: { loading: 'Loading', close: 'Close', resizeHandle: 'Resize handle' },
-    taskLedger: {
-      status: { pending: 'Pending', in_progress: 'In progress', blocked: 'Blocked', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled' },
+    sessionTodo: {
       ariaLabel: 'To-do list',
       retry: 'Reload the to-do list',
       loading: 'Loading the to-do list…',
       activeAriaLabel: 'In-progress to-dos',
       empty: 'This task has no to-dos yet',
-      recent: 'Recently finished',
-      recentAriaLabel: 'Recently finished to-dos',
-      childAgent: (agentId) => `Child agent${agentId ? ` ${agentId}` : ''}`,
-      mainAgent: 'Main agent',
     },
     toast: { notifications: 'Notifications', closeNotification: 'Close notification', confirm: 'Confirm', cancel: 'Cancel' },
     stream: { assistantChunkTruncated: '\n[…single delta truncated]\n', assistantTailTruncated: '\n\n[…remaining output truncated]', thinkingHeadTruncated: '[…earlier reasoning truncated]\n', thinkingChunkTruncated: '\n[…single delta truncated]\n', toolChunkTruncated: '\n[…truncated]\n' },

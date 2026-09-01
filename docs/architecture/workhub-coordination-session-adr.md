@@ -82,12 +82,18 @@ Every WorkHub input resolves to exactly one proposed **disposition**:
 - `clarify`: continue clarification in the Coordination Session without guessing a
   target or creating a Session.
 
+Linked correction is a user-confirmed coordination operation over a prior durable
+delegation, not a model disposition. Its replacement target is still restricted to
+`delegate_existing` or explicit `create_new` admission.
+
 All model and routing output is advisory. Before any write, a deterministic
 **Action Gate** admits or rejects the proposed disposition and operation. The gate
 enforces Runtime Host and target validity, archive and waiting state, self-route
-exclusion, explicit `create_new`, and existing tool and permission ceilings.
-Replacement, supersession, and Stop ownership remain deferred. Neither a model
-nor a routing policy can directly authorize a write or expand execution authority.
+exclusion, explicit `create_new`, and existing tool and permission ceilings. For a
+replacement, the gate additionally requires explicit correction evidence in the
+trusted user text, claims the source delegation in Coordination transcript order,
+and rejects any later competing replacement intent. Neither a model nor a routing
+policy can directly authorize a write, Stop, or expansion of execution authority.
 
 ## Delegation links rather than copies transcripts
 
@@ -107,13 +113,20 @@ The initial assignment link does not mirror the target Turn's execution lifecycl
 Target acceptance, running, waiting, completion, failure, abort, and recovery state
 remain ordinary Session facts. WorkHub derives those states as read-only
 projections and does not persist them as independent Coordination Session truth.
-Future replacement support may add coordination-owned `active` / `superseded`
-linkage without turning target execution status into WorkHub-owned state.
+Linked correction records coordination-owned `active` / `superseded` / `aborted`
+linkage without turning target execution status into WorkHub-owned state. Here,
+`aborted` means the source link was retired but replacement admission could not
+complete because the selected target became archived, disappeared, or began
+waiting for user input. The renderer rebuilds active linkage from the complete
+Coordination transcript separately from its bounded visible timeline, preserving
+durable transcript sequence rather than wall-clock order.
 
 The ordinary Session records the delegated request, tools, side effects, and
 authoritative result. WorkHub may display a bounded projection or record a
 coordination summary, but it does not copy the ordinary Session's complete
-transcript into the Coordination Session.
+transcript into the Coordination Session. The assignment projection preserves
+`create_new` so the visible card explicitly tells the user that WorkHub created a
+new work item rather than merely saying that an existing item accepted the request.
 
 Delegation linkage uses one closed, typed `delegation_assigned` record in the
 existing Coordination Session transcript. Under the Coordination and target
@@ -154,6 +167,23 @@ idempotency without freezing old text or coupling draft edits to Host authority.
 `waiting_for_user` remains a local, retryable result because no assignment has yet
 been committed.
 
+Before any destructive retirement, replacement persists a
+`delegation_replacement_requested` record whose identity is unique to the source
+delegation. The target Session's ordinary Message authority then either cancels
+the exact still-pending delegated Message or resolves how the Message entered an
+execution Turn. A root Turn created by that Message may be stopped; a pre-existing
+user Turn that merely consumed it as steering is shared authority and must remain
+running. Replacement assignment and the old link's `delegation_superseded` proof
+commit atomically. Retrying the same action recovers the crash seam after
+retirement/Stop and before replacement assignment. The replacement fingerprint
+binds the resolved stable target Session id rather than its transient candidate
+reference, so metadata refreshes do not change action identity and a retry cannot
+select a different Session. If the target becomes archived, unavailable, or
+waiting after the destructive retirement boundary, Coordination appends a
+`delegation_replacement_aborted` terminal fact. That auditable fact removes the
+retired source from active linkage and makes later retries return the same terminal
+outcome instead of displaying a stopped, unsuperseded link.
+
 ## Consequences, costs, and reevaluation
 
 - WorkHub gains persistent conversational continuity without adding another
@@ -174,8 +204,10 @@ been committed.
   recovery, per-Host UI resolution, persistent transcript, closed dispositions,
   and the Action Gate are implemented. Durable delegation linkage is encoded in
   that transcript; target lifecycle projection and the hybrid first-response
-  contract are implemented as rebuildable reads. Linked correction and destructive
-  replacement/Stop recovery remain later work.
+  contract are implemented as rebuildable reads. Linked correction, exact
+  target-owned pending cancellation/Turn Stop, atomic supersession, and retry-based
+  replacement recovery are implemented. Broader stop/resume controls remain later
+  work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

@@ -126,6 +126,7 @@ export interface TransientUserMessageProjection {
   text: string;
   ts: number;
   attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
   /**

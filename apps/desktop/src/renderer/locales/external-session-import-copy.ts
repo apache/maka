@@ -79,6 +79,18 @@ type ExternalSessionImportCopy = {
    * or paged away by the time it renders.
    */
   importOutcomeUnknownDescription: (names: readonly string[]) => string;
+  selectAllAriaLabel: string;
+  /** Marked out of listed — the source's own total is not a number this page knows. */
+  selectedCount: (selected: number, listed: number) => string;
+  selectRowAriaLabel: (name: string) => string;
+  importSelected: string;
+  /** Which one of how many the batch is on, so the count means something. */
+  batchProgress: (done: number, total: number) => string;
+  batchDoneTitle: (imported: number) => string;
+  /** Counted apart from the total: these conversations now exist twice. */
+  batchDuplicated: (count: number) => string;
+  batchFailed: (count: number) => string;
+  batchNothingImported: string;
 };
 
 const COPY = {
@@ -126,6 +138,15 @@ const COPY = {
     importNotRecordedTitle: '没有发现新任务',
     importNotRecordedDescription: '没有记录到新的任务，可以安全重试。',
     importOutcomeUnknownTitle: '需要确认导入结果',
+    selectAllAriaLabel: '全选或全不选',
+    selectedCount: (selected, listed) => `已选 ${selected} / ${listed}`,
+    selectRowAriaLabel: (name) => `选择 ${name}`,
+    importSelected: '导入所选',
+    batchProgress: (done, total) => `正在导入 ${done} / ${total}`,
+    batchDoneTitle: (imported) => `已导入 ${imported} 个对话`,
+    batchDuplicated: (count) => `其中 ${count} 个之前已导入过，现在各有两份。`,
+    batchFailed: (count) => `另有 ${count} 个没能导入。`,
+    batchNothingImported: '没有对话被导入。',
     importOutcomeUnknownDescription: (names) =>
       `以下对话的导入结果无法确认：${names.map((name) => `「${name}」`).join('、')}。请先在任务列表中查找，已经出现的不要再次导入。`,
   },
@@ -173,6 +194,15 @@ const COPY = {
     importNotRecordedTitle: '沒有發現新任務',
     importNotRecordedDescription: '沒有記錄到新的任務，可以安全重試。',
     importOutcomeUnknownTitle: '需要確認匯入結果',
+    selectAllAriaLabel: '全選或全部取消選取',
+    selectedCount: (selected, listed) => `已選 ${selected} / ${listed}`,
+    selectRowAriaLabel: (name) => `選取 ${name}`,
+    importSelected: '匯入所選項目',
+    batchProgress: (done, total) => `正在匯入 ${done} / ${total}`,
+    batchDoneTitle: (imported) => `已匯入 ${imported} 個對話`,
+    batchDuplicated: (count) => `其中 ${count} 個先前已匯入，現在各有兩份。`,
+    batchFailed: (count) => `另有 ${count} 個無法匯入。`,
+    batchNothingImported: '沒有匯入任何對話。',
     importOutcomeUnknownDescription: (names) =>
       `以下對話的匯入結果無法確認：${names.map((name) => `「${name}」`).join('、')}。請先在任務列表中查詢，已經出現的不要再次匯入。`,
   },
@@ -218,6 +248,16 @@ const COPY = {
     importNotRecordedTitle: 'No new task found',
     importNotRecordedDescription: 'No new task was recorded, so it is safe to retry.',
     importOutcomeUnknownTitle: 'Check the import result',
+    selectAllAriaLabel: 'Select all or none',
+    selectedCount: (selected, listed) => `${selected} / ${listed} selected`,
+    selectRowAriaLabel: (name) => `Select ${name}`,
+    importSelected: 'Import selected',
+    batchProgress: (done, total) => `Importing ${done} / ${total}`,
+    batchDoneTitle: (imported) => `Imported ${imported} conversations`,
+    batchDuplicated: (count) =>
+      `${count} of them had been imported before and now exist twice.`,
+    batchFailed: (count) => `${count} more could not be imported.`,
+    batchNothingImported: 'No conversation was imported.',
     importOutcomeUnknownDescription: (names) =>
       `Maka could not confirm the outcome of these imports: ${names.map((name) => `“${name}”`).join(', ')}. Look in the task list first, and do not import again anything that is already there.`,
   },

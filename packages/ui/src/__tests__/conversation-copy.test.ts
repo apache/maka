@@ -26,6 +26,17 @@ test('labels the Chinese default thinking level as default', () => {
   assert.equal(getConversationCopy('zh-TW').model.defaultLevel, '預設');
 });
 
+test('explains why folder-reference messages cannot be edited and resent', () => {
+  assert.equal(
+    getConversationCopy('zh-CN').messages.editMessageDisabledDirectoryReferences,
+    '包含文件夹引用的历史消息暂不支持编辑并重发',
+  );
+  assert.equal(
+    getConversationCopy('en').messages.editMessageDisabledDirectoryReferences,
+    'Edit & resend does not yet support messages with folder references',
+  );
+});
+
 /**
  * A subscription quota window can hand the runtime an hour-scale Retry-After;
  * the banner must count down in humanized d/h/m/s units rather than a raw
