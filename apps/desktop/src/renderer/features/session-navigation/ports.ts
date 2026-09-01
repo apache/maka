@@ -32,6 +32,25 @@ export interface SessionNavigationRemoveOutcome {
   readonly archivedSubtaskCount: number;
 }
 
+export type SessionNavigationRef<T> = { current: T };
+
+export type SessionNavigationToastApi = {
+  success(title: string, description?: string): void;
+  error(
+    title: string,
+    description?: string,
+    diagnosticDetails?: string,
+    diagnosticTarget?: { sessionId: string },
+  ): void;
+  confirm(options: {
+    title: string;
+    description: string;
+    confirmLabel: string;
+    cancelLabel: string;
+    destructive?: boolean;
+  }): Promise<boolean>;
+};
+
 export interface SessionNavigationSession extends SessionSummary {
   readonly profileId: string;
   readonly profileName: string;
@@ -73,4 +92,25 @@ export interface SessionNavigationSessionService {
 
 export interface SessionNavigationServices {
   readonly sessions: SessionNavigationSessionService;
+}
+
+/**
+ * What the rail asks of the rest of the shell, named one by one.
+ *
+ * Switching a session also clears the active messages and leaves the Work Hub.
+ * Those are commands the shell issues, and they stay commands: the rail calls
+ * them, it does not subscribe to them. Nothing here has to be identity-stable —
+ * the controller reads them through a ref published on commit — so the shell
+ * may build this object inline, and no ordinary `function` declaration upstream
+ * can quietly put the rail back on every AppShell render (#4109).
+ */
+export interface SessionNavigationPorts {
+  activeIdRef: SessionNavigationRef<string | undefined>;
+  sessionsRef: SessionNavigationRef<ReadonlyArray<SessionSummary>>;
+  pendingSessionRowActionsRef: SessionNavigationRef<Set<string>>;
+  activateSession(sessionId: string | undefined): void;
+  clearActiveMessages(): void;
+  clearSessionRendererState(sessionId: string): void;
+  refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
+  toastApi: SessionNavigationToastApi;
 }

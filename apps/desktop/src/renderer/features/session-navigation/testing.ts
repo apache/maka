@@ -20,6 +20,7 @@
 import type { SessionNavigationServices } from './ports.js';
 
 export type {
+  SessionNavigationPorts,
   SessionNavigationServices,
   SessionNavigationSession,
   SessionNavigationSessionService,
@@ -33,7 +34,6 @@ export { createSessionOpenCommand } from './controller/session-open-command.js';
 export {
   useSessionNavigationController,
   type SessionNavigationController,
-  type SessionNavigationPorts,
   type UseSessionNavigationControllerInput,
 } from './controller/use-session-navigation-controller.js';
 export { useSessionSelection } from './controller/use-session-selection.js';

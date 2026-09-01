@@ -36,10 +36,7 @@ import {
   type SessionRowActions,
   type SidebarUpdateReminder,
 } from '@maka/ui';
-import {
-  useSessionNavigationController,
-  type SessionNavigationPorts,
-} from '../controller/use-session-navigation-controller.js';
+import { useSessionNavigationController } from '../controller/use-session-navigation-controller.js';
 import type { SessionNavigationRowActions } from '../controller/session-row-actions.js';
 import {
   SESSION_LIST_EXPANDED_MAX_WIDTH,
@@ -47,7 +44,7 @@ import {
 } from '../model/session-list-layout.js';
 import type { SessionRailProjection } from '../model/session-rail.js';
 import { sessionRailLayoutStore } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationSession } from '../ports.js';
+import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
 
 /** The chrome the shell owns and the rail only displays. */
 export interface SessionNavigationChromeInput {
