@@ -121,8 +121,8 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
 import {
-  collectRuntimeHostSessionCatalogs,
   collectRuntimeHostSessionCatalogsWithCoverage,
+  reconcileRuntimeHostSessionCatalog,
 } from './runtime-host-session-catalog.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
@@ -262,6 +262,7 @@ const runtimeHostMetadata = new Map<
   }
 >();
 const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
+let lastDesktopSessionCatalog: DesktopSessionSummary[] = [];
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
@@ -362,28 +363,64 @@ function recordRuntimeHostIdentity(value: unknown): {
   return { scope, readiness: metadata.readiness };
 }
 
-async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
+interface RuntimeHostScopeInventory {
+  readonly readyScopes: readonly DesktopTargetScope[];
+  readonly knownProfileIds: readonly string[];
+}
+
+async function runtimeHostScopeInventory(): Promise<RuntimeHostScopeInventory> {
   while (true) {
     const generation = activeRuntimeHostGeneration;
-    const identities: unknown = await ipcRenderer.invoke('runtime-host:identities');
+    const [identities, guestMounts]: [unknown, unknown] = await Promise.all([
+      ipcRenderer.invoke('runtime-host:identities'),
+      ipcRenderer.invoke('session-collaboration:mount:list'),
+    ]);
     if (generation !== activeRuntimeHostGeneration) continue;
     if (!Array.isArray(identities)) {
       throw new Error('Desktop Runtime Host identities are unavailable');
     }
+    if (!Array.isArray(guestMounts)) {
+      throw new Error('Desktop shared Session mounts are unavailable');
+    }
     const authoritativeScopeKeys = new Set<RuntimeHostScopeKey>();
     const readyScopes: DesktopTargetScope[] = [];
+    const knownProfileIds = new Set(
+      guestMounts.map((mount) => {
+        if (
+          !mount ||
+          typeof mount !== 'object' ||
+          !('mountId' in mount) ||
+          typeof mount.mountId !== 'string'
+        ) {
+          throw new Error('Desktop shared Session mount is invalid');
+        }
+        return mount.mountId;
+      }),
+    );
     for (const identity of identities) {
       const { scope, readiness } = recordRuntimeHostIdentity(identity);
       authoritativeScopeKeys.add(runtimeHostScopeKey(scope));
-      if (readiness === 'ready') readyScopes.push(scope);
+      const metadata = runtimeHostMetadataFor(scope);
+      if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
+      knownProfileIds.add(metadata.profileId);
+      if (readiness === 'ready') {
+        readyScopes.push(scope);
+      }
     }
     for (const scopeKey of runtimeHostScopes.keys()) {
       if (authoritativeScopeKeys.has(scopeKey)) continue;
       runtimeHostScopes.delete(scopeKey);
       runtimeHostMetadata.delete(scopeKey);
     }
-    return readyScopes;
+    return {
+      readyScopes,
+      knownProfileIds: [...knownProfileIds],
+    };
   }
+}
+
+async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
+  return (await runtimeHostScopeInventory()).readyScopes;
 }
 
 async function runtimeHostSessionRef(sessionId: string): Promise<{
@@ -896,28 +933,22 @@ async function listDesktopSessions(
     ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
-  const scopes = await runtimeHostScopeList();
-  const sessions = await collectRuntimeHostSessionCatalogs(
-    scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke(
-        'sessions:list',
-        scope,
-        filter,
-      ) as SessionCatalogSummary[];
-      return sessions.map((session) => projectSessionCatalogSummary(scope, session));
-    }),
+  const snapshot = await listDesktopSessionsWithCoverage();
+  lastDesktopSessionCatalog = reconcileRuntimeHostSessionCatalog(
+    lastDesktopSessionCatalog,
+    snapshot,
   );
-  recordSessionCatalogScopes(sessions);
-  return sessions;
+  return lastDesktopSessionCatalog;
 }
 
 async function listDesktopSessionsWithCoverage(): Promise<{
   sessions: DesktopSessionSummary[];
   completeHostIds: string[];
+  knownProfileIds: string[];
 }> {
-  const scopes = await runtimeHostScopeList();
+  const inventory = await runtimeHostScopeInventory();
   const catalog = await collectRuntimeHostSessionCatalogsWithCoverage(
-    scopes.map((scope) => {
+    inventory.readyScopes.map((scope) => {
       const metadata = runtimeHostMetadataFor(scope);
       if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
       return {
@@ -930,7 +961,10 @@ async function listDesktopSessionsWithCoverage(): Promise<{
     }),
   );
   recordSessionCatalogScopes(catalog.sessions);
-  return catalog;
+  return {
+    ...catalog,
+    knownProfileIds: [...inventory.knownProfileIds],
+  };
 }
 
 async function createDesktopSessionOnScope(
