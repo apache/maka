@@ -106,3 +106,20 @@ test('does not offer passive waiting for a supervised Host', async () => {
     'cancel',
   );
 });
+
+test('explains when the safe replacement check found active background work', () => {
+  const conflict = {
+    kind: 'upgrade_required' as const,
+    restartable: false as const,
+    registration: { pid: 42, lifecycleMode: 'service' as const },
+  } as Parameters<typeof buildRuntimeHostUpgradeDialog>[0];
+  const dialog = buildRuntimeHostUpgradeDialog(
+    conflict,
+    { action: 'replace', canWait: false, activeTasksDetected: true },
+    'zh',
+  );
+
+  assert.match(dialog.options.detail ?? '', /仍有后台任务在运行/u);
+  assert.doesNotMatch(dialog.options.detail ?? '', /无法报告后台活动/u);
+  assert.equal(dialog.options.defaultId, dialog.options.cancelId);
+});

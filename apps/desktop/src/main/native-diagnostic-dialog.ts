@@ -102,7 +102,7 @@ export async function showFatalStartupError(
 
 export async function showMainRendererProcessGoneDialog(
   deps: DiagnosticDialogDeps,
-): Promise<'relaunch' | 'exit'> {
+): Promise<'recover' | 'exit'> {
   const copy = MAIN_RENDERER_GONE_COPY[deps.locale];
   const result = await showMessageBoxWithDiagnostics(
     {
@@ -110,14 +110,14 @@ export async function showMainRendererProcessGoneDialog(
       title: copy.title,
       message: copy.message,
       detail: copy.detail,
-      buttons: [copy.relaunch, copy.exit],
+      buttons: [copy.recover, copy.exit],
       defaultId: 0,
       cancelId: 1,
       noLink: true,
     },
     deps,
   );
-  return result.response === 0 ? 'relaunch' : 'exit';
+  return result.response === 0 ? 'recover' : 'exit';
 }
 
 export async function showRuntimeHostStartupRecoveryDialog(
@@ -219,15 +219,16 @@ const MAIN_RENDERER_GONE_COPY = {
   en: {
     title: 'Maka needs to recover',
     message: "Maka's interface stopped unexpectedly.",
-    detail: 'Relaunch Maka to continue, or exit and reopen it later.',
-    relaunch: 'Relaunch',
+    detail:
+      'Recover the interface without restarting Maka. Runtime Host, running work, and background services will stay in place.',
+    recover: 'Recover Interface',
     exit: 'Exit',
   },
   zh: {
     title: 'Maka 需要恢复',
     message: 'Maka 界面意外停止运行。',
-    detail: '重新启动 Maka 以继续，或退出后稍后再打开。',
-    relaunch: '重新启动',
+    detail: '只恢复界面，不重启 Maka。Runtime Host、正在运行的工作和后台服务都会保留。',
+    recover: '恢复界面',
     exit: '退出',
   },
 } as const;

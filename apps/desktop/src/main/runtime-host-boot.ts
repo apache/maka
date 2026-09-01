@@ -19,8 +19,8 @@
 
 import {
   app,
+  type BrowserWindow,
   clipboard,
-  dialog,
   ipcMain,
   nativeTheme,
   powerSaveBlocker,
@@ -81,6 +81,7 @@ import { readFileCapped } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
+import { showBrowserMessageBox } from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
@@ -330,6 +331,11 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   resolveRuntimeHost: resolveRuntimeHostDiagnostics,
   writeClipboard: (report) => clipboard.writeText(report),
 };
+let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
+
+function showDesktopMessageBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
+  return showBrowserMessageBox(options, resolveBrowserDialogParent());
+}
 
 function showStartupDiagnosticDialog(
   options: MessageBoxOptions,
@@ -337,7 +343,7 @@ function showStartupDiagnosticDialog(
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
-    showMessageBox: (next) => dialog.showMessageBox(next),
+    showMessageBox: showDesktopMessageBox,
     copyDiagnostics: () =>
       copyDesktopDiagnosticReport(
         desktopDiagnostics,
@@ -433,12 +439,19 @@ const mainWindowController = createMainWindowController({
       locale: desktopLocale.current(),
       copyDiagnostics: () =>
         copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
-      showMessageBox: (options) => dialog.showMessageBox(options),
+      // The dialog has its own sandboxed renderer, but stays attached to a
+      // visible main window so Recover can transition directly back into that
+      // same window. A pre-first-paint crash uses a standalone dialog instead.
+      showMessageBox: (options) => {
+        const parent = mainWindowController.browserWindow();
+        return showBrowserMessageBox(options, parent?.isVisible() ? parent : undefined);
+      },
     });
-    if (decision === "relaunch") app.relaunch();
+    if (decision === "recover" && mainWindowController.reloadMainRenderer()) return;
     app.quit();
   },
 });
+resolveBrowserDialogParent = () => mainWindowController.browserWindow();
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
@@ -759,7 +772,7 @@ const clientSettingsTools = buildClientSettingsTools({
   },
   confirm: async (changes) => {
     const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
-    const result = await dialog.showMessageBox({
+    const result = await showDesktopMessageBox({
       type: "question",
       message: copy.message,
       detail: copy.detail,
@@ -1127,7 +1140,7 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
     });
     return showRuntimeHostStartupRecoveryDialog(input, {
       locale: desktopLocale.current(),
-      showMessageBox: (options) => dialog.showMessageBox(options),
+      showMessageBox: showDesktopMessageBox,
       copyDiagnostics: () =>
         copyDesktopDiagnosticReport(
           desktopDiagnostics,
@@ -1841,7 +1854,7 @@ async function prepareRuntimeHostDesktopQuit(): Promise<void> {
 
 async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
   const locale = await desktopLocale.resolve();
-  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {

@@ -47,7 +47,7 @@ const diagnosticEnvironment = () => ({
   processUptimeSeconds: 3,
 });
 
-test('copies diagnostics as an auxiliary native-dialog action', async () => {
+test('copies diagnostics as an auxiliary dialog action', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [2, 1];
   let copies = 0;
@@ -80,7 +80,7 @@ test('copies diagnostics as an auxiliary native-dialog action', async () => {
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
 });
 
-test('fatal startup errors remain copyable without a renderer or BrowserWindow', async () => {
+test('fatal startup errors remain copyable before the main Renderer exists', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [1, 0];
   let clipboard = '';
@@ -141,9 +141,10 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
     },
   });
 
-  assert.equal(decision, 'relaunch');
-  assert.deepEqual(shown[0]?.buttons, ['Relaunch', 'Exit', 'Copy Diagnostics']);
-  assert.deepEqual(shown[1]?.buttons, ['Relaunch', 'Exit', 'Copy Again']);
+  assert.equal(decision, 'recover');
+  assert.deepEqual(shown[0]?.buttons, ['Recover Interface', 'Exit', 'Copy Diagnostics']);
+  assert.deepEqual(shown[1]?.buttons, ['Recover Interface', 'Exit', 'Copy Again']);
+  assert.match(shown[0]?.detail ?? '', /without restarting Maka/);
   assert.match(clipboard, /Surface: renderer_process_gone/);
   assert.match(clipboard, /Reason: oom/);
   assert.match(clipboard, /Exit code: 137/);

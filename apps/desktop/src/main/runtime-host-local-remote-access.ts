@@ -32,7 +32,10 @@ import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
 } from '../preload/bridge-contract.js';
-import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
+import type {
+  RuntimeHostDesktopManager,
+  RuntimeHostLocalReplacement,
+} from './runtime-host-desktop-manager.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type {
   createDesktopRuntimeHostLocalOperator,
@@ -121,7 +124,7 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
   resolveConflictingHostReplacement(
     registration: HostRegistration,
     signal: AbortSignal,
-  ): Promise<{ replace(): Promise<void> } | undefined>;
+  ): Promise<RuntimeHostLocalReplacement | undefined>;
   repairManagedStartup(input?: {
     readonly allowManualUpdate?: boolean;
     readonly allowInterruptActiveTasks?: boolean;
@@ -721,7 +724,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       }
       const target = authority.target;
       return {
-        replace: () =>
+        replace: (activeWorkPolicy) =>
           serialize(async () => {
             signal.throwIfAborted();
             const setupPackage = await input.resolveSetupPackage(signal);
@@ -733,13 +736,16 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                   hostEpoch: registration.hostEpoch,
                   pid: registration.pid,
                 },
-                allowInterruptActiveTasks: true,
+                ...(activeWorkPolicy === 'interrupt_active_work'
+                  ? { allowInterruptActiveTasks: true }
+                  : {}),
                 signal,
               },
               () => undefined,
             );
             if (frame.kind === 'error') {
-              if (frame.error.code === 'target_mismatch') return;
+              if (frame.error.code === 'active_tasks') return 'active_tasks';
+              if (frame.error.code === 'target_mismatch') return 'replaced';
               throw conflictReplacementError(registration.pid, frame.error.message);
             }
             if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -749,11 +755,9 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
               );
             }
             if (frame.update.kind === 'active_tasks') {
-              throw conflictReplacementError(
-                registration.pid,
-                'the managed service refused to interrupt active work',
-              );
+              return 'active_tasks';
             }
+            return 'replaced';
           }),
       };
     },

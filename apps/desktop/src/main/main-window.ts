@@ -43,6 +43,11 @@ type SettingsReader = {
 
 export interface MainWindowController {
   createWindow(signal: AbortSignal): Promise<void>;
+  /**
+   * Reload only the crashed main Renderer, preserving the Desktop process,
+   * Runtime Host, background services, and current BrowserWindow.
+   */
+  reloadMainRenderer(): boolean;
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
@@ -170,11 +175,38 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   // skeleton anyway. The gate defers those focus requests until markReady.
   const revealGate = createWindowRevealGate(keepHiddenForE2eFixture);
   let showFallbackTimer: NodeJS.Timeout | undefined;
+  let mainWindowShutdownSignal: AbortSignal | undefined;
   const clearShowFallbackTimer = (): void => {
     if (showFallbackTimer) {
       clearTimeout(showFallbackTimer);
       showFallbackTimer = undefined;
     }
+  };
+  const armShowFallbackTimer = (target: BrowserWindow): void => {
+    clearShowFallbackTimer();
+    if (keepHiddenForE2eFixture || target.isDestroyed() || target.isVisible()) return;
+    showFallbackTimer = setTimeout(() => {
+      showFallbackTimer = undefined;
+      if (!target.isDestroyed()) revealGate.markReady(target);
+    }, SHOW_FALLBACK_TIMEOUT_MS);
+  };
+
+  const observeRendererProcess = (target: BrowserWindow, signal: AbortSignal): void => {
+    observeMainRendererProcessGone({
+      source: target.webContents,
+      shutdownSignal: signal,
+      onUnexpectedExit: (details) => {
+        console.error(
+          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void Promise.resolve()
+          .then(() => deps.onRendererProcessGone(details))
+          .catch((error) => {
+            console.error('[renderer] failed to handle main Renderer process exit:', error);
+            app.quit();
+          });
+      },
+    });
   };
 
   function getBrowserViews(): BrowserViewManager<BrowserViewController> {
@@ -374,21 +406,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
-    observeMainRendererProcessGone({
-      source: mainWindow.webContents,
-      shutdownSignal: signal,
-      onUnexpectedExit: (details) => {
-        console.error(
-          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
-        );
-        void Promise.resolve()
-          .then(() => deps.onRendererProcessGone(details))
-          .catch((error) => {
-            console.error('[renderer] failed to handle main Renderer process exit:', error);
-            app.quit();
-          });
-      },
-    });
+    mainWindowShutdownSignal = signal;
+    observeRendererProcess(mainWindow, signal);
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
@@ -500,12 +519,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // If renderer-ready arrived while loadURL/loadFile was resolving, the
     // window is already visible and no timer is needed. E2e-fixture windows
     // remain hidden for their whole lifecycle.
-    if (!keepHiddenForE2eFixture && !mainWindow.isVisible()) {
-      showFallbackTimer = setTimeout(() => {
-        showFallbackTimer = undefined;
-        revealGate.markReady(mainWindow);
-      }, SHOW_FALLBACK_TIMEOUT_MS);
-    }
+    armShowFallbackTimer(mainWindow);
     if (process.env.MAKA_REAL_WINDOW_SMOKE === '1') {
       emitRealWindowSmokeDiagnostic('after-load');
       setTimeout(() => emitRealWindowSmokeDiagnostic('settled-1000ms'), 1000);
@@ -514,6 +528,32 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 
   return {
     createWindow,
+    reloadMainRenderer() {
+      const target = mainWindow;
+      const signal = mainWindowShutdownSignal;
+      if (
+        !target ||
+        target.isDestroyed() ||
+        target.webContents.isDestroyed() ||
+        !signal ||
+        signal.aborted
+      ) return false;
+      // The previous one-shot observer was consumed by the crash. Arm the
+      // replacement before reload so a second crash still reaches recovery.
+      clearShowFallbackTimer();
+      const contents = target.webContents;
+      const onLoaded = (): void => armShowFallbackTimer(target);
+      contents.once('did-finish-load', onLoaded);
+      try {
+        observeRendererProcess(target, signal);
+        contents.reload();
+        return true;
+      } catch (error) {
+        if (!contents.isDestroyed()) contents.off('did-finish-load', onLoaded);
+        console.error('[renderer] failed to reload main Renderer:', error);
+        return false;
+      }
+    },
     send: safeSendToRenderer,
     notifyRendererReady() {
       // PR-SHOW-AFTER-FIRST-COMMIT: the renderer finished its first React

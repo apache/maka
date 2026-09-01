@@ -27,6 +27,12 @@ import type {
 type Conflict = RuntimeHostRestartableConflict | RuntimeHostWaitConflict;
 export type RuntimeHostUpgradeDialogDecision = 'restart' | 'replace' | 'wait' | 'cancel';
 
+interface RuntimeHostUpgradeAvailability {
+  readonly action: 'restart' | 'replace' | undefined;
+  readonly canWait: boolean;
+  readonly activeTasksDetected?: true;
+}
+
 export interface RuntimeHostUpgradeDialog {
   readonly options: MessageBoxOptions;
   readonly decisions: readonly RuntimeHostUpgradeDialogDecision[];
@@ -42,15 +48,14 @@ type ActivityKey =
 
 export function buildRuntimeHostUpgradeDialog(
   conflict: Conflict,
-  availability: {
-    readonly action: 'restart' | 'replace' | undefined;
-    readonly canWait: boolean;
-  },
+  availability: RuntimeHostUpgradeAvailability,
   locale: UiLocale,
 ): RuntimeHostUpgradeDialog {
   const activity = conflict.handshake?.activity;
   const hasWork =
-    (activity?.activeOperations ?? 0) > 0 || (activity?.residencies.length ?? 0) > 0;
+    availability.activeTasksDetected === true ||
+    (activity?.activeOperations ?? 0) > 0 ||
+    (activity?.residencies.length ?? 0) > 0;
   const copy = UPGRADE_COPY[locale];
   const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
     [];
@@ -85,10 +90,7 @@ export function buildRuntimeHostUpgradeDialog(
 
 function formatActivity(
   conflict: Conflict,
-  availability: {
-    readonly action: 'restart' | 'replace' | undefined;
-    readonly canWait: boolean;
-  },
+  availability: RuntimeHostUpgradeAvailability,
   locale: UiLocale,
 ): string {
   const activity = conflict.handshake?.activity;
@@ -103,7 +105,8 @@ function formatActivity(
     for (const residency of activity.residencies) {
       lines.push(`${copy.activity[activityKey(residency.label)]}: ${residency.count}`);
     }
-  } else lines.push(copy.unknownActivity);
+  } else if (availability.activeTasksDetected) lines.push(copy.activeTasksDetected);
+  else lines.push(copy.unknownActivity);
   if (availability.action === 'replace') {
     lines.push('', copy.replaceWarning, copy.replaceExplanation);
   } else if (availability.action === 'restart') {
@@ -140,6 +143,7 @@ const UPGRADE_COPY = {
     uptime: (n: number) => `Running for about ${n} ${n === 1 ? 'minute' : 'minutes'}`,
     connections: (n: number) => `${n} other client(s) are still connected`,
     operations: (n: number) => `${n} operation(s) are running`,
+    activeTasksDetected: 'This Host reported active background work during the safe replacement check.',
     unknownActivity: 'This Host version cannot report its background activity.',
     processId: (pid: number) => `Process ID (PID): ${pid}`,
     restartWarning:
@@ -166,6 +170,7 @@ const UPGRADE_COPY = {
     uptime: (n: number) => `已运行约 ${n} 分钟`,
     connections: (n: number) => `仍有 ${n} 个其他客户端连接`,
     operations: (n: number) => `有 ${n} 个操作正在运行`,
+    activeTasksDetected: '安全替换检查发现此 Host 仍有后台任务在运行。',
     unknownActivity: '此 Host 版本无法报告后台活动。',
     processId: (pid: number) => `进程 ID (PID)：${pid}`,
     restartWarning: '重启会保留持久化状态，但可能中断正在进行的外部工作。',

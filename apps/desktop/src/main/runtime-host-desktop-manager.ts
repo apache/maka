@@ -150,10 +150,13 @@ export type RuntimeHostNonRestartableDecision = 'replace' | 'wait' | 'cancel';
 export interface RuntimeHostNonRestartableActions {
   readonly canReplace: boolean;
   readonly canWait: boolean;
+  readonly activeTasksDetected?: true;
 }
 
 export interface RuntimeHostLocalReplacement {
-  replace(): Promise<void>;
+  replace(
+    activeWorkPolicy: 'refuse_active_work' | 'interrupt_active_work',
+  ): Promise<'replaced' | 'active_tasks'>;
 }
 
 export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconnectError {
@@ -942,10 +945,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         const replacement = target.input.profileTarget
           ? undefined
           : await this.resolveLocalHostReplacement?.(result.registration, signal);
+        if (replacement) {
+          // The managed-service operator can check active work even when an
+          // older Host cannot include an activity snapshot in its handshake.
+          // Let idle upgrades finish without a dialog, but never grant
+          // interruption authority until the person explicitly confirms it.
+          const attempt = await replacement.replace('refuse_active_work');
+          if (attempt === 'replaced') {
+            takeoverHostEpoch = undefined;
+            continue;
+          }
+        }
         const decision = await this.#resolveNonRestartable(result, {
           canReplace: replacement !== undefined,
           canWait:
             replacement === undefined && result.registration.lifecycleMode !== 'service',
+          ...(replacement ? { activeTasksDetected: true as const } : {}),
         });
         if (decision === 'cancel') throw new RuntimeHostUpgradeCancelledError();
         if (decision === 'replace') {
@@ -954,7 +969,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
               'This Runtime Host cannot be replaced from the current target',
             );
           }
-          await replacement.replace();
+          const replaced = await replacement.replace('interrupt_active_work');
+          if (replaced === 'active_tasks') {
+            throw new RuntimeHostPermanentReconnectError(
+              'This Runtime Host still owns work that cannot be interrupted safely',
+            );
+          }
           takeoverHostEpoch = undefined;
           continue;
         }

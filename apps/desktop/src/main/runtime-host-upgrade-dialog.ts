@@ -56,7 +56,11 @@ export function createRuntimeHostUpgradePrompts(
       const locale = await resolveLocale();
       const dialog = buildRuntimeHostUpgradeDialog(
         conflict,
-        { action: actions.canReplace ? 'replace' : undefined, canWait: actions.canWait },
+        {
+          action: actions.canReplace ? 'replace' : undefined,
+          canWait: actions.canWait,
+          ...(actions.activeTasksDetected ? { activeTasksDetected: true } : {}),
+        },
         locale,
       );
       const { response } = await showDialog(
