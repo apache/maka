@@ -25,7 +25,10 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
