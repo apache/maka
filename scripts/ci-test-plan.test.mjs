@@ -772,6 +772,24 @@ test('the recovery lane filter follows the postinstall launcher chain', () => {
   }
 });
 
+test('every workspace file on the recovery filter branches on Windows', () => {
+  const filtered = pullRequestPathFilter('windows-recovery.yml').filter((path) =>
+    path.startsWith('packages/'),
+  );
+
+  // The rule that admits a workspace file here is that Linux cannot go red on
+  // it: these are the modules whose behaviour forks on the platform, and the
+  // test files whose cases are skipped off Windows. Anything portable belongs
+  // to the required `test` lane instead, so a file that stops branching has to
+  // leave this list. A glob would defeat the rule, so each is named.
+  assert.ok(filtered.length > 0, 'no Windows-specific surface is filtered');
+  for (const path of filtered) {
+    assert.doesNotMatch(path, /\*/u, `${path}: must name one file`);
+    const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+    assert.match(source, /win32/u, `${path}: no Windows branch`);
+  }
+});
+
 test('the recovery lane filters pull requests by what only Windows can prove', () => {
   const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
 
