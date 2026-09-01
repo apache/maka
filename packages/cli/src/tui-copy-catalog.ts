@@ -27,6 +27,7 @@ export const TUI_COPY_RESOURCES = {
       tooLarge:
         'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; a larger payload is silently dropped by the terminal.',
       nothingToCopy: 'Nothing to copy yet.',
+      usage: 'Usage: /copy [all]',
       roleUser: 'You:',
       roleAssistant: 'Maka:',
       roleGoalContinuation: 'Goal continuation (autonomous):',
@@ -40,6 +41,7 @@ export const TUI_COPY_RESOURCES = {
       tooLarge:
         '内容过大，无法复制 · {bytes} 字节超过 {limit} 字节上限；更大的内容会被终端静默丢弃。',
       nothingToCopy: '暂无可复制的内容。',
+      usage: '用法：/copy [all]',
       roleUser: '你：',
       roleAssistant: 'Maka：',
       roleGoalContinuation: '目标续跑（自主）：',

@@ -173,7 +173,7 @@ jobs:
         run: npm ci
 
       - name: Check localized TUI copy boundaries
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: |
           npm run check:tui-copy
           node --test scripts/check-tui-copy.test.mjs
