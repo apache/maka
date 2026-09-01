@@ -178,7 +178,7 @@ export const makaTheme = {
     "--radius-inner": "var(--radius-control)",
     "--radius-element": "var(--radius-surface)",
     "--radius-container": "var(--radius-modal)",
-    "--radius-page": "1.75rem",
+    "--radius-page": "28px",
     "--radius-full": "var(--radius-pill)",
     "--shadow-low": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 25%)), 0 4px 8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 40%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 8%))",
     "--shadow-med": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 35%)), 0 4px 12px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 12%))",

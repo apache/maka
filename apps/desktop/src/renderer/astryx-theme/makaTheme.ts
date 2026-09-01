@@ -200,5 +200,14 @@ export const makaTheme = defineTheme({
     '--radius-element': 'var(--radius-surface)',
     '--radius-container': 'var(--radius-modal)',
     '--radius-full': 'var(--radius-pill)',
+    // --radius-page has no Maka tier and no product consumer, so it is not an
+    // alias like its four siblings — but it is on the same ladder, and it
+    // shipped as `1.75rem` while every other rung is px. DESIGN.md §6 says the
+    // ladder cannot be half px and half rem: a rem rung silently tracks the
+    // root font-size, which is exactly the multiplier the type-scale note above
+    // exists to keep out of the geometry. 28px is the same number the rem
+    // resolves to at a 16px root, so this moves no pixel and removes the way it
+    // could later move on its own.
+    '--radius-page': '28px',
   },
 });
