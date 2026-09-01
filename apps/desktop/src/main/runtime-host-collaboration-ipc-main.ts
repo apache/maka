@@ -70,6 +70,13 @@ export function registerRuntimeHostCollaborationIpc(
             invitationCode: prepared.invitationCode,
             target,
           }),
+          connectivity:
+            target.transport.kind === 'libp2p-direct'
+              ? {
+                  kind: 'peer' as const,
+                  coordinationRelayCount: target.transport.coordinationRelays.length,
+                }
+              : { kind: 'configured' as const },
         },
       };
     },

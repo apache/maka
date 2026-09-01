@@ -29,7 +29,7 @@ import { registerRuntimeHostCollaborationIpc } from '../runtime-host-collaborati
 
 const ROOT_ID = 'a'.repeat(64);
 
-test('requires Owner confirmation before issuing a plaintext collaboration invitation', async () => {
+test('requires plaintext confirmation and reports the issued invitation routes', async () => {
   const handlers = new Map<string, IpcHandler>();
   const ipcMain: ReconnectableReadIpcMain = {
     handle(channel, listener) {
@@ -92,9 +92,43 @@ test('requires Owner confirmation before issuing a plaintext collaboration invit
   assert.equal(prepareCalls, 1);
   assert.equal((result as { kind?: unknown }).kind, 'prepared');
   const invitation = (result as {
-    invitation: { invitationCode: string };
+    invitation: { invitationCode: string; connectivity: unknown };
   }).invitation;
+  assert.deepEqual(invitation.connectivity, { kind: 'configured' });
   const bundle = decodeDesktopCollaborationInvitation(invitation.invitationCode);
   assert.equal(decodeCollaborationInvitationCode(bundle.invitationCode).rootId, ROOT_ID);
   assert.equal(bundle.target.transport.kind, 'plaintext');
+
+  const peerHandlers = new Map<string, IpcHandler>();
+  registerRuntimeHostCollaborationIpc(
+    client as unknown as Parameters<typeof registerRuntimeHostCollaborationIpc>[0],
+    {
+      handle(channel, listener) {
+        peerHandlers.set(channel, listener);
+      },
+    },
+    async () => ({
+      name: 'Peer Lab',
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: '12D3KooWpeer',
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: [
+          '/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay',
+        ],
+      },
+    }),
+  );
+  const preparePeer = peerHandlers.get('session-collaboration:prepare');
+  assert.ok(preparePeer);
+  const peerResult = await preparePeer(
+    {} as Parameters<IpcHandler>[0],
+    'session-1',
+    'observe',
+    false,
+  );
+  assert.deepEqual(
+    (peerResult as { invitation: { connectivity: unknown } }).invitation.connectivity,
+    { kind: 'peer', coordinationRelayCount: 1 },
+  );
 });

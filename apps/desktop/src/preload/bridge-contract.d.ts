@@ -345,7 +345,14 @@ export type DesktopSessionCollaborationCancelResult = SessionCollaborationCancel
 export type DesktopSessionCollaborationPrepareResult =
   | {
       readonly kind: 'prepared';
-      readonly invitation: CollaborationInvitationPrepareResult;
+      readonly invitation: CollaborationInvitationPrepareResult & {
+        readonly connectivity:
+          | {
+              readonly kind: 'peer';
+              readonly coordinationRelayCount: number;
+            }
+          | { readonly kind: 'configured' };
+      };
     }
   | { readonly kind: 'insecure_confirmation_required' };
 
