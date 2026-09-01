@@ -209,6 +209,7 @@ export function projectSandboxBoundaryNegotiation(
   const unresolvedSteps = new Set<string>();
   const requests = new Set<string>();
   const requestToolUseIds = new Map<string, string>();
+  const requestIdentityKeys = new Map<string, string>();
   const settledRequests = new Set<string>();
   const requestEvents = new Set<string>();
   const decisionEvents = new Map<string, { status: SandboxBoundaryRequestStatus }>();
@@ -263,6 +264,7 @@ export function projectSandboxBoundaryNegotiation(
           !nonEmptyString(request.requestId) ||
           !nonEmptyString(request.toolUseId) ||
           typeof request.justification !== 'string' ||
+          request.justification.trim().length === 0 ||
           !validateSandboxBoundaryExpansion(request.expansion).ok ||
           request.toolUseId !== event.refs.toolCallId
         ) {
@@ -273,6 +275,10 @@ export function projectSandboxBoundaryNegotiation(
         }
         requests.add(request.requestId);
         requestToolUseIds.set(request.requestId, request.toolUseId);
+        requestIdentityKeys.set(
+          request.requestId,
+          `${event.sessionId}\u0000${event.invocationId}\u0000${event.runId}\u0000${event.turnId}`,
+        );
         requestEvents.add(request.requestId);
         continue;
       }
@@ -280,6 +286,11 @@ export function projectSandboxBoundaryNegotiation(
         isRecord(decision) && nonEmptyString(decision.requestId)
           ? requestToolUseIds.get(decision.requestId)
           : undefined;
+      const requestIdentityKey =
+        isRecord(decision) && nonEmptyString(decision.requestId)
+          ? requestIdentityKeys.get(decision.requestId)
+          : undefined;
+      const decisionIdentityKey = `${event.sessionId}\u0000${event.invocationId}\u0000${event.runId}\u0000${event.turnId}`;
       if (
         event.author !== 'user' ||
         !isRecord(decision) ||
@@ -289,9 +300,10 @@ export function projectSandboxBoundaryNegotiation(
         (decision.status !== 'approved' &&
           decision.status !== 'denied' &&
           decision.status !== 'conflict') ||
-        typeof decision.revision !== 'number' ||
-        !Number.isFinite(decision.revision) ||
+        !Number.isSafeInteger(decision.revision) ||
+        decision.revision < 0 ||
         requestToolUseId === undefined ||
+        requestIdentityKey !== decisionIdentityKey ||
         event.refs.toolCallId !== requestToolUseId ||
         settledRequests.has(decision.requestId) ||
         (decision.status === 'approved' && decision.decision !== 'allow') ||

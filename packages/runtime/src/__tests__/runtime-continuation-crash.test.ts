@@ -26,6 +26,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { BackendSendInput } from '@maka/core/backend-types';
+import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import {
@@ -59,20 +62,80 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
   await runCrashChild();
 } else {
   describe('runtime resume phase 1 process crash harness', () => {
-    test('reopens and reconstructs a denied sandbox negotiation from the durable ledger', async () => {
+    test('reopens the boundary log and authenticates denial through continuation admission', async () => {
       const root = await mkdtemp(join(tmpdir(), 'maka-runtime-boundary-restart-'));
-      const sessionId = 'session-1';
-      const runId = 'source-run';
-      const turnId = 'source-turn';
-      const runtimeEventStore = createCrashRuntimeStore(root);
-      try {
-        const identity = {
-          sessionId,
-          invocationId: 'source-invocation',
-          runId,
-          turnId,
+      let observedContinuation: BackendSendInput | undefined;
+      const createHarness = () => {
+        const store = createSessionStore(root);
+        const runStore = createSqliteAgentRunStore(root);
+        const runtimeEventStore = createCrashRuntimeStore(root);
+        const backends = new BackendRegistry();
+        backends.register('ai-sdk', (ctx) => {
+          const backend = new FakeBackend({
+            sessionId: ctx.sessionId,
+            header: ctx.header,
+            store: ctx.store,
+            appendMessage: ctx.appendMessage,
+          });
+          return {
+            kind: backend.kind,
+            sessionId: backend.sessionId,
+            async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              if (input.continuation) observedContinuation = input;
+              yield* backend.send(input);
+            },
+            stop: () => backend.stop(),
+            respondToSandboxBoundary: (response) => backend.respondToSandboxBoundary(response),
+            respondToUserQuestion: (response) => backend.respondToUserQuestion(response),
+            dispose: () => backend.dispose(),
+          };
+        });
+        return {
+          store,
+          runStore,
+          runtimeEventStore,
+          manager: new SessionManager({
+            store,
+            runStore,
+            runtimeEventStore,
+            backends,
+            safeBoundaryResumeEnabled: true,
+            inspectContinuationSafety: async () => stableSafetyObservation(),
+            newId: (() => {
+              let id = 0;
+              return () => `restart-id-${++id}`;
+            })(),
+            now: Date.now,
+          }),
         };
-        await runtimeEventStore.appendRuntimeEvent(sessionId, runId, {
+      };
+
+      const first = createHarness();
+      try {
+        const session = await first.manager.createSession({
+          cwd: root,
+          llmConnectionSlug: 'fake',
+          model: 'fake-model',
+          permissionMode: 'ask',
+          name: 'boundary restart authentication',
+        });
+        const identity = {
+          sessionId: session.id,
+          invocationId: 'source-invocation',
+          runId: 'source-run',
+          turnId: 'source-turn',
+        };
+        await first.runStore.createRun(sourceHeader(session.id, root));
+        await first.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
+          ...identity,
+          id: 'source-user',
+          ts: 0,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue after a denied boundary request' },
+        });
+        await first.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
           ...identity,
           id: 'boundary-request-event',
           ts: 1,
@@ -91,7 +154,7 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             },
           },
         });
-        await runtimeEventStore.appendRuntimeEvent(sessionId, runId, {
+        await first.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
           ...identity,
           id: 'boundary-decision-event',
           ts: 2,
@@ -110,36 +173,60 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             },
           },
         });
-        const durableRequest: SandboxBoundaryRequest = {
-          sessionId,
+        await first.runtimeEventStore.appendRuntimeEvent(session.id, 'source-run', {
+          ...identity,
+          id: 'source-terminal',
+          ts: 2,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          status: 'failed',
+          actions: { endInvocation: true, stateDelta: { failureClass: 'app_restarted' } },
+        });
+        await first.store.createSandboxBoundaryRequest({
+          sessionId: session.id,
           requestId: 'boundary-1',
-          status: 'denied',
-          baseRevision: 0,
+          turnId: 'source-turn',
+          runId: 'source-run',
           expansion: { network: { enabled: true } },
           justification: 'Need network access.',
-          createdAt: 1,
-          settledAt: 2,
-          turnId,
-          runId,
-        };
+        });
+        await first.store.settleSandboxBoundaryRequest({
+          sessionId: session.id,
+          requestId: 'boundary-1',
+          decision: 'deny',
+        });
+        await first.store.close?.();
+        first.runStore.close?.();
+        first.runtimeEventStore.close();
 
-        runtimeEventStore.close();
-        const reopened = createCrashRuntimeStore(root);
+        const reopened = createHarness();
         try {
-          const events = await reopened.readRuntimeEvents(sessionId, runId);
-          assert.deepEqual(projectSandboxBoundaryNegotiation(events, [durableRequest]), {
-            kind: 'valid',
-            state: {
-              denied: true,
-              invalidRounds: 0,
-              unresolvedRounds: 0,
-              finalizationRequested: false,
+          const durableRequests = await reopened.store.listSandboxBoundaryRequests(session.id);
+          assert.equal(durableRequests[0]?.status, 'denied');
+          const plan = await reopened.manager.planAuthoritativeSafeBoundaryContinuation(
+            session.id,
+            {
+              sourceRunId: 'source-run',
             },
-          });
+          );
+          assert.equal(plan.disposition, 'continue');
+          if (!plan.continuation) throw new Error('expected a continuation plan');
+          const resumed = reopened.manager.resumeSafeBoundaryContinuation(plan.continuation);
+          for await (const _event of resumed) {
+            // Drain the restarted continuation so backend admission completes.
+          }
+          assert.equal(
+            observedContinuation?.continuation?.sandboxBoundaryNegotiationState?.denied,
+            true,
+          );
         } finally {
-          reopened.close();
+          await reopened.store.close?.();
+          reopened.runStore.close?.();
+          reopened.runtimeEventStore.close();
         }
       } finally {
+        first.runtimeEventStore.close();
         await rm(root, { recursive: true, force: true });
       }
     });

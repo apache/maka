@@ -626,6 +626,22 @@ describe('projectSandboxBoundaryNegotiation', () => {
       text: 'Tool arguments failed validation',
     };
     assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+
+    const blankJustification = request('request-2', 'boundary-2', 'tool-2');
+    (
+      blankJustification.actions!.stateDelta!.sandboxBoundaryRequest as { justification: string }
+    ).justification = '   ';
+    assert.equal(projectSandboxBoundaryNegotiation([blankJustification]).kind, 'invalid');
+
+    const validRequest = request('request-3', 'boundary-3', 'tool-3');
+    const malformedRevision = decision('decision-3', 'boundary-3', 'tool-3', 'denied');
+    (
+      malformedRevision.actions!.stateDelta!.sandboxBoundaryDecision as { revision: number }
+    ).revision = 1.5;
+    assert.equal(
+      projectSandboxBoundaryNegotiation([validRequest, malformedRevision]).kind,
+      'invalid',
+    );
   });
 
   test('fails closed when boundary facts do not preserve call identity', () => {
@@ -647,6 +663,19 @@ describe('projectSandboxBoundaryNegotiation', () => {
     (response.content as Extract<RuntimeEvent['content'], { kind: 'function_response' }>).name =
       'Bash';
     assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+
+    const originalRequest = request('request-2', 'boundary-2', 'tool-2');
+    const mismatchedIdentityDecision = decision(
+      'decision-2',
+      'boundary-2',
+      'tool-2',
+      'denied',
+    );
+    mismatchedIdentityDecision.invocationId = 'other-invocation';
+    assert.equal(
+      projectSandboxBoundaryNegotiation([originalRequest, mismatchedIdentityDecision]).kind,
+      'invalid',
+    );
   });
 
   test('fails closed when a boundary failure marker is attached to a non-boundary tool', () => {
