@@ -17,11 +17,16 @@
  * under the License.
  */
 
-import { Container, ScrollView, type Component, type Terminal } from '@earendil-works/pi-tui';
+import { Container, type Component, type Terminal } from '@earendil-works/pi-tui';
 // Deep import (pi-tui does not re-export it): the viewport shadow diff must
 // compare the same canonical lines pi-tui diffs, and pi-tui normalizes Thai/Lao
 // AM sequences before its diff. Pinned to pi-tui 0.80.3.
 import { normalizeTerminalOutput } from '@earendil-works/pi-tui/dist/utils.js';
+// Separate statement, anchored below the deep import rather than appended to
+// the Container import: upstream inserts its UiLocale import directly after
+// the Container line, and an import here keeps the two changes in different
+// diff gaps so the three-way merge resolves cleanly.
+import { ScrollView } from '@earendil-works/pi-tui';
 import {
   renderMakaPiActivityStrip,
   renderMakaPiPendingQueue,
