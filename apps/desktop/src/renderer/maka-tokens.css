@@ -1265,8 +1265,9 @@
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
    ONLY THE ACCENT TOKENS ARE BRIDGED HERE. The three status rungs live in
-   makaTheme.ts alongside --color-border, because nothing re-declares them
-   below the root. The accent four cannot: maka.css re-declares
+   makaTheme.ts alongside --color-border, the text/icon ink pair and the
+   emphasis hairline, because nothing re-declares those below the root. The
+   accent four cannot: maka.css re-declares
    --color-accent / --color-accent-muted at component level
    (.astryx-banner.info, .astryx-progressbar.accent, the on-dark/on-light
    blocks), and those beat a root declaration inside the same layer. This

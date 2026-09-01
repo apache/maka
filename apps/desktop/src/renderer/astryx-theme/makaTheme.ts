@@ -109,8 +109,8 @@ export const makaTheme = defineTheme({
         '"Liberation Mono", monospace',
     },
   },
-  // The neutral background stack and the hairline, pointed back at the product
-  // palette.
+  // The neutral background stack, the hairlines, and the text/icon ink, pointed
+  // back at the product palette.
   //
   // Astryx ships these as static light-dark() pairs, which cannot follow Maka's
   // eleven switchable palettes — every one of them overrides --background and
@@ -166,6 +166,33 @@ export const makaTheme = defineTheme({
     '--color-background-popover': 'var(--background-elevated)',
     '--color-background-muted': 'var(--muted)',
     '--color-border': 'var(--border)',
+    // Text and icon ink, pointed at the product's two prose tiers (DESIGN.md
+    // §3). maka.css writes these as Astryx literals at the root —
+    // light-dark(#171717, #fafafa) and light-dark(#525252, #a3a3a3) — so every
+    // `<Text color="secondary">` in the app painted a fixed neutral that
+    // followed neither the palette nor the product foreground. 62 such call
+    // sites existed and the five-selector bridge in astryx-mount.css reached
+    // exactly five of them (issue #3446 F2); the other 57 were the drift.
+    // Root is the right place: nothing in maka.css re-declares this pair below
+    // the root except the on-dark/on-light blocks and the four Banner status
+    // rules, both of which are deliberate inversions that must keep winning.
+    //
+    // --color-text-disabled is deliberately NOT here. Astryx's
+    // light-dark(#a3a3a3, #525252) measures 2.52:1 / 2.29:1, under the AA floor
+    // the prose tiers hold, and that is the point: a disabled control read at
+    // prose contrast stops reading as disabled. DESIGN.md §3 records it as the
+    // one standing exemption (issue #3446 F6), not an omission.
+    '--color-text-primary': 'var(--foreground)',
+    '--color-text-secondary': 'var(--muted-foreground)',
+    '--color-icon-primary': 'var(--foreground)',
+    '--color-icon-secondary': 'var(--muted-foreground)',
+    // The emphasis hairline and the chrome hover wash, for the same reason as
+    // --color-border above: both were static light-dark() pairs that no palette
+    // could reach, and both are read by Astryx internals the product cannot
+    // restyle from outside (Switch's track, ProgressBar's rail, every menu
+    // row's hover). Neither is re-declared below the root in maka.css.
+    '--color-border-emphasized': 'var(--border-strong)',
+    '--color-overlay-hover': 'var(--state-hover-bg)',
     '--color-success-muted': 'oklch(from var(--success) l c h / 0.24)',
     '--color-warning-muted': 'oklch(from var(--warning) l c h / 0.24)',
     '--color-error-muted': 'oklch(from var(--destructive) l c h / 0.24)',
