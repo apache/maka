@@ -127,16 +127,24 @@ interface Harness {
   archives: number;
   document: Document;
   clickRow(sessionId: string, modifiers?: Record<string, unknown>): Promise<void>;
-  rightClickRow(sessionId: string): Promise<void>;
+  rightClickRow(sessionId: string): Promise<boolean>;
   openRowMenu(sessionId: string): Promise<void>;
   clickMenuItem(index: number): Promise<void>;
   menuLabels(): string[];
-  pressEscape(focusedSessionId?: string): Promise<void>;
+  hasRowMenu(sessionId: string): boolean;
+  collapseProject(projectId: string): Promise<void>;
+  pressEscape(focusedSessionId?: string): Promise<boolean>;
+  pressEscapeInsideRowMenu(sessionId: string): Promise<boolean>;
   dispose(): Promise<void>;
 }
 
 async function mount(
-  options: { selectedIds?: readonly string[]; sessions?: SessionSummary[] } = {},
+  options: {
+    selectedIds?: readonly string[];
+    sessions?: SessionSummary[];
+    groupVariant?: SessionRailData['groupVariant'];
+    groups?: SessionRailData['groups'];
+  } = {},
 ): Promise<Harness> {
   const original = {
     document: globalThis.document,
@@ -172,8 +180,8 @@ async function mount(
   };
   const data: SessionRailData = {
     sessions,
-    groupVariant: 'conversation',
-    groups: [{ id: 'recent', label: 'Recent', sessions: [...sessions] }],
+    groupVariant: options.groupVariant ?? 'conversation',
+    groups: options.groups ?? [{ id: 'recent', label: 'Recent', sessions: [...sessions] }],
     onSelectSession: (sessionId) => opened.push(sessionId),
     rowActions: ROW_ACTIONS,
   };
@@ -228,19 +236,32 @@ async function mount(
       });
     },
     rightClickRow: async (sessionId) => {
+      const event = pointerEvent(window, 'contextmenu');
       await act(() => {
-        rowButton(sessionId).dispatchEvent(pointerEvent(window, 'contextmenu'));
+        rowButton(sessionId).dispatchEvent(event);
       });
+      // Whether the rail claimed the press. Unclaimed, it goes on to the native
+      // menu, which is the whole answer for a row the rail cannot act on.
+      return event.defaultPrevented;
     },
     openRowMenu: async (sessionId) => {
       const trigger = document.querySelector(
         `[data-session-id="${sessionId}"] .maka-session-row-action button`,
       );
       assert.ok(trigger, `no row menu trigger for ${sessionId}`);
-      openedMenuRow = sessionId;
       await act(() => {
         trigger.dispatchEvent(pointerEvent(window, 'click'));
       });
+      // Scoping the reads below to this row is not enough on its own: the items
+      // are in the document before any ⋯ is pressed, so an assertion about the
+      // menu's wording would pass against a trigger that opens nothing. The
+      // menu has to be observably open before this row becomes the one read.
+      assert.equal(
+        trigger.closest('.maka-session-row-action')?.getAttribute('data-menu-open'),
+        'true',
+        `⋯ on ${sessionId} did not open a menu`,
+      );
+      openedMenuRow = sessionId;
     },
     clickMenuItem: async (index) => {
       const item = menuItems()[index];
@@ -250,29 +271,57 @@ async function mount(
       });
     },
     menuLabels: () => menuItems().map((item) => (item.textContent ?? '').trim()),
+    hasRowMenu: (sessionId) =>
+      document.querySelector(`[data-session-id="${sessionId}"] .maka-session-row-action`) !== null,
+    collapseProject: async (projectId) => {
+      const group = document.querySelector(`[data-project-id="${projectId}"]`);
+      assert.ok(group, `no project row for ${projectId}`);
+      const toggle = [...group.querySelectorAll('button')].find(
+        (candidate) => candidate.getAttribute('aria-expanded') !== null,
+      );
+      assert.ok(toggle, `no disclosure on project ${projectId}`);
+      await act(() => {
+        toggle.dispatchEvent(pointerEvent(window, 'click'));
+      });
+      assert.equal(toggle.getAttribute('aria-expanded'), 'false', `${projectId} did not collapse`);
+    },
     pressEscape: async (focusedSessionId = 'a') => {
       // linkedom has no focus model and reports `activeElement` as null, where a
       // browser reports <body> when nothing is focused — and here a row really
       // is focused, because the user just clicked one. The handler's first
       // guard reads it, so the test has to answer it.
       const focused = rowButton(focusedSessionId);
-      Object.defineProperty(document, 'activeElement', {
-        configurable: true,
-        get: () => focused,
-      });
-      const list = document.querySelector('.maka-session-list');
-      assert.ok(list);
-      await act(() => {
-        const event = new window.Event('keydown', { bubbles: true, cancelable: true });
-        Object.assign(event, { key: 'Escape' });
-        list.dispatchEvent(event);
-      });
+      return pressEscapeWith(focused);
+    },
+    pressEscapeInsideRowMenu: async (sessionId) => {
+      const item = document.querySelector(`[data-session-id="${sessionId}"] [role="menuitem"]`);
+      assert.ok(item, `no menu item under ${sessionId}`);
+      return pressEscapeWith(item);
     },
     dispose: async () => {
       await act(() => root.unmount());
       Object.assign(globalThis, original);
     },
   };
+
+  async function pressEscapeWith(focused: Element): Promise<boolean> {
+    Object.defineProperty(document, 'activeElement', {
+      configurable: true,
+      get: () => focused,
+    });
+    const list = document.querySelector('.maka-session-list');
+    assert.ok(list);
+    const event = new window.Event('keydown', { bubbles: true, cancelable: true });
+    Object.assign(event, { key: 'Escape' });
+    await act(() => {
+      list.dispatchEvent(event);
+    });
+    // Whether the rail claimed the press. Astryx's layer stack listens on
+    // `document` — below this handler in the bubble — and stands down on a
+    // press that is already defaultPrevented, so claiming one the rail does not
+    // own leaves whatever is above it with no way to close.
+    return event.defaultPrevented;
+  }
 }
 
 test('a plain click opens the task and picks exactly it', async () => {
@@ -408,6 +457,24 @@ test("Escape with nothing picked is not this handler's business", async () => {
   }
 });
 
+test('right-clicking a pickable row opens its menu', async () => {
+  // The whole point of claiming the press: the row's own ⋯ menu opens, so ⋯ and
+  // right-click cannot drift into two lists of items that disagree.
+  const harness = await mount({ selectedIds: ['b'] });
+  try {
+    const prevented = await harness.rightClickRow('b');
+    assert.equal(prevented, true);
+    assert.equal(
+      harness.document
+        .querySelector('[data-session-id="b"] .maka-session-row-action')
+        ?.getAttribute('data-menu-open'),
+      'true',
+    );
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test('right-clicking a row outside the set replaces it', async () => {
   // A menu is about a set, and one opened on a row the user never picked must
   // not silently be about the rows they did.
@@ -496,6 +563,103 @@ test('a mixed set pins, including the rows already pinned', async () => {
     assert.deepEqual(harness.menuLabels(), ['Pin 2 tasks', 'Archive 2 tasks']);
     await harness.clickMenuItem(0);
     assert.deepEqual(harness.flags, [true]);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+/**
+ * A project group collapses by grid track — `SideNavItem` keeps the rows
+ * mounted and marks the subtree `inert` — so the rail renders more rows than
+ * the user can see. What a range may cross is the visible ones.
+ */
+test('a Shift range does not reach into a collapsed project', async () => {
+  const project = (id: string) => ({
+    id,
+    name: id,
+    path: `/${id}`,
+    createdAt: 1,
+    updatedAt: 1,
+    available: true,
+    locations: [],
+  });
+  const sessions = ['a1', 'a2', 'b1', 'b2', 'b3', 'c1'].map((id) => summary(id));
+  const harness = await mount({
+    sessions,
+    selectedIds: ['a1'],
+    groupVariant: 'project',
+    groups: [
+      { id: 'pA', label: 'A', project: project('pA'), sessions: sessions.slice(0, 2) },
+      { id: 'pB', label: 'B', project: project('pB'), sessions: sessions.slice(2, 5) },
+      { id: 'pC', label: 'C', project: project('pC'), sessions: sessions.slice(5) },
+    ],
+  });
+  try {
+    await harness.collapseProject('pB');
+    await harness.clickRow('c1', { shiftKey: true });
+    assert.equal(harness.picks[0]?.pick, 'range');
+    // Not a1..c1 across all six. B's rows are still in the document; they are
+    // just not on screen, and a set the user cannot see is a set they cannot
+    // check before the menu acts on it.
+    assert.deepEqual(harness.picks[0]?.orderedSessionIds, ['a1', 'a2', 'c1']);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+/**
+ * A session shared from someone else's Host is projected read-only: the rail
+ * hands its row no actions. A row with nothing that can be done to it has no
+ * business in a set whose only purpose is to be acted on.
+ */
+test('a shared row is not picked, and is still a plain navigation item', async () => {
+  const shared = { ...summary('shared'), shared: true } as SessionSummary;
+  const harness = await mount({ sessions: [summary('a'), shared, summary('c')] });
+  try {
+    assert.equal(harness.hasRowMenu('shared'), false);
+
+    await harness.clickRow('shared', { metaKey: true });
+    assert.equal(harness.picks.length, 0);
+    // Not a dead click: with no set to join, the modifier means nothing and the
+    // row does what it has always done.
+    assert.deepEqual(harness.opened, ['shared']);
+
+    await harness.clickRow('c', { shiftKey: true });
+    assert.deepEqual(harness.picks.at(-1)?.orderedSessionIds, ['a', 'c']);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test('right-clicking a shared row leaves the press, and the set, alone', async () => {
+  const shared = { ...summary('shared'), shared: true } as SessionSummary;
+  const harness = await mount({
+    sessions: [summary('a'), shared, summary('c')],
+    selectedIds: ['a', 'c'],
+  });
+  try {
+    const prevented = await harness.rightClickRow('shared');
+    // Claiming it would take the native menu away and open nothing in its
+    // place, and adopting the row would discard the set on the way.
+    assert.equal(prevented, false);
+    assert.equal(harness.picks.length, 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+/**
+ * Escape belongs to whatever is on top. An open menu — and the rename dialog
+ * built on the same layer stack — is above the rail and owns the press, and the
+ * stack stands down on one that is already defaultPrevented: a rail that
+ * claimed it would clear the set AND leave the layer with no way to close.
+ */
+test('Escape inside a layer above the rail is not the rail\'s to take', async () => {
+  const harness = await mount({ selectedIds: ['a', 'b'] });
+  try {
+    const prevented = await harness.pressEscapeInsideRowMenu('a');
+    assert.equal(prevented, false);
+    assert.equal(harness.clears, 0);
   } finally {
     await harness.dispose();
   }

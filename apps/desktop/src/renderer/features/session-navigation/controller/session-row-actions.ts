@@ -86,8 +86,11 @@ export interface SessionPurgeOutcome {
 /**
  * What a bulk archive can honestly say afterwards. There is no third
  * disposition: a task is archived or its call failed.
+ *
+ * Not on `SessionNavigationRowActions`: `archiveSelected` is the rail's whole
+ * bulk archive, and this is what it reads on the way to its own report.
  */
-export interface SessionArchiveOutcome {
+interface SessionArchiveOutcome {
   archived: number;
   /** Tasks the sweep could not archive, including ones it had to skip. */
   failed: string[];
@@ -105,7 +108,6 @@ export interface SessionNavigationRowActions {
   renameSession(sessionId: string, name: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
-  archiveSessions(sessionIds: readonly string[]): Promise<SessionArchiveOutcome>;
   /** Sweeps and reports — the rail's own wording. */
   archiveSelected(sessionIds: readonly string[]): Promise<void>;
   /** Pins or unpins a picked set in one sweep. */
@@ -424,9 +426,9 @@ export function createSessionNavigationRowActions(deps: {
   /**
    * The rail's own bulk archive, wording included.
    *
-   * `archiveSessions` below it stays silent on purpose — Settings' purge
-   * phrases its own report — but the rail's phrasing belongs to the rail, and
-   * this module is where the feature already holds its copy. Putting it in the
+   * `archiveSessions` above it stays silent on purpose: it counts, and the
+   * caller words the count. The rail's phrasing belongs to the rail, and this
+   * module is where the feature already holds its copy. Putting it in the
    * selection hook instead would have made that hook the feature's second
    * importer of renderer legacy copy, which the architecture check refuses.
    *
@@ -510,7 +512,6 @@ export function createSessionNavigationRowActions(deps: {
     renameSession,
     deleteSession,
     purgeSessions,
-    archiveSessions,
     archiveSelected,
     flagSelected,
   };

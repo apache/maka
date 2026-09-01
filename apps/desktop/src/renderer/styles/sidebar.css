@@ -552,6 +552,20 @@
 }
 
 /*
+ * Forced colors flatten `--color-neutral` away, which is why Astryx's own
+ * `isSelected` names a system color here instead. Picked rows have to say it
+ * too, or the state that carries the whole interaction is the one state high
+ * contrast cannot show. Same pair as `isSelected`, because it is the same
+ * ground — the two states stay one paint in both worlds.
+ */
+@media (forced-colors: active) {
+  .maka-session-row[data-picked='true'] .astryx-side-nav-item {
+    background-color: Highlight;
+    color: HighlightText;
+  }
+}
+
+/*
  * Shift-click extends a text selection from wherever the last one was anchored,
  * and in a list of titles that paints a blue smear across the rows the user is
  * marking. It cannot be fixed from the click handler — the browser starts the

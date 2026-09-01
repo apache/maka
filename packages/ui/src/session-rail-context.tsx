@@ -94,7 +94,17 @@ export interface SessionRailChrome {
 }
 
 /** What a click on a session row means, decided by the modifier held with it. */
-export type SessionRowPick = 'replace' | 'toggle' | 'range';
+export type SessionRowPick =
+  /**
+   * Plain click, and the adoption a menu makes when it opens on an unpicked
+   * row: the set becomes exactly this row. Opening the task is the row's own
+   * business — this names what happens to the SET.
+   */
+  | 'replace'
+  /** ⌘/Ctrl: add or remove this one row, leaving the rest of the set alone. */
+  | 'toggle'
+  /** Shift: pick the contiguous run between the anchor and this row. */
+  | 'range';
 
 /**
  * The commands a picked set can be asked for, held apart from the set itself so
@@ -117,6 +127,7 @@ export interface SessionRailSelectionCommands {
     sessionId: string;
     pick: SessionRowPick;
     orderedSessionIds: readonly string[];
+    /** The open task, which anchors a range when no click has set an anchor. */
     openSessionId?: string;
   }): void;
   /** Drops the picks. The open row stays open, and stays painted. */

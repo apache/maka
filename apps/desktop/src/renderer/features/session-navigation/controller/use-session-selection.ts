@@ -21,7 +21,6 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { SessionSummary } from '@maka/core/session';
 import type { SessionRailSelection, SessionRailSelectionCommands } from '@maka/ui';
 import {
-  clearSessionSelection,
   EMPTY_SESSION_SELECTION,
   pickSessionRow,
   pruneSessionSelection,
@@ -71,7 +70,7 @@ export function useSessionSelection(input: {
     setSelection((current) => pickSessionRow(current, request));
   }, []);
 
-  const clear = useCallback(() => setSelection(clearSessionSelection()), []);
+  const clear = useCallback(() => setSelection(EMPTY_SESSION_SELECTION), []);
 
   /**
    * One sweep at a time, over the ids the user could see when they pressed.
@@ -80,6 +79,15 @@ export function useSessionSelection(input: {
    * set: a verb names a number to a person, and a set re-read afterwards can be
    * a different one. The sweeps and their reports live in `session-row-actions`,
    * which is where this feature already keeps its copy.
+   *
+   * It does not unmark what it swept. The rule is "the selection follows the
+   * catalog", and the prune above already owns it: an archive refreshes the
+   * catalog before it resolves, so those rows leave the set by leaving the
+   * rail. Unmarking here would be that rule stated a second time — right for
+   * archive, wrong for pin, which leaves the rows exactly where they are and
+   * would drop a set the user was still working with. When a refresh fails and
+   * the rows stay listed, keeping them picked is the consistent answer: the
+   * rail still shows them.
    */
   const runSweep = useCallback(
     async (run: (sessionIds: readonly string[]) => Promise<void>) => {
@@ -91,20 +99,6 @@ export function useSessionSelection(input: {
         await run(sessionIds);
       } finally {
         busyRef.current = false;
-        // Unmark exactly what this sweep asked about — never whatever happens
-        // to be picked when it lands. A person can go on picking rows while a
-        // request is still with the Host, and answering A's completion by
-        // discarding B is not something they asked for.
-        setSelection((current) => {
-          const remaining = new Set(current.selectedIds);
-          let changed = false;
-          for (const sessionId of sessionIds) {
-            if (remaining.delete(sessionId)) changed = true;
-          }
-          return changed
-            ? { selectedIds: remaining, anchorId: current.anchorId }
-            : current;
-        });
       }
     },
     [],

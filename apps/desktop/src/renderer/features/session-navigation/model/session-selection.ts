@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { SessionRailSelectionCommands } from '@maka/ui';
+
 /**
  * What the rail has picked, and where a Shift range starts.
  *
@@ -35,19 +37,22 @@ export interface SessionSelection {
   readonly anchorId: string | undefined;
 }
 
-/** What a click on a row means, decided by the modifier held while clicking. */
-export type SessionRowPick =
-  /**
-   * Plain click, and the adoption a menu makes when it opens on an unpicked
-   * row: the set becomes exactly this row. Opening the task is the row's own
-   * business — this names what happens to the SET.
-   */
-  | 'replace'
-  /** ⌘/Ctrl: add or remove this one row, leaving the rest of the set alone. */
-  | 'toggle'
-  /** Shift: pick the contiguous run between the anchor and this row. */
-  | 'range';
+/**
+ * What one click asks of the set — the rail's own contract, not a second copy
+ * of it. The rail is where the gesture is read, so the vocabulary is declared
+ * there and this reducer answers exactly the request the rail sends.
+ */
+export type SessionPickRequest = Parameters<SessionRailSelectionCommands['pick']>[0];
 
+/**
+ * Nothing picked, no anchor — where the rail starts, and what a clear returns
+ * to.
+ *
+ * Clearing is not "collapse to the open row": the open row is painted by the
+ * rail whether or not it is picked, so an empty selection already reads as that
+ * one row, and a set of one that happens to equal the open row is a second way
+ * to say the same thing.
+ */
 export const EMPTY_SESSION_SELECTION: SessionSelection = Object.freeze({
   selectedIds: Object.freeze(new Set<string>()) as ReadonlySet<string>,
   anchorId: undefined,
@@ -98,13 +103,7 @@ export function pruneSessionSelection(
  */
 export function pickSessionRow(
   selection: SessionSelection,
-  input: {
-    sessionId: string;
-    pick: SessionRowPick;
-    orderedSessionIds: readonly string[];
-    /** The open task, which anchors a range when no click has set an anchor. */
-    openSessionId?: string;
-  },
+  input: SessionPickRequest,
 ): SessionSelection {
   const { sessionId, pick, orderedSessionIds, openSessionId } = input;
   if (pick === 'replace') return { selectedIds: new Set([sessionId]), anchorId: sessionId };
@@ -121,16 +120,4 @@ export function pickSessionRow(
   if (from === -1 || to === -1) return { selectedIds: new Set([sessionId]), anchorId: sessionId };
   const run = orderedSessionIds.slice(Math.min(from, to), Math.max(from, to) + 1);
   return { selectedIds: new Set(run), anchorId };
-}
-
-/**
- * Drops the picks and the anchor.
- *
- * Not "collapse to the open row": the open row is painted by the rail whether
- * or not it is picked, so an empty selection already reads as that one row, and
- * a set of one that happens to equal the open row is a second way to say the
- * same thing.
- */
-export function clearSessionSelection(): SessionSelection {
-  return EMPTY_SESSION_SELECTION;
 }

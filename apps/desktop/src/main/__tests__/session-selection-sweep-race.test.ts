@@ -20,13 +20,19 @@
 /**
  * Nothing blocks the rail while a sweep is with the Host — there is no mode to
  * be held in — so a person can go on picking rows before the first request
- * settles. What the sweep unmarks on completion has to be the set it asked
- * about, not whatever happens to be picked when it lands.
+ * settles.
+ *
+ * The selection follows the CATALOG, and nothing else: rows leave the set by
+ * leaving the rail. A sweep that also unmarked what it swept would be that rule
+ * stated twice — right for archive, which removes the rows, and wrong for pin,
+ * which leaves them exactly where they are. So these cases drive the catalog,
+ * not just the hook: a fixture whose session list never changes cannot tell the
+ * two apart.
  */
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createElement, type ReactNode } from 'react';
+import { act, createElement, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { SessionSummary } from '@maka/core/session';
@@ -75,13 +81,19 @@ function toggle(selection: SessionRailSelection | undefined, sessionId: string):
 
 async function mountSelection(commands: SessionNavigationRowActions): Promise<{
   latest(): SessionRailSelection;
+  /** What the rail lists, as a refresh would leave it. */
+  relist(sessionIds: readonly string[]): Promise<void>;
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
 
   let latest: SessionRailSelection | undefined;
+  let listed: readonly string[] = ORDER;
+  let rerender: (() => void) | undefined;
   function Probe(): ReactNode {
-    latest = useSessionSelection({ sessions: [summary('a'), summary('b')], commands });
+    const [, bump] = useState(0);
+    rerender = () => bump((count) => count + 1);
+    latest = useSessionSelection({ sessions: listed.map(summary), commands });
     return null;
   }
 
@@ -95,10 +107,16 @@ async function mountSelection(commands: SessionNavigationRowActions): Promise<{
       assert.ok(latest);
       return latest;
     },
+    relist: async (sessionIds) => {
+      listed = sessionIds;
+      await act(async () => {
+        rerender?.();
+      });
+    },
   };
 }
 
-test('a settled sweep unmarks what it asked about, not what is picked now', async () => {
+test('an archive drops its rows by way of the catalog, keeping later picks', async () => {
   let releaseArchive: (() => void) | undefined;
   const archived: string[][] = [];
   const commands = {
@@ -123,15 +141,38 @@ test('a settled sweep unmarks what it asked about, not what is picked now', asyn
   await act(() => toggle(probe.latest(), 'b'));
   assert.deepEqual([...probe.latest().selectedIds].sort(), ['a', 'b']);
 
-  // Now the first request lands.
+  // The request lands, and the refresh it awaited takes A off the rail.
   await act(async () => {
     releaseArchive?.();
     await Promise.resolve();
   });
+  await probe.relist(['b']);
 
-  // B survives. Clearing the whole set here would answer A's completion by
-  // discarding a pick the user made afterwards and never submitted.
+  // B survives. Answering A's completion by clearing the set would discard a
+  // pick the user made afterwards and never submitted.
   assert.deepEqual([...probe.latest().selectedIds], ['b']);
+});
+
+test('a pin sweep leaves the set exactly as it was', async () => {
+  // Pinning does not remove a row, it moves it into the pinned group. A set
+  // that emptied itself here would make "pin these, then archive them" two
+  // selections instead of one, which is the whole point of holding a set.
+  const asked: Array<{ sessionIds: string[]; flagged: boolean }> = [];
+  const commands = {
+    flagSelected: async (sessionIds: readonly string[], flagged: boolean) => {
+      asked.push({ sessionIds: [...sessionIds], flagged });
+    },
+  } as unknown as SessionNavigationRowActions;
+
+  const probe = await mountSelection(commands);
+  await act(() => toggle(probe.latest(), 'a'));
+  await act(() => toggle(probe.latest(), 'b'));
+  await act(async () => {
+    await probe.latest().commands.flagSelected(true);
+  });
+
+  assert.deepEqual(asked, [{ sessionIds: ['a', 'b'], flagged: true }]);
+  assert.deepEqual([...probe.latest().selectedIds].sort(), ['a', 'b']);
 });
 
 test('a second sweep is refused while the first is still out', async () => {
@@ -162,6 +203,7 @@ test('a second sweep is refused while the first is still out', async () => {
     releaseArchive?.();
     await Promise.resolve();
   });
+  await probe.relist(['b']);
   assert.deepEqual([...probe.latest().selectedIds], []);
 });
 

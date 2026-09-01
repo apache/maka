@@ -19,12 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { SessionRowPick } from '@maka/ui';
 import {
-  clearSessionSelection,
   EMPTY_SESSION_SELECTION,
   pickSessionRow,
   pruneSessionSelection,
-  type SessionRowPick,
   type SessionSelection,
 } from '../../renderer/features/session-navigation/testing.js';
 
@@ -123,7 +122,7 @@ describe('Shift-click', () => {
 
 describe('clearing', () => {
   test('drops the picks and the anchor together', () => {
-    const cleared = clearSessionSelection();
+    const cleared = EMPTY_SESSION_SELECTION;
     assert.deepEqual(ids(cleared), []);
     // With no anchor left, the next range starts from whatever is open —
     // which is where the user's attention already is.

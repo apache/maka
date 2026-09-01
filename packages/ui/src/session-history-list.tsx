@@ -149,9 +149,25 @@ function closestFrom(target: EventTarget | null, selector: string): HTMLElement 
   return typeof node?.closest === 'function' ? node.closest(selector) : null;
 }
 
-/** The row a pointer event landed in, if it landed in one at all. */
-function sessionRowOf(target: EventTarget | null): HTMLElement | null {
-  return closestFrom(target, '.maka-session-row[data-session-id]');
+/**
+ * Whether a gesture may pick this row.
+ *
+ * The one place that answers it, because answering it twice is how a range
+ * comes to disagree with what the user sees. Two rows are rendered but not
+ * pickable: a row inside a collapsed project, which keeps its DOM node —
+ * `SideNavItem` collapses by grid track, not by unmounting — and a shared row
+ * projected from someone else's Host, which is handed no actions because
+ * there is nothing this window may do to it. Neither may be swept into a set,
+ * so neither may sit in the order a range is measured against.
+ */
+function isPickableRow(row: HTMLElement): boolean {
+  return row.dataset.actionable === 'true' && row.closest('[inert]') === null;
+}
+
+/** The row a pointer event landed in, if it landed in a pickable one. */
+function pickableRowOf(target: EventTarget | null): HTMLElement | null {
+  const row = closestFrom(target, '.maka-session-row[data-session-id]');
+  return row && isPickableRow(row) ? row : null;
 }
 
 /**
@@ -181,13 +197,17 @@ export function SessionHistoryList() {
    * range could be computed inside the row; that array gets a fresh identity per
    * render, which is a changed prop on every memoised row, and it turned a
    * two-row session switch into a twelve-row one (#4109). Asked for here it
-   * costs one query per click and nothing per render — and it is the true order,
-   * groups and collapsed projects included, rather than a reconstruction of it.
+   * costs one query per click and nothing per render — and it is the true order
+   * across groups, rather than a reconstruction of it.
+   *
+   * Rendered is not the same as reachable, so it is the pickable rows in that
+   * order: a range may only cross what the user can see and act on.
    */
   function orderedSessionIds(): string[] {
     const node = listRef.current;
     if (!node) return [];
     return [...node.querySelectorAll<HTMLElement>('.maka-session-row[data-session-id]')]
+      .filter(isPickableRow)
       .map((row) => row.dataset.sessionId)
       .filter((sessionId): sessionId is string => sessionId !== undefined);
   }
@@ -205,7 +225,7 @@ export function SessionHistoryList() {
 
   function handleListClickCapture(event: MouseEvent<HTMLDivElement>) {
     if (!commands) return;
-    const row = sessionRowOf(event.target);
+    const row = pickableRowOf(event.target);
     const sessionId = row?.dataset.sessionId;
     if (!row || !sessionId) return;
     if (closestFrom(event.target, '.maka-session-row-action')) {
@@ -230,24 +250,36 @@ export function SessionHistoryList() {
    * fact rather than a promise kept by two lists of items that have to be
    * maintained together — #4365 let them disagree, offering to act on one row
    * from a ⋯ while twelve were marked.
+   *
+   * A row with no ⋯ has no menu to open, so this press is not ours: claiming it
+   * would take the native menu away and leave nothing in its place.
    */
   function handleListContextMenu(event: MouseEvent<HTMLDivElement>) {
     if (!commands) return;
-    const row = sessionRowOf(event.target);
+    const row = pickableRowOf(event.target);
     const sessionId = row?.dataset.sessionId;
     if (!row || !sessionId) return;
+    const trigger = row.querySelector<HTMLElement>('.maka-session-row-action button');
     event.preventDefault();
     adoptForMenu(sessionId);
-    row.querySelector<HTMLElement>('.maka-session-row-action button')?.click();
+    // Opening the menu re-enters `handleListClickCapture` with a synthetic
+    // click. React has not committed the adoption yet, so `adoptForMenu`'s
+    // early return does not see it and the pick is dispatched twice — harmless
+    // only because `replace` is idempotent. Anything else here needs a guard.
+    trigger?.click();
   }
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key !== 'Escape') return;
-    // The text-entry guard: a rename field is where Escape means "abandon this
-    // edit", and answering it by clearing the selection behind the dialog would
-    // be a second, invisible effect of one keypress.
+    // Escape belongs to whatever is on top. A rename dialog or an open menu is
+    // above the rail and owns the press; Astryx's layer stack listens on
+    // `document`, below this handler in the bubble, and stands down on a press
+    // that is already defaultPrevented — so claiming one here would clear the
+    // set AND leave the dialog with no way to close.
     const active = document.activeElement as HTMLElement | null;
-    if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
+    // The rail's only text field is the rename dialog's, so `dialog` already
+    // covers it and there is nothing else here for `input`/`textarea` to name.
+    if (!active || active.closest('dialog, [role="menu"]')) return;
     // Escape drops the picks. The open task stays open and stays painted, so
     // what the user sees is the selection collapsing back onto it.
     if (!commands || selection.selectedIds.size === 0) return;
@@ -657,6 +689,10 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-stale={props.stale ? 'true' : undefined}
       data-worktree={props.worktree ? 'true' : undefined}
       data-picked={props.picked ? 'true' : undefined}
+      // What the list reads to know this row can be picked. Having actions is
+      // the same fact as being ours to act on, so the two cannot drift: a
+      // shared row gets none, and is a plain navigation item all the way down.
+      data-actionable={props.actions ? 'true' : undefined}
     >
       <SideNavItem
         label={props.session.name}
@@ -683,9 +719,10 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           // Shift- and ⌘-clicks are answered by the list, which has already
           // moved the set by the time this runs. Opening the task as well
           // would move the main pane away from the run being built. Where
-          // nothing listens for picks the modifier means nothing, and the row
-          // is a plain navigation item again.
-          if (props.selectionCommands && pickFor(event) !== 'replace') return;
+          // nothing listens for picks — or this row cannot be picked at all —
+          // the modifier means nothing, and the row is a plain navigation item
+          // again rather than a dead click.
+          if (props.actions && props.selectionCommands && pickFor(event) !== 'replace') return;
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
               {
