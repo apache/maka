@@ -277,9 +277,8 @@ type ShellCopy = {
     deleteSubtaskNoteUncertain(): string;
     /** Toast description after deleting a task that had linked subagent subtasks. */
     deletedSubtaskNote(count: number): string;
-    bulkArchiveTitle(count: number): string;
+    /** Where the archived tasks went, said by the toast rather than a dialog. */
     bulkArchiveDescription: string;
-    bulkArchiveLabel: string;
     bulkArchivedTitle(count: number): string;
     bulkArchiveFailedTitle: string;
     bulkFailedBody(count: number): string;
@@ -907,9 +906,7 @@ const SHELL_COPY_BY_LOCALE = {
       deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
       deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
       deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
-      bulkArchiveTitle: (count: number) => `归档选中的 ${count} 个任务？`,
       bulkArchiveDescription: '归档后可在「设置 › 活动 › 已归档任务」中找回。',
-      bulkArchiveLabel: '归档',
       bulkArchivedTitle: (count: number) => `已归档 ${count} 个任务`,
       bulkArchiveFailedTitle: '部分任务未能归档',
       bulkFailedBody: (count: number) => `还有 ${count} 个没有处理成功。`,
@@ -1416,9 +1413,7 @@ const SHELL_COPY_BY_LOCALE = {
         'Its ordinary subtasks, if any, will be kept and moved to Archived.',
       deletedSubtaskNote: (count: number) =>
         count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
-      bulkArchiveTitle: (count: number) => `Archive ${count} selected tasks?`,
       bulkArchiveDescription: 'Archived tasks stay available under Settings › Activity.',
-      bulkArchiveLabel: 'Archive',
       bulkArchivedTitle: (count: number) => `Archived ${count} tasks`,
       bulkArchiveFailedTitle: 'Some tasks were not archived',
       bulkFailedBody: (count: number) => `${count} of them did not go through.`,

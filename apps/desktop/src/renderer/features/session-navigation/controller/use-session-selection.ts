@@ -19,31 +19,35 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { SessionSummary } from '@maka/core/session';
-import type { SessionRailRowSelection, SessionRailSelection } from '@maka/ui';
+import type { SessionRailSelection, SessionRailSelectionCommands } from '@maka/ui';
 import {
+  clearSessionSelection,
   EMPTY_SESSION_SELECTION,
-  enterSessionSelection,
-  exitSessionSelection,
+  pickSessionRow,
   pruneSessionSelection,
-  setAllSessionsSelected,
 } from '../model/session-selection.js';
 import type { SessionNavigationRowActions } from './session-row-actions.js';
 
 /**
- * The rail's multi-select: which rows are marked, and the sweep they feed.
+ * The rail's multi-select: which rows are picked, and the sweeps they feed.
+ *
+ * One state, and it is the whole feature. There is no mode flag beside it, no
+ * "what does all mean" list, and no second half for the rows — the rows are
+ * handed what they need as props, because the picked set now changes on an
+ * ordinary session switch and a context they subscribed to would redraw all of
+ * them for a switch that moved two (#4109).
  *
  * The selection is reconciled against the catalog on every change to it, not
  * only after a sweep. Another window deleting a task, a Host going away, or a
  * grouping change that drops rows all leave ids behind, and a count that
- * includes them is a count that does not match what the confirm names.
+ * includes them is a count that does not match what the menu named.
  */
 export function useSessionSelection(input: {
   sessions: readonly SessionSummary[];
   commands: SessionNavigationRowActions;
-}): { selection: SessionRailSelection; rowSelection: SessionRailRowSelection } {
+}): SessionRailSelection {
   const { sessions, commands } = input;
   const [selection, setSelection] = useState(EMPTY_SESSION_SELECTION);
-  const [busy, setBusy] = useState(false);
 
   const listedIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   useEffect(() => {
@@ -52,139 +56,76 @@ export function useSessionSelection(input: {
     setSelection((current) => pruneSessionSelection(current, listedIds));
   }, [listedIds]);
 
-  // The sweep reads the ids at the moment it runs, and the state it reads is
-  // the one the confirm was built from — held in a ref so the callbacks below
-  // do not change identity per selection change and re-render the bar's buttons.
+  // A sweep reads the ids at the moment it runs, and the state it reads is the
+  // one the menu's verb was counted from — held in a ref so the commands below
+  // never change identity, because every row carries them as a prop.
   const selectionRef = useRef(selection);
-  const busyRef = useRef(busy);
+  const busyRef = useRef(false);
   // Published on commit, not during render: a render React throws away must not
   // leave a ref pointing at a selection that was never shown.
   useLayoutEffect(() => {
     selectionRef.current = selection;
-    busyRef.current = busy;
-    listedRef.current = listedSessionIds;
   });
 
-  const listedSessionIds = useMemo(() => sessions.map((session) => session.id), [sessions]);
-  const listedRef = useRef(listedSessionIds);
-
-  const onToggleRow = useCallback<SessionRailSelection['onToggleRow']>((sessionId, selected) => {
-    setSelection((current) => {
-      if (current.selectedIds.has(sessionId) === selected) return current;
-      const selectedIds = new Set(current.selectedIds);
-      if (selected) selectedIds.add(sessionId);
-      else selectedIds.delete(sessionId);
-      return { active: true, selectedIds };
-    });
+  const pick = useCallback<SessionRailSelectionCommands['pick']>((request) => {
+    setSelection((current) => pickSessionRow(current, request));
   }, []);
 
-  const onEnter = useCallback<SessionRailSelection['onEnter']>((sessionId) => {
-    setSelection((current) => {
-      const entered = enterSessionSelection(current);
-      if (sessionId === undefined) return entered;
-      return { active: true, selectedIds: new Set([...entered.selectedIds, sessionId]) };
-    });
-  }, []);
-
-  const onExit = useCallback(() => setSelection(exitSessionSelection()), []);
-
-  const onToggleAll = useCallback<SessionRailSelection['onToggleAll']>((selected) => {
-    setSelection((current) => setAllSessionsSelected(current, listedRef.current, selected));
-  }, []);
+  const clear = useCallback(() => setSelection(clearSessionSelection()), []);
 
   /**
    * One sweep at a time, over the ids the user could see when they pressed.
    *
    * Frozen at the click for the reason the archived-task purge freezes its own
-   * set: a confirm names a number to a person, and a set re-read after the
-   * dialog can be a different one. The confirm, the sweep and the report all
-   * live in `session-row-actions`, which is where this feature keeps its copy.
+   * set: a verb names a number to a person, and a set re-read afterwards can be
+   * a different one. The sweeps and their reports live in `session-row-actions`,
+   * which is where this feature already keeps its copy.
    */
   const runSweep = useCallback(
     async (run: (sessionIds: readonly string[]) => Promise<void>) => {
       if (busyRef.current) return;
       const sessionIds = [...selectionRef.current.selectedIds];
       if (sessionIds.length === 0) return;
-      setBusy(true);
+      busyRef.current = true;
       try {
         await run(sessionIds);
       } finally {
-        setBusy(false);
+        busyRef.current = false;
         // Unmark exactly what this sweep asked about — never whatever happens
-        // to be marked when it lands.
-        //
-        // `Done` stays enabled during a sweep, so a person can leave the mode,
-        // re-enter it from another row's menu and mark B while A's request is
-        // still with the Host. Clearing the whole set here would then answer
-        // A's completion by discarding B, which the user never asked about.
-        //
-        // The MODE stays on. The person was in the middle of tidying up, and
-        // taking the checkboxes away after each sweep would make them re-enter
-        // for the next one.
+        // to be picked when it lands. A person can go on picking rows while a
+        // request is still with the Host, and answering A's completion by
+        // discarding B is not something they asked for.
         setSelection((current) => {
           const remaining = new Set(current.selectedIds);
           let changed = false;
           for (const sessionId of sessionIds) {
             if (remaining.delete(sessionId)) changed = true;
           }
-          return changed ? { active: current.active, selectedIds: remaining } : current;
+          return changed
+            ? { selectedIds: remaining, anchorId: current.anchorId }
+            : current;
         });
       }
     },
     [],
   );
 
-  const onArchiveSelected = useCallback(
+  const archiveSelected = useCallback(
     () => runSweep((ids) => commands.archiveSelected(ids)),
     [commands, runSweep],
   );
-
-  /**
-   * The rows' half, memoized on the selection ALONE.
-   *
-   * Every row subscribes to this, and a context consumer re-renders whenever
-   * the value it reads changes — `memo` cannot stop it. Keeping
-   * `listedSessionIds` out of it is the whole point: that array is derived from
-   * the catalog and moves on a session switch, which would re-render all of the
-   * rail's rows for a switch that changed two of them (#4109).
-   */
-  const rowSelection = useMemo<SessionRailRowSelection>(
-    () => ({
-      active: selection.active,
-      selectedIds: selection.selectedIds,
-      onToggleRow,
-      onEnter,
-    }),
-    [onEnter, onToggleRow, selection.active, selection.selectedIds],
+  const flagSelected = useCallback(
+    (flagged: boolean) => runSweep((ids) => commands.flagSelected(ids, flagged)),
+    [commands, runSweep],
   );
 
-  const wholeSelection = useMemo<SessionRailSelection>(
-    () => ({
-      active: selection.active,
-      selectedIds: selection.selectedIds,
-      listedSessionIds,
-      onToggleRow,
-      onEnter,
-      onExit,
-      onToggleAll,
-      onArchiveSelected,
-      busy,
-    }),
-    [
-      busy,
-      listedSessionIds,
-      onArchiveSelected,
-      onEnter,
-      onExit,
-      onToggleAll,
-      onToggleRow,
-      selection.active,
-      selection.selectedIds,
-    ],
+  const selectionCommands = useMemo<SessionRailSelectionCommands>(
+    () => ({ pick, clear, archiveSelected, flagSelected }),
+    [archiveSelected, clear, flagSelected, pick],
   );
 
-  return useMemo(
-    () => ({ selection: wholeSelection, rowSelection }),
-    [rowSelection, wholeSelection],
+  return useMemo<SessionRailSelection>(
+    () => ({ selectedIds: selection.selectedIds, commands: selectionCommands }),
+    [selection.selectedIds, selectionCommands],
   );
 }

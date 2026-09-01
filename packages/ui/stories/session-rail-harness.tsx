@@ -22,12 +22,20 @@ import {
   SessionRailProvider,
   type SessionRailChrome,
   type SessionRailData,
+  type SessionRailSelection,
 } from '../src/session-rail-context.js';
 
 export type SessionRailStoryProps = Partial<SessionRailData> &
   Partial<SessionRailChrome> &
   Pick<SessionRailData, 'sessions'> &
-  Pick<SessionRailChrome, 'selection'>;
+  Pick<SessionRailChrome, 'selection'> & {
+    /**
+     * The multi-select context, which the app supplies from
+     * `useSessionSelection`. Named apart from `selection` because that one is
+     * already the shell's NavSelection.
+     */
+    railSelection?: SessionRailSelection;
+  };
 
 /**
  * The rail, described as one flat bag of state.
@@ -71,7 +79,11 @@ export function SessionRail(props: SessionRailStoryProps) {
     workHubEntry: props.workHubEntry,
   };
   return (
-    <SessionRailProvider data={data} chrome={chrome}>
+    <SessionRailProvider
+      data={data}
+      chrome={chrome}
+      {...(props.railSelection ? { selection: props.railSelection } : {})}
+    >
       <SessionListPanel />
     </SessionRailProvider>
   );

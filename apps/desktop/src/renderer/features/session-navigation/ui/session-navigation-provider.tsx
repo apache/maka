@@ -227,7 +227,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       data={data}
       chrome={chrome}
       selection={controller.selection}
-      rowSelection={controller.rowSelection}
     >
       {props.children}
     </SessionRailProvider>

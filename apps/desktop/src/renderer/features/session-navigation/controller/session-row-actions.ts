@@ -106,8 +106,10 @@ export interface SessionNavigationRowActions {
   deleteSession(sessionId: string): Promise<void>;
   purgeSessions(sessionIds: readonly string[]): Promise<SessionPurgeOutcome>;
   archiveSessions(sessionIds: readonly string[]): Promise<SessionArchiveOutcome>;
-  /** Confirms, sweeps, and reports — the rail's own wording. */
+  /** Sweeps and reports — the rail's own wording. */
   archiveSelected(sessionIds: readonly string[]): Promise<void>;
+  /** Pins or unpins a picked set in one sweep. */
+  flagSelected(sessionIds: readonly string[], flagged: boolean): Promise<void>;
 }
 
 export function createSessionNavigationRowActions(deps: {
@@ -422,24 +424,23 @@ export function createSessionNavigationRowActions(deps: {
   /**
    * The rail's own bulk archive, wording included.
    *
-   * The sweeps below it stay silent on purpose — Settings' purge phrases its
-   * own confirm — but the rail's phrasing belongs to the rail, and this module
-   * is where the feature already holds its copy. Putting it in the selection
-   * hook instead would have made that hook the feature's second importer of
-   * renderer legacy copy, which the architecture check refuses.
+   * `archiveSessions` below it stays silent on purpose — Settings' purge
+   * phrases its own report — but the rail's phrasing belongs to the rail, and
+   * this module is where the feature already holds its copy. Putting it in the
+   * selection hook instead would have made that hook the feature's second
+   * importer of renderer legacy copy, which the architecture check refuses.
+   *
+   * NO CONFIRM, at one row or twenty. Archiving is reversible, the single-row
+   * ⋯ has never asked, and a dialog in front of one of two identical verbs
+   * teaches that the count is what makes an action dangerous rather than the
+   * action. The dialog's one piece of information — where the tasks went — is
+   * kept, as the success toast's description.
    */
   async function archiveSelected(sessionIds: readonly string[]): Promise<void> {
     if (sessionIds.length === 0) return;
-    const ok = await toastApi.confirm({
-      title: copy.bulkArchiveTitle(sessionIds.length),
-      description: copy.bulkArchiveDescription,
-      confirmLabel: copy.bulkArchiveLabel,
-      cancelLabel: copy.cancelLabel,
-    });
-    if (!ok) return;
     const outcome = await archiveSessions(sessionIds);
     if (outcome.failed.length === 0) {
-      toastApi.success(copy.bulkArchivedTitle(outcome.archived));
+      toastApi.success(copy.bulkArchivedTitle(outcome.archived), copy.bulkArchiveDescription);
       return;
     }
     toastApi.error(
@@ -452,6 +453,56 @@ export function createSessionNavigationRowActions(deps: {
     );
   }
 
+  /**
+   * The rail's bulk pin, in one direction for the whole set.
+   *
+   * The direction is the caller's: the menu shows 取消置顶 only when every
+   * picked row is already pinned, so a mixed set pins — which is the one rule
+   * that keeps a set-wide toggle from meaning something different for each row
+   * in it.
+   *
+   * Silent on success. Pinning moves the rows between 置顶 and 最近 in front of
+   * the user, which says it better than a toast, and the single-row pin has
+   * never raised one either.
+   */
+  async function flagSelected(sessionIds: readonly string[], flagged: boolean): Promise<void> {
+    if (sessionIds.length === 0) return;
+    const failed: string[] = [];
+    let firstFailure: { error: unknown; sessionId: string } | undefined;
+    for (const sessionId of sessionIds) {
+      const key = `${sessionId}:flag`;
+      if (
+        Array.from(pendingSessionRowActionsRef.current).some((pending) =>
+          pending.startsWith(`${sessionId}:`),
+        )
+      ) {
+        failed.push(sessionId);
+        continue;
+      }
+      pendingSessionRowActionsRef.current.add(key);
+      try {
+        await service.setFlagged(sessionId, flagged, { revisionFamily: true });
+      } catch (error) {
+        failed.push(sessionId);
+        firstFailure ??= { error, sessionId };
+      } finally {
+        pendingSessionRowActionsRef.current.delete(key);
+      }
+    }
+    // Once, after the whole sweep. Refreshing per task would re-render the rail
+    // under the user's cursor for every id in the set.
+    await refreshSessions();
+    if (failed.length === 0) return;
+    toastApi.error(
+      flagged ? copy.flagFailedTitle : copy.unflagFailedTitle,
+      firstFailure
+        ? localizedShellErrorMessage(firstFailure.error, copy.actionFallback, uiLocale)
+        : copy.bulkFailedBody(failed.length),
+      undefined,
+      firstFailure ? { sessionId: firstFailure.sessionId } : undefined,
+    );
+  }
+
   return {
     flagSession,
     archiveSession,
@@ -461,5 +512,6 @@ export function createSessionNavigationRowActions(deps: {
     purgeSessions,
     archiveSessions,
     archiveSelected,
+    flagSelected,
   };
 }

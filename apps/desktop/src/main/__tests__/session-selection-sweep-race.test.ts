@@ -18,11 +18,10 @@
  */
 
 /**
- * `Done` stays enabled while a sweep runs — leaving asks nothing of the Host —
- * so a person can leave the selection, re-enter it from another row's menu, and
- * mark a different task before the first request settles. What the sweep
- * unmarks on completion has to be the set it asked about, not whatever happens
- * to be marked when it lands.
+ * Nothing blocks the rail while a sweep is with the Host — there is no mode to
+ * be held in — so a person can go on picking rows before the first request
+ * settles. What the sweep unmarks on completion has to be the set it asked
+ * about, not whatever happens to be picked when it lands.
  */
 
 import assert from 'node:assert/strict';
@@ -67,10 +66,39 @@ function summary(id: string): SessionSummary {
   };
 }
 
-test('a settled sweep unmarks what it asked about, not what is marked now', async () => {
+const ORDER = ['a', 'b'];
+
+/** A ⌘-click on a row, which is how a set is built without opening anything. */
+function toggle(selection: SessionRailSelection | undefined, sessionId: string): void {
+  selection?.commands.pick({ sessionId, pick: 'toggle', orderedSessionIds: ORDER });
+}
+
+async function mountSelection(commands: SessionNavigationRowActions): Promise<{
+  latest(): SessionRailSelection;
+}> {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
 
+  let latest: SessionRailSelection | undefined;
+  function Probe(): ReactNode {
+    latest = useSessionSelection({ sessions: [summary('a'), summary('b')], commands });
+    return null;
+  }
+
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  const root = createRoot(container);
+  mountedRoot = root;
+  await act(() => root.render(createElement(Probe)));
+  return {
+    latest: () => {
+      assert.ok(latest);
+      return latest;
+    },
+  };
+}
+
+test('a settled sweep unmarks what it asked about, not what is picked now', async () => {
   let releaseArchive: (() => void) | undefined;
   const archived: string[][] = [];
   const commands = {
@@ -80,38 +108,20 @@ test('a settled sweep unmarks what it asked about, not what is marked now', asyn
         releaseArchive = resolve;
       });
     },
-    deleteSelected: async () => undefined,
   } as unknown as SessionNavigationRowActions;
 
-  let latest: SessionRailSelection | undefined;
-  function Probe(): ReactNode {
-    const { selection } = useSessionSelection({
-      sessions: [summary('a'), summary('b')],
-      commands,
-    });
-    latest = selection;
-    return null;
-  }
+  const probe = await mountSelection(commands);
 
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  mountedRoot = root;
-  await act(() => root.render(createElement(Probe)));
-  assert.ok(latest);
-
-  // Mark A and start the sweep. It does not settle yet.
-  await act(() => latest?.onEnter('a'));
+  // Pick A and start the sweep. It does not settle yet.
+  await act(() => toggle(probe.latest(), 'a'));
   await act(() => {
-    void latest?.onArchiveSelected();
+    void probe.latest().commands.archiveSelected();
   });
   assert.deepEqual(archived, [['a']]);
 
-  // Leave the mode and come back on a different row, exactly as the rail
-  // allows while a sweep is in flight.
-  await act(() => latest?.onExit());
-  await act(() => latest?.onEnter('b'));
-  assert.deepEqual([...(latest?.selectedIds ?? [])], ['b']);
+  // Go on picking, exactly as the rail allows while a sweep is in flight.
+  await act(() => toggle(probe.latest(), 'b'));
+  assert.deepEqual([...probe.latest().selectedIds].sort(), ['a', 'b']);
 
   // Now the first request lands.
   await act(async () => {
@@ -120,51 +130,52 @@ test('a settled sweep unmarks what it asked about, not what is marked now', asyn
   });
 
   // B survives. Clearing the whole set here would answer A's completion by
-  // discarding a selection the user made afterwards and never submitted.
-  assert.deepEqual([...(latest?.selectedIds ?? [])], ['b']);
-  assert.equal(latest?.active, true);
+  // discarding a pick the user made afterwards and never submitted.
+  assert.deepEqual([...probe.latest().selectedIds], ['b']);
 });
 
-test('a settled sweep does unmark its own set when nothing else happened', async () => {
-  const { document, window } = parseHTML('<div id="root"></div>');
-  Object.assign(globalThis, { document, window, IS_REACT_ACT_ENVIRONMENT: true });
-
+test('a second sweep is refused while the first is still out', async () => {
+  // Two archive requests over overlapping sets would report two counts for one
+  // set of tasks, and the second would name rows the first has already taken.
   let releaseArchive: (() => void) | undefined;
+  const asked: string[][] = [];
   const commands = {
-    archiveSelected: () =>
-      new Promise<void>((resolve) => {
+    archiveSelected: (sessionIds: readonly string[]) => {
+      asked.push([...sessionIds]);
+      return new Promise<void>((resolve) => {
         releaseArchive = resolve;
-      }),
-    deleteSelected: async () => undefined,
+      });
+    },
   } as unknown as SessionNavigationRowActions;
 
-  let latest: SessionRailSelection | undefined;
-  function Probe(): ReactNode {
-    const { selection } = useSessionSelection({
-      sessions: [summary('a'), summary('b')],
-      commands,
-    });
-    latest = selection;
-    return null;
-  }
-
-  const container = document.querySelector('#root');
-  assert.ok(container);
-  const root = createRoot(container);
-  mountedRoot = root;
-  await act(() => root.render(createElement(Probe)));
-
-  await act(() => latest?.onEnter('a'));
+  const probe = await mountSelection(commands);
+  await act(() => toggle(probe.latest(), 'a'));
   await act(() => {
-    void latest?.onArchiveSelected();
+    void probe.latest().commands.archiveSelected();
   });
+  await act(() => {
+    void probe.latest().commands.archiveSelected();
+  });
+  assert.deepEqual(asked, [['a']]);
+
   await act(async () => {
     releaseArchive?.();
     await Promise.resolve();
   });
+  assert.deepEqual([...probe.latest().selectedIds], []);
+});
 
-  assert.deepEqual([...(latest?.selectedIds ?? [])], []);
-  // The mode stays on: the person was tidying up, and taking the checkboxes
-  // away after each sweep would make them re-enter for the next one.
-  assert.equal(latest?.active, true);
+test('a sweep over nothing asks nothing', async () => {
+  const asked: string[][] = [];
+  const commands = {
+    flagSelected: async (sessionIds: readonly string[]) => {
+      asked.push([...sessionIds]);
+    },
+  } as unknown as SessionNavigationRowActions;
+
+  const probe = await mountSelection(commands);
+  await act(async () => {
+    await probe.latest().commands.flagSelected(true);
+  });
+  assert.deepEqual(asked, []);
 });
