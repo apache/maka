@@ -41,6 +41,8 @@
     "./runtime-event-persistence": "./dist/runtime-event-persistence.js",
     "./runtime-policy-stores": "./dist/runtime-policy-stores.js",
     "./scheduled-task-store": "./dist/scheduled-task-store.js",
+    "./quiescent-session-snapshot": "./dist/quiescent-session-snapshot.js",
+    "./production-session-snapshot": "./dist/production-session-snapshot.js",
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
     "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
     "./session-todo-authority": "./dist/session-todo-authority.js",
