@@ -301,6 +301,12 @@ export async function createExecutionRuntimeHostComposition(
                 cause: storage.contextOffloadUnavailable?.cause,
               });
             },
+            collectGarbage: async (): Promise<never> => {
+              throw new Error(
+                'Context-offload Store is unavailable during context garbage collection',
+                { cause: storage.contextOffloadUnavailable?.cause },
+              );
+            },
           }
         : undefined;
     const openedUsageStores = storage.usage;

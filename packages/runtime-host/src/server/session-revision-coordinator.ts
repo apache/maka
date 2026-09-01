@@ -110,7 +110,7 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly sessionTodo: InteractiveSessionTodoWriter;
   readonly contextOffload?: Pick<
     InteractiveContextOffloadWriter,
-    'copyReferences' | 'retireSession'
+    'copyReferences' | 'retireSession' | 'collectGarbage'
   >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
@@ -146,7 +146,7 @@ export class HostSessionRevisionCoordinator {
       (header) => header.conversationCopy !== undefined,
     );
     for (const header of copies) {
-      if (header.conversationCopy!.state === 'preparing') await this.#discard(header);
+      if (header.conversationCopy!.state === 'preparing') await this.#discardDuringRecovery(header);
     }
 
     const committed = copies.filter((header) => header.conversationCopy!.state === 'committed');
@@ -185,8 +185,18 @@ export class HostSessionRevisionCoordinator {
       if (retained.has(header.id)) {
         await this.options.manager.commitRevisionVersion(header.id);
       } else {
-        await this.#discard(header);
+        await this.#discardDuringRecovery(header);
       }
+    }
+  }
+
+  async #discardDuringRecovery(header: SessionHeader): Promise<void> {
+    try {
+      await this.#discard(header);
+    } catch (error) {
+      console.error(
+        `[runtime-host] conversation copy cleanup deferred during recovery (${header.id}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
     }
   }
 

@@ -41,6 +41,7 @@ import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -107,8 +108,8 @@ test('production composition reaches Ready when the optional context Store canno
   await withCompositionRoot(async ({ root, owner }) => {
     const requestFingerprint = `sha256:${'a'.repeat(64)}` as const;
     const preparingSessionId = 'preparing-context-copy';
-    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    await stores.sessionStore.createStableSession({
+    const sessionStore = createSessionStore(root);
+    await sessionStore.createStableSession({
       sessionId: preparingSessionId,
       requestFingerprint,
       input: {
@@ -130,7 +131,7 @@ test('production composition reaches Ready when the optional context Store canno
         },
       },
     });
-    await stores.sessionStore.close?.();
+    await sessionStore.close?.();
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
     const originalConsoleError = console.error;
     const diagnostics: string[] = [];
@@ -143,34 +144,27 @@ test('production composition reaches Ready when the optional context Store canno
         diagnostics.some((message) => message.includes('optional context-offload Store')),
         true,
       );
-      await assert.rejects(
-        composition.recover(),
-        (error) =>
-          error instanceof AggregateError &&
-          error.errors.some((failure) =>
-            String(failure).includes(
-              'Context-offload Store is unavailable during Session retirement',
-            ),
-          ),
+      await composition.recover();
+      assert.equal(
+        diagnostics.some((message) =>
+          message.includes('conversation copy cleanup deferred during recovery'),
+        ),
+        true,
       );
     } finally {
       console.error = originalConsoleError;
       if (composition) {
-        await assert.rejects(
-          composition.close(),
-          /Unable to close Runtime Host execution composition/,
-        );
+        await composition.close();
       }
     }
-    const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const reopened = createSessionStore(root);
     try {
       assert.equal(
-        (await reopened.sessionStore.readHeaderSnapshot(preparingSessionId)).conversationCopy
-          ?.state,
+        (await reopened.readHeaderSnapshot(preparingSessionId)).conversationCopy?.state,
         'preparing',
       );
     } finally {
-      await reopened.sessionStore.close?.();
+      await reopened.close?.();
     }
   });
 });

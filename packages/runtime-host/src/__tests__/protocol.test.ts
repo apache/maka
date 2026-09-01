@@ -141,7 +141,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for Read image Session context refs', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 87);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 95);
   });
 
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
