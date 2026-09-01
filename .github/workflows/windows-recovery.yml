@@ -63,8 +63,9 @@ on:
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
       # Every file in the import closure of the suites below that branches on
       # `process.platform === 'win32'`. Generated, not curated:
-      # `scripts/ci-test-plan.test.mjs` recomputes this set from the dist tests
-      # the steps run and fails on any difference in either direction.
+      # `scripts/windows-package-source-closure.test.mjs` recomputes this set
+      # from the dist tests the steps run and fails on any difference in either
+      # direction.
       - 'packages/core/src/diagnostic-log.ts'
       - 'packages/runtime-host/src/__tests__/control-endpoint.test.ts'
       - 'packages/runtime-host/src/__tests__/fixtures/endpoint-hygiene.ts'

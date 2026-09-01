@@ -66,7 +66,9 @@ jobs:
           fi
 
       - name: Test CI planner
-        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
+        run: >-
+          node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
+          scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
 
       # Pure Node like the planner test, and the labelling workflow imports this
       # module directly, so a tier or exclusion change is caught here rather

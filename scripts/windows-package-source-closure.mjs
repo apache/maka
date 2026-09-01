@@ -65,11 +65,15 @@ export async function collectWorkspaceSourceClosure(entryPoints, repoRoot = defa
 }
 
 export function readWindowsReleasePathPatterns(repoRoot = defaultRepoRoot) {
-  const workflowPath = join(repoRoot, '.github', 'workflows', 'release-windows-check.yml');
+  return readPullRequestPathPatterns('release-windows-check.yml', repoRoot);
+}
+
+export function readPullRequestPathPatterns(workflowName, repoRoot = defaultRepoRoot) {
+  const workflowPath = join(repoRoot, '.github', 'workflows', workflowName);
   const workflow = parseYaml(readFileSync(workflowPath, 'utf8'));
   const paths = workflow?.on?.pull_request?.paths;
   if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string')) {
-    throw new Error('Release Windows check must declare pull_request.paths as strings.');
+    throw new Error(`${workflowName} must declare pull_request.paths as strings.`);
   }
   return paths;
 }
