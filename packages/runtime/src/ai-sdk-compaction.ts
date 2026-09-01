@@ -120,6 +120,7 @@ import {
   collectHistoricalImageToolResults,
   type HistoricalImageToolResult,
   omitHistoricalImageToolResults,
+  selectHistoricalImageOmissions,
 } from './provider-image-overflow-recovery.js';
 
 /**
@@ -1353,7 +1354,17 @@ export class AiSdkCompaction {
     if (input.retryAlreadyUsed || !state) return undefined;
     if (this.modelAdapter.classifyError(input.error) !== 'ContextLength') return undefined;
 
-    const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
+    // The provider counted the rejected request, so the overshoot is known:
+    // give back that much of the image cost, not every image in the history.
+    // Without a usable count nothing bounds the drop, so it stays all-or-nothing.
+    const overshootTokens =
+      state.lastRequestInputTokens !== undefined
+        ? state.lastRequestInputTokens - state.capacity.tokens
+        : undefined;
+    const eligibleImages = selectHistoricalImageOmissions(
+      collectHistoricalImageToolResults(state.priorContentEvents),
+      overshootTokens,
+    );
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
     if (imageOmission.omittedParts > 0) {
       state.omittedImageToolResults = new Map(

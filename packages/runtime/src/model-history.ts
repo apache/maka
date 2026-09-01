@@ -73,6 +73,7 @@ import type {
 import {
   decodeEffectiveToolResultProjection,
   durableProjectionToToolResultOutput,
+  estimateEffectiveMediaTokens,
 } from './durable-tool-result-projection.js';
 import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
@@ -126,9 +127,9 @@ export function admitProviderReasoningReplayItems(
 // ============================================================================
 
 /**
- * Model-visible character count of a `function_response`'s EFFECTIVE value —
- * the durable projection when the response has one, never the raw execution
- * fact the projection already bounded or redacted.
+ * Size of a `function_response`'s EFFECTIVE value — the durable projection
+ * when the response has one, never the raw execution fact the projection
+ * already bounded or redacted.
  *
  * Memoized on the content object because a legacy response (no durable
  * projection) is re-derived through the whole compatibility codec, and one
@@ -136,7 +137,7 @@ export function admitProviderReasoningReplayItems(
  * compactable-content filter, and checkpoint prefix matching all walk the
  * history. Content is immutable once committed, so identity is a sound key.
  */
-const effectiveToolResultChars = new WeakMap<object, number>();
+const effectiveToolResultSizes = new WeakMap<object, EffectiveToolResultSize>();
 
 /** Model-visible character count of one materialized Tool Result output. */
 function estimateToolResultOutputChars(output: ToolResultOutput): number {
@@ -157,21 +158,36 @@ function estimateToolResultOutputChars(output: ToolResultOutput): number {
   }
 }
 
+interface EffectiveToolResultSize {
+  chars: number;
+  mediaTokens: number;
+}
+
+function effectiveToolResultSize(
+  content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
+  sessionId: string,
+): EffectiveToolResultSize {
+  const memoized = effectiveToolResultSizes.get(content);
+  if (memoized !== undefined) return memoized;
+  const effective = decodeEffectiveToolResultProjection(content, sessionId);
+  const size: EffectiveToolResultSize = {
+    chars:
+      effective.kind === 'projection'
+        ? estimateToolResultOutputChars(durableProjectionToToolResultOutput(effective.projection))
+        : effective.kind === 'invalid_legacy'
+          ? effective.message.length
+          : stableJsonLength(effective.output),
+    mediaTokens: estimateEffectiveMediaTokens(effective, sessionId),
+  };
+  effectiveToolResultSizes.set(content, size);
+  return size;
+}
+
 export function estimateEffectiveToolResultChars(
   content: Extract<RuntimeEventContent, { kind: 'function_response' }>,
   sessionId: string,
 ): number {
-  const memoized = effectiveToolResultChars.get(content);
-  if (memoized !== undefined) return memoized;
-  const effective = decodeEffectiveToolResultProjection(content, sessionId);
-  const chars =
-    effective.kind === 'projection'
-      ? estimateToolResultOutputChars(durableProjectionToToolResultOutput(effective.projection))
-      : effective.kind === 'invalid_legacy'
-        ? effective.message.length
-        : stableJsonLength(effective.output);
-  effectiveToolResultChars.set(content, chars);
-  return chars;
+  return effectiveToolResultSize(content, sessionId).chars;
 }
 
 export function estimateRuntimeEventChars(event: RuntimeEvent): number {
@@ -186,16 +202,30 @@ export function estimateRuntimeEventChars(event: RuntimeEvent): number {
   return total;
 }
 
+/**
+ * Tokens one event costs beyond its characters. Stays in tokens instead of
+ * folding into the char count: `charsPerToken` calibrates text, and applying it
+ * to media would make an image cheaper on a session with a low text ratio.
+ */
+function estimateRuntimeEventMediaTokens(event: RuntimeEvent): number {
+  const content = event.content;
+  return content?.kind === 'function_response'
+    ? effectiveToolResultSize(content, event.sessionId).mediaTokens
+    : 0;
+}
+
 export function estimateRuntimeEventsTokens(
   events: readonly RuntimeEvent[],
   charsPerToken = 4,
 ): number {
-  const chars = events.reduce(
-    (total, event) =>
-      event.modelVisibility === 'hidden' ? total : total + estimateRuntimeEventChars(event),
-    0,
-  );
-  return estimateTokens(chars, charsPerToken);
+  let chars = 0;
+  let mediaTokens = 0;
+  for (const event of events) {
+    if (event.modelVisibility === 'hidden') continue;
+    chars += estimateRuntimeEventChars(event);
+    mediaTokens += estimateRuntimeEventMediaTokens(event);
+  }
+  return estimateTokens(chars, charsPerToken) + mediaTokens;
 }
 
 export function groupEventsByTurn(

@@ -56,7 +56,10 @@ import {
   turnKey,
   utf8ByteLength,
 } from './context-budget-helpers.js';
-import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import {
+  durableProjectionToToolResultOutput,
+  estimateProjectionMediaTokens,
+} from './durable-tool-result-projection.js';
 import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -87,6 +90,23 @@ export function serializedToolResultProjection(projection: DurableToolResultProj
   const output = durableProjectionToToolResultOutput(projection);
   return serializeToolResultForArchive(
     output.type === 'execution-denied' ? { kind: 'text', text: output.reason ?? '' } : output.value,
+  );
+}
+
+/**
+ * What one Tool Result costs the request, in tokens.
+ *
+ * Its serialized bytes plus the media its artifact parts rehydrate into. An
+ * artifact serializes to a short reference and materializes to real image
+ * bytes, so measuring the string alone would price a screenshot at nothing.
+ */
+export function toolResultProjectionEstimatedTokens(
+  projection: DurableToolResultProjection,
+  serialized: string,
+  charsPerToken: number,
+): number {
+  return (
+    estimateTokens(serialized.length, charsPerToken) + estimateProjectionMediaTokens(projection)
   );
 }
 
@@ -289,7 +309,11 @@ export function collectStaleToolResultArchiveCandidates(
     if (!sourceProjection) continue;
     const serializedResult = serializedToolResultProjection(sourceProjection);
     const originalBytes = utf8ByteLength(serializedResult);
-    const originalEstimatedTokens = estimateTokens(serializedResult.length, charsPerToken);
+    const originalEstimatedTokens = toolResultProjectionEstimatedTokens(
+      sourceProjection,
+      serializedResult,
+      charsPerToken,
+    );
     if (originalEstimatedTokens <= maxResultEstimatedTokens) continue;
     candidates.push({
       runtimeEventId: event.id,

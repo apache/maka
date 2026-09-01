@@ -29,7 +29,7 @@ import {
   type DurableToolResultProjection,
   type DurableToolResultProjectionPart,
 } from '@maka/core/durable-tool-result-projection';
-import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import { MATERIALIZED_IMAGE_TOKENS, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
   isCanonicalArtifactEntityId,
   normalizeArtifactImagePreviewMime,
@@ -173,6 +173,63 @@ export function durableProjectionToToolResultOutput(
   }
 }
 
+/** One image a Tool Result puts in the request. */
+export interface MaterializedToolResultMedia {
+  mediaType: string;
+  /** How the model is told to name it once it is gone. */
+  label: string;
+}
+
+function projectionArtifactMedia(
+  projection: DurableToolResultProjection,
+): MaterializedToolResultMedia[] {
+  if (projection.kind !== 'content') return [];
+  return projection.parts.flatMap((part) =>
+    part.kind === 'artifact'
+      ? [
+          {
+            mediaType: part.mediaType,
+            label: part.ref.kind === 'session_context' ? part.ref.refId : part.ref.relativePath,
+          },
+        ]
+      : [],
+  );
+}
+
+/**
+ * The images one Tool Result puts in the request: the artifact parts of its
+ * durable projection, or — for a pre-artifact image the decoder still hands to
+ * materialization raw — that legacy result.
+ */
+export function effectiveToolResultMedia(
+  effective: EffectiveToolResultProjection,
+  sessionId: string,
+): MaterializedToolResultMedia[] {
+  if (effective.kind === 'projection') return projectionArtifactMedia(effective.projection);
+  if (effective.kind !== 'legacy_output') return [];
+  const image = sessionImageResult(effective.output, sessionId);
+  if (!image) return [];
+  return [
+    {
+      mediaType: image.mimeType,
+      label: image.ref.kind === 'session_context' ? image.ref.refId : image.ref.relativePath,
+    },
+  ];
+}
+
+/** Tokens the artifact parts of one projection cost once materialized. */
+export function estimateProjectionMediaTokens(projection: DurableToolResultProjection): number {
+  return projectionArtifactMedia(projection).length * MATERIALIZED_IMAGE_TOKENS;
+}
+
+/** Tokens the images of one decoded Tool Result cost once materialized. */
+export function estimateEffectiveMediaTokens(
+  effective: EffectiveToolResultProjection,
+  sessionId: string,
+): number {
+  return effectiveToolResultMedia(effective, sessionId).length * MATERIALIZED_IMAGE_TOKENS;
+}
+
 /**
  * The one pure decision of WHICH source a replayed Tool Result materializes
  * from: a durable projection wins, and only a response that has none (legacy
@@ -204,7 +261,7 @@ export function rewriteDurableToolResultProjectionArtifactRefs(
   };
 }
 
-type EffectiveToolResultProjection =
+export type EffectiveToolResultProjection =
   | {
       kind: 'projection';
       projection: DurableToolResultProjection;

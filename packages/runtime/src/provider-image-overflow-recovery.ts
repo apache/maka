@@ -19,10 +19,17 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
+import {
+  decodeEffectiveToolResultProjection,
+  effectiveToolResultMedia,
+  estimateEffectiveMediaTokens,
+} from './durable-tool-result-projection.js';
 
 export interface HistoricalImageToolResult {
   toolName: string;
   artifactLabel: string;
+  /** What dropping this result's images gives back, by the same ruler the budget uses. */
+  estimatedTokens: number;
 }
 
 export interface HistoricalImageOmissionResult {
@@ -37,32 +44,11 @@ function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === 'object';
 }
 
-function storageRefLabel(value: unknown): string | undefined {
-  if (!isRecord(value) || typeof value.kind !== 'string') return undefined;
-  if (
-    (value.kind === 'session_file' || value.kind === 'workspace_file') &&
-    typeof value.relativePath === 'string' &&
-    value.relativePath.length > 0
-  ) {
-    return value.relativePath;
-  }
-  if (
-    value.kind === 'session_context' &&
-    typeof value.refId === 'string' &&
-    value.refId.length > 0
-  ) {
-    return value.refId;
-  }
-  if (
-    value.kind === 'external_file' &&
-    typeof value.absolutePath === 'string' &&
-    value.absolutePath.length > 0
-  ) {
-    return value.absolutePath;
-  }
-  return undefined;
-}
-
+/**
+ * The image Tool Results a rejected request can give back, read through the
+ * same decode the budget measures — not from the raw execution fact, which the
+ * durable projection may already have bounded or redacted.
+ */
 export function collectHistoricalImageToolResults(
   events: readonly RuntimeEvent[],
 ): Map<string, HistoricalImageToolResult> {
@@ -70,20 +56,38 @@ export function collectHistoricalImageToolResults(
   for (const event of events) {
     const content = event.content;
     if (content?.kind !== 'function_response' || content.isError === true) continue;
-    const result = content.result;
-    if (
-      !isRecord(result) ||
-      result.kind !== 'image' ||
-      typeof result.mimeType !== 'string' ||
-      result.mimeType.length === 0
-    ) {
-      continue;
-    }
-    const artifactLabel = storageRefLabel(result.ref);
-    if (!artifactLabel) continue;
-    collected.set(content.id, { toolName: content.name, artifactLabel });
+    const effective = decodeEffectiveToolResultProjection(content, event.sessionId);
+    const [media] = effectiveToolResultMedia(effective, event.sessionId);
+    if (!media || media.label.length === 0) continue;
+    collected.set(content.id, {
+      toolName: content.name,
+      artifactLabel: media.label,
+      estimatedTokens: estimateEffectiveMediaTokens(effective, event.sessionId),
+    });
   }
   return collected;
+}
+
+/**
+ * The cheapest set of image Tool Results whose removal covers `targetTokens`,
+ * largest first. An overflow is a fixed overshoot, so dropping everything the
+ * model can still see costs visual context the retry never needed. An unknown
+ * target keeps the old all-or-nothing behaviour.
+ */
+export function selectHistoricalImageOmissions(
+  eligible: ReadonlyMap<string, HistoricalImageToolResult>,
+  targetTokens: number | undefined,
+): Map<string, HistoricalImageToolResult> {
+  if (targetTokens === undefined || targetTokens <= 0) return new Map(eligible);
+  const selected = new Map<string, HistoricalImageToolResult>();
+  let covered = 0;
+  const byCostDesc = [...eligible].sort(([, a], [, b]) => b.estimatedTokens - a.estimatedTokens);
+  for (const [toolCallId, image] of byCostDesc) {
+    if (covered >= targetTokens) break;
+    selected.set(toolCallId, image);
+    covered += image.estimatedTokens;
+  }
+  return selected;
 }
 
 function isInlineImageFilePart(value: unknown): value is UnknownRecord {
