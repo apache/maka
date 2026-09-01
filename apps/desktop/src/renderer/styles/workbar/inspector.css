@@ -200,10 +200,12 @@
 /* Rank by ink, not by weight or size: the whole panel is on three sizes —
    20px for the figures a reader came for, 16px for the two section titles,
    14px for every fact — and inside the 14px tier, colour alone says which
-   half of the row is the fact. A 12px tier used to carry six different roles
-   here; six roles at one size is not a rank, it is small print. */
+   half of the row is which. A 12px tier used to carry six different roles
+   here; six roles at one size is not a rank, it is small print. The label
+   leads the row and the detail qualifies it, so the label takes primary ink:
+   both halves on muted left the row with no rank at all. */
 .maka-inspector-step-label {
-  color: var(--muted-foreground);
+  color: var(--foreground);
 }
 
 .maka-inspector-step-detail {

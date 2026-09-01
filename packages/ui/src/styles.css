@@ -123,9 +123,12 @@
 .maka-stat-tile-value {
   font: var(--maka-text-heading-1);
  display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
+/* Label and detail share one size, so ink is the only thing ranking them: the
+   label names the metric, the detail qualifies it. Both on muted was one row
+   with no rank at all. */
 .maka-stat-tile-label {
   font: var(--maka-text-supporting);
- color: var(--muted-foreground); letter-spacing: 0.025em; }
+ color: var(--foreground); letter-spacing: 0.025em; }
 .maka-stat-tile-detail {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
@@ -682,9 +685,11 @@
 .maka-web-result-list a {
   font: var(--maka-text-label);
  color: var(--link); }
+/* The snippet is what a reader scans; the <small> beside it is the source
+   line. Same size, so ink is the rank. */
 .maka-web-result-list p {
   font: var(--maka-text-body);
- margin: 0; color: var(--muted-foreground); }
+ margin: 0; color: var(--foreground); }
 .maka-web-result-error { gap: 6px; }
 .maka-web-result-error-message,
 .maka-web-result-repair {
