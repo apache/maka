@@ -4045,10 +4045,7 @@ describe('runtime policy stores', () => {
           attemptId: 'copilot-login',
           target: { kind: 'existing', connectionId: copilot.connectionId },
         }),
-        {
-          kind: 'provider_action_unavailable',
-          availability: 'hidden',
-        },
+        { kind: 'provider_action_unavailable' },
       );
 
       // A retired provider keeps its stored connection, so the login entry
@@ -4064,10 +4061,7 @@ describe('runtime policy stores', () => {
           attemptId: 'retired-oauth-login',
           target: { kind: 'existing', connectionId: retired.connectionId },
         }),
-        {
-          kind: 'provider_action_unavailable',
-          availability: 'hidden',
-        },
+        { kind: 'provider_action_unavailable' },
       );
     });
   });

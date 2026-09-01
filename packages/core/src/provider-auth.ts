@@ -34,20 +34,19 @@ export const PROVIDER_AUTH_ACTIONS = [
 ] as const;
 export type ProviderAuthAction = (typeof PROVIDER_AUTH_ACTIONS)[number];
 
-export type ProviderAuthActionAvailability = 'available' | 'hidden';
-
 export interface ProviderAuthContract {
   /**
    * Whether reaching this provider needs credential material at all. Decides
    * whether a missing secret blocks the operation or is simply nothing to load.
    */
   requiresSecret: boolean;
-  actionAvailability: Record<ProviderAuthAction, ProviderAuthActionAvailability>;
+  /** Whether each credential operation may run on this connection. */
+  actionAvailability: Record<ProviderAuthAction, boolean>;
 }
 
 /**
  * Which credential operations a connection may run. This is an admission
- * answer, not a UI state: the storage layer refuses `hidden` actions, so a
+ * answer, not a UI state: the storage layer refuses an unavailable action, so a
  * client that offers one gets the same refusal as one that never showed it.
  *
  * Callers decide `enabled` themselves before asking — a disabled connection
@@ -125,8 +124,8 @@ export function deriveProviderAuthContract(input: {
 
 function actions(
   available: Partial<Record<ProviderAuthAction, boolean>>,
-): Record<ProviderAuthAction, ProviderAuthActionAvailability> {
+): Record<ProviderAuthAction, boolean> {
   return Object.fromEntries(
-    PROVIDER_AUTH_ACTIONS.map((action) => [action, available[action] ? 'available' : 'hidden']),
-  ) as Record<ProviderAuthAction, ProviderAuthActionAvailability>;
+    PROVIDER_AUTH_ACTIONS.map((action) => [action, available[action] === true]),
+  ) as Record<ProviderAuthAction, boolean>;
 }

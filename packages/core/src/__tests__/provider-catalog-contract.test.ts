@@ -133,8 +133,8 @@ describe('retired provider contract', () => {
 
   it('offers no action on a retired connection', () => {
     // The storage layer admits model fetches and connection tests by reading
-    // this contract, so every action being hidden is what refuses them there —
-    // not a check each call site has to remember.
+    // this contract, so every action being unavailable is what refuses them
+    // there — not a check each call site has to remember.
     for (const type of retired) {
       const contract = deriveProviderAuthContract({
         providerType: type,
@@ -143,7 +143,7 @@ describe('retired provider contract', () => {
       for (const action of PROVIDER_AUTH_ACTIONS) {
         assert.equal(
           contract.actionAvailability[action],
-          'hidden',
+          false,
           `${type} must not offer ${action}`,
         );
       }

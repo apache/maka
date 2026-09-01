@@ -553,10 +553,7 @@ export class RuntimePolicyCoordinator {
         const existing = findConnection(catalog, { connectionId: input.target.connectionId });
         if (!existing) return deepFreeze({ kind: 'connection_not_found' as const });
         if (!isInteractiveOAuthLoginProvider(existing.providerType)) {
-          return deepFreeze({
-            kind: 'provider_action_unavailable' as const,
-            availability: 'hidden' as const,
-          });
+          return deepFreeze({ kind: 'provider_action_unavailable' as const });
         }
         connectionBefore = structuredClone(existing);
         connectionAfter = reenabledInteractiveOAuthConnection(
@@ -567,20 +564,14 @@ export class RuntimePolicyCoordinator {
       }
       const connection = connectionBefore ?? connectionAfter;
       if (!isInteractiveOAuthLoginProvider(connection.providerType)) {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: 'hidden' as const,
-        });
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const contract = deriveProviderAuthContract({
         providerType: connection.providerType,
         hasSecret: false,
       });
-      if (contract.actionAvailability.start_oauth !== 'available') {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: contract.actionAvailability.start_oauth,
-        });
+      if (!contract.actionAvailability.start_oauth) {
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const prepared = await this.prepareConnectionMaterial(root, connection, false);
       if (prepared.kind !== 'ready') return prepared;
@@ -1496,9 +1487,8 @@ export class RuntimePolicyCoordinator {
       providerType: connection.providerType,
       hasSecret: true,
     });
-    const availability = contract.actionAvailability[action];
-    if (availability !== 'available') {
-      return deepFreeze({ kind: 'provider_action_unavailable' as const, availability });
+    if (!contract.actionAvailability[action]) {
+      return deepFreeze({ kind: 'provider_action_unavailable' as const });
     }
     return this.prepareConnectionMaterial(root, connection, contract.requiresSecret);
   }

@@ -29,19 +29,19 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(missing.requiresSecret, true);
-    assert.strictEqual(missing.actionAvailability.save_secret, 'available');
-    assert.strictEqual(missing.actionAvailability.test_credentials, 'hidden');
-    assert.strictEqual(missing.actionAvailability.fetch_models, 'hidden');
-    assert.strictEqual(missing.actionAvailability.start_oauth, 'hidden');
+    assert.strictEqual(missing.actionAvailability.save_secret, true);
+    assert.strictEqual(missing.actionAvailability.test_credentials, false);
+    assert.strictEqual(missing.actionAvailability.fetch_models, false);
+    assert.strictEqual(missing.actionAvailability.start_oauth, false);
 
     const configured = deriveProviderAuthContract({
       providerType: 'openai',
       hasSecret: true,
     });
 
-    assert.strictEqual(configured.actionAvailability.test_credentials, 'available');
-    assert.strictEqual(configured.actionAvailability.fetch_models, 'available');
-    assert.strictEqual(configured.actionAvailability.revoke_auth, 'available');
+    assert.strictEqual(configured.actionAvailability.test_credentials, true);
+    assert.strictEqual(configured.actionAvailability.fetch_models, true);
+    assert.strictEqual(configured.actionAvailability.revoke_auth, true);
   });
 
   test('OAuth subscription providers expose validation actions after login', () => {
@@ -51,11 +51,11 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(contract.requiresSecret, true);
-    assert.strictEqual(contract.actionAvailability.save_secret, 'hidden');
-    assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
-    assert.strictEqual(contract.actionAvailability.start_oauth, 'hidden');
-    assert.strictEqual(contract.actionAvailability.refresh_oauth, 'available');
-    assert.strictEqual(contract.actionAvailability.revoke_auth, 'available');
+    assert.strictEqual(contract.actionAvailability.save_secret, false);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.start_oauth, false);
+    assert.strictEqual(contract.actionAvailability.refresh_oauth, true);
+    assert.strictEqual(contract.actionAvailability.revoke_auth, true);
   });
 
   test('a discovery-capable OAuth provider keeps fetch_models available after login', () => {
@@ -64,7 +64,7 @@ describe('ProviderAuth contract', () => {
       hasSecret: true,
     });
 
-    assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 
   test('OAuth subscription providers route missing login to the OAuth setup path', () => {
@@ -73,9 +73,9 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    assert.strictEqual(contract.actionAvailability.start_oauth, 'available');
-    assert.strictEqual(contract.actionAvailability.test_credentials, 'hidden');
-    assert.strictEqual(contract.actionAvailability.fetch_models, 'hidden');
+    assert.strictEqual(contract.actionAvailability.start_oauth, true);
+    assert.strictEqual(contract.actionAvailability.test_credentials, false);
+    assert.strictEqual(contract.actionAvailability.fetch_models, false);
   });
 
   test('no-auth local providers can test and fetch without ever holding a secret', () => {
@@ -85,9 +85,9 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.actionAvailability.save_secret, 'hidden');
-    assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
-    assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
+    assert.strictEqual(contract.actionAvailability.save_secret, false);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 
   test('LocalAI keeps API-key setup available without making the key required', () => {
@@ -97,8 +97,8 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.actionAvailability.save_secret, 'available');
-    assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
-    assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
+    assert.strictEqual(contract.actionAvailability.save_secret, true);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 });

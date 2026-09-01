@@ -317,7 +317,7 @@ test('provider recognition does not resolve inherited object members', () => {
     // inherited member instead of `undefined`, and the branch never ran.
     const contract = deriveProviderAuthContract({ providerType, hasSecret: false });
     assert.equal(
-      Object.values(contract.actionAvailability).every((value) => value === 'hidden'),
+      Object.values(contract.actionAvailability).every((value) => value === false),
       true,
       inherited,
     );
