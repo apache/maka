@@ -32,10 +32,6 @@ import type {
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
 } from '@maka/runtime-host/protocol';
-import {
-  readWorkHubRequestIntent,
-  workHubStopTargetsSession,
-} from './application/contracts/workhub-request-intent.js';
 
 export interface WorkHubSessionTarget {
   sessionId: string;
@@ -477,14 +473,11 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
-      const requestIntent = readWorkHubRequestIntent(input.text);
-      if (requestIntent.stop.cue) {
-        const matching = ordinary.filter(
-          (session) =>
-            activeActionIdsBySessionId.get(session.target.sessionId)?.length === 1 &&
-            workHubStopTargetsSession(requestIntent, session.sessionName),
-        );
-        if (!requestIntent.stop.imperative || matching.length !== 1) {
+      const stoppable = ordinary.filter((session) =>
+        activeActionIdsBySessionId.get(session.target.sessionId)?.length === 1);
+      const stopDecision = submissionPolicy.resolveStop({ text: input.text, sessions: stoppable });
+      if (stopDecision.kind !== 'not_requested') {
+        if (stopDecision.kind === 'clarification') {
           return {
             kind: 'clarification',
             strategyId: WORKHUB_ROUTING_STRATEGY_ID,
@@ -494,8 +487,8 @@ export function createWorkHubController(deps: {
             reason: 'stop_target_required',
           };
         }
-        const target = matching[0]!;
-        const sourceActionId = activeActionIdsBySessionId.get(target.target.sessionId)![0]!;
+        const target = stopDecision.target;
+        const sourceActionId = activeActionIdsBySessionId.get(target.sessionId)![0]!;
         const admitted = await coordination.act({
           actionId: input.requestId,
           userText: input.text,
@@ -506,13 +499,13 @@ export function createWorkHubController(deps: {
           throw new Error('WorkHub Action Gate returned an unexpected disposition');
         }
         if (admitted.outcome !== 'not_owned') {
-          removeActiveAction(target.target.sessionId, sourceActionId);
+          removeActiveAction(target.sessionId, sourceActionId);
         }
         return {
           kind: 'stop',
           strategyId: WORKHUB_ROUTING_STRATEGY_ID,
           requestId: input.requestId,
-          target: target.target,
+          target,
           outcome: admitted.outcome,
           ...(admitted.targetTurnId ? { targetTurnId: admitted.targetTurnId } : {}),
         };

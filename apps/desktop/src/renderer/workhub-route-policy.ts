@@ -20,6 +20,7 @@
 import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
+  workHubStopTargetsSession,
   type WorkHubRequestIntent,
 } from './application/contracts/workhub-request-intent.js';
 
@@ -58,7 +59,16 @@ export type WorkHubRouteDecision =
   | { kind: 'discussion' }
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
+export type WorkHubStopRouteDecision =
+  | { kind: 'not_requested' }
+  | { kind: 'clarification' }
+  | { kind: 'target'; target: WorkHubRouteTarget };
+
 export interface WorkHubRoutePolicy {
+  resolveStop(input: {
+    text: string;
+    sessions: WorkHubRoutableSession[];
+  }): WorkHubStopRouteDecision;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -110,6 +120,16 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
   let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
+    resolveStop({ text, sessions }) {
+      const intent = readWorkHubRequestIntent(text);
+      if (!intent.stop.cue) return { kind: 'not_requested' };
+      if (!intent.stop.imperative) return { kind: 'clarification' };
+      const matching = sessions.filter((session) =>
+        workHubStopTargetsSession(intent, session.sessionName));
+      return matching.length === 1
+        ? { kind: 'target', target: matching[0]!.target }
+        : { kind: 'clarification' };
+    },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);
       if (intent.execution === 'ambiguous') {
