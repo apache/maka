@@ -167,6 +167,7 @@ export interface RuntimeHostMakaSessionDriver extends MakaSessionDriver {
   resumeLatest(): AsyncIterable<SessionEvent>;
   subscribePendingInteractions(listener: (pending: InteractionPendingSnapshot) => void): () => void;
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void;
+  subscribeSessionFailures(listener: (error: Error) => void): () => void;
   subscribeResolvedInteractions(
     listener: (sessionId: string, requestId: string) => void,
   ): () => void;
@@ -224,6 +225,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   #channelGeneration = 0;
   #transcriptRefreshSequence = 0;
   readonly #startedTurnListeners = new Set<(turn: MakaAttachedSessionTurn) => void>();
+  readonly #sessionFailureListeners = new Set<(error: Error) => void>();
   readonly #goalListeners = new Set<(goal: GoalProjection | null) => void>();
   readonly #pendingInteractionListeners = new Set<(pending: InteractionPendingSnapshot) => void>();
   readonly #claimedTurnIds = new Set<string>();
@@ -1074,6 +1076,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     return () => this.#goalListeners.delete(listener);
   }
 
+  subscribeSessionFailures(listener: (error: Error) => void): () => void {
+    this.#sessionFailureListeners.add(listener);
+    return () => this.#sessionFailureListeners.delete(listener);
+  }
+
   async controlGoal(action: GoalControlAction): Promise<GoalProjection | null> {
     const sessionId = this.#sessionId;
     if (!sessionId) return null;
@@ -1524,6 +1531,10 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         // frame when the swap happens; only the live session may publish.
         if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
         for (const listener of this.#goalListeners) listener(goal);
+      },
+      onFailed: (error) => {
+        if (this.#sessionId !== sessionId || this.#sessionGeneration !== sessionGeneration) return;
+        for (const listener of this.#sessionFailureListeners) listener(error);
       },
       onRecovered: () => this.#refreshRuntimeResources(sessionId),
     });

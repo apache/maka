@@ -33,6 +33,8 @@ import {
 } from '@maka/runtime-host/client';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
 import type { InteractionPendingSnapshot, SessionCatalogItem } from '@maka/runtime-host/protocol';
+import type { GoalProjection } from '@maka/runtime-host/protocol';
+import { TERMINAL_GOAL_STATUSES } from '@maka/runtime/goal-state';
 import {
   runMakaTextCliCore,
   type MakaRunContext,
@@ -188,6 +190,9 @@ export function createRuntimeHostRunContext(
   return {
     runtime,
     target: { connection: { slug: target.connection.slug }, model: target.model },
+    goal: {
+      waitForCompletion: (sessionId: string) => runtime.waitForGoalCompletion(sessionId),
+    },
     ...(input.enableAgentGraph
       ? {
           agentGraph: {
@@ -254,6 +259,8 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   readonly #sessionCwdOverride: MakaRunContextInput['sessionCwdOverride'];
   readonly #maxSteps: number | undefined;
   readonly #unsubscribeTranscriptReplacements: () => void;
+  readonly #unsubscribeSessionFailures: () => void;
+  readonly #unsubscribeStartedTurns: () => void;
   #sessionId: string | undefined;
   #activeTurn: ActiveRuntimeHostTurn | undefined;
   #stopRequested = false;
@@ -269,6 +276,12 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       timer: ReturnType<typeof setTimeout>;
     }>
   >();
+  readonly #goalWaiters = new Set<{
+    reject(error: Error): void;
+    unsubscribe(): void;
+  }>();
+  #sessionFailure: Error | undefined;
+  readonly #hostStartedTurnDrains = new Set<Promise<void>>();
 
   constructor(
     connection: RuntimeHostConnection,
@@ -293,6 +306,17 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
         this.#acceptGraphTranscript(messages);
       },
     );
+    this.#unsubscribeSessionFailures = driver.subscribeSessionFailures((error) => {
+      this.#sessionFailure = error;
+      this.#cancelGraphTerminalWaiters(error);
+      this.#cancelGoalWaiters(error);
+    });
+    this.#unsubscribeStartedTurns = driver.subscribeStartedTurns((turn) => {
+      const drain = collectEvents(turn.events)
+        .catch(() => undefined)
+        .finally(() => this.#hostStartedTurnDrains.delete(drain));
+      this.#hostStartedTurnDrains.add(drain);
+    });
   }
 
   async createSession(input: CreateSessionRequest): Promise<SessionSummary> {
@@ -360,6 +384,7 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (this.#graphEnabled) {
       stops.push(this.#stopGraph(sessionId));
     }
+    stops.push(this.#pauseGoal(sessionId));
     const settled = await Promise.allSettled(stops);
     const failure = settled.find(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
@@ -415,11 +440,34 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     if (outcome) await this.#observer?.(outcome);
   }
 
+  async waitForGoalCompletion(sessionId: string): Promise<void> {
+    await this.#attach(sessionId);
+    let current = (await this.#connection.request('goal.query', { sessionId })).goal;
+    if (!current) return;
+    if (current.status === 'paused') throw new Error('Goal paused before completion');
+    if (!TERMINAL_GOAL_STATUSES.has(current.status)) {
+      current = await this.#waitForGoalTerminal(sessionId, current.goalId);
+      if (!current) return;
+      if (current.status === 'paused') throw new Error('Goal paused before completion');
+    }
+    const messages = await this.#driver.readMessages();
+    const turnId = lastGoalTurnId(messages, current.goalId);
+    if (!turnId) return;
+    const outcome = outcomeFromStoredTurn(messages, turnId);
+    if (!outcome) {
+      throw new Error('Goal final Turn did not reach a durable terminal boundary');
+    }
+    await this.#observer?.(outcome);
+  }
+
   close(): Promise<void> {
     this.#closed = true;
     this.#interactions.close();
     this.#unsubscribeTranscriptReplacements();
+    this.#unsubscribeSessionFailures();
+    this.#unsubscribeStartedTurns();
     this.#cancelGraphTerminalWaiters(new Error('Runtime Host run context closed'));
+    this.#cancelGoalWaiters(new Error('Runtime Host run context closed'));
     return Promise.resolve();
   }
 
@@ -475,6 +523,30 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     }
   }
 
+  async #pauseGoal(sessionId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const goal = (await this.#connection.request('goal.query', { sessionId })).goal;
+      if (!goal || (goal.status !== 'active' && goal.status !== 'waiting')) return;
+      try {
+        await this.#connection.request('goal.control', {
+          sessionId,
+          goalId: goal.goalId,
+          expectedRevision: goal.revision,
+          action: 'pause',
+        });
+        return;
+      } catch (error) {
+        if (
+          !(error instanceof RuntimeHostOperationError) ||
+          error.code !== 'operation_conflict' ||
+          attempt === 2
+        ) {
+          throw error;
+        }
+      }
+    }
+  }
+
   #acceptGraphTranscript(messages: readonly StoredMessage[]): void {
     this.#latestTranscriptReplacement = messages;
     for (const [turnId, waiters] of this.#graphTerminalWaiters) {
@@ -521,6 +593,51 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
     });
   }
 
+  #waitForGoalTerminal(sessionId: string, goalId: string): Promise<GoalProjection | null> {
+    if (this.#closed) return Promise.reject(new Error('Runtime Host run context closed'));
+    if (this.#sessionFailure) return Promise.reject(this.#sessionFailure);
+    const subscribe = this.#driver.subscribeGoalChanges;
+    if (!subscribe) return Promise.reject(new Error('Runtime Host Goal updates are unavailable'));
+
+    return new Promise<GoalProjection | null>((resolve, reject) => {
+      let settled = false;
+      let unsubscribe = () => {};
+      const waiter = {
+        reject: (error: Error) => finish(undefined, error),
+        unsubscribe: () => unsubscribe(),
+      };
+      const finish = (goal: GoalProjection | null | undefined, error?: Error) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        this.#goalWaiters.delete(waiter);
+        if (error) reject(error);
+        else resolve(goal ?? null);
+      };
+      const accept = (goal: GoalProjection | null) => {
+        if (
+          goal?.goalId === goalId &&
+          goal.status !== 'paused' &&
+          !TERMINAL_GOAL_STATUSES.has(goal.status)
+        ) {
+          return;
+        }
+        finish(goal);
+      };
+
+      unsubscribe = subscribe.call(this.#driver, accept);
+      if (settled) {
+        unsubscribe();
+        return;
+      }
+      this.#goalWaiters.add(waiter);
+      void this.#connection.request('goal.query', { sessionId }).then(
+        (result) => accept(result.goal),
+        (error) => finish(undefined, error instanceof Error ? error : new Error(String(error))),
+      );
+    });
+  }
+
   async #stopForInteraction(pending: InteractionPendingSnapshot): Promise<void> {
     this.#stopRequested = true;
     const stops: Promise<unknown>[] = [
@@ -546,6 +663,18 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       }
     }
     this.#graphTerminalWaiters.clear();
+  }
+
+  #cancelGoalWaiters(error: Error): void {
+    for (const waiter of [...this.#goalWaiters]) waiter.reject(error);
+    this.#goalWaiters.clear();
+  }
+}
+
+async function collectEvents(events: AsyncIterable<SessionEvent>): Promise<void> {
+  for await (const _event of events) {
+    // Host-started Goal/Graph Turns are projected from durable state. Drain
+    // their live queue so a long autonomous run cannot force channel recovery.
   }
 }
 
@@ -799,6 +928,17 @@ function lastNewGraphSupervisorTurnId(
         message.type === 'user' &&
         message.origin?.kind === 'agent_graph' &&
         !admissionTurnIds.has(message.turnId),
+    )?.turnId;
+}
+
+function lastGoalTurnId(messages: readonly StoredMessage[], goalId: string): string | undefined {
+  return [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.type === 'user' &&
+        message.origin?.kind === 'goal' &&
+        message.origin.goalId === goalId,
     )?.turnId;
 }
 
