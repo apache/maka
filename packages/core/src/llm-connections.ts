@@ -281,35 +281,6 @@ export function offerableCatalogEntries(
   );
 }
 
-/**
- * What `connection.models` IS, which is not the same question as where it was
- * written from. This describes a catalog for display; it never decides what a
- * connection may run — see `authorizeConnectionModel`.
- *
- * `modelSource` records provenance: `'fallback'` for the array a connection was
- * seeded with, `'fetched'` once a discovery run replaced it. For a provider
- * whose `modelDiscovery.kind` is `'fallback'` that run replays the array this
- * build shipped, so `'fetched'` is accurate and still describes a snapshot. The
- * predicate for "a provider enumerated this account" is therefore a
- * conjunction, and this is the only place it lives:
- *
- *   - `live` — a provider with a model-list endpoint enumerated this account.
- *     A model missing from it is one this provider did not mention, which is
- *     worth telling the user.
- *   - `snapshot` — the array this build shipped, either as the seed a
- *     connection was created with or replayed by a `kind: 'fallback'`
- *     provider's discovery run. It describes the provider at release, not the
- *     account, so absence from it means nothing at all (#1584).
- *   - `absent` — no catalog, and none asked for. A connection can be created
- *     and used before its first discovery run (#2896).
- *
- * The split is by authority, not by how full the array is: "the provider
- * listed nothing" and "nobody has asked yet" are opposite facts, and an empty
- * array alone cannot tell them apart. `modelSource` can — the codec keeps it
- * present exactly when a run has written this row.
- */
-export type ConnectionModelInventory = 'absent' | 'live' | 'snapshot';
-
 /** The `LlmConnection` fields that decide what a connection may run. */
 export interface ConnectionModelAuthorityInput {
   readonly providerType: ProviderType;
@@ -319,12 +290,29 @@ export interface ConnectionModelAuthorityInput {
   readonly modelSource?: ModelDiscoverySource;
 }
 
-export function classifyConnectionModelInventory(
+/**
+ * Whether `connection.models` is this account's own list, as a provider
+ * enumerated it — the one question anything asks about that array's provenance.
+ *
+ * It is a conjunction, not a reading of `modelSource` alone. `'fetched'` means
+ * a discovery run wrote this row, and for a provider whose
+ * `modelDiscovery.kind` is `'fallback'` that run replays the array this build
+ * shipped: accurate, and still a snapshot of the provider at release rather
+ * than of the account. Absence from a snapshot means nothing at all (#1584),
+ * and a connection can be created and used before any run at all (#2896) — so
+ * only a discovering provider that has actually run answers true here.
+ *
+ * This describes a catalog; it never decides what a connection may run — see
+ * `authorizeConnectionModel`.
+ */
+export function connectionModelsEnumerateAccount(
   connection: ConnectionModelAuthorityInput,
-): ConnectionModelInventory {
-  if (connection.models === undefined || connection.modelSource === undefined) return 'absent';
-  if (!providerSupportsModelDiscovery(connection.providerType)) return 'snapshot';
-  return connection.modelSource === 'fetched' ? 'live' : 'snapshot';
+): boolean {
+  return (
+    connection.modelSource === 'fetched' &&
+    connection.models !== undefined &&
+    providerSupportsModelDiscovery(connection.providerType)
+  );
 }
 
 /**
@@ -346,9 +334,9 @@ export function classifyConnectionModelInventory(
  * (#2896). Guessing wrong costs one failed request with the provider's own
  * error on it.
  *
- * `classifyConnectionModelInventory` still says whether a catalog could have
- * seen the model, and the picker uses that to annotate one the provider did
- * not mention. Annotating is not vetoing.
+ * `connectionModelsEnumerateAccount` still says whether a catalog could have
+ * seen the model, which is a fact worth acting on elsewhere. Acting on it is
+ * not vetoing.
  */
 export function authorizeConnectionModel(
   connection: ConnectionModelAuthorityInput,

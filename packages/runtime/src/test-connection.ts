@@ -21,7 +21,7 @@ import {
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   providerFallbackModelIds,
-  classifyConnectionModelInventory,
+  connectionModelsEnumerateAccount,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
   type ConnectionTestResult,
@@ -77,8 +77,7 @@ function resolveConnectionTestModel(
   const discoveredIds =
     connection.models?.map(({ id }) => id.trim()).filter((id) => id.length > 0) ?? [];
   const enabled = connectionEnabledModelIds(connection);
-  const listed =
-    classifyConnectionModelInventory(connection) === 'live' ? new Set(discoveredIds) : undefined;
+  const listed = connectionModelsEnumerateAccount(connection) ? new Set(discoveredIds) : undefined;
   const preferred = listed
     ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
     : enabled;
