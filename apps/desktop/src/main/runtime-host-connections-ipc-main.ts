@@ -181,15 +181,20 @@ export function registerRuntimeHostConnectionsIpc(
       if (result.kind === 'saved') deps.emitConnectionListChanged();
       return { kind: 'result', result } satisfies DesktopConnectionOnboardingSaveOutcome;
     } catch (error) {
-      if (
-        (error instanceof RuntimeHostOperationError &&
-          error.code === 'commit_outcome_unknown') ||
-        (error instanceof RuntimeHostRequestInterruptedError &&
-          error.dispatch === 'dispatched')
-      ) {
-        return { kind: 'outcome_unknown' } satisfies DesktopConnectionOnboardingSaveOutcome;
+      if (error instanceof RuntimeHostOperationError) {
+        return {
+          kind: error.code === 'commit_outcome_unknown' ? 'outcome_unknown' : 'not_saved',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
       }
-      return { kind: 'not_saved' } satisfies DesktopConnectionOnboardingSaveOutcome;
+      if (error instanceof RuntimeHostRequestInterruptedError) {
+        return {
+          kind: error.dispatch === 'not_dispatched' ? 'not_saved' : 'outcome_unknown',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
+      }
+      // A protocol/decode failure can arrive only after the command response
+      // has started coming back. Without affirmative evidence that the Host
+      // did not commit, allowing another create risks duplicating the account.
+      return { kind: 'outcome_unknown' } satisfies DesktopConnectionOnboardingSaveOutcome;
     }
   });
   deps.ipcMain.handle('connections:create', async (_event, raw: unknown) => {

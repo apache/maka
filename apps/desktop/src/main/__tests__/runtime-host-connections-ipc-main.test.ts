@@ -224,6 +224,47 @@ test('keeps Host commit_outcome_unknown distinct from a safe non-save', async ()
   });
 });
 
+test('fails closed when a dispatched onboarding response cannot be decoded', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let attempt = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      saveConnectionOnboarding: async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          // RuntimeHostConnection surfaces a malformed command response as
+          // an ordinary protocol error after the frame was dispatched.
+          throw new Error('Invalid connection onboarding save result');
+        }
+        throw new RuntimeHostOperationError(
+          'connection.onboarding.save',
+          'invalid_request',
+          'The Host definitively rejected the save',
+        );
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+  const input = {
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+    enabledModelIds: ['gpt-5'],
+  };
+
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'outcome_unknown',
+  });
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'not_saved',
+  });
+});
+
 test('retries connection delete after a stale revision instead of failing permanently', async () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   let revision = 1;
