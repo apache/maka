@@ -82,6 +82,7 @@
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",
     "./web-search": "./dist/web-search.js",
+    "./bounded-response": "./dist/bounded-response.js",
     "./incognito": "./dist/incognito.js",
     "./backend-types": "./dist/backend-types.js",
     "./codex-model-compatibility": "./dist/codex-model-compatibility.js",
