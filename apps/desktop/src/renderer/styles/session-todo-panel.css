@@ -1,0 +1,94 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+/* SessionTodoPanel (#4351) — the read-only, flat projection of the Host-owned
+   current Todo document. It replaced the nested Task Ledger demand chain, so
+   this sheet was reduced (#4394) to what the flat list actually renders: a
+   `-panel` scroll container, a `-tree` <ol>, and one `-row` <li> per item that
+   holds a status icon and its content text. The retired four-column,
+   depth-indented tree row — its `--task-depth` indent, `-group`,
+   `[data-status]`, `-key`/`-subject`/`-meta`/`-detail`, and `-terminal`
+   descendants — is gone; none of those elements exist anymore. */
+
+.maka-session-todo-panel {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.maka-session-todo-tree {
+  display: grid;
+  gap: var(--border-width-hairline);
+}
+
+/* Two children only: the status icon, then content that takes the remaining
+   width and wraps within it (`minmax(0, 1fr)` lets the text column shrink so
+   long, unbroken content wraps instead of overflowing the workbar). The
+   workbar resizes down to SESSION_WORKBAR_MIN_WIDTH (320px) inside an
+   otherwise wide window, so wrapping — not a width breakpoint — is what keeps
+   the row readable at every width. If width-responsive styling is ever added
+   here it should be an `@container` query on `.maka-session-todo-panel` (see
+   workbar/inspector.css and chat-header.css), not a viewport `@media`. */
+.maka-session-todo-row {
+  font: var(--maka-text-supporting);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--foreground-secondary);
+}
+
+.maka-session-todo-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.maka-session-todo-row:hover { background: var(--state-hover-bg); }
+
+.maka-session-todo-message {
+  font: var(--maka-text-supporting);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--foreground-secondary);
+}
+
+.maka-session-todo-retry {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
+}
+
+.maka-session-todo-retry:hover { background: var(--state-hover-bg); }
+
+.maka-session-todo-retry:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: 1px;
+}

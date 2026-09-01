@@ -23,6 +23,11 @@ export {
   type ActivateRuntimeHostManagedDeploymentInput,
   type RuntimeHostManagedActivationErrorCode,
 } from './managed-activation.js';
+export {
+  decodeRuntimeHostWebRtcStunPolicy,
+  resolveRuntimeHostWebRtcStunUrls,
+  type RuntimeHostWebRtcStunPolicy,
+} from '../webrtc-stun-policy.js';
 export { openRuntimeHostManagedStdioBridge } from './managed-stdio-bridge.js';
 export {
   connectRuntimeHost,
@@ -31,6 +36,7 @@ export {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
   type DirectRequestOperationKey,
 } from './connection.js';
 export {
@@ -44,6 +50,7 @@ export {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
@@ -52,8 +59,10 @@ export {
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
   runtimeHostProfileAccess,
+  runtimeHostProfileTargetFingerprint,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  subscribeClientRuntimeHostProfileCatalogChanges,
   type EnvironmentRuntimeHostProfile,
   type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
@@ -63,6 +72,10 @@ export {
   type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
   type RuntimeHostConnectionPhase,
+  type RuntimeHostRemoteProfileIncarnation,
+  type RuntimeHostCapabilityProviderCredentialStore,
+  RuntimeHostProfileConnectionError,
+  type RuntimeHostProfileConnectionFailureReason,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {
@@ -123,6 +136,8 @@ export {
   readRuntimeHostProjects,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
+  type RuntimeHostConnectionCatalogEntry,
+  type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,

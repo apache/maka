@@ -26,17 +26,15 @@ import {
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
-import {
-  ASSISTANT_PROGRESS_TOOL_NAME,
-  type AssistantTextPhase,
-  type AttachmentRef,
-  type InlineReference,
-  type MessageContent,
-  type QuoteRef,
-  type ShellRunUpdate,
-  type ToolActivityKind,
-  type ToolResultContent,
-  type ToolStepProgress,
+import type {
+  AttachmentRef,
+  InlineReference,
+  MessageContent,
+  QuoteRef,
+  ShellRunUpdate,
+  ToolActivityKind,
+  ToolResultContent,
+  ToolStepProgress,
 } from '@maka/core/events';
 import type { ToolActivityStatus } from '@maka/core/tool-result-status';
 import type { ShellRunToolResult } from '@maka/core/shell-run-result';
@@ -58,6 +56,8 @@ export interface ChatItem {
   ts?: number;
   /** User-message attachments projected from StoredMessage; absent on assistant/system rows. */
   attachments?: AttachmentRef[];
+  /** Host-bound directory references projected from StoredMessage; user rows only. */
+  directoryReferences?: import('@maka/core/events').DirectoryReference[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
@@ -166,6 +166,7 @@ export function materializeChat(
         ...(message.quotes && message.quotes.length > 0
           ? { quotes: message.quotes }
           : {}),
+        ...(message.directoryReferences ? { directoryReferences: message.directoryReferences } : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
@@ -206,12 +207,8 @@ export function materializeTools(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
   return messages
-    .filter(
-      (
-        message,
-      ): message is Extract<StoredMessage, { type: "tool_call" }> =>
-        message.type === "tool_call" && message.toolName !== ASSISTANT_PROGRESS_TOOL_NAME,
-    )
+    .filter((message): message is Extract<StoredMessage, { type: "tool_call" }> =>
+      message.type === "tool_call")
     .map((call) => {
       const result = results.get(call.id);
       return {
@@ -347,7 +344,6 @@ export type TurnTimelineItem =
       kind: "text";
       text: string;
       messageId: string;
-      phase?: AssistantTextPhase;
       ts?: number;
       live?: boolean;
       complete?: boolean;
@@ -541,7 +537,6 @@ export function overlayLiveTurn(
           kind: "text",
           text: step.text.text,
           messageId: step.stepId,
-          ...(step.text.phase !== undefined ? { phase: step.text.phase } : {}),
           live: true,
           complete: step.text.complete,
           truncated: step.text.truncated,
@@ -841,26 +836,24 @@ export function materializeTurns(
  * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
  * turns with no timeline text entry.
  */
-export function assistantFinalAnswerIndex<
-  T extends { kind: string; text?: string; phase?: AssistantTextPhase },
->(items: readonly T[], settled: boolean): number {
-  const explicit = items.findIndex(
-    (item) => item.kind === "text" && item.phase === "final_answer",
-  );
-  if (explicit >= 0) return explicit;
-  if (!settled) return -1;
+export function assistantFinalAnswerIndex<T extends { kind: string; text?: string }>(
+  items: readonly T[],
+  completed: boolean,
+): number {
+  if (!completed) return -1;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item?.kind === "text" && item.text?.length === 0) continue;
-    return item?.kind === "text" && item.phase === undefined ? index : -1;
+    if (item?.kind === "text") return index;
   }
   return -1;
 }
 
 export function finalAssistantReplyText(turn: TurnViewModel): string {
+  if (turn.status !== "completed") return "";
   const lastSteeringIndex = turn.timeline.findLastIndex((item) => item.kind === "user");
   const latestAnswer = turn.timeline.slice(lastSteeringIndex + 1);
-  const answerIndex = assistantFinalAnswerIndex(latestAnswer, turn.status !== "running");
+  const answerIndex = assistantFinalAnswerIndex(latestAnswer, true);
   const answer = latestAnswer[answerIndex];
   if (answer?.kind === "text") return answer.text;
   return turn.timeline.some((item) => item.kind === "text")
@@ -1071,7 +1064,6 @@ function buildTurnTimeline(
               kind: "text",
               text: message.text,
               messageId: rowId,
-              ...(message.phase !== undefined ? { phase: message.phase } : {}),
               ts: message.ts,
             });
           } else if (kind === "tools") {
@@ -1095,7 +1087,6 @@ function buildTurnTimeline(
             kind: "text",
             text: message.text,
             messageId: rowId,
-            ...(message.phase !== undefined ? { phase: message.phase } : {}),
             ts: message.ts,
           });
         }
@@ -1128,6 +1119,7 @@ function chatItemFromContent(
     ...(content.quotes && content.quotes.length > 0
       ? { quotes: content.quotes }
       : {}),
+    ...(content.directoryReferences ? { directoryReferences: content.directoryReferences } : {}),
     ...(content.inlineReferences !== undefined
       ? { inlineReferences: content.inlineReferences }
       : {}),

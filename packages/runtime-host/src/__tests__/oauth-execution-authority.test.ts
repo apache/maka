@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { open, writeFile, mkdtemp, rm } from 'node:fs/promises';
@@ -648,18 +649,6 @@ async function withPublishedSyncFailure(
 function isOAuthError(code: OAuthExecutionCredentialError['code']): (error: unknown) => boolean {
   return (error) => error instanceof OAuthExecutionCredentialError && error.code === code;
 }
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
 function claudeIdentity(body: Record<string, unknown> | undefined): Record<string, unknown> {
   assert.ok(body);
   const metadata = body.metadata as { user_id?: unknown } | undefined;

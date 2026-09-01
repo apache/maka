@@ -25,7 +25,10 @@ import {
   executionBoundaryDisplayMode,
 } from '@maka/core/sandbox-boundary';
 import { findProjectByIdentity } from '@maka/core/project';
-import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
@@ -68,6 +71,7 @@ import {
   type TuiMcpController,
   type TuiMcpManagement,
 } from './tui-mcp-control.js';
+import { createRemoteTuiMcpPublicationTarget } from './tui-mcp-remote-publication.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -77,7 +81,6 @@ export interface RuntimeHostTuiContext {
   readonly connectionId?: string;
   readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
-  readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
@@ -159,7 +162,7 @@ export async function createRuntimeHostTuiContext(
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
+    if (connected.profile.kind === 'local') {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
@@ -167,9 +170,29 @@ export async function createRuntimeHostTuiContext(
         workspaceRoot: input.rootPath,
         connection,
       });
+    } else if (connected.profile.kind === 'remote') {
+      if (!connected.profileIncarnationId) {
+        throw new Error('Remote Runtime Host profile incarnation is unavailable');
+      }
+      mcp = createTuiMcpController({
+        workspaceRoot: input.rootPath,
+        connection: createRemoteTuiMcpPublicationTarget({
+          clientDataRoot: input.clientDataRoot,
+          profile: connected.profile,
+          profileIncarnationId: connected.profileIncarnationId,
+          ownerClientInstanceId: connected.clientInstanceId,
+        }),
+      });
     }
-    const modelContextWindow = selectedTarget.connection?.models.find(
-      (model) => model.id === selectedTarget.model,
+    // From the Host-resolved choice, not the connection's stored rows: a
+    // fallback or provider-default model exists only in the resolved catalog,
+    // so reading `models` left the very first status line and its diagnostics
+    // without a denominator until some later transition happened to refresh
+    // it. Every later read of this value already comes from `modelChoices`.
+    const modelContextWindow = modelChoices.find(
+      (choice) =>
+        choice.connectionSlug === selectedTarget.connectionSlug &&
+        choice.model === selectedTarget.model,
     )?.contextWindow;
     return {
       connection,
@@ -181,9 +204,6 @@ export async function createRuntimeHostTuiContext(
         : { connectionId: selectedTarget.connectionId }),
       connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
-      ...(selectedTarget.connection
-        ? { providerType: selectedTarget.connection.providerType }
-        : {}),
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,

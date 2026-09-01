@@ -21,7 +21,6 @@ import type { Dirent } from 'node:fs';
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve, sep } from 'node:path';
-import { isAssistantTextPhase, type AssistantTextPhase } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import { isSupportedCodexThreadSource, sanitizeForeignTitle } from '@maka/core/foreign-session';
 import { externalSessionMatchesQuery } from '@maka/core/external-session';
@@ -328,7 +327,7 @@ function convertCodexRollout(
         if (itemType === 'agentmessage') {
           const text = codexCompletedItemText(item);
           if (text.length === 0) continue;
-          const phase = codexAssistantTextPhase(item);
+          const providerOptions = codexAssistantProviderOptions(item);
           messages.push({
             type: 'assistant',
             id:
@@ -337,7 +336,7 @@ function convertCodexRollout(
             turnId: ensureTurnId(record.line),
             ts: timestampFor(record),
             text,
-            ...(phase !== undefined ? { phase } : {}),
+            ...(providerOptions !== undefined ? { providerOptions } : {}),
             modelId: activeModel,
             contentOrder: ['text'],
           });
@@ -386,14 +385,14 @@ function convertCodexRollout(
       if (eventType === 'agent_message') {
         const text = stringField(payload, 'message');
         if (!text) continue;
-        const phase = codexAssistantTextPhase(payload);
+        const providerOptions = codexAssistantProviderOptions(payload);
         messages.push({
           type: 'assistant',
           id: generatedCodexId(expectedSessionId, 'assistant', record.line),
           turnId: ensureTurnId(record.line),
           ts: timestampFor(record),
           text,
-          ...(phase !== undefined ? { phase } : {}),
+          ...(providerOptions !== undefined ? { providerOptions } : {}),
           modelId: activeModel,
           contentOrder: ['text'],
         });
@@ -778,9 +777,18 @@ function stringField(record: JsonRecord | undefined, field: string): string | un
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function codexAssistantTextPhase(record: JsonRecord | undefined): AssistantTextPhase | undefined {
+function codexAssistantProviderOptions(
+  record: JsonRecord | undefined,
+): Record<string, unknown> | undefined {
   const phase = record?.phase;
-  return isAssistantTextPhase(phase) ? phase : undefined;
+  if (phase !== 'commentary' && phase !== 'final_answer') return undefined;
+  const itemId = stringField(record, 'id');
+  return {
+    openai: {
+      ...(itemId !== undefined ? { itemId } : {}),
+      phase,
+    },
+  };
 }
 
 function isSafeCodexSessionId(value: unknown): value is string {

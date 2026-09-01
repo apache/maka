@@ -20,7 +20,7 @@
 /**
  * Session Inspector trace projection (#1625).
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';

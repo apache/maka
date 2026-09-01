@@ -34,6 +34,7 @@ import {
   mapCompleteStopReason,
   mapSessionEventToRuntimeEvent,
   createSessionEventMapMemory,
+  isLiveBackendSessionEvent,
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import {
@@ -624,48 +625,6 @@ const projectionRunHeader: AgentRunHeader = {
 };
 
 describe('SessionEvent projection coverage', () => {
-  test('preserves assistant text phase through mapping, projection, and legacy backfill', () => {
-    const runtimeEvent = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'text_complete',
-        messageId: 'message-1',
-        text: 'I am checking the implementation.',
-        phase: 'commentary',
-        providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-    assert.deepEqual(runtimeEvent.content, {
-      kind: 'text',
-      text: 'I am checking the implementation.',
-      phase: 'commentary',
-      providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
-    });
-
-    const projected = projectRuntimeEventsToStoredMessages([runtimeEvent], {
-      runHeaders: [projectionRunHeader],
-    });
-    assert.deepEqual(projected.messages[0], {
-      type: 'assistant',
-      id: 'message-1',
-      turnId: 'turn-1',
-      ts: runtimeEvent.ts,
-      text: 'I am checking the implementation.',
-      phase: 'commentary',
-      modelId: 'model-1',
-      providerOptions: { openai: { itemId: 'message-1', phase: 'commentary' } },
-    });
-
-    const backfilled = backfillRuntimeEventsFromStoredMessages({
-      run: projectionRunHeader,
-      messages: projected.messages,
-      newId: () => 'backfilled-1',
-      now: () => 100,
-    });
-    assert.deepEqual(backfilled.events[0]?.content, runtimeEvent.content);
-  });
-
   test('keeps Host admission facts out of durable Runtime events', () => {
     assert.throws(
       () =>
@@ -682,6 +641,36 @@ describe('SessionEvent projection coverage', () => {
         ),
       /message_admission is not a backend event/,
     );
+  });
+
+  test('keeps Host-owned Client Capability interactions out of backend projection', () => {
+    const request: SessionEvent = {
+      type: 'client_capability_request',
+      id: 'client-capability-request-1',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'request-1',
+      toolUseId: 'tool-1',
+      capability: 'browser',
+      scope: { kind: 'browser_origin', origin: 'https://example.com' },
+    };
+    const ack: SessionEvent = {
+      type: 'client_capability_decision_ack',
+      id: 'client-capability-ack-1',
+      turnId: 'turn-1',
+      ts: 2,
+      requestId: 'request-1',
+      toolUseId: 'tool-1',
+      decision: 'allow',
+    };
+
+    for (const event of [request, ack]) {
+      assert.equal(isLiveBackendSessionEvent(event), false);
+      assert.throws(
+        () => mapSessionEventToRuntimeEvent(event, ctx),
+        new RegExp(`${event.type} is not a backend event`, 'u'),
+      );
+    }
   });
 
   // The contract is over what a reader can actually meet: every mapped event

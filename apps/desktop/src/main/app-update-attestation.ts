@@ -26,7 +26,6 @@ import { createReadStream } from 'node:fs';
 const PRODUCT_REPOSITORY = 'apache/maka';
 const PRODUCT_RELEASE_WORKFLOW = '.github/workflows/release-cli-finalize.yml';
 const PRODUCT_NIGHTLY_WORKFLOW = '.github/workflows/desktop-nightly.yml';
-const PRODUCT_NIGHTLY_BASE_URL = 'https://nightlies.apache.org/maka/desktop';
 const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 const IN_TOTO_STATEMENT_V1 = 'https://in-toto.io/Statement/v1';
 const SLSA_PROVENANCE_V1 = 'https://slsa.dev/provenance/v1';
@@ -102,12 +101,9 @@ function productReleaseAttestationName(version: string): string {
 
 function productReleaseAttestationUrl(
   version: string,
-  channel: DesktopUpdateChannel,
+  _channel: DesktopUpdateChannel,
 ): string {
   const name = productReleaseAttestationName(version);
-  if (channel === 'nightly') {
-    return `${PRODUCT_NIGHTLY_BASE_URL}/versions/${encodeURIComponent(version)}/${encodeURIComponent(name)}`;
-  }
   const tag = `v${version}`;
   return `https://github.com/${PRODUCT_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
 }

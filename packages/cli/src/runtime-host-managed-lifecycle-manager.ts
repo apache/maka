@@ -78,6 +78,7 @@ export async function manageRuntimeHostManagedLifecycle(
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(input.expectedTarget ? { expectedTarget: input.expectedTarget } : {}),
+    allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
   });
   if (resolved.kind === 'absent') {
     if (input.action === 'uninstall' && input.expectedTarget) {

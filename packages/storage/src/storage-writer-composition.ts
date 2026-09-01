@@ -31,8 +31,8 @@ import { openInteractiveProjectCatalogForWrite } from './project-catalog-authori
 import { assertStorageRootLease, type StorageRootLease } from './root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from './runtime-policy-stores.js';
 import { openInteractiveScheduledTaskStoreForWrite } from './scheduled-task-store.js';
+import { openInteractiveSessionTodoStoreForWrite } from './session-todo-authority.js';
 import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
-import { openInteractiveTaskLedgerStoreForWrite } from './task-ledger-authority.js';
 import { openInteractiveUsageStoresForWrite } from './usage-stores.js';
 
 export interface OpenStorageWriterCompositionOptions {
@@ -55,7 +55,7 @@ export interface StorageWriterComposition {
   readonly goal: Awaited<ReturnType<typeof openInteractiveGoalAuthorityForWrite>>;
   readonly memoryBundle: Awaited<ReturnType<typeof openInteractiveMemoryBundleStoreForWrite>>;
   readonly longTermMemory: Awaited<ReturnType<typeof openInteractiveLongTermMemoryStoreForWrite>>;
-  readonly taskLedger: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>>;
+  readonly sessionTodo: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>>;
   readonly artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>;
   readonly contextOffload?: Awaited<ReturnType<typeof openInteractiveContextOffloadStoreForWrite>>;
   /** Present when the optional context-offload capability could not be opened. */
@@ -152,8 +152,8 @@ async function createComposition(
     () => openInteractiveLongTermMemoryStoreForWrite(lease),
     closeWriter,
   );
-  const taskLedger = await openWriter(
-    () => openInteractiveTaskLedgerStoreForWrite(lease),
+  const sessionTodo = await openWriter(
+    () => openInteractiveSessionTodoStoreForWrite(lease),
     closeWriter,
   );
   const artifacts = await openWriter(
@@ -192,7 +192,7 @@ async function createComposition(
     goal,
     memoryBundle,
     longTermMemory,
-    taskLedger,
+    sessionTodo,
     artifacts,
     ...(contextOffload ? { contextOffload } : {}),
     ...(contextOffloadUnavailable ? { contextOffloadUnavailable } : {}),

@@ -27,7 +27,7 @@ import {
 } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { type LlmConnection } from '@maka/core/llm-connections';
-import { ASSISTANT_PROGRESS_TOOL_NAME, type SessionEvent } from '@maka/core/events';
+import { type SessionEvent } from '@maka/core/events';
 import { type SessionHeader } from '@maka/core/session';
 import type { McpToolBinding } from '@maka/core/mcp';
 import { MockLanguageModelV4, convertArrayToReadableStream } from 'ai/test';
@@ -64,8 +64,8 @@ test('adds exec only for the explicit code_mode provider surface', async () => {
     }),
   );
 
-  assert.deepEqual(directSurface[0], [ASSISTANT_PROGRESS_TOOL_NAME, 'lookup']);
-  assert.deepEqual(codeSurface[0], [ASSISTANT_PROGRESS_TOOL_NAME, 'exec', 'lookup']);
+  assert.deepEqual(directSurface[0], ['lookup']);
+  assert.deepEqual(codeSurface[0], ['exec', 'lookup']);
 });
 
 test('allows a custom exec tool in direct mode', async () => {
@@ -83,7 +83,7 @@ test('allows a custom exec tool in direct mode', async () => {
     }).send({ turnId: 'turn-direct-exec', text: 'inspect', context: [], toolMode: 'direct' }),
   );
 
-  assert.deepEqual(surface[0], [ASSISTANT_PROGRESS_TOOL_NAME, 'exec']);
+  assert.deepEqual(surface[0], ['exec']);
 });
 
 test('rejects an invalid runtime tool mode instead of enabling Code Mode', async () => {

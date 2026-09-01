@@ -18,17 +18,15 @@
  */
 
 import { Markdown, visibleWidth } from '@earendil-works/pi-tui';
-import {
-  ASSISTANT_PROGRESS_TOOL_NAME,
-  type AssistantTextPhase,
-  type ProviderRetryEvent,
-  type ProviderRetryScheduledEvent,
-  type SandboxBoundaryRequestEvent,
-  type UserQuestionRequestEvent,
-  type SessionEvent,
-  type ShellRunSnapshotResult,
-  type ToolOutputStream,
-  type ToolResultContent,
+import type {
+  ProviderRetryEvent,
+  ProviderRetryScheduledEvent,
+  SandboxBoundaryRequestEvent,
+  UserQuestionRequestEvent,
+  SessionEvent,
+  ShellRunSnapshotResult,
+  ToolOutputStream,
+  ToolResultContent,
 } from '@maka/core/events';
 import {
   deriveTurnRecords,
@@ -39,7 +37,12 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -166,7 +169,7 @@ export type MakaPiTranscriptEntry =
   | { kind: 'user'; messageId: string; text: string; transient?: boolean }
   | { kind: 'legacy_automation'; text: string }
   | { kind: 'goal_continuation'; text: string }
-  | { kind: 'assistant'; messageId: string; text: string; phase?: AssistantTextPhase }
+  | { kind: 'assistant'; messageId: string; text: string }
   | { kind: 'thinking'; messageId: string; text: string; expanded: boolean }
   | {
       kind: 'tool';
@@ -790,12 +793,12 @@ export function applyMakaSessionEventToTranscript(
   }
   switch (event.type) {
     case 'text_delta':
-      appendAssistantText(state, event.messageId, event.text, event.phase);
+      appendAssistantText(state, event.messageId, event.text);
       break;
 
     case 'text_complete':
-      if (!setAssistantText(state, event.messageId, event.text, event.phase) && event.text) {
-        appendAssistantText(state, event.messageId, event.text, event.phase);
+      if (!setAssistantText(state, event.messageId, event.text) && event.text) {
+        appendAssistantText(state, event.messageId, event.text);
       }
       break;
 
@@ -816,10 +819,9 @@ export function applyMakaSessionEventToTranscript(
       // renders normally and the tool_result fold below still applies.
       const ref = event.shellRunRef ?? readArgsRef(event.args);
       const suppressed =
-        event.toolName === ASSISTANT_PROGRESS_TOOL_NAME ||
-        ((event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
-          !!ref &&
-          !!findShellRunParent(state, ref, event.toolUseId));
+        (event.toolName === 'Read' || event.toolName === 'StopBackgroundTask') &&
+        !!ref &&
+        !!findShellRunParent(state, ref, event.toolUseId);
       state.entries.push({
         kind: 'tool',
         turnId: event.turnId,
@@ -843,10 +845,6 @@ export function applyMakaSessionEventToTranscript(
 
     case 'tool_result': {
       const tool = findToolEntry(state, event.toolUseId);
-      if (tool && tool.toolName === ASSISTANT_PROGRESS_TOOL_NAME) {
-        state.entries.splice(state.entries.indexOf(tool), 1);
-        break;
-      }
       if (tool?.suppressed && event.contentOmitted && !event.isError) {
         state.entries.splice(state.entries.indexOf(tool), 1);
         break;
@@ -1094,18 +1092,10 @@ function storedMessagesToTranscriptEntries(
             expanded: false,
           });
         }
-        if (message.text.trim()) {
-          entries.push({
-            kind: 'assistant',
-            messageId: message.id,
-            text: message.text,
-            ...(message.phase !== undefined ? { phase: message.phase } : {}),
-          });
-        }
+        entries.push({ kind: 'assistant', messageId: message.id, text: message.text });
         break;
       }
       case 'tool_call':
-        if (message.toolName === ASSISTANT_PROGRESS_TOOL_NAME) break;
         entries.push(
           storedToolToTranscriptEntry(
             message,
@@ -1537,7 +1527,7 @@ function renderTranscriptEntryBlock(entry: MakaPiTranscriptEntry, width: number)
       case 'goal_continuation':
         return renderGoalContinuationBlock(entry.text, contentWidth);
       case 'assistant':
-        return renderAssistantBlock(entry.text, contentWidth, entry.phase);
+        return renderAssistantBlock(entry.text, contentWidth);
       case 'thinking':
         return renderThinkingBlock(entry, contentWidth, entry.expanded);
       case 'tool':
@@ -1574,7 +1564,7 @@ function transcriptEntrySignature(entry: MakaPiTranscriptEntry, width: number): 
     case 'assistant':
       // text_complete authoritatively replaces streamed text, including with a
       // same-length final, so the full value must participate in the cache key.
-      return `assistant|${width}|${entry.phase ?? ''}|${entry.text}`;
+      return `assistant|${width}|${entry.text}`;
     case 'thinking':
       // Not just the length: `thinking_complete` can replace the streamed text
       // in place with a same-length final, which a length-only key would miss and
@@ -1886,29 +1876,41 @@ function formatElapsedDuration(elapsedMs: number): string {
  * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
  * Renders nothing when both queues are empty.
  */
+interface TuiPendingQueueCopy {
+  readonly steeringLabel: string;
+  readonly queuedLabel: string;
+  readonly requeueHint: string;
+}
+
+const TUI_PENDING_QUEUE_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPendingQueueCopy>()(TUI_COPY_RESOURCES['pending-queue']),
+);
+
 export function renderMakaPiPendingQueue(
   state: MakaPiTranscriptState,
   width: number,
   platform: NodeJS.Platform = process.platform,
+  locale: UiLocale = 'en',
 ): string[] {
   if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
+  const copy = TUI_PENDING_QUEUE_COPY[locale];
   const safeWidth = Math.max(1, width);
   const steering = state.steering;
   const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(
-      fitLine(`${ansi.accent('Steering:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+      fitLine(`${ansi.accent(copy.steeringLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
   }
   for (const text of followup) {
-    lines.push(fitLine(`${ansi.dim('Queued:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth));
+    lines.push(
+      fitLine(`${ansi.dim(copy.queuedLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+    );
   }
-  lines.push(
-    fitLine(ansi.dim(renderTuiShortcutCopy('Alt+↑ 取回队列以重新编辑', platform)), safeWidth),
-  );
+  lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.requeueHint, platform)), safeWidth));
   return lines;
 }
 
@@ -1949,37 +1951,20 @@ function formatCost(costUsd: number): string {
   return costUsd.toFixed(2);
 }
 
-function appendAssistantText(
-  state: MakaPiTranscriptState,
-  messageId: string,
-  text: string,
-  phase?: AssistantTextPhase,
-): void {
+function appendAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): void {
   const last = state.entries[state.entries.length - 1];
   if (last?.kind === 'assistant' && last.messageId === messageId) {
     last.text += text;
-    if (phase !== undefined) last.phase = phase;
     return;
   }
-  state.entries.push({
-    kind: 'assistant',
-    messageId,
-    text,
-    ...(phase !== undefined ? { phase } : {}),
-  });
+  state.entries.push({ kind: 'assistant', messageId, text });
 }
 
-function setAssistantText(
-  state: MakaPiTranscriptState,
-  messageId: string,
-  text: string,
-  phase?: AssistantTextPhase,
-): boolean {
+function setAssistantText(state: MakaPiTranscriptState, messageId: string, text: string): boolean {
   for (let index = state.entries.length - 1; index >= 0; index -= 1) {
     const entry = state.entries[index];
     if (entry?.kind === 'assistant' && entry.messageId === messageId) {
       entry.text = text;
-      if (phase !== undefined) entry.phase = phase;
       return true;
     }
   }
@@ -2192,14 +2177,11 @@ function renderGoalContinuationBlock(text: string, width: number): string[] {
 }
 
 /** An assistant turn: bare markdown prose, no speaker label or indent. */
-function renderAssistantBlock(text: string, width: number, phase?: AssistantTextPhase): string[] {
+function renderAssistantBlock(text: string, width: number): string[] {
   if (!text.trim()) return [];
-  const lines = new Markdown(text, 0, 0, markdownTheme, undefined, {
-    preserveOrderedListMarkers: true,
-  })
+  return new Markdown(text, 0, 0, markdownTheme, undefined, { preserveOrderedListMarkers: true })
     .render(width)
     .map((line) => fitLine(line, width));
-  return phase === 'commentary' ? lines.map(ansi.muted) : lines;
 }
 
 function renderNotice(entry: MakaPiNoticeEntry, width: number): string[] {

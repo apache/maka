@@ -170,7 +170,7 @@
 .maka-quote-chip-remove > svg,
 .maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
-.maka-task-ledger-empty {
+.maka-session-todo-empty {
   margin: 0;
 }
 

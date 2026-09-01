@@ -26,12 +26,14 @@ import {
   SegmentedControl,
   SegmentedControlItem,
   Switch,
+  Tooltip,
 } from "@astryxdesign/core";
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostPeerMeshTarget,
 } from '../../preload/bridge-contract.js';
 import type {
+  RuntimeHostPeerConnectionPath,
   RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
@@ -695,6 +697,18 @@ export function RuntimeHostProfilesSection(props: {
                       {entry.readiness === "unavailable" ? (
                         <Badge variant="neutral" label={copy.unavailable} />
                       ) : null}
+                      {entry.peerPath ? (
+                        <Tooltip content={peerPathDetail(entry.peerPath, locale)}>
+                          <span>
+                            <Badge
+                              variant="neutral"
+                              label={entry.peerPath.kind === 'direct'
+                                ? (locale.startsWith('zh') ? '直连' : 'Direct')
+                                : (locale.startsWith('zh') ? '成员转发' : 'Member transit')}
+                            />
+                          </span>
+                        </Tooltip>
+                      ) : null}
                       <Switch
                         label={profile.name}
                         isLabelHidden
@@ -817,6 +831,27 @@ export function RuntimeHostProfilesSection(props: {
       ) : null}
     </>
   );
+}
+
+function peerPathDetail(
+  path: RuntimeHostPeerConnectionPath,
+  locale: string,
+): string {
+  if (path.kind === 'transit') {
+    return locale.startsWith('zh')
+      ? `成员转发 · ${abbreviatePeerId(path.relayPeerId)}`
+      : `Member transit · ${abbreviatePeerId(path.relayPeerId)}`;
+  }
+  const transport = path.transport === 'webrtc'
+    ? 'WebRTC'
+    : path.transport === 'quic'
+      ? 'QUIC'
+      : path.transport === 'tcp'
+        ? 'TCP'
+        : locale.startsWith('zh')
+          ? '其他'
+          : 'Other';
+  return `${locale.startsWith('zh') ? '直连' : 'Direct'} · ${transport}`;
 }
 
 function abbreviatePeerId(peerId: string): string {

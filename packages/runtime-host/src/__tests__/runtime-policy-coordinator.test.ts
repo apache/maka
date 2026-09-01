@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, open, rm, writeFile } from 'node:fs/promises';
@@ -29,6 +30,7 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { REQUEST_BODY_OVERLAY_MAX_BYTES } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { type MakaToolContext } from '@maka/runtime/tool-runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -44,6 +46,7 @@ import { createExecutionRuntimeHostComposition } from '../server/execution-compo
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
 import { HostRuntimePolicyCoordinator } from '../server/runtime-policy-coordinator.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const context: ConnectionContext = {
   hostEpoch: 'runtime-policy-test-epoch',
@@ -877,6 +880,75 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
   });
 });
 
+test('catalog pages carry the model facts a user overrode, not the stored row', async () => {
+  await withCoordinator(async ({ coordinator, root, stores }) => {
+    const created = await stores.connectionCatalog.create({
+      expectedCatalogRevision: 0,
+      connection: {
+        slug: 'facts-backed',
+        name: 'Facts backed',
+        providerType: 'openai',
+        enabled: true,
+        enabledModelIds: ['custom-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections[0];
+    assert.ok(connection);
+    if (!connection) return;
+    const credential = await stores.credentialVault.set({
+      locator: {
+        scope: 'connection',
+        connectionId: connection.connectionId,
+        kind: 'api_key',
+      },
+      expected: null,
+      secret: 'facts-backed-test-key',
+    });
+    assert.equal(credential.kind, 'committed');
+    if (credential.kind !== 'committed') return;
+    const fetch = await stores.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const discovered = await stores.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'provider-model' }],
+      source: 'fetched',
+      fetchedAt: 1,
+    });
+    assert.equal(discovered.kind, 'committed');
+    if (discovered.kind !== 'committed') return;
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { 'openai:custom-model': { contextWindow: 200_000 } },
+      }),
+      'utf8',
+    );
+
+    const result = await coordinator.handlers['connection.catalog.query'](
+      { kind: 'start' },
+      context,
+    );
+
+    assert.equal(result.ok, true);
+    if (!result.ok || result.result.kind !== 'page') return;
+    const decoded = RUNTIME_POLICY_OPERATION_SPECS['connection.catalog.query'].decodeOutput(
+      result.result,
+    );
+    if (decoded.kind !== 'page') return;
+    // The override's effect is what a client needs: the page must show the
+    // hand-set context window, not the one the stored row was written with.
+    const overridden = decoded.items.find(
+      (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
+        item.kind === 'model' && item.model.id === 'custom-model',
+    )?.model;
+    assert.equal(overridden?.contextWindow, 200_000);
+    assert.equal(overridden?.inputLimit, 200_000);
+  });
+});
+
 test('catalog protocol preserves an extra request body after a committed update', async () => {
   await withCoordinator(async ({ coordinator, stores }) => {
     const emptyBodyBytes = Buffer.byteLength(JSON.stringify({ padding: '' }), 'utf8');
@@ -1061,12 +1133,25 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     // item, never in one header table (a header item is atomic to the
     // paginator — a long declaration list would make it unsplittable).
     const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -1080,6 +1165,9 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;
@@ -1131,20 +1219,5 @@ async function settlesWithin<T>(promise: Promise<T>, label: string): Promise<T> 
 }
 
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`${label} did not occur`);
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
+  await pollFor(predicate, { attempts: 100, pollMs: 10, message: `${label} did not occur` });
 }

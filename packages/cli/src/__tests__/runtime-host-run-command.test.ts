@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -237,32 +238,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stderr.join(''), 'maka run: Turn failed\n');
   });
 
-  test('prints only final-answer text when a Turn also emits commentary', async () => {
-    const stdout: string[] = [];
-    const fixture = runFixture({
-      turnEvents: commentaryThenFinalEvents('turn-1'),
-    });
-    const exitCode = await runFixtureCommand(fixture, ['inspect and answer'], (text) =>
-      stdout.push(text),
-    );
-
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'The implementation is ready.\n');
-  });
-
-  test('prefers an explicit final answer over a later unphased compatibility message', async () => {
-    const stdout: string[] = [];
-    const fixture = runFixture({
-      turnEvents: explicitFinalThenLegacyEvents('turn-1'),
-    });
-    const exitCode = await runFixtureCommand(fixture, ['inspect and answer'], (text) =>
-      stdout.push(text),
-    );
-
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'The implementation is ready.\n');
-  });
-
   test('returns exit code 1 when a same-step sibling succeeds after a sandbox failure', async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -463,56 +438,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
   });
 
-  test('ignores durable commentary when selecting a Graph final answer', async () => {
-    const stdout: string[] = [];
-    const finalMessages = graphMessages();
-    finalMessages.splice(finalMessages.length - 1, 0, {
-      type: 'assistant',
-      id: 'assistant-commentary-after-final',
-      turnId: 'turn-2',
-      ts: 4.5,
-      text: 'I am still checking.',
-      phase: 'commentary',
-      modelId: 'gpt-5',
-    });
-    const fixture = runFixture({ graph: true, finalMessages });
-    const exitCode = await runFixtureCommand(fixture, ['delegate once', '--graph'], (text) =>
-      stdout.push(text),
-    );
-
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'Final graph answer\n');
-  });
-
-  test('prefers a durable explicit final answer over later unphased compatibility text', async () => {
-    const stdout: string[] = [];
-    const finalMessages = graphMessages();
-    finalMessages.splice(finalMessages.length - 1, 0, {
-      type: 'assistant',
-      id: 'assistant-explicit-final',
-      turnId: 'turn-2',
-      ts: 4.5,
-      text: 'Explicit graph answer',
-      phase: 'final_answer',
-      modelId: 'gpt-5',
-    });
-    finalMessages.splice(finalMessages.length - 1, 0, {
-      type: 'assistant',
-      id: 'assistant-legacy-after-final',
-      turnId: 'turn-2',
-      ts: 4.6,
-      text: 'Legacy compatibility text',
-      modelId: 'gpt-5',
-    });
-    const fixture = runFixture({ graph: true, finalMessages });
-    const exitCode = await runFixtureCommand(fixture, ['delegate once', '--graph'], (text) =>
-      stdout.push(text),
-    );
-
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'Explicit graph answer\n');
-  });
-
   test('reports a recovered sandbox boundary from live and durable Turns', async () => {
     const live = await observeFixtureOutcome({
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
@@ -709,6 +634,7 @@ describe('Runtime Host maka run adapter', () => {
           providerType: 'openai' as const,
           enabled: true,
           enabledModelIds: ['gpt-5'],
+          catalogEntries: [],
           models: [{ id: 'gpt-5' }, { id: 'gpt-6-preview' }],
         },
       ],
@@ -1216,6 +1142,7 @@ function connectionCatalog() {
         providerType: 'openai' as const,
         enabled: true,
         enabledModelIds: ['gpt-5'],
+        catalogEntries: [],
         models: [{ id: 'gpt-5' }],
       },
     ],
@@ -1314,15 +1241,6 @@ async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
     ],
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function pendingQuestion(turnId: string): InteractionPendingSnapshot {
   return {
     schemaVersion: 1,
@@ -1541,49 +1459,6 @@ async function* eventsFor(turnId: string, text: string, ts = 1): AsyncIterable<S
     text,
   };
   yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: ts + 1, stopReason: 'end_turn' };
-}
-
-async function* commentaryThenFinalEvents(turnId: string): AsyncIterable<SessionEvent> {
-  yield {
-    type: 'text_complete',
-    id: `${turnId}-commentary`,
-    turnId,
-    messageId: `${turnId}-commentary-message`,
-    ts: 1,
-    text: 'I am checking the implementation.',
-    phase: 'commentary',
-  };
-  yield {
-    type: 'text_complete',
-    id: `${turnId}-final`,
-    turnId,
-    messageId: `${turnId}-final-message`,
-    ts: 2,
-    text: 'The implementation is ready.',
-    phase: 'final_answer',
-  };
-  yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: 3, stopReason: 'end_turn' };
-}
-
-async function* explicitFinalThenLegacyEvents(turnId: string): AsyncIterable<SessionEvent> {
-  yield {
-    type: 'text_complete',
-    id: `${turnId}-final`,
-    turnId,
-    messageId: `${turnId}-final-message`,
-    ts: 1,
-    text: 'The implementation is ready.',
-    phase: 'final_answer',
-  };
-  yield {
-    type: 'text_complete',
-    id: `${turnId}-legacy`,
-    turnId,
-    messageId: `${turnId}-legacy-message`,
-    ts: 2,
-    text: 'Legacy compatibility text',
-  };
-  yield { type: 'complete', id: `${turnId}-complete`, turnId, ts: 3, stopReason: 'end_turn' };
 }
 
 async function* eventsAfterTranscriptReplacement(publish: () => void): AsyncIterable<SessionEvent> {

@@ -43,7 +43,6 @@ import type {
   PermissionRequestEvent,
   ShellRunUpdate,
   MessageContent,
-  AssistantTextPhase,
 } from '@maka/core/events';
 import { messageContentsEqual, normalizeMessageContent } from '@maka/core/events';
 import type {
@@ -62,9 +61,7 @@ import type {
 } from '@maka/core/session';
 import type {
   CreateSessionInput,
-  BranchFromTurnInput,
   RegenerateTurnInput,
-  ReviseBeforeTurnInput,
   UserMessageInput,
   SessionListFilter,
 } from '@maka/core/runtime-inputs';
@@ -92,7 +89,6 @@ import {
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
-import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -145,12 +141,6 @@ import {
   type RuntimeReadModelSessionView,
 } from './runtime-read-model.js';
 import { inspectAgentRunReadModel, type AgentRunInspectModel } from './agent-run-inspect.js';
-import {
-  cloneConversationRuntimeLedger as cloneConversationLedger,
-  createConversationCopySlice,
-  prepareConversationRuntimeLedgerCopy,
-  type ConversationRuntimeLedgerCopyPlan,
-} from './conversation-copy.js';
 import { firstRuntimeRepairRunId, RuntimeLedgerRepair } from './runtime-ledger-repair.js';
 import {
   buildRecoveredTerminalRuntimeEvent,
@@ -165,14 +155,12 @@ import type { MakaTool } from './tool-runtime.js';
 import type { TurnShellPlan } from './shell-detect.js';
 import type { RunTraceRecorder } from './run-trace.js';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureLedgerRecord,
-} from './provider-request-telemetry.js';
 import { readLatestContextDiagnostics, type ContextDiagnostics } from './context-diagnostics.js';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { ShellRunProcessManager } from './shell-run-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
+import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
 import type { AgentRunLineage, RuntimeContinuationFailpoint } from './agent-run.js';
 import type { RuntimeCommitResult, RuntimeCommitSink } from './runtime-commit-sink.js';
 import {
@@ -278,7 +266,10 @@ export type CompactSessionInput =
       };
     };
 
-export type PlanSafeBoundaryContinuationInput = Omit<RuntimeContinuationPlannerInput, 'sessionId'>;
+export type PlanSafeBoundaryContinuationInput = Omit<
+  RuntimeContinuationPlannerInput,
+  'sessionId' | 'admissionRoute'
+>;
 
 export interface PlanAuthoritativeSafeBoundaryContinuationInput {
   sourceRunId: string;
@@ -679,14 +670,9 @@ export interface BackendFactoryContext {
   /** Turn-scoped shell plan captured with a bound child tool ceiling. */
   turnShellPlan?: TurnShellPlan;
   recordRunTrace?: RunTraceRecorder;
-  /** Durable AgentRun metadata row written after the private capture artifact. */
-  recordProviderRequestCapture?: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
-  /** Best-effort AgentRun row for one physical provider call. */
-  recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void;
   /**
-   * Durable AgentRun row carrying the canonical accounting record for one
-   * physical provider call. Distinct from the diagnostic row above: this one is
-   * the metering source of truth (#1679).
+   * Durable AgentRun row carrying the canonical record for one physical
+   * provider call, including metering and its prepared-request observation.
    */
   recordModelCallAttempt?: (commit: ModelCallCommit<ModelCallAttempt>) => Promise<void>;
   /** Immutable Run policy snapshot; provider dispatch waits for this durable commit. */
@@ -694,6 +680,17 @@ export interface BackendFactoryContext {
   loadHistoryCompactCheckpoint?: () => Promise<HistoryCompactCheckpoint | undefined>;
   recordHistoryCompactCheckpoint?: (
     checkpoint: HistoryCompactCheckpoint,
+    turnId: string,
+  ) => Promise<void>;
+  /**
+   * Session-scoped read of every committed model-projection transition (#4283).
+   * The reducer folds these onto the RuntimeEvent ledger, so a lossy rewrite
+   * survives the Turn that made it.
+   */
+  loadModelProjectionTransitions?: () => Promise<LoadedModelProjectionTransitions>;
+  /** Durable append for one transition; persistence precedes any model-visible loss. */
+  recordModelProjectionTransition?: (
+    transition: ModelProjectionTransition,
     turnId: string,
   ) => Promise<void>;
   /**
@@ -709,21 +706,43 @@ export interface BackendFactoryContext {
 
 export type BackendFactory = (ctx: BackendFactoryContext) => AgentBackend | Promise<AgentBackend>;
 
-export class BackendRegistry {
-  private readonly factories = new Map<PersistedBackendKind, BackendFactory>();
+export type BackendPreparationContext = Pick<
+  BackendFactoryContext,
+  'sessionId' | 'workspaceRoot' | 'header' | 'abortSignal'
+>;
 
-  register(kind: PersistedBackendKind, factory: BackendFactory): void {
-    this.factories.set(kind, factory);
+export interface PreparedBackendActivation {
+  readonly providerStateIdentity?: `sha256:${string}`;
+  build(ctx: BackendFactoryContext): AgentBackend | Promise<AgentBackend>;
+}
+
+export interface PreparedBackendFactory {
+  prepare(ctx: BackendPreparationContext): Promise<PreparedBackendActivation>;
+}
+
+type BackendRegistration = BackendFactory | PreparedBackendFactory;
+
+export class BackendRegistry {
+  private readonly registrations = new Map<PersistedBackendKind, BackendRegistration>();
+
+  register(kind: PersistedBackendKind, registration: BackendRegistration): void {
+    this.registrations.set(kind, registration);
   }
 
-  async build(kind: PersistedBackendKind, ctx: BackendFactoryContext): Promise<AgentBackend> {
-    const f = this.factories.get(kind);
-    if (!f) throw new Error(`No backend factory registered for kind="${kind}"`);
-    return await f(ctx);
+  async prepare(
+    kind: PersistedBackendKind,
+    ctx: BackendPreparationContext,
+  ): Promise<PreparedBackendActivation> {
+    const registration = this.registrations.get(kind);
+    if (!registration) throw new Error(`No backend factory registered for kind="${kind}"`);
+    if (typeof registration === 'function') {
+      return { build: registration };
+    }
+    return await registration.prepare(ctx);
   }
 
   has(kind: PersistedBackendKind): boolean {
-    return this.factories.has(kind);
+    return this.registrations.has(kind);
   }
 }
 
@@ -1996,6 +2015,39 @@ export class SessionManager {
     sessionId: string,
     input: PlanSafeBoundaryContinuationInput,
   ): Promise<SafeBoundaryContinuationPlan> {
+    let admissionRoute: RuntimeContinuationPlannerInput['admissionRoute'];
+    try {
+      if (!this.deps.runStore) throw new Error('AgentRunStore is not configured');
+      const [header, runHeaders] = await Promise.all([
+        this.deps.store.readHeader(sessionId),
+        this.deps.runStore.listSessionRuns(sessionId),
+      ]);
+      const targetProviderStateIdentity = (
+        await this.deps.backends.prepare(header.backend, {
+          sessionId,
+          workspaceRoot: header.workspaceRoot,
+          header,
+        })
+      ).providerStateIdentity;
+      admissionRoute = {
+        runHeaders,
+        targetProviderStateIdentity,
+        targetModelId: header.model,
+      };
+    } catch {
+      const plan: SafeBoundaryContinuationPlan = {
+        disposition: 'park',
+        rejectionReasons: ['continuation_authority_unavailable'],
+        diagnostics: [
+          {
+            code: 'continuation_authority_unavailable',
+            message: 'provider replay admission authority is unavailable',
+          },
+        ],
+      };
+      this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
+      return plan;
+    }
     const planner = new RuntimeContinuationPlanner({
       readSourceRun: async (targetSessionId, runId) => {
         if (!this.deps.runStore) throw new Error('AgentRunStore is not configured');
@@ -2027,7 +2079,7 @@ export class SessionManager {
       },
       newId: this.deps.newId,
     });
-    const plan = await planner.plan({ sessionId, ...input });
+    const plan = await planner.plan({ sessionId, admissionRoute, ...input });
     this.recordContinuationPlan(sessionId, input.sourceRunId, plan);
     return plan;
   }
@@ -3212,13 +3264,12 @@ export class SessionManager {
       this.finalizeAndListChildTurnArtifacts(child.id, run.turnId, run.status),
     ]);
     const storedSummary =
-      preferredAssistantText(
-        messages.flatMap((message) =>
-          message.type === 'assistant' && message.turnId === run.turnId
-            ? [{ text: message.text, phase: message.phase }]
-            : [],
-        ),
-      ) ?? '';
+      messages
+        .filter(
+          (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
+            message.type === 'assistant' && message.turnId === run.turnId,
+        )
+        .at(-1)?.text ?? '';
     const runtimeText = runtimeEvents.filter(
       (
         event,
@@ -3226,13 +3277,10 @@ export class SessionManager {
         content: Extract<NonNullable<RuntimeEvent['content']>, { kind: 'text' }>;
       } => event.role === 'model' && event.content?.kind === 'text',
     );
-    const durableRuntimeSummary = preferredAssistantText(
-      runtimeText
-        .filter((event) => !event.partial)
-        .map((event) => ({ text: event.content.text, phase: event.content.phase })),
-    );
+    const durableRuntimeSummary = runtimeText.filter((event) => !event.partial).at(-1)
+      ?.content.text;
     const partialRuntimeSummary = runtimeText
-      .filter((event) => event.partial && event.content.phase !== 'commentary')
+      .filter((event) => event.partial)
       .map((event) => event.content.text)
       .join('');
     const completedAt = run.completedAt ?? run.updatedAt;
@@ -3880,13 +3928,6 @@ export class SessionManager {
     };
   }
 
-  async branchFromTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'through');
-    if (!slice) throw new Error(`Cannot branch from unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
   /** Canonical, repaired source view for a Host-owned cross-Session copy. */
   async readConversationCopySnapshot(sessionId: string): Promise<RuntimeReadModelSessionView> {
     const readMessagesSnapshot = this.deps.store.readMessagesSnapshot;
@@ -3903,148 +3944,6 @@ export class SessionManager {
       messages,
       turns: deriveTurnRecords(messages),
     };
-  }
-
-  async branchBeforeTurn(sessionId: string, input: BranchFromTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
-    if (!slice) throw new Error(`Cannot branch before unknown turn ${input.sourceTurnId}`);
-    return this.createBranchSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
-  /**
-   * Create a non-destructive edit-and-resend version. Unlike branchBeforeTurn,
-   * this is not a new sidebar conversation: revision lineage lets hosts fold
-   * every version into one conversation slot while keeping old transcripts.
-   */
-  async reviseBeforeTurn(sessionId: string, input: ReviseBeforeTurnInput): Promise<SessionSummary> {
-    const sourceView = await this.getSessionView(sessionId);
-    const slice = createConversationCopySlice(sourceView.messages, input.sourceTurnId, 'before');
-    if (!slice) throw new Error(`Cannot revise before unknown turn ${input.sourceTurnId}`);
-    return this.createRevisionSession(sessionId, sourceView, [...slice.messages], input);
-  }
-
-  private async createRevisionSession(
-    sessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copied: StoredMessage[],
-    input: ReviseBeforeTurnInput,
-  ): Promise<SessionSummary> {
-    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
-    const [header, boundary] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.store.readExecutionBoundary(sessionId),
-    ]);
-    const revisionRootSessionId = header.revisionRootSessionId ?? sessionId;
-    const family = (await this.deps.store.list()).filter(
-      (candidate) =>
-        candidate.id === revisionRootSessionId ||
-        candidate.revisionRootSessionId === revisionRootSessionId,
-    );
-    const revisionIndex =
-      Math.max(1, ...family.map((candidate) => candidate.revisionIndex ?? 1)) + 1;
-    const next = await this.deps.store.create(
-      {
-        cwd: header.cwd,
-        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        ...(header.llmConnectionId === undefined
-          ? {}
-          : { llmConnectionId: header.llmConnectionId }),
-        llmConnectionSlug: header.llmConnectionSlug,
-        model: header.model,
-        thinkingLevel: header.thinkingLevel,
-        permissionMode: header.permissionMode,
-        collaborationMode: header.collaborationMode,
-        orchestrationMode: header.orchestrationMode ?? 'default',
-        name: header.name,
-        labels: header.labels,
-        // A revision of a real branch remains in that branch's conversation
-        // slot; revision lineage itself must not create a branch banner.
-        parentSessionId: header.parentSessionId,
-        branchOfTurnId: header.branchOfTurnId,
-        revisionRootSessionId,
-        revisionParentSessionId: sessionId,
-        revisionOfTurnId: input.sourceTurnId,
-        revisionIndex,
-        revisionState: 'preparing',
-        status: 'active',
-      },
-      boundary,
-    );
-    try {
-      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
-      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
-      await this.deps.store.appendMessage(next.id, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'session_start',
-        data: {
-          revisionRootSessionId,
-          revisionParentSessionId: sessionId,
-          revisionOfTurnId: input.sourceTurnId,
-          revisionIndex,
-          revisionState: 'preparing',
-        },
-      });
-      await this.deps.store.updateHeader(next.id, {
-        isFlagged: header.isFlagged,
-        titleIsManual: header.titleIsManual,
-      });
-      return headerToSummary(await this.deps.store.readHeader(next.id));
-    } catch (error) {
-      return this.rollbackLegacyConversationCopy(next.id, error);
-    }
-  }
-
-  private async createBranchSession(
-    sessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copied: StoredMessage[],
-    input: BranchFromTurnInput,
-  ): Promise<SessionSummary> {
-    const plan = await this.prepareConversationRuntimeLedgerClone(sessionId, sourceView, copied);
-    const [header, boundary] = await Promise.all([
-      this.deps.store.readHeader(sessionId),
-      this.deps.store.readExecutionBoundary(sessionId),
-    ]);
-    const next = await this.deps.store.create(
-      {
-        cwd: header.cwd,
-        ...(header.projectId !== undefined ? { projectId: header.projectId } : {}),
-        ...(header.llmConnectionId === undefined
-          ? {}
-          : { llmConnectionId: header.llmConnectionId }),
-        llmConnectionSlug: header.llmConnectionSlug,
-        model: header.model,
-        thinkingLevel: header.thinkingLevel,
-        permissionMode: header.permissionMode,
-        collaborationMode: header.collaborationMode,
-        orchestrationMode: header.orchestrationMode ?? 'default',
-        name: input.name ?? `${header.name} · 分支`,
-        labels: input.sideConversation
-          ? [...new Set([...header.labels, SIDE_CONVERSATION_SESSION_LABEL])]
-          : header.labels,
-        parentSessionId: sessionId,
-        branchOfTurnId: input.sourceTurnId,
-        status: 'active',
-      },
-      boundary,
-    );
-    try {
-      const rewritten = await this.cloneConversationRuntimeLedger(next.id, copied, plan);
-      if (rewritten.length > 0) await this.deps.store.appendMessages(next.id, [...rewritten]);
-      await this.deps.store.appendMessage(next.id, {
-        type: 'system_note',
-        id: this.deps.newId(),
-        ts: this.deps.now(),
-        kind: 'session_start',
-        data: { parentSessionId: sessionId, branchOfTurnId: input.sourceTurnId },
-      });
-      return headerToSummary(await this.deps.store.readHeader(next.id));
-    } catch (error) {
-      return this.rollbackLegacyConversationCopy(next.id, error);
-    }
   }
 
   async respondToSandboxBoundary(
@@ -4474,54 +4373,6 @@ export class SessionManager {
       await this.updateHeader(sessionId, { transcriptLedgerVersion: 1 });
     }
     this.preparedTranscriptLedgers.add(sessionId);
-  }
-
-  private async prepareConversationRuntimeLedgerClone(
-    sourceSessionId: string,
-    sourceView: RuntimeReadModelSessionView,
-    copiedMessages: readonly StoredMessage[],
-  ): Promise<ConversationRuntimeLedgerCopyPlan | undefined> {
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) return undefined;
-    return prepareConversationRuntimeLedgerCopy({
-      sourceSessionId,
-      sourceEvents: sourceView.events,
-      copiedMessages,
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-    });
-  }
-
-  private async cloneConversationRuntimeLedger(
-    childSessionId: string,
-    copiedMessages: readonly StoredMessage[],
-    plan: ConversationRuntimeLedgerCopyPlan | undefined,
-  ): Promise<readonly StoredMessage[]> {
-    if (!plan || !this.deps.runStore || !this.deps.runtimeEventStore) return copiedMessages;
-    const copied = await cloneConversationLedger({
-      plan,
-      copiedMessages,
-      referenceMap: {
-        mode: 'preserve_external',
-        sourceSessionId: plan.sourceSessionId,
-        targetSessionId: childSessionId,
-      },
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-      newId: this.deps.newId,
-    });
-    return copied.copiedMessages;
-  }
-
-  private async rollbackLegacyConversationCopy(sessionId: string, error: unknown): Promise<never> {
-    try {
-      await this.deps.store.remove(sessionId);
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        `Conversation copy ${sessionId} failed and could not be removed`,
-      );
-    }
-    throw error;
   }
 
   /**
@@ -5291,24 +5142,11 @@ function trimSummary(text: string): string {
     : `${trimmed.slice(0, CHILD_AGENT_SUMMARY_MAX_CHARS - 1)}…`;
 }
 
-function preferredAssistantText(
-  texts: readonly { readonly text: string; readonly phase?: AssistantTextPhase }[],
-): string | undefined {
-  let explicitFinal: string | undefined;
-  let legacyFallback: string | undefined;
-  for (const text of texts) {
-    if (text.phase === 'final_answer') explicitFinal = text.text;
-    else if (text.phase === undefined) legacyFallback = text.text;
-  }
-  return explicitFinal ?? legacyFallback;
-}
-
 class ChildAgentSummaryAccumulator {
   eventCount = 0;
   failureClass: string | undefined;
   private terminalStatus: SpawnChildSessionResult['status'] | undefined;
-  private lastFinalTextComplete = '';
-  private lastLegacyTextComplete = '';
+  private lastTextComplete = '';
   private textDeltaTail = '';
   private textDeltaTruncated = false;
   private lastError = '';
@@ -5317,19 +5155,10 @@ class ChildAgentSummaryAccumulator {
     this.eventCount += 1;
     switch (event.type) {
       case 'text_complete':
-        if (event.phase === 'commentary') {
-          this.textDeltaTail = '';
-          this.textDeltaTruncated = false;
-          break;
-        }
-        if (event.phase === 'final_answer') {
-          this.lastFinalTextComplete = trimSummary(event.text);
-        } else {
-          this.lastLegacyTextComplete = trimSummary(event.text);
-        }
+        this.lastTextComplete = trimSummary(event.text);
         break;
       case 'text_delta':
-        if (event.phase !== 'commentary') this.appendTextDelta(event.text);
+        this.appendTextDelta(event.text);
         break;
       case 'error':
         this.terminalStatus = 'failed';
@@ -5353,8 +5182,7 @@ class ChildAgentSummaryAccumulator {
   }
 
   text(): string {
-    if (this.lastFinalTextComplete.trim()) return this.lastFinalTextComplete;
-    if (this.lastLegacyTextComplete.trim()) return this.lastLegacyTextComplete;
+    if (this.lastTextComplete.trim()) return this.lastTextComplete;
     if (this.textDeltaTail.trim()) {
       return this.textDeltaTruncated
         ? `…${this.textDeltaTail.slice(1)}`

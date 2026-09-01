@@ -1054,6 +1054,52 @@ describe('renderer architecture checker fixtures', () => {
     );
   });
 
+  it('rejects a feature controller Hook returning to AppShell after provider migration', async () => {
+    const providerOwnedAppShell = `
+      import { GoalProvider } from './features/goals/index.js';
+      export const AppShell = GoalProvider;
+    `;
+    await withDesktopFixture(
+      {
+        [TRANSITIVE_APP_SHELL_PATH]: providerOwnedAppShell,
+        'src/renderer/features/goals/index.ts': `
+          export const GoalProvider = true;
+          export function useGoalController() { return true; }
+        `,
+      },
+      async (desktopRoot) => {
+        const seedConfig = transitiveAppShellSeedConfig();
+        const providerOwnedConfig = generateArchitectureConfig(desktopRoot, seedConfig);
+
+        await writeFile(
+          join(desktopRoot, TRANSITIVE_APP_SHELL_PATH),
+          `
+            import { GoalProvider, useGoalController } from './features/goals/index.js';
+            export const AppShell = [GoalProvider, useGoalController()];
+          `,
+          'utf8',
+        );
+        const regressedConfig = generateArchitectureConfig(
+          desktopRoot,
+          providerOwnedConfig,
+        );
+        const violations = violationsFor(
+          desktopRoot,
+          regressedConfig,
+          providerOwnedConfig,
+        );
+
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/app-shell\.ts: hookCalls debt increased from 0 to 1$/u,
+        );
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/app-shell\.ts: new or increased hookCalls debt useGoalController$/u,
+        );
+      },
+    );
+  });
   it('rejects bridge and environment capability growth inside a transitive legacy AppShell helper', async () => {
     await withDesktopFixture(
       transitiveAppShellFiles(`

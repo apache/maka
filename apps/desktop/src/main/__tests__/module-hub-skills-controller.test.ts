@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { act, createElement } from "react";
@@ -30,17 +31,6 @@ import {
   type SkillsController,
   type UseSkillsControllerInput,
 } from "../../renderer/features/module-hub/testing.js";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
-}
-
 function skill(id: string): SkillEntry {
   return {
     id,

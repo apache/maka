@@ -20,7 +20,10 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
-import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import {
   connectOrSpawnRuntimeHost,
@@ -90,6 +93,12 @@ export interface RuntimeHostCliConnectionContext {
   close(): Promise<void>;
 }
 
+export interface RuntimeHostCliConnectionContextWithIdentity
+  extends RuntimeHostCliConnectionContext {
+  readonly clientInstanceId: string;
+  readonly profileIncarnationId?: string;
+}
+
 export interface RuntimeHostCliTarget {
   readonly connection: ConnectionCatalogEntry;
   readonly model: string;
@@ -114,7 +123,7 @@ export async function connectRuntimeHostCli(
     readonly interactiveSsh?: boolean;
   },
   overrides: Partial<RuntimeHostCliContextDeps> = {},
-): Promise<RuntimeHostCliConnectionContext> {
+): Promise<RuntimeHostCliConnectionContextWithIdentity> {
   const deps: RuntimeHostCliContextDeps = {
     connectOrSpawn: connectOrSpawnRuntimeHost,
     connectProfile: connectRuntimeHostProfile,
@@ -201,6 +210,10 @@ export async function connectRuntimeHostCli(
       connection: liveConnection,
       catalog: await deps.readConnectionCatalog(liveConnection),
       profile,
+      clientInstanceId,
+      ...(resolvedProfile.profileIncarnationId
+        ? { profileIncarnationId: resolvedProfile.profileIncarnationId }
+        : {}),
       close: async () => {
         try {
           await liveConnection.close();

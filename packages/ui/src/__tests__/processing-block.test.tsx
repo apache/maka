@@ -107,7 +107,6 @@ function workTimeline(
       kind: 'text',
       text: '准备检查 package.json 的 name 字段。',
       messageId: 'commentary-1',
-      phase: 'commentary',
     },
     {
       kind: 'thinking',
@@ -120,7 +119,6 @@ function workTimeline(
           kind: 'text' as const,
           text: 'package name 是 maka。',
           messageId: 'final-1',
-          phase: 'final_answer' as const,
           live: finalAnswerLive,
         }]
       : []),
@@ -143,20 +141,26 @@ test('folds completed reasoning and tool activity into one collapsed work log', 
 
   assert.match(markup, /准备检查 package\.json 的 name 字段/);
   assert.match(markup, /data-processing="block"/);
-  assert.match(markup, /class="maka-work-log-header" aria-expanded="false"/);
-  assert.match(markup, /class="maka-work-log-content" hidden=""/);
-  assert.match(markup, /aria-expanded="false"/);
   assert.match(markup, /用时 4 分钟 33 秒/);
   assert.match(markup, /读取 1 个文件/);
-  assert.match(markup, /class="maka-processing-sequence" hidden=""/);
   assert.match(markup, /package name 是 maka/);
 
   const { document } = parseHTML(markup);
+  const workLogHeader = document.querySelector(
+    '.maka-work-log > .astryx-collapsible-trigger',
+  );
+  const processingHeader = document.querySelector(
+    '.maka-processing-block > .astryx-collapsible-trigger',
+  );
   const workLogContent = document.querySelector('.maka-work-log-content');
   const finalAnswer = [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
     .find((element) => element.textContent.includes('package name 是 maka'));
+  assert.ok(workLogHeader);
+  assert.ok(processingHeader);
   assert.ok(workLogContent);
   assert.ok(finalAnswer);
+  assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
+  assert.equal(processingHeader.getAttribute('aria-expanded'), 'false');
   assert.equal(workLogContent.textContent.includes('package name 是 maka'), false);
   assert.equal(workLogContent.contains(finalAnswer), false);
 });
@@ -165,32 +169,46 @@ test('keeps live work expanded, then collapses it once when the final answer app
   const { container, root } = domRoot();
 
   await renderTurn(root, fixtureTurn(workTimeline(false)), true);
-  const processingHeader = container.querySelector('.maka-processing-header');
+  const processingHeader = container.querySelector(
+    '.maka-processing-block > .astryx-collapsible-trigger',
+  );
   assert.ok(processingHeader);
-  assert.equal(container.querySelector('.maka-work-log-header'), null);
+  assert.equal(
+    container.querySelector('.maka-work-log > .astryx-collapsible-trigger'),
+    null,
+  );
   assert.equal(processingHeader.getAttribute('aria-expanded'), 'true');
-  assert.equal(container.querySelector('.maka-processing-sequence')?.hasAttribute('hidden'), false);
 
-  await renderTurn(root, fixtureTurn(workTimeline(true)), true);
-  const workLogHeader = container.querySelector('.maka-work-log-header');
+  await renderTurn(root, {
+    ...fixtureTurn(workTimeline(true, false)),
+    status: 'completed',
+  }, false);
+  const workLogHeader = container.querySelector(
+    '.maka-work-log > .astryx-collapsible-trigger',
+  );
+  const settledProcessingHeader = container.querySelector(
+    '.maka-processing-block > .astryx-collapsible-trigger',
+  );
   assert.ok(workLogHeader);
+  assert.ok(settledProcessingHeader);
   assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
-  assert.equal(container.querySelector('.maka-work-log-content')?.hasAttribute('hidden'), true);
-  assert.equal(processingHeader.getAttribute('aria-expanded'), 'false');
+  assert.equal(settledProcessingHeader.getAttribute('aria-expanded'), 'false');
 
   await act(() => workLogHeader.dispatchEvent(new window.Event('click', { bubbles: true })));
   assert.equal(workLogHeader.getAttribute('aria-expanded'), 'true');
 
-  await renderTurn(root, fixtureTurn([
-    ...workTimeline(false),
-    {
-      kind: 'text',
-      text: 'package name 是 maka，验证完成。',
-      messageId: 'final-1',
-      phase: 'final_answer',
-      live: true,
-    },
-  ]), true);
+  await renderTurn(root, {
+    ...fixtureTurn([
+      ...workTimeline(false),
+      {
+        kind: 'text',
+        text: 'package name 是 maka，验证完成。',
+        messageId: 'final-1',
+        live: false,
+      },
+    ]),
+    status: 'completed',
+  }, false);
   assert.equal(
     workLogHeader.getAttribute('aria-expanded'),
     'true',
@@ -212,7 +230,6 @@ test('keeps a steered segment expanded while its tool is still running', async (
       kind: 'text',
       text: '正在读取项目文件。',
       messageId: 'commentary-running',
-      phase: 'commentary',
     },
     { kind: 'tools', items: [runningRead] },
     {
@@ -224,9 +241,14 @@ test('keeps a steered segment expanded while its tool is still running', async (
 
   await renderTurn(root, turn, true);
 
-  assert.equal(container.querySelector('.maka-work-log-header'), null);
   assert.equal(
-    container.querySelector('.maka-processing-header')?.getAttribute('aria-expanded'),
+    container.querySelector('.maka-work-log > .astryx-collapsible-trigger'),
+    null,
+  );
+  assert.equal(
+    container
+      .querySelector('.maka-processing-block > .astryx-collapsible-trigger')
+      ?.getAttribute('aria-expanded'),
     'true',
   );
   assert.equal(container.textContent.includes('正在读取项目文件。'), true);
@@ -239,13 +261,11 @@ test('shows the turn duration only on the final assistant segment', () => {
         kind: 'text' as const,
         text: '先检查第一部分。',
         messageId: 'commentary-1',
-        phase: 'commentary' as const,
       },
       {
         kind: 'text' as const,
         text: '第一部分完成。',
         messageId: 'final-1',
-        phase: 'final_answer' as const,
       },
       {
         kind: 'user' as const,
@@ -256,13 +276,11 @@ test('shows the turn duration only on the final assistant segment', () => {
         kind: 'text' as const,
         text: '正在检查第二部分。',
         messageId: 'commentary-2',
-        phase: 'commentary' as const,
       },
       {
         kind: 'text' as const,
         text: '第二部分完成。',
         messageId: 'final-2',
-        phase: 'final_answer' as const,
       },
     ]),
     status: 'completed' as const,
@@ -287,7 +305,6 @@ test('does not create a work log for a direct final answer', () => {
         kind: 'text' as const,
         text: '直接答案。',
         messageId: 'final-1',
-        phase: 'final_answer' as const,
       },
     ]),
     status: 'completed' as const,
@@ -304,14 +321,13 @@ test('does not create a work log for a direct final answer', () => {
   assert.match(markup, /直接答案/);
 });
 
-test('keeps an unphased legacy final answer outside phased imported work', () => {
+test('keeps the last completed text outside earlier imported progress', () => {
   const turn = {
     ...fixtureTurn([
       {
         kind: 'text' as const,
         text: '正在检查导入的旧会话。',
         messageId: 'commentary-1',
-        phase: 'commentary' as const,
       },
       {
         kind: 'text' as const,
@@ -339,7 +355,7 @@ test('keeps an unphased legacy final answer outside phased imported work', () =>
   assert.equal(workLogContent.contains(finalAnswer), false);
 });
 
-test('keeps legacy text inside work when later processing proves it was not terminal', () => {
+test('uses the last text as the final reply when a completed turn ends after tool activity', () => {
   const turn = {
     ...fixtureTurn([
       {
@@ -371,64 +387,48 @@ test('keeps legacy text inside work when later processing proves it was not term
   );
   const { document } = parseHTML(markup);
   const workLogContent = document.querySelector('.maka-work-log-content');
+  const finalAnswer = [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
+    .find((element) => element.textContent.includes('先检查一下。'));
   assert.ok(workLogContent);
-  assert.equal(workLogContent.textContent.includes('先检查一下。'), true);
-  assert.equal(
-    [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
-      .some((element) => !workLogContent.contains(element)),
-    false,
-  );
+  assert.ok(finalAnswer);
+  assert.equal(workLogContent.textContent.includes('先检查一下。'), false);
+  assert.equal(workLogContent.contains(finalAnswer), false);
+  assert.equal(workLogContent.textContent.includes('读取 1 个文件'), true);
 });
 
-test('does not render unphased compatibility text after an explicit final answer', () => {
-  const turn = {
-    ...fixtureTurn([
-      {
-        kind: 'text' as const,
-        text: '明确最终答案。',
-        messageId: 'final-1',
-        phase: 'final_answer' as const,
-      },
-      {
-        kind: 'text' as const,
-        text: '旧版兼容副本。',
-        messageId: 'legacy-copy',
-      },
-    ]),
-    status: 'completed' as const,
-  };
-
-  const markup = renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      locale: 'zh',
-      children: createElement(TurnView, { turn }),
-    }),
-  );
-
-  assert.match(markup, /明确最终答案/);
-  assert.doesNotMatch(markup, /旧版兼容副本/);
-});
-
-test('collapses commentary-only failed work while leaving the failure outcome outside', () => {
-  const turn = {
-    ...fixtureTurn(workTimeline(false)),
-    status: 'failed' as const,
-  };
-  const markup = renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      locale: 'zh',
-      children: createElement(TurnView, {
-        turn,
-        failedReasonLabel: '模型请求失败',
+for (const status of ['failed', 'aborted'] as const) {
+  test(`collapses all retained work for a ${status} turn with no final answer`, () => {
+    const turn = {
+      ...fixtureTurn(workTimeline(false)),
+      status,
+    };
+    const markup = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        locale: 'zh',
+        children: createElement(TurnView, {
+          turn,
+          failedReasonLabel: status === 'failed' ? '模型请求失败' : undefined,
+        }),
       }),
-    }),
-  );
+    );
 
-  const { document } = parseHTML(markup);
-  const workLogContent = document.querySelector('.maka-work-log-content');
-  assert.ok(workLogContent);
-  assert.equal(workLogContent.hasAttribute('hidden'), true);
-  assert.equal(workLogContent.textContent.includes('准备检查 package.json'), true);
-  assert.equal(workLogContent.textContent.includes('模型请求失败'), false);
-  assert.match(markup, /模型请求失败/);
-});
+    const { document } = parseHTML(markup);
+    const workLogHeader = document.querySelector(
+      '.maka-work-log > .astryx-collapsible-trigger',
+    );
+    const workLogContent = document.querySelector('.maka-work-log-content');
+    assert.ok(workLogHeader);
+    assert.ok(workLogContent);
+    assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
+    assert.equal(workLogContent.textContent.includes('准备检查 package.json'), true);
+    assert.equal(
+      [...document.querySelectorAll('.maka-chat-message-bubble-assistant')]
+        .some((element) => !workLogContent.contains(element)),
+      false,
+    );
+    if (status === 'failed') {
+      assert.equal(workLogContent.textContent.includes('模型请求失败'), false);
+      assert.match(markup, /模型请求失败/);
+    }
+  });
+}

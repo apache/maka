@@ -58,18 +58,22 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './model-call-ledger',
   './operational-state-store',
   './plan-authority',
+  // Production snapshot composition exports one filtered runtime SQLite database.
+  './production-session-snapshot',
   './project-catalog',
   './project-catalog-authority',
+  // Snapshot staging cleanup persists a lease through Session-copy cleanup.
+  './quiescent-session-snapshot',
   './runtime-event-persistence',
   './scheduled-task-store',
   './session-bundle-policy',
   './session-copy-cleanup',
   './session-store',
+  './session-todo-authority',
   './shell-run-authority',
   './shell-run-store',
   './sqlite-session-metadata-store',
   './storage-writer-composition',
-  './task-ledger-authority',
   './usage-stores',
   './work-board-store',
 ];

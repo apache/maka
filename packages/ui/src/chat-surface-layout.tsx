@@ -28,7 +28,7 @@ import { cn } from './utils.js';
 
 /**
  * Stock ChatLayoutProps, minus `autoScroll`. That prop is the patch-package
- * seam (`patches/@astryxdesign+core+0.5.0.patch`) forwarding Astryx's own
+ * seam (`patches/@astryxdesign+core+0.5.2.patch`) forwarding Astryx's own
  * published `enabled` option to `useChatStreamScroll`, and `scrollOwner`
  * decides it — a caller-supplied value would be silently overwritten.
  */

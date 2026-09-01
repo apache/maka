@@ -86,7 +86,7 @@ export * from './scheduled-task-change.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './session-turns.js';
-export * from './task-ledger.js';
+export * from './session-todo.js';
 export * from './workspace.js';
 export * from './workhub-coordination.js';
 export * from './websocket-path.js';
@@ -95,9 +95,35 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 79 as const;
-// 79: live assistant text streams carry the optional commentary/final-answer phase.
-// Older Clients reject the widened closed event and transcript shapes.
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 87 as const;
+// 87: The connection catalog projects each model as the Host resolved it —
+// a `catalog_entry` item per model, counted by the connection header. Clients
+// render those entries instead of merging the stored row against their own
+// bundled model metadata, so a Desktop and a TUI attached to one Host cannot
+// describe the same model differently. An older client ignores the new items
+// but would still resolve locally; an older Host sends none, leaving a newer
+// client with an empty catalog. Both are rejected at the handshake.
+// 86: Client Capability accepted frames carry typed admission evidence used to
+// enforce Session Grant scopes. Older peers cannot preserve that boundary.
+// 85: Plugin package and Entry composition operations become Host-owned protocol
+// surfaces. Older peers cannot safely exchange these strict operation shapes.
+// 84: Message content carries Host-bound directory references. Older peers
+// reject this field and cannot preserve its identity through admission/replay.
+// 83: WorkHub Coordination actions add linked replacement proposals,
+// destructive user confirmation, and replacement results. Older peers reject
+// these closed action and result shapes.
+// 82: Session removal reports how many linked subtasks it archived, and adds a
+// `session.remove.preview` query for that count before the delete. Older peers
+// reject the extra removed-result field and the unknown operation.
+// 81: SessionTodo replaces the Task Ledger protocol and continuity domain with
+// one bounded current-state snapshot. Older peers cannot decode the operation
+// or preserve the new invalidation vocabulary.
+// 80: Runtime Policy catalog models gained validated user-overridden fact
+// provenance. Older peers reject this projected model shape, so they must be
+// refused during the handshake before catalog admission.
+// 79: Every `turn.message.submit` disposition carries the exact Skill
+// invocation outcome. Durable queued replays may omit the previous Host
+// Epoch's transient queue revision; older strict peers reject either shape.
 // 78: OAuth login targets explicit create/existing Connection entities and
 // returns their canonical identity. Older peers reject both closed wire shapes.
 // 77: LLM and tool usage-log projections carry an optional `sessionTitle` (the

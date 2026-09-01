@@ -19,7 +19,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { ASSISTANT_PROGRESS_TOOL_NAME, encodeToolStepProgress } from '@maka/core/events';
+import { encodeToolStepProgress } from '@maka/core/events';
 import {
   applyLiveTurnEvent,
   armLiveTurn,
@@ -79,44 +79,6 @@ describe('provider retry copy', () => {
 });
 
 describe('applyLiveTurnEvent', () => {
-  it('hides the progress transport while preserving projected commentary', () => {
-    let projection = applyLiveTurnEvent(undefined, {
-      type: 'text_delta',
-      id: 'commentary-delta',
-      turnId: 'turn-1',
-      messageId: 'step-1',
-      ts: 1,
-      text: 'I am checking the recent repository activity.',
-      phase: 'commentary',
-    });
-    projection = applyLiveTurnEvent(projection, {
-      type: 'tool_start',
-      id: 'progress-start',
-      turnId: 'turn-1',
-      stepId: 'step-1',
-      toolUseId: 'progress-1',
-      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
-      args: { text: 'I am checking the recent repository activity.' },
-      ts: 2,
-    });
-    projection = applyLiveTurnEvent(projection, {
-      type: 'tool_result',
-      id: 'progress-result',
-      turnId: 'turn-1',
-      toolUseId: 'progress-1',
-      isError: false,
-      content: { kind: 'json', value: { status: 'displayed' } },
-      ts: 3,
-    });
-
-    assert.equal(projection?.steps[0]?.text?.phase, 'commentary');
-    assert.equal(
-      projection?.steps[0]?.text?.text,
-      'I am checking the recent repository activity.',
-    );
-    assert.deepEqual(projection?.steps[0]?.tools, []);
-  });
-
   it('keeps every streamed prefix oracle-equivalent and drops raw state on terminal events', () => {
     const input = 'api_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY tail';
     let projection: LiveTurnProjection | undefined;
@@ -536,30 +498,6 @@ describe('applyLiveTurnEvent', () => {
         item.kind === 'user' ? `user:${item.message.text}` : item.kind),
       ['user:before tool', 'text', 'tools', 'user:after tool'],
     );
-  });
-
-  it('preserves commentary phase in the live timeline', () => {
-    const streaming = applyLiveTurnEvent(undefined, {
-      type: 'text_delta',
-      id: 'commentary-delta',
-      messageId: 'step-1',
-      turnId: 'turn-1',
-      ts: 100,
-      text: 'Checking',
-      phase: 'commentary',
-    });
-    const completed = applyLiveTurnEvent(streaming, {
-      type: 'text_complete',
-      id: 'commentary-complete',
-      messageId: 'step-1',
-      turnId: 'turn-1',
-      ts: 101,
-      text: 'Checking the repository',
-      phase: 'commentary',
-    });
-
-    const item = overlayLiveTurn([], completed)[0]?.timeline[0];
-    assert.equal(item?.kind === 'text' ? item.phase : undefined, 'commentary');
   });
 
 

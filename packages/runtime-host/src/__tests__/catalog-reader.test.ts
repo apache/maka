@@ -124,6 +124,7 @@ test('reassembles per-item relay profiles into the connection profile table', as
     {
       enabledModelIds: ['declared', 'plain'],
       models: [],
+      catalogEntries: [],
       // Only the profiled model lands in the reassembled table — the item
       // shape is wire-only and never surfaces per item downstream.
       relayModelProfiles: { declared: profile },
@@ -300,6 +301,7 @@ function connectionHeader(enabledModelIdCount: number) {
     connectionIndex: 0,
     enabledModelIdCount,
     modelCount: 0,
+    catalogEntryCount: 0,
   } as const;
 }
 

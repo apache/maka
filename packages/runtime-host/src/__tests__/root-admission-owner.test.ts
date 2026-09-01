@@ -98,6 +98,55 @@ test('recovery installs the validated tip and the successor extends it', async (
   });
 });
 
+test('recovers the original submitted placement for a promoted source after SQLite reopen', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-root-admission-placement-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    let admitted: RootTurnAdmission;
+    try {
+      const owner = new RootAdmissionOwner(store);
+      await owner.recoverSession('session');
+      const content = { text: 'promoted follow-up' };
+      admitted = (
+        await owner.admitRootTurn({
+          sessionId: 'session',
+          turnId: 'turn-promoted',
+          proposedRunId: 'run-promoted',
+          proposedUserMessageId: 'message-promoted',
+          execution: { kind: 'external_message' },
+          normalizedInput: content,
+          sourceMessages: [
+            {
+              messageId: 'message-promoted',
+              content,
+              submittedPlacement: 'next_turn',
+              placement: 'current_turn',
+              disposition: 'steering',
+            },
+          ],
+          admittedAt: 10,
+        })
+      ).admission;
+    } finally {
+      store.close?.();
+    }
+
+    const reopenedStore = createSqliteAgentRunStore(root);
+    try {
+      const reopenedOwner = new RootAdmissionOwner(reopenedStore);
+      const [recovered] = await reopenedOwner.recoverSession('session');
+      assert.ok(recovered);
+      assert.equal(recovered.sourceMessages[0]?.submittedPlacement, 'next_turn');
+      assert.equal(recovered.sourceMessages[0]?.placement, 'current_turn');
+      assert.doesNotThrow(() => reopenedOwner.assertKnownAdmission(admitted));
+    } finally {
+      reopenedStore.close?.();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('fails closed when a known durable admission identity drifts', async () => {
   await withStore(async (store) => {
     const first = await store.admitRootTurn({
@@ -149,6 +198,15 @@ test('fails closed when a known durable admission identity drifts', async () => 
     );
     const [firstSource] = first.admission.sourceMessages;
     assert.ok(firstSource);
+    assert.doesNotThrow(() =>
+      owner.assertKnownAdmission({
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: firstSource.placement },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      }),
+    );
     const sourceDrifts: RootTurnAdmission[] = [
       {
         ...first.admission,
@@ -179,6 +237,37 @@ test('fails closed when a known durable admission identity drifts', async () => 
         ...first.admission,
         sourceMessages: [
           { ...firstSource, disposition: 'followup' },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          { ...firstSource, submittedPlacement: 'next_turn' },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            submittedIntent: { skillIds: ['writer'] },
+          },
+          ...first.admission.sourceMessages.slice(1),
+        ],
+      },
+      {
+        ...first.admission,
+        sourceMessages: [
+          {
+            ...firstSource,
+            skillInvocation: {
+              loaded: [{ id: 'writer', name: 'Writer' }],
+              failed: [],
+              receipts: [],
+            },
+          },
           ...first.admission.sourceMessages.slice(1),
         ],
       },

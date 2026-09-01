@@ -31,7 +31,6 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { SessionToolProfile } from '@maka/core/session';
-import { type TaskLedgerStore } from '@maka/core/task-ledger';
 import { assembleMainSessionSystemPrompt } from '@maka/runtime/system-prompt/main-session-prompt';
 import { buildAskUserQuestionTool } from '@maka/runtime/ask-user-question-tool';
 import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
@@ -52,7 +51,7 @@ import {
   type SkillCatalogBudgetOptions,
   type SkillInventoryResolver,
 } from '@maka/runtime/skills';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { buildSessionTodoTools, type SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { buildWorkspaceInstructionsPromptFragment } from '@maka/runtime/system-prompt/workspace-instructions';
 import { isDeepResearchToolAllowed } from '@maka/runtime/deep-research-tools';
 import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
@@ -94,7 +93,7 @@ export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
   readonly skills: HostSkillCatalogCoordinator;
   readonly memory: HostMemoryCoordinator;
-  readonly taskLedger: TaskLedgerStore;
+  readonly sessionTodo: SessionTodoToolStore;
   readonly childInstruction?: string;
   readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
@@ -136,7 +135,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const defaultTools = input.boundTools
     ? input.boundTools
     : buildDefaultHostTools(
-        input.taskLedger,
+        input.sessionTodo,
         inventoryFor,
         builtinTools,
         input.hostTools,
@@ -287,7 +286,6 @@ export interface InteractiveRunToolSurfaceInput {
   readonly boundTools?: readonly MakaTool[];
   readonly childTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
-  readonly taskLedger: TaskLedgerStore;
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly tavilyReady: boolean;
 }
@@ -321,7 +319,6 @@ export function routeInteractiveRunToolSurface(input: InteractiveRunToolSurfaceI
     ...(childTools
       ? {
           parentAgentTools: buildParentAgentTools({
-            taskLedger: input.taskLedger,
             definitions: listRunnableBuiltinAgentDefinitions({
               tools: childTools,
               worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
@@ -377,7 +374,6 @@ export function createInteractiveRunComposerFactory(
         ...(backendContext.tools ? { boundTools: backendContext.tools } : {}),
         ...(input.childTools ? { childTools: input.childTools } : {}),
         ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
-        taskLedger: input.taskLedger,
         worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
         tavilyReady,
       });
@@ -386,7 +382,7 @@ export function createInteractiveRunComposerFactory(
         runtimePolicy,
         skills: input.skills,
         memory: input.memory,
-        taskLedger: input.taskLedger,
+        sessionTodo: input.sessionTodo,
         ...(backendContext.systemPrompt ? { childInstruction: backendContext.systemPrompt } : {}),
         ...(isSideConversationSession(backendContext.header.labels)
           ? { sideConversation: true }
@@ -447,7 +443,7 @@ function assertUniqueToolNames(tools: readonly MakaTool[]): void {
 }
 
 function buildDefaultHostTools(
-  taskLedger: TaskLedgerStore,
+  sessionTodo: SessionTodoToolStore,
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
   hostTools: readonly MakaTool[] = [],
@@ -460,7 +456,7 @@ function buildDefaultHostTools(
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const sandboxBoundary = buildRequestSandboxBoundaryTool();
-  const taskTools = buildTaskLedgerTools({ store: taskLedger });
+  const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
     ? [...plan.state.executions].reverse().find((execution) => execution.status === 'interrupted')
@@ -482,7 +478,7 @@ function buildDefaultHostTools(
     sandboxBoundary.name,
     'Skill',
     'SkillSearch',
-    ...taskTools.map((tool) => tool.name),
+    ...todoTools.map((tool) => tool.name),
     ...(scheduledTaskTool ? [scheduledTaskTool.name] : []),
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
@@ -498,7 +494,7 @@ function buildDefaultHostTools(
     sandboxBoundary,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
-    ...taskTools,
+    ...todoTools,
     ...(scheduledTaskTool ? [scheduledTaskTool] : []),
     ...goalTools,
     ...parentAgentTools,

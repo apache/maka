@@ -42,8 +42,8 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import {
-  TaskLedgerPanel,
-  deriveTaskLedgerPanelModel,
+  SessionTodoPanel,
+  sessionTodoActiveCount,
   IconButton,
   Composer,
   useUiLocale,
@@ -86,7 +86,7 @@ import {
   sessionWorkbarTabsToRight,
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
-import { useSessionTasks } from '../tools/tasks/use-session-tasks';
+import { useSessionTodo } from '../tools/tasks/use-session-todo';
 import { WorkbarToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
@@ -718,9 +718,13 @@ export function WorkbarSurface(props: {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const sessionTasks = useSessionTasks(props.sessionId);
-  const taskCount = deriveTaskLedgerPanelModel(sessionTasks.tasks).activeCount;
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workbar;
+  const sessionTodo = useSessionTodo(props.sessionId, {
+    locale,
+    loadFailed: copy.todoLoadFailed,
+  });
+  const taskCount = sessionTodoActiveCount(sessionTodo.items);
   const [artifactCount, setArtifactCount] = useState(0);
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
@@ -821,11 +825,11 @@ export function WorkbarSurface(props: {
           );
         } else if (tab.kind === 'tasks') {
           content = (
-            <TaskLedgerPanel
-              tasks={sessionTasks.tasks}
-              loading={sessionTasks.loading}
-              error={sessionTasks.error}
-              onRetry={sessionTasks.retry}
+            <SessionTodoPanel
+              items={sessionTodo.items}
+              loading={sessionTodo.loading}
+              error={sessionTodo.error}
+              onRetry={sessionTodo.retry}
             />
           );
         } else if (tab.kind === 'work-board') {

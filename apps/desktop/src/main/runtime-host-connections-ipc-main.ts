@@ -26,18 +26,19 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogSnapshot,
-  CredentialLocator,
-} from '@maka/core/runtime-policy';
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
@@ -51,7 +52,10 @@ import {
   normalizeConnectionSlugForIpc,
   normalizeCreateConnectionInputForIpc,
 } from './connections-ipc-validation.js';
-import type { DesktopConnectionSnapshot } from '../shared/desktop-connection-snapshot.js';
+import type {
+  DesktopConnectionIdentity,
+  DesktopConnectionSnapshot,
+} from '../shared/desktop-connection-snapshot.js';
 
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
@@ -89,9 +93,9 @@ export function registerRuntimeHostConnectionsIpc(
       chatModelChoices: buildChatModelChoices(connections),
     } satisfies DesktopConnectionSnapshot;
   });
-  handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, slug: unknown) => {
+  handleReconnectableRead(deps.ipcMain, 'connections:hasSecret', async (_event, identity: unknown) => {
     const catalog = await snapshot();
-    const connection = requireConnection(catalog, slug);
+    const connection = requireConnectionIdentity(catalog, identity);
     if (!providerAuthRequiresSecret(connection.providerType)) return true;
     return (
       (await deps.client.queryCredential(connectionCredential(connection)))
@@ -101,8 +105,8 @@ export function registerRuntimeHostConnectionsIpc(
   handleReconnectableRead(
     deps.ipcMain,
     'connections:getRequestHeaders',
-    async (_event, slug: unknown) => {
-      const connection = requireConnection(await snapshot(), slug);
+    async (_event, identity: unknown) => {
+      const connection = requireConnectionIdentity(await snapshot(), identity);
       const result = await deps.client.getConnectionRequestHeaders(connection.connectionId);
       if (result.kind !== 'found') throw new Error('Connection no longer exists');
       return { names: result.names } satisfies SavedRequestHeaders;
@@ -110,8 +114,8 @@ export function registerRuntimeHostConnectionsIpc(
   );
   deps.ipcMain.handle(
     'connections:setRequestHeaders',
-    async (_event, slug: unknown, rawUpdates: unknown) => {
-      const connection = requireConnection(await snapshot(), slug);
+    async (_event, identity: unknown, rawUpdates: unknown) => {
+      const connection = requireConnectionIdentity(await snapshot(), identity);
       const result = await deps.client.replaceConnectionRequestHeaders(
         connection.connectionId,
         normalizeRequestHeaderUpdates(rawUpdates),
@@ -121,13 +125,24 @@ export function registerRuntimeHostConnectionsIpc(
       return { names: result.names } satisfies SavedRequestHeaders;
     },
   );
-  deps.ipcMain.handle('connections:setDefault', async (_event, slug: unknown) => {
+  deps.ipcMain.handle('connections:setDefault', async (_event, identity: unknown) => {
     const catalog = await snapshot();
-    const target = slug === null
+    const target = identity === null
       ? null
-      : defaultTargetForConnection(requireConnection(catalog, slug));
+      : defaultTargetForConnection(requireConnectionIdentity(catalog, identity));
     requireCommitted(
       await deps.client.setDefaultConnectionTarget(catalog.revision, target),
+      'set default Connection',
+    );
+    deps.emitConnectionListChanged();
+  });
+  deps.ipcMain.handle('connections:setDefaultBySlug', async (_event, slug: unknown) => {
+    const catalog = await snapshot();
+    requireCommitted(
+      await deps.client.setDefaultConnectionTarget(
+        catalog.revision,
+        defaultTargetForConnection(requireConnection(catalog, slug)),
+      ),
       'set default Connection',
     );
     deps.emitConnectionListChanged();
@@ -193,9 +208,9 @@ export function registerRuntimeHostConnectionsIpc(
     deps.emitConnectionListChanged();
     return requireProjectedConnection(await snapshot(), input.slug);
   });
-  deps.ipcMain.handle('connections:update', async (_event, rawSlug: unknown, rawPatch: unknown) => {
+  deps.ipcMain.handle('connections:update', async (_event, rawIdentity: unknown, rawPatch: unknown) => {
     const catalog = await snapshot();
-    const current = requireConnection(catalog, rawSlug);
+    const current = requireConnectionIdentity(catalog, rawIdentity);
     const patch = normalizeUpdateInput(current, rawPatch);
     const updated = await deps.client.updateConnection(
       { connectionId: current.connectionId, revision: current.revision },
@@ -227,7 +242,7 @@ export function registerRuntimeHostConnectionsIpc(
     if (patch.apiKey !== undefined) await updateCredential(deps.client, current, patch.apiKey);
     if (patch.defaultModel !== undefined) {
       const latest = await snapshot();
-      const entry = requireConnection(latest, current.slug);
+      const entry = requireConnectionIdentity(latest, connectionIdentity(current));
       const target = patch.defaultModel
         ? { connectionId: entry.connectionId, modelId: patch.defaultModel }
         : latest.defaultTarget?.connectionId === entry.connectionId
@@ -239,9 +254,10 @@ export function registerRuntimeHostConnectionsIpc(
       );
     }
     deps.emitConnectionListChanged();
-    return requireProjectedConnection(await snapshot(), current.slug);
+    return requireProjectedConnectionIdentity(await snapshot(), connectionIdentity(current));
   });
-  deps.ipcMain.handle('connections:delete', async (_event, slug: unknown) => {
+  deps.ipcMain.handle('connections:delete', async (_event, rawIdentity: unknown) => {
+    const identity = normalizeConnectionIdentity(rawIdentity);
     // OAuth/model-fetch can bump the connection revision under the UI. Retry
     // on connection_stale with a fresh snapshot so delete does not fail with a
     // opaque "service unavailable" after the user already confirmed.
@@ -250,10 +266,11 @@ export function registerRuntimeHostConnectionsIpc(
       const catalog = await snapshot();
       let current: ReturnType<typeof requireConnection>;
       try {
-        current = requireConnection(catalog, slug);
+        current = requireConnectionIdentity(catalog, identity);
       } catch (error) {
-        // Only treat a missing slug as success. Invalid input must still fail.
-        if (error instanceof Error && error.message.startsWith('No such Connection:')) {
+        // The exact entity is already gone. A new entity may reuse its slug;
+        // deleting that replacement would violate the detail route's binding.
+        if (error instanceof Error && error.message.startsWith('No such Connection identity:')) {
           deps.emitConnectionListChanged();
           return;
         }
@@ -275,22 +292,31 @@ export function registerRuntimeHostConnectionsIpc(
       throw new Error('Unable to delete Connection: connection_stale');
     }
   });
-  deps.ipcMain.handle('connections:fetchModels', async (_event, slug: unknown) => {
-    const current = requireConnection(await snapshot(), slug);
+  deps.ipcMain.handle('connections:fetchModels', async (_event, identity: unknown) => {
+    const current = requireConnectionIdentity(await snapshot(), identity);
     const result = await deps.client.fetchConnectionModels(current.connectionId);
     if (result.kind !== 'committed') {
       throw new Error(`Unable to fetch Connection models: ${result.kind}`);
     }
     deps.emitConnectionListChanged();
-    const latest = requireConnection(await snapshot(), current.slug);
-    return {
-      models: [...latest.models],
-      source: result.source,
-      fetchedAt: result.fetchedAt,
-    };
+    const latest = requireConnectionIdentity(await snapshot(), connectionIdentity(current));
+    return { models: [...latest.models], source: result.source };
   });
   deps.ipcMain.handle(
     'connections:test',
+    async (_event, identity: unknown, options?: { model?: unknown }) => {
+      const current = requireConnectionIdentity(await snapshot(), identity);
+      const model = options?.model;
+      if (model !== undefined && (typeof model !== 'string' || model.length === 0)) {
+        throw new Error('Invalid Connection test model');
+      }
+      const result = await deps.client.testConnection(current.connectionId, model);
+      deps.emitConnectionListChanged();
+      return projectHostConnectionTest(result);
+    },
+  );
+  deps.ipcMain.handle(
+    'connections:testBySlug',
     async (_event, slug: unknown, options?: { model?: unknown }) => {
       const current = requireConnection(await snapshot(), slug);
       const model = options?.model;
@@ -328,7 +354,7 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
 
 export function projectHostConnections(
   catalog: ConnectionCatalogSnapshot,
-): IdentifiedLlmConnection[] {
+): ProjectedLlmConnection[] {
   return catalog.connections.map((connection) => {
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
@@ -344,6 +370,7 @@ export function projectHostConnections(
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
+      catalogEntries: connection.catalogEntries,
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
@@ -351,9 +378,6 @@ export function projectHostConnections(
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(connection.modelsFetchedAt === undefined
-        ? {}
-        : { modelsFetchedAt: connection.modelsFetchedAt }),
       ...(connection.lastTest === undefined
         ? {}
         : {
@@ -402,7 +426,7 @@ async function updateCredential(
 }
 
 function connectionCredential(connection: ConnectionCatalogEntry): CredentialLocator {
-  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
   return {
     scope: 'connection',
     connectionId: connection.connectionId,
@@ -426,6 +450,43 @@ function requireConnection(
   return connection;
 }
 
+function normalizeConnectionIdentity(value: unknown): DesktopConnectionIdentity {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid Connection identity');
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 2 || keys[0] !== 'connectionId' || keys[1] !== 'slug') {
+    throw new Error('Invalid Connection identity');
+  }
+  if (typeof record.connectionId !== 'string' || record.connectionId.length === 0) {
+    throw new Error('Connection identity id is required');
+  }
+  return {
+    connectionId: record.connectionId,
+    slug: normalizeConnectionSlugForIpc(record.slug, 'connection identity slug'),
+  };
+}
+
+function requireConnectionIdentity(
+  catalog: ConnectionCatalogSnapshot,
+  value: unknown,
+): ConnectionCatalogEntry {
+  const identity = normalizeConnectionIdentity(value);
+  const connection = catalog.connections.find(
+    (candidate) => candidate.connectionId === identity.connectionId,
+  );
+  if (!connection) throw new Error(`No such Connection identity: ${identity.connectionId}`);
+  if (connection.slug !== identity.slug) {
+    throw new Error('Connection identity no longer matches its slug');
+  }
+  return connection;
+}
+
+function connectionIdentity(connection: ConnectionCatalogEntry): DesktopConnectionIdentity {
+  return { connectionId: connection.connectionId, slug: connection.slug };
+}
+
 function requireProjectedConnection(
   catalog: ConnectionCatalogSnapshot,
   slug: string,
@@ -433,6 +494,18 @@ function requireProjectedConnection(
   const connection = projectHostConnections(catalog).find((candidate) => candidate.slug === slug);
   if (!connection) throw new Error(`No such Connection: ${slug}`);
   return connection;
+}
+
+function requireProjectedConnectionIdentity(
+  catalog: ConnectionCatalogSnapshot,
+  identity: DesktopConnectionIdentity,
+): ProjectedLlmConnection {
+  const connection = requireConnectionIdentity(catalog, identity);
+  const projected = projectHostConnections(catalog).find(
+    (candidate) => candidate.connectionId === connection.connectionId,
+  );
+  if (!projected) throw new Error(`No such Connection identity: ${identity.connectionId}`);
+  return projected;
 }
 
 function defaultTargetForConnection(connection: ConnectionCatalogEntry) {

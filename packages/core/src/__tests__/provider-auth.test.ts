@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from './test-helpers.js';
 import { deriveProviderAuthContract } from '../provider-auth.js';
 
 describe('ProviderAuth contract', () => {
@@ -28,82 +28,38 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    expect(missing.setupMode).toBe('api_key');
-    expect(missing.state).toBe('not_configured');
-    expect(missing.validationStatus).toBe('not_run');
-    expect(missing.requiresSecret).toBe(true);
-    expect(missing.sendMayUseWithoutSecret).toBe(false);
-    expect(missing.actionAvailability.save_secret).toBe('available');
-    expect(missing.actionAvailability.test_credentials).toBe('hidden');
-    expect(missing.actionAvailability.fetch_models).toBe('hidden');
-    expect(missing.actionAvailability.start_oauth).toBe('hidden');
+    assert.strictEqual(missing.requiresSecret, true);
+    assert.strictEqual(missing.actionAvailability.test_credentials, false);
+    assert.strictEqual(missing.actionAvailability.fetch_models, false);
+    assert.strictEqual(missing.actionAvailability.start_oauth, false);
 
     const configured = deriveProviderAuthContract({
       providerType: 'openai',
       hasSecret: true,
     });
 
-    expect(configured.state).toBe('configured');
-    expect(configured.actionAvailability.test_credentials).toBe('available');
-    expect(configured.actionAvailability.fetch_models).toBe('available');
-    expect(configured.actionAvailability.revoke_auth).toBe('available');
-  });
-
-  test('maps verified credentials to validation state', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'zai-coding-plan',
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    expect(contract.state).toBe('validated');
-    expect(contract.validationStatus).toBe('verified');
-  });
-
-  test('maps authentication failures to distinct repair states', () => {
-    const needsReauth = deriveProviderAuthContract({
-      providerType: 'anthropic',
-      hasSecret: true,
-      lastTestStatus: 'needs_reauth',
-    });
-    const error = deriveProviderAuthContract({
-      providerType: 'anthropic',
-      hasSecret: true,
-      lastTestStatus: 'error',
-    });
-
-    expect(needsReauth.state).toBe('needs_reauth');
-    expect(error.state).toBe('error');
+    assert.strictEqual(configured.actionAvailability.test_credentials, true);
+    assert.strictEqual(configured.actionAvailability.fetch_models, true);
   });
 
   test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'xai-oauth',
       hasSecret: true,
-      lastTestStatus: 'verified',
     });
 
-    expect(contract.setupMode).toBe('oauth');
-    expect(contract.state).toBe('validated');
-    expect(contract.validationStatus).toBe('verified');
-    expect(contract.requiresSecret).toBe(true);
-    expect(contract.sendMayUseWithoutSecret).toBe(false);
-    expect(contract.actionAvailability.save_secret).toBe('hidden');
-    expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.start_oauth).toBe('hidden');
-    expect(contract.actionAvailability.refresh_oauth).toBe('available');
-    expect(contract.actionAvailability.revoke_auth).toBe('available');
+    assert.strictEqual(contract.requiresSecret, true);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.start_oauth, false);
   });
 
   test('a discovery-capable OAuth provider keeps fetch_models available after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: true,
-      lastTestStatus: 'verified',
     });
 
-    expect(contract.setupMode).toBe('oauth');
-    expect(contract.actionAvailability.fetch_models).toBe('available');
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 
   test('OAuth subscription providers route missing login to the OAuth setup path', () => {
@@ -112,72 +68,32 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    expect(contract.setupMode).toBe('oauth');
-    expect(contract.state).toBe('not_configured');
-    expect(contract.validationStatus).toBe('not_run');
-    expect(contract.actionAvailability.start_oauth).toBe('available');
-    expect(contract.actionAvailability.test_credentials).toBe('hidden');
-    expect(contract.actionAvailability.fetch_models).toBe('hidden');
+    assert.strictEqual(contract.actionAvailability.start_oauth, true);
+    assert.strictEqual(contract.actionAvailability.test_credentials, false);
+    assert.strictEqual(contract.actionAvailability.fetch_models, false);
   });
 
-  test('no-auth local providers can send without secret but are still not validated runtime probes', () => {
+  test('no-auth local providers can test and fetch without ever holding a secret', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'ollama',
       hasSecret: false,
     });
 
-    expect(contract.setupMode).toBe('none');
-    expect(contract.state).toBe('configured');
-    expect(contract.validationStatus).toBe('not_required');
-    expect(contract.requiresSecret).toBe(false);
-    expect(contract.sendMayUseWithoutSecret).toBe(true);
-    expect(contract.actionAvailability.save_secret).toBe('hidden');
-    expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('available');
+    assert.strictEqual(contract.requiresSecret, false);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 
-  test('LocalAI keeps API-key setup available without making the key required', () => {
+  test('an optional-key provider admits testing and fetching before a key exists', () => {
+    // LocalAI accepts a key but does not require one, so waiting for a saved
+    // secret would refuse an instance that is already reachable.
     const contract = deriveProviderAuthContract({
       providerType: 'localai',
       hasSecret: false,
     });
 
-    expect(contract.setupMode).toBe('api_key');
-    expect(contract.state).toBe('configured');
-    expect(contract.validationStatus).toBe('not_required');
-    expect(contract.requiresSecret).toBe(false);
-    expect(contract.sendMayUseWithoutSecret).toBe(true);
-    expect(contract.actionAvailability.save_secret).toBe('available');
-    expect(contract.actionAvailability.test_credentials).toBe('available');
-    expect(contract.actionAvailability.fetch_models).toBe('available');
-  });
-
-  test('LocalAI preserves endpoint validation failures without making its optional key required', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'localai',
-      hasSecret: true,
-      lastTestStatus: 'needs_reauth',
-    });
-
-    expect(contract.state).toBe('needs_reauth');
-    expect(contract.validationStatus).toBe('needs_reauth');
-    expect(contract.requiresSecret).toBe(false);
-    expect(contract.sendMayUseWithoutSecret).toBe(true);
-  });
-
-  test('disabled providers hide actions regardless of stored credential state', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'openai-codex',
-      enabled: false,
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    expect(contract.setupMode).toBe('oauth');
-    expect(contract.state).toBe('disabled');
-    expect(contract.validationStatus).toBe('verified');
-    expect(Object.values(contract.actionAvailability).every((value) => value === 'hidden')).toBe(
-      true,
-    );
+    assert.strictEqual(contract.requiresSecret, false);
+    assert.strictEqual(contract.actionAvailability.test_credentials, true);
+    assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 });

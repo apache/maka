@@ -69,7 +69,7 @@ test('credential metadata exposes only usable public access state', async (t) =>
     principalId: `${credentialId}-client`,
     principalKind: 'remote_owner',
     status,
-    operationGrants: ['host.status'],
+    grants: ['host.status'],
     canPublishClientCapabilities: false,
     canUseHostPaths: false,
     createdAt: '2026-08-22T00:00:00.000Z',
@@ -168,5 +168,5 @@ test('releases a retired execution.inspect.resolve grant from an existing access
   );
 
   const file = await readAccessCredentialFile(path);
-  assert.deepEqual(file.credentials[0]?.operationGrants, ['host.status']);
+  assert.deepEqual(file.credentials[0]?.grants, ['host.status']);
 });

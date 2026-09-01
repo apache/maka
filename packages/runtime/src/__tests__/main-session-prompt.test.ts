@@ -31,17 +31,12 @@ test('main-session prompt distinguishes progress updates from runtime activity a
   assert.match(prompt, /Avoid empty narration/);
   assert.match(prompt, /before the next tool call in the same response/);
   assert.match(prompt, /Do not end a response after merely saying what you will do/);
-  assert.match(prompt, /When the ProgressUpdate tool is available/);
-  assert.match(prompt, /Runtime may require it as a separate first step/);
-  assert.match(prompt, /Never call a work tool before the first ProgressUpdate/);
-  assert.match(prompt, /Otherwise call ProgressUpdate alone first/);
-  assert.match(prompt, /A ProgressUpdate is not a final answer/);
+  assert.doesNotMatch(prompt, /ProgressUpdate/);
   assert.match(
     prompt,
     /Do not expose hidden reasoning or repeat commands, tool names, counts, durations/,
   );
   assert.match(prompt, /exactly one obvious, quick tool call/);
-  assert.match(prompt, /unless Runtime explicitly requires ProgressUpdate/);
   assert.match(prompt, /several requested facts is a multi-step task/);
   assert.match(prompt, /distinct final answer/);
   assert.match(prompt, /Project instructions$/);

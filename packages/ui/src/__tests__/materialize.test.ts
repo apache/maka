@@ -19,7 +19,6 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { ASSISTANT_PROGRESS_TOOL_NAME } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   materializeChat,
@@ -63,8 +62,8 @@ function timelineText(turn: ReturnType<typeof materializeTurns>[number] | undefi
   ) ?? [];
 }
 
-describe("assistant text phases", () => {
-  test("keeps commentary in the timeline while selecting only the final answer", () => {
+describe("assistant reply selection", () => {
+  test("keeps progress text in the timeline while selecting the last completed text", () => {
     const [turn] = materializeTurns([
       originalUser,
       {
@@ -73,7 +72,6 @@ describe("assistant text phases", () => {
         turnId: "t1",
         ts: 2,
         text: "I am checking the implementation.",
-        phase: "commentary",
         modelId: "fixture",
       },
       {
@@ -82,81 +80,94 @@ describe("assistant text phases", () => {
         turnId: "t1",
         ts: 3,
         text: "The implementation is ready.",
-        phase: "final_answer",
         modelId: "fixture",
+      },
+      {
+        type: "turn_state",
+        id: "state-completed",
+        turnId: "t1",
+        ts: 4,
+        status: "completed",
+        partialOutputRetained: false,
       },
     ]);
 
     assert.deepEqual(
       turn?.timeline.flatMap((item) =>
-        item.kind === "text" ? [{ text: item.text, phase: item.phase }] : [],
+        item.kind === "text" ? [item.text] : [],
       ),
       [
-        { text: "I am checking the implementation.", phase: "commentary" },
-        { text: "The implementation is ready.", phase: "final_answer" },
+        "I am checking the implementation.",
+        "The implementation is ready.",
       ],
     );
     assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "The implementation is ready.");
   });
 
-  test("keeps an unphased legacy final answer in a mixed imported timeline", () => {
+  test("returns no final reply while the turn is still running", () => {
     const [turn] = materializeTurns([
       originalUser,
+      {
+        type: "turn_state",
+        id: "state-running",
+        turnId: "t1",
+        ts: 2,
+        status: "running",
+        partialOutputRetained: false,
+      },
       {
         type: "assistant",
         id: "commentary",
         turnId: "t1",
-        ts: 2,
+        ts: 3,
         text: "I am checking the implementation.",
-        phase: "commentary",
-        modelId: "fixture",
-      },
-      {
-        type: "assistant",
-        id: "legacy-final",
-        turnId: "t1",
-        ts: 3,
-        text: "Legacy final answer",
         modelId: "fixture",
       },
     ]);
 
-    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "Legacy final answer");
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "");
   });
 
-  test("prefers an explicit final answer over later unphased compatibility text", () => {
+  test("returns no final reply when a turn fails after emitting text", () => {
     const [turn] = materializeTurns([
       originalUser,
       {
         type: "assistant",
-        id: "final",
+        id: "progress",
         turnId: "t1",
         ts: 2,
-        text: "Explicit final answer",
-        phase: "final_answer",
+        text: "I found the relevant code.",
         modelId: "fixture",
       },
       {
-        type: "assistant",
-        id: "legacy-after-final",
+        type: "turn_state",
+        id: "state-failed",
         turnId: "t1",
         ts: 3,
-        text: "Legacy compatibility text",
-        modelId: "fixture",
+        status: "failed",
+        partialOutputRetained: true,
       },
     ]);
 
-    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "Explicit final answer");
+    assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "");
   });
 
-  test("does not treat unphased text as final when processing follows it", () => {
+  test("does not treat progress text as final while later processing is still running", () => {
     const [turn] = materializeTurns([
       originalUser,
+      {
+        type: "turn_state",
+        id: "state-running",
+        turnId: "t1",
+        ts: 2,
+        status: "running",
+        partialOutputRetained: false,
+      },
       {
         type: "assistant",
         id: "legacy-progress",
         turnId: "t1",
-        ts: 2,
+        ts: 3,
         text: "I will inspect it.",
         modelId: "fixture",
       },
@@ -164,7 +175,7 @@ describe("assistant text phases", () => {
         type: "tool_call",
         id: "read-1",
         turnId: "t1",
-        ts: 3,
+        ts: 4,
         toolName: "Read",
         args: { path: "README.md" },
       },
@@ -172,7 +183,7 @@ describe("assistant text phases", () => {
         type: "tool_result",
         id: "read-result-1",
         turnId: "t1",
-        ts: 4,
+        ts: 5,
         toolUseId: "read-1",
         isError: false,
         content: { kind: "text", text: "README" },
@@ -191,7 +202,6 @@ describe("assistant text phases", () => {
         turnId: "t1",
         ts: 2,
         text: "I am checking it.",
-        phase: "commentary",
         modelId: "fixture",
       },
       {
@@ -455,44 +465,6 @@ test('retains persisted nested tool activity identity', () => {
     parentToolCallId: 'exec-1',
     parentOperationId: 'exec-operation-1',
   });
-});
-
-test('hides the persisted progress transport while preserving commentary text', () => {
-  const messages: StoredMessage[] = [
-    userMsg('turn-1', 1, 'inspect the repository'),
-    {
-      type: 'assistant',
-      id: 'commentary-1',
-      turnId: 'turn-1',
-      ts: 2,
-      text: 'I am checking the recent repository activity.',
-      phase: 'commentary',
-      modelId: 'fixture',
-    },
-    {
-      type: 'tool_call',
-      id: 'progress-1',
-      turnId: 'turn-1',
-      ts: 3,
-      toolName: ASSISTANT_PROGRESS_TOOL_NAME,
-      args: { text: 'I am checking the recent repository activity.' },
-      stepId: 'commentary-1',
-    },
-    {
-      type: 'tool_result',
-      id: 'progress-result-1',
-      turnId: 'turn-1',
-      ts: 4,
-      toolUseId: 'progress-1',
-      isError: false,
-      content: { kind: 'json', value: { status: 'displayed' } },
-    },
-  ];
-
-  assert.deepEqual(materializeTools(messages), []);
-  assert.deepEqual(timelineText(materializeTurns(messages)[0]), [
-    'text:I am checking the recent repository activity.',
-  ]);
 });
 
 function shellRunResult(revision: number) {

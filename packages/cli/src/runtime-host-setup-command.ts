@@ -670,6 +670,7 @@ async function prepareSupervisedDirectPeer(
       ...(options.directPeer?.coordinationRelays ?? current?.coordinationRelays ?? []),
     ],
     automaticRelayDiscovery: current?.automaticRelayDiscovery ?? true,
+    webRtcStunPolicy: current?.webRtcStunPolicy ?? { kind: 'default' },
   };
 }
 

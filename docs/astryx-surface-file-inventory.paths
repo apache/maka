@@ -16,6 +16,7 @@ apps/desktop/src/renderer/error-boundary.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
+apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
@@ -135,6 +136,7 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
+apps/desktop/src/renderer/styles/session-todo-panel.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/about.css
 apps/desktop/src/renderer/styles/settings/bot.css
@@ -156,7 +158,6 @@ apps/desktop/src/renderer/styles/settings/web-search.css
 apps/desktop/src/renderer/styles/settings/wechat.css
 apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
-apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
 apps/desktop/src/renderer/styles/work-board.css
 apps/desktop/src/renderer/styles/workbar/artifacts.css
@@ -180,10 +181,12 @@ packages/ui/src/chat-model-switcher.tsx
 packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
+packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
 packages/ui/src/daily-review-panel.tsx
+packages/ui/src/directory-reference-chip.tsx
 packages/ui/src/icons.tsx
 packages/ui/src/inline-reference.tsx
 packages/ui/src/inline-rename-input.tsx
@@ -214,11 +217,12 @@ packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
+packages/ui/src/session-selection-bar.tsx
 packages/ui/src/session-sidebar-nav.tsx
+packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx
 packages/ui/src/skills-panel.tsx
 packages/ui/src/styles.css
-packages/ui/src/task-ledger-panel.tsx
 packages/ui/src/titlebar-session-identity.tsx
 packages/ui/src/toast.tsx
 packages/ui/src/tool-activity.tsx

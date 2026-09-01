@@ -39,6 +39,7 @@ export function createDesktopSessionNavigationServices(
         bridge.sessions.rename(sessionId, name, options),
       remove: (sessionId, options) =>
         bridge.sessions.remove(sessionId, options),
+      previewRemoval: (sessionId) => bridge.sessions.previewRemoval(sessionId),
     },
   };
 }

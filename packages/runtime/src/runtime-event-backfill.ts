@@ -129,6 +129,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             ...(message.quotes !== undefined && message.quotes.length > 0
               ? { quotes: message.quotes }
               : {}),
+            ...(message.directoryReferences
+              ? { directoryReferences: message.directoryReferences }
+              : {}),
             ...(message.inlineReferences !== undefined
               ? { inlineReferences: message.inlineReferences }
               : {}),
@@ -145,14 +148,7 @@ export function backfillRuntimeEventsFromStoredMessages(
             id: newId(),
             role: 'model',
             author: 'agent',
-            content: {
-              kind: 'text',
-              text: message.text,
-              ...(message.phase !== undefined ? { phase: message.phase } : {}),
-              ...(message.providerOptions !== undefined
-                ? { providerOptions: structuredClone(message.providerOptions) }
-                : {}),
-            },
+            content: { kind: 'text', text: message.text },
             actions: { stateDelta: recoveryState(now, message) },
             refs: { storedMessageId: message.id },
           });

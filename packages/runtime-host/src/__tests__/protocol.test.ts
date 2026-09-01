@@ -134,6 +134,12 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 22);
   });
 
+  test('publishes a new compatibility epoch for mandatory submit Skill outcomes', () => {
+    // Submit Skill outcomes and explicit OAuth Connection targets independently
+    // claimed epoch 78, so their merge requires a distinct compatibility boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 78);
+  });
+
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
     assert.throws(
       () =>
@@ -387,8 +393,14 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
   });
 
-  test('publishes a new compatibility epoch for assistant text phases', () => {
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 78);
+  test('publishes a new compatibility epoch for Host-bound directory references', () => {
+    // Epoch 80 belongs to catalog model-facts provenance on main. Directory
+    // references widen closed message inputs and need a later boundary.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 80);
+  });
+
+  test('publishes a new compatibility epoch for catalog model-facts provenance', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -414,37 +426,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(opened), opened);
-    const commentaryOpen = {
-      ...opened,
-      result: {
-        ...opened.result,
-        activeAssistantStreams: [
-          {
-            kind: 'text' as const,
-            turnId: 'turn-1',
-            messageId: 'message-commentary',
-            phase: 'commentary' as const,
-          },
-        ],
-      },
-    };
-    assert.deepEqual(decodeHostFrame(commentaryOpen), commentaryOpen);
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          ...commentaryOpen,
-          result: {
-            ...commentaryOpen.result,
-            activeAssistantStreams: [
-              {
-                ...commentaryOpen.result.activeAssistantStreams[0],
-                phase: 'analysis',
-              },
-            ],
-          },
-        }),
-      isInvalidFrame,
-    );
     assert.throws(
       () =>
         decodeHostFrame({
@@ -751,35 +732,6 @@ describe('Runtime Host bootstrap protocol', () => {
       },
     };
     assert.deepEqual(decodeHostFrame(completion), completion);
-    const commentary = {
-      ...completion,
-      delta: {
-        kind: 'text' as const,
-        turnId: 'turn-1',
-        runId: 'run-1',
-        messageId: 'message-commentary',
-        startOffset: 0,
-        text: 'checking',
-        phase: 'commentary' as const,
-      },
-    };
-    assert.deepEqual(decodeHostFrame(commentary), commentary);
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          ...commentary,
-          delta: { ...commentary.delta, phase: 'analysis' },
-        }),
-      isInvalidFrame,
-    );
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          ...completion,
-          delta: { ...completion.delta, phase: 'commentary' },
-        }),
-      isInvalidFrame,
-    );
     const replacement = {
       ...completion,
       delta: {
@@ -1635,7 +1587,7 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
-  test('bounds canonical MessageContent attachments and quotes', () => {
+  test('bounds canonical MessageContent attachments, directory references and quotes', () => {
     const submit = (content: unknown) =>
       decodeClientFrame({
         requestId: 'submit-bounds',
@@ -1648,6 +1600,17 @@ describe('Runtime Host bootstrap protocol', () => {
           placement: 'next_turn',
         },
       });
+    const directory = { hostId: 'host-a', path: '/workspace/source' };
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 56);
+    assert.doesNotThrow(() => submit({ text: 'valid', directoryReferences: [directory] }));
+    for (const directoryReferences of [
+      Array.from({ length: 5 }, () => directory),
+      [{ ...directory, path: '../outside' }],
+      [{ ...directory, hostId: '' }],
+      [{ ...directory, permissions: 'read' }],
+    ]) {
+      assert.throws(() => submit({ text: 'valid', directoryReferences }), isInvalidFrame);
+    }
     assert.doesNotThrow(() =>
       submit({
         text: 'valid',
@@ -1753,10 +1716,21 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('decodes exact submit dispositions and bounded retract and interrupt results', () => {
+    const skillInvocation = { loaded: [], failed: [], receipts: [] };
     for (const result of [
-      { disposition: 'steering', queueRevision: 2 },
-      { disposition: 'followup', queueRevision: 3 },
-      { disposition: 'turn_started', turnId: 'turn-2' },
+      { disposition: 'steering', queueRevision: 2, skillInvocation },
+      { disposition: 'followup', queueRevision: 3, skillInvocation },
+      { disposition: 'steering', skillInvocation },
+      { disposition: 'followup', skillInvocation },
+      { disposition: 'turn_started', turnId: 'turn-2', skillInvocation },
+      {
+        disposition: 'blocked',
+        skillInvocation: {
+          loaded: [],
+          failed: [{ request: 'missing', reason: 'not_found' }],
+          receipts: [],
+        },
+      },
     ]) {
       assert.doesNotThrow(() =>
         decodeHostFrame({
@@ -1767,16 +1741,54 @@ describe('Runtime Host bootstrap protocol', () => {
         }),
       );
     }
+    for (const result of [
+      { disposition: 'steering', queueRevision: 2 },
+      { disposition: 'followup', queueRevision: 3 },
+      { disposition: 'turn_started', turnId: 'turn-2' },
+      { disposition: 'blocked' },
+    ]) {
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId: 'submit-response',
+            operation: 'turn.message.submit',
+            ok: true,
+            result,
+          }),
+        isInvalidFrame,
+      );
+    }
     assert.throws(
       () =>
         decodeHostFrame({
           requestId: 'submit-response',
           operation: 'turn.message.submit',
           ok: true,
-          result: { disposition: 'turn_started', turnId: 'turn-2', queueRevision: 4 },
+          result: {
+            disposition: 'turn_started',
+            turnId: 'turn-2',
+            queueRevision: 4,
+            skillInvocation,
+          },
         }),
       isInvalidFrame,
     );
+    for (const skillInvocation of [
+      { loaded: 'invalid', failed: [], receipts: [] },
+      { loaded: [{ id: 'writer', name: 'Writer' }], failed: [], receipts: [] },
+      { loaded: [], failed: [], receipts: [] },
+    ]) {
+      assert.throws(
+        () =>
+          decodeHostFrame({
+            requestId: 'submit-response',
+            operation: 'turn.message.submit',
+            ok: true,
+            result: { disposition: 'blocked', skillInvocation },
+          }),
+        isInvalidFrame,
+      );
+    }
     for (const [operation, requestId] of [
       ['queue.entry.retract', 'entry-retract-response'],
       ['queue.entry.promote', 'entry-promote-response'],

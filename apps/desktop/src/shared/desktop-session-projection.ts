@@ -128,9 +128,18 @@ export function projectDesktopStoredMessage(
         ? { ...message, parentSessionId: projectSessionId(host, message.parentSessionId) }
         : message;
     case 'workhub_coordination':
+      if (message.kind === 'delegation_superseded') return message;
       return {
         ...message,
         targetSessionId: projectSessionId(host, message.targetSessionId),
+        ...(message.kind === 'delegation_replacement_requested'
+          ? {
+              replacedTargetSessionId: projectSessionId(
+                host,
+                message.replacedTargetSessionId,
+              ),
+            }
+          : {}),
       };
     default:
       return message;

@@ -34,7 +34,7 @@
  * fragment order.
  *
  * The identity and response-format guidance are pure static text: constant
- * across turns, so they never churn the systemPromptHash / prefix-cache (see
+ * across turns, so they never churn the provider-stable request prefix (see
  * request-shape.ts). They are intentionally NOT injected into sub-agent
  * (childInstruction) paths, which already carry their own role identities.
  */
@@ -63,13 +63,10 @@ The opening update should name the concrete area you will inspect or change and 
 Send another update only when you reach a meaningful phase change, discover information that changes the plan, finish a long-running operation, or have completed several non-trivial tool calls without any user-visible update.
 Later updates should state a concrete finding or completed milestone and the next action when more work remains.
 When more work remains, put the progress update before the next tool call in the same response. Do not end a response after merely saying what you will do.
-When the ProgressUpdate tool is available, it is the required transport for these updates. Runtime may require it as a separate first step; when that happens, describe the concrete task you are about to perform and then continue. Never call a work tool before the first ProgressUpdate in a multi-step task.
-Call ProgressUpdate alongside the next work tool when the provider supports multiple tool calls. Otherwise call ProgressUpdate alone first, then continue with the work tool in the next response.
-A ProgressUpdate is not a final answer, so continue the task after sending it.
 Keep most updates to one concise sentence and never more than two short sentences.
 Avoid empty narration such as "I will take a look", "Working on it", "Continuing", or announcing a routine tool choice. Describe useful intent, findings, decisions, or changed direction instead.
 Do not expose hidden reasoning or repeat commands, tool names, counts, durations, or other raw activity that the interface already shows.
-Skip progress updates only when no tool is needed or exactly one obvious, quick tool call answers the whole request, unless Runtime explicitly requires ProgressUpdate for that step.
+Skip progress updates only when no tool is needed or exactly one obvious, quick tool call answers the whole request.
 Checking several requested facts is a multi-step task even when those checks could be combined into one shell command.
 End the turn with a distinct final answer that states the outcome.`;
 }

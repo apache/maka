@@ -113,6 +113,7 @@ export interface RuntimeHostUpdateCliOptions {
 export interface RuntimeHostSelectedUpdateCliOptions
   extends Omit<RuntimeHostUpdateCliOptions, 'sourcePackageRoot' | 'version' | 'registrySelection'> {
   readonly selector: RuntimeHostUpdateSelector;
+  readonly allowManualUpdate?: boolean;
 }
 
 interface RuntimeHostUpdateCliDeps {
@@ -601,6 +602,7 @@ async function runCanonicalRuntimeHostUpdate(
           {
             expectedTarget: options.expectedTarget,
             ...(options.expectedHost ? { expectedOwner: options.expectedHost } : {}),
+            allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
           },
         );
         if (recovered.kind === 'absent') {
@@ -774,7 +776,9 @@ async function runCanonicalRuntimeHostUpdate(
         ? error.code
         : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'owner_changed'
           ? 'target_mismatch'
-          : 'update_incomplete';
+          : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'active_tasks'
+            ? 'active_tasks'
+            : 'update_incomplete';
     emit({
       schemaVersion: 1,
       kind: 'error',
@@ -818,6 +822,7 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
       ...(options.operatorDeploymentId
         ? { operatorDeploymentId: options.operatorDeploymentId }
         : {}),
+      ...(options.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     });
     return await runManagedRuntimeHostResolvedUpdateCli(options, selection, deps, emit);
   } catch (error) {
@@ -826,7 +831,9 @@ export async function runManagedRuntimeHostSelectedUpdateCli(
       error instanceof RuntimeHostServiceManagerError ||
       error instanceof RuntimeHostUpdatePackageError
         ? error.code
-        : 'update_resolution_failed';
+        : error instanceof RuntimeHostLifecycleTransactionError && error.code === 'active_tasks'
+          ? 'active_tasks'
+          : 'update_resolution_failed';
     const message = error instanceof Error ? error.message : String(error);
     emit({
       schemaVersion: 1,
@@ -862,8 +869,10 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
     if (
       selection.outcome.kind === 'manual_action' &&
       !(
-        options.expectedHost &&
-        options.allowInterruptActiveTasks &&
+        ((options.expectedHost && options.allowInterruptActiveTasks) ||
+          (options.allowManualUpdate &&
+            options.managedRootId &&
+            options.expectedTarget.deploymentId)) &&
         selection.outcome.reason !== 'target_not_newer'
       )
     ) {
@@ -883,7 +892,11 @@ export async function runManagedRuntimeHostResolvedUpdateCli(
     }
 
     const apply = async (packageRoot: string) => {
-      const { selector: _selector, ...updateOptions } = options;
+      const {
+        selector: _selector,
+        allowManualUpdate: _allowManualUpdate,
+        ...updateOptions
+      } = options;
       return await deps.update(
         {
           ...updateOptions,

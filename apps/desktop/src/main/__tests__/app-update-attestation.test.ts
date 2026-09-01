@@ -19,8 +19,10 @@
 
 import type { Bundle } from '@sigstore/bundle';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -28,6 +30,21 @@ import {
   desktopUpdateChannelFromManifest,
   verifyDownloadedUpdateAttestation,
 } from '../app-update-attestation.js';
+
+const require = createRequire(import.meta.url);
+
+function assertElectronVerification(script: string, failureMessage: string): void {
+  const verification = spawnSync(require('electron') as string, ['-e', script], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+  });
+  assert.equal(
+    verification.status,
+    0,
+    `${failureMessage}:\n${verification.stderr || verification.stdout}`,
+  );
+}
 
 function provenanceBundle(name: string, sha256: string): Bundle {
   const statement = {
@@ -108,7 +125,7 @@ test('download verification accepts only a trusted exact artifact subject', asyn
   );
 });
 
-test('nightly verification fetches provenance from the versioned Nightlies path', async (t) => {
+test('nightly verification fetches provenance from the versioned GitHub Release asset', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-nightly-attestation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const artifact = join(directory, 'cached-update.zip');
@@ -151,7 +168,7 @@ test('nightly verification fetches provenance from the versioned Nightlies path'
 
   assert.equal(
     fetchedUrl,
-    `https://nightlies.apache.org/maka/desktop/versions/${version}/Maka-${version}-attestation.sigstore.json`,
+    `https://github.com/apache/maka/releases/download/v${version}/Maka-${version}-attestation.sigstore.json`,
   );
 });
 
@@ -161,5 +178,48 @@ test('packaged update trust accepts only an explicit release or nightly channel'
   assert.throws(
     () => desktopUpdateChannelFromManifest({ makaUpdateChannel: 'preview' }),
     /does not declare a trusted update channel/u,
+  );
+});
+
+test('TUF verifies ECDSA without breaking Ed25519 in the packaged Electron runtime', () => {
+  assertElectronVerification(
+    String.raw`
+        const { generateKeyPairSync, sign } = require('node:crypto');
+        const { dirname, join } = require('node:path');
+        const modelsEntry = require.resolve('@tufjs/models');
+        const { canonicalize } = require('@tufjs/canonical-json');
+        const { verifySignature } = require(join(dirname(modelsEntry), 'utils', 'verify.js'));
+        const metadata = { _type: 'root', expires: '2030-01-01T00:00:00Z', version: 1 };
+        const data = Buffer.from(canonicalize(metadata));
+        for (const { type, options, algorithm } of [
+          { type: 'ec', options: { namedCurve: 'prime256v1' }, algorithm: 'sha256' },
+          { type: 'ed25519', options: {}, algorithm: null },
+        ]) {
+          const { privateKey, publicKey } = generateKeyPairSync(type, options);
+          const signature = sign(algorithm, data, privateKey).toString('hex');
+          if (!verifySignature(metadata, { key: publicKey }, signature)) process.exit(1);
+        }
+      `,
+    'Electron TUF verification failed',
+  );
+});
+
+test('Sigstore verifies ECDSA without breaking Ed25519 in the packaged Electron runtime', () => {
+  assertElectronVerification(
+    String.raw`
+        const { generateKeyPairSync, sign } = require('node:crypto');
+        const { crypto } = require('@sigstore/core');
+        const data = Buffer.from('signed update metadata');
+        for (const { type, options, algorithm } of [
+          { type: 'ec', options: { namedCurve: 'prime256v1' }, algorithm: 'sha256' },
+          { type: 'ed25519', options: {}, algorithm: null },
+        ]) {
+          const { privateKey, publicKey } = generateKeyPairSync(type, options);
+          const signature = sign(algorithm, data, privateKey);
+          if (!crypto.verify(data, publicKey, signature)) process.exit(1);
+        }
+        if (crypto.verify(data, 'not a public key', Buffer.alloc(0))) process.exit(1);
+      `,
+    'Electron Sigstore verification failed',
   );
 });

@@ -36,7 +36,6 @@
  * for this seam.
  */
 
-import type { AssistantTextPhase } from '@maka/core/events';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 
 // ---------------------------------------------------------------------------
@@ -387,25 +386,36 @@ export interface ModelRequestMetadata {
  *   recovery and terminal error emission.
  */
 export type ModelStreamEvent =
-  | { kind: 'text-start'; phase?: AssistantTextPhase }
+  | {
+      kind: 'text-start';
+      providerOptions?: ProviderOptions;
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
   | { kind: 'text'; text: string }
   | {
-      kind: 'text-metadata';
-      providerOptions: ProviderOptions;
-      phase?: AssistantTextPhase;
+      kind: 'text-end';
+      providerOptions?: ProviderOptions;
+      /** Native Responses output item boundary; internal to adapter/backend replay. */
+      providerItemBoundary?: true;
+    }
+  | {
+      kind: 'thinking-start';
+      reasoningPartId?: string;
+      providerOptions?: ProviderOptions;
     }
   | {
       kind: 'thinking';
       text: string;
       providerOptions?: ProviderOptions;
-      /** Bounded item identity used only while grouping one streamed reasoning item. */
-      reasoningItemId?: string;
+      /** Bounded SDK-local identity used only while grouping one streamed reasoning part. */
+      reasoningPartId?: string;
       /** Final provider summary, compared before only its part boundaries are persisted. */
       reasoningSummaryText?: string;
       /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
       providerOptionsOrigin?: 'maka_transport';
     }
-  | { kind: 'thinking-signature'; signature: string }
+  | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
   /** Provider-side tool execution has begun, but no replayable call exists yet. */
   | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }

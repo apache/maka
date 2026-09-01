@@ -23,7 +23,7 @@ import {
   findCheckpointSummaryDefect,
   SUMMARY_FORMAT_TEMPLATE,
 } from './history-compact-summary-validation.js';
-import { toolResultOutput } from './tool-result-output.js';
+import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
 import type { HistoryCompactSummaryInput } from './ai-sdk-compaction-contract.js';
 import {
   HistoryCompactSummarizerError,
@@ -297,7 +297,7 @@ export function replayPlanItemsToModelMessages(items: ReplayPlanItems): ModelMes
             type: 'tool-result',
             toolCallId: item.toolCallId,
             toolName: item.toolName,
-            output: toolResultOutput(item.output, item.isError),
+            output: effectiveReplayToolResultOutput(item),
           },
         ],
       };

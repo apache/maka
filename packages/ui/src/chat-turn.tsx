@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, Ban, BookOpen, Check, ChevronRight, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, BookOpen, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -35,6 +35,7 @@ import {
   ChatMessageMetadata,
   ChatSystemMessage,
   ChatTokenizedText,
+  Collapsible,
   HStack,
   IconButton as UiIconButton,
   Spinner,
@@ -76,6 +77,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
@@ -160,6 +162,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   ts?: number;
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   inlineReferences?: readonly InlineReference[];
   /** When set on a user message, show an edit affordance that starts a revision draft. */
   onEditUserMessage?: () => void;
@@ -230,6 +233,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           ))}
         </HStack>
       ) : null}
+      {props.directoryReferences?.length ? (
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
+          {props.directoryReferences.map((reference, index) => (
+            <DirectoryReferenceChip key={index} reference={reference} />
+          ))}
+        </HStack>
+      ) : null}
       {props.quotes && props.quotes.length > 0 ? (
         <div className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
@@ -281,6 +291,7 @@ export function TransientUserMessage(props: {
           ts={message.ts}
           attachments={message.attachments}
           quotes={message.quotes}
+          directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
         />
       </LocalizedChatMessage>
@@ -558,17 +569,19 @@ export const TurnView = memo(function TurnView(props: {
             ts={turn.user.ts}
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
+            directoryReferences={turn.user.directoryReferences}
             inlineReferences={turn.user.inlineReferences}
             onEditUserMessage={
               props.onEditUserMessage && !turn.user.hostOrigin
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
-            // A revision restages neither attachments nor quotes, so a turn
-            // carrying either can't be edited without silently dropping the
-            // reference the answer was grounded in.
+            // A revision restages neither attachments, directory references,
+            // nor quotes, so a turn carrying any of them can't be edited
+            // without silently dropping context the answer was grounded in.
             editDisabled={
               (turn.user.attachments?.length ?? 0) > 0 ||
+              (turn.user.directoryReferences?.length ?? 0) > 0 ||
               (turn.user.quotes?.length ?? 0) > 0 ||
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
@@ -578,11 +591,13 @@ export const TurnView = memo(function TurnView(props: {
             editDisabledReason={
               (turn.user.attachments?.length ?? 0) > 0
                 ? copy.editMessageDisabledAttachments
-                : (turn.user.quotes?.length ?? 0) > 0
-                  ? copy.editMessageDisabledQuotes
-                  : props.editUserMessageTransformed
-                    ? copy.editMessageDisabledTransformedText
-                    : copy.editMessageDisabledRunning
+                : (turn.user.directoryReferences?.length ?? 0) > 0
+                  ? copy.editMessageDisabledDirectoryReferences
+                  : (turn.user.quotes?.length ?? 0) > 0
+                    ? copy.editMessageDisabledQuotes
+                    : props.editUserMessageTransformed
+                      ? copy.editMessageDisabledTransformedText
+                      : copy.editMessageDisabledRunning
             }
           />
 
@@ -613,6 +628,7 @@ export const TurnView = memo(function TurnView(props: {
                 ts={message.ts}
                 attachments={message.attachments}
                 quotes={message.quotes}
+                directoryReferences={message.directoryReferences}
                 inlineReferences={message.inlineReferences}
               />
             </LocalizedChatMessage>
@@ -630,26 +646,14 @@ export const TurnView = memo(function TurnView(props: {
             (item.kind === 'processing' && isProcessingRunning(item.children)) ||
             (item.kind === 'thinking' && item.live === true),
         );
-        const segmentSettled =
-          !segmentHasRunningWork &&
-          (!ownsTurnChrome || (!props.liveStreaming && turn.status !== 'running'));
-        const finalAnswerIndex = assistantFinalAnswerIndex(segment.items, segmentSettled);
-        const workItems =
-          finalAnswerIndex < 0 ? segment.items : segment.items.slice(0, finalAnswerIndex);
-        const explicitFinalAnswer =
-          finalAnswerIndex >= 0 &&
-          segment.items[finalAnswerIndex]?.kind === 'text' &&
-          segment.items[finalAnswerIndex]?.phase === 'final_answer';
-        const answerItems =
-          finalAnswerIndex < 0
-            ? []
-            : explicitFinalAnswer
-              ? segment.items
-                  .slice(finalAnswerIndex)
-                  .filter((item) => item.kind !== 'text' || item.phase !== undefined)
-              : segment.items.slice(finalAnswerIndex);
+        const turnCompleted =
+          ownsTurnChrome && turn.status === 'completed' && !props.liveStreaming;
+        const finalAnswerIndex = assistantFinalAnswerIndex(segment.items, turnCompleted);
+        const workItems = segment.items.filter((_, index) => index !== finalAnswerIndex);
+        const finalAnswer =
+          finalAnswerIndex >= 0 ? segment.items[finalAnswerIndex] : undefined;
         const workLogCollapsed =
-          !segmentHasRunningWork && (segmentSettled || finalAnswerIndex >= 0);
+          !props.liveStreaming && turn.status !== 'running' && !segmentHasRunningWork;
         const renderTimelineItem = (
           item: AssistantFoldedTimelineEntry,
           index: number,
@@ -697,8 +701,9 @@ export const TurnView = memo(function TurnView(props: {
             <div className="maka-assistant-answer-content">
               {/* The turn timeline is the rendering source of truth
                 (materialize.ts). Before a final answer, commentary and activity
-                stay exposed. Once the answer begins they remain mounted inside
-                one work-log disclosure, while the final answer stays outside. */}
+                remain ordinary timeline entries. Once the Turn completes, the
+                last text stays visible and all earlier work moves into one
+                disclosure. Failed and aborted Turns fold all retained work. */}
               {workItems.length > 0 && (
                 <TurnWorkLog
                   collapsed={workLogCollapsed}
@@ -710,9 +715,7 @@ export const TurnView = memo(function TurnView(props: {
                   )}
                 </TurnWorkLog>
               )}
-              {answerItems.map((item, index) =>
-                renderTimelineItem(item, workItems.length + index, true)
-              )}
+              {finalAnswer && renderTimelineItem(finalAnswer, finalAnswerIndex, true)}
               {/* A failed turn's banner states the OUTCOME of the turn, so it
                   belongs after the work it is the outcome of. `description`
                   carries the parked-resume diagnostic when there
@@ -1339,21 +1342,20 @@ function TurnWorkLog(props: {
   const [expanded, setExpanded] = useState(!props.collapsed);
   const [capturedDurationMs, setCapturedDurationMs] = useState<number | undefined>();
   const previousCollapsed = useRef(props.collapsed);
-  const headerRef = useRef<HTMLButtonElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const contentId = useId();
-  const visibleExpanded = props.collapsed ? expanded : true;
+  const rootRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     const shouldCollapse = props.collapsed && !previousCollapsed.current;
     previousCollapsed.current = props.collapsed;
     if (!shouldCollapse) return;
     if (
-      contentRef.current &&
+      rootRef.current &&
       typeof document !== 'undefined' &&
-      contentRef.current.contains(document.activeElement)
+      rootRef.current.contains(document.activeElement)
     ) {
-      headerRef.current?.focus();
+      rootRef.current
+        .querySelector<HTMLButtonElement>(':scope > .astryx-collapsible-trigger')
+        ?.focus();
     }
     setExpanded(false);
     if (props.durationMs === undefined && props.startedAt !== undefined) {
@@ -1367,38 +1369,25 @@ function TurnWorkLog(props: {
       ? copy.workLog
       : copy.workLogDuration(formatWorkLogDuration(durationMs, locale));
 
+  if (!props.collapsed) {
+    return (
+      <div className="maka-work-log" data-work-log="true">
+        <div className="maka-work-log-content">{props.children}</div>
+      </div>
+    );
+  }
+
   return (
-    <div
+    <Collapsible
+      ref={rootRef}
       className="maka-work-log"
       data-work-log="true"
-      data-collapsible={props.collapsed ? 'true' : undefined}
+      isOpen={expanded}
+      onOpenChange={setExpanded}
+      trigger={<span className="maka-work-log-label">{label}</span>}
     >
-      {props.collapsed && (
-        <button
-          ref={headerRef}
-          type="button"
-          className="maka-work-log-header"
-          aria-expanded={visibleExpanded}
-          aria-controls={contentId}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          <span className="maka-work-log-label">{label}</span>
-          <ChevronRight
-            className="maka-work-log-chevron"
-            size={ICON_SIZE.meta}
-            aria-hidden="true"
-          />
-        </button>
-      )}
-      <div
-        ref={contentRef}
-        id={contentId}
-        className="maka-work-log-content"
-        hidden={props.collapsed && !visibleExpanded}
-      >
-        {props.children}
-      </div>
-    </div>
+      <div className="maka-work-log-content">{props.children}</div>
+    </Collapsible>
   );
 }
 
@@ -1417,7 +1406,6 @@ function ProcessingBlock(props: {
   const running = isProcessingRunning(entries);
   const hasError = processingHasError(entries);
   const summary = summarizeProcessing(entries, locale);
-  const contentId = useId();
 
   useEffect(() => {
     const shouldCollapse = props.autoCollapse && !previousAutoCollapse.current;
@@ -1426,34 +1414,23 @@ function ProcessingBlock(props: {
   }, [props.autoCollapse]);
 
   return (
-    <div
+    <Collapsible
       className="maka-processing-block"
       data-processing="block"
       data-running={running ? 'true' : undefined}
       data-error={hasError ? 'true' : undefined}
-    >
-      <button
-        type="button"
-        className="maka-processing-header"
-        aria-expanded={expanded}
-        aria-controls={contentId}
-        onClick={() => setExpanded((current) => !current)}
-      >
+      isOpen={expanded}
+      onOpenChange={setExpanded}
+      trigger={(
+        <span className="maka-processing-trigger">
         <span className="maka-processing-icon" aria-hidden="true">
           <BookOpen size={ICON_SIZE.control} />
         </span>
         <span className="maka-processing-summary">{summary}</span>
-        <ChevronRight
-          className="maka-processing-chevron"
-          size={ICON_SIZE.meta}
-          aria-hidden="true"
-        />
-      </button>
-      <div
-        id={contentId}
-        className="maka-processing-sequence"
-        hidden={!expanded}
-      >
+        </span>
+      )}
+    >
+      <div className="maka-processing-sequence">
         {entries.map((entry, index) =>
           entry.kind === 'tools' ? (
             <ToolTrow
@@ -1474,7 +1451,7 @@ function ProcessingBlock(props: {
           ),
         )}
       </div>
-    </div>
+    </Collapsible>
   );
 }
 

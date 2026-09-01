@@ -73,8 +73,8 @@ export function createFakeWorkbarServices(
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
-    tasks: {
-      list: async () => [],
+    todo: {
+      read: async () => [],
       subscribeChanges: noopSubscription,
     },
     browser: {
@@ -136,6 +136,7 @@ export function createFakeWorkbarServices(
       },
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
+      respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();

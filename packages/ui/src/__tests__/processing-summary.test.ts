@@ -95,14 +95,13 @@ describe('processing summary', () => {
   });
 });
 
-test('commentary text remains a boundary around folded activity', async () => {
+test('ordinary assistant text remains a boundary around folded activity', async () => {
   const { foldTimeline } = await import('../timeline-fold.js');
   const timeline: TurnTimelineItem[] = [
     {
       kind: 'text',
       text: '准备检查实现。',
       messageId: 'commentary-1',
-      phase: 'commentary',
     },
     thinking(),
     tools(tool('read-1', 'Read', 'completed', 'read')),
@@ -110,14 +109,12 @@ test('commentary text remains a boundary around folded activity', async () => {
       kind: 'text',
       text: '已经定位到入口，接下来验证行为。',
       messageId: 'commentary-2',
-      phase: 'commentary',
     },
     tools(tool('bash-1', 'Bash', 'completed', 'command')),
     {
       kind: 'text',
       text: '验证通过。',
       messageId: 'final-1',
-      phase: 'final_answer',
     },
   ];
 

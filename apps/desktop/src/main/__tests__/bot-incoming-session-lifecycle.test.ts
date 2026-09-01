@@ -22,13 +22,13 @@ import { describe, test } from 'node:test';
 import type { BotIncomingMessage, BotRegistry } from '@maka/runtime/bots';
 import { createBotIncomingMainService } from '../bot-incoming-main.js';
 import { BotSessionUnavailableError } from '../bot-session-adapter.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for bot lifecycle test');
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, {
+    timeoutMs: 1_000,
+    message: 'Timed out waiting for bot lifecycle test',
+  });
 }
 
 describe('bot session lifecycle bindings', () => {

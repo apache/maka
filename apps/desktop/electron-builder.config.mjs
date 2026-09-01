@@ -18,9 +18,9 @@
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import {
-  DESKTOP_NIGHTLY_FEED_URL,
   resolveDesktopBuildVersion,
   resolveRuntimeHostSetupPackage,
 } from '../../scripts/desktop-nightly.mjs';
@@ -29,6 +29,20 @@ import { resolveProductManifestIdentity } from '../../scripts/product-release-id
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
+}
+
+// Some license files below ship inside third-party packages that apps/desktop
+// depends on (electron, @fontsource-variable/geist*). Locate each package by
+// resolving its manifest rather than assuming its node_modules location:
+// `../../node_modules/<pkg>` only resolves when the installer hoists these
+// packages to the workspace root, but they are declared in apps/desktop, not
+// the root. electron-builder logs a warning and still exits 0 when a `from`
+// path is missing, so a non-hoisting layout would silently drop the notices
+// (verify-packaged-app.mjs then fails far from the cause). resolve() finds the
+// package wherever the installer placed it — hoisted or nested.
+const require = createRequire(import.meta.url);
+function resolvePackageFile(packageName, relativePath) {
+  return join(dirname(require.resolve(`${packageName}/package.json`)), relativePath);
 }
 
 async function stageReleaseManifests({ packager }) {
@@ -151,11 +165,11 @@ const baseDesktopBuilderConfig = {
       to: 'licenses/maka/DISCLAIMER-WIP',
     },
     {
-      from: '../../node_modules/electron/dist/LICENSE',
+      from: resolvePackageFile('electron', 'dist/LICENSE'),
       to: 'licenses/electron/LICENSE',
     },
     {
-      from: '../../node_modules/electron/dist/LICENSES.chromium.html',
+      from: resolvePackageFile('electron', 'dist/LICENSES.chromium.html'),
       to: 'licenses/electron/LICENSES.chromium.html',
     },
     {
@@ -167,11 +181,11 @@ const baseDesktopBuilderConfig = {
       to: 'licenses/renderer/THIRD_PARTY_LICENSES.txt',
     },
     {
-      from: '../../node_modules/@fontsource-variable/geist/LICENSE',
+      from: resolvePackageFile('@fontsource-variable/geist', 'LICENSE'),
       to: 'licenses/renderer/GEIST_LICENSE.txt',
     },
     {
-      from: '../../node_modules/@fontsource-variable/geist-mono/LICENSE',
+      from: resolvePackageFile('@fontsource-variable/geist-mono', 'LICENSE'),
       to: 'licenses/renderer/GEIST_MONO_LICENSE.txt',
     },
     {
@@ -287,7 +301,7 @@ export function resolveDesktopBuilderConfig(environment = process.env) {
       runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
       makaUpdateChannel: 'nightly',
     },
-    publish: [{ provider: 'generic', url: DESKTOP_NIGHTLY_FEED_URL, channel: 'latest' }],
+    publish: [{ provider: 'github', owner: 'apache', repo: 'maka', channel: 'dev' }],
   };
 }
 

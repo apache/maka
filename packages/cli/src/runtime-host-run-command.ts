@@ -17,11 +17,7 @@
  * under the License.
  */
 
-import {
-  failureClassFromCompleteStopReason,
-  type AssistantTextPhase,
-  type SessionEvent,
-} from '@maka/core/events';
+import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import { findProjectByIdentity } from '@maka/core/project';
 import { type StoredMessage } from '@maka/core/session';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
@@ -558,7 +554,7 @@ function runtimeHostSessionSummaries(items: readonly SessionCatalogItem[]): Sess
 }
 
 type TurnOutcomeObservation =
-  | { readonly kind: 'output'; readonly text: string; readonly phase?: AssistantTextPhase }
+  | { readonly kind: 'output'; readonly text: string }
   | {
       readonly kind: 'terminal';
       readonly update: 'replace' | 'if_unset';
@@ -594,8 +590,7 @@ class TurnOutcomeClassifier {
     string,
     { readonly failedStepId: string | undefined }
   >();
-  #explicitFinalOutput: string | undefined;
-  #legacyFinalOutput: string | undefined;
+  #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
   #sandboxBoundaryRecovered = false;
 
@@ -608,11 +603,7 @@ class TurnOutcomeClassifier {
       case undefined:
         return;
       case 'output':
-        if (observation.phase === 'final_answer') {
-          this.#explicitFinalOutput = observation.text;
-        } else {
-          this.#legacyFinalOutput = observation.text;
-        }
+        this.#finalOutput = observation.text;
         return;
       case 'terminal':
         if (observation.update === 'replace' || this.#terminal === undefined) {
@@ -658,7 +649,6 @@ class TurnOutcomeClassifier {
     const terminal = this.#terminal;
     if (!terminal && incomplete === 'pending') return undefined;
     const completed = terminal?.status === 'completed';
-    const finalOutput = this.#explicitFinalOutput ?? this.#legacyFinalOutput;
     const sandboxBoundary =
       this.#unresolvedSandboxFailures.size > 0
         ? 'unresolved'
@@ -675,7 +665,7 @@ class TurnOutcomeClassifier {
     return {
       outcomeId: this.#outcomeId,
       status: completed ? 'completed' : 'failed',
-      ...(completed && finalOutput !== undefined ? { finalOutput } : {}),
+      ...(completed && this.#finalOutput !== undefined ? { finalOutput: this.#finalOutput } : {}),
       ...(!completed ? { failure } : {}),
       sandboxBoundary,
     };
@@ -683,12 +673,8 @@ class TurnOutcomeClassifier {
 }
 
 function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservation | undefined {
-  if (
-    event.type === 'text_complete' &&
-    event.phase !== 'commentary' &&
-    event.text.trim().length > 0
-  ) {
-    return { kind: 'output', text: event.text, phase: event.phase };
+  if (event.type === 'text_complete' && event.text.trim().length > 0) {
+    return { kind: 'output', text: event.text };
   }
   if (event.type === 'error') {
     return {
@@ -721,12 +707,8 @@ function observationFromSessionEvent(event: SessionEvent): TurnOutcomeObservatio
 }
 
 function observationFromStoredMessage(message: StoredMessage): TurnOutcomeObservation | undefined {
-  if (
-    message.type === 'assistant' &&
-    message.phase !== 'commentary' &&
-    message.text.trim().length > 0
-  ) {
-    return { kind: 'output', text: message.text, phase: message.phase };
+  if (message.type === 'assistant' && message.text.trim().length > 0) {
+    return { kind: 'output', text: message.text };
   }
   if (message.type === 'turn_state' && message.status === 'completed') {
     return { kind: 'terminal', update: 'replace', status: 'completed' };

@@ -39,7 +39,7 @@
 </p>
 
 <p align="center">
-  <a href="https://nightlies.apache.org/maka/desktop/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
   每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
 </p>
 
@@ -99,7 +99,7 @@ Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包�
 
 在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-[Desktop Nightly](https://nightlies.apache.org/maka/desktop/) 面向开发者和测试者，每天从 `main` 构建。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
+[Desktop Nightly](https://github.com/apache/maka/releases) 面向开发者和测试者，每天从 `main` 构建。请选择最新的 **Maka Desktop Nightly** prerelease；安装后，应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
 
 ### 环境要求
 
@@ -250,16 +250,16 @@ npm run check:release
 针对单个 workspace：
 
 ```sh
-npm --workspace @maka/runtime test
-npm --workspace @maka/eval test
-npm --workspace @maka/desktop test
+npm --workspace @maka/runtime run test:dist
+npm --workspace @maka/eval run test:dist
+npm --workspace @maka/desktop run test:dist
 ```
 
 用 `refresh:model-metadata` 从 models.dev 获取当前目录、更新仓库内快照，并重新生成派生的 TypeScript 文件。已提交的模型、能力、provider override 或 pricing 字段消失时，refresh 会 fail closed；审查确认上游确实有意删除后，用 `npm run refresh:model-metadata -- --accept-upstream-removals` 显式确认。`sync:model-metadata` 刻意保持离线，只会从已提交快照重新生成这些文件。访问路径特有的 override 写在 `model-metadata.ts`，不要手动修改生成文件。
 
 ```sh
 npm run refresh:model-metadata
-npm --workspace @maka/core test
+npm --workspace @maka/core run test:dist
 ```
 
 Desktop 的真实窗口与视觉验证：

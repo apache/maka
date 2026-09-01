@@ -19,7 +19,8 @@
 
 import {
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerDefaultsOf,
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import {
@@ -61,7 +62,7 @@ export function providerEndpointPresentation(
     baseUrl?: string;
   },
 ): ProviderEndpointPresentation {
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const effective = effectiveBaseUrl(connection).trim();
   const value = endpointForDisplay(effective);
   const editable = defaults.authKind !== 'oauth_token'
@@ -89,7 +90,7 @@ function providerRoutesModelsElsewhere(
   connection: { providerType: LlmConnection['providerType']; baseUrl?: string },
 ): boolean {
   if (connection.baseUrl?.trim()) return false;
-  const defaultBaseUrl = PROVIDER_DEFAULTS[connection.providerType]?.baseUrl;
+  const defaultBaseUrl = providerDefaultsOf(connection.providerType)?.baseUrl;
   if (!defaultBaseUrl) return false;
   const cached = modelOverrideRouteCache.get(connection.providerType);
   if (cached !== undefined) return cached;

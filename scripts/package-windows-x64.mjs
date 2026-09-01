@@ -19,6 +19,7 @@
 
 import { spawn } from 'node:child_process';
 import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
@@ -27,7 +28,16 @@ import { npmSpawnOptions } from './npm-spawn.mjs';
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
 const releaseDirectory = join(desktopRoot, 'release');
-const electronDistributionDirectory = join(repoRoot, 'node_modules', 'electron', 'dist');
+// electron is declared by apps/desktop, so resolve its install directory from
+// there rather than assuming node_modules hoisted it to the repo root. This
+// pre-flight guard exists to catch a missing electron dist before packaging;
+// pinning it to the hoisted path would make it fail at the wrong location the
+// moment an installer nests electron under apps/desktop.
+const require = createRequire(join(desktopRoot, 'package.json'));
+const electronDistributionDirectory = join(
+  dirname(require.resolve('electron/package.json')),
+  'dist',
+);
 const sandboxManifestPath = join(
   repoRoot,
   'experiments',
@@ -88,6 +98,8 @@ export async function packageWindowsX64({
   env = process.env,
   remove = rm,
   assertFile = access,
+  makeDirectory = mkdir,
+  copy = copyFile,
 } = {}) {
   if (platform !== 'win32' || arch !== 'x64') {
     throw new Error('Release packaging requires a Windows x64 host.');
@@ -97,7 +109,10 @@ export async function packageWindowsX64({
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
   const exePath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.exe`);
   const zipPath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.zip`);
-  const updateMetadataPath = join(releaseDirectory, 'latest.yml');
+  const updateMetadataPath = join(
+    releaseDirectory,
+    buildVersion === manifest.version ? 'latest.yml' : 'dev.yml',
+  );
   const unpackedDirectory = join(releaseDirectory, 'win-unpacked');
 
   for (const path of requiredElectronLicensePaths) {
@@ -110,8 +125,8 @@ export async function packageWindowsX64({
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('cargo', ['build', '--manifest-path', sandboxManifestPath, '--release', '--locked']);
   await run('npm', ['run', 'check:windows-cargo-notices']);
-  await mkdir(sandboxResourceDirectory, { recursive: true });
-  await copyFile(sandboxBinaryPath, sandboxResourcePath);
+  await makeDirectory(sandboxResourceDirectory, { recursive: true });
+  await copy(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);

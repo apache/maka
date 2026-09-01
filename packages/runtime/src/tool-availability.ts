@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { ASSISTANT_PROGRESS_TOOL_NAME } from '@maka/core/events';
 import type { ToolAvailabilityDiagnostic } from '@maka/core/usage-stats/types';
 import MiniSearch from 'minisearch';
 import { z } from 'zod';
@@ -36,7 +35,6 @@ export const TOOL_SEARCH_MAX_SCHEMA_CHARS = 64 * 1024;
 
 /** Tools that remain visible whenever they are bound. */
 const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
-  ASSISTANT_PROGRESS_TOOL_NAME,
   'Bash',
   'Read',
   'ArchiveRead',

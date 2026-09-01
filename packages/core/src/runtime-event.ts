@@ -35,9 +35,7 @@
 
 import {
   isMessageContent,
-  isAssistantTextPhase,
   normalizeMessageContent,
-  type AssistantTextPhase,
   type MessageContent,
   type PermissionClosureReason,
 } from './events.js';
@@ -65,6 +63,10 @@ import {
   isRuntimeEventWorkspaceFactEnvelope,
   type RuntimeEventWorkspaceFactEnvelope,
 } from './workspace-version-authority.js';
+import {
+  decodeDurableToolResultProjection,
+  type DurableToolResultProjection,
+} from './durable-tool-result-projection.js';
 
 // ============================================================================
 // Role / Author / Status
@@ -146,8 +148,6 @@ export function isTerminalRuntimeEventStatus(value: unknown): boolean {
 
 export interface RuntimeEventTextContent extends MessageContent {
   kind: 'text';
-  /** User-visible role of model-authored text; absent on user and legacy events. */
-  phase?: AssistantTextPhase;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
   /** Durable provenance for a host-authored user-role turn. */
@@ -192,6 +192,8 @@ export interface RuntimeEventFunctionResponseContent {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** Frozen provider-neutral content consumed by every model-history projection. */
+  modelProjection?: DurableToolResultProjection;
 }
 
 export interface RuntimeEventErrorContent {
@@ -253,6 +255,8 @@ export type ToolBoundaryProtocol = typeof TOOL_BOUNDARY_PROTOCOL_V1;
  */
 export interface RuntimeEventToolDispatch {
   protocol: ToolBoundaryProtocol;
+  /** New writes require this exact durable Tool Result projection protocol. */
+  resultProjectionVersion?: 1;
   operationId: string;
   providerToolCallId: string;
   toolName: string;
@@ -332,7 +336,7 @@ export interface RuntimeEventContinuationStartV2 {
     prefixDigest: `sha256:${string}`;
   };
   replayManifestDigest: `sha256:${string}`;
-  providerProjectionVersion: 1;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: `sha256:${string}`;
 }
 
@@ -536,10 +540,10 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'displayText',
     'origin',
     'attachments',
+    'directoryReferences',
     'quotes',
     'inlineReferences',
     'steering',
-    'phase',
     'providerOptions',
   ],
 );
@@ -553,7 +557,7 @@ const FUNCTION_CALL_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionCallCo
 );
 const FUNCTION_RESPONSE_CONTENT_SHAPE = defineObjectShape<RuntimeEventFunctionResponseContent>()(
   ['kind', 'id', 'name', 'result'],
-  ['isError', 'providerExecuted', 'providerOutput'],
+  ['isError', 'providerExecuted', 'providerOutput', 'modelProjection'],
 );
 const ERROR_CONTENT_SHAPE = defineObjectShape<RuntimeEventErrorContent>()(
   ['kind', 'message'],
@@ -606,7 +610,7 @@ const RUNTIME_TOOL_DISPATCH_SHAPE = defineObjectShape<RuntimeEventToolDispatch>(
     'canonicalArgsHash',
     'recoveryMode',
   ],
-  ['managedMutation'],
+  ['managedMutation', 'resultProjectionVersion'],
 );
 const RUNTIME_MANAGED_WORKSPACE_MUTATION_SHAPE =
   defineObjectShape<RuntimeEventManagedWorkspaceMutationV2>()(
@@ -717,6 +721,7 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
     !isOptionalMember(value.modelVisibility, RUNTIME_EVENT_MODEL_VISIBILITIES) ||
     (value.status !== undefined && !isRuntimeEventStatus(value.status)) ||
     (value.content !== undefined && !isRuntimeEventContent(value.content)) ||
+    !hasOwnedModelProjection(value.content, value.sessionId) ||
     (value.actions !== undefined && !isRuntimeEventActions(value.actions)) ||
     (value.refs !== undefined && !isRuntimeEventRefs(value.refs))
   ) {
@@ -732,11 +737,24 @@ export function decodeRuntimeEvent(value: unknown): RuntimeEvent {
           ? { origin: decodeTurnOrigin(value.content.origin) }
           : {}),
         ...(value.content.steering === true ? { steering: true as const } : {}),
-        ...(value.content.phase !== undefined ? { phase: value.content.phase } : {}),
       },
     } as unknown as RuntimeEvent;
   }
   return value as unknown as RuntimeEvent;
+}
+
+function hasOwnedModelProjection(content: unknown, sessionId: string): boolean {
+  if (!isRecord(content) || content.kind !== 'function_response') return true;
+  const projection = content.modelProjection;
+  if (!isRecord(projection) || projection.kind !== 'content' || !Array.isArray(projection.parts)) {
+    return true;
+  }
+  return projection.parts.every(
+    (part) =>
+      !isRecord(part) ||
+      part.kind !== 'artifact' ||
+      (isRecord(part.ref) && part.ref.sessionId === sessionId),
+  );
 }
 
 function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
@@ -747,7 +765,6 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         !hasExactShape(value, TEXT_CONTENT_SHAPE) ||
         (value.origin !== undefined && !isTurnOrigin(value.origin)) ||
         (value.steering !== undefined && value.steering !== true) ||
-        (value.phase !== undefined && !isAssistantTextPhase(value.phase)) ||
         (value.providerOptions !== undefined && !isRecord(value.providerOptions))
       ) {
         return false;
@@ -756,6 +773,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         text: value.text,
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
+        ...(value.directoryReferences !== undefined
+          ? { directoryReferences: value.directoryReferences }
+          : {}),
         ...(value.quotes !== undefined ? { quotes: value.quotes } : {}),
         ...(value.inlineReferences !== undefined
           ? { inlineReferences: value.inlineReferences }
@@ -784,7 +804,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         typeof value.name === 'string' &&
         Object.hasOwn(value, 'result') &&
         (value.isError === undefined || typeof value.isError === 'boolean') &&
-        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean')
+        (value.providerExecuted === undefined || typeof value.providerExecuted === 'boolean') &&
+        (value.modelProjection === undefined ||
+          decodesDurableToolResultProjection(value.modelProjection))
       );
     case 'error':
       return (
@@ -796,6 +818,15 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
       );
     default:
       return false;
+  }
+}
+
+function decodesDurableToolResultProjection(value: unknown): boolean {
+  try {
+    decodeDurableToolResultProjection(value);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -903,6 +934,7 @@ function isRuntimeToolDispatch(value: unknown): value is RuntimeEventToolDispatc
     isRecord(value) &&
     hasExactShape(value, RUNTIME_TOOL_DISPATCH_SHAPE) &&
     value.protocol === TOOL_BOUNDARY_PROTOCOL_V1 &&
+    (value.resultProjectionVersion === undefined || value.resultProjectionVersion === 1) &&
     typeof value.operationId === 'string' &&
     typeof value.providerToolCallId === 'string' &&
     typeof value.toolName === 'string' &&
@@ -1002,7 +1034,7 @@ function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContin
     (value.immediateSource.highWater as number) > 0 &&
     isSha256Digest(value.immediateSource.prefixDigest) &&
     isSha256Digest(value.replayManifestDigest) &&
-    value.providerProjectionVersion === 1 &&
+    (value.providerProjectionVersion === 1 || value.providerProjectionVersion === 2) &&
     isSha256Digest(value.providerReplayDigest)
   );
 }

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement } from 'react';
@@ -94,17 +95,6 @@ function reconnectingRemoteHost(): TaskEntryHost {
 function catalog(host: TaskEntryHost = readyHost()): TaskEntryCatalog {
   return { defaultProfileId: 'local', hosts: [host] };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((accept, decline) => {
-    resolve = accept;
-    reject = decline;
-  });
-  return { promise, resolve, reject };
-}
-
 let latestController: TaskEntryController | undefined;
 
 function ControllerProbe(props: { reportError(error: unknown): void }) {

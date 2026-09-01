@@ -18,8 +18,16 @@
  */
 
 import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
-import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
-import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
+import {
+  Banner,
+  Button,
+  ClientCapabilityPrompt,
+  Composer,
+  ComposerGoalProjectionConsumer,
+  SandboxBoundaryPrompt,
+  UserQuestionPrompt,
+} from '@maka/ui';
+import type { ComposerHandle } from '@maka/ui';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,
@@ -53,6 +61,11 @@ interface BoundaryUnreadableNotice {
   onRetry(): void;
 }
 
+type ComposerInteraction =
+  | ComponentProps<typeof SandboxBoundaryPrompt>['request']
+  | ComponentProps<typeof ClientCapabilityPrompt>['request']
+  | ComponentProps<typeof UserQuestionPrompt>['request'];
+
 /**
  * The composer region of the chat surface (issue #1043): the composer
  * interaction slot (permission / user-question prompts) plus the always-mounted
@@ -74,6 +87,8 @@ interface ChatComposerRegionProps
     | 'hidden'
     | 'draftKey'
     | 'stopPending'
+    | 'goalActive'
+    | 'onSetGoal'
     | 'allowAttachmentImportWhileStreaming'
     // Read from ComposerMentionsProvider, so a catalog reload repaints the
     // popups without re-rendering the shell that would otherwise pass them.
@@ -81,6 +96,9 @@ interface ChatComposerRegionProps
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'pendingDirectories'
+    | 'onRemoveDirectory'
+    | 'onPickDirectory'
   > {
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
@@ -92,11 +110,15 @@ interface ChatComposerRegionProps
   newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
-  activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
-  activeQuestion: ComponentProps<typeof UserQuestionPrompt>['request'] | undefined;
+  respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
+  directoryComposerProps: Pick<
+    ComponentProps<typeof Composer>,
+    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
+  >;
+  directoryPickerEnabled: boolean;
 }
 
 export function ChatComposerRegion({
@@ -109,14 +131,20 @@ export function ChatComposerRegion({
   newTaskSendPending,
   stopPendingBySession,
   respondToSandboxBoundary,
-  activeSandboxBoundary,
-  activeQuestion,
+  respondToClientCapability,
   respondToUserQuestion,
   stop,
   boundaryUnreadableNotice,
+  directoryComposerProps,
+  directoryPickerEnabled,
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
+  const activeClientCapability =
+    activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
+  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -206,6 +234,12 @@ export function ChatComposerRegion({
             onRespond={respondToSandboxBoundary}
           />
         )}
+        {activeClientCapability && (
+          <ClientCapabilityPrompt
+            request={activeClientCapability}
+            onRespond={respondToClientCapability}
+          />
+        )}
         {activeQuestion && (
           <UserQuestionPrompt
             request={activeQuestion}
@@ -215,22 +249,32 @@ export function ChatComposerRegion({
           />
         )}
       </div>
-      <Composer
-        ref={composerRef}
-        {...composerRest}
-        // AppShell carries staged attachments into both queued and steering
-        // follow-ups. Other Composer hosts remain gated by default because a
-        // text-only running-turn submission would leave attachments behind.
-        allowAttachmentImportWhileStreaming
-        mentionSkills={mentions?.mentionSkills}
-        mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-        mentionSkillsLoading={mentions?.mentionSkillsLoading}
-        onSearchMentionFiles={mentions?.searchMentionFiles}
-        hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-        draftKey={activeId ?? newTaskDraftKey}
-        draftPersistence={newTaskDraftPersistence}
-        stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-      />
+      <ComposerGoalProjectionConsumer>
+        {(goalProjection) => (
+          <Composer
+            ref={composerRef}
+            {...composerRest}
+            // AppShell carries staged attachments into both queued and steering
+            // follow-ups. Other Composer hosts remain gated by default because a
+            // text-only running-turn submission would leave attachments behind.
+            allowAttachmentImportWhileStreaming
+            mentionSkills={mentions?.mentionSkills}
+            mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+            mentionSkillsLoading={mentions?.mentionSkillsLoading}
+            onSearchMentionFiles={mentions?.searchMentionFiles}
+            {...directoryComposerProps}
+            onPickDirectory={
+              directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+            }
+            hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+            draftKey={activeId ?? newTaskDraftKey}
+            draftPersistence={newTaskDraftPersistence}
+            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            goalActive={goalProjection.goalActive}
+            onSetGoal={goalProjection.onSetGoal}
+          />
+        )}
+      </ComposerGoalProjectionConsumer>
     </>
   );
 }

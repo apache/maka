@@ -66,6 +66,34 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(adapter.runtimeEventReplaySupport().signedThinking, true);
   });
 
+  test('preserves Anthropic redacted thinking metadata at the model boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
+  });
+
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
     const adapter = new ModelAdapter({
       connection: {
@@ -219,7 +247,7 @@ describe('ModelAdapter stream and error normalization', () => {
     };
     assert.deepEqual(
       adapter.translateChunk({ type: 'reasoning-start', id: 'alibaba-reasoning-item' } as Chunk),
-      [{ kind: 'thinking', text: '', reasoningItemId: 'alibaba-reasoning-item' }],
+      [{ kind: 'thinking-start', reasoningPartId: 'alibaba-reasoning-item' }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -227,7 +255,7 @@ describe('ModelAdapter stream and error normalization', () => {
         id: 'alibaba-reasoning-item',
         delta: 'summary',
       } as Chunk),
-      [{ kind: 'thinking', text: 'summary', reasoningItemId: 'alibaba-reasoning-item' }],
+      [{ kind: 'thinking', text: 'summary', reasoningPartId: 'alibaba-reasoning-item' }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -245,7 +273,7 @@ describe('ModelAdapter stream and error normalization', () => {
           kind: 'thinking',
           text: '',
           providerOptions,
-          reasoningItemId: 'alibaba-reasoning-item',
+          reasoningPartId: 'alibaba-reasoning-item',
           reasoningSummaryText: 'summary',
         },
       ],
@@ -288,7 +316,13 @@ describe('ModelAdapter stream and error normalization', () => {
         id: 'deepseek-reasoning-item',
         delta: 'plaintext reasoning',
       } as Chunk),
-      [{ kind: 'thinking', text: 'plaintext reasoning' }],
+      [
+        {
+          kind: 'thinking',
+          text: 'plaintext reasoning',
+          reasoningPartId: 'deepseek-reasoning-item',
+        },
+      ],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -521,7 +555,7 @@ describe('ModelAdapter stream and error normalization', () => {
       } as Chunk),
       [
         {
-          kind: 'text-metadata',
+          kind: 'text-end',
           providerOptions: {
             openai: {
               itemId: 'message-1',
@@ -541,42 +575,74 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('preserves OpenAI Responses assistant text phases', () => {
-    const adapter = newAdapter();
-    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+  test('preserves native Responses text item metadata at both stream boundaries', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = {
+      openai: {
+        itemId: 'message-1',
+        phase: 'commentary',
+      },
+    };
 
     assert.deepEqual(
       adapter.translateChunk({
         type: 'text-start',
-        id: 'message-commentary',
-        providerMetadata: { openai: { phase: 'commentary' } },
-      } as Chunk),
-      [{ kind: 'text-start', phase: 'commentary' }],
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start', providerOptions: metadata, providerItemBoundary: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
         type: 'text-end',
-        id: 'message-final',
-        providerMetadata: { openai: { itemId: 'message-final', phase: 'final_answer' } },
-      } as Chunk),
-      [
-        {
-          kind: 'text-metadata',
-          phase: 'final_answer',
-          providerOptions: { openai: { itemId: 'message-final', phase: 'final_answer' } },
-        },
-      ],
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata, providerItemBoundary: true }],
     );
+  });
+
+  test('does not treat Chat Completions metadata as a Responses item boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai-chat',
+        providerType: 'openai-compatible',
+        defaultModel: 'chat-model',
+      },
+      apiKey: 'sk-test',
+      modelId: 'chat-model',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = { openai: { itemId: 'message-1', phase: 'commentary' } };
+
     assert.deepEqual(
       adapter.translateChunk({
         type: 'text-start',
-        id: 'message-unknown',
-        providerMetadata: {
-          openai: { phase: 'analysis' },
-          otherProvider: { phase: 'commentary' },
-        },
-      } as Chunk),
-      [{ kind: 'text-start' }],
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start', providerOptions: metadata }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata }],
     );
   });
 
@@ -695,7 +761,7 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.deepEqual(
       events.map((event) => event.kind),
-      ['thinking', 'thinking', 'thinking-signature'],
+      ['thinking-start', 'thinking', 'thinking', 'thinking-signature'],
     );
     assert.deepEqual(
       events

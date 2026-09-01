@@ -313,7 +313,6 @@
     "src/renderer/features/workbar/tools/side-chat/quote-companion-panel.tsx -> src/renderer/use-composer-attachments",
     "src/renderer/features/workbar/tools/side-chat/use-quote-companion.ts -> src/renderer/locales/conversation-copy",
     "src/renderer/features/workbar/tools/side-chat/use-quote-companion.ts -> src/renderer/settled-message-merge",
-    "src/renderer/features/workbar/tools/tasks/use-session-tasks.ts -> src/renderer/locales/shell-remaining-copy",
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/locales/conversation-copy",
     "src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx -> src/renderer/theme",
     "src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx -> src/renderer/locales/conversation-copy",
@@ -388,7 +387,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 4376
+        "nonTriviaTokens": 4278
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 5,
@@ -711,8 +710,8 @@
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1
         },
-        "importSpecifiers": 23,
-        "nonTriviaTokens": 3042
+        "importSpecifiers": 21,
+        "nonTriviaTokens": 2974
       },
       "src/renderer/app-shell-session-settings-actions.ts": {
         "importDeclarations": 9,
@@ -740,7 +739,7 @@
           "@maka/core/ui-locale": 1
         },
         "importSpecifiers": 11,
-        "nonTriviaTokens": 1267
+        "nonTriviaTokens": 1264
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 7,
@@ -922,7 +921,6 @@
           "useCommandPalette": 1,
           "useComposerAttachments": 1,
           "useEffect": 14,
-          "useGoalController": 1,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
           "useModuleHubController": 1,
@@ -1061,8 +1059,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 187,
-        "nonTriviaTokens": 15908
+        "importSpecifiers": 186,
+        "nonTriviaTokens": 15825
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -3674,9 +3672,7 @@
           "window.maka.githubCopilotSubscription.logout": 1,
           "window.maka.githubCopilotSubscription.refreshTokens": 1,
           "window.maka.openAiCodex": 1,
-          "window.maka.openAiCodex.getAccountState": 1,
-          "window.maka.xaiOAuth": 1,
-          "window.maka.xaiOAuth.getAccountState": 1
+          "window.maka.xaiOAuth": 1
         },
         "environmentCapabilities": {},
         "hookCalls": {
@@ -3983,9 +3979,7 @@
           "window.maka.connections.test": 1,
           "window.maka.connections.update": 1
         },
-        "environmentCapabilities": {
-          "window": 2
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -4365,8 +4359,8 @@
           "./settings-status-badge.js": 1,
           "./subagent-preset-presentation.js": 1,
           "@astryxdesign/core": 1,
-          "@maka/core/llm-connections": 2,
-          "@maka/core/model-thinking": 2,
+          "@maka/core/llm-connections": 1,
+          "@maka/core/model-thinking": 1,
           "@maka/core/settings": 1,
           "@maka/core/subagent-settings": 1,
           "@maka/ui": 1,
@@ -5356,7 +5350,7 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./workhub-controller.js": 1
+          "./application/contracts/workhub-request-intent.js": 1
         }
       },
       "src/renderer/workhub-send-lease.ts": {

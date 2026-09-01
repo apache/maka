@@ -24,6 +24,7 @@ import type { StoredMessage } from '@maka/core/session';
 import type { SteeringMessageSnapshot } from '../protocol/message.js';
 import {
   createRuntimeHostSessionProjectionSeed,
+  projectRuntimeHostInteractionRequest,
   RuntimeHostSessionProjector,
 } from '../adapter/session-projector.js';
 import {
@@ -31,6 +32,48 @@ import {
   type SessionContinuitySnapshot,
   type SubscriptionFrame,
 } from '../protocol/index.js';
+
+test('projects Client Capability approvals without exposing provider identities', () => {
+  assert.deepEqual(
+    projectRuntimeHostInteractionRequest(
+      {
+        schemaVersion: 1,
+        interactionId: 'approval-1',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        revision: 1,
+        request: {
+          kind: 'client_capability',
+          toolUseId: 'tool-1',
+          target: {
+            providerId: 'provider-secret',
+            contractId: 'contract-secret',
+            serverId: 'desktop_browser',
+            toolName: 'browser_snapshot',
+            capability: 'browser',
+            scope: { kind: 'browser_origin', origin: 'https://example.com' },
+          },
+        },
+        status: 'pending',
+        outcome: null,
+      },
+      10,
+    ),
+    [
+      {
+        type: 'client_capability_request',
+        id: 'host-interaction:approval-1:1',
+        turnId: 'turn-1',
+        ts: 10,
+        requestId: 'approval-1',
+        toolUseId: 'tool-1',
+        capability: 'browser',
+        scope: { kind: 'browser_origin', origin: 'https://example.com' },
+      },
+    ],
+  );
+});
 
 test('applies authoritative replacement once and does not complete it again at Turn terminal', () => {
   const projector = new RuntimeHostSessionProjector(
@@ -71,97 +114,6 @@ test('applies authoritative replacement once and does not complete it again at T
   assert.deepEqual(
     terminal.map((event) => event.type),
     ['complete'],
-  );
-});
-
-test('preserves commentary phase across active stream seeding and completion', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed(
-      [{ ...assistant('message-1', 'checking'), phase: 'commentary' }],
-      snapshot(),
-    ),
-    () => 10,
-    [
-      {
-        kind: 'text',
-        turnId: 'turn-1',
-        messageId: 'message-1',
-        phase: 'commentary',
-      },
-    ],
-  );
-
-  assert.deepEqual(projector.seedActive(true), [
-    {
-      type: 'text_delta',
-      id: 'host-seed:run-1:text:message-1',
-      turnId: 'turn-1',
-      messageId: 'message-1',
-      ts: 10,
-      startOffset: 0,
-      text: 'checking',
-      phase: 'commentary',
-    },
-  ]);
-  assert.deepEqual(
-    projector.accept(
-      deltaFrame(1, 'checking'.length, ' the repository', {
-        complete: true,
-        phase: 'commentary',
-      }),
-    ).events,
-    [
-      {
-        type: 'text_complete',
-        id: 'host-frame:host-1:subscription-1:1',
-        turnId: 'turn-1',
-        messageId: 'message-1',
-        ts: 10,
-        text: 'checking the repository',
-        phase: 'commentary',
-      },
-    ],
-  );
-});
-
-test('preserves commentary phase when seeding a stored terminal turn', () => {
-  const projector = new RuntimeHostSessionProjector(
-    snapshot(),
-    createRuntimeHostSessionProjectionSeed([], snapshot()),
-    () => 10,
-  );
-
-  assert.deepEqual(
-    projector.seedStoredTerminal('turn-1', [
-      { ...assistant('message-1', 'checked'), phase: 'commentary' },
-      {
-        type: 'turn_state',
-        id: 'terminal-1',
-        turnId: 'turn-1',
-        ts: 11,
-        status: 'completed',
-        partialOutputRetained: true,
-      },
-    ]),
-    [
-      {
-        type: 'text_complete',
-        id: 'terminal-1:text:message-1',
-        turnId: 'turn-1',
-        messageId: 'message-1',
-        ts: 11,
-        text: 'checked',
-        phase: 'commentary',
-      },
-      {
-        type: 'complete',
-        id: 'terminal-1',
-        turnId: 'turn-1',
-        ts: 11,
-        stopReason: 'end_turn',
-      },
-    ],
   );
 });
 
@@ -823,7 +775,7 @@ function deltaFrame(
   sequence: number,
   startOffset: number,
   text: string,
-  flags: { reset?: true; complete?: true; phase?: 'commentary' | 'final_answer' } = {},
+  flags: { reset?: true; complete?: true } = {},
 ): SubscriptionFrame {
   return {
     kind: 'subscription.session_delta',

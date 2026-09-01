@@ -40,6 +40,7 @@ import {
   createDesktopRuntimeHostSshTerminal,
   runtimeHostDevelopmentPeerTargetFromUname,
 } from '../runtime-host-ssh-terminal.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('maps supported SSH uname identities to development peer targets', () => {
   assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
@@ -640,12 +641,13 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
-test('requests relay-discovery status only on the peer-management frame', async () => {
+test('requests adaptive-connectivity status only on the peer-management frame', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runPeerManagement({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    webRtcStunStatus: true,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/srv/maka',
@@ -655,7 +657,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
   });
   await waitFor(() => harness.pty.hasDataListener());
   const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
-  assert.match(command, /peer.*status.*--framed.*--relay-discovery-status/u);
+  assert.match(
+    command,
+    /peer.*status.*--framed.*--relay-discovery-status.*--webrtc-stun-status/u,
+  );
 
   harness.pty.emitData(
     encodeRuntimeHostPeerManagementFrame({
@@ -669,6 +674,7 @@ test('requests relay-discovery status only on the peer-management frame', async 
         routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
         coordinationRelays: [],
         automaticRelayDiscovery: true,
+        webRtcStunPolicy: { kind: 'default' },
       },
     }),
   );
@@ -676,6 +682,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
 
   const result = await management;
   assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
+  assert.deepEqual(
+    result.kind === 'result' ? result.status.webRtcStunPolicy : undefined,
+    { kind: 'default' },
+  );
   await harness.terminal.close();
 });
 
@@ -1051,9 +1061,5 @@ class FakePty {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail('Condition was not reached');
+  await pollFor(predicate, { attempts: 100, pollMs: 1, message: 'Condition was not reached' });
 }

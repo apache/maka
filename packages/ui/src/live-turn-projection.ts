@@ -18,9 +18,7 @@
  */
 
 import {
-  ASSISTANT_PROGRESS_TOOL_NAME,
   decodeToolStepProgress,
-  type AssistantTextPhase,
   type MessageContent,
   type ProviderRetryEvent,
   type SessionEvent,
@@ -77,7 +75,6 @@ export type LiveTurnStepContentKind = 'thinking' | 'text' | 'tools';
 
 export interface LiveTextProjection {
   text: string;
-  phase?: AssistantTextPhase;
   truncated: boolean;
   complete: boolean;
   /** Raw source length, independent of redaction and display truncation. */
@@ -111,8 +108,6 @@ export interface LiveTurnProjection {
    */
   unconfirmed?: true;
   providerRetry?: LiveProviderRetry;
-  /** Runtime compatibility tools hidden from the user-facing activity log. */
-  hiddenToolUseIds?: string[];
   steps: LiveTurnStepProjection[];
 }
 
@@ -270,19 +265,6 @@ export function applyLiveTurnEvent(
     ? current
     : { turnId: event.turnId, phase: 'streamed' as const, steps: [] };
   const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
-  if (event.type === 'tool_start' && event.toolName === ASSISTANT_PROGRESS_TOOL_NAME) {
-    const hiddenToolUseIds = prior.hiddenToolUseIds?.includes(event.toolUseId)
-      ? prior.hiddenToolUseIds
-      : [...(prior.hiddenToolUseIds ?? []), event.toolUseId];
-    return { ...priorWithoutRetry, hiddenToolUseIds };
-  }
-  if (
-    event.type !== 'tool_start' &&
-    'toolUseId' in event &&
-    prior.hiddenToolUseIds?.includes(event.toolUseId)
-  ) {
-    return priorWithoutRetry;
-  }
   const messageEvent = event.type === 'thinking_delta'
     || event.type === 'thinking_complete'
     || event.type === 'text_delta'
@@ -361,9 +343,6 @@ export function applyLiveTurnEvent(
       ...step,
       text: {
         text: applied.text,
-        ...(event.phase ?? step.text?.phase
-          ? { phase: event.phase ?? step.text?.phase }
-          : {}),
         truncated: (step.text?.truncated ?? false) || applied.truncated,
         complete: false,
         ...(delta.sourceEndOffset === undefined
@@ -380,9 +359,6 @@ export function applyLiveTurnEvent(
       ...step,
       text: {
         text: applied.text,
-        ...(event.phase ?? step.text?.phase
-          ? { phase: event.phase ?? step.text?.phase }
-          : {}),
         truncated: applied.truncated,
         complete: true,
         ...(step.text?.sourceEndOffset === undefined

@@ -38,6 +38,10 @@ import type {
 import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
+  ClientCapabilityGrantCapability,
+  ClientCapabilityGrantScope,
+} from './client-capability-grant.js';
+import type {
   PipeShellOutput,
   PtyShellOutput,
   ShellOutput,
@@ -48,6 +52,7 @@ import type {
 export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import { type TokenUsageFields } from './usage-record-schema.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
+import type { DurableToolResultProjection } from './durable-tool-result-projection.js';
 
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
 export const TOOL_OUTPUT_DELTA_MAX_CHARS = 8192;
@@ -68,27 +73,6 @@ export const TOOL_ACTIVITY_KINDS = [
   'tool',
 ] as const;
 export type ToolActivityKind = (typeof TOOL_ACTIVITY_KINDS)[number];
-export const ASSISTANT_TEXT_PHASES = ['commentary', 'final_answer'] as const;
-/**
- * Runtime-owned compatibility transport for providers without native
- * assistant text phases. Clients render the projected commentary text and
- * hide this implementation-detail tool from the activity log.
- */
-export const ASSISTANT_PROGRESS_TOOL_NAME = 'ProgressUpdate';
-/**
- * Maka-owned assistant text semantics.
- *
- * OpenAI Responses can provide this explicitly. Phase-less protocols such as
- * Chat Completions and Anthropic Messages are normalized by the Runtime from
- * the response shape: text followed by a client tool call is commentary, while
- * terminal text is a final answer.
- */
-export type AssistantTextPhase = (typeof ASSISTANT_TEXT_PHASES)[number];
-
-export function isAssistantTextPhase(value: unknown): value is AssistantTextPhase {
-  return typeof value === 'string' && (ASSISTANT_TEXT_PHASES as readonly string[]).includes(value);
-}
-
 type TerminalToolResultStatus = Exclude<ShellRunTerminalStatus, 'orphaned'>;
 
 // ============================================================================
@@ -107,6 +91,26 @@ export interface AttachmentRef {
   mimeType: string;
   bytes: number;
   ref: StorageRef;
+}
+
+/** A live directory on the originating Host, not a saved file or an access grant. */
+export interface DirectoryReference {
+  hostId: string;
+  path: string;
+}
+
+export const DIRECTORY_REFERENCE_MAX_COUNT = 4;
+
+export function isDirectoryReference(value: unknown): value is DirectoryReference {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    typeof value.hostId === 'string' &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(value.hostId) &&
+    typeof value.path === 'string' &&
+    value.path.length <= 4096 &&
+    isCanonicalAbsolutePath(value.path)
+  );
 }
 
 /**
@@ -150,6 +154,7 @@ export interface MessageContent {
   displayText?: string;
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
+  directoryReferences?: DirectoryReference[];
   /** Ordered inline excerpts; omit when empty. Provenance remains part of content identity. */
   quotes?: QuoteRef[];
   /** Sent inline tokens; an empty array marks a current-format plain message. Never model-visible. */
@@ -158,7 +163,7 @@ export interface MessageContent {
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'quotes', 'inlineReferences'],
+  ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
@@ -191,6 +196,9 @@ const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'e
 export function normalizeMessageContent(content: MessageContent): MessageContent {
   return {
     text: content.text,
+    ...(content.directoryReferences?.length
+      ? { directoryReferences: content.directoryReferences.map((ref) => ({ ...ref })) }
+      : {}),
     ...(content.displayText !== undefined && content.displayText !== content.text
       ? { displayText: content.displayText }
       : {}),
@@ -224,6 +232,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
   const text = contents.map((content) => content.text).join('\n\n');
   const displayText = contents.map((content) => content.displayText ?? content.text).join('\n\n');
   const attachments = contents.flatMap((content) => content.attachments ?? []);
+  const directoryReferences = contents.flatMap((content) => content.directoryReferences ?? []);
   const quotes = contents.flatMap((content) => content.quotes ?? []);
   const inlineReferences: InlineReference[] = [];
   const hasInlineReferenceMarker = contents.some(
@@ -241,6 +250,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
     text,
     ...(displayText !== text ? { displayText } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(directoryReferences.length > 0 ? { directoryReferences } : {}),
     ...(quotes.length > 0 ? { quotes } : {}),
     ...(hasInlineReferenceMarker ? { inlineReferences } : {}),
   });
@@ -256,6 +266,9 @@ export function isMessageContent(value: unknown): value is MessageContent {
     isRecord(value) &&
     hasExactShape(value, MESSAGE_CONTENT_SHAPE) &&
     typeof value.text === 'string' &&
+    (value.directoryReferences === undefined ||
+      (Array.isArray(value.directoryReferences) &&
+        value.directoryReferences.every(isDirectoryReference))) &&
     (value.displayText === undefined || typeof value.displayText === 'string') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
@@ -416,6 +429,12 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
+    (left.directoryReferences?.length ?? 0) === (right.directoryReferences?.length ?? 0) &&
+    (left.directoryReferences ?? []).every(
+      (ref, index) =>
+        ref.hostId === right.directoryReferences?.[index]?.hostId &&
+        ref.path === right.directoryReferences?.[index]?.path,
+    ) &&
     ((leftAttachments === undefined && rightAttachments === undefined) ||
       (leftAttachments !== undefined &&
         rightAttachments !== undefined &&
@@ -542,6 +561,8 @@ export type SessionEvent =
   | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
   | SandboxBoundaryDecisionAckEvent
+  | ClientCapabilityRequestEvent
+  | ClientCapabilityDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
@@ -560,8 +581,6 @@ export type SessionEvent =
 export interface TextDeltaEvent extends BaseEvent {
   type: 'text_delta';
   messageId: string;
-  /** User-visible role when known before or during streaming. */
-  phase?: AssistantTextPhase;
   /** Absolute UTF-16 offset for replay-safe streams; absent for append-only backends. */
   startOffset?: number;
   text: string;
@@ -571,8 +590,6 @@ export interface TextCompleteEvent extends BaseEvent {
   type: 'text_complete';
   messageId: string;
   text: string;
-  /** User-visible role of this assistant text after runtime normalization. */
-  phase?: AssistantTextPhase;
   /** Provider-owned text metadata such as Responses URL citations. */
   providerOptions?: Record<string, unknown>;
 }
@@ -723,6 +740,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** Provider-neutral model-visible output computed before durable publication. */
+  modelProjection?: DurableToolResultProjection;
   /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
   contentOmitted?: true;
   isError: boolean;
@@ -816,7 +835,13 @@ export type ToolResultContent =
       originalEstimatedTokens: number;
       originalBytes: number;
       rewriteVersion: number;
-      reason: 'stale_tool_result_pruned_before_compact';
+      /**
+       * Both prune paths now record the same durable projection transition
+       * (#4283), so the archived-result read model spans both reasons.
+       */
+      reason:
+        | 'stale_tool_result_pruned_before_compact'
+        | 'active_current_turn_tool_result_pruned_before_next_step';
     }
   | {
       kind: 'terminal';
@@ -997,12 +1022,23 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   expansion: SandboxBoundaryExpansion;
 }
 
+export interface ClientCapabilityRequestEvent extends BaseEvent {
+  type: 'client_capability_request';
+  requestId: string;
+  toolUseId: string;
+  capability: ClientCapabilityGrantCapability;
+  scope: ClientCapabilityGrantScope;
+}
+
 /**
  * The requests a session can park on while it waits for the user. Both are
  * registered by RuntimeKernel while unanswered, so a surface that missed the
  * live event can rehydrate the prompt instead of stranding the run.
  */
-export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type ActiveInteractionRequestEvent =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | ClientCapabilityRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';
@@ -1011,6 +1047,13 @@ export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   decision: 'allow' | 'deny';
   status: Exclude<SandboxBoundaryRequestStatus, 'pending'>;
   revision: number;
+}
+
+export interface ClientCapabilityDecisionAckEvent extends BaseEvent {
+  type: 'client_capability_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
 }
 
 /**

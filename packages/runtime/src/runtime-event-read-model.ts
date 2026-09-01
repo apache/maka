@@ -652,7 +652,6 @@ function projectText(
       turnId: event.turnId,
       ts: event.ts,
       text: event.content.text,
-      ...(event.content.phase !== undefined ? { phase: event.content.phase } : {}),
       ...(event.content.providerOptions !== undefined
         ? { providerOptions: structuredClone(event.content.providerOptions) }
         : {}),
@@ -1501,6 +1500,7 @@ function semanticMessage(message: StoredMessage): unknown {
         displayText: message.displayText,
         origin: message.origin,
         attachments: message.attachments ?? [],
+        directoryReferences: message.directoryReferences,
         quotes: message.quotes ?? [],
       };
     case 'assistant':
@@ -1509,7 +1509,6 @@ function semanticMessage(message: StoredMessage): unknown {
         turnId: message.turnId,
         text: message.text,
         modelId: message.modelId,
-        phase: message.phase,
         thinking: message.thinking,
       };
     case 'tool_call':

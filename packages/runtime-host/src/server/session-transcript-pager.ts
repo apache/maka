@@ -18,7 +18,6 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import type { AssistantTextPhase } from '@maka/core/events';
 import type { StoredMessage } from '@maka/core/session';
 import {
   SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES,
@@ -68,7 +67,6 @@ export interface ActiveTranscriptAssistantStream {
   readonly messageId: string;
   readonly kind: 'text' | 'thinking';
   readonly text: string;
-  readonly phase?: AssistantTextPhase;
 }
 
 interface SelectedFragments {
@@ -882,12 +880,7 @@ function mergeActiveAssistantStreams(
       throw new Error('Active assistant prefix has no matching transcript message');
     }
     if (prefix.kind === 'text') {
-      const phase = prefix.phase ?? message.phase;
-      merged[index] = {
-        ...message,
-        text: reconcileAssistantText(message.text, prefix.text),
-        ...(phase === undefined ? {} : { phase }),
-      };
+      merged[index] = { ...message, text: reconcileAssistantText(message.text, prefix.text) };
       continue;
     }
     if (!message.thinking) {
@@ -921,7 +914,6 @@ function reconcileAssistantMessage(
   durable: Extract<StoredMessage, { type: 'assistant' }>,
   projected: Extract<StoredMessage, { type: 'assistant' }>,
 ): Extract<StoredMessage, { type: 'assistant' }> {
-  const phase = projected.phase ?? durable.phase;
   const thinking =
     durable.thinking && projected.thinking
       ? {
@@ -932,7 +924,6 @@ function reconcileAssistantMessage(
   return {
     ...projected,
     text: reconcileAssistantText(durable.text, projected.text),
-    ...(phase === undefined ? {} : { phase }),
     ...(thinking ? { thinking } : {}),
   };
 }

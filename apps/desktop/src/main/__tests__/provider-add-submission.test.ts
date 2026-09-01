@@ -26,10 +26,10 @@ import {
   type AddProviderField,
 } from '../../renderer/settings/provider-add-submission.js';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerSupportsModelDiscovery,
   type CreateConnectionInput,
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 
@@ -53,8 +53,9 @@ function draft(over: Partial<AddProviderDraft> = {}): AddProviderDraft {
   };
 }
 
-function connection(slug: string): LlmConnection {
+function connection(slug: string): IdentifiedLlmConnection {
   return {
+    connectionId: `connection-${slug}`,
     slug,
     name: slug,
     providerType: 'openai-compatible',
@@ -62,12 +63,12 @@ function connection(slug: string): LlmConnection {
     enabled: true,
     createdAt: 0,
     updatedAt: 0,
-  } as LlmConnection;
+  } as IdentifiedLlmConnection;
 }
 
 function bridge(over: {
-  create?: (input: CreateConnectionInput) => Promise<LlmConnection>;
-  fetchModels?: (slug: string) => Promise<unknown>;
+  create?: (input: CreateConnectionInput) => Promise<IdentifiedLlmConnection>;
+  fetchModels?: (connection: { readonly connectionId: string; readonly slug: string }) => Promise<unknown>;
 }) {
   return {
     create: over.create ?? (async (input) => connection(input.slug)),
@@ -88,8 +89,8 @@ test('no provider type demands a model id at creation', () => {
   // Stated across the catalog rather than for the two relays alone: the rule
   // that came back would be a per-provider `if`, and asserting only where it
   // used to live would let it reappear next door.
-  for (const providerType of Object.keys(PROVIDER_DEFAULTS) as ProviderType[]) {
-    const defaults = PROVIDER_DEFAULTS[providerType];
+  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+    const defaults = PROVIDER_REGISTRY[providerType];
     if (defaults.status === 'phase3-experimental') continue;
     const issue = validateAddProviderDraft(
       draft({
@@ -159,7 +160,7 @@ test('a successful catalog fetch reports no error', async () => {
 });
 
 test('a provider without discovery is not asked, and reports no error', async () => {
-  const withoutDiscovery = (Object.keys(PROVIDER_DEFAULTS) as ProviderType[]).find(
+  const withoutDiscovery = (Object.keys(PROVIDER_REGISTRY) as ProviderType[]).find(
     (providerType) => !providerSupportsModelDiscovery(providerType),
   );
   assert.ok(withoutDiscovery, 'expected at least one provider with no discovery endpoint');
