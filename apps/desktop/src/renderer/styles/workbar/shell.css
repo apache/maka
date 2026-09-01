@@ -202,7 +202,7 @@
 
 .maka-workbar-tab:hover,
 .maka-workbar-tab[data-active] {
-  background: var(--color-overlay-hover);
+  background: var(--state-hover-bg);
   color: var(--foreground);
 }
 
