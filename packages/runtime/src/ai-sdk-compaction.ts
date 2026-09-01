@@ -909,10 +909,6 @@ export class AiSdkCompaction {
         ) ?? projectedMessages;
       const keepProjection = (): RequestProjection | undefined =>
         projectedMessages ? { messages: projectedMessages } : undefined;
-      // Step 0 is shaped by the pre_turn path; the mid-turn trigger only runs
-      // between steps, once completed-step usage and events exist.
-      if (options.stepNumber < 1) return keepProjection();
-
       // Real usage for the last finished step, read synchronously from the
       // SDK's own step results (the same numbers the finish-step chunk
       // carries) — no coupling to how far the stream consumer has advanced.
@@ -946,6 +942,9 @@ export class AiSdkCompaction {
             : undefined;
       }
 
+      // The turn's first request folds as a pre_turn boundary, like the
+      // reactive step-0 recovery; later steps fold mid_turn.
+      const phase = options.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
       // A skipped trigger is never silent: every failure-driven skip records a
       // failedOpen decision.
       const failOpen = (failOpenReason: string): RequestProjection | undefined => {
@@ -954,7 +953,7 @@ export class AiSdkCompaction {
             stage: 'activeStep',
             sourceKind: 'runtimeEvents',
             decision: 'failedOpen',
-            phase: 'mid_turn',
+            phase,
             boundaryKind: 'historyCompact',
             reason: 'context_limit',
             failOpenReason,
@@ -989,10 +988,23 @@ export class AiSdkCompaction {
       );
       const forcedEstimate = state.forcedTriggerEstimate;
       state.forcedTriggerEstimate = undefined;
+      const anchored = requestEstimateAnchor(state, payloadChars);
+      // The turn's FIRST request only gets a trigger when a previous turn left
+      // a usable anchor. Without one the estimate is the whole payload at
+      // chars/4 — the same guess the pre_turn gate already spends, and far too
+      // crude to start a summarizer on. With one, step 0 is judged exactly like
+      // every later step.
+      if (
+        options.stepNumber < 1 &&
+        forcedEstimate === undefined &&
+        anchored.priorUsageTokens === undefined
+      ) {
+        return keepProjection();
+      }
       const estimate =
         forcedEstimate ??
         estimateNextRequestTokens({
-          ...requestEstimateAnchor(state, payloadChars),
+          ...anchored,
           charsPerToken,
           coldStartChars: payloadChars,
         });
@@ -1009,6 +1021,7 @@ export class AiSdkCompaction {
       // keep the raw projection on skip/fail, apply the fold on success.
       const outcome = await this.compactActiveRequestHistory({
         turnId,
+        phase,
         origin,
         state,
         queue,
@@ -1498,7 +1511,11 @@ export class AiSdkCompaction {
           charsPerToken,
         );
       let payloadChars = finalPayloadChars();
-      if (state.capacity !== undefined && options.stepNumber >= 1) {
+      // Same rule as the trigger: the turn's first request is measured only
+      // when a previous turn left a usable anchor to measure it against.
+      const anchoredAtStepZero =
+        requestEstimateAnchor(state, payloadChars).priorUsageTokens !== undefined;
+      if (state.capacity !== undefined && (options.stepNumber >= 1 || anchoredAtStepZero)) {
         const estimateFinal = (): number =>
           estimateNextRequestTokens({
             ...requestEstimateAnchor(state, payloadChars),

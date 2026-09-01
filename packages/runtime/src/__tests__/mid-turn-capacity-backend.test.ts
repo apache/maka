@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
@@ -71,6 +71,7 @@ interface MidTurnFixture {
   toolExecutions: string[];
   summarizerCalls: number;
   priorEvents: RuntimeEvent[];
+  priorRunHeaders: AgentRunHeader[];
   anchor: RuntimeEvent;
   /** The fixture's durable RuntimeEvent ledger for the current turn/run. */
   ledger: RuntimeEvent[];
@@ -151,6 +152,12 @@ interface MidTurnFixtureOptions {
   assistantTextInFirstStep?: boolean;
   /** Override the first step's reported usage; 'missing' = empty usage object. */
   firstStepUsage?: { input: number; output: number } | 'missing';
+  /** Override the final (text) step's reported usage. */
+  finalStepUsage?: { input: number; output: number };
+  /** Prior-turn RuntimeEvents appended after the shaped priors (e.g. a persisted usage anchor). */
+  extraPriorEvents?: readonly RuntimeEvent[];
+  /** Run headers for the prior turns, so a persisted anchor can be identity-gated. */
+  priorRunHeaders?: readonly AgentRunHeader[];
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
@@ -216,7 +223,13 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     { type: 'text-start', id: 'text-1' },
     { type: 'text-delta', id: 'text-1', delta: 'done' },
     { type: 'text-end', id: 'text-1' },
-    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: usage(120, 10) },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: options.finalStepUsage
+        ? usage(options.finalStepUsage.input, options.finalStepUsage.output)
+        : usage(120, 10),
+    },
   ];
   const chunksForCall = (call: number): LanguageModelV4StreamPart[] => {
     if (options.bigToolGroup) {
@@ -333,6 +346,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
               `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
             ),
           ];
+  priorEvents.push(...(options.extraPriorEvents ?? []));
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
     ...(options.currentImage
@@ -584,6 +598,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return fixture.ledgerReads;
     },
     priorEvents,
+    priorRunHeaders: [...(options.priorRunHeaders ?? [])],
     anchor,
     ledger,
     modelCalls,
@@ -608,6 +623,7 @@ async function runFixtureTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
+    runtimeContextRunHeaders: [...fixture.priorRunHeaders],
   })) {
     if (consumer === 'slow') {
       // Scheduling perturbation: hold the durable write back across several
@@ -1527,6 +1543,115 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal((anchor?.payloadChars ?? 0) > 0, true);
   });
 
+  test('a turn seeded with the previous turn’s anchor compacts its FIRST request', async () => {
+    // End to end: turn one really runs, the backend writes the anchor, the
+    // fixture's own mapper puts it in the durable ledger, and turn two reads
+    // it back as prior context. Nothing here hand-builds the anchor.
+    const previous = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 1_000_000,
+      finalAtSecondCall: true,
+      // A dense (CJK-shaped) request: real input tokens well above chars/4.
+      finalStepUsage: { input: 30_000, output: 10 },
+    });
+    await runFixtureTurn(previous);
+    const persisted = priorTurnUsageEvents(previous);
+    assert.equal(persisted.length, 1);
+    assert.equal(
+      (persisted[0]?.actions?.tokenUsage?.lastRequestAnchor as { inputTokens: number } | undefined)
+        ?.inputTokens,
+      30_000,
+    );
+
+    // High water 20k: the whole payload at chars/4 is nowhere near it, so
+    // without the anchor step 0 has nothing to act on. The anchor says the
+    // request really costs 30k, and the first request is compacted.
+    const seeded = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 40_000,
+      reserveTokens: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: persisted,
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(seeded);
+
+    assert.equal(seeded.recorded.length, 1);
+    // The first request folds on the pre_turn boundary: the head anchor stays
+    // verbatim in the successor tail instead of being covered.
+    assert.equal(
+      compactionDecisions(seeded).find((decision) => decision.decision === 'replaced')?.phase,
+      'pre_turn',
+    );
+    const firstPrompt = promptJson(seeded, 0);
+    assert.match(firstPrompt, /maka_history_compact_checkpoint/);
+    assert.match(firstPrompt, /MID_TURN_SUMMARY_SENTINEL/);
+    assert.equal(firstPrompt.includes('PRIOR_FACT'), false);
+    assert.equal(firstPrompt.includes(ANCHOR_TEXT), true);
+    const complete = seeded.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+  });
+
+  test('the same turn without an anchor leaves its first request alone', async () => {
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 40_000,
+      reserveTokens: 20_000,
+      finalAtSecondCall: true,
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 0);
+    assert.equal(promptJson(fixture, 0).includes('PRIOR_FACT'), true);
+  });
+
+  test('an anchor is discarded unless a run header proves it came from this model', async () => {
+    // Input tokens are a count in one model's tokenizer; nothing converts them.
+    // A header naming another model and no header at all fail the same way.
+    for (const priorRunHeaders of [[{ ...priorRunHeader(), modelId: 'some-other-model' }], []]) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 40_000,
+        reserveTokens: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [priorUsageEvent({ inputTokens: 30_000, payloadChars: 4_000 })],
+        priorRunHeaders,
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, 0);
+    }
+  });
+
+  test('a synthetic /compact usage row does not shadow the real anchor', async () => {
+    // A manual /compact writes `input: 0, output: 0` without going through the
+    // provider send, so it carries no anchor. The reverse scan skips it and
+    // still finds the last real request.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 40_000,
+      reserveTokens: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: [
+        priorUsageEvent({ inputTokens: 30_000, payloadChars: 4_000 }),
+        {
+          ...runtimeTextEvent('prior-compact-usage', 'turn-0', 'model', ''),
+          id: 'prior-compact-usage',
+          runId: 'run-0',
+          role: 'system' as const,
+          author: 'system' as const,
+          content: undefined,
+          actions: { tokenUsage: { input: 0, output: 0 } },
+        },
+      ],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 1);
+    assert.match(promptJson(fixture, 0), /maka_history_compact_checkpoint/);
+  });
+
   test('an unrescuable turn under the shipped default still dispatches', async () => {
     // Same runtime-derived default (window 120 → reserve 30, high water 90):
     // no prior turns leaves no safe completed span, and the request genuinely
@@ -1547,6 +1672,52 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     );
   });
 });
+
+/**
+ * The turn's durable token_usage RuntimeEvents, re-labelled as a previous turn
+ * so the next fixture turn sees them the way `prior-run-context` serves them
+ * back after a restart.
+ */
+function priorTurnUsageEvents(fixture: MidTurnFixture): RuntimeEvent[] {
+  return fixture.ledger
+    .filter((event) => event.actions?.tokenUsage !== undefined)
+    .map((event) => ({ ...event, turnId: 'turn-0', runId: 'run-0', invocationId: 'run-0' }));
+}
+
+function priorUsageEvent(lastRequestAnchor: {
+  inputTokens: number;
+  payloadChars: number;
+}): RuntimeEvent {
+  return {
+    ...runtimeTextEvent('prior-usage', 'turn-0', 'model', ''),
+    id: 'prior-usage',
+    runId: 'run-0',
+    invocationId: 'run-0',
+    role: 'system',
+    author: 'system',
+    content: undefined,
+    actions: { tokenUsage: { input: 30_100, output: 30, lastRequestAnchor } },
+  };
+}
+
+function priorRunHeader(): AgentRunHeader {
+  return {
+    runId: 'run-0',
+    invocationId: 'run-0',
+    sessionId: 'session-1',
+    turnId: 'turn-0',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
+    llmConnectionSlug: 'anthropic-main',
+    modelId: 'mock-model-id',
+    cwd: '/tmp/maka',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 2,
+    completedAt: 2,
+  };
+}
 
 function runtimeTextEvent(
   id: string,
