@@ -1061,12 +1061,15 @@ export const Composer = forwardRef<
               </>
             );
           }
+          const fileName = inlineReferenceFileBasename(item.id);
           return (
             <>
               <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
               <span className="maka-composer-mention-text">
-                <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
-                <span className="maka-composer-mention-secondary">{item.id}</span>
+                <span className="maka-composer-mention-name">{fileName}</span>
+                <span className="maka-composer-mention-secondary">
+                  {item.id === fileName ? null : item.id}
+                </span>
               </span>
             </>
           );
@@ -1557,6 +1560,12 @@ export const Composer = forwardRef<
     (props.pendingQuotes?.length ?? 0) +
     (props.pendingAttachments?.length ?? 0) +
     (props.pendingDirectories?.length ?? 0);
+  // Session references are a single-line context token, unlike attachments
+  // and directory previews which still need the full drawer treatment.
+  const sessionReferenceDrawer =
+    drawerTokenCount > 0 &&
+    (props.pendingQuotes?.length ?? 0) === drawerTokenCount &&
+    props.pendingQuotes?.every((quote) => Boolean(quote.sourceSessionId)) === true;
   /** The last staged image opened from a chip (Lightbox media shape). Kept
    *  mounted after close — see the Lightbox render — so only the open flag
    *  drives visibility. */
@@ -1763,6 +1772,7 @@ export const Composer = forwardRef<
           drawer={drawerTokenCount > 0 ? (
             <ChatComposerDrawer
               className="maka-composer-drawer"
+              data-maka-session-reference-only={sessionReferenceDrawer ? 'true' : undefined}
               count={drawerTokenCount}
               label={copy.stagedContext}
               defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
