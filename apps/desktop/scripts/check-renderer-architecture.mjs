@@ -1431,7 +1431,7 @@ function validateDependencies({
     }
 
     if (sourceZone.kind === 'feature') {
-      if (targetZone.kind === 'legacy') {
+      if (targetZone.kind === 'legacy' && !isValidatedCopyCatalog(desktopRoot, targetRelative)) {
         const edge = `${fileRelative} -> ${targetRelative}`;
         observedLegacyFeatureImports.add(edge);
         if (!allowedLegacyFeatureImports.has(edge)) {
@@ -1511,7 +1511,7 @@ function validateDependencies({
       if (targetZone.kind === 'application' && !isPublicApplicationPath(targetRelative)) {
         violations.push(`${fileRelative}: Desktop adapter imports application implementation instead of a public entry: ${dependency}`);
       }
-      if (targetZone.kind === 'legacy') {
+      if (targetZone.kind === 'legacy' && !isValidatedCopyCatalog(desktopRoot, targetRelative)) {
         const edge = `${fileRelative} -> ${targetRelative}`;
         observedLegacyPlatformImports.add(edge);
         if (!allowedLegacyPlatformImports.has(edge)) {
@@ -2171,6 +2171,108 @@ function metricTotal(value) {
   return Object.values(value).reduce((total, count) => total + count, 0);
 }
 
+const COPY_CATALOG_PATH = /^src\/renderer\/locales\/[a-z0-9-]+-copy\.ts$/u;
+const COPY_CATALOG_MARKER_MODULE = '@maka/core/ui-locale';
+const COPY_CATALOG_MARKER_TYPE = 'UiCatalog';
+const copyCatalogValidationCache = new Map();
+
+function copyCatalogMarkerPresent(source, file) {
+  const ast = parse(source, {
+    createImportExpressions: true,
+    errorRecovery: false,
+    plugins: PARSER_PLUGINS.filter((plugin) => plugin !== 'jsx'),
+    sourceFilename: file,
+    sourceType: 'module',
+  });
+  let markerLocalName;
+  for (const statement of ast.program.body) {
+    if (statement.type !== 'ImportDeclaration' || statement.source.value !== COPY_CATALOG_MARKER_MODULE) continue;
+    for (const specifier of statement.specifiers) {
+      if (specifier.type === 'ImportSpecifier' && specifier.imported.name === COPY_CATALOG_MARKER_TYPE) {
+        markerLocalName = specifier.local.name;
+      }
+    }
+  }
+  if (!markerLocalName) return false;
+  let found = false;
+  function referencesMarker(typeAnnotation) {
+    return (
+      typeAnnotation?.type === 'TSTypeReference' &&
+      typeAnnotation.typeName.type === 'Identifier' &&
+      typeAnnotation.typeName.name === markerLocalName
+    );
+  }
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    if (typeof node.type !== 'string') return;
+    if (node.type === 'TSSatisfiesExpression' && referencesMarker(node.typeAnnotation)) found = true;
+    if (node.type === 'TSTypeAnnotation' && referencesMarker(node.typeAnnotation)) found = true;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end') continue;
+      visit(value);
+    }
+  }
+  visit(ast.program.body);
+  return found;
+}
+
+// A "validated copy catalog" is the one dependency class the migration ratchet
+// admits into legacy files: the locale policy (#2672) forces user-visible copy
+// OUT of business files and INTO locales/ catalogs, which necessarily ADDS an
+// import edge the debt ratchet would otherwise forbid. The admission is
+// structural, re-verified on every run, and never extends to the catalog's own
+// dependencies: bare package specifiers only, so a catalog cannot become a
+// tunnel to renderer implementation modules.
+function isValidatedCopyCatalog(desktopRoot, path) {
+  const relativePath = /\.[a-z]+$/u.test(path) ? path : `${path}.ts`;
+  const cacheKey = `${desktopRoot}|${relativePath}`;
+  const cached = copyCatalogValidationCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const validated = validateCopyCatalog(desktopRoot, relativePath);
+  copyCatalogValidationCache.set(cacheKey, validated);
+  return validated;
+}
+
+function validateCopyCatalog(desktopRoot, relativePath) {
+  if (!COPY_CATALOG_PATH.test(relativePath)) return false;
+  const absolutePath = resolve(desktopRoot, relativePath);
+  if (!existsSync(absolutePath)) return false;
+  const source = readFileSync(absolutePath, 'utf8');
+  let analysis;
+  try {
+    analysis = analyzeRendererSource(source, relativePath);
+    if (!copyCatalogMarkerPresent(source, relativePath)) return false;
+  } catch {
+    return false;
+  }
+  const capabilityMetrics = [
+    analysis.actionFactories,
+    analysis.bridgePaths,
+    analysis.environmentCapabilities,
+    analysis.hookCalls,
+    analysis.lifecycleMethods,
+    analysis.unresolvedDependencies,
+  ];
+  if (capabilityMetrics.some((metric) => metricTotal(metric) > 0)) return false;
+  return analysis.dependencies.every(
+    (dependency) => !dependency.startsWith('.') && !dependency.startsWith(DESKTOP_SELF_PREFIX),
+  );
+}
+
+function withoutValidatedCatalogDependencies(desktopRoot, importerPath, dependencyPaths) {
+  const filtered = {};
+  for (const [dependency, count] of Object.entries(dependencyPaths)) {
+    const target = resolveDependency(desktopRoot, resolve(desktopRoot, importerPath), dependency);
+    if (target && isValidatedCopyCatalog(desktopRoot, normalizePath(relative(desktopRoot, target)))) continue;
+    filtered[dependency] = count;
+  }
+  return filtered;
+}
+
 function allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section }) {
   if (metricTotal(current.dependencyPaths) > metricTotal(base.dependencyPaths)) return false;
   const target = resolveDependency(desktopRoot, resolve(desktopRoot, path), dependency);
@@ -2207,6 +2309,7 @@ function collectLegacyImportEdges(desktopRoot) {
       if (!target) continue;
       const targetRelative = normalizePath(relative(desktopRoot, target));
       if (zoneFor(targetRelative).kind !== 'legacy') continue;
+      if (isValidatedCopyCatalog(desktopRoot, targetRelative)) continue;
       const edge = `${fileRelative} -> ${targetRelative}`;
       if (sourceZone.kind === 'feature') feature.add(edge);
       else platform.add(edge);
@@ -2285,7 +2388,11 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
     for (const path of Object.keys(currentFiles)) {
       const shiftedAppShellBase =
         section === 'rootDebtClosure' ? baseConfig.legacyAppShell.closure[path] : undefined;
-      if (!baseFiles[path] && !shiftedAppShellBase) {
+      if (
+        !baseFiles[path] &&
+        !shiftedAppShellBase &&
+        !(section.endsWith('Closure') && isValidatedCopyCatalog(desktopRoot, path))
+      ) {
         violations.push(`${path}: new ${section} debt entries are forbidden`);
       }
     }
@@ -2301,10 +2408,18 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
         baseFiles[path] ??
         (section === 'rootDebtClosure' ? baseConfig.legacyAppShell.closure[path] : undefined);
       if (!base) continue;
+      const currentView = {
+        ...current,
+        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, current.dependencyPaths),
+      };
+      const baseView = {
+        ...base,
+        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, base.dependencyPaths),
+      };
       const metrics = section.endsWith('Closure') ? CAPABILITY_DEBT_METRICS : ROOT_DEBT_METRICS;
       for (const metric of metrics) {
-        if (metricTotal(current[metric]) > metricTotal(base[metric])) {
-          violations.push(`${path}: ${metric} debt increased from ${metricTotal(base[metric])} to ${metricTotal(current[metric])}`);
+        if (metricTotal(currentView[metric]) > metricTotal(baseView[metric])) {
+          violations.push(`${path}: ${metric} debt increased from ${metricTotal(baseView[metric])} to ${metricTotal(currentView[metric])}`);
         }
         if (['bridgePaths', 'environmentCapabilities', 'hookCalls', 'lifecycleMethods'].includes(metric)) {
           const increases = Object.fromEntries(
@@ -2324,10 +2439,17 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
           }
         }
         if (metric === 'dependencyPaths') {
-          for (const [dependency, count] of Object.entries(current.dependencyPaths)) {
+          for (const [dependency, count] of Object.entries(currentView.dependencyPaths)) {
             if (
-              count > (base.dependencyPaths[dependency] ?? 0) &&
-              !allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section })
+              count > (baseView.dependencyPaths[dependency] ?? 0) &&
+              !allowsMigrationDependency({
+                base: baseView,
+                current: currentView,
+                dependency,
+                desktopRoot,
+                path,
+                section,
+              })
             ) {
               violations.push(`${path}: new dependency debt ${dependency}`);
             }

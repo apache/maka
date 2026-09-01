@@ -2305,3 +2305,187 @@ describe('renderer architecture checker fixtures', () => {
     assert.match(invalid.stderr, /base ref does not resolve to a commit/u);
   });
 });
+
+describe('validated copy catalog dependencies', () => {
+  const CATALOG_PATH = 'src/renderer/locales/fixture-copy.ts';
+
+  function catalogSource(extra = '') {
+    return `
+      import type { UiCatalog } from '@maka/core/ui-locale';
+      export interface FixtureCopy { readonly notice: string; }
+      export const FIXTURE_COPY = {
+        en: { notice: 'Notice' },
+        zh: { notice: '通知' },
+      } satisfies UiCatalog<FixtureCopy>;
+      ${extra}
+    `;
+  }
+
+  function catalogSeedConfig() {
+    return architectureConfig({
+      legacyGrowthDirectories: ['src/renderer/locales'],
+      ownership: [
+        {
+          capability: 'fixture-app-shell',
+          targetZone: 'shell',
+          legacyPaths: [TRANSITIVE_APP_SHELL_PATH],
+        },
+      ],
+    });
+  }
+
+  function baseWithoutCatalog(currentConfig) {
+    const baseConfig = structuredClone(currentConfig);
+    delete baseConfig.legacyAppShell.closure[CATALOG_PATH];
+    baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+      (path) => path !== CATALOG_PATH,
+    );
+    baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].dependencyPaths = {};
+    return baseConfig;
+  }
+
+  it('admits a validated copy catalog as a new legacy dependency and closure entry', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.notice;
+        `,
+        { [CATALOG_PATH]: catalogSource() },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        assert.deepEqual(
+          violationsFor(desktopRoot, currentConfig, baseWithoutCatalog(currentConfig)),
+          [],
+        );
+      },
+    );
+  });
+
+  const INVALID_CATALOGS = [
+    ['a hook call', catalogSource(`
+      import { useState } from 'react';
+      export function useFixtureCopy() { return useState(FIXTURE_COPY); }
+    `)],
+    ['a relative implementation import', catalogSource(`
+      import { legacySessionStore } from '../legacy-session-store.js';
+      export const smuggled = legacySessionStore;
+    `)],
+    ['no UiCatalog marker', `
+      export const FIXTURE_COPY = {
+        en: { notice: 'Notice' },
+        zh: { notice: '通知' },
+      };
+    `],
+  ];
+
+  for (const [flaw, source] of INVALID_CATALOGS) {
+    it(`keeps the ratchet for a catalog with ${flaw}`, async () => {
+      await withDesktopFixture(
+        transitiveAppShellFiles(
+          `
+            import { FIXTURE_COPY } from './locales/fixture-copy.js';
+            export const legacySessionHelper = FIXTURE_COPY;
+          `,
+          {
+            [CATALOG_PATH]: source,
+            'src/renderer/legacy-session-store.ts': `export const legacySessionStore = 'legacy';`,
+          },
+        ),
+        (desktopRoot) => {
+          const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+          const violations = violationsFor(
+            desktopRoot,
+            currentConfig,
+            baseWithoutCatalog(currentConfig),
+          );
+          assertHasViolation(
+            violations,
+            /^src\/renderer\/locales\/fixture-copy\.ts: new legacyAppShellClosure debt entries are forbidden$/u,
+          );
+          assertHasViolation(
+            violations,
+            /^src\/renderer\/legacy-session-helper\.ts: new dependency debt \.\/locales\/fixture-copy\.js$/u,
+          );
+        },
+      );
+    });
+  }
+
+  it('fails closed upstream when a reachable catalog uses a dynamic import', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          export const legacySessionHelper = FIXTURE_COPY;
+        `,
+        {
+          [CATALOG_PATH]: catalogSource(`
+            export async function load(name) { return import(name); }
+          `),
+        },
+      ),
+      (desktopRoot) => {
+        assert.throws(
+          () => generateArchitectureConfig(desktopRoot, catalogSeedConfig()),
+          /non-static import/u,
+        );
+      },
+    );
+  });
+
+  it('still rejects an unrelated dependency added beside a validated catalog', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import { FIXTURE_COPY } from './locales/fixture-copy.js';
+          import { legacySessionStore } from './legacy-session-store.js';
+          export const legacySessionHelper = FIXTURE_COPY.en.notice + legacySessionStore;
+        `,
+        {
+          [CATALOG_PATH]: catalogSource(),
+          'src/renderer/legacy-session-store.ts': `export const legacySessionStore = 'legacy';`,
+        },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const baseConfig = baseWithoutCatalog(currentConfig);
+        delete baseConfig.legacyAppShell.closure['src/renderer/legacy-session-store.ts'];
+        baseConfig.legacyRendererFiles = baseConfig.legacyRendererFiles.filter(
+          (path) => path !== 'src/renderer/legacy-session-store.ts',
+        );
+
+        const violations = violationsFor(desktopRoot, currentConfig, baseConfig);
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: new dependency debt \.\/legacy-session-store\.js$/u,
+        );
+        assert.ok(
+          !violations.some((violation) => violation.includes('fixture-copy')),
+          `catalog dependency must stay admitted, received:\n${violations.join('\n')}`,
+        );
+      },
+    );
+  });
+
+  it('lets feature code import a validated catalog without a legacy budget edge', async () => {
+    await withDesktopFixture(
+      {
+        [CATALOG_PATH]: catalogSource(),
+        'src/renderer/features/alpha/controller.ts': `
+          import { FIXTURE_COPY } from '../../locales/fixture-copy.js';
+          export const featureNotice = FIXTURE_COPY.en.notice;
+        `,
+      },
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(
+          desktopRoot,
+          architectureConfig({ legacyGrowthDirectories: ['src/renderer/locales'] }),
+        );
+        assert.deepEqual(currentConfig.legacyFeatureImports, []);
+        assert.deepEqual(violationsFor(desktopRoot, currentConfig), []);
+      },
+    );
+  });
+});
