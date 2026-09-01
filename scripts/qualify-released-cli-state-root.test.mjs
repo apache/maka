@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import test from 'node:test';
 import {
   assertExpectedEpochRelation,
@@ -199,14 +199,17 @@ test('durable state covers the control namespace, not only the State Root', () =
   // transition it proved was never the one a user performs.
   const locations = durableStateLocations('/qualification-scope');
   assert.ok(locations.length >= 2);
-  assert.ok(locations.some(({ live }) => live === '/qualification-scope/state-root'));
+  assert.ok(locations.some(({ live }) => live === join('/qualification-scope', 'state-root')));
   assert.ok(
     locations.some(({ live }) => live.endsWith(join('.cache', 'maka', 'runtime-hosts'))),
     'the account-local control namespace must be captured and restored',
   );
   for (const { live, golden } of locations) {
     assert.ok(isAbsolute(live) && isAbsolute(golden));
-    assert.ok(!golden.startsWith(`${live}/`), 'a golden copy must not nest inside its live path');
+    assert.ok(
+      !golden.startsWith(`${live}${sep}`),
+      'a golden copy must not nest inside its live path',
+    );
   }
 });
 
