@@ -52,7 +52,7 @@ export function apiKeyOnboardingRoute(input: {
   readonly requestHeaderCount: number;
   readonly hasRequestBodyOverlay: boolean;
 }): ApiKeyOnboardingRoute {
-  const definition = PROVIDER_DEFAULTS[input.providerType];
+  const definition = PROVIDER_REGISTRY[input.providerType];
   if (!providerAuthSupportsApiKey(input.providerType) || definition.authKind !== 'api_key') {
     return { kind: 'legacy', reason: 'provider_auth' };
   }

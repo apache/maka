@@ -54,7 +54,9 @@ export interface ConnectionsBridge {
   update(connection: DesktopConnectionIdentity, patch: UpdateConnectionInput): Promise<LlmConnection>;
   delete(connection: DesktopConnectionIdentity): Promise<void>;
   test(connection: DesktopConnectionIdentity, opts?: { model?: string }): Promise<ConnectionTestResult>;
-  fetchModels(connection: DesktopConnectionIdentity): Promise<ModelDiscoveryResult>;
+  fetchModels(connection: DesktopConnectionIdentity): Promise<
+    Pick<ModelDiscoveryResult, 'models' | 'source'>
+  >;
   hasSecret(connection: DesktopConnectionIdentity): Promise<boolean>;
   getRequestHeaders(connection: DesktopConnectionIdentity): Promise<SavedRequestHeaders>;
   setRequestHeaders(

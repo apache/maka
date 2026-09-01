@@ -28,7 +28,6 @@ import type {
   ConnectionTestResult,
   IdentifiedLlmConnection,
   LlmConnection,
-  ModelDiscoveryResult,
   ProviderType,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
@@ -249,7 +248,7 @@ const oauthConnections = [
 ];
 
 interface StoryConnectionsBridge extends ConnectionsBridge {
-  addFixtureConnection(connection: IdentifiedLlmConnection): void;
+  addFixtureConnection(connection: ProjectedLlmConnection): void;
 }
 
 function createBridge(input: {
@@ -327,14 +326,13 @@ function createBridge(input: {
       }
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
-    async fetchModels(identity): Promise<ModelDiscoveryResult> {
+    async fetchModels(identity) {
       return {
         models: [
           { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
           { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
         ],
         source: 'fetched',
-        fetchedAt: NOW,
       };
     },
     async hasSecret() {
