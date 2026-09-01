@@ -403,50 +403,46 @@ test('GitHub output matches the selections consumed by CI', () => {
   const output = formatGitHubOutputs(planTests([], { graph, forceFull: true }));
   const outputKeys = new Set(output.split('\n').map((line) => line.split('=', 1)[0]));
   const workflow = readWorkflow('ci.yml');
-  const declaredOutputs = new Map(
-    [
-      ...workflow.matchAll(/^ {6}([a-z0-9_]+): \$\{\{ steps\.plan\.outputs\.([a-z0-9_]+) \}\}$/gmu),
-    ].map((match) => [match[1], match[2]]),
-  );
-  assert.deepEqual(new Set(declaredOutputs.keys()), outputKeys);
-  for (const [name, source] of declaredOutputs) assert.equal(source, name);
 
+  // The planner writes one step's outputs and every later step gates on them,
+  // so what it emits and what CI reads are the same set. A key nothing reads,
+  // or a gate on a key the planner never writes, is a dead lane either way.
   const consumedKeys = new Set(
-    [...workflow.matchAll(/needs\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
+    [...workflow.matchAll(/steps\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
   );
 
   assert.deepEqual(outputKeys, consumedKeys);
 });
 
-test('core CI always reports the required test after optional heavy validation', () => {
+test('one unconditional job carries the required context on every pull request', () => {
   const workflow = readWorkflow('ci.yml');
 
+  // `.asf.yaml` requires `test`. A paths filter would stop the workflow and
+  // leave that check pending forever, and a second job would make the same
+  // pull request queue for a scarce runner twice to reach one verdict.
   assert.doesNotMatch(triggerBlock('ci.yml'), /\bpaths(-ignore)?:/u);
-  assert.match(
-    workflow,
-    /\n {2}heavy:\n {4}needs: plan\n {4}if: needs\.plan\.outputs\.heavy == 'true'/u,
-  );
-  assert.match(workflow, /\n {2}test:\n {4}needs: \[plan, heavy\]\n {4}if: always\(\)/u);
-  assert.match(workflow, /PLAN_RESULT: \$\{\{ needs\.plan\.result \}\}/u);
-  assert.match(workflow, /HEAVY_RESULT: \$\{\{ needs\.heavy\.result \}\}/u);
-  assert.match(workflow, /if \[\[ "\$PLAN_RESULT" != "success" \]\]/u);
-  assert.match(workflow, /if \[\[ "\$HEAVY_RESULT" != "success" \]\]/u);
-  assert.match(workflow, /if \[\[ "\$HEAVY_RESULT" != "skipped" \]\]/u);
+
+  const jobsBlock = workflow.slice(workflow.indexOf('\njobs:'));
+  const jobs = [...jobsBlock.matchAll(/^ {2}([a-z0-9_-]+):$/gmu)].map((match) => match[1]);
+  assert.deepEqual(jobs, ['test']);
+  assert.doesNotMatch(jobsBlock, /^ {4}needs:/mu);
+  assert.doesNotMatch(jobsBlock, /^ {4}if:/mu);
 });
 
-test('heavy CI consumes planner outputs through the plan job', () => {
+test('planning runs first and every later step gates on its outputs', () => {
   const workflow = readWorkflow('ci.yml');
-  const heavyStart = workflow.indexOf('\n  heavy:\n');
-  const testStart = workflow.indexOf('\n  test:\n', heavyStart);
 
-  assert.ok(heavyStart >= 0);
-  assert.ok(testStart > heavyStart);
-  const heavy = workflow.slice(heavyStart, testStart);
+  // With the job split gone there is no `needs` context to read. GitHub
+  // resolves a leftover `needs.plan.outputs.x` to the empty string rather
+  // than failing, so the step it guards would silently never run again.
+  assert.doesNotMatch(workflow, /needs\.plan\.outputs/u);
 
-  assert.doesNotMatch(heavy, /steps\.plan\.outputs/u);
+  const planStep = workflow.indexOf('      - id: plan\n');
+  assert.ok(planStep >= 0, 'no planning step');
+  assert.ok(planStep < workflow.indexOf('steps.plan.outputs'));
   assert.match(
-    heavy,
-    /- name: Check renderer architecture\n\s+if: needs\.plan\.outputs\.code == 'true'/u,
+    workflow,
+    /- name: Check renderer architecture\n\s+if: steps\.plan\.outputs\.code == 'true'/u,
   );
 });
 
@@ -507,7 +503,7 @@ test('core CI checks the Astryx inventory for every code change before building'
   const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
   assert.match(
     inventoryStep,
-    /if: needs\.plan\.outputs\.code == 'true' \|\| needs\.plan\.outputs\.astryx_surface == 'true'/u,
+    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
   );
   assert.doesNotMatch(inventoryStep, /continue-on-error/u);
 });
@@ -523,7 +519,7 @@ test('CI installs dependencies whenever the Astryx surface inventory runs', () =
   const stepStart = workflow.lastIndexOf('\n      - name:', npmCi) + 1;
   const stepEnd = workflow.indexOf('\n      - ', npmCi);
   const installStep = workflow.slice(stepStart, stepEnd);
-  assert.match(installStep, /needs\.plan\.outputs\.astryx_surface == 'true'/u);
+  assert.match(installStep, /steps\.plan\.outputs\.astryx_surface == 'true'/u);
 });
 
 test('core CI validates affected installed CLI packages on the heavy runner', () => {
@@ -533,7 +529,7 @@ test('core CI validates affected installed CLI packages on the heavy runner', ()
   );
   const pack = workflow.indexOf('run: npm run release:cli:pack');
 
-  assert.match(workflow, /if: needs\.plan\.outputs\.cli_package == 'true'/u);
+  assert.match(workflow, /if: steps\.plan\.outputs\.cli_package == 'true'/u);
   assert.ok(toolchain >= 0);
   assert.ok(toolchain < pack);
   assert.match(workflow, /run: npm run release:cli:smoke/u);
@@ -579,7 +575,7 @@ test('release contracts run against built CLI outputs', () => {
   assert.ok(buildIndex < releaseIndex);
   assert.match(
     workflow.slice(releaseIndex),
-    /if: needs\.plan\.outputs\.release_contract == 'true'/u,
+    /if: steps\.plan\.outputs\.release_contract == 'true'/u,
   );
 });
 
@@ -910,7 +906,7 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
 
   assert.match(
     workflow,
-    /if: contains\(needs\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
+    /if: contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
   );
   assert.match(workflow, /MAKA_EVAL_EGRESS_PROXY_TEST: '1'/u);
   assert.match(workflow, /docker build[\s\S]*maka-eval-egress-proxy:12\.2\.3/u);

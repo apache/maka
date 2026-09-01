@@ -32,26 +32,18 @@ permissions:
   contents: read
 
 jobs:
-  # Path planning and install-free repository contracts stay on the cheap lane
-  # that every pull request must run. The outputs select the separate heavy lane
-  # without teaching the workflow a second copy of the path rules.
-  plan:
+  # One job, not three. A runner slot is scarcer than a minute on shared
+  # infrastructure, and splitting planning from validation made every pull
+  # request queue for a runner three times to reach one verdict. Planning is
+  # the first step; every later step gates on its outputs, so a
+  # documentation-only change costs one short allocation rather than two.
+  #
+  # The name is `test` because that is the required context in `.asf.yaml`.
+  # Renaming it would leave that check unreported on every open pull request
+  # until the rename merged, and nothing could merge while it was unreported.
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    outputs:
-      asf_source: ${{ steps.plan.outputs.asf_source }}
-      astryx_surface: ${{ steps.plan.outputs.astryx_surface }}
-      cli_package: ${{ steps.plan.outputs.cli_package }}
-      code: ${{ steps.plan.outputs.code }}
-      e2e: ${{ steps.plan.outputs.e2e }}
-      heavy: ${{ steps.plan.outputs.heavy }}
-      release_contract: ${{ steps.plan.outputs.release_contract }}
-      runtime_host: ${{ steps.plan.outputs.runtime_host }}
-      runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
-      state_root_compat: ${{ steps.plan.outputs.state_root_compat }}
-      storage_stress: ${{ steps.plan.outputs.storage_stress }}
-      storybook: ${{ steps.plan.outputs.storybook }}
-      standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,28 +120,20 @@ jobs:
       - name: Check ASF source headers
         run: npm run check:asf-headers
 
-  heavy:
-    needs: plan
-    if: needs.plan.outputs.heavy == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
+      # Everything below needs an installed toolchain. A plan that selected no
+      # surface stops at the install-free checks above.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.plan.outputs.heavy == 'true'
         with:
           node-version: '24'
           cache: npm
 
       - name: Select the release npm toolchain
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
 
       - name: Restore Electron artifact cache
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
@@ -157,13 +141,13 @@ jobs:
           restore-keys: electron-${{ runner.os }}-
 
       - name: Install Linux runtime dependencies
-        if: needs.plan.outputs.runtime_sandbox == 'true' || needs.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
 
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: needs.plan.outputs.runtime_sandbox == 'true' || needs.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -173,21 +157,21 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: needs.plan.outputs.code == 'true' || needs.plan.outputs.astryx_surface == 'true' || needs.plan.outputs.asf_source == 'true' || needs.plan.outputs.cli_package == 'true' || needs.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
       # dependency is installed, matching the source-candidate workflow.
       - name: Verify ASF source release mechanics
-        if: needs.plan.outputs.asf_source == 'true'
+        if: steps.plan.outputs.asf_source == 'true'
         run: npm run check:asf-source
 
       # Parsed dependency rules and an exact legacy-debt ledger keep the
       # renderer root from absorbing new feature or Desktop ownership while
       # the existing AppShell is migrated behind stable boundaries.
       - name: Check renderer architecture
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         env:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
         run: |
@@ -198,11 +182,11 @@ jobs:
           fi
 
       - name: Lint
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npm run lint
 
       - name: Check formatting
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npm run format:check
 
       # This generated artifact describes the whole renderer/UI tree, so every
@@ -210,21 +194,21 @@ jobs:
       # an Astryx surface. Keep it before Build so stale output is reported
       # directly instead of being hidden behind an earlier compilation failure.
       - name: Astryx surface inventory
-        if: needs.plan.outputs.code == 'true' || needs.plan.outputs.astryx_surface == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
         run: |
           npm run astryx:surface-inventory
           npm run astryx:surface-inventory:test
 
       - name: Build
-        if: needs.plan.outputs.code == 'true' || needs.plan.outputs.cli_package == 'true' || needs.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm run build
 
       - name: Release contracts
-        if: needs.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.release_contract == 'true'
         run: npm run check:release
 
       - name: Typecheck
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npm run typecheck
 
       # Two drift contracts over the shipped app-icon artwork, sitting beside
@@ -233,32 +217,32 @@ jobs:
       # the generator, to DEFAULT_APP_ICON, or to the packaging config can go
       # green while the artwork it names no longer matches.
       - name: App icon artwork drift
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: node --test scripts/verify-packaged-app-icons.test.mjs scripts/generate-app-icons.test.mjs
 
       - name: Astryx theme drift
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npm run astryx:theme -- --check
 
       - name: Knip (apps/desktop)
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npx knip --workspace apps/desktop
 
       - name: Knip (packages/ui)
-        if: needs.plan.outputs.code == 'true'
+        if: steps.plan.outputs.code == 'true'
         run: npx knip --workspace packages/ui
 
       - name: Linux sandbox smoke
-        if: needs.plan.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true'
         env:
           MAKA_REQUIRE_LINUX_SANDBOX_SMOKE: '1'
         run: npm exec -w @maka/runtime -- node --test dist/__tests__/linux-sandbox-smoke.test.js
 
       - name: Run affected standard workspace tests
-        if: needs.plan.outputs.standard_workspaces != ''
+        if: steps.plan.outputs.standard_workspaces != ''
         env:
-          STORAGE_STRESS: ${{ needs.plan.outputs.storage_stress }}
-          WORKSPACES: ${{ needs.plan.outputs.standard_workspaces }}
+          STORAGE_STRESS: ${{ steps.plan.outputs.storage_stress }}
+          WORKSPACES: ${{ steps.plan.outputs.standard_workspaces }}
         run: |
           if [[ "$STORAGE_STRESS" == "true" ]]; then
             export MAKA_STORAGE_STRESS=1
@@ -266,7 +250,7 @@ jobs:
           node scripts/run-workspace-tests-parallel.mjs --concurrency=3 --workspaces="$WORKSPACES"
 
       - name: Run live Eval egress proxy test
-        if: contains(needs.plan.outputs.standard_workspaces, 'packages/eval')
+        if: contains(steps.plan.outputs.standard_workspaces, 'packages/eval')
         env:
           MAKA_EVAL_EGRESS_PROXY_TEST: '1'
         run: |
@@ -278,7 +262,7 @@ jobs:
           npm --workspace @maka/eval run test:egress-proxy:live
 
       - name: Run Runtime Host tests
-        if: needs.plan.outputs.runtime_host == 'true'
+        if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
 
       # A published predecessor writes the durable state; the workspace built
@@ -287,11 +271,11 @@ jobs:
       # read that state. The release lanes still qualify exact tarballs.
       - id: forward-roll-baseline
         name: Resolve the published forward-roll baseline
-        if: needs.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.state_root_compat == 'true'
         run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
 
       - name: Download the forward-roll baseline
-        if: needs.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.state_root_compat == 'true'
         env:
           SOURCE_URL: ${{ steps.forward-roll-baseline.outputs.tarball_url }}
           SOURCE_INTEGRITY: ${{ steps.forward-roll-baseline.outputs.integrity }}
@@ -313,7 +297,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Qualify durable state against the published baseline
-        if: needs.plan.outputs.state_root_compat == 'true'
+        if: steps.plan.outputs.state_root_compat == 'true'
         env:
           MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
         run: |
@@ -325,42 +309,42 @@ jobs:
             | tee "$RUNNER_TEMP/durable-state-report.json"
 
       - name: Ensure xvfb
-        if: needs.plan.outputs.e2e == 'true'
+        if: steps.plan.outputs.e2e == 'true'
         run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
 
       - name: Desktop e2e
-        if: needs.plan.outputs.e2e == 'true'
+        if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
 
       - name: Browser WebContentsView semantic smoke
-        if: needs.plan.outputs.e2e == 'true'
+        if: steps.plan.outputs.e2e == 'true'
         # Hosted Linux runners cannot configure Electron's SUID helper. This
         # smoke loads only its loopback fixture; production stays sandboxed.
         run: xvfb-run -a npm exec --workspace @maka/desktop -- electron --no-sandbox scripts/browser-observe-act-smoke.mjs
 
       - name: Alignment audit
-        if: needs.plan.outputs.e2e == 'true'
+        if: steps.plan.outputs.e2e == 'true'
         run: xvfb-run -a node scripts/audit-alignment.mjs
 
       - name: Install Playwright Chromium
-        if: needs.plan.outputs.storybook == 'true'
+        if: steps.plan.outputs.storybook == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Build Storybook
-        if: needs.plan.outputs.storybook == 'true'
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run build-storybook
 
       - name: Storybook smoke
-        if: needs.plan.outputs.storybook == 'true'
+        if: steps.plan.outputs.storybook == 'true'
         run: npm --workspace @maka/desktop run smoke:storybook
 
       - name: Update stable Rust for CLI packaging
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         run: rustup update stable --no-self-update
 
       - id: cli-rustc
         name: Resolve CLI Rust cache version
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         shell: bash
         run: |
           echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
@@ -372,14 +356,14 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Install Kache for CLI packaging
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: kache@0.16.0
 
       - id: cli-kache-cache
         name: Restore CLI Rust build cache
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kache-cli-package
@@ -388,68 +372,27 @@ jobs:
             kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
 
       - name: Install cargo-deny for CLI packaging
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-deny@0.20.2
 
       - name: Build CLI release candidate
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:pack -- --allow-dirty
 
       - name: Report CLI Rust build cache
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         shell: bash
         run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save CLI Rust build cache
-        if: needs.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
+        if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/kache-cli-package
           key: ${{ steps.cli-kache-cache.outputs.cache-primary-key }}
 
       - name: Validate installed CLI release candidate
-        if: needs.plan.outputs.cli_package == 'true'
+        if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:smoke -- packages/cli/release/*.tgz
-
-  # Branch protection requires the `test` context on every pull request. Keep
-  # this aggregation job unconditional so documentation-only plans report
-  # success while selected heavy validation still propagates every failure.
-  test:
-    needs: [plan, heavy]
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - name: Report required test status
-        env:
-          HEAVY_RESULT: ${{ needs.heavy.result }}
-          HEAVY_SELECTED: ${{ needs.plan.outputs.heavy }}
-          PLAN_RESULT: ${{ needs.plan.result }}
-        run: |
-          if [[ "$PLAN_RESULT" != "success" ]]; then
-            echo "::error::CI planning and lightweight checks ended with $PLAN_RESULT"
-            exit 1
-          fi
-
-          case "$HEAVY_SELECTED" in
-            true)
-              if [[ "$HEAVY_RESULT" != "success" ]]; then
-                echo "::error::Selected heavy CI ended with $HEAVY_RESULT"
-                exit 1
-              fi
-              ;;
-            false)
-              if [[ "$HEAVY_RESULT" != "skipped" ]]; then
-                echo "::error::Unselected heavy CI ended with $HEAVY_RESULT instead of skipped"
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::CI planner produced an invalid heavy selection: $HEAVY_SELECTED"
-              exit 1
-              ;;
-          esac
-
-          echo "Required CI passed (heavy selected: $HEAVY_SELECTED)"
