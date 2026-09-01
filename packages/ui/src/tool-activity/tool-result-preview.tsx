@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { isShellOutput, type ShellOutput } from '@maka/core/shell-run';
 import { normalizeSearchUrl } from '@maka/core/search';
 import { ptyHumanTerminalText } from '@maka/core/pty-output-view';
@@ -643,7 +643,7 @@ function ShellOutputBody(props: {
 function PtyTerminalSurface(props: { text: string }) {
   const ref = useRef<HTMLPreElement>(null);
   const followTail = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = ref.current;
     if (element && followTail.current) element.scrollTop = element.scrollHeight;
   }, [props.text]);

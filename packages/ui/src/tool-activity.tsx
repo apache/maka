@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { countDiffLineStats } from '@maka/core/unified-diff';
 import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import { type ToolResultContent } from '@maka/core/events';
@@ -717,29 +717,30 @@ function ToolOutputStream(props: {
 }) {
   const copy = getToolActivityCopy(useUiLocale()).output;
   const preRef = useRef<HTMLPreElement>(null);
-  useEffect(() => {
+  const runs = useMemo(() => coalesceToolOutputDisplayRuns(props.chunks), [props.chunks]);
+  useLayoutEffect(() => {
     if (!props.live) return;
     const el = preRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [props.chunks, props.live]);
+  }, [runs, props.live]);
 
   return (
     <>
       <pre ref={preRef} className={TOOL_OUTPUT_BODY_CLASS} data-live={props.live ? 'true' : undefined}>
-        {props.chunks.map((chunk) => (
+        {runs.map((run) => (
           <span
-            key={chunk.seq}
+            key={run.key}
             className={cn(
               'maka-tool-output-chunk',
-              chunk.stream === 'stderr' && 'maka-tool-output-chunk-stderr',
-              chunk.redacted && 'maka-tool-output-chunk-redacted',
+              run.stream === 'stderr' && 'maka-tool-output-chunk-stderr',
+              run.redacted && 'maka-tool-output-chunk-redacted',
             )}
-            data-stream={chunk.stream}
-            data-redacted={chunk.redacted ? 'true' : undefined}
+            data-stream={run.stream}
+            data-redacted={run.redacted ? 'true' : undefined}
           >
-            {chunk.text}
-            {chunk.redacted && (
+            {run.text}
+            {run.redacted && (
               <span className="maka-tool-output-redacted">
                 {' '}{copy.redacted}
               </span>
@@ -752,6 +753,38 @@ function ToolOutputStream(props: {
       )}
     </>
   );
+}
+
+interface ToolOutputDisplayRun {
+  key: string;
+  stream: ToolOutputChunk['stream'];
+  text: string;
+  redacted: boolean;
+}
+
+export function coalesceToolOutputDisplayRuns(
+  chunks: readonly ToolOutputChunk[],
+): ToolOutputDisplayRun[] {
+  const runs: ToolOutputDisplayRun[] = [];
+  for (const chunk of chunks) {
+    const previous = runs.at(-1);
+    if (
+      !chunk.redacted
+      && previous
+      && !previous.redacted
+      && previous.stream === chunk.stream
+    ) {
+      previous.text += chunk.text;
+      continue;
+    }
+    runs.push({
+      key: String(chunk.seq),
+      stream: chunk.stream,
+      text: chunk.text,
+      redacted: chunk.redacted,
+    });
+  }
+  return runs;
 }
 
 /** Warning banner only for sandbox denials; ordinary failures use row status + wells. */

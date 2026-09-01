@@ -33,7 +33,7 @@ import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { ToolActivityItem } from './materialize.js';
 import { applyThinkingComplete, applyThinkingDelta } from './thinking-stream.js';
 import type { StreamingDisplayRedactionState } from './streaming-display-redaction.js';
-import { applyToolOutputChunk } from './tool-output-stream.js';
+import { applyToolOutputChunk, applyToolOutputChunks } from './tool-output-stream.js';
 
 type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_progress' | 'tool_result_preview' | 'tool_result' }>;
 
@@ -516,6 +516,106 @@ export function applyLiveTurnEvent(
     phase: 'streamed',
     steps,
   };
+}
+
+export function applyLiveTurnEvents(
+  current: LiveTurnProjection | undefined,
+  events: readonly SessionEvent[],
+  locale: UiLocale = 'zh',
+): LiveTurnProjection | undefined {
+  let next = current;
+  for (let index = 0; index < events.length;) {
+    const event = events[index]!;
+    if (event.type !== 'tool_output_delta') {
+      next = applyLiveTurnEvent(next, event, locale);
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < events.length) {
+      const candidate = events[end]!;
+      if (
+        candidate.type !== 'tool_output_delta'
+        || candidate.turnId !== event.turnId
+        || candidate.toolUseId !== event.toolUseId
+      ) {
+        break;
+      }
+      end += 1;
+    }
+    const seeded = applyLiveTurnEvent(next, event, locale);
+    if (end === index + 1) {
+      next = seeded;
+      index = end;
+      continue;
+    }
+    next = applyToolOutputEventBatch(
+      seeded,
+      events.slice(index + 1, end) as Extract<SessionEvent, { type: 'tool_output_delta' }>[],
+      locale,
+    );
+    index = end;
+  }
+  return next;
+}
+
+function applyToolOutputEventBatch(
+  current: LiveTurnProjection | undefined,
+  events: readonly Extract<SessionEvent, { type: 'tool_output_delta' }>[],
+  locale: UiLocale,
+): LiveTurnProjection {
+  const first = events[0]!;
+  const prior = current?.turnId === first.turnId
+    ? current
+    : { turnId: first.turnId, phase: 'streamed' as const, steps: [] };
+  const { providerRetry: _providerRetry, ...priorWithoutRetry } = confirmed(prior);
+  const existingToolStep = prior.steps.find(
+    (candidate) => candidate.tools.some((tool) => tool.toolUseId === first.toolUseId),
+  );
+  const stepId = existingToolStep?.stepId ?? `tool:${first.toolUseId}`;
+  const stepIndex = prior.steps.findIndex((step) => step.stepId === stepId);
+  const step = stepIndex >= 0 ? prior.steps[stepIndex]! : { stepId, tools: [] };
+  const toolIndex = step.tools.findIndex((candidate) => candidate.toolUseId === first.toolUseId);
+  const base: ToolActivityItem = toolIndex >= 0
+    ? step.tools[toolIndex]!
+    : { toolUseId: first.toolUseId, toolName: 'Tool', status: 'running', args: undefined };
+  let identity = projectToolActivityIdentity(base);
+  for (const event of events) {
+    identity = {
+      ...identity,
+      ...projectToolActivityIdentity(event),
+    };
+  }
+  const applied = applyToolOutputChunks(
+    base.outputChunks,
+    events.map((event) => ({
+      seq: event.seq,
+      stream: event.stream,
+      text: event.chunk,
+      redacted: event.redacted,
+      createdAt: event.createdAt,
+    })),
+    { locale },
+  );
+  const tool: ToolActivityItem = {
+    ...base,
+    ...identity,
+    status: base.status,
+    outputChunks: applied.chunks,
+    outputTruncated: base.outputTruncated || applied.truncated,
+  };
+  const nextStep: LiveTurnStepProjection = {
+    ...step,
+    tools: toolIndex >= 0
+      ? step.tools.map((candidate, index) => index === toolIndex ? tool : candidate)
+      : [...step.tools, tool],
+    contentOrder: appendContentKind(step, 'tools'),
+  };
+  const steps = stepIndex >= 0
+    ? prior.steps.map((candidate, index) => index === stepIndex ? nextStep : candidate)
+    : [...prior.steps, nextStep];
+  return { ...priorWithoutRetry, phase: 'streamed', steps };
 }
 
 function liveSteeringMessages(current: LiveTurnProjection): LiveSteeringProjection[] {

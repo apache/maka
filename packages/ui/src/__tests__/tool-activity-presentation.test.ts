@@ -22,7 +22,11 @@ import { describe, it } from 'node:test';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup as renderReactToStaticMarkup } from 'react-dom/server';
 import { computerUseModelCallArgs } from '@maka/core/computer-use';
-import { ToolCallDetail, ToolTrow } from '../tool-activity.js';
+import {
+  coalesceToolOutputDisplayRuns,
+  ToolCallDetail,
+  ToolTrow,
+} from '../tool-activity.js';
 import type { ToolActivityItem } from '../materialize.js';
 import { LocaleProvider } from '../locale-context.js';
 import { ToolResultPreview } from '../tool-activity/tool-result-preview.js';
@@ -40,6 +44,23 @@ function renderToStaticMarkup(node: ReactNode, locale: 'zh' | 'en' = 'zh'): stri
 }
 
 describe('tool activity presentation', () => {
+  it('coalesces ordinary live-output chunks without crossing display styles', () => {
+    const runs = coalesceToolOutputDisplayRuns([
+      { seq: 1, text: 'one', stream: 'stdout', redacted: false, createdAt: 1 },
+      { seq: 2, text: ' two', stream: 'stdout', redacted: false, createdAt: 2 },
+      { seq: 3, text: ' warning', stream: 'stderr', redacted: false, createdAt: 3 },
+      { seq: 4, text: ' secret', stream: 'stderr', redacted: true, createdAt: 4 },
+      { seq: 5, text: ' tail', stream: 'stderr', redacted: false, createdAt: 5 },
+    ]);
+
+    assert.deepEqual(runs, [
+      { key: '1', stream: 'stdout', text: 'one two', redacted: false },
+      { key: '3', stream: 'stderr', text: ' warning', redacted: false },
+      { key: '4', stream: 'stderr', text: ' secret', redacted: true },
+      { key: '5', stream: 'stderr', text: ' tail', redacted: false },
+    ]);
+  });
+
   it('localizes client capability boundary failures and offers recovery', () => {
     const item: ToolActivityItem = {
       toolUseId: 'client-capability-boundary',

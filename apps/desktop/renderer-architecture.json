@@ -691,7 +691,7 @@
         "bridgePaths": {},
         "environmentCapabilities": {
           "requestAnimationFrame": 1,
-          "window.setTimeout": 2
+          "window.setTimeout": 3
         },
         "hookCalls": {},
         "lifecycleMethods": {},
@@ -711,7 +711,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 21,
-        "nonTriviaTokens": 2974
+        "nonTriviaTokens": 3912
       },
       "src/renderer/app-shell-session-settings-actions.ts": {
         "importDeclarations": 9,
