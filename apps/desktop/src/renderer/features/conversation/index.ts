@@ -40,3 +40,23 @@ export {
   type TaskReadinessNotice,
 } from './model/task-readiness-notice.js';
 export * from './model/session-ui-state.js';
+export { ConversationServicesProvider } from './services-context.js';
+export type {
+  ConversationServices,
+  ConversationSession,
+  ConversationTaskTarget,
+} from './ports.js';
+export {
+  useSessionReferenceComposer,
+  type SessionReferenceSession,
+} from './controller/use-session-reference-composer.js';
+export {
+  ComposerMentionsProvider,
+  useComposerMentionsContext,
+  type ComposerMentions,
+  type ComposerMentionsSurface,
+} from './ui/composer-mentions-provider.js';
+export {
+  useComposerQuotes,
+  useComposerQuotes as useAppShellComposerQuotes,
+} from './controller/use-composer-quotes.js';

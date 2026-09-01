@@ -441,6 +441,7 @@ function AppShellContent({
     clearQuotes,
     restoreQuotes,
   } = useAppShellComposerQuotes({ draftKey: attachmentDraftKey });
+
   // Held for the whole of sendOwningItsTarget; see ChatComposerRegion.
   const [newTaskSendPending, setNewTaskSendPending] = useState(false);
   // What a new chat will start with, held the way the Session holds it: a
@@ -1568,9 +1569,10 @@ function AppShellContent({
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
     newSessionPermissionMode: newTaskPermissionMode,
+    onAddQuote: addQuote,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.target !== undefined;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>

@@ -354,6 +354,14 @@ export function ChatComposerRegion({
               />} />
           </div>
         )}
+        {mentions?.sessionReferenceError && (
+          <Banner
+            status="error"
+            role="alert"
+            title={mentions.sessionReferenceError.title}
+            description={mentions.sessionReferenceError.detail}
+          />
+        )}
         {activeSandboxBoundary && (
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}

@@ -26,6 +26,7 @@
     "./provider-retry-countdown": "./dist/provider-retry-countdown.js",
     "./interaction": "./dist/interaction.js",
     "./session": "./dist/session.js",
+    "./session-reference": "./dist/session-reference.js",
     "./session-revisions": "./dist/session-revisions.js",
     "./collaboration": "./dist/collaboration.js",
     "./orchestration": "./dist/orchestration.js",

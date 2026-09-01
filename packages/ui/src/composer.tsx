@@ -38,6 +38,7 @@ import {
   ICON_SIZE,
   ArrowUp,
   CircleGauge,
+  BookOpen,
   FileText,
   ListTodo,
   Network,
@@ -139,6 +140,15 @@ export interface ComposerSkillOption {
   description?: string;
 }
 
+/** Session metadata offered by the Composer's `@Session` reference picker. */
+export interface ComposerSessionReference {
+  id: string;
+  name: string;
+  status?: string;
+  lastMessageAt?: number;
+  lastMessagePreview?: string;
+}
+
 export interface ComposerSlashCommandOption {
   id: string;
   name: string;
@@ -150,6 +160,11 @@ export interface ComposerSlashCommandOption {
 type ComposerSlashSuggestion =
   | { kind: 'command'; command: ComposerSlashCommandOption; group: string }
   | { kind: 'skill'; skill: ComposerSkillOption; group: string };
+
+type ComposerMentionSuggestion = {
+  kind: 'session';
+  session: ComposerSessionReference;
+};
 
 /**
  * The draft text a chosen Skill becomes. This is the product-wide invocation
@@ -339,6 +354,10 @@ export const Composer = forwardRef<
      * case a large paste behaves like any other paste.
      */
     onPasteAsQuote?(input: { text: string; label?: string }): void;
+    /** Other Sessions available for a read-only, bounded Composer reference. */
+    sessionReferences?: ReadonlyArray<ComposerSessionReference>;
+    /** Called when the user selects a Session from the `@` picker. */
+    onPickSessionReference?(session: ComposerSessionReference): void | Promise<void>;
     modelLabel?: string;
     activeSession?: SessionSummary;
     activeModelConnectionId?: string;
@@ -906,6 +925,8 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    sessionReferences: props.sessionReferences,
+    onPickSessionReference: props.onPickSessionReference,
     commandsGroup: mentionCopy.commandsGroup,
     skillsGroup: mentionCopy.skillsGroup,
   });
@@ -913,22 +934,42 @@ export const Composer = forwardRef<
     mentionSkills: props.mentionSkills,
     slashCommands: props.slashCommands,
     onSearchMentionFiles: props.onSearchMentionFiles,
+    sessionReferences: props.sessionReferences,
+    onPickSessionReference: props.onPickSessionReference,
     commandsGroup: mentionCopy.commandsGroup,
     skillsGroup: mentionCopy.skillsGroup,
   };
 
   const searchSourcesRef = useRef<{ files: SearchSource; skills: SearchSource }>(null);
   if (!searchSourcesRef.current) {
-    const runFileSearch = (query: string): Promise<SearchableItem[]> => {
-      const search = mentionSourceRef.current.onSearchMentionFiles;
-      return (search ? search(query) : Promise.resolve([])).then((files) =>
-        files
-          .filter((file) => mentionQueryMatches(query, file.relativePath))
-          .slice(0, 50)
-          .map((file) => ({ id: file.relativePath, label: file.relativePath })),
-      );
+    const runMentionSearch = (query: string): Promise<SearchableItem[]> => {
+      const source = mentionSourceRef.current;
+      const files = source.onSearchMentionFiles
+        ? source.onSearchMentionFiles(query).then((entries) =>
+            entries
+              .filter((file) => mentionQueryMatches(query, file.relativePath))
+              .slice(0, 25)
+              .map((file) => ({ id: file.relativePath, label: file.relativePath })),
+          )
+        : Promise.resolve<SearchableItem[]>([]);
+      const sessions = source.onPickSessionReference
+        ? (source.sessionReferences ?? [])
+            .filter((session) =>
+              mentionQueryMatches(
+                query,
+                `${session.name} ${session.lastMessagePreview ?? ''} ${session.status ?? ''}`,
+              ),
+            )
+            .slice(0, 25)
+            .map((session) => ({
+              id: `session:${session.id}`,
+              label: session.name,
+              auxiliaryData: { kind: 'session', session } satisfies ComposerMentionSuggestion,
+            }))
+        : [];
+      return files.then((fileItems) => [...fileItems, ...sessions].slice(0, 50));
     };
-    const files = createTriggerSearchSource<SearchableItem>(runFileSearch);
+    const files = createTriggerSearchSource<SearchableItem>(runMentionSearch);
     const listSlashSuggestions = (rawQuery: string): SearchableItem[] => {
       const source = mentionSourceRef.current;
       const skills = source.mentionSkills ?? [];
@@ -1000,22 +1041,45 @@ export const Composer = forwardRef<
   const triggers = useMemo<ChatComposerTrigger[]>(() => {
     const sources = searchSourcesRef.current!;
     const list: ChatComposerTrigger[] = [];
-    if (props.onSearchMentionFiles) {
+    if (props.onSearchMentionFiles || props.onPickSessionReference) {
       list.push({
         character: '@',
         searchSource: sources.files,
-        menuLabel: mentionCopy.filesAriaLabel,
-        emptySearchResultsText: mentionCopy.noFiles,
+        menuLabel:
+          props.sessionReferences !== undefined && props.onPickSessionReference !== undefined
+            ? mentionCopy.filesAndSessionsAriaLabel
+            : mentionCopy.filesAriaLabel,
+        emptySearchResultsText:
+          props.sessionReferences !== undefined && props.onPickSessionReference !== undefined
+            ? mentionCopy.noFilesOrSessions
+            : mentionCopy.noFiles,
         loadingText: mentionCopy.loading,
-        renderItem: (item) => (
-          <>
-            <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
-            <span className="maka-composer-mention-text">
-              <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
-              <span className="maka-composer-mention-secondary">{item.id}</span>
-            </span>
-          </>
-        ),
+        renderItem: (item) => {
+          const suggestion = item.auxiliaryData as ComposerMentionSuggestion | undefined;
+          if (suggestion?.kind === 'session') {
+            const { session } = suggestion;
+            return (
+              <>
+                <BookOpen size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
+                <span className="maka-composer-mention-text">
+                  <span className="maka-composer-mention-name">{session.name}</span>
+                  <span className="maka-composer-mention-secondary">
+                    {session.lastMessagePreview ?? session.status ?? mentionCopy.sessionsGroup}
+                  </span>
+                </span>
+              </>
+            );
+          }
+          return (
+            <>
+              <FileText size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
+              <span className="maka-composer-mention-text">
+                <span className="maka-composer-mention-name">{inlineReferenceFileBasename(item.id)}</span>
+                <span className="maka-composer-mention-secondary">{item.id}</span>
+              </span>
+            </>
+          );
+        },
         // The token serializes back to `@<path>`, so the mention reaches the
         // model exactly as the plain-text popup used to splice it in — it just
         // reads as a chip while the draft is being composed.
@@ -1027,8 +1091,17 @@ export const Composer = forwardRef<
         // '\n' as a trigger boundary, so typing `@` directly after a chip
         // opens no menu until the user types a space. That boundary set is
         // internal to `useTriggerMenu`; the fix belongs upstream.
-        onSelect: (item): ChatComposerToken =>
-          inlineReferenceToken(workspaceFileInlineReference(item.id)),
+        onSelect: (item): string | ChatComposerToken => {
+          const suggestion = item.auxiliaryData as ComposerMentionSuggestion | undefined;
+          if (suggestion?.kind === 'session') {
+            void mentionSourceRef.current.onPickSessionReference?.(suggestion.session);
+            // Session references are held as QuoteRefs by the host, not as
+            // serialized draft text. Returning an empty string only removes
+            // the trigger query from the editor.
+            return '';
+          }
+          return inlineReferenceToken(workspaceFileInlineReference(item.id));
+        },
       });
     }
     if (
@@ -1129,6 +1202,8 @@ export const Composer = forwardRef<
   }, [
     locale,
     Boolean(props.onSearchMentionFiles),
+    props.sessionReferences,
+    Boolean(props.onPickSessionReference),
     props.mentionSkills,
     props.slashCommands,
   ]);
@@ -1144,7 +1219,13 @@ export const Composer = forwardRef<
     const editable = editableNode();
     if (editable?.getAttribute('aria-expanded') !== 'true') return;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }, [locale, props.mentionSkills, props.slashCommands]);
+  }, [
+    locale,
+    props.mentionSkills,
+    props.sessionReferences,
+    props.slashCommands,
+    Boolean(props.onPickSessionReference),
+  ]);
 
   /**
    * An open menu must follow the caret, not just the text. `useTriggerMenu`
@@ -1749,6 +1830,7 @@ export const Composer = forwardRef<
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
+                    icon={quote.sourceSessionId ? <BookOpen aria-hidden="true" /> : undefined}
                     label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
                   />

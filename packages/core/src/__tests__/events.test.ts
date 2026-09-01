@@ -23,6 +23,8 @@ import {
   aggregateMessageContents,
   decodeToolStepProgress,
   encodeToolStepProgress,
+  decodeMessageContent,
+  isQuoteRef,
 } from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {
@@ -55,6 +57,21 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
     text: 'plain',
     inlineReferences: [],
   });
+});
+
+test('round-trips Session snapshot provenance and rejects partial provenance', () => {
+  const quote = {
+    text: 'bounded excerpt',
+    label: 'Session: Research',
+    sourceSessionId: 'session-source',
+    sourceSessionName: 'Research',
+    sourceCapturedAt: 1_735_000_000_000,
+    sourceTruncated: true,
+  } as const;
+  assert.equal(isQuoteRef(quote), true);
+  assert.deepEqual(decodeMessageContent({ text: 'continue', quotes: [quote] }).quotes, [quote]);
+  assert.equal(isQuoteRef({ ...quote, sourceTruncated: undefined }), false);
+  assert.equal(isQuoteRef({ ...quote, sourceCapturedAt: Number.NaN }), false);
 });
 
 test('round-trips bounded tool step progress through the shared wire codec', () => {
