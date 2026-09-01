@@ -82,18 +82,6 @@ export function lookupModelFactOverride(
   }
 }
 
-/** Return model ids with facts for one provider without exposing other providers. */
-export function modelFactOverrideIdsForProvider(
-  overrides: ModelFactOverrides | undefined,
-  providerType: ProviderType | string,
-): string[] {
-  if (!overrides) return [];
-  const prefix = `${providerType.trim()}:`;
-  return Object.keys(overrides)
-    .filter((key) => key.startsWith(prefix))
-    .map((key) => key.slice(prefix.length));
-}
-
 export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
   if (!isRecord(value)) throw new Error('model-facts.json must be an object');
   if (!Number.isSafeInteger(value.schemaVersion)) {

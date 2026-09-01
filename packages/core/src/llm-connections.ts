@@ -24,7 +24,6 @@
  * tokens live in the desktop credential store, keyed by connection slug.
  */
 
-import type { BackendKind } from './session.js';
 // Type-only, and the one edge back to the catalog: a connection is what holds
 // a catalog, so the projected-connection shape belongs here beside the stored
 // one rather than in the module that computes entries.
@@ -40,7 +39,6 @@ import {
   CATALOG_PROVIDER_TYPES,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
@@ -55,13 +53,11 @@ import {
   type ProviderType,
 } from './provider-registry.js';
 
-export type { BackendKind } from './session.js';
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
-  READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
@@ -525,48 +521,9 @@ export function providerSupportsModelDiscovery(providerType: ProviderType): bool
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
-/**
- * The backend that runs a connection.
- *
- * Throws for an unknown `providerType` (a legacy seed, or a connection
- * persisted on a branch that registers a provider this build doesn't know).
- * It used to answer `'fake'` there, which was the last live producer of that
- * value (#3211); there is no honest backend to name for a provider this build
- * cannot describe. Callers that need a non-throwing answer are asking whether
- * the connection is usable, not which backend runs it — use `isRealConnection`
- * / `isConnectionReady` from `connection-readiness.ts`.
- */
-export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKind {
-  const defaults = providerDefaultsOf(c.providerType);
-  if (!defaults) throw new Error(`Unknown providerType: ${c.providerType}`);
-  return defaults.backendKind;
-}
-
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {
   if (c.baseUrl && c.baseUrl.trim()) return c.baseUrl.trim();
   return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
-}
-
-/**
- * Reduce a submitted connection `baseUrl` to the value that should be persisted,
- * or `undefined` if nothing should be stored.
- *
- * The add-form and edit-form pre-fill `defaults.baseUrl` and submit it verbatim
- * when the user does not customize the field. Storing that default as an
- * explicit override would pin the connection to the current default —
- * `effectiveBaseUrl` honors the explicit value first, so future default changes
- * would not reach it. Only a real override (non-empty and differing from the
- * current default) is persisted; the empty/whitespace and equals-default cases
- * collapse to `undefined` so the connection reads back through the live default.
- */
-export function persistedBaseUrl(
-  providerType: ProviderType,
-  baseUrl: string | undefined | null,
-): string | undefined {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) return undefined;
-  if (trimmed === providerDefaultsOf(providerType)?.baseUrl) return undefined;
-  return trimmed;
 }
 
 export function validateSlug(slug: string): string | null {
@@ -595,9 +552,7 @@ export function deriveConnectionSlug(
 export type InteractiveOAuthProviderType = Extract<ProviderType, 'openai-codex' | 'xai-oauth'>;
 
 /** Stable human-facing slug base for one interactive OAuth Connection. */
-export function interactiveOAuthConnectionSlugBase(
-  providerType: InteractiveOAuthProviderType,
-): string {
+function interactiveOAuthConnectionSlugBase(providerType: InteractiveOAuthProviderType): string {
   switch (providerType) {
     case 'openai-codex':
       return 'codex-subscription';
@@ -798,17 +753,3 @@ export interface UpdateConnectionInput {
 }
 
 export type { RequestHeaderUpdate, SavedRequestHeaders } from './request-customization.js';
-
-export function normalizePersistedConnection(input: unknown): LlmConnection {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('Invalid connection: expected an object');
-  }
-  const value = input as Partial<LlmConnection>;
-  if (typeof value.providerType !== 'string' || !value.providerType) {
-    throw new Error('Invalid connection: providerType is required');
-  }
-  return {
-    ...value,
-    enabledModelIds: connectionEnabledModelIds(value),
-  } as LlmConnection;
-}
