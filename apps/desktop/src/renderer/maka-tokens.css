@@ -639,6 +639,11 @@
      one its own components already round to, so meeting it there is what stops
      our cards from disagreeing with the controls inside them.
 
+     These four px values are the ladder's only authority: Astryx's
+     --radius-inner / -element / -container / -full are emitted as aliases to
+     them (astryx-theme/makaTheme.ts), so both vocabularies resolve to one
+     number by construction. Never restate a rung as a literal on either side.
+
      Assignment is monotonic in box height, and `border-radius: 0` is legal
      only on an edge-to-edge row. See DESIGN.md, Radius language. */
   --radius-control: 6px;

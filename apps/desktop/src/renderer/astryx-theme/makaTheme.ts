@@ -142,6 +142,15 @@ export const makaTheme = defineTheme({
   // than an opaque literal, so it is defined RELATIVE to whatever it sits on and
   // cannot invert in any palette or mode — the failure above is unrepresentable
   // rather than merely fixed.
+  //
+  // The radius rungs below are the same convergence one tier down. Maka and
+  // Astryx name one ladder twice — control/inner, surface/element,
+  // modal/container, pill/full — and both vocabularies are live in product
+  // CSS. They carried independent literals that happened to agree, in
+  // different units: the product's absolute px against Astryx's rem, which
+  // the root font-size note above is the reason to keep out. Aliasing makes
+  // the px side the single authority, so an upstream rung change can no
+  // longer move one name out from under the other without anyone seeing it.
   tokens: {
     '--color-background-body': 'var(--surface-canvas)',
     '--color-background-surface': 'var(--background)',
