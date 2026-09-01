@@ -1627,12 +1627,15 @@ describe('ToolRuntime durable boundary', () => {
       sessionId: string;
       operationId: string;
     };
-    assert.deepEqual({ ...compensation, operationId: '<runtime-owned>' }, {
-      result: { kind: 'json', value: { ok: true } },
-      isError: false,
-      sessionId: 'session-1',
-      operationId: '<runtime-owned>',
-    });
+    assert.deepEqual(
+      { ...compensation, operationId: '<runtime-owned>' },
+      {
+        result: { kind: 'json', value: { ok: true } },
+        isError: false,
+        sessionId: 'session-1',
+        operationId: '<runtime-owned>',
+      },
+    );
     assert.match(compensation.operationId, /^toolop_/);
   });
 
