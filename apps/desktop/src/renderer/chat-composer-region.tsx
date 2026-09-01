@@ -23,6 +23,7 @@ import {
   Button,
   ClientCapabilityPrompt,
   Composer,
+  type ComposerInteraction,
   ComposerGoalProjectionConsumer,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
@@ -60,11 +61,6 @@ interface BoundaryUnreadableNotice {
   retryPending: boolean;
   onRetry(): void;
 }
-
-type ComposerInteraction =
-  | ComponentProps<typeof SandboxBoundaryPrompt>['request']
-  | ComponentProps<typeof ClientCapabilityPrompt>['request']
-  | ComponentProps<typeof UserQuestionPrompt>['request'];
 
 /**
  * The composer region of the chat surface (issue #1043): the composer
