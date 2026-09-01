@@ -325,7 +325,7 @@
   display: inline-flex;
   border-radius: var(--radius-pill);
   background: var(--color-accent-muted);
-  color: var(--accent-solid);
+  color: var(--foreground);
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {

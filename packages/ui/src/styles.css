@@ -815,7 +815,7 @@
 
 .maka-turn-lineage-badge[data-direction="forward"] {
   background: var(--color-accent-muted);
-  color: var(--accent-solid);
+  color: var(--foreground);
 }
 
 .maka-turn-lineage-badge[data-direction="reverse"] {

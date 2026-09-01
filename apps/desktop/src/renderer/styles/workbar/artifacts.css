@@ -265,7 +265,7 @@
   padding: var(--space-1) var(--space-1-5);
   border-radius: var(--radius-control);
   background: var(--color-accent-muted);
-  color: var(--accent-solid);
+  color: var(--foreground);
 }
 
 .maka-artifact-preview-image {
