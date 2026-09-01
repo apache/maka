@@ -116,6 +116,7 @@ import {
   resolveContextBudgetCapacity,
   type ContextBudgetCapacity,
 } from './context-budget-policy.js';
+import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import {
   collectHistoricalImageToolResults,
   type HistoricalImageToolResult,
@@ -979,6 +980,7 @@ export class AiSdkCompaction {
         providerTools,
         activeToolsForStep,
         systemPromptChars,
+        charsPerToken,
       );
       const forcedEstimate = state.forcedTriggerEstimate;
       state.forcedTriggerEstimate = undefined;
@@ -1263,6 +1265,7 @@ export class AiSdkCompaction {
       providerTools,
       activeToolsForStep,
       systemPromptChars,
+      charsPerToken,
     );
     if (replacedPayloadChars >= input.referencePayloadChars) {
       return {
@@ -1393,6 +1396,7 @@ export class AiSdkCompaction {
         input.providerTools,
         input.activeTools,
         input.systemPromptChars,
+        this.input.contextBudget?.charsPerToken ?? 4,
       );
     const phase = input.stepNumber === 0 ? 'pre_turn' : 'mid_turn';
     const outcome = await this.compactActiveRequestHistory({
@@ -1516,6 +1520,7 @@ export class AiSdkCompaction {
           providerTools,
           result?.activeTools ?? options.activeTools ?? fallbackActiveTools(),
           systemPromptChars,
+          charsPerToken,
         );
       let payloadChars = finalPayloadChars();
       if (
@@ -1797,17 +1802,46 @@ export class MidTurnCapacityCompactState {
  * requests — signed deltas cancel it — but the cold-start estimate (no usable
  * usage sample) is the whole payload, so omitting it would under-estimate by
  * exactly the system prompt and let an over-window request stream.
+ *
+ * A media part is worth what the provider charges for it, not what it
+ * serializes to: materialized bytes reach the request as base64 or a byte map,
+ * where a 500 KB screenshot serializes to ~667K chars. Measuring that string
+ * makes one image look like a whole context window, which is how an affordable
+ * request became a terminal verdict (#4458). Billing it at the same constant
+ * the ledger's ruler uses keeps the two measures commensurable.
  */
 function midTurnRequestPayloadChars(
   messages: readonly ModelMessage[],
   providerTools: readonly MakaTool[],
   activeTools: readonly string[],
   systemPromptChars: number,
+  charsPerToken: number,
 ): number {
+  let mediaParts = 0;
+  const serializedMessages = JSON.stringify(messages, (_key, value) => {
+    if (!isMaterializedMediaPart(value)) return value;
+    mediaParts += 1;
+    return { type: value.type, mediaType: value.mediaType };
+  });
   return (
     Math.max(0, Math.floor(systemPromptChars)) +
-    JSON.stringify(messages).length +
+    (serializedMessages?.length ?? 0) +
+    mediaParts * MATERIALIZED_IMAGE_TOKENS * Math.max(1, charsPerToken) +
     toolSchemaCharsForDiagnostics(providerTools, activeTools)
+  );
+}
+
+/** A `file` part carrying inline bytes, as opposed to a URL the provider fetches. */
+function isMaterializedMediaPart(
+  value: unknown,
+): value is { type: 'file'; mediaType: string; data: object } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const part = value as { type?: unknown; mediaType?: unknown; data?: unknown };
+  return (
+    part.type === 'file' &&
+    typeof part.mediaType === 'string' &&
+    part.data !== null &&
+    typeof part.data === 'object'
   );
 }
 

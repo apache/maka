@@ -1476,6 +1476,28 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(promptJson(fixture, 2).includes('RAW_SPAN_ONE_'), true);
   });
 
+  test('measures a materialized image by what it bills, not by its serialized bytes', async () => {
+    // apache/maka#4458. The unknown model's 48,384-token fallback capacity is
+    // enforced from step 0. A 200 KB screenshot reaches the request as base64,
+    // so measuring the serialized payload prices these two images at ~130,000
+    // tokens and ends the turn before a single provider call — while the
+    // provider itself would charge a few thousand.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      currentImage: true,
+      imageBytes: 200_000,
+      priorShape: 'image_tool',
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    // Nothing was folded or dropped: at the real cost the request fits.
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.doesNotMatch(promptJson(fixture, 0), /omitted after provider context overflow/);
+  });
+
   test('compacts one oversized prior turn before an unknown-model request', async () => {
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
