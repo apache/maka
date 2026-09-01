@@ -19,11 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isAppleShortcutPlatform } from '../utils.js';
+import { isAppleShortcutPlatform, preferredShortcutPlatform } from '../utils.js';
 
 test('detects Apple platforms from navigator.platform values', () => {
   assert.equal(isAppleShortcutPlatform('MacIntel'), true);
   assert.equal(isAppleShortcutPlatform('Macintosh'), true);
+  assert.equal(isAppleShortcutPlatform('macOS'), true);
   assert.equal(isAppleShortcutPlatform('iPhone'), true);
   assert.equal(isAppleShortcutPlatform('iPad'), true);
 });
@@ -34,4 +35,12 @@ test('rejects non-Apple platforms and unknown input (#3876)', () => {
   assert.equal(isAppleShortcutPlatform(''), false);
   assert.equal(isAppleShortcutPlatform(null), false);
   assert.equal(isAppleShortcutPlatform(undefined), false);
+});
+
+test('prefers userAgentData.platform and falls back only when it is blank', () => {
+  assert.equal(preferredShortcutPlatform('macOS', 'Win32'), 'macOS');
+  assert.equal(preferredShortcutPlatform('Windows', 'MacIntel'), 'Windows');
+  assert.equal(preferredShortcutPlatform('  ', 'MacIntel'), 'MacIntel');
+  assert.equal(preferredShortcutPlatform(undefined, 'Linux x86_64'), 'Linux x86_64');
+  assert.equal(preferredShortcutPlatform(undefined, undefined), '');
 });

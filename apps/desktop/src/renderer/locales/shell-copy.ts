@@ -29,19 +29,6 @@ import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog'
 
 import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type GoalStatus } from '@maka/core/goal';
-import { isAppleShortcutPlatform } from '@maka/ui';
-
-// Palette hints are plain strings rendered verbatim by the command palette,
-// not Kbd tokens, so they detect the platform themselves (#3876). The
-// keyboardHelp `keys` arrays below stay as ⌘/⇧ glyphs on purpose: they are
-// parsed through keyboard-help's ASTRYX_KEY_TOKENS into Kbd's platform-aware
-// `mod` token, which renders the right label per platform.
-const APPLE_HINTS = isAppleShortcutPlatform(
-  typeof navigator === 'undefined' ? '' : navigator.platform,
-);
-function platformHint(apple: string, other: string): string {
-  return APPLE_HINTS ? apple : other;
-}
 
 export const STATIC_COMMAND_IDS = [
   'action:new-chat',
@@ -77,6 +64,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -570,7 +561,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: platformHint('⌥⌘S', 'Ctrl+Alt+S'),
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -583,7 +574,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: platformHint('⌘,', 'Ctrl+,'), group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -635,7 +630,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: platformHint('⇧⌘D · 脱敏日志 · 仅写入剪贴板', 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板'),
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -658,7 +656,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: platformHint('⌥⌘S', 'Ctrl+Alt+S'),
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -673,7 +671,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: platformHint('⌘,', 'Ctrl+,'),
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -731,7 +729,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: platformHint('⇧⌘D · Redacted logs · clipboard only', 'Ctrl+Shift+D · Redacted logs · clipboard only'),
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {

@@ -31,5 +31,14 @@ export function cn(...inputs: ClassValue[]): string {
  * rendered beside them.
  */
 export function isAppleShortcutPlatform(platform: string | null | undefined): boolean {
-  return /Mac|iPhone|iPad|iPod/.test(platform ?? '');
+  return /mac|iphone|ipad|ipod/i.test(platform ?? '');
+}
+
+/** Prefer Chromium's current platform authority, falling back for older engines. */
+export function preferredShortcutPlatform(
+  userAgentDataPlatform: string | null | undefined,
+  legacyPlatform: string | null | undefined,
+): string {
+  const modern = userAgentDataPlatform?.trim();
+  return modern || legacyPlatform?.trim() || '';
 }
