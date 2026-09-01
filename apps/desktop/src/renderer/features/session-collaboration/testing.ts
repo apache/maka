@@ -17,16 +17,9 @@
  * under the License.
  */
 
-export { SessionCollaborationServicesProvider } from './services-context';
 export {
-  useSessionCollaborationDialog,
-  type SessionCollaborationDialogTarget,
-} from './controller/use-session-collaboration-dialog';
-export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
-export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';
-export { SessionTurnRequestBadge } from './ui/session-turn-request-badge';
-export {
-  SessionTurnRequestInboxProvider,
-  type SessionTurnRequestInboxCopy,
-} from './turn-request-inbox-context';
-export type { SessionCollaborationServices } from './ports';
+  groupPendingTurnRequests,
+  samePendingTurnRequests,
+  turnRequestPreview,
+  unseenTurnRequests,
+} from './model/turn-request-inbox.js';

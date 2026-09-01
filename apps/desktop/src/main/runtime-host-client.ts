@@ -336,8 +336,11 @@ export class DesktopRuntimeHostClient {
     return this.request('collaboration.turn-request.create', { intent });
   }
 
-  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
-    return this.request('collaboration.turn-request.query', { sessionId });
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
   }
 
   acknowledgeCollaborationTurnRequest(

@@ -23,6 +23,10 @@ import type {
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../../../shared/session-collaboration.js';
+import type {
+  CollaborationTurnRequestDecideResult,
+  SessionTurnAccessRequest,
+} from '@maka/runtime-host/protocol';
 
 export type {
   SessionCollaborationCancelResult,
@@ -40,5 +44,11 @@ export interface SessionCollaborationServices {
   cancelImport(operationId: string): Promise<SessionCollaborationCancelResult>;
   listMounts(): Promise<readonly SessionCollaborationMountSummary[]>;
   removeMount(mountId: string): Promise<void>;
+  getPendingTurnRequests(): Promise<readonly SessionTurnAccessRequest[]>;
+  decideTurnRequest(
+    sessionId: string,
+    requestId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<CollaborationTurnRequestDecideResult>;
   createOperationId(): string;
 }

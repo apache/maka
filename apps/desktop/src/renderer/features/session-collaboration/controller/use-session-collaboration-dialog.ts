@@ -17,16 +17,32 @@
  * under the License.
  */
 
-export { SessionCollaborationServicesProvider } from './services-context';
-export {
-  useSessionCollaborationDialog,
-  type SessionCollaborationDialogTarget,
-} from './controller/use-session-collaboration-dialog';
-export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
-export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';
-export { SessionTurnRequestBadge } from './ui/session-turn-request-badge';
-export {
-  SessionTurnRequestInboxProvider,
-  type SessionTurnRequestInboxCopy,
-} from './turn-request-inbox-context';
-export type { SessionCollaborationServices } from './ports';
+import { useState } from 'react';
+
+export interface SessionCollaborationDialogTarget {
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly requiresRemoteAccess: boolean;
+}
+
+export function useSessionCollaborationDialog() {
+  const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
+
+  return {
+    target,
+    isOpen: target !== undefined,
+    open: setTarget,
+    openSession(session: {
+      readonly id: string;
+      readonly name: string;
+      readonly profileKind: string;
+    }) {
+      setTarget({
+        sessionId: session.id,
+        sessionName: session.name,
+        requiresRemoteAccess: session.profileKind === 'local',
+      });
+    },
+    close: () => setTarget(undefined),
+  };
+}

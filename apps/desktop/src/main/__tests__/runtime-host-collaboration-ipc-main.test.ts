@@ -56,6 +56,10 @@ test('requires plaintext confirmation and reports the issued invitation routes',
     async queryCollaborationAccess() {
       return { principals: [], grants: [] };
     },
+    async queryCollaborationTurnRequests(sessionId?: string) {
+      assert.equal(sessionId, undefined);
+      return { canRequestTurns: false, requests: [] };
+    },
     async revokeCollaborationPrincipal() {
       return { revoked: false };
     },
@@ -98,6 +102,13 @@ test('requires plaintext confirmation and reports the issued invitation routes',
   const bundle = decodeDesktopCollaborationInvitation(invitation.invitationCode);
   assert.equal(decodeCollaborationInvitationCode(bundle.invitationCode).rootId, ROOT_ID);
   assert.equal(bundle.target.transport.kind, 'plaintext');
+
+  const inbox = handlers.get('session-collaboration:turn-request:inbox');
+  assert.ok(inbox);
+  assert.deepEqual(await inbox({} as Parameters<IpcHandler>[0]), {
+    canRequestTurns: false,
+    requests: [],
+  });
 
   const peerHandlers = new Map<string, IpcHandler>();
   registerRuntimeHostCollaborationIpc(
