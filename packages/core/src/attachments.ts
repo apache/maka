@@ -174,8 +174,11 @@ export function guessMimeFromName(fileName: string): string {
  * Sniffed bytes win outright. When nothing sniffs, a *claimed* image/PDF MIME
  * (from the name or the renderer) is downgraded to `application/octet-stream`
  * so unverified bytes never enter the image or PDF path; any other claim is
- * kept so genuine document kinds still resolve. `bytes` may be just the
- * {@link ATTACHMENT_MIME_SNIFF_BYTES} prefix — the sniff only inspects that.
+ * kept so genuine document kinds still resolve. `bytes` may be a prefix rather
+ * than the whole file: image signatures resolve from the
+ * {@link ATTACHMENT_MIME_SNIFF_BYTES} prefix, while a PDF header behind a
+ * preamble is only found within the first {@link PDF_HEADER_SCAN_BYTES} — the
+ * send path passes the full bytes, pick-time staging passes the short prefix.
  */
 export function resolveAttachmentMimeType(
   bytes: Uint8Array,

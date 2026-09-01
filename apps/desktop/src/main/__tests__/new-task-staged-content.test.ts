@@ -149,6 +149,17 @@ function textFile(name: string): File {
   return fileWithBytes(name, 'text/plain', new TextEncoder().encode('plain notes'));
 }
 
+/** A blob whose leading-byte read rejects, exercising the `sniffFileMimeType`
+ * catch: the declared image/PDF type must be downgraded, not reinstated. */
+function unreadableFile(name: string, type: string): File {
+  return {
+    name,
+    type,
+    size: 32,
+    slice: () => ({ arrayBuffer: () => Promise.reject(new Error('slice read failed')) }),
+  } as unknown as File;
+}
+
 /** A blob whose leading-byte read is held open, so a test can switch the active
  * draft while `fileToPending` is mid-sniff — the window this PR's async made
  * real. Bytes are PNG so it stages as an image once the read resolves. */
@@ -420,4 +431,32 @@ test('dropped files stage by content: a real image named .pdf notices, a disguis
   );
   assert.equal(probe.latest().pendingAttachments.at(-1)?.kind, 'other');
   assert.equal(calls.length, 1);
+});
+
+test('a failed leading-byte read downgrades the declared image claim rather than trusting it', async () => {
+  const calls: Array<{ title: string }> = [];
+  const probe = await mountProbe((options) =>
+    useComposerAttachments({
+      ...options,
+      toastApi: { error() {} },
+      imageNotice: {
+        notify(title) {
+          calls.push({ title });
+        },
+        supportsVision: () => false,
+      },
+      service: idleAttachmentService,
+    }),
+  );
+  await probe.render('session-1');
+
+  // `slice().arrayBuffer()` rejects: the catch must route an empty prefix
+  // through the downgrade, so an `image/png` claim it could not verify stages
+  // as an ordinary file and never fires the vision notice.
+  await act(() =>
+    probe.latest().attachFilePaths([unreadableFile('screenshot.png', 'image/png')]),
+  );
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.kind, 'other');
+  assert.equal(probe.latest().pendingAttachments.at(-1)?.mimeType, 'application/octet-stream');
+  assert.equal(calls.length, 0);
 });

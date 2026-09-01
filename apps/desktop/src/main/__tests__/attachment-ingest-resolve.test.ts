@@ -26,6 +26,7 @@ import {
   type AttachmentSnapshotInput,
   resolveAttachmentRefs,
   resolveIngestItems,
+  resolvePickedAttachments,
   sniffPickedAttachmentMimeType,
 } from '../attachment-ingest.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
@@ -471,5 +472,37 @@ describe('sniffPickedAttachmentMimeType (pick-time staging kind)', () => {
       docx,
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     );
+  });
+});
+
+describe('resolvePickedAttachments (pick dialog owner: stage by content)', () => {
+  test('stamps each picked path with its sniffed MIME and main-side size, not its extension', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'att-pick-plan-'));
+    const imageAsPdf = join(dir, 'report.pdf'); // real PNG bytes behind a .pdf name
+    const junkAsPng = join(dir, 'payload.png'); // non-image bytes behind an image name
+    await writeFile(imageAsPdf, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    await writeFile(junkAsPng, Buffer.from('not an image'));
+    const statCalls: string[] = [];
+    try {
+      const plan = await resolvePickedAttachments([imageAsPdf, junkAsPng], async (path) => {
+        statCalls.push(path);
+        return { size: path.endsWith('report.pdf') ? 8 : 12 };
+      });
+
+      // report.pdf carries image bytes → stages as an image (thumbnail + notice).
+      assert.equal(plan[0].name, 'report.pdf');
+      assert.equal(plan[0].mimeType, 'image/png');
+      assert.equal(attachmentKindFromMimeType(plan[0].mimeType, plan[0].name), 'image');
+      assert.equal(plan[0].size, 8);
+
+      // A disguised .png loses its image claim → stages as an ordinary file.
+      assert.equal(plan[1].mimeType, 'application/octet-stream');
+      assert.equal(attachmentKindFromMimeType(plan[1].mimeType, plan[1].name), 'other');
+
+      // Sizes come from the injected (main-side) stat, one call per path.
+      assert.deepEqual(statCalls, [imageAsPdf, junkAsPng]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

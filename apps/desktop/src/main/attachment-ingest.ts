@@ -104,6 +104,31 @@ export async function sniffPickedAttachmentMimeType(path: string, name: string):
   return resolveAttachmentMimeType(prefix, undefined, name);
 }
 
+/**
+ * Resolve the paths returned by the pick dialog into approval-plan entries,
+ * each staged under its content-sniffed MIME rather than its extension — the
+ * headline behavior of this feature, extracted from the `attachments:pickFiles`
+ * IPC handler so the content decision is testable without a native dialog.
+ * `stat` is injected (the handler passes `node:fs/promises`); sizes come from
+ * main, never the renderer.
+ */
+export async function resolvePickedAttachments(
+  paths: readonly string[],
+  stat: (path: string) => Promise<{ size: number }>,
+): Promise<Array<{ path: string; name: string; mimeType: string; size: number }>> {
+  return Promise.all(
+    paths.map(async (path) => {
+      const name = basename(path);
+      return {
+        path,
+        name,
+        size: (await stat(path)).size,
+        mimeType: await sniffPickedAttachmentMimeType(path, name),
+      };
+    }),
+  );
+}
+
 /** Read up to `byteCount` leading bytes without loading the whole file, for
  * content sniffing at pick time (a full read waits until send). */
 async function readFilePrefix(path: string, byteCount: number): Promise<Uint8Array> {
