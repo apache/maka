@@ -72,7 +72,6 @@ import {
 } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent } from '@astryxdesign/core/Layout';
 import { MetadataList, MetadataListItem } from '@astryxdesign/core/MetadataList';
-import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   ModulePage,
   Selector,
@@ -1289,7 +1288,7 @@ function McpEditorDialog(props: {
                           { value: 'streamable-http', label: props.copy.editor.transportStreamableHttp },
                           { value: 'sse', label: props.copy.editor.transportLegacySse },
                         ]}
-                        onChange={(value) => updateTransport(value as McpEditorDraft['transport'])}
+                        onChange={(value) => updateDraft('transport', value as McpEditorDraft['transport'])}
                         label={props.copy.editor.transportLabel}
                         width="100%"
                       />

@@ -818,3 +818,72 @@ test('MCP config commit is not rolled back by a capability publication failure',
     'Host disconnected',
   ]);
 });
+
+test('import merges against the store state at commit time, not the snapshot a renderer loaded', async () => {
+  const handlers = new Map<string, (...args: any[]) => Promise<any>>();
+  let config: McpConfigFile = {
+    version: MCP_CONFIG_VERSION,
+    mcpServers: { alpha: { command: 'node' } },
+  };
+  registerMcpIpcMain({
+    ipcMain: { handle(channel, handler) { handlers.set(channel, handler as (...args: any[]) => Promise<any>); } },
+    store: {
+      get: async () => config,
+      transform: async (apply) => { config = await apply(config); return config; },
+      upsert: async (_serverId, _server) => config,
+      remove: async () => config,
+    },
+    manager: {
+      cancelConnect: () => false,
+      forgetServerCredentials: async () => {},
+      sync: async () => {},
+      statuses: () => [],
+      test: async () => { throw new Error('not used'); },
+    },
+    oauth: {
+      isActive: () => false,
+      cancelLogin: () => false,
+      login: async () => { throw new Error('not used'); },
+      logout: async () => { throw new Error('not used'); },
+      resumeLogin: async () => undefined,
+    },
+    ensureReady: async () => {},
+    publishCapabilities: async () => {},
+    onPublicationError: () => {},
+    emitChanged: () => {},
+  });
+
+  const getConfig = handlers.get('mcp:getConfig');
+  const importConfig = handlers.get('mcp:importConfig');
+  assert.ok(getConfig && importConfig);
+
+  // A renderer loads {alpha} — the snapshot an import dialog would sit on.
+  const rendererSnapshot = await getConfig({});
+  assert.deepEqual(Object.keys(rendererSnapshot.mcpServers), ['alpha']);
+
+  // While the dialog is open, a concurrent writer (marketplace install,
+  // another window, another Host client) commits `beta` with a credential.
+  config = {
+    version: MCP_CONFIG_VERSION,
+    mcpServers: {
+      ...config.mcpServers,
+      beta: {
+        url: 'https://mcp.beta.example/mcp',
+        oauth: { clientId: 'beta-client', clientSecret: 'beta-secret' },
+      },
+    },
+  };
+
+  // The import must merge against the CURRENT store state inside the lane —
+  // a renderer-side merge of the stale snapshot would erase beta entirely.
+  const next = await importConfig({}, '{"gamma":{"command":"npx","args":["gamma"]}}');
+  assert.equal(next.status, 'imported');
+  assert.deepEqual(Object.keys(config.mcpServers).sort(), ['alpha', 'beta', 'gamma']);
+  const storedBeta = config.mcpServers.beta;
+  assert.ok(storedBeta && 'url' in storedBeta);
+  assert.equal(storedBeta.oauth?.clientSecret, 'beta-secret');
+  // The response the renderer adopts also carries beta — masked, never raw.
+  const returnedBeta = next.config.mcpServers.beta;
+  assert.ok(returnedBeta && 'url' in returnedBeta);
+  assert.notEqual(returnedBeta.oauth?.clientSecret, 'beta-secret');
+});
