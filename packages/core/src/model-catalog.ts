@@ -35,7 +35,6 @@ import {
 import type { PricingConfig } from './usage-stats/types.js';
 import {
   curatedCatalogFallbackModelsForProvider,
-  hasModelMetadata,
   lookupModelMetadata,
   resolveModelVisionSupport,
 } from './model-metadata.js';
@@ -82,25 +81,6 @@ export interface ModelCatalogPricing {
   source: 'builtin' | 'user_override';
 }
 
-export type ModelCatalogUserChoiceSource =
-  | 'connection_default'
-  | 'saved_model'
-  | 'session_model'
-  | 'daily_review_model';
-
-export type SavedModelChoice =
-  | string
-  | {
-      id: string;
-      source: Exclude<ModelCatalogUserChoiceSource, 'connection_default'>;
-    };
-
-export interface ModelCatalogProvenanceSources {
-  providerInventory?: true;
-  staticCatalog?: true;
-  userChoice?: ModelCatalogUserChoiceSource[];
-}
-
 export interface ModelCatalogEntry {
   id: string;
   displayName?: string;
@@ -136,8 +116,6 @@ export interface ModelCatalogEntry {
     modelSource?: ModelDiscoverySource;
     modelsFetchedAt?: number;
     pricingModelKey?: string;
-    userChoice?: true;
-    sources?: ModelCatalogProvenanceSources;
   };
 }
 
@@ -166,7 +144,8 @@ export interface BuildConnectionModelCatalogInput {
     | 'modelsFetchedAt'
     | 'relayModelProfiles'
   >;
-  savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
+  /** Ids the catalog must list even when no inventory describes them (#1584). */
+  savedModelIds?: Iterable<string | undefined | null>;
   fallbackModels?: string[];
   now?: number;
   staleAfterMs?: number;
@@ -190,7 +169,8 @@ export interface BuildModelCatalogInput {
   authOk?: boolean;
   pricing?: Iterable<PricingConfig>;
   pricingSource?: 'builtin' | 'user_override';
-  savedModelIds?: Iterable<SavedModelChoice | undefined | null>;
+  /** Ids the catalog must list even when no inventory describes them (#1584). */
+  savedModelIds?: Iterable<string | undefined | null>;
   /** Per-model user declarations; authoritative over every catalog source. */
   relayModelProfiles?: RelayModelProfiles;
 }
@@ -222,11 +202,10 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
           id,
           ...displayNameForKnownModel(input.providerType, id),
         }));
-  const savedChoiceSources = savedChoiceSourcesById(input.savedModelIds);
+  const savedModelIds = normalizedIdSet(input.savedModelIds);
   const ctx: EntryContext = {
     input,
     modelSource,
-    savedChoiceSources,
     normalizedDefaultModel,
   };
   const seen = new Set<string>();
@@ -244,10 +223,10 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
     seen.add(normalizedDefaultModel);
   }
 
-  for (const id of savedChoiceSources.keys()) {
+  for (const id of savedModelIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    entries.push(makeMissingEntry(ctx, id, inventory, { userChoice: true }));
+    entries.push(makeMissingEntry(ctx, id, inventory));
   }
 
   return entries;
@@ -331,9 +310,9 @@ export function buildConnectionModelCatalogEntries(
     // provider whose `models` is a release snapshot vanished from every picker
     // (#1584), and fixing it at one call site left the others broken. The raw
     // array, not `connectionEnabledModelIds`: that one folds in `defaultModel`,
-    // which `provenanceSources` already reports as `connection_default`.
+    // which the builder already lists on its own.
     savedModelIds: [...(connection.enabledModelIds ?? []), ...(input.savedModelIds ?? [])].filter(
-      (choice) => !broken.has(typeof choice === 'string' ? choice : (choice?.id ?? '')),
+      (id) => !broken.has(id ?? ''),
     ),
   });
 }
@@ -390,21 +369,18 @@ export function resolveConnectionModelCatalog(
 interface EntryContext {
   readonly input: BuildModelCatalogInput;
   readonly modelSource: ModelDiscoverySource;
-  readonly savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>;
   readonly normalizedDefaultModel: string | undefined;
 }
 
 /**
  * The facts an entry cannot derive from its model row. A model the catalog
  * never listed has no row to derive them from: its unavailability is a
- * property of the inventory rather than of the model, a missing default is
- * default by construction, and a missing saved choice records that the user
- * picked it.
+ * property of the inventory rather than of the model, and a missing default
+ * is default by construction.
  */
 interface EntryOverrides {
   readonly unavailableReason?: ModelUnavailableReason;
   readonly isDefault?: boolean;
-  readonly userChoice?: true;
 }
 
 function makeEntry(
@@ -413,7 +389,7 @@ function makeEntry(
   source: ModelCatalogEntry['source'],
   overrides: EntryOverrides = {},
 ): ModelCatalogEntry {
-  const { input, modelSource, savedChoiceSources, normalizedDefaultModel } = ctx;
+  const { input, modelSource, normalizedDefaultModel } = ctx;
   const normalizedModel = { ...model, id: model.id.trim() };
   const pricing = findPricing(input, normalizedModel.id);
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
@@ -482,14 +458,6 @@ function makeEntry(
       ...(pricing
         ? { pricingModelKey: pricingModelKey(input.providerType, normalizedModel.id) }
         : {}),
-      ...(overrides.userChoice ? { userChoice: overrides.userChoice } : {}),
-      sources: provenanceSources(
-        input,
-        normalizedModel.id,
-        source,
-        savedChoiceSources,
-        normalizedDefaultModel,
-      ),
     },
   };
 }
@@ -503,7 +471,7 @@ function makeMissingEntry(
   ctx: EntryContext,
   id: string,
   inventory: ConnectionModelInventory,
-  overrides: Omit<EntryOverrides, 'unavailableReason'>,
+  overrides: Omit<EntryOverrides, 'unavailableReason'> = {},
 ): ModelCatalogEntry {
   return makeEntry(ctx, { id }, 'unknown', {
     unavailableReason: missingEntryUnavailableReason(ctx.input, inventory),
@@ -544,36 +512,6 @@ function displayNameForKnownModel(
 ): { displayName?: string } {
   const displayName = lookupModelMetadata(providerType, id).displayName;
   return displayName ? { displayName } : {};
-}
-
-function provenanceSources(
-  input: Pick<BuildModelCatalogInput, 'providerType'>,
-  id: string,
-  source: ModelCatalogEntry['source'],
-  savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
-  normalizedDefaultModel: string | undefined,
-): ModelCatalogProvenanceSources {
-  const userChoice = userChoiceSources(id, savedChoiceSources, normalizedDefaultModel);
-  return {
-    ...(source === 'provider_api' ? { providerInventory: true as const } : {}),
-    ...(source === 'static_catalog' || hasModelMetadata(input.providerType, id)
-      ? { staticCatalog: true as const }
-      : {}),
-    ...(userChoice.length > 0 ? { userChoice } : {}),
-  };
-}
-
-function userChoiceSources(
-  id: string,
-  savedChoiceSources: ReadonlyMap<string, ModelCatalogUserChoiceSource[]>,
-  normalizedDefaultModel: string | undefined,
-): ModelCatalogUserChoiceSource[] {
-  const sources: ModelCatalogUserChoiceSource[] = [];
-  if (id === normalizedDefaultModel) sources.push('connection_default');
-  for (const source of savedChoiceSources.get(id) ?? []) {
-    if (!sources.includes(source)) sources.push(source);
-  }
-  return sources;
 }
 
 function deriveModelUnavailableReason(
@@ -694,19 +632,11 @@ function canUseUnavailableReasonAsDefault(reason: ModelUnavailableReason): boole
   return reason === 'none' || reason === 'stale' || reason === 'not_in_live_list';
 }
 
-function savedChoiceSourcesById(
-  choices: Iterable<SavedModelChoice | undefined | null> | undefined,
-): Map<string, ModelCatalogUserChoiceSource[]> {
-  const result = new Map<string, ModelCatalogUserChoiceSource[]>();
-  if (!choices) return result;
-  for (const choice of choices) {
-    if (!choice) continue;
-    const id = typeof choice === 'string' ? choice.trim() : choice.id.trim();
-    if (!id) continue;
-    const source = typeof choice === 'string' ? 'saved_model' : choice.source;
-    const sources = result.get(id) ?? [];
-    if (!sources.includes(source)) sources.push(source);
-    result.set(id, sources);
+function normalizedIdSet(ids: Iterable<string | undefined | null> | undefined): Set<string> {
+  const result = new Set<string>();
+  for (const id of ids ?? []) {
+    const trimmed = id?.trim();
+    if (trimmed) result.add(trimmed);
   }
   return result;
 }

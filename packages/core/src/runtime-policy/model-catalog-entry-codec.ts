@@ -23,8 +23,6 @@ import type {
   ModelCatalogEntry,
   ModelCatalogLifecycle,
   ModelCatalogPricing,
-  ModelCatalogProvenanceSources,
-  ModelCatalogUserChoiceSource,
 } from '../model-catalog.js';
 import { decodeConnectionModel, decodeProviderType } from './connection-catalog-codec.js';
 import {
@@ -47,12 +45,6 @@ const UNAVAILABLE_REASONS = [
 ] as const;
 const AVAILABILITIES = ['available', 'warning', 'blocked'] as const;
 const LIFECYCLES = ['active', 'beta', 'alpha', 'deprecated', 'retired', 'unknown'] as const;
-const USER_CHOICE_SOURCES = [
-  'connection_default',
-  'saved_model',
-  'session_model',
-  'daily_review_model',
-] as const;
 const CAPABILITY_KEYS = [
   'chat',
   'vision',
@@ -203,12 +195,9 @@ function decodeProvenance(value: unknown): ModelCatalogEntry['provenance'] {
   const item = exactRecord(
     value,
     'entry provenance',
-    ['modelSource', 'modelsFetchedAt', 'pricingModelKey', 'userChoice', 'sources'],
+    ['modelSource', 'modelsFetchedAt', 'pricingModelKey'],
     [],
   );
-  if (item.userChoice !== undefined && item.userChoice !== true) {
-    throw domainError('entry provenance user choice must be true when present');
-  }
   return {
     ...(item.modelSource === undefined
       ? {}
@@ -228,39 +217,6 @@ function decodeProvenance(value: unknown): ModelCatalogEntry['provenance'] {
       : {
           pricingModelKey: nonEmptyStringValue(item.pricingModelKey, 'entry pricing key', 512),
         }),
-    ...(item.userChoice === undefined ? {} : { userChoice: true as const }),
-    ...(item.sources === undefined ? {} : { sources: decodeProvenanceSources(item.sources) }),
-  };
-}
-
-function decodeProvenanceSources(value: unknown): ModelCatalogProvenanceSources {
-  const item = exactRecord(
-    value,
-    'entry provenance sources',
-    ['providerInventory', 'staticCatalog', 'userChoice'],
-    [],
-  );
-  for (const key of ['providerInventory', 'staticCatalog'] as const) {
-    if (item[key] !== undefined && item[key] !== true) {
-      throw domainError(`entry provenance ${key} must be true when present`);
-    }
-  }
-  let userChoice: ModelCatalogUserChoiceSource[] | undefined;
-  if (item.userChoice !== undefined) {
-    if (!Array.isArray(item.userChoice) || item.userChoice.length === 0) {
-      throw domainError('entry provenance user choices must be a non-empty array');
-    }
-    userChoice = item.userChoice.map((source) =>
-      oneOf(source, USER_CHOICE_SOURCES, 'entry provenance user choice'),
-    );
-    if (new Set(userChoice).size !== userChoice.length) {
-      throw domainError('entry provenance user choices must be unique');
-    }
-  }
-  return {
-    ...(item.providerInventory === undefined ? {} : { providerInventory: true as const }),
-    ...(item.staticCatalog === undefined ? {} : { staticCatalog: true as const }),
-    ...(userChoice === undefined ? {} : { userChoice }),
   };
 }
 

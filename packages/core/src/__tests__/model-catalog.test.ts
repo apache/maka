@@ -293,7 +293,7 @@ test('a persisted empty discovery result preserves the connection fallback throu
   );
 });
 
-test('connection catalogs preserve user-choice provenance without inventing availability', () => {
+test('connection catalogs list every model the user saved without inventing availability', () => {
   const connection: LlmConnection = {
     slug: 'zai-live',
     name: 'Z.AI',
@@ -307,7 +307,7 @@ test('connection catalogs preserve user-choice provenance without inventing avai
   };
   const entries = buildConnectionModelCatalogEntries({
     connection,
-    savedModelIds: [{ id: 'session-model', source: 'session_model' }, 'glm-4.7', ' '],
+    savedModelIds: ['session-model', 'glm-4.7', ' '],
   });
 
   // All three are selectable; what differs is what the catalog knows about
@@ -326,8 +326,6 @@ test('connection catalogs preserve user-choice provenance without inventing avai
       ['session-model', 'unknown', true, 'not_in_live_list'],
     ],
   );
-  assert.deepEqual(entries[0]?.provenance.sources?.userChoice, ['connection_default']);
-  assert.deepEqual(entries[2]?.provenance.sources?.userChoice, ['session_model']);
 });
 
 test('every picker sees a model the user enabled but no catalog describes', () => {
@@ -352,7 +350,6 @@ test('every picker sees a model the user enabled but no catalog describes', () =
   const declared = entries.find(({ id }) => id === 'deepseek-v4-pro-beta');
   assert.equal(declared?.canUseAsChatDefault, true);
   assert.equal(declared?.unavailableReason, 'none');
-  assert.deepEqual(declared?.provenance.sources?.userChoice, ['saved_model']);
 });
 
 test('catalog provenance follows the projected model facts marker used in production', () => {
