@@ -23,8 +23,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
+  defaultEnabledModelIdsWhenOmitted,
 } from '@maka/core/llm-connections';
 import {
   openInteractiveRuntimePolicyStoresForWrite,
@@ -32,6 +32,9 @@ import {
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import { ensureBootstrapRuntimePolicy } from '../server/bootstrap-runtime-policy.js';
+
+const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
+  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 test('a fresh Host starts with one anonymous runnable target', async () => {
   await withFixture(async ({ root, stores }) => {
@@ -44,7 +47,7 @@ test('a fresh Host starts with one anonymous runnable target', async () => {
     assert.equal(free?.enabled, true);
     // The free set is derived from the models.dev snapshot and rotates with
     // refreshes; assert the structural contract, not today's ids.
-    assert.deepEqual(free?.enabledModelIds, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
+    assert.deepEqual(free?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
     assert.ok(free.enabledModelIds.length > 0);
     assert.equal(free.enabledModelIds[0], OPENCODE_FREE_DEFAULT_MODEL);
     assert.deepEqual(catalog.defaultTarget, {
@@ -267,10 +270,10 @@ test('a historical persisted seed migrates atomically, inventory and default inc
     // static inventory, and the retargeted default.
     const catalog = await stores.connectionCatalog.getSnapshot();
     const migrated = catalog.connections.find(({ slug }) => slug === 'opencode-free');
-    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
+    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
     assert.deepEqual(
       migrated?.models.map(({ id }) => id),
-      [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS],
+      [...OPENCODE_FREE_ENABLED_MODEL_IDS],
     );
     assert.deepEqual(catalog.defaultTarget, {
       connectionId,
@@ -315,7 +318,7 @@ test('a historical seed with a user-cleared default migrates without inventing o
 
     const catalog = await stores.connectionCatalog.getSnapshot();
     const migrated = catalog.connections.find(({ slug }) => slug === 'opencode-free');
-    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
+    assert.deepEqual(migrated?.enabledModelIds, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
     assert.equal(catalog.defaultTarget, null);
   });
 });

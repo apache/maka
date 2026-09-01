@@ -47,7 +47,11 @@ import {
   type MigrateSystemSeedInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
-import { PROVIDER_REGISTRY, reconcileConnectionAfterModelFetch } from '@maka/core/llm-connections';
+import {
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
+  reconcileConnectionAfterModelFetch,
+} from '@maka/core/llm-connections';
 import { modelIdAliasesForProvider } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { pruneRelayModelProfiles } from '@maka/core/model-thinking';
@@ -840,7 +844,7 @@ function fallbackInventory(
 ): ConnectionCatalogEntry['models'] {
   const provider = PROVIDER_REGISTRY[providerType];
   return provider.modelDiscovery.kind === 'fallback'
-    ? provider.fallbackModels.map((id) => ({ id }))
+    ? providerFallbackModelIds(provider).map((id) => ({ id }))
     : [];
 }
 

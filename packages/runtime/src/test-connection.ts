@@ -19,6 +19,7 @@
 
 import {
   PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   classifyConnectionModelInventory,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
@@ -158,14 +159,18 @@ async function testConnectionStrict(
   }
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
-  const testModel = resolveConnectionTestModel(connection, model, defaults.fallbackModels);
+  const testModel = resolveConnectionTestModel(
+    connection,
+    model,
+    providerFallbackModelIds(defaults),
+  );
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
   }
   if (connection.providerType === 'opencode-free' && !model?.trim()) {
     const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...defaults.fallbackModels]),
+      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
     ];
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {

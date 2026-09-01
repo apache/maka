@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
+import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
@@ -29,6 +29,9 @@ import {
   projectHostConnectionTest,
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
+
+const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
+  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
 
 test('registers pure Connection reads for replacement-Host retry', () => {
   const reads = new Set<string>();
@@ -316,7 +319,7 @@ test('preserves the provider default inventory beside the recommended model', as
   });
 
   // Snapshot-derived set; assert the contract, not today's ids.
-  assert.deepEqual(createdModels, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
+  assert.deepEqual(createdModels, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
 });
 
 test('projects the Host default target without inventing a second Connection authority', () => {

@@ -19,6 +19,7 @@
 
 import {
   PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   effectiveBaseUrl,
   providerAuthSupportsApiKey,
   type LlmConnection,
@@ -190,7 +191,7 @@ async function fetchProviderModelsStrict(
   const discovery = definition.modelDiscovery;
 
   if (discovery.kind === 'fallback') {
-    return definition.fallbackModels.map((id) => ({ id }));
+    return providerFallbackModelIds(definition).map((id) => ({ id }));
   }
   if (discovery.kind === 'ollama') {
     const r = await fetchForConnectionEffect(fetchFn, `${ollamaRoot(baseUrl)}/api/tags`, {

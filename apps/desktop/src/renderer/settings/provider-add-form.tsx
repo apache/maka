@@ -18,12 +18,10 @@
  */
 
 import { useState, type FormEvent } from 'react';
-import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import type { ProviderType } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY, deriveConnectionSlug } from '@maka/core/llm-connections';
 import {
+  defaultEnabledModelIdsWhenOmitted,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
@@ -163,15 +161,16 @@ export function AddProviderForm(props: {
           )
         : baseUrl || undefined;
       const createdDefaultModel = normalizedDefaultModel || recommendedDefaultModel;
+      // Providers that seed their whole shipped baseline say so in the registry;
+      // the form does not name any of them.
+      const seededModelIds = defaultEnabledModelIdsWhenOmitted(props.providerType);
       const created = await createProviderWithDiscovery(props.bridge, {
         slug,
         name: name || display.name,
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
         defaultModel: createdDefaultModel,
-        ...(props.providerType === 'opencode-free'
-          ? { enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS] }
-          : {}),
+        ...(seededModelIds ? { enabledModelIds: [...seededModelIds] } : {}),
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
         ...(Object.keys(normalizedRequestHeaders).length > 0
           ? { requestHeaders: normalizedRequestHeaders }

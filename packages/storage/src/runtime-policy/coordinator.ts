@@ -67,6 +67,7 @@ import {
   deriveInteractiveOAuthConnectionSlug,
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -2289,7 +2290,7 @@ function newInteractiveOAuthConnection(
     name: defaults.label,
     providerType,
     enabled: true,
-    enabledModelIds: [...defaults.fallbackModels],
+    enabledModelIds: providerFallbackModelIds(defaults),
     models: [],
   };
 }

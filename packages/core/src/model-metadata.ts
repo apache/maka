@@ -203,12 +203,6 @@ export function resolveModelPdfSupport(
   return resolveModelInputModalities(providerType, models, modelId).includes('pdf');
 }
 
-export function curatedCatalogFallbackModelsForProvider(
-  providerType: ProviderType,
-): readonly string[] | undefined {
-  return CURATED_CATALOG_FALLBACK_MODELS[providerType];
-}
-
 const REASONING_FUNCTION_CALLING = {
   reasoning: true,
   functionCalling: true,
@@ -543,9 +537,9 @@ function displayMetadataOnly(
  * that was genuinely withdrawn does NOT belong here — repairing that one onto a
  * different model is correct, because the original is gone.
  *
- * Lives beside CURATED_CATALOG_FALLBACK_MODELS because every target has to be an
- * id that list offers; a rename pointing at nothing sends reconciliation back to
- * the fallback this table exists to prevent.
+ * Every target has to be an id the provider's shipped baseline
+ * (`ProviderDefaults.fallbackModels`) offers; a rename pointing at nothing sends
+ * reconciliation back to the fallback this table exists to prevent.
  */
 export const CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES: Readonly<Record<string, string>> = {
   'claude-haiku-4-5-20251001': 'claude-haiku-4-5',
@@ -575,34 +569,3 @@ export function modelIdAliasesForProvider(
   }
   return undefined;
 }
-
-const CURATED_CATALOG_FALLBACK_MODELS: Partial<Record<ProviderType, readonly string[]>> = {
-  anthropic: [
-    'claude-sonnet-4-6',
-    'claude-opus-4-8',
-    'claude-haiku-4-5',
-    'claude-sonnet-4-5',
-    'claude-sonnet-4-5-20250929',
-    'claude-opus-4-1-20250805',
-  ],
-  'claude-subscription': [
-    'claude-opus-5',
-    'claude-sonnet-5',
-    'claude-sonnet-4-6',
-    'claude-opus-4-8',
-    'claude-haiku-4-5',
-    'claude-sonnet-4-5-20250929',
-  ],
-  openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
-  deepseek: [
-    'deepseek-v4-flash',
-    'deepseek-v4-flash-vision-exp',
-    'deepseek-v4-pro',
-    'deepseek-reasoner',
-    'deepseek-chat',
-  ],
-  google: ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-  'zai-coding-plan': ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
-  MiniMax: ['MiniMax-M3'],
-  'MiniMax-cn': ['MiniMax-M3'],
-};

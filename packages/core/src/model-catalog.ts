@@ -29,15 +29,12 @@ import {
   connectionEnabledModelIds,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
+  providerFallbackModelIds,
   providerSupportsModelDiscovery,
   type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
-import {
-  curatedCatalogFallbackModelsForProvider,
-  lookupModelMetadata,
-  resolveModelVisionSupport,
-} from './model-metadata.js';
+import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
   relayModelProfile,
   thinkingVariantsForConnection,
@@ -173,20 +170,6 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
 }
 
 /**
- * The offerable models a provider ships for a connection: its curated catalog
- * list when the bundled metadata has one, its registry list otherwise, minus
- * anything quarantined.
- */
-function providerFallbackModelIds(
-  providerType: ProviderType,
-  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
-): string[] {
-  const broken = new Set(defaults.brokenModelIds ?? []);
-  const curated = curatedCatalogFallbackModelsForProvider(providerType);
-  return [...(curated ?? defaults.fallbackModels)].filter((id) => !broken.has(id));
-}
-
-/**
  * The most fallback rows a connection's catalog can gain beyond what the
  * connection itself stores.
  *
@@ -195,7 +178,7 @@ function providerFallbackModelIds(
  * so its catalog is larger than the persisted lists it draws from — and the
  * wire bound that admits such a catalog has to allow for the difference. It is
  * derived from the registry rather than written down beside it: a provider
- * added or a curated list grown would otherwise leave a hand-written bound
+ * added or a baseline grown would otherwise leave a hand-written bound
  * quietly too small, which is exactly how a valid persisted catalog became
  * unencodable. Providers that do discover models substitute their fallback
  * list instead of prepending it, so they add nothing here.
@@ -205,10 +188,7 @@ export const MAX_PREPENDED_FALLBACK_MODELS: number = Object.keys(PROVIDER_REGIST
     if (providerSupportsModelDiscovery(providerType as ProviderType)) return largest;
     const defaults = providerDefaultsOf(providerType);
     if (!defaults) return largest;
-    return Math.max(
-      largest,
-      providerFallbackModelIds(providerType as ProviderType, defaults).length,
-    );
+    return Math.max(largest, providerFallbackModelIds(defaults).length);
   },
   0,
 );
@@ -227,7 +207,7 @@ export function buildConnectionModelCatalogEntries(
   // including inventories stored or selections made before the quarantine —
   // mirroring the `authorizeConnectionModel` veto.
   const broken = new Set(defaults.brokenModelIds ?? []);
-  const fallbackModels = providerFallbackModelIds(connection.providerType, defaults);
+  const fallbackModels = providerFallbackModelIds(defaults);
   // A quarantined id persisted as this connection's `defaultModel` must not
   // re-enter the catalog either. `models` and `enabledModelIds` are filtered
   // below, but a broken default reaches `makeMissingDefaultEntry` unfiltered and
@@ -299,7 +279,7 @@ export function normalizeOpenAiCodexConnection<
   T extends Pick<LlmConnection, 'providerType' | 'models' | 'defaultModel' | 'enabledModelIds'>,
 >(connection: T): T {
   if (connection.providerType !== 'openai-codex') return connection;
-  const fallbackModels = PROVIDER_REGISTRY['openai-codex'].fallbackModels;
+  const fallbackModels = providerFallbackModelIds(PROVIDER_REGISTRY['openai-codex']);
   const safeModels = (connection.models ?? []).filter(
     (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
   );

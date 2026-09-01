@@ -117,8 +117,18 @@ export interface ProviderDefaults {
   baseUrlTemplate?: string;
   authKind: 'api_key' | 'optional_api_key' | 'oauth_token' | 'none';
   backendKind: BackendKind;
+  /**
+   * The baseline this provider ships: what it offers with no live list to go
+   * on. Read it through `providerFallbackModelIds`, never directly — the
+   * accessor subtracts `brokenModelIds`.
+   */
   fallbackModels: string[];
-  defaultEnabledModelIds?: readonly string[];
+  /**
+   * A new connection to this provider starts with its whole shipped baseline
+   * enabled instead of nothing. Set where a provider costs the user nothing to
+   * call, so the models are on the moment the connection exists.
+   */
+  enableShippedModelsByDefault?: true;
   status: 'ready' | 'phase3-experimental';
   protocol: 'anthropic' | 'openai' | 'google' | 'cohere';
   runtimeAdapter: ProviderRuntimeAdapter;
@@ -700,7 +710,6 @@ if (opencodeFreeModelIds[0] !== OPENCODE_FREE_DEFAULT_MODEL) {
     `models.dev opencode snapshot no longer serves ${OPENCODE_FREE_DEFAULT_MODEL} as an active tool-capable free model; pick a new OPENCODE_FREE_DEFAULT_MODEL`,
   );
 }
-export const OPENCODE_FREE_DEFAULT_ENABLED_MODELS: readonly string[] = opencodeFreeModelIds;
 const githubCopilot = GENERATED_MODELS_DEV_PROVIDER_FACTS['github-copilot'];
 if (githubCopilot.id !== 'github-copilot') {
   throw new Error('models.dev GitHub Copilot provider facts are missing stable id github-copilot');
@@ -744,10 +753,12 @@ const providerRegistry = {
     authKind: 'api_key',
     backendKind: 'ai-sdk',
     fallbackModels: [
+      'claude-sonnet-4-6',
+      'claude-opus-4-8',
+      'claude-haiku-4-5',
+      'claude-sonnet-4-5',
       'claude-sonnet-4-5-20250929',
       'claude-opus-4-1-20250805',
-      'claude-haiku-4-5-20251001',
-      'claude-3-5-haiku-20241022',
     ],
     status: 'ready',
     protocol: 'anthropic',
@@ -888,7 +899,7 @@ const providerRegistry = {
     baseUrl: 'https://api.openai.com/v1',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gpt-4o-mini', 'gpt-4o', 'gpt-5'],
+    fallbackModels: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5'],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai', applyPatchProtocol: 'openai-structured' },
@@ -908,7 +919,12 @@ const providerRegistry = {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['gemini-2.5-flash'],
+    fallbackModels: [
+      'gemini-3.5-flash',
+      'gemini-3.1-pro-preview',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+    ],
     status: 'ready',
     protocol: 'google',
     runtimeAdapter: { kind: 'google' },
@@ -928,7 +944,13 @@ const providerRegistry = {
     baseUrl: 'https://api.deepseek.com',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['deepseek-chat', 'deepseek-reasoner'],
+    fallbackModels: [
+      'deepseek-v4-flash',
+      'deepseek-v4-flash-vision-exp',
+      'deepseek-v4-pro',
+      'deepseek-reasoner',
+      'deepseek-chat',
+    ],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: {
@@ -972,7 +994,7 @@ const providerRegistry = {
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     authKind: 'api_key',
     backendKind: 'ai-sdk',
-    fallbackModels: ['glm-4.7', 'glm-4.6', 'glm-4.5-air'],
+    fallbackModels: ['glm-5.2', 'glm-5.1', 'glm-5-turbo', 'glm-4.7', 'glm-4.5-air'],
     status: 'ready',
     protocol: 'openai',
     runtimeAdapter: { kind: 'openai-compatible', name: 'provider' },
@@ -1352,7 +1374,9 @@ const providerRegistry = {
     authKind: 'none',
     backendKind: 'ai-sdk',
     fallbackModels: [...opencodeFreeModelIds],
-    defaultEnabledModelIds: OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
+    // Free and keyless: nothing is spent by having every shipped model on, and
+    // a user who just added the connection can send immediately.
+    enableShippedModelsByDefault: true,
     brokenModelIds: [...OPENCODE_FREE_BROKEN_MODEL_IDS],
     status: 'ready',
     protocol: 'openai',
@@ -1960,6 +1984,22 @@ function providerTypesByOrder(
     .filter(([, provider]) => provider[field] !== undefined)
     .sort(([, left], [, right]) => left[field]! - right[field]!)
     .map(([providerType]) => providerType);
+}
+
+/**
+ * The models a provider offers with no live list to go on: the baseline it
+ * ships, minus anything quarantined. This is the only reader of
+ * `fallbackModels` — a provider's offline offer has exactly one authority.
+ *
+ * `brokenModelIds` subtracts here rather than being pruned from the baseline at
+ * the source because the ids it names are ones a stored connection may still
+ * carry from an older shipped list.
+ */
+export function providerFallbackModelIds(
+  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
+): string[] {
+  const broken = new Set(defaults.brokenModelIds ?? []);
+  return defaults.fallbackModels.filter((id) => !broken.has(id));
 }
 
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');

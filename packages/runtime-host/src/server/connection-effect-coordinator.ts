@@ -24,7 +24,7 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import { parseRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
@@ -599,7 +599,7 @@ function transientConnection(
 ): ConnectionCatalogEntry {
   const { providerType } = identity;
   const definition = PROVIDER_REGISTRY[providerType];
-  const models = definition.fallbackModels.map((id) => ({ id }));
+  const models = providerFallbackModelIds(definition).map((id) => ({ id }));
   return {
     connectionId: identity.connectionId,
     revision: 0,

@@ -20,6 +20,7 @@
 import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
 import type { OnboardableProvider } from './pi-tui-contracts.js';
@@ -43,7 +44,7 @@ export function listApiKeyOnboardableProviders(): OnboardableProvider[] {
       label: definition.label,
       authKind: definition.authKind as 'api_key' | 'optional_api_key',
       requiresBaseUrl: !definition.baseUrl,
-      fallbackModels: definition.fallbackModels,
+      fallbackModels: providerFallbackModelIds(definition),
     };
   });
 }

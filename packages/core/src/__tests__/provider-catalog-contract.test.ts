@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  defaultEnabledModelIdsWhenOmitted,
   deriveConnectionSlug,
   validateConnectionBaseUrl,
   validateSlug,
@@ -29,6 +30,7 @@ import {
   CATALOG_PROVIDER_TYPES,
   PROVIDER_REGISTRY,
   isRetiredProvider,
+  providerFallbackModelIds,
 } from '../provider-registry.js';
 import { buildConnectionModelCatalogEntries } from '../model-catalog.js';
 import { PROVIDER_AUTH_ACTIONS, deriveProviderAuthContract } from '../provider-auth.js';
@@ -172,10 +174,8 @@ describe('retired provider contract', () => {
 
 // A deprecated id in `fallbackModels` is offered as a usable choice: the
 // catalog marks the list available and default-capable, and `fallbackModels[0]`
-// is the new-connection default and the connection-test probe. (For the eight
-// providers with a `CURATED_CATALOG_FALLBACK_MODELS` entry that curated list
-// replaces this one in the catalog, so theirs reaches CLI onboarding and the
-// probe candidates instead.) `toolCallingModelIds` filters on tool-calling
+// is the new-connection default and the connection-test probe.
+// `toolCallingModelIds` filters on tool-calling
 // capability only, so a derivation that needs it drops deprecated ids at its
 // own call site, and `openai` writes its list by hand. Removal is from the
 // offer only — an id a user already chose still sends, and live discovery
@@ -218,8 +218,10 @@ describe('opencode-free retired-model quarantine', () => {
   // marks it deprecated (or upstream serves it again).
   it('quarantines x-preview-f-free out of the offered free models', () => {
     assert.ok(opencodeFree.brokenModelIds?.includes('x-preview-f-free'));
-    assert.ok(!(opencodeFree.fallbackModels ?? []).includes('x-preview-f-free'));
-    assert.ok(!(opencodeFree.defaultEnabledModelIds ?? []).includes('x-preview-f-free'));
+    assert.ok(!providerFallbackModelIds(opencodeFree).includes('x-preview-f-free'));
+    assert.ok(
+      !(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []).includes('x-preview-f-free'),
+    );
   });
 
   // Mechanism guard, independent of which ids the deny-list holds: a quarantined
@@ -227,8 +229,8 @@ describe('opencode-free retired-model quarantine', () => {
   it('never offers a quarantined broken id as a free candidate', () => {
     const broken = new Set(opencodeFree.brokenModelIds ?? []);
     const offered = [
-      ...(opencodeFree.fallbackModels ?? []),
-      ...(opencodeFree.defaultEnabledModelIds ?? []),
+      ...providerFallbackModelIds(opencodeFree),
+      ...(defaultEnabledModelIdsWhenOmitted('opencode-free') ?? []),
     ];
     assert.deepEqual(
       offered.filter((id) => broken.has(id)),

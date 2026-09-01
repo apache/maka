@@ -38,11 +38,11 @@ import type {
 import { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS } from './codex-model-compatibility.js';
 import {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
+  providerFallbackModelIds,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -57,11 +57,11 @@ export type { BackendKind } from './session.js';
 export { CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS };
 export {
   CATALOG_PROVIDER_TYPES,
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
   OPENCODE_FREE_DEFAULT_MODEL,
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
+  providerFallbackModelIds,
 };
 export type {
   ApplyPatchProtocol,
@@ -508,10 +508,18 @@ export function providerDefaultsOf(providerType: string): ProviderDefaults | und
     : undefined;
 }
 
+/**
+ * The models a connection created without an explicit selection starts with,
+ * or undefined when the provider seeds nothing. Derived from the provider's
+ * shipped baseline rather than listed a second time: the two can then never
+ * disagree about what "all of them" means.
+ */
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
-  return providerDefaultsOf(providerType)?.defaultEnabledModelIds;
+  const defaults = providerDefaultsOf(providerType);
+  if (!defaults?.enableShippedModelsByDefault) return undefined;
+  return providerFallbackModelIds(defaults);
 }
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {

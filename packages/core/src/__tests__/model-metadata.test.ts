@@ -20,12 +20,12 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
-  curatedCatalogFallbackModelsForProvider,
   lookupModelMetadata,
   openAiAdapterApiProtocol,
   resolveModelInputModalities,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
@@ -134,9 +134,9 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     assert.ok(input.includes('image'));
   });
 
-  it('keeps the model present in the deepseek fallback catalog', () => {
+  it('keeps the model present in the deepseek shipped baseline', () => {
     assert.ok(
-      curatedCatalogFallbackModelsForProvider('deepseek')?.includes('deepseek-v4-flash-vision-exp'),
+      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
     );
   });
 

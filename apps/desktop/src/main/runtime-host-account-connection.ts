@@ -19,6 +19,7 @@
 
 import {
   PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type {
@@ -56,7 +57,7 @@ export async function ensureRuntimeHostAccountConnection(
       ? enabledModelIds
       : existing?.enabledModelIds.length
         ? existing.enabledModelIds
-        : PROVIDER_REGISTRY[identity.providerType].fallbackModels;
+        : providerFallbackModelIds(PROVIDER_REGISTRY[identity.providerType]);
   if (!existing) {
     const slugOwner = catalog.connections.find(({ slug }) => slug === identity.slug);
     if (slugOwner) {
@@ -122,7 +123,7 @@ export async function synchronizeRuntimeHostAccountConnectionById(
   );
   if (!connection) throw new Error('Account Connection is missing');
   // Discovery is best effort. Selecting a default must not depend on it: a
-  // connection whose inventory came from the curated fallback still has usable
+  // connection whose inventory came from the shipped baseline still has usable
   // models, and leaving `defaultTarget` empty makes every later operation that
   // needs a default — new Session, send, external Session import — fail with a
   // reason the user cannot see from the error it produces.

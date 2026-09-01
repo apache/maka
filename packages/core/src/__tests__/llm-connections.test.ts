@@ -24,7 +24,7 @@ import {
   lookupModelMetadata,
   modelIdAliasesForProvider,
 } from '../model-metadata.js';
-import { curatedCatalogFallbackModelsForProvider } from '../model-metadata.js';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
   authorizeConnectionModel,
   backendKindOf,
@@ -244,9 +244,9 @@ test('the alias table is selected by provider and names only renames', () => {
       providerType,
     );
   }
-  const offered = curatedCatalogFallbackModelsForProvider('claude-subscription') ?? [];
+  const offered = providerFallbackModelIds(PROVIDER_REGISTRY['claude-subscription']);
   for (const [renamed, target] of Object.entries(CLAUDE_SUBSCRIPTION_MODEL_ID_ALIASES)) {
-    assert.ok(offered.includes(target), `${target} is not offered by the curated inventory`);
+    assert.ok(offered.includes(target), `${target} is not offered by the shipped baseline`);
     // A withdrawn model must be repaired against the live list, never rewritten.
     assert.notEqual(lookupModelMetadata('anthropic', renamed).lifecycle, 'deprecated');
   }
