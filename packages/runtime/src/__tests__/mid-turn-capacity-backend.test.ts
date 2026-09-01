@@ -1579,7 +1579,12 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('rejects an oversized complete step-zero payload before provider dispatch', async () => {
+  test('lets an undeclared window dispatch a payload no local number can judge', async () => {
+    // A 200,000-char system prompt against a model that declares no window.
+    // The runtime used to add its 32,000-token history budget to the 16,384
+    // reserve, call the sum a context window, and end the turn on it. Both are
+    // policy choices about how much history to keep; neither says what this
+    // model accepts, so the request goes out and the provider answers.
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       withoutContextWindow: true,
@@ -1587,12 +1592,9 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     });
     await runFixtureTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 0);
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
   test('keeps user_stop when stopping an oversized pre-turn summary', async () => {

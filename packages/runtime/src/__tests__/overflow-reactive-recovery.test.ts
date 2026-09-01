@@ -128,6 +128,11 @@ const BIG_RESULT = 'BIG_RESULT_'.repeat(200);
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  /**
+   * A model that declares no context window, on a provider whose default
+   * policy sets no history budget either — so nothing can synthesize one.
+   */
+  withoutContextWindow?: boolean;
   reserveTokens?: number;
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
@@ -582,7 +587,12 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       ...(options.providerNative
         ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
         : {}),
-      models: [{ id: 'mock-model-id', contextWindow }],
+      ...(options.withoutContextWindow ? { providerType: 'deepseek' as const } : {}),
+      models: [
+        options.withoutContextWindow
+          ? { id: 'mock-model-id' }
+          : { id: 'mock-model-id', contextWindow },
+      ],
     },
     apiKey: 'sk-test',
     ...(options.reasoningReplayTail ? { providerStateIdentity: PROVIDER_STATE_IDENTITY } : {}),
@@ -638,7 +648,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
     contextBudget: {
       name: 'reactive-test',
-      maxHistoryEstimatedTokens: 100_000,
+      // An undeclared window on this provider carries no history budget either,
+      // matching what the default policy builds for it.
+      ...(options.withoutContextWindow ? {} : { maxHistoryEstimatedTokens: 100_000 }),
       historyCompact: {
         enabled: true,
         ...(midTurnEnabled ? { midTurn: { enabled: true, reserveTokens } } : {}),
@@ -1369,6 +1381,28 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
     assert.equal(fixture.model.doStreamCalls.length, 2);
     assert.equal(fixture.recorded.length, 0);
+  });
+
+  test('recovers a model whose context window nothing can supply', async () => {
+    // DeepSeek publishes no window and its default policy sets no history
+    // budget, so no number could be synthesized and mid-turn state was skipped
+    // entirely. That left the one provider with no proactive threshold ALSO
+    // without reactive recovery. The overflow is a real provider rejection, so
+    // recovery needs no window of its own.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      withoutContextWindow: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
   });
 
   test('recovers from a plain-object in-stream error part, not just Error instances (review round-8 P1-1)', async () => {

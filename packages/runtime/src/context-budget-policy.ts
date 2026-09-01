@@ -126,24 +126,3 @@ function narrowestPositiveLimit(...values: Array<number | undefined>): number | 
   );
   return positiveValues.length > 0 ? Math.min(...positiveValues) : undefined;
 }
-
-export interface ContextBudgetCapacity {
-  tokens: number;
-  source: 'selected_model' | 'policy_fallback';
-}
-
-export function resolveContextBudgetCapacity(
-  connection: RuntimeExecutionConnection,
-  modelId: string | undefined,
-  policy: ContextBudgetPolicy | undefined,
-): ContextBudgetCapacity | undefined {
-  const selectedWindow = resolveSelectedModelContextWindow(connection, modelId);
-  if (selectedWindow !== undefined) {
-    return { tokens: selectedWindow, source: 'selected_model' };
-  }
-
-  const historyBudget = finitePositive(policy?.maxHistoryEstimatedTokens);
-  const reserveTokens = finitePositive(policy?.historyCompact?.midTurn?.reserveTokens);
-  if (historyBudget === undefined || reserveTokens === undefined) return undefined;
-  return { tokens: historyBudget + reserveTokens, source: 'policy_fallback' };
-}
