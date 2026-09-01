@@ -83,6 +83,39 @@ describe('Task Entry feature boundary', () => {
     const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
     assert.equal(productionEntry.includes('createFakeTaskEntryServices'), false);
     assert.equal(productionEntry.includes("from './testing"), false);
+    assert.equal(productionEntry.includes('useTaskEntryController'), false);
+    assert.equal(productionEntry.includes('TaskEntryProvider,'), false);
+    assert.equal(productionEntry.includes('useTaskEntryOwnership'), false);
+  });
+
+  it('keeps the controller owned by TaskEntryProvider and out of renderer roots', () => {
+    const controllerOwner = join(featureRoot, 'ui', 'task-entry-provider.tsx');
+    const consumers: string[] = [];
+    for (const path of sourceFiles(join(desktopRoot, 'src', 'renderer'))) {
+      if (!/\.tsx?$/.test(path) || path.endsWith('use-task-entry-controller.ts')) continue;
+      const source = readFileSync(path, 'utf8');
+      if (/\buseTaskEntryController\s*\(/.test(source)) {
+        consumers.push(relative(desktopRoot, path));
+      }
+    }
+    assert.deepEqual(consumers, [relative(desktopRoot, controllerOwner)]);
+  });
+
+  it('keeps the controller module behind TaskEntryProvider and the testing entry', () => {
+    const importers: string[] = [];
+    for (const path of sourceFiles(featureRoot)) {
+      if (!/\.tsx?$/.test(path)) continue;
+      const source = readFileSync(path, 'utf8');
+      for (const match of source.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+        if (match[1]?.includes('controller/use-task-entry-controller')) {
+          importers.push(relative(desktopRoot, path));
+        }
+      }
+    }
+    assert.deepEqual(importers.sort(), [
+      'src/renderer/features/task-entry/testing.ts',
+      'src/renderer/features/task-entry/ui/task-entry-provider.tsx',
+    ]);
   });
 
   it('keeps Task Entry catalog, picker, and directory handoff ownership out of AppShell', () => {
@@ -96,10 +129,21 @@ describe('Task Entry feature boundary', () => {
       'newTaskDraftKey(',
       'RemoteProjectDirectoryDialog',
       'const workspacePicker: WorkspacePickerModel',
+      'useTaskEntryController',
+      'useTaskEntryShellProjection',
+      'taskEntry.host',
+      'taskEntry.owner',
+      '<TaskEntryHost model=',
+      '<TaskEntry.TaskEntryHost model=',
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(appShell.includes('const taskEntry = useTaskEntryController({'), true);
-    assert.equal(appShell.includes('<TaskEntryHost model={taskEntry.host} />'), true);
+    for (const required of [
+      '<TaskEntry.TaskEntryRoot>',
+      '<TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects=',
+      '<TaskEntry.TaskEntryHost />',
+    ]) {
+      assert.equal(appShell.includes(required), true, required);
+    }
   });
 });

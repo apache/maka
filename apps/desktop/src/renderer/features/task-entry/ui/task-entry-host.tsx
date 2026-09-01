@@ -20,6 +20,7 @@
 import type { ProjectRecord } from '@maka/core/project';
 import { RemoteProjectDirectoryDialog } from '../../../remote-project-directory-dialog.js';
 import type { TaskEntryHostRef } from '../ports.js';
+import { useTaskEntryHostModel } from './task-entry-provider.js';
 
 export interface TaskEntryHostModel {
   directoryHost?: TaskEntryHostRef & { readonly name?: string };
@@ -31,7 +32,11 @@ export interface TaskEntryHostModel {
   ): Promise<void>;
 }
 
-export function TaskEntryHost({ model }: { model: TaskEntryHostModel }) {
+export function TaskEntryHost() {
+  return <TaskEntryHostView model={useTaskEntryHostModel()} />;
+}
+
+export function TaskEntryHostView({ model }: { model: TaskEntryHostModel }) {
   return (
     <RemoteProjectDirectoryDialog
       host={model.directoryHost}

@@ -100,7 +100,7 @@ import {
   type SessionNavigationPorts,
   type SessionNavigationRowActions,
 } from './features/session-navigation';
-import { TaskEntryHost, useTaskEntryController } from './features/task-entry';
+import * as TaskEntry from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
@@ -258,6 +258,10 @@ type AppShellProps = {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
 };
 
+type TaskEntryShellProjection = Parameters<
+  ComponentProps<typeof TaskEntry.TaskEntryRoot>['children']
+>[0];
+
 export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {}) {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
@@ -288,13 +292,18 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
       <AstryxLocaleProvider>
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
-            <AppShellContent
-              initialOnboardingSnapshot={initialOnboardingSnapshot}
-              uiLocale={uiLocale}
-              uiLocaleOverride={uiLocaleOverride}
-              setUiLocaleOverride={setUiLocaleOverride}
-              setUiLocalePreference={setUiLocalePreference}
-            />
+            <TaskEntry.TaskEntryRoot>
+              {(taskEntry) => (
+                <AppShellContent
+                  initialOnboardingSnapshot={initialOnboardingSnapshot}
+                  taskEntry={taskEntry}
+                  uiLocale={uiLocale}
+                  uiLocaleOverride={uiLocaleOverride}
+                  setUiLocaleOverride={setUiLocaleOverride}
+                  setUiLocalePreference={setUiLocalePreference}
+                />
+              )}
+            </TaskEntry.TaskEntryRoot>
           </ErrorBoundary>
         </ToastProvider>
       </AstryxLocaleProvider>
@@ -315,12 +324,14 @@ const SESSION_RAIL = <SessionListPanel />;
 
 function AppShellContent({
   initialOnboardingSnapshot = null,
+  taskEntry,
   uiLocale,
   uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
+  taskEntry: TaskEntryShellProjection;
   uiLocale: UiLocale;
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
@@ -385,21 +396,8 @@ function AppShellContent({
   } = useSettingsModal();
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
-  const reportTaskEntryError = useCallback<
-    Parameters<typeof useTaskEntryController>[0]['reportError']
-  >(
-    ({ title, description, profileId }) => {
-      toastApi.error(title, description, undefined, { profileId });
-    },
-    [toastApi],
-  );
-  const taskEntry = useTaskEntryController({
-    reportError: reportTaskEntryError,
-    manageProjects: openProjectSettings,
-  });
-  // Named on its own because the rail depends on it: `taskEntry.commands` is a
-  // fresh object every render, so depending on the bag rather than the command
-  // would rebuild the rail's Project rows on every AppShell commit (#4109).
+  // The owner bridge keeps commands stable while TaskEntryProvider swaps the
+  // current feature-owned implementation below the shell.
   const { selectLocalProject } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;
   // Staged files and quotes do NOT take the target-scoped key: they belong to
@@ -1449,7 +1447,6 @@ function AppShellContent({
   // Where a NEW chat starts. Built unconditionally and handed to the composer,
   // which renders it only while no session owns it — the project is fixed once
   // the first message creates one, so there is nothing to pick after that.
-  const workspacePicker = taskEntry.selectors.workspacePicker;
   const taskReadinessWorkspace = activeSession?.cwd ?? taskEntry.selectors.projectPath;
   const taskReadinessRequest = {
     ...resolveTaskReadinessModelTarget(activeSession, activeSessionSendOutcome, newChatModel),
@@ -2619,9 +2616,12 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-    // Goal state and Module Hub ownership both live below the shell. Composer
-    // mentions still wrap the frame so one projection serves every composer,
-    // including side-chat panels, without rebuilding the frame on catalog moves.
+    // Feature controllers live below the shell. Task Entry publishes a stable
+    // shell projection plus reader-local Host/Workspace Picker projections;
+    // Goal state and Module Hub ownership likewise wake only their narrow
+    // readers. Composer mentions still wrap the frame so one projection serves
+    // every composer, including side-chat panels, without rebuilding the frame
+    // on catalog moves.
     <Goals.GoalProvider
       activeSessionId={ownerActiveId}
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
@@ -2879,7 +2879,9 @@ function AppShellContent({
                         sessionId={activeId}
                       />
                     ) : (
-                    <ChatComposerRegion
+                      <TaskEntry.TaskEntryWorkspacePickerConsumer manageProjects={openProjectSettings}>
+                        {(workspacePicker) => (
+                          <ChatComposerRegion
                   workspacePicker={workspacePicker}
                   composerRef={composerRef}
                   active={navSelection.section === 'sessions'}
@@ -3031,7 +3033,9 @@ function AppShellContent({
                       ? shellCopy.goalTurnActive
                       : undefined
                   }
-                    />
+                          />
+                        )}
+                      </TaskEntry.TaskEntryWorkspacePickerConsumer>
                     )}
                   </>
                 }
@@ -3220,7 +3224,7 @@ function AppShellContent({
         />
       )}
       <Goals.GoalHost />
-      <TaskEntryHost model={taskEntry.host} />
+      <TaskEntry.TaskEntryHost />
       <RuntimeHostSshTerminalDialog />
       <SessionCollaborationDialog
         target={sharedSessionDialog.target}
