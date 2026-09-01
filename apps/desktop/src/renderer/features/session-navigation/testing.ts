@@ -24,7 +24,6 @@ export type {
   SessionNavigationServices,
   SessionNavigationSession,
   SessionNavigationSessionService,
-  SessionNavigationToastApi,
 } from './ports.js';
 
 export { SessionNavigationServicesProvider } from './services-context.js';

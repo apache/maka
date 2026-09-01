@@ -30,5 +30,4 @@ export type {
 export type {
   SessionNavigationPorts,
   SessionNavigationServices,
-  SessionNavigationToastApi,
 } from './ports.js';
