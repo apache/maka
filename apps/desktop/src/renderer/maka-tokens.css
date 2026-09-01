@@ -1267,8 +1267,8 @@
    §4's One Means Rule.
 
    --color-accent-muted is the informational tint on the SAME rung. Maka has
-   no --info hue: "info" is a semantic slot (Banner status, StatTile tone), so
-   it paints with the accent at 0.24 like its three siblings. It has to be the
+   no --info hue: "info" is a semantic slot (Banner status), so it paints with
+   the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
    compose, so a tinted chip on a tinted panel (deep-research's count pill,
    plan-mode's in-progress marker) resolves to the parent's exact pixel and

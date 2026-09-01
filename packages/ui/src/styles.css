@@ -89,38 +89,40 @@
 .maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 
-.maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
-/* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
+/* One shape. The tone and emphasis modifiers that used to sit here — a filled
+   plate, four tinted borders, four value inks, a dimmed zero — were reachable
+   only from this package's own story; the product's single call site renders
+   the plain outlined tile. The tinted borders were also the least defensible of
+   them: 0.24 alpha over an UNtinted plate measures about 1.2:1 in light, so the
+   edge stated a status the reader could not see while the value ink beside it
+   said the same thing legibly.
+
+   Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
    depth comes from the ladder, then a line, then shadow only for something that
    genuinely floats — a stat tile sits on the plate. It already states its edge
    with a border, so the resting shadow was also a second separator on the same
-   edge (§4's One Means Rule). Dropping it retires --card-shadow's last consumer
+   edge (§4's One Means Rule). Dropping it retired --card-shadow's last consumer
    rather than promoting it to --elevation-raised, which would have made a
-   stationary tile float harder than it did before. */
-.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
-.maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
-/* One rung, four siblings. These were 0.24/0.24/0.28/0.3 — four hand-picked
-   alphas for one ladder position, which is what a tinted edge costs when the
-   call site owns it. The `-muted` tokens are that rung. */
-.maka-stat-tile-border-info { border-color: var(--color-accent-muted); }
-.maka-stat-tile-border-success { border-color: var(--color-success-muted); }
-.maka-stat-tile-border-warning { border-color: var(--color-warning-muted); }
-.maka-stat-tile-border-destructive { border-color: var(--color-error-muted); }
-.maka-stat-tile-empty { opacity: var(--opacity-disabled); }
-.maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
-.maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
-/* After the two role rules, not before them. The `font:` shorthand resets
-   `font-variant-numeric` along with the four axes the role names, and both
-   modifiers land on this same element — so declared first, the tabular figures
-   these tiles exist to align were being reset away by the role. Ordering is
-   the fix rather than repeating the declaration on each modifier: it is one
-   authority, and it is the general rule for any sub-property the roles do not
-   carry. */
-.maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-info { color: var(--accent-solid); }
-.maka-stat-tile-value-success { color: var(--success-text); }
-.maka-stat-tile-value-warning { color: var(--warning-text); }
-.maka-stat-tile-value-destructive { color: var(--destructive-text); }
+   stationary tile float harder than it did before.
+
+   `.maka-stat-tile-value` is declared after the tile, not before: the `font:`
+   shorthand resets `font-variant-numeric` along with the four axes the role
+   names, so the tabular figures these tiles exist to align have to be set on
+   the element that carries the role, after it. */
+.maka-stat-tile {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--card-border-color, var(--border));
+  border-radius: var(--radius-surface);
+  background: var(--card-bg, var(--background));
+}
+.maka-stat-tile-value {
+  font: var(--maka-text-heading-1);
+ display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
 .maka-stat-tile-label {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); letter-spacing: 0.025em; }
@@ -649,9 +651,11 @@
  margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
+/* No tinted edge on the panel: 0.24 alpha over an untinted plate measures about
+   1.2:1 in light, so the border said nothing the reader could see while the
+   note text above already said it in red or amber. `.maka-tool-output-panel`
+   keeps its --border hairline. */
 .maka-tool-output-warning { color: var(--warning-text); }
-.maka-tool-output-warning-border { border-color: var(--color-warning-muted); }
-.maka-tool-output-destructive-border { border-color: var(--color-error-muted); }
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
@@ -762,8 +766,10 @@
  }
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
-.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
-.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: var(--color-error-muted); color: var(--destructive); }
+.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { color: var(--link); }
+/* The failed state is stated by the label ink; a 0.24-alpha tint on an
+   untinted button reads about 1.2:1 in light, so the edge stays --border. */
+.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
 .maka-turn-host-origin {
@@ -1001,13 +1007,16 @@
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
  margin: 0; color: var(--muted-foreground); white-space: pre-wrap; word-break: break-word; }
-.maka-web-search-error { border-color: color-mix(in oklab, var(--destructive-text) 32%, var(--foreground-10)); background: color-mix(in oklab, var(--destructive-text) 8%, var(--foreground-3)); }
+/* The tinted status surface is Astryx's token; the edge around it is --border,
+   because the fill and the message ink already state the error (DESIGN.md §8).
+   Its copy sits on the tint, so it reads at primary ink (§3). */
+.maka-web-search-error { background: var(--color-error-muted); border-color: var(--border); }
 .maka-web-search-error-message,
 .maka-web-search-error-repair {
   font: var(--maka-text-supporting);
  margin: 0; white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error-message { color: var(--destructive-text); }
-.maka-web-search-error-repair { color: var(--muted-foreground); }
+.maka-web-search-error-repair { color: var(--foreground); }
 
 .maka-load-tool-preview {
   display: grid;

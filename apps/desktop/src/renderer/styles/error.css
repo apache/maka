@@ -89,9 +89,11 @@
     cursor: progress;
   }
 
+/* Ink only. A 0.24-alpha status tint on an untinted control measures about
+   1.2:1 in light — an edge that states nothing the reader can see, next to a
+   label that states it legibly. */
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
-    border-color: var(--color-error-muted);
   }
 
 .maka-error-copy-status {
