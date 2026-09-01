@@ -20,11 +20,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
+import { runInNewContext } from 'node:vm';
 import type {
   BrowserWindow,
   BrowserWindowConstructorOptions,
   MessageBoxReturnValue,
 } from 'electron';
+import { parseHTML } from 'linkedom';
 import {
   type BrowserMessageBoxRuntime,
   buildBrowserMessageBoxHtml,
@@ -254,6 +256,45 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
   assert.ok(copyPosition < actionPosition);
   assert.match(html, /data-response="0" autofocus/u);
   assert.match(html, /default-src 'none'/u);
+});
+
+test('routes button and keyboard decisions through the rendered interaction bridge', () => {
+  const html = buildBrowserMessageBoxHtml(
+    {
+      message: 'Recover Maka',
+      buttons: ['Recover', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+    },
+    { dark: false, locale: 'en' },
+  );
+  const { document, window } = parseHTML(html);
+  const script = document.querySelector('script')?.textContent;
+  assert.ok(script);
+  const navigations: string[] = [];
+  runInNewContext(script, {
+    window: { location: { assign: (url: string) => navigations.push(url) } },
+    document,
+    Element: window.Element,
+    HTMLButtonElement: window.HTMLButtonElement,
+  });
+  const dispatchKey = (key: string): void => {
+    const event = new window.Event('keydown', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'key', { value: key });
+    document.body.dispatchEvent(event);
+  };
+
+  document
+    .querySelector('[data-response="0"]')
+    ?.dispatchEvent(new window.Event('click', { bubbles: true, cancelable: true }));
+  dispatchKey('Escape');
+  dispatchKey('Enter');
+
+  assert.deepEqual(navigations, [
+    'maka-dialog://response/0',
+    'maka-dialog://response/1',
+    'maka-dialog://response/0',
+  ]);
 });
 
 test('normalizes fallback buttons and out-of-range action indexes once', () => {

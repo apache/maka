@@ -52,13 +52,30 @@ test('localizes upgrade activity without changing decision indexes', () => {
   ).options;
   assert.deepEqual(en.buttons, ['Restart Runtime Host', 'Wait', 'Cancel Startup']);
   assert.deepEqual(zh.buttons, ['重启 Runtime Host', '等待', '取消启动']);
-  assert.equal(en.defaultId, 1);
-  assert.equal(zh.defaultId, 1);
+  assert.equal(en.defaultId, en.cancelId);
+  assert.equal(zh.defaultId, zh.cancelId);
   assert.match(zh.detail ?? '', /仍有 2 个其他客户端连接/);
   assert.match(zh.detail ?? '', /每日回顾: 1/);
   assert.match(en.detail ?? '', /Scheduled Task: 2/);
   assert.match(zh.detail ?? '', /计划任务: 2/);
   assert.match(en.detail ?? '', /Process ID \(PID\):/);
+
+  const connectionOnly = buildRuntimeHostUpgradeDialog(
+    {
+      ...conflict,
+      handshake: {
+        activity: {
+          connections: 1,
+          activeOperations: 0,
+          processUptimeSeconds: 60,
+          residencies: [],
+        },
+      },
+    } as never,
+    'restart',
+    'en',
+  ).options;
+  assert.equal(connectionOnly.defaultId, connectionOnly.cancelId);
 });
 
 test('maps the non-default replacement choice to the replace decision', async () => {
@@ -85,7 +102,7 @@ test('maps the non-default replacement choice to the replace decision', async ()
   );
 });
 
-test('offers only cancellation when the target cannot wait or replace the Host', async () => {
+test('defaults non-restartable prompts to cancellation', async () => {
   const conflict = {
     kind: 'upgrade_required',
     restartable: false,
@@ -105,6 +122,18 @@ test('offers only cancellation when the target cannot wait or replace the Host',
     await prompts.nonRestartable(conflict, 'cancel_only'),
     'cancel',
   );
+
+  const waitDialog = buildRuntimeHostUpgradeDialog(
+    {
+      kind: 'upgrade_required',
+      restartable: false,
+      registration: { pid: 42, lifecycleMode: 'ephemeral' },
+    } as never,
+    'wait',
+    'en',
+  ).options;
+  assert.deepEqual(waitDialog.buttons, ['Wait', 'Cancel Startup']);
+  assert.equal(waitDialog.defaultId, waitDialog.cancelId);
 });
 
 test('does not offer passive waiting when a supervised Host can restart', async () => {
@@ -112,6 +141,7 @@ test('does not offer passive waiting when a supervised Host can restart', async 
     async () => 'en',
     async (options) => {
       assert.deepEqual(options.buttons, ['Restart Runtime Host', 'Cancel Startup']);
+      assert.equal(options.defaultId, options.cancelId);
       assert.doesNotMatch(options.detail ?? '', /If you wait/u);
       return { response: 0, checkboxChecked: false };
     },

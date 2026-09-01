@@ -48,11 +48,6 @@ export function buildRuntimeHostUpgradeDialog(
   availability: RuntimeHostUpgradeAvailability,
   locale: UiLocale,
 ): RuntimeHostUpgradeDialog {
-  const activity = conflict.handshake?.activity;
-  const hasWork =
-    availability === 'replace_may_interrupt_work' ||
-    (activity?.activeOperations ?? 0) > 0 ||
-    (activity?.residencies.length ?? 0) > 0;
   const copy = UPGRADE_COPY[locale];
   const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
     [];
@@ -73,12 +68,7 @@ export function buildRuntimeHostUpgradeDialog(
   }
   if (canWait) choices.push({ label: copy.wait, decision: 'wait' });
   choices.push({ label: copy.cancel, decision: 'cancel' });
-  const defaultDecision =
-    action === 'restart' && !hasWork
-      ? 'restart'
-      : canWait
-        ? 'wait'
-        : 'cancel';
+  const cancelId = choices.length - 1;
   return {
     options: {
       type: 'warning',
@@ -86,8 +76,8 @@ export function buildRuntimeHostUpgradeDialog(
       message: copy.message,
       detail: formatActivity(conflict, availability, canWait, locale),
       buttons: choices.map((choice) => choice.label),
-      defaultId: choices.findIndex((choice) => choice.decision === defaultDecision),
-      cancelId: choices.findIndex((choice) => choice.decision === 'cancel'),
+      defaultId: cancelId,
+      cancelId,
       noLink: true,
     },
     decisions: choices.map((choice) => choice.decision),
