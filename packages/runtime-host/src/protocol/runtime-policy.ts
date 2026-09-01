@@ -148,8 +148,6 @@ export type ConnectionCatalogHeaderItem = Omit<
  * not work out model facts from a registry or metadata they bundle.
  *
  * Only add a field some client shows. Host bookkeeping stays in the Host.
- *
- * Authored-by: AstroHan
  */
 export type ConnectionCatalogPageItem =
   | ConnectionCatalogHeaderItem
