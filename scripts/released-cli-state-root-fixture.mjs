@@ -172,8 +172,23 @@ async function inspectAccessCredential(packageRoot, controlDirectory) {
     (candidate) => candidate.principalId === ACCESS_PRINCIPAL_ID,
   );
   if (!credential) throw new Error('The released access credential fact is missing');
-  if (!credential.operationGrants.includes('host.status')) {
+  // This fixture runs on both builds, which do not share a field name here: the
+  // record is `grants` on builds that separate it from the derived authority and
+  // `operationGrants` on those that did not. The published JSON key never moved.
+  const grants = credential.grants ?? credential.operationGrants;
+  if (!grants.includes('host.status')) {
     throw new Error('The released access credential lost its liveness grant');
+  }
+  // Asked of whichever build is reading, so it is deliberately not a shared
+  // fact: a grant the reader can neither serve nor account for means a rename
+  // shipped without its migration entry. Builds predating the check skip it.
+  if (typeof store.unresolvedPersistedGrants === 'function') {
+    const unresolved = store.unresolvedPersistedGrants(file);
+    if (unresolved.length > 0) {
+      throw new Error(
+        `The released access credential carries grants this build cannot account for: ${unresolved.join(', ')}`,
+      );
+    }
   }
   return { credentialId: credential.credentialId, principalId: credential.principalId };
 }
