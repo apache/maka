@@ -68,6 +68,7 @@ import {
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
   providerFallbackModelIds,
+  providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -573,9 +574,7 @@ export class RuntimePolicyCoordinator {
       }
       const contract = deriveProviderAuthContract({
         providerType: connection.providerType,
-        enabled: true,
         hasSecret: false,
-        lastTestStatus: connection.lastTest?.status,
       });
       if (contract.actionAvailability.start_oauth !== 'available') {
         return deepFreeze({
@@ -766,16 +765,10 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'provider_retired' as const });
       }
 
-      const contract = deriveProviderAuthContract({
-        providerType: connection.providerType,
-        enabled: true,
-        hasSecret: true,
-        lastTestStatus: connection.lastTest?.status,
-      });
       const prepared = await this.prepareConnectionMaterial(
         root,
         connection,
-        contract.requiresSecret,
+        providerAuthRequiresSecret(connection.providerType),
       );
       if (prepared.kind !== 'ready') return prepared;
       return deepFreeze({
@@ -1501,9 +1494,7 @@ export class RuntimePolicyCoordinator {
 
     const contract = deriveProviderAuthContract({
       providerType: connection.providerType,
-      enabled: true,
       hasSecret: true,
-      lastTestStatus: connection.lastTest?.status,
     });
     const availability = contract.actionAvailability[action];
     if (availability !== 'available') {

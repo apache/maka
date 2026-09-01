@@ -28,11 +28,7 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    assert.strictEqual(missing.setupMode, 'api_key');
-    assert.strictEqual(missing.state, 'not_configured');
-    assert.strictEqual(missing.validationStatus, 'not_run');
     assert.strictEqual(missing.requiresSecret, true);
-    assert.strictEqual(missing.sendMayUseWithoutSecret, false);
     assert.strictEqual(missing.actionAvailability.save_secret, 'available');
     assert.strictEqual(missing.actionAvailability.test_credentials, 'hidden');
     assert.strictEqual(missing.actionAvailability.fetch_models, 'hidden');
@@ -43,51 +39,18 @@ describe('ProviderAuth contract', () => {
       hasSecret: true,
     });
 
-    assert.strictEqual(configured.state, 'configured');
     assert.strictEqual(configured.actionAvailability.test_credentials, 'available');
     assert.strictEqual(configured.actionAvailability.fetch_models, 'available');
     assert.strictEqual(configured.actionAvailability.revoke_auth, 'available');
-  });
-
-  test('maps verified credentials to validation state', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'zai-coding-plan',
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    assert.strictEqual(contract.state, 'validated');
-    assert.strictEqual(contract.validationStatus, 'verified');
-  });
-
-  test('maps authentication failures to distinct repair states', () => {
-    const needsReauth = deriveProviderAuthContract({
-      providerType: 'anthropic',
-      hasSecret: true,
-      lastTestStatus: 'needs_reauth',
-    });
-    const error = deriveProviderAuthContract({
-      providerType: 'anthropic',
-      hasSecret: true,
-      lastTestStatus: 'error',
-    });
-
-    assert.strictEqual(needsReauth.state, 'needs_reauth');
-    assert.strictEqual(error.state, 'error');
   });
 
   test('OAuth subscription providers expose validation actions after login', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'xai-oauth',
       hasSecret: true,
-      lastTestStatus: 'verified',
     });
 
-    assert.strictEqual(contract.setupMode, 'oauth');
-    assert.strictEqual(contract.state, 'validated');
-    assert.strictEqual(contract.validationStatus, 'verified');
     assert.strictEqual(contract.requiresSecret, true);
-    assert.strictEqual(contract.sendMayUseWithoutSecret, false);
     assert.strictEqual(contract.actionAvailability.save_secret, 'hidden');
     assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
     assert.strictEqual(contract.actionAvailability.start_oauth, 'hidden');
@@ -99,10 +62,8 @@ describe('ProviderAuth contract', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'openai-codex',
       hasSecret: true,
-      lastTestStatus: 'verified',
     });
 
-    assert.strictEqual(contract.setupMode, 'oauth');
     assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
   });
 
@@ -112,25 +73,18 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    assert.strictEqual(contract.setupMode, 'oauth');
-    assert.strictEqual(contract.state, 'not_configured');
-    assert.strictEqual(contract.validationStatus, 'not_run');
     assert.strictEqual(contract.actionAvailability.start_oauth, 'available');
     assert.strictEqual(contract.actionAvailability.test_credentials, 'hidden');
     assert.strictEqual(contract.actionAvailability.fetch_models, 'hidden');
   });
 
-  test('no-auth local providers can send without secret but are still not validated runtime probes', () => {
+  test('no-auth local providers can test and fetch without ever holding a secret', () => {
     const contract = deriveProviderAuthContract({
       providerType: 'ollama',
       hasSecret: false,
     });
 
-    assert.strictEqual(contract.setupMode, 'none');
-    assert.strictEqual(contract.state, 'configured');
-    assert.strictEqual(contract.validationStatus, 'not_required');
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.sendMayUseWithoutSecret, true);
     assert.strictEqual(contract.actionAvailability.save_secret, 'hidden');
     assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
     assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
@@ -142,43 +96,9 @@ describe('ProviderAuth contract', () => {
       hasSecret: false,
     });
 
-    assert.strictEqual(contract.setupMode, 'api_key');
-    assert.strictEqual(contract.state, 'configured');
-    assert.strictEqual(contract.validationStatus, 'not_required');
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.sendMayUseWithoutSecret, true);
     assert.strictEqual(contract.actionAvailability.save_secret, 'available');
     assert.strictEqual(contract.actionAvailability.test_credentials, 'available');
     assert.strictEqual(contract.actionAvailability.fetch_models, 'available');
-  });
-
-  test('LocalAI preserves endpoint validation failures without making its optional key required', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'localai',
-      hasSecret: true,
-      lastTestStatus: 'needs_reauth',
-    });
-
-    assert.strictEqual(contract.state, 'needs_reauth');
-    assert.strictEqual(contract.validationStatus, 'needs_reauth');
-    assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.sendMayUseWithoutSecret, true);
-  });
-
-  test('disabled providers hide actions regardless of stored credential state', () => {
-    const contract = deriveProviderAuthContract({
-      providerType: 'openai-codex',
-      enabled: false,
-      hasSecret: true,
-      lastTestStatus: 'verified',
-    });
-
-    assert.strictEqual(contract.setupMode, 'oauth');
-    assert.strictEqual(contract.state, 'disabled');
-    assert.strictEqual(contract.validationStatus, 'verified');
-    assert.strictEqual(
-      Object.values(contract.actionAvailability).every((value) => value === 'hidden'),
-      true,
-    );
   });
 });

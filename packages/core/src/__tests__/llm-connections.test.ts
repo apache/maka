@@ -27,10 +27,8 @@ import {
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import {
   authorizeConnectionModel,
-  backendKindOf,
   effectiveBaseUrl,
   normalizeConnectionBaseUrl,
-  persistedBaseUrl,
   providerAuthRequiresSecret,
   providerDefaultsOf,
   providerAuthSupportsApiKey,
@@ -73,20 +71,6 @@ test('connection base URLs allow HTTP(S) and reject unsafe or malformed inputs',
   assert.equal(validateConnectionBaseUrl(exactLimit), null);
 });
 
-test('persisted base URLs retain only meaningful overrides', () => {
-  for (const value of [undefined, '  ', 'https://api.openai.com/v1']) {
-    assert.equal(persistedBaseUrl('openai', value), undefined);
-  }
-  assert.equal(
-    persistedBaseUrl('openai', '  https://proxy.example.com/v1  '),
-    'https://proxy.example.com/v1',
-  );
-  assert.equal(
-    persistedBaseUrl('openai-compatible', 'https://gateway.example.com/v1'),
-    'https://gateway.example.com/v1',
-  );
-});
-
 test('base URL normalization preserves clear intent and rejects untrusted runtime types', () => {
   assert.deepEqual(normalizeConnectionBaseUrl('  '), { ok: true, value: '' });
   assert.deepEqual(normalizeConnectionBaseUrl('  https://Example.com:443/V1  '), {
@@ -100,10 +84,6 @@ test('base URL normalization preserves clear intent and rejects untrusted runtim
 
 test('unknown provider ids fail closed without breaking persisted connections', () => {
   const unknown = 'branch-only-provider' as ProviderType;
-  // `backendKindOf` no longer invents a backend for a provider this build
-  // cannot describe (#3211); the readiness projection is the non-throwing
-  // answer to "can this connection be used?".
-  assert.throws(() => backendKindOf({ providerType: unknown }), /Unknown providerType/);
   assert.equal(isRealConnection({ providerType: unknown }), false);
   assert.equal(providerDefaultsOf(unknown), undefined);
   assert.equal(
@@ -111,7 +91,6 @@ test('unknown provider ids fail closed without breaking persisted connections', 
     'https://example.test/v1',
   );
   assert.equal(effectiveBaseUrl({ providerType: unknown }), '');
-  assert.equal(persistedBaseUrl(unknown, '  '), undefined);
   assert.equal(providerAuthRequiresSecret(unknown), false);
   assert.equal(providerAuthSupportsApiKey(unknown), false);
 });
@@ -312,14 +291,12 @@ test('chat model choices project exact vision support for attachment composition
 test('provider recognition does not resolve inherited object members', () => {
   // `PROVIDER_REGISTRY` is an object literal, so plain indexing answers truthy
   // for `__proto__` / `toString` / `constructor` and they would read as
-  // registered providers. #3211 made `backendKindOf` throw for unknown types,
-  // which turns that leak from a wrong-but-closed `'fake'` into an `undefined`
-  // masquerading as a BackendKind — so recognition owns the own-property check.
+  // registered providers. Recognition owns the own-property check so no
+  // caller has to repeat it.
   for (const inherited of ['__proto__', 'toString', 'constructor', 'valueOf']) {
     const providerType = inherited as ProviderType;
     assert.equal(providerDefaultsOf(inherited), undefined, inherited);
     assert.equal(isRealConnection({ providerType }), false, inherited);
-    assert.throws(() => backendKindOf({ providerType }), /Unknown providerType/, inherited);
     assert.deepEqual(
       chatModelChoicesFor([
         {
@@ -338,8 +315,12 @@ test('provider recognition does not resolve inherited object members', () => {
     // says it mirrors `isRealConnection`. It only does so while it asks the
     // same question the same way: indexing the registry directly handed it an
     // inherited member instead of `undefined`, and the branch never ran.
-    assert.equal(deriveProviderAuthContract({ providerType }).setupMode, 'none', inherited);
-    assert.equal(deriveProviderAuthContract({ providerType }).state, 'not_configured', inherited);
+    const contract = deriveProviderAuthContract({ providerType, hasSecret: false });
+    assert.equal(
+      Object.values(contract.actionAvailability).every((value) => value === 'hidden'),
+      true,
+      inherited,
+    );
   }
 });
 

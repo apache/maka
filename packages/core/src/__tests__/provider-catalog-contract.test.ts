@@ -138,7 +138,6 @@ describe('retired provider contract', () => {
     for (const type of retired) {
       const contract = deriveProviderAuthContract({
         providerType: type,
-        enabled: true,
         hasSecret: true,
       });
       for (const action of PROVIDER_AUTH_ACTIONS) {
