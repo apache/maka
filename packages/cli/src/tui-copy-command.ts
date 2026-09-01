@@ -38,6 +38,8 @@ export interface TuiCopyCopy {
   readonly copiedLast: string;
   /** ICU: confirmation for `/copy all` (whole conversation). Takes `{count}`. */
   readonly copiedAll: string;
+  /** ICU: refusal when the payload exceeds the clipboard cap. Takes `{bytes}`, `{limit}`. */
+  readonly tooLarge: string;
   /** Shown when there is nothing to copy yet. */
   readonly nothingToCopy: string;
   /** Role label for user turns in `/copy all`. */
@@ -75,29 +77,43 @@ export function lastAssistantText(state: MakaPiTranscriptState): string | undefi
  * role labels, in order. Thinking, tool calls, and notices are omitted so the
  * copy reads as the conversation, not the machinery around it.
  *
- * Consecutive same-role entries collapse under one label, so an assistant turn
- * whose text is split across several internal steps (e.g. text before and after
- * a tool call) reads as one `Maka:` block rather than several. Empty assistant
- * steps are dropped.
+ * `goal_continuation` and `legacy_automation` are user-authored driving turns
+ * (visible blocks in the TUI, both stored as `user` messages), so they carry the
+ * user label; dropping them would erase the prompts that drove an autonomous run
+ * and leave the replies reading as one answer.
+ *
+ * Only *consecutive assistant* entries collapse under one label, so an assistant
+ * turn whose text is split across several internal steps (e.g. text before and
+ * after a tool call) reads as one `Maka:` block. Every user turn opens its own
+ * block — two queued messages, or two user turns separated only by a skipped
+ * text-less assistant entry, must not merge into one `You:` block. Empty
+ * assistant steps are dropped, and because a new block only ever opens for a
+ * user turn or a fresh assistant run, that skip never joins the blocks around it.
  */
 export function serializeTranscriptText(
   state: MakaPiTranscriptState,
   labels: { user: string; assistant: string },
 ): string {
-  const blocks: { label: string; texts: string[] }[] = [];
+  const blocks: { role: 'user' | 'assistant'; label: string; text: string }[] = [];
   for (const entry of state.entries) {
-    let label: string;
-    if (entry.kind === 'user') {
-      label = labels.user;
+    let role: 'user' | 'assistant';
+    if (
+      entry.kind === 'user' ||
+      entry.kind === 'goal_continuation' ||
+      entry.kind === 'legacy_automation'
+    ) {
+      role = 'user';
     } else if (entry.kind === 'assistant') {
       if (entry.text.trim() === '') continue;
-      label = labels.assistant;
+      role = 'assistant';
     } else {
       continue;
     }
+    const label = role === 'user' ? labels.user : labels.assistant;
     const last = blocks[blocks.length - 1];
-    if (last && last.label === label) last.texts.push(entry.text);
-    else blocks.push({ label, texts: [entry.text] });
+    // Collapse only a running assistant turn's steps; every user turn is its own.
+    if (role === 'assistant' && last?.role === 'assistant') last.text += `\n\n${entry.text}`;
+    else blocks.push({ role, label, text: entry.text });
   }
-  return blocks.map((block) => `${block.label}\n${block.texts.join('\n\n')}`).join('\n\n');
+  return blocks.map((block) => `${block.label}\n${block.text}`).join('\n\n');
 }

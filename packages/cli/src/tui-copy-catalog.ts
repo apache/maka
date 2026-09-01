@@ -21,16 +21,22 @@ export const TUI_COPY_RESOURCES = {
   copy: {
     en: {
       copiedLast:
-        'Copied the last reply to the clipboard · {count, plural, one {# char} other {# chars}}',
+        'Sent the last reply to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
       copiedAll:
-        'Copied the conversation to the clipboard · {count, plural, one {# char} other {# chars}}',
+        'Sent the conversation to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
+      tooLarge:
+        'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; terminals silently truncate past their own limit.',
       nothingToCopy: 'Nothing to copy yet.',
       roleUser: 'You:',
       roleAssistant: 'Maka:',
     },
     zh: {
-      copiedLast: '已复制最后一条回复到剪贴板 · {count} 个字符',
-      copiedAll: '已复制整段对话到剪贴板 · {count} 个字符',
+      copiedLast:
+        '已通过 OSC 52 将最后一条回复发送到终端 · {count} 个字符——仅当终端(以及 tmux,如使用)允许 OSC 52 写入时才会真正复制。',
+      copiedAll:
+        '已通过 OSC 52 将整段对话发送到终端 · {count} 个字符——仅当终端(以及 tmux,如使用)允许 OSC 52 写入时才会真正复制。',
+      tooLarge:
+        '内容过大,无法通过 OSC 52 复制 · {bytes} 字节超过 {limit} 字节上限;终端超限会静默截断。',
       nothingToCopy: '暂无可复制的内容。',
       roleUser: '你：',
       roleAssistant: 'Maka：',

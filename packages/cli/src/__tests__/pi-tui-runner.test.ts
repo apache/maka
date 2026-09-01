@@ -8043,7 +8043,47 @@ describe('Maka Pi TUI runner', () => {
     const payload = Buffer.from('COPY-ME-REPLY', 'utf8').toString('base64');
     await waitFor(() => terminal.output().includes(`;c;${payload}`));
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('Copied the last reply to the clipboard'),
+      plainTerminalOutput(terminal.output()).includes('Sent the last reply to the terminal'),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('/copy all writes the whole conversation with role labels via OSC 52', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new CopyReplyDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('hi');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('COPY-ME-REPLY'));
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    terminal.input('/copy all');
+    terminal.input('\r');
+
+    // Exercises copiedAll + the roleUser/roleAssistant labels end to end: the
+    // serialized transcript is the user turn and the reply under their labels.
+    const payload = Buffer.from('You:\nhi\n\nMaka:\nCOPY-ME-REPLY', 'utf8').toString('base64');
+    await waitFor(() => terminal.output().includes(`;c;${payload}`));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Sent the conversation to the terminal'),
     );
 
     exitMaka(terminal);

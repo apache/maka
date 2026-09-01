@@ -94,6 +94,53 @@ describe('serializeTranscriptText', () => {
     );
   });
 
+  test('keeps two adjacent user turns in separate blocks', () => {
+    // Queued steering (Alt+Enter) appends a user entry before any assistant
+    // text, so two user entries can sit adjacent. They are distinct messages,
+    // not one message with two paragraphs, and must not merge.
+    const state = stateWith([
+      { kind: 'user', messageId: 'u1', text: 'do the thing' },
+      { kind: 'user', messageId: 'u2', text: 'actually, stop' },
+      { kind: 'assistant', messageId: 'a1', text: 'ok' },
+    ]);
+    assert.equal(
+      serializeTranscriptText(state, LABELS),
+      'You:\ndo the thing\n\nYou:\nactually, stop\n\nMaka:\nok',
+    );
+  });
+
+  test('a text-less assistant entry between two user turns does not join them', () => {
+    // The skip of an empty assistant entry must not fuse the surrounding user
+    // blocks: a tool-only / aborted / recovery turn leaves exactly this shape.
+    const state = stateWith([
+      { kind: 'user', messageId: 'u1', text: 'first question' },
+      { kind: 'assistant', messageId: 'a1', text: '' },
+      { kind: 'user', messageId: 'u2', text: 'second question' },
+    ]);
+    assert.equal(
+      serializeTranscriptText(state, LABELS),
+      'You:\nfirst question\n\nYou:\nsecond question',
+    );
+  });
+
+  test('serializes goal_continuation and legacy_automation as user turns', () => {
+    // Both are user-authored driving turns stored as `user` messages and shown
+    // as visible blocks; dropping them would erase the prompts that drove a run.
+    const state = stateWith([
+      { kind: 'user', messageId: 'u1', text: 'start the goal' },
+      { kind: 'assistant', messageId: 'a1', text: 'Step one done.' },
+      { kind: 'goal_continuation', text: 'keep going' },
+      { kind: 'assistant', messageId: 'a2', text: 'Step two done.' },
+      { kind: 'legacy_automation', text: 'automated nudge' },
+      { kind: 'assistant', messageId: 'a3', text: 'Step three done.' },
+    ]);
+    assert.equal(
+      serializeTranscriptText(state, LABELS),
+      'You:\nstart the goal\n\nMaka:\nStep one done.\n\nYou:\nkeep going\n\n' +
+        'Maka:\nStep two done.\n\nYou:\nautomated nudge\n\nMaka:\nStep three done.',
+    );
+  });
+
   test('returns an empty string when there are no conversation turns', () => {
     assert.equal(serializeTranscriptText(stateWith([]), LABELS), '');
   });
@@ -104,5 +151,7 @@ describe('getTuiCopyCopy', () => {
     assert.equal(typeof getTuiCopyCopy('en').nothingToCopy, 'string');
     assert.equal(typeof getTuiCopyCopy('zh').nothingToCopy, 'string');
     assert.ok(getTuiCopyCopy('en').copiedLast.includes('{count'));
+    const tooLarge = getTuiCopyCopy('en').tooLarge;
+    assert.ok(tooLarge.includes('{bytes}') && tooLarge.includes('{limit}'));
   });
 });

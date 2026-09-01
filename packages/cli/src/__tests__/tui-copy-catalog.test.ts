@@ -27,6 +27,8 @@ const MESSAGE_VALUES = {
   count: 2,
   detail: 'HTTP 401',
   hasDetail: true,
+  bytes: 40_000,
+  limit: 16_384,
 } as const;
 
 describe('TUI copy resources', () => {

@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { copyToClipboard, osc52ClipboardSequence } from '../tui-clipboard.js';
+import {
+  copyToClipboard,
+  MAX_CLIPBOARD_TEXT_BYTES,
+  osc52ClipboardSequence,
+} from '../tui-clipboard.js';
 
 describe('osc52ClipboardSequence', () => {
   test('wraps base64-encoded UTF-8 in the OSC 52 clipboard sequence', () => {
@@ -32,8 +36,9 @@ describe('osc52ClipboardSequence', () => {
   });
 
   test('emits a bare sequence with no tmux DCS passthrough wrapper', () => {
-    // tmux forwards bare OSC 52 with `set-clipboard on`; passthrough would need
-    // `allow-passthrough on` (off by default) and is intentionally not used.
+    // The bare sequence is the correct primitive; tmux forwards it only with
+    // `set-clipboard on` (default `external` drops it) and an `Ms` terminfo cap.
+    // DCS passthrough is avoided: it needs `allow-passthrough on`, off by default.
     const sequence = osc52ClipboardSequence('hi');
     assert.equal(sequence.startsWith('\x1b]52;'), true);
     assert.equal(sequence.includes('\x1bPtmux;'), false);
@@ -41,9 +46,41 @@ describe('osc52ClipboardSequence', () => {
 });
 
 describe('copyToClipboard', () => {
-  test('writes the OSC 52 sequence to the terminal', () => {
+  test('writes the OSC 52 sequence to the terminal and reports the byte count', () => {
     const writes: string[] = [];
-    copyToClipboard({ write: (d) => writes.push(d) }, 'hi');
+    const result = copyToClipboard({ write: (d) => writes.push(d) }, 'hi');
     assert.deepEqual(writes, [osc52ClipboardSequence('hi')]);
+    assert.deepEqual(result, { ok: true, bytes: 2 });
+  });
+
+  test('accepts a payload exactly at the byte limit', () => {
+    const writes: string[] = [];
+    const text = 'a'.repeat(MAX_CLIPBOARD_TEXT_BYTES);
+    const result = copyToClipboard({ write: (d) => writes.push(d) }, text);
+    assert.equal(result.ok, true);
+    assert.equal(writes.length, 1);
+  });
+
+  test('refuses an oversized payload and writes nothing', () => {
+    // Past a terminal's OSC-string buffer the sequence is silently truncated,
+    // not echoed, so an oversized copy must fail readably rather than emit.
+    const writes: string[] = [];
+    const text = 'a'.repeat(MAX_CLIPBOARD_TEXT_BYTES + 1);
+    const result = copyToClipboard({ write: (d) => writes.push(d) }, text);
+    assert.deepEqual(result, {
+      ok: false,
+      reason: 'too_large',
+      bytes: MAX_CLIPBOARD_TEXT_BYTES + 1,
+      limit: MAX_CLIPBOARD_TEXT_BYTES,
+    });
+    assert.deepEqual(writes, []);
+  });
+
+  test('measures the limit in UTF-8 bytes, not JS string length', () => {
+    // A multibyte char counts as its encoded bytes: 8193 '€' = 24579 bytes.
+    const writes: string[] = [];
+    const result = copyToClipboard({ write: (d) => writes.push(d) }, '€'.repeat(8193));
+    assert.equal(result.ok, false);
+    assert.deepEqual(writes, []);
   });
 });

@@ -3284,7 +3284,20 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           requestRender();
           return;
         }
-        copyToClipboard(terminal, text);
+        const result = copyToClipboard(terminal, text);
+        if (!result.ok) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: formatUiMessage(
+              copyCopy.tooLarge,
+              { bytes: result.bytes, limit: result.limit },
+              locale,
+            ),
+          });
+          requestRender();
+          return;
+        }
         state.entries.push({
           kind: 'notice',
           level: 'info',
