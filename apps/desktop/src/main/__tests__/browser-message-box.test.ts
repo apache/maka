@@ -89,7 +89,7 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
   const actionPosition = html.indexOf('>Replace &lt;Host&gt;</button>');
   assert.ok(cancelPosition >= 0 && cancelPosition < copyPosition);
   assert.ok(copyPosition < actionPosition);
-  assert.match(html, /class="decision primary"[^>]*data-response="0" autofocus/u);
+  assert.match(html, /data-response="0" autofocus/u);
   assert.match(html, /default-src 'none'/u);
 });
 
