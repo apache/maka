@@ -451,6 +451,8 @@ export function registerDesktopGuestSessionMountIpc(
     if (Buffer.byteLength(value, 'utf8') > DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES) {
       throw new Error('Clipboard content is too large to be a shared Session invitation');
     }
+    if (!value) return value;
+    decodeDesktopCollaborationInvitation(value);
     return value;
   });
   return () => {

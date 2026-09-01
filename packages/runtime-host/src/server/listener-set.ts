@@ -129,6 +129,17 @@ export function createRuntimeHostListenerSet(
   additional: readonly RuntimeHostListener[] = [],
 ): RuntimeHostListenerSet {
   const listeners = Object.freeze([local, ...additional]);
+  const peerListeners = Object.freeze(
+    additional.filter(isRuntimeHostPeerListener).map((listener) =>
+      Object.freeze({
+        peerId: listener.peerId,
+        listenAddresses: Object.freeze([...listener.listenAddresses]),
+        get coordinationRelays() {
+          return Object.freeze([...listener.coordinationRelays]);
+        },
+      }),
+    ),
+  );
   return {
     listeners,
     localEndpoint: local.endpoint,
@@ -137,17 +148,7 @@ export function createRuntimeHostListenerSet(
         .filter((listener) => listener.kind === 'websocket')
         .map((listener) => listener.endpoint),
     ),
-    get peerListeners() {
-      return Object.freeze(
-        additional.filter(isRuntimeHostPeerListener).map((listener) =>
-          Object.freeze({
-            peerId: listener.peerId,
-            listenAddresses: Object.freeze([...listener.listenAddresses]),
-            coordinationRelays: Object.freeze([...listener.coordinationRelays]),
-          }),
-        ),
-      );
-    },
+    peerListeners,
     closeAdmission: () => settleListeners(listeners, (listener) => listener.closeAdmission()),
     cleanup: () => settleListeners([...listeners].reverse(), (listener) => listener.cleanup()),
   };

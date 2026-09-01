@@ -216,16 +216,6 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
     notifyPhase(onPhase, 'discovering');
-    if (input.routeHints.length > 0 && (input.coordinationRelays?.length ?? 0) > 0) {
-      // Reserve the application-connect lane before refreshing Mesh control.
-      // A fresh invitation therefore dials immediately, while a persisted
-      // invitation still refreshes routes for the next reconnect if its
-      // advertised reservation has rotated.
-      notifyPhase(onPhase, 'connecting');
-      const connection = this.#connect(input, signal, 'application');
-      void this.#prepareRoutes(input, signal).catch(() => undefined);
-      return connection;
-    }
     await this.#prepareRoutes(input, signal);
     notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');

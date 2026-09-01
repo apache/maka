@@ -35,6 +35,24 @@ export interface RuntimeHostSessionCatalogSnapshot extends RuntimeHostSessionCat
   readonly knownProfileIds: string[];
 }
 
+export async function resolveRuntimeHostSessionCatalog(
+  current: readonly DesktopSessionSummary[],
+  coverage: Promise<RuntimeHostSessionCatalogCoverage>,
+  knownRuntimeProfileIds: () => readonly string[],
+  guestMountProfileIds: Promise<readonly string[]>,
+): Promise<DesktopSessionSummary[]> {
+  const [snapshot, knownGuestProfileIds] = await Promise.all([
+    coverage,
+    guestMountProfileIds.catch(() =>
+      current.flatMap((session) => session.shared === true ? [session.profileId] : []),
+    ),
+  ]);
+  return reconcileRuntimeHostSessionCatalog(current, {
+    ...snapshot,
+    knownProfileIds: [...knownRuntimeProfileIds(), ...knownGuestProfileIds],
+  });
+}
+
 export async function collectRuntimeHostSessionCatalogsWithCoverage(
   requests: readonly RuntimeHostSessionCatalogRequest[],
 ): Promise<RuntimeHostSessionCatalogCoverage> {
@@ -62,20 +80,6 @@ export async function collectRuntimeHostSessionCatalogsWithCoverage(
         : hostRequests.every((request) => fulfilledRequests.has(request));
     }),
   };
-}
-
-export async function collectRuntimeHostSessionCatalogs(
-  requests: readonly Promise<DesktopSessionSummary[]>[],
-): Promise<DesktopSessionSummary[]> {
-  const results = await Promise.allSettled(requests);
-  const groups = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (requests.length > 0 && groups.length === 0) {
-    throw new AggregateError(
-      results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
-      'Every Runtime Host Session Catalog request failed',
-    );
-  }
-  return sortSessionCatalogs(groups.flat());
 }
 
 /**

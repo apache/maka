@@ -278,7 +278,8 @@ test('reads an invitation from the clipboard only on explicit IPC invocation', a
   type IpcHandler = Parameters<Pick<Electron.IpcMain, 'handle'>['handle']>[1];
   const handlers = new Map<string, IpcHandler>();
   let clipboardReads = 0;
-  let clipboardText = '  invitation-code  ';
+  const clipboardInvitation = invitation('guest-clipboard');
+  let clipboardText = `  ${clipboardInvitation}  `;
   const mounts = service(memoryStore());
   const dispose = registerDesktopGuestSessionMountIpc(
     {
@@ -299,8 +300,14 @@ test('reads an invitation from the clipboard only on explicit IPC invocation', a
   assert.equal(clipboardReads, 0);
   const handler = handlers.get('session-collaboration:invitation:read-clipboard');
   assert.ok(handler);
-  assert.equal(await handler({} as never), 'invitation-code');
+  assert.equal(await handler({} as never), clipboardInvitation);
   assert.equal(clipboardReads, 1);
+
+  clipboardText = 'an unrelated clipboard secret';
+  assert.throws(() => handler({} as never), /Invalid Desktop collaboration invitation/);
+
+  clipboardText = '   ';
+  assert.equal(await handler({} as never), '');
 
   clipboardText = 'x'.repeat(32 * 1024 + 1);
   assert.throws(

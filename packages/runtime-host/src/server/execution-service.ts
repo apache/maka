@@ -168,13 +168,7 @@ export function attachPeerOwnerCleanup(
   owner: RuntimeHostPeerMeshOwner,
 ): RuntimeHostListenerSet {
   return {
-    listeners: listeners.listeners,
-    localEndpoint: listeners.localEndpoint,
-    websocketEndpoints: listeners.websocketEndpoints,
-    get peerListeners() {
-      return listeners.peerListeners;
-    },
-    closeAdmission: () => listeners.closeAdmission(),
+    ...listeners,
     cleanup: async () => {
       const errors: unknown[] = [];
       await listeners.cleanup().catch((error: unknown) => errors.push(error));

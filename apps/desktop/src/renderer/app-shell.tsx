@@ -109,12 +109,7 @@ import {
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import { SessionTurnRequestComposer } from './session-turn-request-composer.js';
-import {
-  SessionTurnRequestApprovalForSession,
-  SessionTurnRequestBadge,
-  SessionTurnRequestInboxProvider,
-  useSessionCollaborationDialog,
-} from './features/session-collaboration';
+import * as SessionCollaboration from './features/session-collaboration';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
@@ -247,6 +242,7 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
+const { useSessionCollaborationDialog } = SessionCollaboration;
 type FirstSendObservationWaiter = {
   promise: Promise<void>;
   resolve: () => void;
@@ -2731,7 +2727,7 @@ function AppShellContent({
       reportError={showSessionError}
     >
     <ComposerMentionsProvider {...composerMentionsSurface}>
-    <SessionTurnRequestInboxProvider
+    <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
       toast={toastApi}
       onOpenSession={openSession}
@@ -2866,7 +2862,7 @@ function AppShellContent({
             projects={localProjects}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
-            SessionBadge={SessionTurnRequestBadge}
+            SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
             ports={sessionNavigationPorts}
             commandsRef={sessionNavigationCommandsRef}
             onExitWorkHub={exitWorkHub}
@@ -2936,7 +2932,9 @@ function AppShellContent({
                 composer={
                   <>
                     {!sharedSessionActive && activeId ? (
-                      <SessionTurnRequestApprovalForSession sessionId={activeId} />
+                      <SessionCollaboration.SessionTurnRequestApprovalForSession
+                        sessionId={activeId}
+                      />
                     ) : null}
                     {!sharedSessionActive && navSelection.section === 'sessions' &&
                     activeId &&
@@ -3337,7 +3335,7 @@ function AppShellContent({
         onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
-    </SessionTurnRequestInboxProvider>
+    </SessionCollaboration.SessionTurnRequestInboxProvider>
     </ComposerMentionsProvider>
     </Goals.GoalProvider>
   );

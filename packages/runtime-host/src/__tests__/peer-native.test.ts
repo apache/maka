@@ -51,6 +51,7 @@ let finishMeshAccept;
 const pending = new Map();
 const stats = { starts: 0, closes: 0, requests: [], cancellations: [] };
 let missFirstCancellation = true;
+let selfContainedRoutesPrepared = false;
 const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   stats,
@@ -72,12 +73,15 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'self-contained') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'fallback' || (peerId === 'self-contained' && selfContainedRoutesPrepared)) return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
-        if (peerId === 'ready') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'self-contained') {
+          if (peerId === 'self-contained') selfContainedRoutesPrepared = true;
+          return Promise.resolve(stream);
+        }
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       configureTransit: async () => {},
@@ -101,11 +105,8 @@ module.exports = {
     );
     let routesPrepared = false;
     const preparedPeerIds: string[] = [];
-    let releaseSelfContainedPreparation!: () => void;
-    const selfContainedPreparation = new Promise<void>((resolve) => {
-      releaseSelfContainedPreparation = resolve;
-    });
-    const client = createRuntimeHostPeerClient({
+    let client!: ReturnType<typeof createRuntimeHostPeerClient>;
+    client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
       routeResolver: {
@@ -113,7 +114,9 @@ module.exports = {
           preparedPeerIds.push(peerId);
           routesPrepared = true;
           if (peerId === 'fallback') throw new Error('Mesh refresh failed');
-          if (peerId === 'self-contained') await selfContainedPreparation;
+          if (peerId === 'self-contained') {
+            await client.connectMeshControl(peerConnectInput(peerId));
+          }
         },
         resolveRoutes: () =>
           routesPrepared
@@ -162,10 +165,8 @@ module.exports = {
       ...peerConnectInput('self-contained'),
       coordinationRelays: ['/memory/explicit-relay'],
     });
-    await waitForRequestCount(native.default.stats, 7);
-    assert.equal(preparedPeerIds.includes('self-contained'), true);
-    releaseSelfContainedPreparation();
     await selfContained;
+    assert.equal(preparedPeerIds.includes('self-contained'), true);
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
@@ -214,6 +215,13 @@ module.exports = {
         },
         {
           requestId: 7,
+          peerId: 'self-contained',
+          routeHints: ['/memory/1'],
+          coordinationRelays: [],
+          transitRelayPeerIds: [],
+        },
+        {
+          requestId: 8,
           peerId: 'self-contained',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay', '/memory/explicit-relay'],

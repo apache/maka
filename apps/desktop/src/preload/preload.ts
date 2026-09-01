@@ -122,8 +122,9 @@ import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/
 import type { HealthSnapshot } from '@maka/core/health';
 import {
   collectRuntimeHostSessionCatalogsWithCoverage,
-  reconcileRuntimeHostSessionCatalog,
+  resolveRuntimeHostSessionCatalog,
 } from './runtime-host-session-catalog.js';
+import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
@@ -363,64 +364,28 @@ function recordRuntimeHostIdentity(value: unknown): {
   return { scope, readiness: metadata.readiness };
 }
 
-interface RuntimeHostScopeInventory {
-  readonly readyScopes: readonly DesktopTargetScope[];
-  readonly knownProfileIds: readonly string[];
-}
-
-async function runtimeHostScopeInventory(): Promise<RuntimeHostScopeInventory> {
+async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
   while (true) {
     const generation = activeRuntimeHostGeneration;
-    const [identities, guestMounts]: [unknown, unknown] = await Promise.all([
-      ipcRenderer.invoke('runtime-host:identities'),
-      ipcRenderer.invoke('session-collaboration:mount:list'),
-    ]);
+    const identities: unknown = await ipcRenderer.invoke('runtime-host:identities');
     if (generation !== activeRuntimeHostGeneration) continue;
     if (!Array.isArray(identities)) {
       throw new Error('Desktop Runtime Host identities are unavailable');
     }
-    if (!Array.isArray(guestMounts)) {
-      throw new Error('Desktop shared Session mounts are unavailable');
-    }
     const authoritativeScopeKeys = new Set<RuntimeHostScopeKey>();
     const readyScopes: DesktopTargetScope[] = [];
-    const knownProfileIds = new Set(
-      guestMounts.map((mount) => {
-        if (
-          !mount ||
-          typeof mount !== 'object' ||
-          !('mountId' in mount) ||
-          typeof mount.mountId !== 'string'
-        ) {
-          throw new Error('Desktop shared Session mount is invalid');
-        }
-        return mount.mountId;
-      }),
-    );
     for (const identity of identities) {
       const { scope, readiness } = recordRuntimeHostIdentity(identity);
       authoritativeScopeKeys.add(runtimeHostScopeKey(scope));
-      const metadata = runtimeHostMetadataFor(scope);
-      if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
-      knownProfileIds.add(metadata.profileId);
-      if (readiness === 'ready') {
-        readyScopes.push(scope);
-      }
+      if (readiness === 'ready') readyScopes.push(scope);
     }
     for (const scopeKey of runtimeHostScopes.keys()) {
       if (authoritativeScopeKeys.has(scopeKey)) continue;
       runtimeHostScopes.delete(scopeKey);
       runtimeHostMetadata.delete(scopeKey);
     }
-    return {
-      readyScopes,
-      knownProfileIds: [...knownProfileIds],
-    };
+    return readyScopes;
   }
-}
-
-async function runtimeHostScopeList(): Promise<readonly DesktopTargetScope[]> {
-  return (await runtimeHostScopeInventory()).readyScopes;
 }
 
 async function runtimeHostSessionRef(sessionId: string): Promise<{
@@ -933,10 +898,13 @@ async function listDesktopSessions(
     ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
-  const snapshot = await listDesktopSessionsWithCoverage();
-  lastDesktopSessionCatalog = reconcileRuntimeHostSessionCatalog(
+  lastDesktopSessionCatalog = await resolveRuntimeHostSessionCatalog(
     lastDesktopSessionCatalog,
-    snapshot,
+    listDesktopSessionsWithCoverage(),
+    () => [...runtimeHostMetadata.values()].map(({ profileId }) => profileId),
+    // Unknown Guest coverage cannot suppress healthy Owner catalogs or prove
+    // that a previously observed Guest mount was removed.
+    listKnownGuestMountProfileIds(),
   );
   return lastDesktopSessionCatalog;
 }
@@ -944,11 +912,10 @@ async function listDesktopSessions(
 async function listDesktopSessionsWithCoverage(): Promise<{
   sessions: DesktopSessionSummary[];
   completeHostIds: string[];
-  knownProfileIds: string[];
 }> {
-  const inventory = await runtimeHostScopeInventory();
+  const scopes = await runtimeHostScopeList();
   const catalog = await collectRuntimeHostSessionCatalogsWithCoverage(
-    inventory.readyScopes.map((scope) => {
+    scopes.map((scope) => {
       const metadata = runtimeHostMetadataFor(scope);
       if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
       return {
@@ -961,10 +928,25 @@ async function listDesktopSessionsWithCoverage(): Promise<{
     }),
   );
   recordSessionCatalogScopes(catalog.sessions);
-  return {
-    ...catalog,
-    knownProfileIds: [...inventory.knownProfileIds],
-  };
+  return catalog;
+}
+
+async function listKnownGuestMountProfileIds(): Promise<string[]> {
+  const mounts: unknown = await ipcRenderer.invoke('session-collaboration:mount:list');
+  if (!Array.isArray(mounts)) {
+    throw new Error('Desktop shared Session mounts are unavailable');
+  }
+  return mounts.map((mount) => {
+    if (
+      !mount ||
+      typeof mount !== 'object' ||
+      !('mountId' in mount) ||
+      typeof mount.mountId !== 'string'
+    ) {
+      throw new Error('Desktop shared Session mount is invalid');
+    }
+    return mount.mountId;
+  });
 }
 
 async function createDesktopSessionOnScope(
@@ -1374,10 +1356,10 @@ const makaBridge = {
       const scopes = (await runtimeHostScopeList()).filter(
         (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
       );
-      const results = await Promise.all(
+      return collectAvailablePendingTurnRequests(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(
-            'session-collaboration:turn-request:inbox',
+            'session-collaboration:turn-request:query',
             scope,
           ) as CollaborationTurnRequestQueryResult;
           return result.requests
@@ -1391,9 +1373,6 @@ const makaBridge = {
             }));
         }),
       );
-      return results
-        .flat()
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     },
     async acknowledgeTurnRequest(sessionId, requestId) {
       const session = await runtimeHostSessionRef(sessionId);
