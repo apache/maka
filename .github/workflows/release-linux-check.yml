@@ -63,7 +63,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  package:
+  # Not `package`: the Windows lane's job already claims that name, and two
+  # checks reading `package` on the same pull request cannot be told apart.
+  package-linux:
     # x64 only. The arm64 packages are built from the same scripts, the same
     # configuration and the same descriptor, so this lane would re-prove all of
     # what it can reach and none of what differs — a 16K-page host and its own
