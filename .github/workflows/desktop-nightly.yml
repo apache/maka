@@ -169,16 +169,23 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: >-
-            apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-mac-${{ matrix.arch }}.dmg
         run: |
+          # Discovered, not spelled out — see the same step in release.yml.
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG to notarize, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          DMG_PATH="${dmgs[0]}"
+
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
           xcrun stapler staple "$DMG_PATH"
-          npm run verify:macos -- "$DMG_PATH"
+          npm run verify:macos -- "${{ matrix.arch }}"
 
       - name: Package the Windows Nightly
         if: matrix.platform == 'windows'

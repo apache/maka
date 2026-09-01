@@ -32,6 +32,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import {
@@ -226,8 +227,35 @@ export async function verifyMacosDmg(
   }
 }
 
+/**
+ * Named from the descriptor rather than handed in as a path, the way
+ * `verify:linux` already resolves its own payloads. The workflows used to spell
+ * this name out in YAML, which put a second authority on the artifact name
+ * beside the one this branch exists to establish — and, unlike the descriptor,
+ * that copy was checked by nothing.
+ */
+async function macosDmgPath(arch, environment = process.env) {
+  const manifest = JSON.parse(
+    await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
+  );
+  const version = resolveDesktopBuildVersion(manifest.version, environment);
+  const target = desktopReleaseTargets(version, { nightly: version !== manifest.version }).find(
+    (entry) => entry.name === `macos-${arch}`,
+  );
+  if (!target) {
+    throw new Error('Usage: npm run verify:macos -- <arm64|x64>');
+  }
+  return join(
+    repoRoot,
+    'apps',
+    'desktop',
+    'release',
+    target.payloads.find((name) => name.endsWith('.dmg')),
+  );
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyMacosDmg(process.argv[2]);
+  const result = await verifyMacosDmg(await macosDmgPath(process.argv[2] ?? process.arch));
   console.log(`Verified ${result.dmgPath}`);
   console.log(`SHA-256 ${result.sha256}`);
 }

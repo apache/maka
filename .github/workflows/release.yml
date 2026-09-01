@@ -181,9 +181,19 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: >-
-            apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-${{ matrix.arch }}.dmg
         run: |
+          # Discovered, not spelled out: this runner builds one architecture, so
+          # exactly one DMG exists, and signing does not need to know its name.
+          # The name itself is the descriptor's to decide and `verify:macos`
+          # below resolves it from there.
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG to sign, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          DMG_PATH="${dmgs[0]}"
+
           codesign --verify --verbose=4 "$DMG_PATH"
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY" \
@@ -202,9 +212,7 @@ jobs:
 
       - name: Verify the final DMG
         if: matrix.platform == 'macos'
-        run: >-
-          npm run verify:macos --
-          "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-${{ matrix.arch }}.dmg"
+        run: npm run verify:macos -- "${{ matrix.arch }}"
 
       # The updater is one code path across both macOS architectures, so the
       # end-to-end update proof runs once, on the architecture most installs
