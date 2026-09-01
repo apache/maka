@@ -152,7 +152,7 @@ describe('tool-result archive resources', () => {
       kind: 'agent_swarm',
       status: 'completed',
       ...Object.fromEntries(
-        Array.from({ length: 24 }, (_, index) => ['key_' + index + '_' + '\\'.repeat(120), 'v']),
+        Array.from({ length: 24 }, (_, index) => ['key_' + index + '_' + '\\'.repeat(160), 'v']),
       ),
       items: [{ itemId: 'core', summary: 'complete' }],
     });
