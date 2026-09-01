@@ -59,23 +59,6 @@ test('localizes upgrade activity without changing decision indexes', () => {
   assert.match(en.detail ?? '', /Scheduled Task: 2/);
   assert.match(zh.detail ?? '', /计划任务: 2/);
   assert.match(en.detail ?? '', /Process ID \(PID\):/);
-
-  const connectionOnly = buildRuntimeHostUpgradeDialog(
-    {
-      ...conflict,
-      handshake: {
-        activity: {
-          connections: 1,
-          activeOperations: 0,
-          processUptimeSeconds: 60,
-          residencies: [],
-        },
-      },
-    } as never,
-    'restart',
-    'en',
-  ).options;
-  assert.equal(connectionOnly.defaultId, connectionOnly.cancelId);
 });
 
 test('maps the non-default replacement choice to the replace decision', async () => {

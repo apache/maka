@@ -176,6 +176,7 @@ test('managed Host recovery preserves the workspace and confirms active-work int
     'Exit',
     'Copy Diagnostics',
   ]);
+  assert.equal(shown?.defaultId, shown?.cancelId);
   assert.match(shown?.detail ?? '', /workspace, Host identity, credentials, and settings/);
   assert.match(shown?.detail ?? '', /automatic update compatibility cannot be confirmed/);
   assert.match(shown?.detail ?? '', /interrupt that work/);

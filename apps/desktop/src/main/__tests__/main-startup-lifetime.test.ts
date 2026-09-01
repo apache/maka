@@ -48,6 +48,20 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   assert.notEqual(retentionPolicy, -1);
   assert.notEqual(singleInstanceDecision, -1);
   assert.ok(retentionPolicy < singleInstanceDecision);
+
+  const lifecycleStart = bootSource.indexOf('function wireLifecycle');
+  const windowAllClosedStart = bootSource.indexOf(
+    'app.on("window-all-closed"',
+    lifecycleStart,
+  );
+  const windowAllClosed = bootSource.slice(
+    windowAllClosedStart,
+    bootSource.indexOf('app.on("before-quit"', windowAllClosedStart),
+  );
+  assert.match(
+    windowAllClosed,
+    /process\.platform !== "darwin" && !isBrowserMessageBoxPresentationActive\(\)/u,
+  );
 });
 
 test('resolves persisted locale before first post-settings recovery prompt', () => {
@@ -87,8 +101,18 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     readyHandlerStart,
     mainWindowSource.indexOf('setTitlebarControlsVisible(sender', readyHandlerStart),
   );
+  const reloadStart = mainWindowSource.indexOf('    async reloadMainRenderer() {');
+  const reloadHandler = mainWindowSource.slice(
+    reloadStart,
+    mainWindowSource.indexOf('    send: safeSendToRenderer', reloadStart),
+  );
 
   assert.match(ipcHandler, /mainWindowController\.notifyRendererReady\(event\.sender\)/u);
+  assert.match(
+    reloadHandler,
+    /clearShowFallbackTimer\(\);\s*revealGate\.reset\(\);\s*target\.hide\(\);/u,
+  );
+  assert.match(reloadHandler, /reloadMainRendererProcess\(/u);
   assert.match(
     readyHandler,
     /sender !== mainWindow\.webContents\) return;/u,
@@ -97,4 +121,5 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
     readyHandler,
     /if \(recovery\?\.contents === sender\) recovery\.listener\?\.\(\);/u,
   );
+  assert.match(readyHandler, /revealGate\.markReady\(mainWindow\)/u);
 });

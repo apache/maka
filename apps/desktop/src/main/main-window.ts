@@ -548,6 +548,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         signal.aborted
       ) return false;
       clearShowFallbackTimer();
+      revealGate.reset();
+      target.hide();
       const contents = target.webContents;
       const readiness: {
         readonly contents: Electron.WebContents;
