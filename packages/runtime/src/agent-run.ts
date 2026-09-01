@@ -482,14 +482,15 @@ export class AgentRun {
         const requestPreservation = await deriveAttemptRequestPreservation({
           current: attempt,
           store: runStore,
-        }).catch(() => ({
-          status: 'unavailable' as const,
-          previousSegmentCount: 0 as const,
-          preservedSegmentCount: 0 as const,
-        }));
+        }).catch(() => undefined);
         projected = {
           ...projected,
-          snapshot: { ...projected.snapshot, requestPreservation },
+          snapshot: {
+            ...projected.snapshot,
+            ...(requestPreservation
+              ? { requestPreservation }
+              : { requestPreservationPending: true }),
+          },
         };
       }
       await runStore.appendEvent(

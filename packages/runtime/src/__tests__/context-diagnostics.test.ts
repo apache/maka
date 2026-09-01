@@ -122,6 +122,139 @@ test('serves the sealed snapshot without reading a single run', async () => {
   }
 });
 
+test('repairs a pending preservation result after its admitted predecessor becomes durable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    const previousRun = {
+      ...runHeader('run-1', 1),
+      status: 'running' as const,
+      providerStateIdentity: `sha256:${'1'.repeat(64)}` as const,
+      llmConnectionSlug: 'connection',
+    };
+    const currentRun = {
+      ...runHeader('run-2', 2),
+      providerStateIdentity: `sha256:${'1'.repeat(64)}` as const,
+      llmConnectionSlug: 'connection',
+    };
+    await store.createRun(previousRun);
+    await store.createRun(currentRun);
+    await admitTurn(store, 'turn-run-1', 'run-1', null, 1);
+    await admitTurn(store, 'turn-run-2', 'run-2', 'turn-run-1', 2);
+
+    const observation = requestObservation([
+      {
+        kind: 'message',
+        index: 0,
+        cacheable: true,
+        comparison: 'exact',
+        digest: `sha256:${'a'.repeat(64)}`,
+        bytes: 10,
+      },
+    ]);
+    const currentEvent = meteringEvent('run-2', 'current', 20, 'model', 40, 200, {
+      logicalCallId: 'current-call',
+      connectionSlug: 'connection',
+      requestObservation: observation,
+    });
+    const currentProjection = latestContext('current', 20);
+    Object.assign(currentProjection.snapshot, { requestPreservationPending: true });
+    await store.appendEvent('session-1', 'run-2', currentEvent, {
+      durable: true,
+      latestContext: currentProjection,
+    });
+
+    const before = await readLatestContextDiagnostics(store, 'session-1');
+    assert.equal(before.status, 'available');
+    if (before.status !== 'available') return;
+    assert.deepEqual(before.requestPreservation, {
+      status: 'unavailable',
+      previousSegmentCount: 0,
+      preservedSegmentCount: 0,
+    });
+
+    const previousEvent = meteringEvent('run-1', 'previous', 10, 'model', 40, 200, {
+      logicalCallId: 'previous-call',
+      connectionSlug: 'connection',
+      requestObservation: observation,
+    });
+    await store.appendEvent('session-1', 'run-1', previousEvent, {
+      durable: true,
+      latestContext: latestContext('previous', 10),
+    });
+
+    const repaired = await readLatestContextDiagnostics(store, 'session-1');
+    assert.equal(repaired.status, 'available');
+    if (repaired.status !== 'available') return;
+    assert.equal(repaired.modelId, 'model');
+    assert.deepEqual(repaired.requestPreservation, {
+      status: 'preserved',
+      previousSegmentCount: 1,
+      preservedSegmentCount: 1,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('settles unavailable when a terminal predecessor has no canonical attempt', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
+  try {
+    const store = createSqliteAgentRunStore(root);
+    const providerStateIdentity = `sha256:${'1'.repeat(64)}` as const;
+    await store.createRun({
+      ...runHeader('run-1', 1),
+      providerStateIdentity,
+      llmConnectionSlug: 'connection',
+    });
+    await store.createRun({
+      ...runHeader('run-2', 2),
+      providerStateIdentity,
+      llmConnectionSlug: 'connection',
+    });
+    await admitTurn(store, 'turn-run-1', 'run-1', null, 1);
+    await admitTurn(store, 'turn-run-2', 'run-2', 'turn-run-1', 2);
+
+    const currentProjection = latestContext('current', 20);
+    Object.assign(currentProjection.snapshot, { requestPreservationPending: true });
+    await store.appendEvent(
+      'session-1',
+      'run-2',
+      meteringEvent('run-2', 'current', 20, 'model', 40, 200, {
+        connectionSlug: 'connection',
+        requestObservation: requestObservation([
+          {
+            kind: 'message',
+            index: 0,
+            cacheable: true,
+            comparison: 'exact',
+            digest: `sha256:${'a'.repeat(64)}`,
+            bytes: 10,
+          },
+        ]),
+      }),
+      { durable: true, latestContext: currentProjection },
+    );
+
+    let scanned = 0;
+    const counted = countingStore(store, () => {
+      scanned += 1;
+    });
+    const first = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(first.status, 'available');
+    if (first.status !== 'available') return;
+    assert.equal(first.requestPreservation?.status, 'unavailable');
+    assert.ok(scanned > 0, 'the pending projection is rebuilt once');
+
+    scanned = 0;
+    const second = await readLatestContextDiagnostics(counted, 'session-1');
+    assert.equal(second.status, 'available');
+    assert.equal(scanned, 0, 'terminal unavailability becomes a settled warm projection');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('does not trust a pre-observation projection over its canonical attempt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
@@ -1056,7 +1189,28 @@ function countingStore(
     readEventLedgerRevision: (sessionId) => reader.readEventLedgerRevision(sessionId),
     repairEventProjection: (sessionId, type, event, options) =>
       reader.repairEventProjection(sessionId, type, event, options),
+    readRootTurnAdmission: (sessionId, turnId) => reader.readRootTurnAdmission(sessionId, turnId),
   };
+}
+
+async function admitTurn(
+  store: ReturnType<typeof createSqliteAgentRunStore>,
+  turnId: string,
+  runId: string,
+  previousRootTurnId: string | null,
+  admittedAt: number,
+): Promise<void> {
+  await store.admitRootTurn({
+    sessionId: 'session-1',
+    turnId,
+    proposedRunId: runId,
+    proposedUserMessageId: `message-${turnId}`,
+    execution: { kind: 'external_message' },
+    previousRootTurnId,
+    normalizedInput: { text: turnId },
+    sourceMessages: [],
+    admittedAt,
+  });
 }
 
 /**

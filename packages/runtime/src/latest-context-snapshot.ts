@@ -70,6 +70,8 @@ export interface LatestContextSnapshot {
   compaction?: ContextDiagnosticsCompaction;
   /** Runtime-owned conclusion; consumers must not select or compare observations. */
   requestPreservation?: RequestPreservation;
+  /** Internal retry marker; never projected through Runtime Host. */
+  requestPreservationPending?: true;
 }
 
 /**
@@ -139,6 +141,7 @@ export function readLatestContextSnapshot(
       'composition',
       'compaction',
       'requestPreservation',
+      'requestPreservationPending',
     ],
   );
   if (!record) return undefined;
@@ -154,7 +157,11 @@ export function readLatestContextSnapshot(
       (!isCount(record.contextWindow) || record.contextWindow === 0)) ||
     (record.composition !== undefined && !isContextDiagnosticsComposition(record.composition)) ||
     (record.compaction !== undefined && !isContextDiagnosticsCompaction(record.compaction)) ||
-    (record.requestPreservation !== undefined && !isRequestPreservation(record.requestPreservation))
+    (record.requestPreservation !== undefined &&
+      !isRequestPreservation(record.requestPreservation)) ||
+    (record.requestPreservationPending !== undefined &&
+      record.requestPreservationPending !== true) ||
+    (record.requestPreservation !== undefined && record.requestPreservationPending === true)
   ) {
     return undefined;
   }

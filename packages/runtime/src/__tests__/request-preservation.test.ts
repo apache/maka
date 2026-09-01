@@ -237,6 +237,45 @@ test('uses the unique continuation tip for the previous root turn', async () => 
   );
 });
 
+test('leaves an admitted predecessor unresolved until its canonical attempt is durable', async () => {
+  const current = attempt({ attemptId: 'current', runId: 'run-2', turnId: 'turn-2' });
+
+  assert.equal(
+    await deriveAttemptRequestPreservation({
+      current,
+      store: preservationStore(
+        [
+          run('run-1', 'turn-1', PROVIDER_STATE, { status: 'running' }),
+          run('run-2', 'turn-2', PROVIDER_STATE),
+        ],
+        [],
+        { runId: 'run-2', previousRootTurnId: 'turn-1' },
+      ),
+    }),
+    undefined,
+  );
+});
+
+test('leaves durable lineage unresolved while an expected run header is not readable', async () => {
+  const current = attempt({ attemptId: 'current', runId: 'run-2', turnId: 'turn-2' });
+  const admission = { runId: 'run-2', previousRootTurnId: 'turn-1' };
+
+  assert.equal(
+    await deriveAttemptRequestPreservation({
+      current,
+      store: preservationStore([run('run-2', 'turn-2', PROVIDER_STATE)], [], admission),
+    }),
+    undefined,
+  );
+  assert.equal(
+    await deriveAttemptRequestPreservation({
+      current,
+      store: preservationStore([run('run-1', 'turn-1', PROVIDER_STATE)], [], admission),
+    }),
+    undefined,
+  );
+});
+
 test('compares later local turns without inheriting a copied session baseline', async () => {
   const previous = attempt({ attemptId: 'local-1', runId: 'run-1', turnId: 'turn-1' });
   const current = attempt({ attemptId: 'local-2', runId: 'run-2', turnId: 'turn-2' });
@@ -287,7 +326,7 @@ async function statusOf(
       current,
       store: preservationStore(runs, attempts, admission),
     })
-  ).status;
+  )?.status;
 }
 
 function observation(segments: PreparedRequestObservationSegment[]): PreparedRequestObservation {

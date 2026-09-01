@@ -67,18 +67,28 @@ interface AttemptPreservationInput {
   store: PreservationStore;
 }
 
+const PREDECESSOR_PENDING = Symbol('predecessor_pending');
+type Predecessor = { attempt: ModelCallAttempt; run: AgentRunHeader };
+type PredecessorResolution = Predecessor | null | undefined | typeof PREDECESSOR_PENDING;
+interface AttemptCandidates {
+  attempts: ModelCallAttempt[];
+  sawInvalidAttemptEvent: boolean;
+}
+
 export async function deriveAttemptRequestPreservation(
   input: AttemptPreservationInput,
-): Promise<RequestPreservation> {
+): Promise<RequestPreservation | undefined> {
   const { current, store } = input;
   if (current.callKind !== 'main' || !current.requestObservation) {
     return unavailable();
   }
   const runs = await store.listSessionRuns(current.sessionId);
   const currentRun = runs.find((run) => run.runId === current.runId);
-  if (!currentRun || !isSessionInlineRun(currentRun)) return unavailable();
+  if (!currentRun) return undefined;
+  if (!isSessionInlineRun(currentRun)) return unavailable();
 
   const predecessor = await predecessorAttempt(current, currentRun, runs, store);
+  if (predecessor === PREDECESSOR_PENDING) return undefined;
   if (predecessor === null) {
     return { status: 'no_predecessor', previousSegmentCount: 0, preservedSegmentCount: 0 };
   }
@@ -162,9 +172,9 @@ async function predecessorAttempt(
   currentRun: AgentRunHeader,
   runs: readonly AgentRunHeader[],
   store: PreservationStore,
-): Promise<{ attempt: ModelCallAttempt; run: AgentRunHeader } | null | undefined> {
+): Promise<PredecessorResolution> {
   if (current.attempt > 0) {
-    return uniqueAttempt(
+    return expectedAttempt(
       currentRun,
       await attemptsFor(store, currentRun),
       (candidate) =>
@@ -173,16 +183,19 @@ async function predecessorAttempt(
     );
   }
   if (current.step > 0) {
-    return latestAttempt(
+    return expectedLatestAttempt(
       currentRun,
-      (await attemptsFor(store, currentRun)).filter(
+      filterAttempts(
+        await attemptsFor(store, currentRun),
         (candidate) => candidate.turnId === current.turnId && candidate.step === current.step - 1,
       ),
     );
   }
   if (currentRun.parentRunId) {
     const parent = runs.find((run) => run.runId === currentRun.parentRunId);
-    return parent ? latestAttempt(parent, await attemptsFor(store, parent)) : undefined;
+    return parent
+      ? expectedLatestAttempt(parent, await attemptsFor(store, parent))
+      : PREDECESSOR_PENDING;
   }
   if (
     currentRun.parentSessionId ||
@@ -212,8 +225,9 @@ async function predecessorAttempt(
   const previousRuns = runs.filter(
     (run) => run.turnId === admission.previousRootTurnId && isSessionInlineRun(run),
   );
+  if (previousRuns.length === 0) return PREDECESSOR_PENDING;
   const previous = uniqueDurableRunTip(previousRuns);
-  return previous ? latestAttempt(previous, await attemptsFor(store, previous)) : undefined;
+  return previous ? expectedLatestAttempt(previous, await attemptsFor(store, previous)) : undefined;
 }
 
 function uniqueDurableRunTip(runs: readonly AgentRunHeader[]): AgentRunHeader | undefined {
@@ -241,20 +255,31 @@ function uniqueDurableRunTip(runs: readonly AgentRunHeader[]): AgentRunHeader | 
 async function attemptsFor(
   store: PreservationStore,
   run: AgentRunHeader,
-): Promise<ModelCallAttempt[]> {
+): Promise<AttemptCandidates> {
   const attempts: ModelCallAttempt[] = [];
+  let sawInvalidAttemptEvent = false;
   for (const event of await store.readEvents(run.sessionId, run.runId)) {
     if (event.type !== 'model_call_attempt_recorded') continue;
     try {
       const attempt = decodeModelCallAttempt(event.data);
       if (attempt.callKind === 'main' && isCanonicalAttemptForRun(event, attempt, run)) {
         attempts.push(attempt);
+      } else {
+        sawInvalidAttemptEvent = true;
       }
     } catch {
       // An unreadable attempt cannot become a guessed baseline.
+      sawInvalidAttemptEvent = true;
     }
   }
-  return attempts;
+  return { attempts, sawInvalidAttemptEvent };
+}
+
+function filterAttempts(
+  candidates: AttemptCandidates,
+  predicate: (attempt: ModelCallAttempt) => boolean,
+): AttemptCandidates {
+  return { ...candidates, attempts: candidates.attempts.filter(predicate) };
 }
 
 export function isCanonicalAttemptForRun(
@@ -282,6 +307,36 @@ function latestAttempt(
   const onStep = attempts.filter((attempt) => attempt.step === step);
   const physical = Math.max(...onStep.map((attempt) => attempt.attempt));
   return uniqueAttempt(run, onStep, (attempt) => attempt.attempt === physical);
+}
+
+function expectedLatestAttempt(
+  run: AgentRunHeader,
+  candidates: AttemptCandidates,
+): Predecessor | undefined | typeof PREDECESSOR_PENDING {
+  if (candidates.attempts.length === 0) {
+    return candidates.sawInvalidAttemptEvent || isTerminalRun(run)
+      ? undefined
+      : PREDECESSOR_PENDING;
+  }
+  return latestAttempt(run, candidates.attempts);
+}
+
+function expectedAttempt(
+  run: AgentRunHeader,
+  candidates: AttemptCandidates,
+  predicate: (attempt: ModelCallAttempt) => boolean,
+): Predecessor | undefined | typeof PREDECESSOR_PENDING {
+  const matches = candidates.attempts.filter(predicate);
+  if (matches.length === 0) {
+    return candidates.sawInvalidAttemptEvent || isTerminalRun(run)
+      ? undefined
+      : PREDECESSOR_PENDING;
+  }
+  return matches.length === 1 ? { attempt: matches[0]!, run } : undefined;
+}
+
+function isTerminalRun(run: AgentRunHeader): boolean {
+  return run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
 }
 
 function uniqueAttempt(

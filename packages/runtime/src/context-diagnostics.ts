@@ -173,7 +173,7 @@ export async function readLatestContextDiagnostics(
         .catch(() => undefined);
       if (projected === null) return { status: 'unavailable', reason: 'no_completed_request' };
       const snapshot = readLatestContextSnapshot(projected ?? undefined);
-      if (snapshot) return availableFrom(snapshot);
+      if (snapshot && !snapshot.requestPreservationPending) return availableFrom(snapshot);
       if (projected) replaceProjectionId = projected.id;
     }
     const ledgerRevision =
@@ -282,7 +282,11 @@ async function rebuildContextFromLedger(
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
     ...(composition ? { composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
-    ...(requestPreservation ? { requestPreservation } : {}),
+    ...(requestPreservation
+      ? { requestPreservation }
+      : anchor?.attempt
+        ? { requestPreservationPending: true as const }
+        : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
@@ -368,6 +372,15 @@ function legacyProviderAnchor(event: AgentRunEvent): MeteringAnchor | undefined 
 type LegacyProviderAnchor = MeteringAnchor;
 
 function availableFrom(snapshot: LatestContextSnapshot): ContextDiagnostics {
+  const requestPreservation =
+    snapshot.requestPreservation ??
+    (snapshot.requestPreservationPending
+      ? {
+          status: 'unavailable' as const,
+          previousSegmentCount: 0 as const,
+          preservedSegmentCount: 0 as const,
+        }
+      : undefined);
   return {
     status: 'available',
     providerId: snapshot.providerId,
@@ -380,7 +393,7 @@ function availableFrom(snapshot: LatestContextSnapshot): ContextDiagnostics {
     ...(snapshot.contextWindow !== undefined ? { contextWindow: snapshot.contextWindow } : {}),
     ...(snapshot.composition ? { composition: snapshot.composition } : {}),
     ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}),
-    ...(snapshot.requestPreservation ? { requestPreservation: snapshot.requestPreservation } : {}),
+    ...(requestPreservation ? { requestPreservation } : {}),
   };
 }
 
