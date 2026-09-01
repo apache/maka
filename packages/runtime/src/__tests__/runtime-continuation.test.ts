@@ -131,7 +131,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   });
 });
 
-test('RuntimeContinuationPlanner restores a durable denial when its RuntimeEvent ack was lost', async () => {
+test('RuntimeContinuationPlanner does not carry the durable negotiation projection', async () => {
   const sourceEvents = [
     event({
       id: 'source-user',
@@ -182,12 +182,7 @@ test('RuntimeContinuationPlanner restores a durable denial when its RuntimeEvent
   });
 
   assert.equal(plan.disposition, 'continue');
-  assert.deepEqual(plan.continuation?.sandboxBoundaryNegotiationState, {
-    denied: true,
-    invalidRounds: 0,
-    unresolvedRounds: 0,
-    finalizationRequested: false,
-  });
+  assert.equal('sandboxBoundaryNegotiationState' in (plan.continuation ?? {}), false);
 });
 
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {

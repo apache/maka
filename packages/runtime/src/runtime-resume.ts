@@ -40,10 +40,7 @@ import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-eve
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
 import {
-  createSandboxBoundaryFinalizationState,
-  projectSandboxBoundaryNegotiation,
   type SandboxBoundaryRequest,
-  type SandboxBoundaryNegotiationState,
 } from '@maka/core/sandbox-boundary';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -305,8 +302,6 @@ export interface SafeBoundaryContinuationFacts {
   priorRuntimeContext?: readonly RuntimeEvent[];
   /** Versioned, segment-scoped provider replay built from immutable prefixes. */
   continuationReplayPlan?: ContinuationReplayPlanV1;
-  /** Projection from the complete immutable lineage, including hidden calls. */
-  sandboxBoundaryNegotiationState?: SandboxBoundaryNegotiationState;
   expectedRuntimeEventHighWater?: number;
   workspaceCheckpoint?: {
     ref?: string;
@@ -332,8 +327,6 @@ export interface RuntimeContinuation {
   runtimeContext: RuntimeEvent[];
   /** Composite immutable ledger boundary used to build runtimeContext. */
   boundary?: RuntimeBoundaryCursorV1;
-  /** Authenticated negotiation projection, including hidden Code Mode calls. */
-  sandboxBoundaryNegotiationState?: SandboxBoundaryNegotiationState;
   /** Identity of the exact provider-facing replay projection. */
   providerReplayDigest?: RuntimeBoundaryDigest;
   providerProjectionVersion?: typeof PROVIDER_REPLAY_PROJECTION_VERSION;
@@ -403,17 +396,6 @@ export interface RuntimeContinuationPlannerDeps {
   newId(): string;
 }
 
-function hasNonEmptySandboxBoundaryNegotiationState(
-  state: SandboxBoundaryNegotiationState,
-): boolean {
-  return (
-    state.denied ||
-    state.invalidRounds > 0 ||
-    state.unresolvedRounds > 0 ||
-    state.finalizationRequested
-  );
-}
-
 export class RuntimeContinuationPlanner {
   constructor(private readonly deps: RuntimeContinuationPlannerDeps) {}
 
@@ -470,26 +452,14 @@ export class RuntimeContinuationPlanner {
         `continuation replay segment ${replay.segmentIndex} is not replayable: ${replay.reason}`,
       );
     }
-    let durableSandboxBoundaryRequests: readonly SandboxBoundaryRequest[] = [];
     try {
-      durableSandboxBoundaryRequests =
-        (await this.deps.readSandboxBoundaryRequests?.(input.sessionId)) ?? [];
+      await this.deps.readSandboxBoundaryRequests?.(input.sessionId);
     } catch {
       return parkedPlan(
         'continuation_authority_unavailable',
         'sandbox boundary interaction log is unavailable',
       );
     }
-    const negotiationProjection = projectSandboxBoundaryNegotiation(
-      prefixes.flatMap((prefix) => prefix.events),
-      durableSandboxBoundaryRequests,
-    );
-    const sandboxBoundaryNegotiationState =
-      negotiationProjection.kind === 'valid'
-        ? negotiationProjection.state
-        : // Do not guess from a malformed or legacy lineage. The resumed
-          // segment will be tool-free and can report the blocked state.
-          createSandboxBoundaryFinalizationState();
     let durableClaimState: ContinuationClaimStateV1 | undefined;
     try {
       durableClaimState = await this.deps.readContinuationClaimStateByBoundary?.(
@@ -551,9 +521,6 @@ export class RuntimeContinuationPlanner {
       })(),
       continuationClaimId: this.deps.newId(),
       continuationReplayPlan: replay.plan,
-      ...(hasNonEmptySandboxBoundaryNegotiationState(sandboxBoundaryNegotiationState)
-        ? { sandboxBoundaryNegotiationState }
-        : {}),
       ...(input.expectedRuntimeEventHighWater !== undefined
         ? { expectedRuntimeEventHighWater: input.expectedRuntimeEventHighWater }
         : {}),
@@ -1130,12 +1097,6 @@ export function buildSafeBoundaryContinuationPlan(
     ...(facts.priorRuntimeContext ?? []),
     ...sourceReplayRuntimeEvents,
   ];
-  const sandboxBoundaryNegotiationState = facts.sandboxBoundaryNegotiationState ?? {
-    denied: false,
-    invalidRounds: 0,
-    unresolvedRounds: 0,
-    finalizationRequested: false,
-  };
   const availableToolNames = new Set(facts.availableToolNames);
   const unavailableToolNames = [
     ...new Set(
@@ -1238,9 +1199,6 @@ export function buildSafeBoundaryContinuationPlan(
             providerReplayDigest: compositeReplay.providerReplayDigest,
             providerProjectionVersion: compositeReplay.providerProjectionVersion,
           }
-        : {}),
-      ...(hasNonEmptySandboxBoundaryNegotiationState(sandboxBoundaryNegotiationState)
-        ? { sandboxBoundaryNegotiationState }
         : {}),
       safetySnapshot: {
         workspaceIdentity: facts.currentWorkspaceIdentity,

@@ -55,6 +55,7 @@ import {
   createSandboxBoundaryFinalizationState,
   projectSandboxBoundaryNegotiation,
   type SandboxBoundaryRequest,
+  type SandboxBoundaryNegotiationState,
 } from '@maka/core/sandbox-boundary';
 import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -1317,9 +1318,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     messageOwner?: RuntimeMessageRunIdentity,
     onRunStarted?: () => void | Promise<void>,
     revalidateSafety?: () => Promise<void>,
-    authenticatedSandboxBoundaryNegotiationState?: NonNullable<
-      RuntimeContinuation['sandboxBoundaryNegotiationState']
-    >,
+    authenticatedSandboxBoundaryNegotiationState?: SandboxBoundaryNegotiationState,
   ): AsyncIterable<SessionEvent> {
     const sessionEvents = new DeliveryAckQueue<SessionEvent>();
     const { abortController, release: releaseExecutionAbort } =
@@ -2829,9 +2828,7 @@ async function revalidateContinuationBoundary(
   durableSandboxBoundaryRequests: readonly SandboxBoundaryRequest[] = [],
 ): Promise<{
   events: RuntimeEvent[];
-  sandboxBoundaryNegotiationState: NonNullable<
-    RuntimeContinuation['sandboxBoundaryNegotiationState']
-  >;
+  sandboxBoundaryNegotiationState: SandboxBoundaryNegotiationState;
 }> {
   if (
     !continuation.boundary ||
@@ -2888,18 +2885,6 @@ async function revalidateContinuationBoundary(
   );
   const sandboxBoundaryNegotiationState =
     negotiation.kind === 'valid' ? negotiation.state : createSandboxBoundaryFinalizationState();
-  if (
-    continuation.sandboxBoundaryNegotiationState !== undefined &&
-    !isDeepStrictEqual(
-      continuation.sandboxBoundaryNegotiationState,
-      sandboxBoundaryNegotiationState,
-    )
-  ) {
-    throw new RuntimeContinuationRevalidationError(
-      'source_replay_changed',
-      'Runtime continuation sandbox negotiation projection changed after planning',
-    );
-  }
   return { events: [...prefixes.at(-1)!.events], sandboxBoundaryNegotiationState };
 }
 
@@ -3025,9 +3010,7 @@ function consumeAdmittedRuntimeContinuation(input: {
   admissionRoute: ContinuationReplayAdmissionRoute;
   startAdmission: RuntimeContinuationStartAdmissionProof;
   toolBoundaryProtocol?: ToolBoundaryProtocol;
-  authenticatedSandboxBoundaryNegotiationState: NonNullable<
-    RuntimeContinuation['sandboxBoundaryNegotiationState']
-  >;
+  authenticatedSandboxBoundaryNegotiationState: SandboxBoundaryNegotiationState;
 }): RuntimeContinuationMetadata {
   const { continuation } = input;
   assertRuntimeContinuationEnvelope(continuation);
@@ -3091,15 +3074,6 @@ function consumeAdmittedRuntimeContinuation(input: {
     }) !== continuation.providerReplayDigest
   ) {
     throw new Error('Runtime continuation provider replay identity changed after admission');
-  }
-  if (
-    continuation.sandboxBoundaryNegotiationState !== undefined &&
-    !isDeepStrictEqual(
-      continuation.sandboxBoundaryNegotiationState,
-      input.authenticatedSandboxBoundaryNegotiationState,
-    )
-  ) {
-    throw new Error('Runtime continuation sandbox negotiation projection is not authenticated');
   }
   return {
     sourceInvocationId: continuation.sourceInvocationId,
