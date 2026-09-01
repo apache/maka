@@ -51,9 +51,13 @@ const TONE_VALUE_CLASS: Record<StatTileTone, string> = {
   destructive: 'maka-stat-tile-value-destructive',
 };
 
+// `info` has no entry on purpose: the tinted edge is the status `-muted` rung,
+// and the informational tint (`--color-accent-muted`) is a fill token — an
+// opaque near-white in light mode that reads as no edge at all on a white card.
+// The info tone is carried by its value colour, which is the stronger signal.
 const TONE_BORDER_CLASS: Record<StatTileTone, string> = {
   neutral: '',
-  info: 'maka-stat-tile-border-info',
+  info: '',
   success: 'maka-stat-tile-border-success',
   warning: 'maka-stat-tile-border-warning',
   destructive: 'maka-stat-tile-border-destructive',

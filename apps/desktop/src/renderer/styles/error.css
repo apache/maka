@@ -54,7 +54,7 @@
     place-items: center;
     /* Square icon plate — ratio-governed, see --radius-plate. */
     border-radius: var(--radius-plate);
-    background: oklch(from var(--destructive) l c h / 0.10);
+    background: var(--color-error-muted);
     color: var(--destructive-text);
   }
 
@@ -105,7 +105,7 @@
 
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
-    border-color: oklch(from var(--destructive) l c h / 0.35);
+    border-color: var(--color-error-muted);
   }
 
 .maka-error-copy-status {

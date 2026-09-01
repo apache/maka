@@ -65,7 +65,7 @@
 }
 
 .settingsRemoteAccessChannelRow[data-attention="true"] {
-  background: var(--warning-wash);
+  background: var(--color-warning-muted);
 }
 
 .settingsRemoteAccessItemActions {
@@ -242,12 +242,12 @@
 
 .settingsBotOnboardingSuccess {
   color: var(--success-text);
-  background: var(--success-wash);
+  background: var(--color-success-muted);
 }
 
 .settingsBotOnboardingEmpty {
   color: var(--destructive);
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
 }
 
 .settingsBotOnboardingStatus,

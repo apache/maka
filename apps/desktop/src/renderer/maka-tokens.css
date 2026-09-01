@@ -25,7 +25,7 @@
      @import "./maka-tokens.css";
 
    The 6-color philosophy:
-     - background / foreground / accent (logo blue) / info (blue) / success (green) / destructive (red)
+     - background / foreground / accent (logo blue) / success (green) / warning (orange) / destructive (red)
      - All other colors are derived: alpha overlays (foreground/N) or solid mixes (foreground-N).
      - Borders / dividers / hovers / muted text never use a "gray" — they're foreground at low alpha.
 
@@ -178,34 +178,28 @@
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
-  /* Cool info blue (h240, azure-family — see the blue-info alt themes at
-     :773 nord h200 / :817 azure h240). Was amber h70, which collided with
-     --warning's orange h55 (info + warning were indistinguishable). Blue is
-     also consistent with the accent (h250) and unambiguously reads as
-     informational, not cautionary. */
   /* Status family, specified rather than picked (visual system 2.0, T1).
-     One lightness for all four hues, each keeping its own chroma, so the
-     family reads as one system instead of four independent choices.
+     One lightness for all three hues, each keeping its own chroma, so the
+     family reads as one system instead of three independent choices.
 
-     Measured against white before this: info 2.82:1, warning 3.29:1, success
-     4.55:1, destructive 4.81:1 — a 1.7x spread with TWO of the four under the
-     4.5:1 AA floor. At L=0.50 they land 5.54-6.33:1 together. Residual spread
-     is hue, not drift: yellow carries more luminance than blue at equal
-     lightness, and equalising that would mean abandoning the shared L that
-     makes them a family.
+     Measured against white before this: warning 3.29:1, success 4.55:1,
+     destructive 4.81:1 — with warning under the 4.5:1 AA floor. At L=0.50
+     they land 5.54-6.33:1 together. Residual spread is hue, not drift: yellow
+     carries more luminance than red at equal lightness, and equalising that
+     would mean abandoning the shared L that makes them a family.
 
-     All FOUR are declared here, in one block, in both modes. Warning used to
+     These are Astryx's three statuses. There is no informational colour:
+     "info" is a semantic slot, not a hue, and it paints with the accent —
+     see the Astryx bridge at the bottom of this file.
+
+     All THREE are declared here, in one block, in both modes. Warning used to
      sit thirty lines further down beside the -text variants, which is how it
      came to be the only hue without a dark override: a regeneration that walks
-     "the status block" walks three of them and silently leaves the fourth
+     "the status block" walks two of them and silently leaves the third
      behind. Grouping is the fix, not a tidy-up. */
-  --info: oklch(0.50 0.13 240);         /* blue — informational / "ask" mode */
   --success: oklch(0.50 0.17 145);      /* green — connected, ok */
   --destructive: oklch(0.50 0.24 28);   /* red — errors, denied */
-  /* 警告 must be visually distinct from 提示. Warning is the orange caution
-     hue (h55); info is now cool blue (h240), so the two tiers read as clearly
-     different families — no longer the near-identical ambers they once were. */
-  --warning: oklch(0.50 0.18 55);
+  --warning: oklch(0.50 0.18 55);       /* orange — caution */
 
   /* Legacy brand affordance for a few emphasized surfaces.
      PR-THEME-APPLY-AND-DONE-POLISH-0 (WAWQAQ msg `dec85e5b`): was a static
@@ -235,40 +229,7 @@
   /* === text variants (mixed toward foreground for better contrast) === */
   --success-text: color-mix(in oklab, var(--success) 50%, var(--foreground));
   --destructive-text: color-mix(in oklab, var(--destructive) 50%, var(--foreground));
-  --info-text: color-mix(in oklab, var(--info) 50%, var(--foreground));
   --warning-text: color-mix(in oklab, var(--warning) 50%, var(--foreground));
-
-  /* === tinted status surfaces (visual system 2.0, T4) =================
-     The wash family behind status rows and banners. DESIGN.md §8 forbids a
-     hand-rolled `oklch()` status wash at a call site — before this there was
-     nothing to consume instead, only the `-text` variants above, so fourteen
-     call sites each picked their own alpha: backgrounds ranged 0.06–0.12 and
-     borders 0.22–0.38, none of them wrong on its own and no two agreeing.
-
-     EVERY member derives from the status hue with `oklch(from var(--x) ...)`
-     and no literal ever appears here. That is the whole point of a family:
-     when §8's status colours are regenerated — including the scheduled
-     separate dark-mode round — the washes follow automatically instead of
-     being fourteen more places to remember.
-
-     Two tiers, decided in #my-ai:944f2c9d:
-     - regular 0.08 fill / 0.24 border. 0.08 was the existing mode; the border
-       lands at ~3x the fill, matching the system's established "the edge reads
-       about three times the face" rhythm.
-     - strong 0.12 fill / 0.40 border, at 1.5x / 1.67x the regular tier, in the
-       same ~1.6x family as the border ladder.
-
-     STRONG IS RESERVED, and the reservation is the point: it is only for
-     warnings about data destruction or something the user cannot undo. It is
-     not "the loud one to reach for when a notice should stand out" — that
-     habit is exactly how the fourteen alphas above accumulated. */
-  --success-wash:            oklch(from var(--success)     l c h / 0.08);
-  --success-wash-border:     oklch(from var(--success)     l c h / 0.24);
-  --warning-wash:            oklch(from var(--warning)     l c h / 0.08);
-  --warning-wash-border:     oklch(from var(--warning)     l c h / 0.24);
-  --destructive-wash:        oklch(from var(--destructive) l c h / 0.08);
-  --info-wash:               oklch(from var(--info)        l c h / 0.08);
-  --info-wash-border:        oklch(from var(--info)        l c h / 0.24);
 
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
@@ -979,12 +940,11 @@
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
-  /* All four together, same shape as the light block. Warning is the hue that
+  /* All three together, same shape as the light block. Warning is the hue that
      proves why: it was the ONE status without a dark override, so lowering the
      light value to L=0.50 dragged dark down with it and put dark warning at
      2.83:1, well under AA. Its measured 5.44:1 is restored, and the structure
      that let it be missed is gone. */
-  --info: oklch(0.74 0.13 240);         /* blue — see light-mode note */
   --success: oklch(0.60 0.17 145);
   --destructive: oklch(0.70 0.19 22);
   --warning: oklch(0.66 0.18 55);
@@ -1059,7 +1019,6 @@
   --background: oklch(0.95 0.005 250);
   --foreground: oklch(0.30 0.02 250);
   --accent: oklch(0.62 0.13 237);              /* One Dark blue (#61AFEF family) */
-  --info: oklch(0.72 0.14 60);                 /* warm amber */
   --success: oklch(0.62 0.16 145);
   --destructive: oklch(0.62 0.20 22);
   --user-message-bubble: oklch(0.92 0.012 250);
@@ -1069,7 +1028,6 @@
   --background: oklch(0.21 0.010 250);
   --foreground: oklch(0.90 0.010 250);
   --accent: oklch(0.70 0.13 237);
-  --info: oklch(0.74 0.15 70);
   --success: oklch(0.65 0.16 145);
   --destructive: oklch(0.70 0.18 22);
   --user-message-bubble: oklch(0.30 0.012 250);
@@ -1081,7 +1039,6 @@
   --background: oklch(0.96 0.008 60);
   --foreground: oklch(0.28 0.02 300);
   --accent: oklch(0.65 0.18 330);              /* mauve / pink */
-  --info: oklch(0.72 0.13 50);
   --success: oklch(0.62 0.14 145);
   --destructive: oklch(0.62 0.20 25);
   --user-message-bubble: oklch(0.94 0.012 60);
@@ -1091,7 +1048,6 @@
   --background: oklch(0.22 0.020 290);
   --foreground: oklch(0.92 0.012 320);
   --accent: oklch(0.78 0.16 330);
-  --info: oklch(0.78 0.13 60);
   --success: oklch(0.72 0.14 145);
   --destructive: oklch(0.72 0.18 22);
   --user-message-bubble: oklch(0.30 0.020 290);
@@ -1103,7 +1059,6 @@
   --background: oklch(0.97 0.005 240);
   --foreground: oklch(0.25 0.015 240);
   --accent: oklch(0.55 0.16 215);              /* cool sky blue */
-  --info: oklch(0.70 0.14 60);
   --success: oklch(0.62 0.14 145);
   --destructive: oklch(0.62 0.20 22);
   --user-message-bubble: oklch(0.93 0.010 240);
@@ -1113,7 +1068,6 @@
   --background: oklch(0.18 0.020 250);
   --foreground: oklch(0.90 0.010 240);
   --accent: oklch(0.70 0.18 215);              /* brighter sky blue */
-  --info: oklch(0.74 0.14 70);
   --success: oklch(0.68 0.16 145);
   --destructive: oklch(0.70 0.19 22);
   --user-message-bubble: oklch(0.28 0.018 250);
@@ -1125,7 +1079,6 @@
   --background: oklch(0.97 0.005 220);
   --foreground: oklch(0.28 0.015 220);
   --accent: oklch(0.62 0.12 215);              /* glacier blue */
-  --info: oklch(0.72 0.10 200);
   --success: oklch(0.68 0.12 145);
   --destructive: oklch(0.62 0.16 22);
   --user-message-bubble: oklch(0.93 0.008 220);
@@ -1135,7 +1088,6 @@
   --background: oklch(0.24 0.012 220);
   --foreground: oklch(0.92 0.008 220);
   --accent: oklch(0.72 0.14 215);
-  --info: oklch(0.76 0.10 200);
   --success: oklch(0.72 0.13 145);
   --destructive: oklch(0.72 0.17 22);
   --user-message-bubble: oklch(0.32 0.014 220);
@@ -1147,7 +1099,6 @@
   --background: oklch(0.99 0.005 25);
   --foreground: oklch(0.22 0.015 25);
   --accent: oklch(0.68 0.18 25);                /* coral / warm pink */
-  --info: oklch(0.70 0.13 60);                  /* honey amber */
   --success: oklch(0.68 0.14 145);
   --destructive: oklch(0.60 0.20 18);
   --user-message-bubble: oklch(0.95 0.012 25);
@@ -1157,7 +1108,6 @@
   --background: oklch(0.22 0.018 25);
   --foreground: oklch(0.94 0.008 25);
   --accent: oklch(0.76 0.18 25);
-  --info: oklch(0.78 0.13 60);
   --success: oklch(0.72 0.13 145);
   --destructive: oklch(0.70 0.20 18);
   --user-message-bubble: oklch(0.30 0.020 25);
@@ -1169,7 +1119,6 @@
   --background: oklch(0.98 0.005 250);
   --foreground: oklch(0.20 0.015 250);
   --accent: oklch(0.55 0.12 195);               /* lake cyan */
-  --info: oklch(0.68 0.13 240);
   --success: oklch(0.66 0.15 150);
   --destructive: oklch(0.62 0.18 22);
   --user-message-bubble: oklch(0.94 0.010 250);
@@ -1179,7 +1128,6 @@
   --background: oklch(0.20 0.015 250);
   --foreground: oklch(0.93 0.010 250);
   --accent: oklch(0.72 0.13 195);
-  --info: oklch(0.74 0.13 240);
   --success: oklch(0.72 0.14 150);
   --destructive: oklch(0.72 0.18 22);
   --user-message-bubble: oklch(0.28 0.018 250);
@@ -1191,7 +1139,6 @@
   --background: oklch(0.985 0.006 130);
   --foreground: oklch(0.22 0.018 145);
   --accent: oklch(0.50 0.12 152);                /* deep moss green */
-  --info: oklch(0.68 0.13 75);                   /* warm honey */
   --success: oklch(0.62 0.14 145);
   --destructive: oklch(0.58 0.20 22);
   --user-message-bubble: oklch(0.94 0.012 130);
@@ -1201,7 +1148,6 @@
   --background: oklch(0.21 0.012 145);
   --foreground: oklch(0.93 0.010 130);
   --accent: oklch(0.68 0.14 152);
-  --info: oklch(0.76 0.13 75);
   --success: oklch(0.70 0.14 145);
   --destructive: oklch(0.70 0.20 22);
   --user-message-bubble: oklch(0.30 0.014 145);
@@ -1213,7 +1159,6 @@
   --background: oklch(0.97 0.008 290);
   --foreground: oklch(0.22 0.018 295);
   --accent: oklch(0.55 0.18 305);                /* deep violet */
-  --info: oklch(0.70 0.14 60);
   --success: oklch(0.64 0.14 145);
   --destructive: oklch(0.60 0.20 18);
   --user-message-bubble: oklch(0.93 0.013 290);
@@ -1223,7 +1168,6 @@
   --background: oklch(0.20 0.018 295);
   --foreground: oklch(0.92 0.010 290);
   --accent: oklch(0.72 0.18 305);
-  --info: oklch(0.78 0.13 60);
   --success: oklch(0.70 0.14 145);
   --destructive: oklch(0.70 0.20 18);
   --user-message-bubble: oklch(0.30 0.020 295);
@@ -1235,7 +1179,6 @@
   --background: oklch(0.98 0.008 75);
   --foreground: oklch(0.22 0.014 70);
   --accent: oklch(0.62 0.14 55);                 /* amber / ochre */
-  --info: oklch(0.70 0.13 90);
   --success: oklch(0.62 0.14 145);
   --destructive: oklch(0.60 0.20 22);
   --user-message-bubble: oklch(0.94 0.012 75);
@@ -1245,7 +1188,6 @@
   --background: oklch(0.22 0.014 70);
   --foreground: oklch(0.93 0.010 75);
   --accent: oklch(0.72 0.14 55);
-  --info: oklch(0.76 0.13 90);
   --success: oklch(0.70 0.14 145);
   --destructive: oklch(0.70 0.20 22);
   --user-message-bubble: oklch(0.30 0.014 70);
@@ -1257,7 +1199,6 @@
   --background: oklch(0.985 0 0);
   --foreground: oklch(0.18 0 0);
   --accent: oklch(0.30 0 0);                     /* near-black */
-  --info: oklch(0.55 0 0);
   --success: oklch(0.55 0 0);
   --destructive: oklch(0.45 0.18 22);            /* keep destructive readable */
   --user-message-bubble: oklch(0.93 0 0);
@@ -1267,7 +1208,6 @@
   --background: oklch(0.18 0 0);
   --foreground: oklch(0.95 0 0);
   --accent: oklch(0.92 0 0);                     /* near-white */
-  --info: oklch(0.70 0 0);
   --success: oklch(0.70 0 0);
   --destructive: oklch(0.65 0.18 22);
   --user-message-bubble: oklch(0.28 0 0);
@@ -1275,16 +1215,36 @@
 }
 
 /* =============================================================================
-   ASTRYX ACCENT BRIDGE
+   ASTRYX COLOUR BRIDGE
 
    The Maka Astryx theme (astryx-theme/makaTheme.ts) is a pure `extends` of
-   theme-neutral, so Astryx's accent family ships as near-black #262626. That
-   left the product with TWO accent authorities: maka-tokens said Maka blue,
-   Astryx said black. Every Astryx primary button, Switch, RadioList dot,
-   SegmentedControl selection, focus ring and selected-card ring rendered
-   black — and because those tokens never consulted --accent, the Appearance
-   page's 11 palettes had NO effect on any Astryx-rendered surface. Picking
-   「珊瑚」 recolored the chat accent and left all of Settings black.
+   theme-neutral, so Astryx's accent family ships as near-black #262626 and its
+   status fills as fixed pastels. That left the product with TWO colour
+   authorities: maka-tokens said Maka blue over palette-derived status hues,
+   Astryx said black over #c5e5c0 / #facecb / #f8da9d. Every Astryx primary
+   button, Switch, RadioList dot, SegmentedControl selection, focus ring and
+   selected-card ring rendered black, and every Banner rendered the same three
+   pastels — because those tokens never consulted --accent or the status hues,
+   the Appearance page's 11 palettes had NO effect on any Astryx-rendered
+   surface. Picking 「珊瑚」 recolored the chat accent and left all of Settings
+   black.
+
+   THESE FOUR -muted TOKENS ARE THE PRODUCT'S ONLY TINTED STATUS SURFACE.
+   One rung per status, no border rung, no strong tier: Astryx's own shape.
+   0.24 is the alpha the neutral theme's pastels already sit at, so a Banner
+   and a product row painted side by side read as one material. A call site
+   that wants a status tint reads one of these; a hand-rolled
+   `oklch(from var(--success) l c h / 0.14)` is how the fourteen disagreeing
+   alphas this replaced accumulated. Borders around a tinted surface use
+   --border: the fill already states the status, and a second tinted edge is
+   §4's One Means Rule.
+
+   --color-accent-muted is the informational tint. Maka has no --info hue:
+   "info" is a semantic slot (Banner status, StatTile tone), and painting it
+   with the accent is what upstream Banner does. The alpha here is
+   --accent-wash rather than 0.24 because this token also backs fourteen
+   upstream consumers — eight selection backgrounds and two focus rings —
+   which a status-weight fill would overwhelm.
 
    Bridging here rather than in makaTheme.ts is deliberate: the theme file is
    compiled to maka.css by `npm run astryx:theme`, and a build artifact cannot
@@ -1306,6 +1266,9 @@
   --color-text-accent: var(--accent-solid);
   --color-icon-accent: var(--accent-solid);
   --color-accent-muted: var(--accent-wash);
+  --color-success-muted: oklch(from var(--success) l c h / 0.24);
+  --color-warning-muted: oklch(from var(--warning) l c h / 0.24);
+  --color-error-muted: oklch(from var(--destructive) l c h / 0.24);
 }
 
 /* =============================================================================
