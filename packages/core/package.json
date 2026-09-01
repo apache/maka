@@ -119,6 +119,7 @@
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
     "./session-name": "./dist/session-name.js",
+    "./text-sanitize": "./dist/text-sanitize.js",
     "./thread-search": "./dist/thread-search.js",
     "./agent-graph-timeline": "./dist/agent-graph-timeline.js",
     "./agent-swarm": "./dist/agent-swarm.js",

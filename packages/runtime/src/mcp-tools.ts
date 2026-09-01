@@ -27,6 +27,7 @@ import type {
   McpToolSnapshot,
 } from '@maka/core/mcp';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -284,13 +285,9 @@ function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unkno
 
 function clipModelText(value: string, limit: number): string {
   if (value.length <= limit) return value;
+  // The marker is all-BMP, so slicing it can't split a pair.
   if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
-  const kept = value.slice(0, limit - TRUNCATION_MARKER.length);
-  // The cut can land inside a surrogate pair; an unpaired high surrogate must
-  // not reach the model request or durable storage, so it is dropped with the
-  // rest of the clipped tail.
-  const boundarySafe = /[\uD800-\uDBFF]$/u.test(kept) ? kept.slice(0, -1) : kept;
-  return `${boundarySafe}${TRUNCATION_MARKER}`;
+  return `${truncateUtf16Safe(value, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function safeJsonStringify(value: unknown): string {
