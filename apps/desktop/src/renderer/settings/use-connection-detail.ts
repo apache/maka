@@ -28,10 +28,11 @@ import {
   type ConnectionTestResult,
   type IdentifiedLlmConnection,
   type ModelInfo,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
@@ -119,7 +120,7 @@ export function oauthLoginServiceFor(
 
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
-  connection: IdentifiedLlmConnection;
+  connection: ProjectedLlmConnection;
   isDefault: boolean;
   onChanged(): Promise<void>;
   onDeleted(): Promise<void>;
@@ -306,21 +307,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(connectionEnabledModelIds(connection));
   }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
 
-  // The one client-side resolution left on a saved connection: the editor
-  // shows the unsaved draft — model rows just fetched, ids just ticked — which
-  // the Host has not been told about and so cannot have resolved. Everything
-  // the user has committed is read from `connection.catalogEntries`; this
-  // resolves only what is still in the draft.
-  const modelChoices = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: connection.slug,
-      providerType: connection.providerType,
-      defaultModel: connection.defaultModel,
-      enabledModelIds,
-      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-      modelSource,
-      modelsFetchedAt: connection.modelsFetchedAt,
-    },
+  // Reads `connection.catalogEntries` while the editor still shows what was
+  // committed, and resolves locally only once the draft diverges — the one
+  // client-side resolution left on a saved connection. The rule itself lives
+  // beside the resolver it guards, in `@maka/core/model-catalog`.
+  const modelChoices = resolveDraftConnectionModelCatalog(connection, {
+    models,
+    modelSource,
+    enabledModelIds,
   });
 
   /**

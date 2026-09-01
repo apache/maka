@@ -35,6 +35,7 @@ import {
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type IdentifiedLlmConnection,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
@@ -108,7 +109,10 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   onInitialCreateProviderConsumed?: () => void;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const [connections, setConnections] = useState<IdentifiedLlmConnection[]>([]);
+  // Projected, not merely identified: the detail editor renders the Host's
+  // resolved entries for a connection the user has not edited, so the catalog
+  // must survive this state rather than being narrowed away here.
+  const [connections, setConnections] = useState<ProjectedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
   // Browsing state, not navigation state: it outlives the catalog so that
@@ -223,7 +227,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'list' });
   }
 
-  function openDetail(connection: IdentifiedLlmConnection) {
+  function openDetail(connection: ProjectedLlmConnection) {
     returnFocusRef.current = { level: 'list', connectionId: connection.connectionId };
     setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }

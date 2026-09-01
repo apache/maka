@@ -27,10 +27,12 @@ import type {
 import {
   classifyConnectionModelInventory,
   CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
+  connectionEnabledModelIds,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   providerSupportsModelDiscovery,
   type ConnectionModelInventory,
+  type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
 import type { PricingConfig } from './usage-stats/types.js';
 import {
@@ -399,6 +401,77 @@ export function resolveConnectionModelCatalog(
 ): ModelCatalogEntry[] {
   return buildConnectionModelCatalogEntries({
     connection: normalizeOpenAiCodexConnection(connection),
+  });
+}
+
+/** A connection editor's unsaved model state. */
+export interface ConnectionModelDraft {
+  readonly models: readonly ModelInfo[];
+  readonly modelSource: ModelDiscoverySource;
+  readonly enabledModelIds: readonly string[];
+}
+
+/**
+ * The catalog to show for a connection being edited.
+ *
+ * While the draft still matches what is committed, the Host has already
+ * resolved this exact connection and its entries are the answer. Resolving
+ * again against a client's own bundled metadata would replace a possibly
+ * newer Host's display names and eligibility decisions with local guesses —
+ * the disagreement the projection exists to end.
+ *
+ * The other branch is the client-side resolution an editor legitimately needs:
+ * once the draft diverges — model rows just fetched, ids just ticked — it
+ * describes a connection the Host has never been told about and so cannot
+ * have resolved.
+ */
+export function resolveDraftConnectionModelCatalog(
+  connection: BuildConnectionModelCatalogInput['connection'] & HostResolvedConnectionCatalog,
+  draft: ConnectionModelDraft,
+): readonly ModelCatalogEntry[] {
+  if (draftMatchesConnection(connection, draft)) return connection.catalogEntries;
+  return resolveConnectionModelCatalog({
+    ...connection,
+    enabledModelIds: [...draft.enabledModelIds],
+    models:
+      draft.modelSource === 'fetched' || draft.models.length > 0 ? [...draft.models] : undefined,
+    modelSource: draft.modelSource,
+  });
+}
+
+function draftMatchesConnection(
+  connection: Pick<LlmConnection, 'defaultModel' | 'enabledModelIds' | 'models' | 'modelSource'>,
+  draft: ConnectionModelDraft,
+): boolean {
+  if (draft.modelSource !== (connection.modelSource ?? 'fallback')) return false;
+  const enabled = connectionEnabledModelIds(connection);
+  if (draft.enabledModelIds.length !== enabled.length) return false;
+  if (draft.enabledModelIds.some((id, index) => id !== enabled[index])) return false;
+  return modelRowsEqual(draft.models, connection.models ?? []);
+}
+
+/**
+ * Every stored field a catalog entry can be built from. Comparing ids alone
+ * would keep showing the Host's entries for rows the user just re-fetched,
+ * whose facts may differ under the same id.
+ */
+function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((model, index) => {
+    const other = right[index];
+    return (
+      model.id === other.id &&
+      model.displayName === other.displayName &&
+      model.contextWindow === other.contextWindow &&
+      model.inputLimit === other.inputLimit &&
+      model.maxOutputTokens === other.maxOutputTokens &&
+      model.capabilities?.chat === other.capabilities?.chat &&
+      model.capabilities?.vision === other.capabilities?.vision &&
+      model.capabilities?.reasoning === other.capabilities?.reasoning &&
+      model.capabilities?.functionCalling === other.capabilities?.functionCalling &&
+      model.capabilities?.parallelToolCalls === other.capabilities?.parallelToolCalls &&
+      model.capabilities?.imageGeneration === other.capabilities?.imageGeneration
+    );
   });
 }
 
