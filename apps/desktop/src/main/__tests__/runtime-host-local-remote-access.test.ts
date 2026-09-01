@@ -44,17 +44,36 @@ test('enabling remote access hands the same root to one managed service before D
   const handlers = new Map<string, Parameters<Electron.IpcMain['handle']>[1]>();
   let retired = false;
   let resumed = false;
-  const manager = {
-    async retireOwnedLocalHost() {
-      retired = true;
-      return { kind: 'retired' as const, resume: () => { resumed = true; } };
-    },
-  } as unknown as RuntimeHostDesktopManager;
   const peer = {
     peerId: '12D3KooWpeer',
     routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
     coordinationRelays: [],
   };
+  const livePeer = {
+    ...peer,
+    coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  };
+  const manager = {
+    async retireOwnedLocalHost() {
+      retired = true;
+      return { kind: 'retired' as const, resume: () => { resumed = true; } };
+    },
+    async waitUntilReady(profileId: string) {
+      assert.equal(profileId, 'local');
+    },
+    current(profileId: string) {
+      assert.equal(profileId, 'local');
+      return {
+        candidate: {
+          client: {
+            async status() {
+              return { peerEndpoint: livePeer };
+            },
+          },
+        },
+      };
+    },
+  } as unknown as RuntimeHostDesktopManager;
   const deploymentId = '11111111-1111-4111-8111-111111111111';
   const operator = {
     async runSetup(input: {
@@ -123,7 +142,7 @@ test('enabling remote access hands the same root to one managed service before D
   assert.deepEqual(decodeRuntimeHostOwnerConnectionCode(result.connectionCode), {
     name: decodeRuntimeHostOwnerConnectionCode(result.connectionCode).name,
     rootId: 'a'.repeat(64),
-    transport: { kind: 'libp2p-direct', ...peer },
+    transport: { kind: 'libp2p-direct', ...livePeer },
     credential: 'pending-credential',
   });
   const lifecycle = JSON.parse(
@@ -132,6 +151,69 @@ test('enabling remote access hands the same root to one managed service before D
   assert.equal(lifecycle.state, 'managed');
   assert.equal((lifecycle as { serviceId?: string }).serviceId, 'a'.repeat(64));
   assert.equal(lifecycle.deploymentId, deploymentId);
+});
+
+test('shares the running Local Host endpoint instead of its persisted startup routes', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-live-peer-share-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const configuredPeer = {
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    coordinationRelays: [],
+  };
+  const livePeer = {
+    ...configuredPeer,
+    coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  };
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () =>
+      ({
+        current() {
+          return {
+            candidate: {
+              client: {
+                async status() {
+                  return { peerEndpoint: livePeer };
+                },
+              },
+            },
+          };
+        },
+      }) as unknown as RuntimeHostDesktopManager,
+    resolveSetupPackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.2.0' }),
+    operator: {
+      async runPeer() {
+        return {
+          kind: 'result' as const,
+          action: 'status' as const,
+          status: {
+            state: 'enabled' as const,
+            serviceState: 'running',
+            rootId,
+            ...configuredPeer,
+          },
+        };
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  const target = await service.createCollaborationConnectionTarget();
+  assert.deepEqual(target, {
+    name: target.name,
+    transport: { kind: 'libp2p-direct', ...livePeer },
+  });
 });
 
 test('revokes the one Local sharing authority without changing peer connectivity', async (t) => {

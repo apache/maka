@@ -825,6 +825,7 @@ export class RuntimeHostKernel {
   }
 
   #statusSnapshot(): HostStatusResult {
+    const peer = this.peerListeners[0];
     return {
       hostEpoch: this.hostEpoch,
       compositionId: this.compositionDescriptor.id,
@@ -833,6 +834,15 @@ export class RuntimeHostKernel {
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,
+      ...(peer
+        ? {
+            peerEndpoint: {
+              peerId: peer.peerId,
+              routeHints: peer.listenAddresses,
+              coordinationRelays: peer.coordinationRelays,
+            },
+          }
+        : {}),
     };
   }
 

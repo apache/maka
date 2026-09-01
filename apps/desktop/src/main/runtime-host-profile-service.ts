@@ -920,23 +920,49 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profile.kind !== 'remote') {
           throw new Error('This Runtime Host does not expose a shareable peer endpoint');
         }
-        if (profile.transport.kind !== 'ssh') {
+        if (profile.transport.kind !== 'ssh' && profile.transport.kind !== 'libp2p-direct') {
           return { name: profile.name, transport: profile.transport };
         }
-        const direct = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
-        );
-        if (
-          !direct ||
-          direct.kind !== 'remote' ||
-          direct.rootId !== profile.rootId ||
-          direct.transport.kind !== 'libp2p-direct'
-        ) {
+        let configuredPeerId: string | undefined;
+        if (profile.transport.kind === 'libp2p-direct') {
+          configuredPeerId = profile.transport.peerId;
+        } else {
+          const direct = (await catalog.read()).profiles.find(
+            (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
+          );
+          if (
+            direct?.kind === 'remote' &&
+            direct.rootId === profile.rootId &&
+            direct.transport.kind === 'libp2p-direct'
+          ) {
+            configuredPeerId = direct.transport.peerId;
+          }
+        }
+        if (!configuredPeerId) {
           throw new Error(
             'Enable Direct peer access for this Runtime Host before sharing its Sessions',
           );
         }
-        return { name: profile.name, transport: direct.transport };
+        const active = input.states().find((state) => state.target.profile.id === profile.id);
+        if (!active || active.readiness !== 'ready') {
+          throw new Error('Connect this Runtime Host before sharing its Sessions');
+        }
+        const endpoint = (await active.candidate.client.status()).peerEndpoint;
+        if (!endpoint) {
+          throw new Error('Runtime Host Direct peer is not available');
+        }
+        if (configuredPeerId !== endpoint.peerId) {
+          throw new Error('Runtime Host Direct peer identity changed');
+        }
+        return {
+          name: profile.name,
+          transport: {
+            kind: 'libp2p-direct' as const,
+            peerId: endpoint.peerId,
+            routeHints: endpoint.routeHints,
+            coordinationRelays: endpoint.coordinationRelays,
+          },
+        };
       });
     },
     resolveManagedAccess(profileId) {

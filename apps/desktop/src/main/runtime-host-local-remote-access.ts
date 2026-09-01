@@ -339,11 +339,14 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       };
       const completed = await finishSetup(setup, 'request');
       if (completed.kind === 'active_tasks') return completed;
+      const manager = requireManager(input.manager);
+      await manager.waitUntilReady('local');
+      const livePeer = await readLivePeer(localClient(input.manager), completed.peer);
       return enabledResult(
         encodeRuntimeHostOwnerConnectionCode({
           name: hostName(),
           rootId: completed.managed.rootId,
-          transport: { kind: 'libp2p-direct', ...completed.peer },
+          transport: { kind: 'libp2p-direct', ...livePeer },
           credential: completed.credential,
         }),
       );
@@ -515,9 +518,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
+      const livePeer = await readLivePeer(localClient(input.manager), peer);
       return {
         name: hostName(),
-        transport: { kind: 'libp2p-direct' as const, ...peer },
+        transport: { kind: 'libp2p-direct' as const, ...livePeer },
       };
     });
 
@@ -968,6 +972,7 @@ async function issueConnectionCode(
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
+  const livePeer = await readLivePeer(client, peer);
   const prepared = await client.request('access.credential.prepare', {
     principalKind: 'remote_owner',
     principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
@@ -984,8 +989,27 @@ async function issueConnectionCode(
   return encodeRuntimeHostOwnerConnectionCode({
     name: hostName(),
     rootId,
-    transport: { kind: 'libp2p-direct', ...peer },
+    transport: { kind: 'libp2p-direct', ...livePeer },
     credential,
+  });
+}
+
+async function readLivePeer(
+  client: DesktopRuntimeHostClient,
+  configured: LocalPeerDescriptor,
+): Promise<LocalPeerDescriptor> {
+  const endpoint = (await client.status()).peerEndpoint;
+  if (!endpoint) {
+    throw new Error('Runtime Host Direct peer is not available');
+  }
+  if (endpoint.peerId !== configured.peerId) {
+    throw new Error('Runtime Host Direct peer identity changed');
+  }
+  return requireEnabledPeer({
+    state: 'enabled',
+    peerId: endpoint.peerId,
+    routeHints: endpoint.routeHints,
+    coordinationRelays: endpoint.coordinationRelays,
   });
 }
 

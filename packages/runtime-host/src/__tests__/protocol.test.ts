@@ -1924,6 +1924,36 @@ describe('Runtime Host bootstrap protocol', () => {
     );
   });
 
+  test('publishes a bounded live Direct peer endpoint through Host status', () => {
+    const status = {
+      hostEpoch: 'epoch-1',
+      compositionId: 'maka.interactive',
+      compositionRevision: '1',
+      state: 'ready',
+      connections: 1,
+      activeOperations: 0,
+      activeResidencies: 0,
+      peerEndpoint: {
+        peerId: '12D3KooWhost',
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+      },
+    };
+    assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
+    assert.throws(() =>
+      HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput({
+        ...status,
+        peerEndpoint: {
+          ...status.peerEndpoint,
+          coordinationRelays: [
+            status.peerEndpoint.coordinationRelays[0],
+            status.peerEndpoint.coordinationRelays[0],
+          ],
+        },
+      }),
+    );
+  });
+
   test('keeps Runtime Host logs within the diagnostics operation contract', () => {
     for (let index = 0; index < 257; index += 1) {
       runtimeHostLogBuffer.append('info', `entry ${index}`);

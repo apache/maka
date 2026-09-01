@@ -72,7 +72,7 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready' || peerId === 'fallback') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'self-contained') return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
@@ -100,11 +100,13 @@ module.exports = {
 `,
     );
     let routesPrepared = false;
+    const preparedPeerIds: string[] = [];
     const client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
       routeResolver: {
         prepareRoutes: async (peerId) => {
+          preparedPeerIds.push(peerId);
           routesPrepared = true;
           if (peerId === 'fallback') throw new Error('Mesh refresh failed');
         },
@@ -151,6 +153,11 @@ module.exports = {
     await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
       return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';
     });
+    await client.connect({
+      ...peerConnectInput('self-contained'),
+      coordinationRelays: ['/memory/explicit-relay'],
+    });
+    assert.equal(preparedPeerIds.includes('self-contained'), false);
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
@@ -195,6 +202,13 @@ module.exports = {
           peerId: 'unreachable',
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay'],
+          transitRelayPeerIds: ['transit-peer'],
+        },
+        {
+          requestId: 7,
+          peerId: 'self-contained',
+          routeHints: ['/memory/discovered', '/memory/1'],
+          coordinationRelays: ['/memory/relay', '/memory/explicit-relay'],
           transitRelayPeerIds: ['transit-peer'],
         },
       ],

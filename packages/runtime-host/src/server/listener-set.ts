@@ -46,11 +46,13 @@ export interface RuntimeHostPeerListener extends RuntimeHostListener {
   readonly kind: 'libp2p_direct';
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
+  readonly coordinationRelays: readonly string[];
 }
 
 export interface RuntimeHostPeerListenerDescriptor {
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
+  readonly coordinationRelays: readonly string[];
 }
 
 export type RuntimeHostListenerKind = 'local_ipc' | 'websocket' | 'libp2p_direct';
@@ -135,14 +137,17 @@ export function createRuntimeHostListenerSet(
         .filter((listener) => listener.kind === 'websocket')
         .map((listener) => listener.endpoint),
     ),
-    peerListeners: Object.freeze(
-      additional.filter(isRuntimeHostPeerListener).map((listener) =>
-        Object.freeze({
-          peerId: listener.peerId,
-          listenAddresses: Object.freeze([...listener.listenAddresses]),
-        }),
-      ),
-    ),
+    get peerListeners() {
+      return Object.freeze(
+        additional.filter(isRuntimeHostPeerListener).map((listener) =>
+          Object.freeze({
+            peerId: listener.peerId,
+            listenAddresses: Object.freeze([...listener.listenAddresses]),
+            coordinationRelays: Object.freeze([...listener.coordinationRelays]),
+          }),
+        ),
+      );
+    },
     closeAdmission: () => settleListeners(listeners, (listener) => listener.closeAdmission()),
     cleanup: () => settleListeners([...listeners].reverse(), (listener) => listener.cleanup()),
   };

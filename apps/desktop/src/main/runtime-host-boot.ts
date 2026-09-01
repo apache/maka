@@ -270,6 +270,9 @@ if (runtimeHostPeerConfiguration) {
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
       endpointKind: 'client',
+      onBackgroundReconcileError: (error) => {
+        console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+      },
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
     runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
