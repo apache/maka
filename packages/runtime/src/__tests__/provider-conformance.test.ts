@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import { after, describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
@@ -658,7 +658,7 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.ok, true);
     assert.equal(requestedModels.length, 1);
     assert.ok(
-      PROVIDER_DEFAULTS.moonshot.fallbackModels.includes(requestedModels[0]!),
+      PROVIDER_REGISTRY.moonshot.fallbackModels.includes(requestedModels[0]!),
       `expected a provider fallback model, got ${requestedModels[0]}`,
     );
   });
@@ -1007,7 +1007,7 @@ describe('models.dev provider conformance', () => {
         baseUrl: `${server.url}/api/plan/v3`,
         defaultModel: 'deepseek-v4-pro-beta',
         enabledModelIds: ['deepseek-v4-pro-beta'],
-        models: PROVIDER_DEFAULTS['volcengine-agent-plan'].fallbackModels.map((id) => ({ id })),
+        models: PROVIDER_REGISTRY['volcengine-agent-plan'].fallbackModels.map((id) => ({ id })),
         modelSource: 'fetched',
         enabled: true,
         createdAt: 1,
@@ -1020,7 +1020,7 @@ describe('models.dev provider conformance', () => {
     assert.equal(result.modelTested, 'deepseek-v4-pro-beta');
     assert.equal(probedModel, 'deepseek-v4-pro-beta');
     assert.ok(
-      !PROVIDER_DEFAULTS['volcengine-agent-plan'].fallbackModels.includes('deepseek-v4-pro-beta'),
+      !PROVIDER_REGISTRY['volcengine-agent-plan'].fallbackModels.includes('deepseek-v4-pro-beta'),
       'the fixture stops proving anything once the snapshot ships this id',
     );
   });

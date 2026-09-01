@@ -45,22 +45,6 @@ export type DesktopModelTargetResolution =
   | { kind: 'connection_missing'; connectionSlug: string }
   | { kind: 'unknown' };
 
-export async function resolveStoredModelTarget(
-  requestedSlug: string | undefined,
-  deps: {
-    getSnapshot(): Promise<{ defaultSlug: string | null; connections: LlmConnection[] }>;
-    hasCredential(connection: LlmConnection): Promise<boolean>;
-  },
-): Promise<DesktopModelTargetResolution> {
-  const catalog = await deps.getSnapshot();
-  const connectionSlug = requestedSlug ?? catalog.defaultSlug ?? undefined;
-  if (!connectionSlug) return { kind: 'missing_default' };
-  const connection = catalog.connections.find((candidate) => candidate.slug === connectionSlug);
-  if (!connection) return { kind: 'connection_missing', connectionSlug };
-  const hasSecret = await deps.hasCredential(connection).catch(() => undefined);
-  return { kind: 'resolved', connection, hasSecret };
-}
-
 export function createDesktopTaskSubmissionReadinessService(
   deps: DesktopTaskSubmissionReadinessDeps,
 ) {

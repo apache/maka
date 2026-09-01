@@ -29,8 +29,11 @@ import type {
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
-  /** Immutable account identity; required for a cross-connection selection. */
-  connectionId?: string;
+  /**
+   * Immutable account identity. The slug is renameable, so this is what a
+   * cross-connection selection rebinds the session to.
+   */
+  connectionId: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;
@@ -41,13 +44,12 @@ export interface ModelChoice {
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
   /**
-   * Thinking levels this model exposes. `listReadyModelChoices` always
-   * computes this with the full connection (so an openai-compatible relay's
-   * declared `relayModelProfiles[model].thinkingLevels` are honoured);
-   * optional only so hand-written choice literals stay valid — consumers
-   * must tolerate its absence.
+   * Thinking levels this model exposes, as the Host resolved them — a relay's
+   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * model that offers none; never absent, so no caller has to guess from a
+   * bundled metadata copy of its own.
    */
-  thinkingLevels?: readonly ThinkingLevel[];
+  thinkingLevels: readonly ThinkingLevel[];
 }
 
 export type ConnectionIdentity = {
@@ -59,9 +61,7 @@ export type ConnectionIdentity = {
 export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
-  authKind: 'api_key' | 'optional_api_key';
   requiresBaseUrl: boolean;
-  fallbackModels: readonly string[];
 }
 
 export type OnboardingProviderEntry = OnboardableProvider &
@@ -117,7 +117,6 @@ export interface OnboardingSaveInput {
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
   enabledModelIds: readonly string[];
-  models: readonly ModelInfo[];
 }
 
 export interface OnboardingSavedConnection {

@@ -18,7 +18,8 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   effectiveBaseUrl,
   providerAuthSupportsApiKey,
   type LlmConnection,
@@ -131,7 +132,7 @@ type RawGitHubCopilotModel = {
 };
 
 type FireworksModelDiscovery = Extract<
-  (typeof PROVIDER_DEFAULTS)[keyof typeof PROVIDER_DEFAULTS]['modelDiscovery'],
+  (typeof PROVIDER_REGISTRY)[keyof typeof PROVIDER_REGISTRY]['modelDiscovery'],
   { kind: 'fireworks' }
 >;
 
@@ -180,7 +181,7 @@ async function fetchProviderModelsStrict(
   fetchFn: ConnectionEffectFetch | undefined,
 ): Promise<ModelInfo[]> {
   const baseUrl = effectiveBaseUrl(connection);
-  const definition = PROVIDER_DEFAULTS[connection.providerType];
+  const definition = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → no discovery path. Throw a clear error (caught and
   // generalized by the caller) rather than crashing on `.modelDiscovery`.
   // Mirrors `isRealConnection` in @maka/core/connection-readiness.ts.
@@ -190,7 +191,7 @@ async function fetchProviderModelsStrict(
   const discovery = definition.modelDiscovery;
 
   if (discovery.kind === 'fallback') {
-    return definition.fallbackModels.map((id) => ({ id }));
+    return providerFallbackModelIds(definition).map((id) => ({ id }));
   }
   if (discovery.kind === 'ollama') {
     const r = await fetchForConnectionEffect(fetchFn, `${ollamaRoot(baseUrl)}/api/tags`, {
@@ -221,7 +222,10 @@ async function fetchProviderModelsStrict(
     return fetchOpenAiCodexModels(baseUrl, apiKey, fetchFn);
   }
 
-  switch (definition.protocol) {
+  // The wire is the Runtime adapter's, not a second field beside it. Only four
+  // adapter kinds reach here: every other one returned above on its own
+  // discovery branch, and both OpenAI-shaped kinds speak the same /models wire.
+  switch (definition.runtimeAdapter.kind) {
     case 'anthropic': {
       const r = await fetchForConnectionEffect(fetchFn, anthropicV1Url(baseUrl, '/models'), {
         headers: anthropicModelHeaders(apiKey),
@@ -237,7 +241,8 @@ async function fetchProviderModelsStrict(
         .filter((model): model is ModelInfo => model !== null);
       return filterDiscoveredModels(models, discovery.filter);
     }
-    case 'openai': {
+    case 'openai':
+    case 'openai-compatible': {
       const r = await fetchForConnectionEffect(
         fetchFn,
         modelListUrl(baseUrl, discovery.path, discovery.query),
@@ -291,8 +296,11 @@ async function fetchProviderModelsStrict(
         },
       );
     }
-    case 'cohere':
-      throw new Error('Cohere requires native model discovery');
+    default:
+      // Every other adapter kind returned above on its own discovery branch;
+      // an adapter that reaches here has a `protocol` discovery declaration it
+      // has no wire to serve.
+      throw new Error(`Provider type "${connection.providerType}" has no model discovery wire`);
   }
 }
 

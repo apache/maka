@@ -19,15 +19,24 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
+import {
+  resolveConnectionModelCatalog,
+  resolveDraftConnectionModelCatalog,
+  type ModelCatalogEntry,
+} from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(
   overrides: Partial<IdentifiedLlmConnection> &
     Pick<IdentifiedLlmConnection, 'slug' | 'providerType'>,
-): IdentifiedLlmConnection {
-  return {
+): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
     connectionId: `connection-${overrides.slug}`,
     name: overrides.slug,
     defaultModel: '',
@@ -37,6 +46,9 @@ function connection(
     updatedAt: 1,
     ...overrides,
   };
+  // The Host resolves the catalog and projects it; tests build connections the
+  // same way so they exercise what a client actually receives.
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 describe('model catalog picker helpers', () => {
@@ -110,4 +122,80 @@ describe('model catalog picker helpers', () => {
     assert.ok(choices.every((choice) => !(choice.connectionName ?? '').includes('@')));
   });
 
+  it('renders the Host entry, not a local rebuild, while the editor is unedited', () => {
+    // A Host that knows this model and a Desktop that does not: the entry says
+    // the model cannot serve as a chat default and carries a name this build
+    // has never heard. An unedited editor must show what the Host decided —
+    // rebuilding locally is exactly the version disagreement the projection
+    // ends, and here it would also offer a model the Host ruled out.
+    const stored = {
+      connectionId: 'connection-relay',
+      slug: 'relay',
+      name: 'Relay',
+      providerType: 'openai-compatible' as const,
+      defaultModel: 'host-only-model',
+      enabled: true,
+      enabledModelIds: ['host-only-model'],
+      models: [{ id: 'host-only-model' }],
+      modelSource: 'fetched' as const,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const hostEntry: ModelCatalogEntry = {
+      ...resolveConnectionModelCatalog(stored)[0],
+      displayName: 'Host-only image model',
+      canUseAsChatDefault: false,
+    };
+    const connection: ProjectedLlmConnection = { ...stored, catalogEntries: [hostEntry] };
+    const draft = {
+      models: stored.models,
+      modelSource: stored.modelSource,
+      enabledModelIds: stored.enabledModelIds,
+    };
+
+    const unedited = resolveDraftConnectionModelCatalog(connection, draft);
+    assert.deepEqual(unedited, [hostEntry]);
+
+    // And the exception still applies: a draft the Host has not seen is the
+    // one thing the client resolves for itself.
+    const edited = resolveDraftConnectionModelCatalog(connection, {
+      ...draft,
+      models: [...stored.models, { id: 'just-fetched' }],
+    });
+    assert.deepEqual(
+      edited.map((entry) => entry.id).sort(),
+      ['host-only-model', 'just-fetched'],
+    );
+    assert.notEqual(edited[0]?.displayName, 'Host-only image model');
+  });
+
+  it('does not offer Daily Review a Codex model the subscription cannot serve', () => {
+    // A connection saved while `gpt-5-codex` was still picker-visible keeps it
+    // in `enabledModelIds`. The inventory filter alone left it there, and the
+    // catalog listed it back as a model no inventory describes — selectable,
+    // and failing at the provider once a scheduled run sent to it.
+    const options = buildCatalogDailyReviewModelOptions(
+      [
+        connection({
+          slug: 'codex',
+          providerType: 'openai-codex',
+          defaultModel: 'gpt-5.5',
+          enabledModelIds: ['gpt-5.5', 'gpt-5-codex'],
+          models: [{ id: 'gpt-5.5' }],
+          modelSource: 'fetched',
+        }),
+      ],
+      '',
+    );
+    const keys = options.map(([key]) => key);
+    assert.ok(
+      keys.includes('codex::gpt-5.5'),
+      `expected the servable model to be offered, got ${JSON.stringify(keys)}`,
+    );
+    assert.equal(
+      keys.includes('codex::gpt-5-codex'),
+      false,
+      `unsupported Codex model was offered: ${JSON.stringify(keys)}`,
+    );
+  });
 });

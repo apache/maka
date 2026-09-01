@@ -34,7 +34,7 @@ import {
   type ProviderCatalogGroup,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
@@ -261,17 +261,17 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-    if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
+    if (PROVIDER_REGISTRY[type].status !== 'ready') return false;
     if (
       category !== 'all' &&
       category !== 'recommended' &&
-      PROVIDER_DEFAULTS[type].catalogGroup !== category
+      PROVIDER_REGISTRY[type].catalogGroup !== category
     ) {
       return false;
     }
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
-    return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
+    return [type, display.name, display.description, PROVIDER_REGISTRY[type].label]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 }

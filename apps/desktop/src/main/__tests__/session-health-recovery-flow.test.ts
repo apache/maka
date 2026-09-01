@@ -23,7 +23,7 @@ import { parseHTML } from 'linkedom';
 import { act, createElement, Fragment, useCallback, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
 import {
   Composer,
@@ -48,7 +48,7 @@ const originalGlobals = {
     .IS_REACT_ACT_ENVIRONMENT,
 };
 
-const CONNECTION: IdentifiedLlmConnection = {
+const CONNECTION: ProjectedLlmConnection = {
   connectionId: 'connection-openrouter',
   slug: 'openrouter',
   providerType: 'openrouter',
@@ -58,6 +58,7 @@ const CONNECTION: IdentifiedLlmConnection = {
   enabledModelIds: ['openai/gpt-5'],
   createdAt: 1,
   updatedAt: 1,
+  catalogEntries: [],
 };
 const CHOICE: ChatModelChoice = {
   connectionId: CONNECTION.connectionId,

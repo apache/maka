@@ -23,6 +23,7 @@ import { pathToFileURL } from 'node:url';
 const SESSION_NAME = 'Released State Root qualification';
 const MESSAGE_ID = 'released-state-root-message';
 const TASK_TITLE = 'Released State Root durable task';
+const ACCESS_PRINCIPAL_ID = 'released-state-root-qualification-client';
 const FUTURE_FIRE_DELAY_MS = 24 * 60 * 60 * 1_000;
 
 const input = parseFixtureArgs(process.argv.slice(2));
@@ -113,11 +114,83 @@ async function seedFixture(packageRoot, rootPath, rootOwner, rootId) {
         schedule: task.schedule,
         effect: task.effect,
       },
+      access: await seedAccessCredential(packageRoot, rootOwner.controlDirectory),
     };
   } finally {
     scheduledTasks.close();
     await sessions.close?.();
   }
+}
+
+// The access file lives in the account-local control namespace rather than the
+// State Root, and the Host opens it before the Kernel starts. A credential
+// issued by the released build is therefore the one durable record that decides
+// whether the current build can start at all.
+async function seedAccessCredential(packageRoot, controlDirectory) {
+  const accessAuthority = await loadInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/server/access-authority.js',
+  );
+  const protocol = await loadInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
+  );
+  const authority = await accessAuthority.openRuntimeHostAccessAuthority(controlDirectory);
+  try {
+    // Ask the released build what it is able to grant instead of naming
+    // operations here. A fixture that hard-codes today's keys stops covering
+    // the next rename the moment that rename lands.
+    const issued = await accessAuthority.issueAccessCredential(authority, {
+      principalKind: 'remote_owner',
+      principalId: ACCESS_PRINCIPAL_ID,
+      operationGrants: [...protocol.REMOTE_OWNER_OPERATION_GRANTS],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+    });
+    if (!issued.ok) {
+      throw new Error(
+        `The released access credential could not be issued: ${issued.error.message}`,
+      );
+    }
+    return { credentialId: issued.result.credentialId, principalId: issued.result.principalId };
+  } finally {
+    await authority.close();
+  }
+}
+
+// Grants are deliberately absent from the facts: a rename is supposed to move a
+// stored grant to its successor, so comparing the grant list across builds
+// would report a correct migration as a lost fact. The credential identity is
+// what must survive, and the Host refusing to open the file is what fails.
+async function inspectAccessCredential(packageRoot, controlDirectory) {
+  const store = await loadInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/server/access-credential-store.js',
+  );
+  const file = await store.readAccessCredentialFile(join(controlDirectory, store.ACCESS_FILE_NAME));
+  const credential = file.credentials.find(
+    (candidate) => candidate.principalId === ACCESS_PRINCIPAL_ID,
+  );
+  if (!credential) throw new Error('The released access credential fact is missing');
+  // This fixture runs on both builds, which do not share a field name here: the
+  // record is `grants` on builds that separate it from the derived authority and
+  // `operationGrants` on those that did not. The published JSON key never moved.
+  const grants = credential.grants ?? credential.operationGrants;
+  if (!grants.includes('host.status')) {
+    throw new Error('The released access credential lost its liveness grant');
+  }
+  // Asked of whichever build is reading, so it is deliberately not a shared
+  // fact: a grant the reader can neither serve nor account for means a rename
+  // shipped without its migration entry. Builds predating the check skip it.
+  if (typeof store.unresolvedPersistedGrants === 'function') {
+    const unresolved = store.unresolvedPersistedGrants(file);
+    if (unresolved.length > 0) {
+      throw new Error(
+        `The released access credential carries grants this build cannot account for: ${unresolved.join(', ')}`,
+      );
+    }
+  }
+  return { credentialId: credential.credentialId, principalId: credential.principalId };
 }
 
 async function inspectFixture(packageRoot, rootPath, rootOwner, rootId) {
@@ -158,6 +231,7 @@ async function inspectFixture(packageRoot, rootPath, rootOwner, rootId) {
         schedule: task.schedule,
         effect: task.effect,
       },
+      access: await inspectAccessCredential(packageRoot, rootOwner.controlDirectory),
     };
   } finally {
     scheduledTasks.close();

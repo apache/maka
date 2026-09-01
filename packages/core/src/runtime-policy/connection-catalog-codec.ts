@@ -19,11 +19,12 @@
 
 import {
   isRelayProviderType,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
   type ProviderType,
 } from '../llm-connections.js';
+import { MAX_PREPENDED_FALLBACK_MODELS } from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -65,6 +66,22 @@ import {
 export const CONNECTION_CATALOG_MAX_CONNECTIONS = 1_024;
 export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
+/**
+ * A resolved entry exists for every stored model, for every enabled id the
+ * inventory never listed, for the connection default when it lists none, and —
+ * on a provider with no model-list endpoint — for every model that provider
+ * ships, which the resolver prepends rather than substitutes.
+ *
+ * That last term is why this cannot be the sum of the two persisted lists
+ * alone: without it, a catalog the storage decoder accepts at its own maxima
+ * resolves to more entries than the wire admits, and the Host's own page is
+ * rejected on arrival, leaving every client with no models to choose from.
+ */
+export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
+  MAX_PREPENDED_FALLBACK_MODELS +
+  1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 
@@ -737,7 +754,7 @@ export function normalizeCatalogConnectionBaseUrl(
   if (
     override !== undefined &&
     providerType &&
-    PROVIDER_DEFAULTS[providerType].authKind === 'oauth_token'
+    PROVIDER_REGISTRY[providerType].authKind === 'oauth_token'
   ) {
     throw domainError('OAuth provider endpoint cannot be overridden');
   }
@@ -754,7 +771,7 @@ export function decodeCanonicalConnectionBaseUrl(
 }
 
 function canonicalProviderBaseUrl(providerType: ProviderType): string | undefined {
-  const raw = PROVIDER_DEFAULTS[providerType].baseUrl.trim();
+  const raw = PROVIDER_REGISTRY[providerType].baseUrl.trim();
   if (!raw) return undefined;
   try {
     return new URL(raw).toString();

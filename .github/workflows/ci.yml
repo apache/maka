@@ -48,6 +48,7 @@ jobs:
       release_contract: ${{ steps.plan.outputs.release_contract }}
       runtime_host: ${{ steps.plan.outputs.runtime_host }}
       runtime_sandbox: ${{ steps.plan.outputs.runtime_sandbox }}
+      state_root_compat: ${{ steps.plan.outputs.state_root_compat }}
       storage_stress: ${{ steps.plan.outputs.storage_stress }}
       storybook: ${{ steps.plan.outputs.storybook }}
       standard_workspaces: ${{ steps.plan.outputs.standard_workspaces }}
@@ -156,13 +157,13 @@ jobs:
           restore-keys: electron-${{ runner.os }}-
 
       - name: Install Linux runtime dependencies
-        if: needs.plan.outputs.runtime_sandbox == 'true'
+        if: needs.plan.outputs.runtime_sandbox == 'true' || needs.plan.outputs.state_root_compat == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
 
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: needs.plan.outputs.runtime_sandbox == 'true'
+        if: needs.plan.outputs.runtime_sandbox == 'true' || needs.plan.outputs.state_root_compat == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -279,6 +280,49 @@ jobs:
       - name: Run Runtime Host tests
         if: needs.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
+
+      # A published predecessor writes the durable state; the workspace built
+      # above reads it. Release packaging is deliberately not in front of this:
+      # it takes minutes and changes nothing about whether these decoders can
+      # read that state. The release lanes still qualify exact tarballs.
+      - id: forward-roll-baseline
+        name: Resolve the published forward-roll baseline
+        if: needs.plan.outputs.state_root_compat == 'true'
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
+
+      - name: Download the forward-roll baseline
+        if: needs.plan.outputs.state_root_compat == 'true'
+        env:
+          SOURCE_URL: ${{ steps.forward-roll-baseline.outputs.tarball_url }}
+          SOURCE_INTEGRITY: ${{ steps.forward-roll-baseline.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          source_path="$RUNNER_TEMP/forward-roll-source.tgz"
+          curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-connrefused --retry-delay 2 "$SOURCE_URL" --output "$source_path"
+          node - "$source_path" "$SOURCE_INTEGRITY" <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const bytes = readFileSync(process.argv[2]);
+          const actual = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          if (actual !== process.argv[3]) throw new Error('Forward-roll baseline integrity mismatch');
+          NODE
+          {
+            echo "FORWARD_ROLL_SOURCE=$source_path"
+            echo "FORWARD_ROLL_SOURCE_SHA256=$(sha256sum "$source_path" | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
+
+      - name: Qualify durable state against the published baseline
+        if: needs.plan.outputs.state_root_compat == 'true'
+        env:
+          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
+        run: |
+          set -o pipefail
+          npm run --silent release:cli:qualify-state-root -- \
+            --source "$FORWARD_ROLL_SOURCE" \
+            --source-sha256 "$FORWARD_ROLL_SOURCE_SHA256" \
+            --target-workspace "$PWD" \
+            | tee "$RUNNER_TEMP/durable-state-report.json"
 
       - name: Ensure xvfb
         if: needs.plan.outputs.e2e == 'true'

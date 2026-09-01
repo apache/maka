@@ -368,6 +368,37 @@ test('full-suite authority files select every surface', () => {
   }
 });
 
+// The SessionTodo cutover (#4351) retired an operation and stranded every
+// workspace holding a credential issued before it (#4420). It changed the
+// vocabulary, not the decoders — so a trigger listing only decoders stays green
+// on the exact change shape this guard exists to catch.
+test('retiring an operation selects the released forward roll', () => {
+  const plan = planTests(
+    [
+      'packages/runtime-host/src/protocol/operations.ts',
+      'apps/desktop/src/renderer/features/workbar/tools/tasks/use-session-todo.ts',
+    ],
+    { graph },
+  );
+
+  assert.equal(plan.stateRootCompat, true);
+  assert.equal(plan.full, false);
+});
+
+test('a durable-state decoder selects the released forward roll', () => {
+  const plan = planTests(['packages/runtime-host/src/server/access-credential-store.ts'], {
+    graph,
+  });
+
+  assert.equal(plan.stateRootCompat, true);
+});
+
+test('ordinary changes do not pay for the released forward roll', () => {
+  const plan = planTests(['apps/desktop/src/renderer/features/workbar/ports.ts'], { graph });
+
+  assert.equal(plan.stateRootCompat, false);
+});
+
 test('GitHub output matches the selections consumed by CI', () => {
   const output = formatGitHubOutputs(planTests([], { graph, forceFull: true }));
   const outputKeys = new Set(output.split('\n').map((line) => line.split('=', 1)[0]));

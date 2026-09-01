@@ -30,6 +30,7 @@ import type {
   CredentialLocator,
 } from '@maka/core/runtime-policy';
 import { REQUEST_BODY_OVERLAY_MAX_BYTES } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { FAKE_ASK_USER_QUESTION_PROMPT, FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { type MakaToolContext } from '@maka/runtime/tool-runtime';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -879,7 +880,7 @@ test('a fully profiled relay catalog paginates with profiles riding per item', a
   });
 });
 
-test('catalog pages preserve model-facts provenance from the projected snapshot', async () => {
+test('catalog pages carry the model facts a user overrode, not the stored row', async () => {
   await withCoordinator(async ({ coordinator, root, stores }) => {
     const created = await stores.connectionCatalog.create({
       expectedCatalogRevision: 0,
@@ -937,13 +938,14 @@ test('catalog pages preserve model-facts provenance from the projected snapshot'
       result.result,
     );
     if (decoded.kind !== 'page') return;
-    assert.deepEqual(
-      decoded.items.find(
-        (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
-          item.kind === 'model' && item.model.id === 'custom-model',
-      )?.model.factOverriddenFields,
-      ['contextWindow', 'inputLimit'],
-    );
+    // The override's effect is what a client needs: the page must show the
+    // hand-set context window, not the one the stored row was written with.
+    const overridden = decoded.items.find(
+      (item): item is Extract<ConnectionCatalogPageItem, { kind: 'model' }> =>
+        item.kind === 'model' && item.model.id === 'custom-model',
+    )?.model;
+    assert.equal(overridden?.contextWindow, 200_000);
+    assert.equal(overridden?.inputLimit, 200_000);
   });
 });
 
@@ -1131,12 +1133,25 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     // item, never in one header table (a header item is atomic to the
     // paginator — a long declaration list would make it unsplittable).
     const { enabledModelIds, models, relayModelProfiles, ...header } = connection;
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -1150,6 +1165,9 @@ function expectedCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCa
     }
     for (const [itemIndex, model] of models.entries()) {
       items.push({ kind: 'model', connectionIndex, itemIndex, model });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;

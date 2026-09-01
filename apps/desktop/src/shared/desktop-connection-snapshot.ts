@@ -18,7 +18,7 @@
  */
 
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 
 /** Immutable identity plus the human-readable locator last shown by Desktop. */
 export interface DesktopConnectionIdentity {
@@ -27,7 +27,7 @@ export interface DesktopConnectionIdentity {
 }
 
 export interface DesktopConnectionSnapshot {
-  readonly connections: IdentifiedLlmConnection[];
+  readonly connections: ProjectedLlmConnection[];
   readonly defaultConnection: string | null;
   readonly chatModelChoices: ChatModelChoice[];
 }
