@@ -54,7 +54,6 @@ export type ModelUnavailableReason =
   | 'auth'
   | 'stale';
 
-export type ModelCatalogAvailability = 'available' | 'warning' | 'blocked';
 export type ModelCatalogLifecycle =
   | 'active'
   | 'beta'
@@ -89,7 +88,6 @@ export interface ModelCatalogEntry {
   connectionSlug?: string;
   source: 'provider_api' | 'static_catalog' | 'unknown';
   unavailableReason: ModelUnavailableReason;
-  availability: ModelCatalogAvailability;
   canUseAsChatDefault: boolean;
   isDefault: boolean;
   capabilities: KnownModelCapabilities;
@@ -437,7 +435,6 @@ function makeEntry(
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
     unavailableReason,
-    availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     capabilities: normalizeCapabilities(capabilities),
@@ -618,17 +615,11 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
   };
 }
 
-function availabilityOf(reason: ModelUnavailableReason): ModelCatalogAvailability {
-  if (reason === 'none') return 'available';
+function canUseUnavailableReasonAsDefault(reason: ModelUnavailableReason): boolean {
   // `stale` and `not_in_live_list` are both things worth saying and neither is
   // a fact about what the account can run. A provider that did not mention a
   // model in its last response has not refused it; only the provider itself
   // can do that, when the request goes out (#1584).
-  if (reason === 'stale' || reason === 'not_in_live_list') return 'warning';
-  return 'blocked';
-}
-
-function canUseUnavailableReasonAsDefault(reason: ModelUnavailableReason): boolean {
   return reason === 'none' || reason === 'stale' || reason === 'not_in_live_list';
 }
 

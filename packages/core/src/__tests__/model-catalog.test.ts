@@ -58,7 +58,6 @@ test('a live inventory annotates a model it omits and preserves higher-priority 
   // in its last response, which is a fact about that response and not about
   // what the account can run (#1584). It stays selectable and the provider
   // gets to answer for itself.
-  assert.equal(missing?.availability, 'warning');
   assert.equal(missing?.canUseAsChatDefault, true);
   assert.equal(missing?.unavailableReason, 'not_in_live_list');
   assert.deepEqual(verdict(input), { ok: true });
@@ -181,7 +180,6 @@ test('stale provider inventory warns without blocking sends', () => {
     staleAfterMs: 1,
   };
   const [entry] = buildModelCatalogEntries(input);
-  assert.equal(entry?.availability, 'warning');
   assert.equal(entry?.unavailableReason, 'stale');
   assert.equal(entry?.canUseAsChatDefault, true);
   assert.deepEqual(verdict(input), { ok: true });

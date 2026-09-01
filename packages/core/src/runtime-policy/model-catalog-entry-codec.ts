@@ -43,7 +43,6 @@ const UNAVAILABLE_REASONS = [
   'auth',
   'stale',
 ] as const;
-const AVAILABILITIES = ['available', 'warning', 'blocked'] as const;
 const LIFECYCLES = ['active', 'beta', 'alpha', 'deprecated', 'retired', 'unknown'] as const;
 const CAPABILITY_KEYS = [
   'chat',
@@ -75,7 +74,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'connectionSlug',
       'source',
       'unavailableReason',
-      'availability',
       'canUseAsChatDefault',
       'isDefault',
       'capabilities',
@@ -97,7 +95,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'providerType',
       'source',
       'unavailableReason',
-      'availability',
       'canUseAsChatDefault',
       'isDefault',
       'capabilities',
@@ -135,7 +132,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       UNAVAILABLE_REASONS,
       'entry unavailable reason',
     ),
-    availability: oneOf(item.availability, AVAILABILITIES, 'entry availability'),
     canUseAsChatDefault: booleanValue(item.canUseAsChatDefault, 'entry chat default eligibility'),
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     capabilities: decodeKnownCapabilities(item.capabilities),
