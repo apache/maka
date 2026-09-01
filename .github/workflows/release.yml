@@ -276,9 +276,7 @@ jobs:
 
       - name: Verify the Linux release
         if: matrix.platform == 'linux'
-        run: >-
-          npm run verify:linux --
-          "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-linux-${{ matrix.arch }}.AppImage"
+        run: npm run verify:linux -- "${{ matrix.arch }}"
 
       - name: Stage the exact product artifact group
         run: >-
@@ -436,6 +434,11 @@ jobs:
       - name: Install the release verifier dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      # Each macOS runner uploaded a feed naming only its own architecture. The
+      # feed a client reads carries both, so it only exists once they are here.
+      - name: Merge the per-architecture update feeds
+        run: node scripts/product-release-artifacts.mjs merge-feeds release-assets
+
       - name: Verify the exact product artifact manifest
         run: node scripts/product-release-artifacts.mjs verify release-assets
 
@@ -491,9 +494,9 @@ jobs:
         run: |
           notes="Maka Desktop and the required Apple Silicon CLI/TUI artifact built from approved ASF source reference ${SOURCE_REFERENCE_TAG} at commit ${SOURCE_COMMIT}.
 
-          Before publishing, download these draft assets on another Apple Silicon Mac and on a Windows x64 machine, and complete .github/RELEASE_CHECKLIST.md.
+          Before publishing, download these draft assets on an Apple Silicon Mac, an Intel Mac, a Windows x64 machine, and an x64 and an arm64 Linux machine, and complete .github/RELEASE_CHECKLIST.md.
 
-          The Windows build is unsigned: SmartScreen warns on first launch, and the download has to be checked against its .sha256 file.
+          The Windows and Linux builds are unsigned: SmartScreen warns on first launch, no Linux package is signed either, and every download has to be checked against its .sha256 file.
 
           These files are convenience binaries built from the approved ASF source release; they are not ASF release artifacts.
 

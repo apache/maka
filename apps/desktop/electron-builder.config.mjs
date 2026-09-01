@@ -215,11 +215,15 @@ const baseDesktopBuilderConfig = {
       to: 'licenses/renderer/SIMPLE_ICONS_LICENSE.md',
     },
   ],
+  // No `target` here, or in `win`/`linux` below: electron-builder ignores the
+  // command line's architecture flags for any target the configuration names
+  // (targetFactory.computeArchToTargetNamesMap only falls back to the CLI when
+  // `target.arch` is absent, and returns the CLI map untouched when the CLI
+  // named targets). Declaring targets in both places lets them disagree, and a
+  // configured `arch` silently wins — which would build every architecture on
+  // every runner. The packaging scripts in package.json name the target and the
+  // architecture together and are the single authority for both.
   mac: {
-    target: [
-      { target: 'dmg', arch: ['arm64', 'x64'] },
-      { target: 'zip', arch: ['arm64', 'x64'] },
-    ],
     category: 'public.app-category.productivity',
     // The bundle icon is what Finder, Launchpad and the installer show, and
     // none of those run our code — so it cannot follow the user's choice and
@@ -257,10 +261,6 @@ const baseDesktopBuilderConfig = {
     writeUpdateInfo: false,
   },
   win: {
-    target: [
-      { target: 'nsis', arch: ['x64'] },
-      { target: 'zip', arch: ['x64'] },
-    ],
     artifactName: 'Maka-${version}-win-${arch}.${ext}',
     // Same reason as `mac.icon` above: the .exe, the installer and the
     // shortcut are drawn by the OS from this file, not by us.
@@ -274,10 +274,10 @@ const baseDesktopBuilderConfig = {
     // is then the whole change — the verification follows it.
   },
   linux: {
-    target: [
-      { target: 'AppImage', arch: ['x64', 'arm64'] },
-      { target: 'deb', arch: ['x64', 'arm64'] },
-    ],
+    // `${arch}` is not the Node architecture name here: electron-builder maps it
+    // through builder-util's getArtifactArchName, so x64 becomes `x86_64` for the
+    // AppImage and `amd64` for the deb. scripts/desktop-release-targets.mjs
+    // records those names and a test pins them to electron-builder's own mapping.
     artifactName: 'Maka-${version}-linux-${arch}.${ext}',
     // Same reason as `mac.icon` above: the launcher entry and the window
     // decoration are drawn by the desktop environment from this file, not by

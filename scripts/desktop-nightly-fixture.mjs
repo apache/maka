@@ -25,8 +25,8 @@ import { desktopNightlyTargets } from './desktop-nightly.mjs';
 
 /**
  * Builds what the packaging runners would have uploaded, so a test can exercise
- * staging and publication without producing real installers. Only fpm targets
- * ship without a blockmap.
+ * staging and publication without producing real installers. The descriptor
+ * names every file, blockmaps included, so this stays in step with it.
  */
 export async function writeDesktopNightlyInput(directory, version) {
   await Promise.all(

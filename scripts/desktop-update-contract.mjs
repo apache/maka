@@ -48,6 +48,15 @@ export function linuxUpdateMetadataName(arch, isNightly) {
   return arch === 'x64' ? `${channel}-linux.yml` : `${channel}-linux-${arch}.yml`;
 }
 
+/**
+ * The payloads electron-builder writes a `<file>.blockmap` beside. Only the
+ * archive and NSIS targets call `createBlockmap`, which writes that sidecar; the
+ * AppImage calls `appendBlockmap`, which puts the block map inside the AppImage,
+ * and fpm targets build none. Naming the two that have one keeps a payload with
+ * no sidecar from silently skipping the check.
+ */
+const SIDECAR_BLOCKMAP_EXTENSIONS = Object.freeze(['.exe', '.zip']);
+
 /** A stable successor lets stable, alpha, and beta candidates use one feed contract. */
 export function bumpedAutoupdateVersion(candidateVersion) {
   const { core, prerelease } = parseProductReleaseVersion(candidateVersion);
@@ -143,7 +152,6 @@ async function sha512Base64(path) {
  * One feed carries every payload a client on that platform may be offered —
  * both macOS architectures, or the AppImage and the deb — so the caller names
  * all of them and anything else in the feed is an unverified update path.
- * Only fpm targets ship without a blockmap; every other payload has one.
  */
 export async function verifyDesktopUpdateArtifacts({
   directory,
@@ -196,7 +204,7 @@ export async function verifyDesktopUpdateArtifacts({
         `${metadataName} records ${file.url} size ${JSON.stringify(file.size)}, expected ${artifact.size}`,
       );
     }
-    if (file.url.endsWith('.deb')) continue;
+    if (!SIDECAR_BLOCKMAP_EXTENSIONS.some((extension) => file.url.endsWith(extension))) continue;
     const blockmapPath = join(directory, `${file.url}.blockmap`);
     if (!(await stat(blockmapPath)).isFile()) {
       throw new Error(`Desktop update blockmap is not a file: ${blockmapPath}`);

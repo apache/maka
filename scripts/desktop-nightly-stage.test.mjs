@@ -53,11 +53,11 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
     `Maka-${version}-win-x64.exe`,
     `Maka-${version}-win-x64.exe.blockmap`,
     `Maka-${version}-win-x64.zip`,
-    `Maka-${version}-linux-x64.AppImage`,
-    `Maka-${version}-linux-x64.AppImage.blockmap`,
-    `Maka-${version}-linux-x64.deb`,
+    // Linux artifact names use the packaging ecosystem's architecture, and
+    // neither distributable has a sidecar blockmap.
+    `Maka-${version}-linux-x86_64.AppImage`,
+    `Maka-${version}-linux-amd64.deb`,
     `Maka-${version}-linux-arm64.AppImage`,
-    `Maka-${version}-linux-arm64.AppImage.blockmap`,
     `Maka-${version}-linux-arm64.deb`,
   ];
   const release = join(output, 'release');
@@ -81,7 +81,7 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
       directory: release,
       metadataName: 'dev-linux.yml',
       version,
-      artifactNames: [`Maka-${version}-linux-x64.AppImage`, `Maka-${version}-linux-x64.deb`],
+      artifactNames: [`Maka-${version}-linux-x86_64.AppImage`, `Maka-${version}-linux-amd64.deb`],
     }),
     verifyDesktopUpdateArtifacts({
       directory: release,

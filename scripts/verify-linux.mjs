@@ -17,10 +17,12 @@
  * under the License.
  */
 
-import { access, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 import {
   assertMissing,
@@ -31,14 +33,34 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
 }
 
-/** The deb is the AppImage's sibling: one build, two distributables. */
-function debPath(appImagePath) {
-  return `${appImagePath.slice(0, -'.AppImage'.length)}.deb`;
+/**
+ * The AppImage and the deb never share a spelling of the architecture, so the
+ * target descriptor is the only place that knows both names.
+ */
+async function linuxDistributables(arch, environment) {
+  const manifest = JSON.parse(
+    await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
+  );
+  const version = resolveDesktopBuildVersion(manifest.version, environment);
+  const target = desktopReleaseTargets(version, { nightly: version !== manifest.version }).find(
+    (entry) => entry.name === `linux-${arch}`,
+  );
+  if (!target) {
+    throw new Error('Usage: npm run verify:linux -- <x64|arm64>');
+  }
+  return {
+    appImagePath: join(
+      releaseDirectory,
+      target.payloads.find((name) => name.endsWith('.AppImage')),
+    ),
+    checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
+  };
 }
 
 /**
@@ -47,7 +69,7 @@ function debPath(appImagePath) {
  * by the AppImage runtime itself and needs no FUSE mount.
  */
 export async function verifyLinuxAppImage(
-  inputPath,
+  arch,
   {
     platform = process.platform,
     run = runCommandFromRepo,
@@ -60,11 +82,9 @@ export async function verifyLinuxAppImage(
   if (platform !== 'linux') {
     throw new Error('AppImage verification requires Linux.');
   }
-  if (!inputPath) {
-    throw new Error('Usage: npm run verify:linux -- <path-to-appimage>');
-  }
 
-  const appImagePath = resolve(inputPath);
+  const { appImagePath: appImage, checksumSubjects } = await linuxDistributables(arch, environment);
+  const appImagePath = resolve(appImage);
   await access(appImagePath);
   const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
 
@@ -74,6 +94,10 @@ export async function verifyLinuxAppImage(
     const resources = join(workingDirectory, 'squashfs-root', 'resources');
 
     await assertPackagedResources(resources, { requirePath, forbidPath });
+    // The deb target writes this marker into the shared unpacked tree, and it is
+    // what electron-updater reads to pick DebUpdater over AppImageUpdater. An
+    // AppImage carrying it would try to update itself by installing a deb.
+    await forbidPath(join(resources, 'package-type'));
     await assertPackagedUpdateConfiguration(resources, {
       channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
     });
@@ -82,7 +106,7 @@ export async function verifyLinuxAppImage(
     // A formal release publishes a checksum beside each distributable, the way
     // the Windows verification does for its installer and archive.
     const checksums = [];
-    for (const path of [appImagePath, debPath(appImagePath)]) {
+    for (const path of checksumSubjects) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
@@ -96,7 +120,7 @@ export async function verifyLinuxAppImage(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyLinuxAppImage(process.argv[2]);
+  const result = await verifyLinuxAppImage(process.argv[2] ?? process.arch);
   console.log(`Verified ${result.appImagePath}`);
   for (const { path, sha256 } of result.checksums) {
     console.log(`SHA-256 ${sha256}  ${basename(path)}`);

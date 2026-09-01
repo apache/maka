@@ -25,6 +25,7 @@ import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
+import { packageLinux } from './package-linux.mjs';
 import { packageMacos } from './package-macos.mjs';
 import { packageWindowsX64 } from './package-windows-x64.mjs';
 import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
@@ -95,6 +96,40 @@ test('the Windows Nightly wrapper accepts dev update metadata', async () => {
       if (path.endsWith('.yml')) assert.equal(basename(path), 'dev.yml');
     },
   });
+});
+
+test('the Linux Nightly wrapper builds the AppImage before the deb and merges one feed', async () => {
+  const version = '0.2.0-dev.42.20260829';
+  const events = [];
+  await packageLinux({
+    platform: 'linux',
+    arch: 'x64',
+    env: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
+    run: async (_command, args) => {
+      const script = args.at(-1);
+      if (script.startsWith('package:')) events.push(script);
+    },
+    remove: async () => {},
+    move: async (source, destination) => {
+      events.push(`move ${basename(source)} ${basename(destination)}`);
+    },
+    mergeFeeds: async ({ sourcePaths, outputPath }) => {
+      events.push(
+        `merge ${sourcePaths.map((path) => basename(path)).join(' ')} ${basename(outputPath)}`,
+      );
+    },
+    assertFile: async () => {},
+  });
+  // The deb run writes a `package-type` marker into the tree both targets share,
+  // and an AppImage carrying it updates itself by installing a deb. Building the
+  // AppImage first, in a run of its own, is the only thing keeping it out — and
+  // the second run rewrites the feed, so the two are merged back afterwards.
+  assert.deepEqual(events, [
+    'package:linux-appimage-x64',
+    'move dev-linux.yml dev-linux.yml.appimage',
+    'package:linux-deb-x64',
+    'merge dev-linux.yml.appimage dev-linux.yml dev-linux.yml',
+  ]);
 });
 
 test('a packaged Nightly accepts the pinned GitHub dev update channel', async () => {

@@ -239,6 +239,7 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/verify-macos-autoupdate.mjs',
     'scripts/verify-linux.mjs',
     'scripts/desktop-release-targets.mjs',
+    'scripts/desktop-release-targets.test.mjs',
     'scripts/desktop-update-contract.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',

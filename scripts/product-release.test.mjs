@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
@@ -26,6 +27,9 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
+import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
+import { mergeProductReleaseUpdateFeeds } from './product-release-artifacts.mjs';
 import {
   parseAsfSourceReferenceTag,
   resolveProductManifestIdentity,
@@ -118,17 +122,17 @@ test('one root version defines every product artifact from one source commit', (
       'Maka-1.2.3-win-x64.zip.sha256',
       'latest.yml',
     ],
+    // Linux artifact names carry the packaging ecosystem's architecture, not
+    // Node's: x64 is `x86_64` for an AppImage and `amd64` for a deb.
     'desktop-linux-x64': [
-      'Maka-1.2.3-linux-x64.AppImage',
-      'Maka-1.2.3-linux-x64.AppImage.blockmap',
-      'Maka-1.2.3-linux-x64.AppImage.sha256',
-      'Maka-1.2.3-linux-x64.deb',
-      'Maka-1.2.3-linux-x64.deb.sha256',
+      'Maka-1.2.3-linux-amd64.deb',
+      'Maka-1.2.3-linux-amd64.deb.sha256',
+      'Maka-1.2.3-linux-x86_64.AppImage',
+      'Maka-1.2.3-linux-x86_64.AppImage.sha256',
       'latest-linux.yml',
     ],
     'desktop-linux-arm64': [
       'Maka-1.2.3-linux-arm64.AppImage',
-      'Maka-1.2.3-linux-arm64.AppImage.blockmap',
       'Maka-1.2.3-linux-arm64.AppImage.sha256',
       'Maka-1.2.3-linux-arm64.deb',
       'Maka-1.2.3-linux-arm64.deb.sha256',
@@ -141,6 +145,74 @@ test('one root version defines every product artifact from one source commit', (
   assert.ok(identity.releaseAssets.includes('latest-mac.yml'));
   assert.ok(!identity.releaseAssets.includes('latest-mac-arm64.yml'));
   assert.ok(!identity.releaseAssets.includes('latest-mac-x64.yml'));
+  // Nothing may reach publication that no runner uploads, and nothing a runner
+  // uploads may go unaccounted for. The merged feeds are the one difference,
+  // and each names exactly the per-architecture copies it consumes.
+  const staged = new Set(Object.values(identity.artifacts).flat());
+  const published = new Set(identity.releaseAssets);
+  const consumed = new Set(identity.updateFeeds.flatMap((feed) => feed.mergedFrom ?? []));
+  const produced = new Set(
+    identity.updateFeeds.filter((feed) => feed.mergedFrom).map((feed) => feed.name),
+  );
+  assert.deepEqual(
+    [...published].filter((name) => !staged.has(name)).toSorted(),
+    [...produced].toSorted(),
+  );
+  assert.deepEqual(
+    [...staged].filter((name) => !published.has(name)).toSorted(),
+    [...consumed].toSorted(),
+  );
+});
+
+test('publication merges the per-architecture macOS feeds into the one clients read', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-merge-feeds-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const version = '1.2.3';
+  const feeds = [];
+  for (const arch of ['arm64', 'x64']) {
+    const zip = `Maka-${version}-mac-${arch}.zip`;
+    const bytes = Buffer.from(`${zip} bytes`);
+    const sha512 = createHash('sha512').update(bytes).digest('base64');
+    await writeFile(join(directory, zip), bytes);
+    await writeFile(join(directory, `${zip}.blockmap`), 'blockmap');
+    const name = `latest-mac-${arch}.yml`;
+    feeds.push(name);
+    await writeFile(
+      join(directory, name),
+      [
+        `version: ${version}`,
+        'files:',
+        `  - url: ${zip}`,
+        `    sha512: ${sha512}`,
+        `    size: ${bytes.length}`,
+        `path: ${zip}`,
+        `sha512: ${sha512}`,
+        '',
+      ].join('\n'),
+    );
+  }
+
+  const merged = await mergeProductReleaseUpdateFeeds(directory, {
+    updateFeeds: [
+      { name: 'latest-mac.yml', advertised: [], mergedFrom: feeds },
+      { name: 'latest.yml', advertised: [], mergedFrom: null },
+    ],
+  });
+
+  assert.deepEqual(merged, ['latest-mac.yml']);
+  // The per-architecture copies are consumed, not published: leaving them would
+  // publish two feeds each offering one architecture an update it cannot use.
+  for (const name of feeds) {
+    await assert.rejects(access(join(directory, name)));
+  }
+  // The merged feed has to hold against the bytes that will be published, not
+  // merely parse: this is the only check between the two runners and a client.
+  await verifyDesktopUpdateArtifacts({
+    directory,
+    metadataName: 'latest-mac.yml',
+    version,
+    artifactNames: [`Maka-${version}-mac-arm64.zip`, `Maka-${version}-mac-x64.zip`],
+  });
 });
 
 test('the standalone launcher identifies its installed Eval bundle root', async (t) => {
@@ -765,11 +837,39 @@ test('one product workflow gates one draft release on every required artifact', 
     );
     assert.equal(upload.with.path, '${{ runner.temp }}/release-assets');
   }
+  // The macOS feed only becomes the one clients read once both runners' copies
+  // are here, so the merge has to precede the exact-manifest check.
+  const publishStepNames = jobs.publish.steps.map((step) => step.name);
+  assert.ok(
+    publishStepNames.indexOf('Merge the per-architecture update feeds') <
+      publishStepNames.indexOf('Verify the exact product artifact manifest'),
+  );
+  const mergeFeeds = jobs.publish.steps.find(
+    (step) => step.name === 'Merge the per-architecture update feeds',
+  ).run;
+  assert.match(mergeFeeds, /product-release-artifacts\.mjs merge-feeds release-assets/u);
   const verifyArtifacts = jobs.publish.steps.find(
     (step) => step.name === 'Verify the exact product artifact manifest',
   ).run;
   assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
   assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
+  // A workflow matrix cannot be generated from the target descriptor, so it is
+  // held to it here instead of being a second list that can drift.
+  const matrix = jobs.desktop.strategy.matrix.include;
+  assert.deepEqual(
+    matrix.map((entry) => entry.target).toSorted(),
+    desktopReleaseTargets('1.2.3', { nightly: false })
+      .map((target) => target.name)
+      .toSorted(),
+  );
+  for (const entry of matrix) {
+    assert.equal(entry.target, `${entry.platform}-${entry.arch}`);
+  }
+  assert.deepEqual(
+    matrix.map((entry) => entry.runner),
+    ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],
+  );
+
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
     .map((step) => step.run)

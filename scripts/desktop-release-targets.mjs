@@ -23,6 +23,18 @@ const MACOS_ARCHITECTURES = Object.freeze(['arm64', 'x64']);
 const LINUX_ARCHITECTURES = Object.freeze(['x64', 'arm64']);
 
 /**
+ * `${arch}` in a Linux `artifactName` is the packaging ecosystem's spelling, not
+ * the Node one: builder-util's getArtifactArchName rewrites x64 to `x86_64` for
+ * an AppImage and to `amd64` for a deb, and leaves arm64 alone. Recorded here
+ * because these names are what every other step looks for; the mapping itself is
+ * pinned to electron-builder's own function by desktop-release-targets.test.mjs.
+ */
+const LINUX_ARTIFACT_ARCHITECTURES = Object.freeze({
+  x64: Object.freeze({ AppImage: 'x86_64', deb: 'amd64' }),
+  arm64: Object.freeze({ AppImage: 'arm64', deb: 'arm64' }),
+});
+
+/**
  * Every Desktop packaging runner, for either publication channel. A target is
  * one runner: `payloads` is what it uploads, `advertised` is the subset its
  * update feed offers, and `checksums` is the subset a formal release publishes
@@ -61,13 +73,17 @@ export function desktopReleaseTargets(version, { nightly }) {
       checksums: [windowsExe, windowsZip],
     },
     ...LINUX_ARCHITECTURES.map((arch) => {
-      const appImage = `Maka-${version}-linux-${arch}.AppImage`;
-      const deb = `Maka-${version}-linux-${arch}.deb`;
+      const names = LINUX_ARTIFACT_ARCHITECTURES[arch];
+      const appImage = `Maka-${version}-linux-${names.AppImage}.AppImage`;
+      const deb = `Maka-${version}-linux-${names.deb}.deb`;
+      // Neither Linux distributable has a sidecar blockmap: electron-builder
+      // appends the AppImage's block map to the AppImage itself, and fpm targets
+      // have none at all.
       return {
         name: `linux-${arch}`,
         platform: 'linux',
         arch,
-        payloads: [appImage, `${appImage}.blockmap`, deb],
+        payloads: [appImage, deb],
         feed: linuxUpdateMetadataName(arch, nightly),
         advertised: [appImage, deb],
         checksums: [appImage, deb],

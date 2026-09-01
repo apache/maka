@@ -18,11 +18,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, readFile, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { linuxUpdateMetadataName } from './desktop-update-contract.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
+import { mergeDesktopUpdateFeeds } from './desktop-update-contract.mjs';
 import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -43,7 +44,7 @@ const requiredElectronLicensePaths = [
 const linuxPackageArchitectures = Object.freeze(['x64', 'arm64']);
 
 /** electron-builder names the unpacked staging directory after the target. */
-export function linuxUnpackedDirectoryName(arch) {
+function linuxUnpackedDirectoryName(arch) {
   return arch === 'x64' ? 'linux-unpacked' : `linux-${arch}-unpacked`;
 }
 
@@ -77,6 +78,8 @@ export async function packageLinux({
   env = process.env,
   run = runCommand,
   remove = rm,
+  move = rename,
+  mergeFeeds = mergeDesktopUpdateFeeds,
   assertFile = access,
 } = {}) {
   // The native Runtime Host peer is built for the host, so each architecture
@@ -89,12 +92,21 @@ export async function packageLinux({
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const appImagePath = join(releaseDirectory, `Maka-${buildVersion}-linux-${arch}.AppImage`);
-  const debPath = join(releaseDirectory, `Maka-${buildVersion}-linux-${arch}.deb`);
-  const updateMetadataPath = join(
+  const target = desktopReleaseTargets(buildVersion, {
+    nightly: buildVersion !== manifest.version,
+  }).find((entry) => entry.name === `linux-${arch}`);
+  const appImagePath = join(
     releaseDirectory,
-    linuxUpdateMetadataName(arch, buildVersion !== manifest.version),
+    target.payloads.find((name) => name.endsWith('.AppImage')),
   );
+  const debPath = join(
+    releaseDirectory,
+    target.payloads.find((name) => name.endsWith('.deb')),
+  );
+  const updateMetadataPath = join(releaseDirectory, target.feed);
+  // electron-builder rewrites the feed on every run rather than adding to it, so
+  // the AppImage's copy is moved aside and merged back once the deb has run.
+  const appImageMetadataPath = `${updateMetadataPath}.appimage`;
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);
@@ -106,10 +118,22 @@ export async function packageLinux({
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('npm', ['run', 'check:release']);
   await remove(releaseDirectory, { recursive: true, force: true });
-  await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:linux']);
+  // Both distributables come out of one unpacked tree, and the deb target writes
+  // a `package-type` marker into it that makes electron-updater drive an install
+  // through DebUpdater. Building the AppImage in a run of its own is what keeps
+  // that marker out of the AppImage, which has to update itself in place.
+  await run('npm', ['--workspace', '@maka/desktop', 'run', `package:linux-appimage-${arch}`]);
   await assertFile(appImagePath);
+  await assertFile(updateMetadataPath);
+  await move(updateMetadataPath, appImageMetadataPath);
+  await run('npm', ['--workspace', '@maka/desktop', 'run', `package:linux-deb-${arch}`]);
   await assertFile(debPath);
   await assertFile(updateMetadataPath);
+  await mergeFeeds({
+    sourcePaths: [appImageMetadataPath, updateMetadataPath],
+    outputPath: updateMetadataPath,
+  });
+  await remove(appImageMetadataPath, { force: true });
   await remove(join(releaseDirectory, linuxUnpackedDirectoryName(arch)), {
     recursive: true,
     force: true,

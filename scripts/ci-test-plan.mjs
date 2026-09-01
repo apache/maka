@@ -69,6 +69,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/verify-macos-autoupdate.mjs',
   'scripts/verify-linux.mjs',
   'scripts/desktop-release-targets.mjs',
+  'scripts/desktop-release-targets.test.mjs',
   'scripts/desktop-update-contract.mjs',
   'scripts/product-nightly.mjs',
   'scripts/product-nightly.test.mjs',

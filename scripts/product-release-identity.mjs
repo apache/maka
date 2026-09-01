@@ -140,8 +140,11 @@ export function resolveProductReleaseIdentity({
     ),
     'cli-macos-arm64': cliGroup,
   };
+  // `mergedFrom` travels with the feed: publication is the only step that can
+  // turn the per-architecture copies the runners upload into the one feed
+  // `releaseAssets` names, and it needs to be told which copies those are.
   const updateFeeds = desktopPublishedFeeds(version, { nightly: false }).map(
-    ({ name, advertised }) => ({ name, advertised }),
+    ({ name, advertised, mergedFrom }) => ({ name, advertised, mergedFrom }),
   );
   const releaseAssets = [
     ...targets.flatMap(uploaded),
