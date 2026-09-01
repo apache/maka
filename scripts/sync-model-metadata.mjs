@@ -547,7 +547,9 @@ export function toMetadata(providerId, modelId, provider, model) {
   // Filter rather than reject a modality value the wire format does not carry yet
   // (e.g. upstream adding 'video'): the model itself is real and otherwise valid,
   // so dropping the whole model would misreport it as removed from the catalog.
-  const knownInputModalities = model.modalities?.input.filter((value) => KNOWN_INPUT_MODALITIES.has(value));
+  const knownInputModalities = model.modalities?.input.filter((value) =>
+    KNOWN_INPUT_MODALITIES.has(value),
+  );
   const knownOutputModalities = model.modalities?.output.filter((value) =>
     KNOWN_OUTPUT_MODALITIES.has(value),
   );

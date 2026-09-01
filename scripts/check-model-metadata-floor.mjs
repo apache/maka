@@ -45,8 +45,7 @@ export async function main(argv = process.argv) {
 
   const requiredProviders = Object.keys(PROVIDERS);
   const missingProviders = requiredProviders.filter(
-    (providerType) =>
-      !metadata[providerType] || Object.keys(metadata[providerType]).length === 0,
+    (providerType) => !metadata[providerType] || Object.keys(metadata[providerType]).length === 0,
   );
   if (missingProviders.length > 0) {
     throw new Error(
