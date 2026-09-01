@@ -48,7 +48,7 @@ export function desktopNightlyTargets(version) {
   return desktopReleaseTargets(version, { nightly: true });
 }
 
-export function desktopNightlyPublishedFeeds(version) {
+function desktopNightlyPublishedFeeds(version) {
   return desktopPublishedFeeds(version, { nightly: true });
 }
 

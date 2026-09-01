@@ -109,7 +109,7 @@ export async function assertPackagedUpdateConfiguration(
  * install. The first document is the primary: its `path` and top-level digest
  * survive the merge, and the rest contribute only their payloads.
  */
-export function mergeDesktopUpdateFeedDocuments(documents) {
+function mergeDesktopUpdateFeedDocuments(documents) {
   const [primary, ...rest] = documents;
   if (!primary) {
     throw new Error('Desktop update feed merge requires at least one feed');
