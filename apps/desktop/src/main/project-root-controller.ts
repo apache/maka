@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { resolveProjectRoot } from '@maka/runtime/system-prompt/project-context';
 
 export interface CurrentProjectSelection {
@@ -42,6 +43,7 @@ export interface ProjectRootControllerDeps {
   readonly rootId: string;
   readonly preferenceFile: string;
   readonly fallbackRoots: () => string[];
+  readonly defaultWorkingDirectory?: () => Promise<string | undefined>;
 }
 
 interface ProjectPreferenceFile {
@@ -55,11 +57,24 @@ export function createProjectRootController(
   deps: ProjectRootControllerDeps,
 ): ProjectRootController {
   let selectedProject: CurrentProjectSelection | null = null;
+  // Bumped by every explicit selection so a resolution that started earlier
+  // cannot commit its result over a newer one.
+  let selectionGeneration = 0;
   const initialSelection = loadInitialSelection(deps);
 
   async function currentSelection(): Promise<CurrentProjectSelection> {
-    if (selectedProject) return selectedProject;
-    return (selectedProject = await initialSelection);
+    const generation = selectionGeneration;
+    const base = selectedProject ?? (await initialSelection);
+    // `setSelection()` writes `selectedProject` synchronously, so an explicit
+    // Project can be installed while either await here is pending. Its value
+    // is newer than anything this call computed: committing the stale
+    // unassociated selection would leave the active session on the default
+    // directory after the caller was told the Project selection succeeded.
+    if (selectionGeneration !== generation && selectedProject) return selectedProject;
+    if (typeof base.projectId === 'string') return (selectedProject = base);
+    const path = await resolveUnassociatedRoot(deps);
+    if (selectionGeneration !== generation && selectedProject) return selectedProject;
+    return (selectedProject = { ...base, path });
   }
 
   async function current(): Promise<string> {
@@ -82,6 +97,7 @@ export function createProjectRootController(
   }
 
   function setSelection(projectId: string | null, projectPath: string): Promise<void> {
+    selectionGeneration += 1;
     selectedProject = { projectId, path: projectPath };
     return persistSelection(deps, projectId);
   }
@@ -89,12 +105,36 @@ export function createProjectRootController(
   return { current, currentSelection, resolveExplicit, setSelection };
 }
 
+/**
+ * Project identity is authoritative whenever it exists, so it is recovered
+ * first and on its own. The optional default working directory is irrelevant
+ * to a selected Project and is therefore not consulted here at all: a
+ * malformed settings file or transient I/O in that callback must never be able
+ * to reject this promise and take `current()` and Bot workspace resolution
+ * down with it. The no-Project case reaches the directory lazily through
+ * `resolveUnassociatedRoot`, which stays the single decision point.
+ */
 async function loadInitialSelection(
   deps: ProjectRootControllerDeps,
 ): Promise<CurrentProjectSelection> {
-  const fallbackPath = await resolveProjectRoot(deps.fallbackRoots());
   const preference = await readPreference(deps.preferenceFile, deps.rootId);
-  return { projectId: preference, path: fallbackPath };
+  return { projectId: preference, path: await resolveProjectRoot(deps.fallbackRoots()) };
+}
+
+/**
+ * The one place that decides the working directory for a conversation with no
+ * Project: configured default, then the established fallback roots. A
+ * rejecting callback is treated exactly like an unset preference — this is a
+ * fallback boundary, so it fails open rather than propagating.
+ */
+async function resolveUnassociatedRoot(deps: ProjectRootControllerDeps): Promise<string> {
+  const configured = await deps.defaultWorkingDirectory?.().catch(() => undefined);
+  if (configured) {
+    const path = resolve(configured);
+    const info = await stat(path).catch(() => undefined);
+    if (info?.isDirectory()) return path;
+  }
+  return resolveProjectRoot(deps.fallbackRoots());
 }
 
 async function persistSelection(

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -31,6 +31,7 @@ import {
   createProjectManagementService,
   type ProjectManagementCatalog,
 } from '../project-management-service.js';
+import { createProjectRootController } from '../project-root-controller.js';
 
 const LOCAL_CAPABILITIES = {
   chooseClientDirectory: true,
@@ -213,6 +214,7 @@ test('keeps an explicit no-Project selection local to Desktop', async () => {
 
 test('does not silently replace a stale Project preference with another Project', async () => {
   const selections: Array<{ projectId: string | null; path: string }> = [];
+  let currentSelection = { projectId: 'missing' as string | null, path: '/last-known' };
   const service = createProjectManagementService({
     capabilities: LOCAL_CAPABILITIES,
     catalog: {
@@ -225,13 +227,56 @@ test('does not silently replace a stale Project preference with another Project'
     },
     chooseDirectory: async () => undefined,
     selection: {
-      currentSelection: async () => ({ projectId: 'missing', path: '/last-known' }),
-      setSelection: (projectId, path) => selections.push({ projectId, path }),
+      currentSelection: async () => currentSelection,
+      setSelection: (projectId, path) => {
+        currentSelection = { projectId, path };
+        selections.push({ projectId, path });
+      },
     },
   });
 
   assert.deepEqual(await service.current(), { projectId: null, path: '/last-known' });
   assert.deepEqual(selections, [{ projectId: null, path: '/last-known' }]);
+});
+
+test('a stale Project preference recovers through the configured default directory', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-project-stale-default-'));
+  const fallback = join(base, 'fallback');
+  const configuredDefault = join(base, 'configured-default');
+  const preferenceFile = join(base, 'project-preferences.json');
+  await Promise.all([mkdir(fallback), mkdir(configuredDefault)]);
+  await writeFile(
+    preferenceFile,
+    JSON.stringify({ version: 1, selections: { 'root-a': 'deleted-project' } }),
+  );
+  const selection = createProjectRootController({
+    rootId: 'root-a',
+    preferenceFile,
+    fallbackRoots: () => [fallback],
+    defaultWorkingDirectory: async () => configuredDefault,
+  });
+  const service = createProjectManagementService({
+    capabilities: LOCAL_CAPABILITIES,
+    catalog: {
+      list: async () => [],
+      register: unexpected,
+      relink: unexpected,
+      rename: unexpected,
+      archive: unexpected,
+      restore: unexpected,
+    },
+    chooseDirectory: async () => undefined,
+    selection,
+  });
+
+  try {
+    assert.deepEqual(await service.current(), {
+      projectId: null,
+      path: configuredDefault,
+    });
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('does not expose Client directory actions for a remote Host', async () => {

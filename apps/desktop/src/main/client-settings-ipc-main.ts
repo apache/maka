@@ -37,9 +37,18 @@ export function registerClientSettingsIpc(deps: {
   readonly ipcMain: Pick<IpcMain, "handle">;
   readonly settingsStore: SettingsStore;
   readonly apply: (settings: AppSettings) => Promise<void>;
+  readonly chooseDefaultWorkingDirectory: () => Promise<string | undefined>;
 }): void {
   deps.ipcMain.handle("settings:client:get", async () =>
     maskAppSettings(await deps.settingsStore.get()),
+  );
+  // The default working directory lives in the client tier because
+  // `projects` is client-owned: the path names a folder on THIS machine, so a
+  // Host-shared value would be wrong for every other client of that Host.
+  // Registering the picker here also keeps it off the per-target settings
+  // channel, which only exists while a Runtime Host is selected.
+  deps.ipcMain.handle("settings:client:chooseDefaultWorkingDirectory", () =>
+    deps.chooseDefaultWorkingDirectory(),
   );
   deps.ipcMain.handle(
     "settings:client:update",

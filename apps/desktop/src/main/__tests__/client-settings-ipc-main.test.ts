@@ -45,6 +45,7 @@ test("client settings updates filter Host policy and return newly submitted secr
         return settings;
       },
     } as never,
+    chooseDefaultWorkingDirectory: async () => undefined,
     apply: async () => {
       applied += 1;
     },
@@ -67,4 +68,25 @@ test("client settings updates filter Host policy and return newly submitted secr
   );
   assert.equal(settings.chatDefaults.permissionMode, "ask");
   assert.equal(applied, 1);
+});
+
+// The default working directory is client-owned (`projects` is a client-tier
+// section), so its folder picker is registered on the client channel and stays
+// reachable regardless of which Runtime Host is selected.
+test("the default working directory picker answers on the client channel", async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerClientSettingsIpc({
+    ipcMain: {
+      handle(channel, listener) {
+        handlers.set(channel, listener as (...args: unknown[]) => unknown);
+      },
+    },
+    settingsStore: { get: async () => createDefaultSettings() } as never,
+    apply: async () => {},
+    chooseDefaultWorkingDirectory: async () => "/Users/example/agent",
+  });
+
+  const choose = handlers.get("settings:client:chooseDefaultWorkingDirectory");
+  assert.ok(choose);
+  assert.equal(await choose({}), "/Users/example/agent");
 });

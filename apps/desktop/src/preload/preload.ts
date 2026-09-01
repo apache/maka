@@ -2997,6 +2997,9 @@ const makaBridge = {
     getClient(): Promise<AppSettings> {
       return ipcRenderer.invoke('settings:client:get');
     },
+    chooseDefaultWorkingDirectory(): Promise<string | undefined> {
+      return ipcRenderer.invoke('settings:client:chooseDefaultWorkingDirectory');
+    },
     get(host?: DesktopRuntimeHostRef): Promise<AppSettings> {
       return invokeSelectedRuntimeHost(host, 'settings:get');
     },

@@ -98,8 +98,8 @@ export function createProjectManagementService(deps: {
         : undefined;
     if (!requested) {
       if (typeof selectedProjectId === 'string') {
-        deps.selection.setSelection(null, selection.path);
-        return { projectId: null, path: selection.path };
+        await deps.selection.setSelection(null, selection.path);
+        return deps.selection.currentSelection();
       }
       return { projectId: undefined, path: selection.path };
     }

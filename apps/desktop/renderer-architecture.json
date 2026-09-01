@@ -3086,7 +3086,7 @@
           "@maka/core/model-thinking": 1,
           "@maka/core/settings": 3,
           "@maka/core/settings/network-settings": 1,
-          "@maka/ui": 2,
+          "@maka/ui": 1,
           "react": 1
         }
       },
@@ -4230,10 +4230,10 @@
         "dependencyPaths": {
           "../../preload/bridge-contract.js": 1,
           "../../shared/settings-ownership.js": 1,
-          "../browser-storage": 1,
           "../features/connection-settings": 1,
           "../locales/settings-navigation-copy.js": 1,
           "../locales/settings-shared-copy.js": 1,
+          "../platform/desktop/settings-surface-capabilities.js": 1,
           "./about-settings-page": 1,
           "./appearance-settings-page": 1,
           "./bot-chat-settings-page": 1,

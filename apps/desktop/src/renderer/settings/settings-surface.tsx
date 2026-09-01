@@ -39,6 +39,13 @@ import {
   useMediaQuery,
 } from '@astryxdesign/core';
 import { ICON_SIZE, ArrowLeft } from '@maka/ui/icons';
+import {
+  canSetLocalDefaultWorkingDirectory,
+  chooseDefaultWorkingDirectory,
+  persistSettingsSection,
+  resolveDefaultWorkingDirectoryPatch,
+} from '../platform/desktop/settings-surface-capabilities.js';
+import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import type {
   AppSettings,
   ChatDefaultPermissionMode,
@@ -61,11 +68,9 @@ import type {
   DesktopSessionSummary,
 } from '../../preload/bridge-contract.js';
 import type { UiLocalePreference } from '@maka/core/ui-locale';
-import { createDefaultSettings, DEFAULT_APP_ICON } from '@maka/core/settings';
 import { Banner, Selector, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import { ProvidersPanel } from './providers-panel';
 import { SubagentSettingsPage } from './subagent-settings-page';
-import { safeLocalStorageSet } from '../browser-storage';
 import { ProjectsSettingsPage } from './projects-settings-page';
 import { AboutSettingsPage } from './about-settings-page';
 import { AppearanceSettingsPage } from './appearance-settings-page';
@@ -261,7 +266,7 @@ function SettingsSurfaceContent(
   }, []);
 
   useEffect(() => {
-    safeLocalStorageSet('maka-settings-section-v1', section);
+    persistSettingsSection(section);
   }, [section]);
   const defaultSettings = useMemo(() => createDefaultSettings(), []);
   const snapshotCache = useMemo(
@@ -482,6 +487,9 @@ function SettingsSurfaceContent(
   const runtimeHostTargetVerified = Boolean(
     selectedRuntimeHost && runtimeHostCatalogStatus.isVerified,
   );
+  const canSetLocalDefault =
+    runtimeHostTargetVerified &&
+    canSetLocalDefaultWorkingDirectory(selectedRuntimeHostEntry?.profile.kind);
   const runtimeHostTargetStatus: RuntimeHostAvailabilityStatus =
     runtimeHostCatalogStatus.phase === 'error'
       ? 'error'
@@ -1045,6 +1053,7 @@ function SettingsSurfaceContent(
                             runtimeHostSettingsStatus={selectedRuntimeHostSettingsStatus}
                             runtimeHostConnectionsStatus={selectedRuntimeHostConnectionsStatus}
                             runtimeHostTargetVerified={runtimeHostTargetVerified}
+                            canSetLocalDefault={canSetLocalDefault}
                             runtimeHostTargetStatus={runtimeHostTargetStatus}
                             runtimeHostErrorMessage={runtimeHostErrorMessage}
                             themePref={props.themePref}
@@ -1103,6 +1112,7 @@ function SettingsPageBody(props: {
   runtimeHostSettingsStatus: SettingsResourceStatus;
   runtimeHostConnectionsStatus: SettingsResourceStatus;
   runtimeHostTargetVerified: boolean;
+  canSetLocalDefault: boolean;
   runtimeHostTargetStatus: RuntimeHostAvailabilityStatus;
   runtimeHostErrorMessage?: string;
   themePref: ThemePreference;
@@ -1194,6 +1204,14 @@ function SettingsPageBody(props: {
           testNetworkProxy={props.runtimeHost
             ? (input) => window.maka.settings.testNetworkProxy(input, props.runtimeHost)
             : undefined}
+          canSetLocalDefault={props.canSetLocalDefault}
+          onSaveWorkingDirectory={async (action) => {
+            const patch = await resolveDefaultWorkingDirectoryPatch(
+              action,
+              chooseDefaultWorkingDirectory,
+            );
+            if (patch) await props.onUpdateSettings(patch);
+          }}
           onUpdate={props.onUpdateSettings}
           onRefreshConnections={props.onRefreshConnections}
           onRetryRuntimeHost={props.onRetryRuntimeHost}
