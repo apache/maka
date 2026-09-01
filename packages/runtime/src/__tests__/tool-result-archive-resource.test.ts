@@ -372,6 +372,20 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal(match.snippet, 'İA');
   });
 
+  test('search preserves contextual Unicode case folding', async () => {
+    const { ref, reader } = textFixture('ΟΣ');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'ΟΣ',
+    })) as Record<string, unknown>;
+    const match = (result.matches as Array<Record<string, unknown>>)[0]!;
+
+    assert.equal(result.matchCount, 1);
+    assert.equal(match.offset, 0);
+    assert.equal(match.snippet, 'ΟΣ');
+  });
+
   test('preserves accepted long search patterns and complete matching snippets', async () => {
     const pattern = 'A'.repeat(256);
     const { ref, reader } = textFixture('prefix ' + pattern + ' suffix');

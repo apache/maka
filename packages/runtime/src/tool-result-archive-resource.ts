@@ -268,35 +268,38 @@ function inspectArchive(
       ...(typeof value.kind === 'string' ? { archivedKind: boundedString(value.kind) } : {}),
       ...(typeof value.status === 'string' ? { status: boundedString(value.status) } : {}),
     };
-    const manifestItems = items
-      ? fitManifestItems(
-          {
-            ...objectBase,
-            itemCount: items.length,
-            queryHint:
-              'Call ArchiveRead with operation "query" and one of the listed itemId values.',
-            readHint,
-          },
-          items,
-        )
-      : undefined;
-    const result = {
-      ...objectBase,
-      ...(items
-        ? {
-            itemCount: items.length,
-            items: manifestItems!,
-            queryHint:
-              'Call ArchiveRead with operation "query" and one of the listed itemId values.',
-          }
-        : { preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS) }),
-      readHint,
-    };
+    if (items) {
+      const queryHint =
+        'Call ArchiveRead with operation "query" and one of the listed itemId values.';
+      let manifestItems = fitManifestItems(
+        { ...objectBase, itemCount: items.length, queryHint, readHint },
+        items,
+      );
+      const buildManifest = (): Record<string, unknown> => ({
+        ...objectBase,
+        itemCount: items.length,
+        items: manifestItems,
+        queryHint,
+        readHint,
+        ...(manifestItems.length < items.length
+          ? { itemsTruncated: true, listedItemCount: manifestItems.length }
+          : {}),
+      });
+      // fitManifestItems uses a reserve for the final envelope. Re-check the
+      // complete object because keys, hints, and truncation metadata are part
+      // of the bounded response too.
+      while (
+        manifestItems.length > 0 &&
+        JSON.stringify(buildManifest()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS
+      ) {
+        manifestItems = manifestItems.slice(0, -1);
+      }
+      return buildManifest();
+    }
     return {
-      ...result,
-      ...(items && manifestItems && manifestItems.length < items.length
-        ? { itemsTruncated: true, listedItemCount: manifestItems.length }
-        : {}),
+      ...objectBase,
+      preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS),
+      readHint,
     };
   }
   if (Array.isArray(value)) {
@@ -402,9 +405,10 @@ function pagedContent(input: {
 
 /**
  * Locate a literal (case-insensitive) substring inside the archived text and
- * return matched offsets with bounded context snippets. Literal — never a regex
- * — so a search can neither backtrack pathologically nor exceed the response
- * budget: matches accumulate only while the envelope stays within
+ * return matched offsets with bounded context snippets. The pattern is escaped
+ * before using a Unicode-aware literal regex, so it cannot inject regex syntax
+ * or introduce pathological backtracking. Matches accumulate only while the
+ * envelope stays within
  * TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS, and `nextOffset` resumes the scan.
  */
 function searchArchive(
@@ -414,9 +418,11 @@ function searchArchive(
   offset: number,
 ): unknown {
   if (!pattern) return archiveFailure(ref, 'pattern_required');
-  const folded = foldArchiveText(text);
-  const needle = pattern.toLowerCase();
-  const step = Math.max(1, needle.length);
+  // Escape the user pattern before using a Unicode-aware literal regex. This
+  // preserves original source indices while retaining contextual case folding
+  // (for example, Greek final sigma), and remains safe from regex injection or
+  // pathological backtracking because the pattern is literal.
+  const matcher = new RegExp(escapeRegExp(pattern), 'giu');
   const base = {
     ok: true as const,
     kind: 'tool_result_archive' as const,
@@ -449,17 +455,13 @@ function searchArchive(
     return scanLine;
   };
 
-  let from = foldedIndexAtOrAfter(folded.sourceOffsets, Math.min(Math.max(0, offset), text.length));
+  let from = Math.min(Math.max(0, offset), text.length);
   while (matches.length < TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES) {
-    const foldedIndex = folded.value.indexOf(needle, from);
-    if (foldedIndex === -1) return buildResponse(matches, null);
-    const index = folded.sourceOffsets[foldedIndex] ?? text.length;
-    const matchEnd = sourceEndForFoldedMatch(
-      text,
-      folded.sourceOffsets,
-      foldedIndex,
-      needle.length,
-    );
+    matcher.lastIndex = from;
+    const match = matcher.exec(text);
+    if (!match) return buildResponse(matches, null);
+    const index = match.index;
+    const matchEnd = index + match[0].length;
     // Keep the complete match representable when the accepted pattern is
     // longer than the normal snippet budget; trim surrounding context first.
     const snippetLimit = Math.min(
@@ -485,55 +487,16 @@ function searchArchive(
       return buildResponse(matches, index);
     }
     matches.push(candidate);
-    from = foldedIndex + step;
+    from = index + Math.max(1, match[0].length);
   }
   // Hit the per-page match cap; report where an unread match still waits.
-  const more = folded.value.indexOf(needle, from);
-  return buildResponse(matches, more === -1 ? null : (folded.sourceOffsets[more] ?? text.length));
+  matcher.lastIndex = from;
+  const more = matcher.exec(text);
+  return buildResponse(matches, more === null ? null : more.index);
 }
 
-interface FoldedArchiveText {
-  value: string;
-  /** For each UTF-16 unit in `value`, the source UTF-16 offset it came from. */
-  sourceOffsets: number[];
-}
-
-function foldArchiveText(text: string): FoldedArchiveText {
-  let value = '';
-  const sourceOffsets: number[] = [];
-  for (let sourceIndex = 0; sourceIndex < text.length; ) {
-    const codePoint = text.codePointAt(sourceIndex)!;
-    const sourceChar = String.fromCodePoint(codePoint);
-    const folded = sourceChar.toLowerCase();
-    value += folded;
-    for (let index = 0; index < folded.length; index++) sourceOffsets.push(sourceIndex);
-    sourceIndex += sourceChar.length;
-  }
-  return { value, sourceOffsets };
-}
-
-function foldedIndexAtOrAfter(sourceOffsets: readonly number[], sourceOffset: number): number {
-  let low = 0;
-  let high = sourceOffsets.length;
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if ((sourceOffsets[middle] ?? Number.POSITIVE_INFINITY) < sourceOffset) low = middle + 1;
-    else high = middle;
-  }
-  return low;
-}
-
-function sourceEndForFoldedMatch(
-  text: string,
-  sourceOffsets: readonly number[],
-  foldedStart: number,
-  foldedLength: number,
-): number {
-  const lastSourceStart =
-    sourceOffsets[Math.min(sourceOffsets.length - 1, foldedStart + foldedLength - 1)];
-  if (lastSourceStart === undefined) return text.length;
-  const lastCodePoint = text.codePointAt(lastSourceStart)!;
-  return lastSourceStart + (lastCodePoint > 0xffff ? 2 : 1);
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** Count 1-based lines in text (an empty string has zero lines). */
