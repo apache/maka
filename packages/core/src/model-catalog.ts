@@ -21,6 +21,7 @@ import type {
   LlmConnection,
   ModelDiscoverySource,
   ModelInfo,
+  ProviderDefaults,
   ProviderType,
 } from './llm-connections.js';
 import {
@@ -216,6 +217,47 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
   return entries;
 }
 
+/**
+ * The offerable models a provider ships for a connection: its curated catalog
+ * list when the bundled metadata has one, its registry list otherwise, minus
+ * anything quarantined.
+ */
+function providerFallbackModelIds(
+  providerType: ProviderType,
+  defaults: Pick<ProviderDefaults, 'fallbackModels' | 'brokenModelIds'>,
+): string[] {
+  const broken = new Set(defaults.brokenModelIds ?? []);
+  const curated = curatedCatalogFallbackModelsForProvider(providerType);
+  return [...(curated ?? defaults.fallbackModels)].filter((id) => !broken.has(id));
+}
+
+/**
+ * The most fallback rows a connection's catalog can gain beyond what the
+ * connection itself stores.
+ *
+ * A provider with no model-list endpoint has its whole shipped inventory
+ * prepended to the connection's own models rather than substituted for them,
+ * so its catalog is larger than the persisted lists it draws from — and the
+ * wire bound that admits such a catalog has to allow for the difference. It is
+ * derived from the registry rather than written down beside it: a provider
+ * added or a curated list grown would otherwise leave a hand-written bound
+ * quietly too small, which is exactly how a valid persisted catalog became
+ * unencodable. Providers that do discover models substitute their fallback
+ * list instead of prepending it, so they add nothing here.
+ */
+export const MAX_PREPENDED_FALLBACK_MODELS: number = Object.keys(PROVIDER_REGISTRY).reduce(
+  (largest, providerType) => {
+    if (providerSupportsModelDiscovery(providerType as ProviderType)) return largest;
+    const defaults = providerDefaultsOf(providerType);
+    if (!defaults) return largest;
+    return Math.max(
+      largest,
+      providerFallbackModelIds(providerType as ProviderType, defaults).length,
+    );
+  },
+  0,
+);
+
 export function buildConnectionModelCatalogEntries(
   input: BuildConnectionModelCatalogInput,
 ): ModelCatalogEntry[] {
@@ -226,14 +268,11 @@ export function buildConnectionModelCatalogEntries(
   // Mirrors `isRealConnection` in connection-readiness.ts.
   if (!defaults) return [];
   const supportsModelDiscovery = providerSupportsModelDiscovery(connection.providerType);
-  const catalogFallbackModels = curatedCatalogFallbackModelsForProvider(connection.providerType);
   // Quarantined ids never surface as offerable entries — from any source,
   // including inventories stored or selections made before the quarantine —
   // mirroring the `authorizeConnectionModel` veto.
   const broken = new Set(defaults.brokenModelIds ?? []);
-  const fallbackModels = [...(catalogFallbackModels ?? defaults.fallbackModels)].filter(
-    (id) => !broken.has(id),
-  );
+  const fallbackModels = providerFallbackModelIds(connection.providerType, defaults);
   // A quarantined id persisted as this connection's `defaultModel` must not
   // re-enter the catalog either. `models` and `enabledModelIds` are filtered
   // below, but a broken default reaches `makeMissingDefaultEntry` unfiltered and

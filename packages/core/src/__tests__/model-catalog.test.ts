@@ -25,7 +25,13 @@ import {
   type BuildModelCatalogInput,
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
+  resolveConnectionModelCatalog,
 } from '../model-catalog.js';
+import {
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+} from '../runtime-policy.js';
 
 /**
  * Whether a build's default model is one the chat can send to. The catalog
@@ -510,4 +516,42 @@ test('DeepSeek catalogs the V4 vision model display metadata from a bare provide
   });
   assert.deepEqual(model?.modalities, { input: ['text', 'image'], output: ['text'] });
   assert.equal(model?.canUseAsChatDefault, true);
+});
+
+test('no provider resolves past the wire bound at the storage maxima', () => {
+  // The storage decoder and the wire decoder bound different things — what a
+  // connection may persist, and how many entries its resolved catalog may
+  // carry — and the Host sits between them. A catalog that storage accepts
+  // must therefore resolve to a page the wire accepts, or the Host's own
+  // projection is rejected on arrival and every client is left with no models
+  // to choose from. This is that boundary, at both maxima at once.
+  const models = Array.from(
+    { length: CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION },
+    (_, index) => ({ id: `stored-model-${index}` }),
+  );
+  const enabledModelIds = Array.from(
+    { length: CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS },
+    (_, index) => `enabled-only-${index}`,
+  );
+  let largest = 0;
+  for (const providerType of Object.keys(PROVIDER_REGISTRY) as ProviderType[]) {
+    const entries = resolveConnectionModelCatalog({
+      slug: 'boundary',
+      providerType,
+      // Listed by neither array, so it costs the catalog one more entry.
+      defaultModel: 'default-the-inventory-never-listed',
+      enabledModelIds,
+      models,
+      modelSource: 'fetched',
+    });
+    assert.ok(
+      entries.length <= CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
+      `${providerType} resolved ${entries.length} entries, over the bound of ${CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION}`,
+    );
+    largest = Math.max(largest, entries.length);
+  }
+  // And the bound is the real maximum, not a comfortable round number: one
+  // that drifted above what any catalog can reach would stop reporting when
+  // the projection grows underneath it.
+  assert.equal(largest, CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION);
 });

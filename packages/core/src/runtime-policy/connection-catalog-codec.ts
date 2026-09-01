@@ -24,6 +24,7 @@ import {
   validateSlug,
   type ProviderType,
 } from '../llm-connections.js';
+import { MAX_PREPENDED_FALLBACK_MODELS } from '../model-catalog.js';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   isThinkingLevel,
@@ -67,11 +68,20 @@ export const CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION = 2_048;
 export const CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS = 512;
 /**
  * A resolved entry exists for every stored model, for every enabled id the
- * inventory never listed, and for the connection default when it lists none —
- * so the entry bound is the sum of the two lists it draws from, plus one.
+ * inventory never listed, for the connection default when it lists none, and —
+ * on a provider with no model-list endpoint — for every model that provider
+ * ships, which the resolver prepends rather than substitutes.
+ *
+ * That last term is why this cannot be the sum of the two persisted lists
+ * alone: without it, a catalog the storage decoder accepts at its own maxima
+ * resolves to more entries than the wire admits, and the Host's own page is
+ * rejected on arrival, leaving every client with no models to choose from.
  */
 export const CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION =
-  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION + CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS + 1;
+  CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION +
+  CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS +
+  MAX_PREPENDED_FALLBACK_MODELS +
+  1;
 export const CONNECTION_NAME_MAX_LENGTH = 256;
 export const CONNECTION_MODEL_ID_MAX_LENGTH = 512;
 
