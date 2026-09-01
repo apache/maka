@@ -189,6 +189,12 @@ function resolveArchiveText(parsed: unknown, serializedResult: string): string {
   // line reads should operate on the human-readable streams, not JSON-escaped
   // `\\n` sequences in that object.
   const output = isRecord(parsed.output) ? parsed.output : undefined;
+  if (output?.mode === 'pty') {
+    const ptyParts = [output.scrollback, output.screen, output.lastAlternateScreen].filter(
+      (part): part is string => typeof part === 'string' && part.length > 0,
+    );
+    return ptyParts.join('\n');
+  }
   const stdout = output && typeof output.stdout === 'string' ? output.stdout : undefined;
   const stderr = output && typeof output.stderr === 'string' ? output.stderr : undefined;
   if (stdout !== undefined || stderr !== undefined) {

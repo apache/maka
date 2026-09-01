@@ -216,6 +216,30 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal((searched.matches as Array<Record<string, unknown>>)[0]!.line, 2);
   });
 
+  test('read and search project PTY terminal streams', async () => {
+    const { ref, reader } = fixture(
+      JSON.stringify({
+        kind: 'terminal',
+        output: { mode: 'pty', scrollback: 'history', screen: 'NEEDLE', lastAlternateScreen: '' },
+      }),
+    );
+    const page = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 1,
+      limit: 1,
+    })) as Record<string, unknown>;
+    assert.equal(page.content, 'NEEDLE');
+
+    const searched = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'needle',
+    })) as Record<string, unknown>;
+    assert.equal((searched.matches as Array<Record<string, unknown>>)[0]!.line, 2);
+  });
+
   test('line paging reports an oversized line instead of returning a stuck empty page', async () => {
     const { ref, reader } = textFixture('x'.repeat(8_000));
     const result = (await readToolResultArchiveResource(reader, 'session-1', {
