@@ -26,8 +26,10 @@ import {
   type AttachmentSnapshotInput,
   resolveAttachmentRefs,
   resolveIngestItems,
+  sniffPickedAttachmentMimeType,
 } from '../attachment-ingest.js';
 import { createAttachmentApprovalRegistry } from '../attachment-approval.js';
+import { attachmentKindFromMimeType } from '@maka/core/attachments';
 
 describe('resolveIngestItems (pre-read validation)', () => {
   test('rejects more than 8 items before touching approvals or stat', async () => {
@@ -397,5 +399,41 @@ describe('resolveAttachmentRefs', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('sniffPickedAttachmentMimeType (pick-time staging kind)', () => {
+  test('stages a real image named .pdf as an image so it previews and notices', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'att-pick-'));
+    const path = join(dir, 'report.pdf');
+    await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    try {
+      const mimeType = await sniffPickedAttachmentMimeType(path, 'report.pdf');
+      assert.equal(mimeType, 'image/png');
+      assert.equal(attachmentKindFromMimeType(mimeType, 'report.pdf'), 'image');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('stages a real PDF named .png as a pdf, and unknown bytes as an ordinary file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'att-pick-'));
+    const pdfPath = join(dir, 'report.png');
+    const junkPath = join(dir, 'payload.png');
+    await writeFile(pdfPath, Buffer.from('%PDF-1.4\nfixture'));
+    await writeFile(junkPath, Buffer.from('not an image'));
+    try {
+      assert.equal(await sniffPickedAttachmentMimeType(pdfPath, 'report.png'), 'application/pdf');
+      const junk = await sniffPickedAttachmentMimeType(junkPath, 'payload.png');
+      assert.equal(junk, 'application/octet-stream');
+      assert.equal(attachmentKindFromMimeType(junk, 'payload.png'), 'other');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('falls back to the name when the prefix cannot be read', async () => {
+    const mimeType = await sniffPickedAttachmentMimeType('/no/such/file.pdf', 'file.pdf');
+    assert.equal(mimeType, 'application/pdf');
   });
 });

@@ -83,7 +83,6 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
   jpeg: 'image/jpeg',
   gif: 'image/gif',
   webp: 'image/webp',
-  bmp: 'image/bmp',
   pdf: 'application/pdf',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -100,7 +99,6 @@ export type SniffedAttachmentMimeType =
   | 'image/jpeg'
   | 'image/gif'
   | 'image/webp'
-  | 'image/bmp'
   | 'application/pdf';
 
 /**
@@ -117,7 +115,6 @@ export function sniffAttachmentMimeType(bytes: Uint8Array): SniffedAttachmentMim
   if (startsWithBytes(prefix, [0xff, 0xd8, 0xff])) return 'image/jpeg';
   if (startsWithAscii(prefix, 'GIF87a') || startsWithAscii(prefix, 'GIF89a')) return 'image/gif';
   if (startsWithAscii(prefix, 'RIFF') && startsWithAscii(prefix, 'WEBP', 8)) return 'image/webp';
-  if (startsWithAscii(prefix, 'BM')) return 'image/bmp';
   if (startsWithAscii(prefix, '%PDF-')) return 'application/pdf';
   return undefined;
 }
@@ -147,6 +144,33 @@ export function guessMimeFromName(fileName: string): string {
   if (dot < 0 || dot === fileName.length - 1) return 'application/octet-stream';
   const ext = fileName.slice(dot + 1).toLowerCase();
   return MIME_BY_EXTENSION[ext] ?? 'application/octet-stream';
+}
+
+/**
+ * Decide an attachment's MIME with content taking precedence over the name and
+ * any renderer-supplied MIME, so a spoofed extension cannot steer routing.
+ * Sniffed bytes win outright. When nothing sniffs, a *claimed* image/PDF MIME
+ * (from the name or the renderer) is downgraded to `application/octet-stream`
+ * so unverified bytes never enter the image or PDF path; any other claim is
+ * kept so genuine document kinds still resolve. `bytes` may be just the
+ * {@link ATTACHMENT_MIME_SNIFF_BYTES} prefix — the sniff only inspects that.
+ */
+export function resolveAttachmentMimeType(
+  bytes: Uint8Array,
+  suppliedMimeType: string | undefined,
+  fileName: string,
+): string {
+  const sniffed = sniffAttachmentMimeType(bytes);
+  if (sniffed) return sniffed;
+
+  const fallback =
+    suppliedMimeType && suppliedMimeType.length > 0
+      ? suppliedMimeType
+      : guessMimeFromName(fileName);
+  const normalized = fallback.toLowerCase();
+  return normalized.startsWith('image/') || normalized === 'application/pdf'
+    ? 'application/octet-stream'
+    : fallback;
 }
 
 /**

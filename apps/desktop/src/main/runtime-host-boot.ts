@@ -77,7 +77,7 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
-import { readFileCapped } from "./attachment-ingest.js";
+import { readFileCapped, sniffPickedAttachmentMimeType } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -1711,11 +1711,18 @@ function registerPersistentClientIpc(): void {
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
     const chosen = await Promise.all(
-      result.filePaths.map(async (path) => ({
-        path,
-        name: basename(path),
-        size: (await stat(path)).size,
-      })),
+      result.filePaths.map(async (path) => {
+        const name = basename(path);
+        return {
+          path,
+          name,
+          size: (await stat(path)).size,
+          // Route by content, not the extension: the composer stages the kind
+          // this MIME implies, so a real image named `report.pdf` previews and
+          // triggers the vision notice, and a disguised file does neither.
+          mimeType: await sniffPickedAttachmentMimeType(path, name),
+        };
+      }),
     );
     return {
       ok: true,

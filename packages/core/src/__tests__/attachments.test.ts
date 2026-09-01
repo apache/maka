@@ -23,6 +23,7 @@ import {
   ATTACHMENT_MIME_SNIFF_BYTES,
   formatAttachmentResourceRef,
   parseAttachmentResourceRef,
+  resolveAttachmentMimeType,
   sniffAttachmentMimeType,
 } from '../attachments.js';
 
@@ -64,13 +65,19 @@ describe('attachment content sniffing', () => {
       [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg'],
       [Buffer.from('GIF89a', 'ascii'), 'image/gif'],
       [Buffer.from('RIFF0000WEBP', 'ascii'), 'image/webp'],
-      [Buffer.from('BM', 'ascii'), 'image/bmp'],
       [Buffer.from('%PDF-1.7', 'ascii'), 'application/pdf'],
     ];
 
     for (const [bytes, expected] of fixtures) {
       assert.equal(sniffAttachmentMimeType(bytes), expected);
     }
+  });
+
+  test('does not sniff BMP: unsupported downstream, and its 2-byte marker is too weak', () => {
+    // No reader (send path or Read) accepts BMP, and `BM` matches arbitrary
+    // files, so treating those bytes as an image would route them to a decoder
+    // that later fails with unsupported_mime.
+    assert.equal(sniffAttachmentMimeType(Buffer.from('BM harmless text')), undefined);
   });
 
   test('does not infer a type from an extension-like payload or bytes after the sniffing prefix', () => {
@@ -81,5 +88,33 @@ describe('attachment content sniffing', () => {
       ),
       undefined,
     );
+  });
+});
+
+describe('resolveAttachmentMimeType (content-first precedence)', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const PDF = Buffer.from('%PDF-1.7', 'ascii');
+
+  test('sniffed content wins over a conflicting name or supplied MIME', () => {
+    assert.equal(resolveAttachmentMimeType(PNG, 'application/pdf', 'report.pdf'), 'image/png');
+    assert.equal(resolveAttachmentMimeType(PDF, 'image/png', 'photo.png'), 'application/pdf');
+  });
+
+  test('downgrades an unverified image/PDF claim to octet-stream', () => {
+    const notAnImage = Buffer.from('not an image');
+    assert.equal(
+      resolveAttachmentMimeType(notAnImage, 'image/png', 'payload.png'),
+      'application/octet-stream',
+    );
+    assert.equal(
+      resolveAttachmentMimeType(notAnImage, undefined, 'payload.png'),
+      'application/octet-stream',
+    );
+  });
+
+  test('keeps a non-image document claim so real document kinds still resolve', () => {
+    const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    assert.equal(resolveAttachmentMimeType(Buffer.from('PK'), docx, 'notes.docx'), docx);
+    assert.equal(resolveAttachmentMimeType(Buffer.from('PK'), undefined, 'notes.docx'), docx);
   });
 });

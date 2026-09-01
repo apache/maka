@@ -25,6 +25,8 @@ import {
   guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  resolveAttachmentMimeType,
   sniffAttachmentMimeType,
 } from '@maka/core/attachments';
 import type { ArtifactKind } from '@maka/core/artifacts';
@@ -81,15 +83,36 @@ export async function resolveAttachmentRefs(input: {
   return refs;
 }
 
-function resolveAttachmentMimeType(bytes: Uint8Array, supplied: string | undefined, name: string): string {
-  const sniffed = sniffAttachmentMimeType(bytes);
-  if (sniffed) return sniffed;
+/**
+ * Content type for a user-picked path, read cheaply from a short prefix so the
+ * composer can stage — and later preview — an attachment by its bytes rather
+ * than its extension. Mirrors the send-path precedence in
+ * {@link resolveAttachmentMimeType}: a real image named `report.pdf` resolves
+ * to its image MIME (so the composer shows a thumbnail and the vision notice),
+ * a disguised file loses its spoofed image/PDF claim. An unreadable prefix
+ * falls back to the name so a transient read error never blocks staging.
+ */
+export async function sniffPickedAttachmentMimeType(path: string, name: string): Promise<string> {
+  let prefix: Uint8Array;
+  try {
+    prefix = await readFilePrefix(path, ATTACHMENT_MIME_SNIFF_BYTES);
+  } catch {
+    return guessMimeFromName(name);
+  }
+  return resolveAttachmentMimeType(prefix, undefined, name);
+}
 
-  const fallback = supplied && supplied.length > 0 ? supplied : guessMimeFromName(name);
-  const normalized = fallback.toLowerCase();
-  return normalized.startsWith('image/') || normalized === 'application/pdf'
-    ? 'application/octet-stream'
-    : fallback;
+/** Read up to `byteCount` leading bytes without loading the whole file, for
+ * content sniffing at pick time (a full read waits until send). */
+async function readFilePrefix(path: string, byteCount: number): Promise<Uint8Array> {
+  const fh = await open(path, 'r');
+  try {
+    const buf = Buffer.alloc(byteCount);
+    const { bytesRead } = await fh.read(buf, 0, byteCount, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 function isPathAttachment(file: AttachmentIngestFile): file is Extract<AttachmentIngestFile, { path: string }> {

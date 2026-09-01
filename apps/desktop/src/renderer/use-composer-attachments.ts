@@ -18,7 +18,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
+import {
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  attachmentKindFromMimeType,
+  guessMimeFromName,
+  resolveAttachmentMimeType,
+} from '@maka/core/attachments';
 import {
   DIRECTORY_REFERENCE_MAX_COUNT,
   type AttachmentRef,
@@ -108,16 +113,33 @@ function approvalToPending(file: {
   };
 }
 
-function fileToPending(file: File): PendingAttachment {
-  const mimeType = file.type || undefined;
+async function fileToPending(file: File): Promise<PendingAttachment> {
+  // Sniff the leading bytes so a spoofed extension (a real image named
+  // `report.pdf`, or a PDF named `photo.png`) stages under its true kind —
+  // matching how main resolves picked files and how the send path routes.
+  const mimeType = await sniffFileMimeType(file);
   return {
     stagingKey: crypto.randomUUID(),
     displayName: file.name,
     mimeType,
-    kind: attachmentKindFromMimeType(mimeType ?? '', file.name),
+    kind: attachmentKindFromMimeType(mimeType, file.name),
     size: file.size,
     source: { type: 'file', file },
   };
+}
+
+/** Content type for a dropped/pasted blob, from its {@link ATTACHMENT_MIME_SNIFF_BYTES}
+ * prefix. Falls back to the browser-declared type if the slice cannot be read. */
+async function sniffFileMimeType(file: File): Promise<string> {
+  const declared = file.type || undefined;
+  try {
+    const prefix = new Uint8Array(
+      await file.slice(0, ATTACHMENT_MIME_SNIFF_BYTES).arrayBuffer(),
+    );
+    return resolveAttachmentMimeType(prefix, declared, file.name);
+  } catch {
+    return declared ?? guessMimeFromName(file.name);
+  }
 }
 
 function retainedToPending(attachment: AttachmentRef): PendingAttachment {
@@ -349,7 +371,7 @@ export function useComposerAttachments(options: {
   async function attachFilePaths(files: File[]): Promise<void> {
     if (files.length === 0) return;
     const ownerKey = options.draftKey;
-    const staged = files.map(fileToPending);
+    const staged = await Promise.all(files.map(fileToPending));
     updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
     notifyStagedImages(ownerKey, staged);
