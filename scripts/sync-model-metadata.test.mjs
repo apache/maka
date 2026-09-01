@@ -273,7 +273,7 @@ test('refresh rejects an empty required provider before replacing outputs', asyn
   }
 });
 
-test('refresh rejects unknown model modalities instead of dropping them', async () => {
+test('refresh drops an unknown model modality instead of rejecting the whole model', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-modalities-'));
   try {
     const input = join(root, 'api.json');
@@ -283,20 +283,23 @@ test('refresh rejects unknown model modalities instead of dropping them', async 
     catalog.anthropic.models.model.modalities = { input: ['text', 'video'], output: ['text'] };
     await writeFile(input, JSON.stringify(catalog));
 
-    await assert.rejects(
-      main([
-        'node',
-        'sync-model-metadata.mjs',
-        '--refresh',
-        '--refresh-input',
-        input,
-        '--snapshot',
-        snapshot,
-        '--output',
-        metadata,
-      ]),
-      /unsupported modalities/,
-    );
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+    ]);
+
+    const written = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.deepEqual(written.projection.metadata.anthropic.model.modalities, {
+      input: ['text'],
+      output: ['text'],
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

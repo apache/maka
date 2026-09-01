@@ -1,0 +1,102 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Model metadata refresh
+
+# Nightly drift check: pull the current models.dev catalog, and if it differs from the
+# committed snapshot (scripts/model-metadata/models-dev-api.snapshot.json), open a PR so
+# a human reviews the diff. Running the refresh itself *is* the drift check — there is no
+# separate comparison step, because refresh-then-diff already tells us exactly what
+# upstream changed. check:model-metadata (run in CI) only ever verified the generated
+# output against the committed snapshot, never the snapshot against upstream; this job is
+# what keeps the snapshot itself from going stale between manual refreshes.
+on:
+  schedule:
+    # Offset from the hour to reduce peak-time scheduling delays.
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-metadata-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Refresh the models.dev snapshot
+        run: npm run refresh:model-metadata
+
+      - name: Enforce the sanity floor
+        # Runs after the refresh so a degraded upstream response never reaches the diff
+        # or PR steps below, even though sync-model-metadata.mjs already refuses a
+        # refresh that would remove any previously committed projection path.
+        run: node scripts/check-model-metadata-floor.mjs
+
+      - name: Check for a diff
+        id: diff
+        run: |
+          if git diff --quiet -- scripts/model-metadata packages/core/src/model-metadata.generated.ts packages/runtime/src/telemetry/model-pricing.generated.ts; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pull request
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="automation/model-metadata-refresh-$(date -u +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add scripts/model-metadata packages/core/src/model-metadata.generated.ts packages/runtime/src/telemetry/model-pricing.generated.ts
+          git commit -m "chore(model-metadata): refresh models.dev snapshot"
+          git push origin "$branch"
+          existing="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number' || true)"
+          if [ -n "$existing" ]; then
+            echo "PR #$existing already open for $branch"
+            exit 0
+          fi
+          gh pr create \
+            --title "chore(model-metadata): refresh models.dev snapshot" \
+            --body "Automated nightly refresh of the models.dev catalog snapshot. Review the diff under scripts/model-metadata and the two generated files before merging; sync:model-metadata's shrink guard already blocks any refresh that would silently drop a previously committed model or capability." \
+            --base main \
+            --head "$branch"

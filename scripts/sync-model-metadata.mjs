@@ -25,6 +25,11 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
+// Kept in sync with ModelInfo['modalities'] in packages/core/src/llm-connections.ts.
+// A value outside these sets (e.g. upstream's newly added 'video') is dropped rather
+// than rejected — see the filtering in toMetadata().
+const KNOWN_INPUT_MODALITIES = new Set(['text', 'image', 'audio', 'pdf']);
+const KNOWN_OUTPUT_MODALITIES = new Set(['text', 'image', 'audio']);
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
@@ -539,15 +544,21 @@ export function toMetadata(providerId, modelId, provider, model) {
   ) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
   }
-  if (
-    model.modalities?.input.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio' && value !== 'pdf',
-    ) ||
-    model.modalities?.output.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio',
-    )
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
+  // Filter rather than reject a modality value the wire format does not carry yet
+  // (e.g. upstream adding 'video'): the model itself is real and otherwise valid,
+  // so dropping the whole model would misreport it as removed from the catalog.
+  const knownInputModalities = model.modalities?.input.filter((value) => KNOWN_INPUT_MODALITIES.has(value));
+  const knownOutputModalities = model.modalities?.output.filter((value) =>
+    KNOWN_OUTPUT_MODALITIES.has(value),
+  );
+  const unknownModalities = [
+    ...(model.modalities?.input.filter((value) => !KNOWN_INPUT_MODALITIES.has(value)) ?? []),
+    ...(model.modalities?.output.filter((value) => !KNOWN_OUTPUT_MODALITIES.has(value)) ?? []),
+  ];
+  if (unknownModalities.length > 0) {
+    console.warn(
+      `sync-model-metadata: ${providerId}/${modelId} dropped unsupported modalit${unknownModalities.length === 1 ? 'y' : 'ies'} ${unknownModalities.map((value) => JSON.stringify(value)).join(', ')}`,
+    );
   }
   if (
     (model.description !== undefined && typeof model.description !== 'string') ||
@@ -609,8 +620,8 @@ export function toMetadata(providerId, modelId, provider, model) {
     ...(model.modalities
       ? {
           modalities: {
-            input: model.modalities.input,
-            output: model.modalities.output,
+            input: knownInputModalities,
+            output: knownOutputModalities,
           },
         }
       : {}),
