@@ -174,7 +174,6 @@
      so palettes still read as themselves. This is the token the Astryx bridge
      below hands to --color-accent. */
   --accent-solid: oklch(from var(--accent) 0.52 c h);
-  --accent-wash: oklch(from var(--accent) 0.96 min(c, 0.035) h);
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
@@ -949,7 +948,6 @@
      at 7.16:1). See the light-mode note above for why --action cannot serve
      this role. */
   --accent-solid: oklch(from var(--accent) 0.76 c h);
-  --accent-wash: oklch(from var(--accent) 0.28 min(c, 0.05) h);
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
@@ -1242,7 +1240,7 @@
    surface. Picking 「珊瑚」 recolored the chat accent and left all of Settings
    black.
 
-   THESE FOUR -muted TOKENS ARE THE PRODUCT'S ONLY TINTED STATUS SURFACE.
+   THOSE FOUR -muted TOKENS ARE THE PRODUCT'S ONLY TINTED STATUS SURFACE.
    One rung per status, no border rung, no strong tier: Astryx's own shape.
    0.24 is the alpha the neutral theme's pastels already sit at, so a Banner
    and a product row painted side by side read as one material. A call site
@@ -1252,23 +1250,29 @@
    --border: the fill already states the status, and a second tinted edge is
    §4's One Means Rule.
 
-   --color-accent-muted is the informational tint. Maka has no --info hue:
-   "info" is a semantic slot (Banner status, StatTile tone), and painting it
-   with the accent is what upstream Banner does. The alpha here is
-   --accent-wash rather than 0.24 because this token also backs fourteen
-   upstream consumers — eight selection backgrounds and two focus rings —
-   which a status-weight fill would overwhelm.
+   --color-accent-muted is the informational tint on the SAME rung. Maka has
+   no --info hue: "info" is a semantic slot (Banner status, StatTile tone), so
+   it paints with the accent at 0.24 like its three siblings. It has to be the
+   same CONSTRUCTION and not just the same weight — an opaque tint does not
+   compose, so a tinted chip on a tinted panel (deep-research's count pill,
+   plan-mode's in-progress marker) resolves to the parent's exact pixel and
+   disappears. Alpha is also what upstream ships this token as (#0082FB33,
+   0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
-   Bridging here rather than in makaTheme.ts is deliberate: the theme file is
-   compiled to maka.css by `npm run astryx:theme`, and a build artifact cannot
-   reference runtime tokens that only exist once a palette attribute lands on
-   <html>. This block is unlayered (like the rest of this file) so it outranks
-   the @layer astryx-tokens import of maka.css regardless of specificity, and
-   it re-resolves per palette because --accent is redeclared on the same <html>
-   element that carries [data-maka-theme].
+   ONLY THE ACCENT TOKENS ARE BRIDGED HERE. The three status rungs live in
+   makaTheme.ts alongside --color-border, because nothing re-declares them
+   below the root. The accent four cannot: maka.css re-declares
+   --color-accent / --color-accent-muted at component level
+   (.astryx-banner.info, .astryx-progressbar.accent, the on-dark/on-light
+   blocks), and those beat a root declaration inside the same layer. This
+   block is unlayered, so it outranks the whole @layer astryx-tokens import
+   regardless of specificity. What it still cannot beat is a declaration on
+   the banner ELEMENT itself — see the info note in DESIGN.md §8.
 
    Scoped to [data-astryx-theme] — the attribute Astryx's <Theme> writes on
-   both <html> and its own wrapper — so only the Astryx token surface moves.
+   both <html> and its own wrapper — so only the Astryx token surface moves,
+   and it re-resolves per palette because --accent is redeclared on the same
+   <html> element that carries [data-maka-theme].
    --color-on-accent is deliberately NOT overridden: Astryx's own
    light-dark(#ffffff, #171717) is already the correct ink for the
    --accent-solid tier in both modes (see the contrast notes at that token).
@@ -1278,10 +1282,7 @@
   --color-accent: var(--accent-solid);
   --color-text-accent: var(--accent-solid);
   --color-icon-accent: var(--accent-solid);
-  --color-accent-muted: var(--accent-wash);
-  --color-success-muted: oklch(from var(--success) l c h / 0.24);
-  --color-warning-muted: oklch(from var(--warning) l c h / 0.24);
-  --color-error-muted: oklch(from var(--destructive) l c h / 0.24);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.24);
 }
 
 /* =============================================================================

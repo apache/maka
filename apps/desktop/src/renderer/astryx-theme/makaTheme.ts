@@ -151,6 +151,14 @@ export const makaTheme = defineTheme({
   // the root font-size note above is the reason to keep out. Aliasing makes
   // the px side the single authority, so an upstream rung change can no
   // longer move one name out from under the other without anyone seeing it.
+  //
+  // The three status tints belong here too, for the same reason --color-border
+  // does: nothing in maka.css re-declares them below the root, so a root
+  // declaration inside the theme's own @scope is enough. Their fourth sibling
+  // --color-accent-muted is NOT here — maka.css re-declares the accent pair at
+  // component level, which beats a root rule in the same layer, so that one
+  // needs the unlayered bridge in maka-tokens.css. 0.24 is the alpha the
+  // neutral theme's own pastels already sit at.
   tokens: {
     '--color-background-body': 'var(--surface-canvas)',
     '--color-background-surface': 'var(--background)',
@@ -158,6 +166,9 @@ export const makaTheme = defineTheme({
     '--color-background-popover': 'var(--background-elevated)',
     '--color-background-muted': 'var(--muted)',
     '--color-border': 'var(--border)',
+    '--color-success-muted': 'oklch(from var(--success) l c h / 0.24)',
+    '--color-warning-muted': 'oklch(from var(--warning) l c h / 0.24)',
+    '--color-error-muted': 'oklch(from var(--destructive) l c h / 0.24)',
     '--radius-inner': 'var(--radius-control)',
     '--radius-element': 'var(--radius-surface)',
     '--radius-container': 'var(--radius-modal)',

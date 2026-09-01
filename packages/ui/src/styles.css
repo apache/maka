@@ -99,10 +99,10 @@
    stationary tile float harder than it did before. */
 .maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
 .maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
-/* One rung, three siblings. These were 0.24/0.28/0.3 (plus an info rung) —
-   four hand-picked alphas for one ladder position, which is what a tinted edge
-   costs when the call site owns it. The `-muted` tokens are that rung. The info
-   tone has no edge class: see stat-tile.tsx. */
+/* One rung, four siblings. These were 0.24/0.24/0.28/0.3 — four hand-picked
+   alphas for one ladder position, which is what a tinted edge costs when the
+   call site owns it. The `-muted` tokens are that rung. */
+.maka-stat-tile-border-info { border-color: var(--color-accent-muted); }
 .maka-stat-tile-border-success { border-color: var(--color-success-muted); }
 .maka-stat-tile-border-warning { border-color: var(--color-warning-muted); }
 .maka-stat-tile-border-destructive { border-color: var(--color-error-muted); }
