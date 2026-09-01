@@ -21,10 +21,19 @@ import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } fr
 import { useSessionRailChrome } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { isAppleShortcutPlatform } from './utils.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
+
+// The kbd is a plain display string outside the design-system Kbd, so it
+// cannot lean on that component's platform-aware `mod` token (#3876).
+const NEW_TASK_KEYS = isAppleShortcutPlatform(
+  typeof navigator === 'undefined' ? '' : navigator.platform,
+)
+  ? '⌘ N'
+  : 'Ctrl N';
 
 export function SessionSidebarNav() {
   const props = useSessionRailChrome();
@@ -55,7 +64,7 @@ export function SessionSidebarNav() {
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">{NEW_TASK_KEYS}</kbd>}
       />
       {props.workHubEntry ? (
         <SideNavItem

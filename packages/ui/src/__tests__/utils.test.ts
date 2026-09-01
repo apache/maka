@@ -17,19 +17,21 @@
  * under the License.
  */
 
-import { clsx, type ClassValue } from 'clsx';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { isAppleShortcutPlatform } from '../utils.js';
 
-export function cn(...inputs: ClassValue[]): string {
-  return clsx(inputs);
-}
+test('detects Apple platforms from navigator.platform values', () => {
+  assert.equal(isAppleShortcutPlatform('MacIntel'), true);
+  assert.equal(isAppleShortcutPlatform('Macintosh'), true);
+  assert.equal(isAppleShortcutPlatform('iPhone'), true);
+  assert.equal(isAppleShortcutPlatform('iPad'), true);
+});
 
-/**
- * Plain shortcut display strings cannot lean on the design-system Kbd,
- * whose `mod` token is already platform-aware (⌘ on Apple platforms, Ctrl
- * elsewhere). Detect Apple platforms with the same navigator.platform
- * fallback Kbd uses so hand-built hint strings agree with Kbd output
- * rendered beside them.
- */
-export function isAppleShortcutPlatform(platform: string | null | undefined): boolean {
-  return /Mac|iPhone|iPad|iPod/.test(platform ?? '');
-}
+test('rejects non-Apple platforms and unknown input (#3876)', () => {
+  assert.equal(isAppleShortcutPlatform('Win32'), false);
+  assert.equal(isAppleShortcutPlatform('Linux x86_64'), false);
+  assert.equal(isAppleShortcutPlatform(''), false);
+  assert.equal(isAppleShortcutPlatform(null), false);
+  assert.equal(isAppleShortcutPlatform(undefined), false);
+});
