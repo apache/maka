@@ -462,7 +462,10 @@ function searchArchive(
     );
     // Keep the complete match representable when the accepted pattern is
     // longer than the normal snippet budget; trim surrounding context first.
-    const snippetLimit = Math.max(MAX_SEARCH_SNIPPET_CHARS, matchEnd - index);
+    const snippetLimit = Math.min(
+      MAX_SEARCH_PATTERN_CHARS + SEARCH_SNIPPET_RADIUS * 2,
+      Math.max(MAX_SEARCH_SNIPPET_CHARS, matchEnd - index),
+    );
     const contextBudget = Math.max(0, snippetLimit - (matchEnd - index));
     const before = Math.min(SEARCH_SNIPPET_RADIUS, Math.floor(contextBudget / 2));
     const after = Math.min(SEARCH_SNIPPET_RADIUS, contextBudget - before);
