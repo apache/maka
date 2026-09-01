@@ -63,24 +63,34 @@ test('ignores clean exits and app shutdown', () => {
   }
 });
 
-test('reports reload success only after the main document finishes loading', async () => {
+test('reports reload success only after the main document loads and the Renderer paints', async () => {
   const source = reloadSource();
+  const readiness = rendererReadiness();
   let observed = false;
+  let settled = false;
   const result = reloadMainRendererProcess({
     source,
     shutdownSignal: new AbortController().signal,
-    onLoaded: () => {
+    subscribeRendererReady: readiness.subscribe,
+    onReady: () => {
       observed = true;
     },
+  });
+  void result.then(() => {
+    settled = true;
   });
 
   assert.equal(source.reloadCalls, 1);
   source.emit('did-fail-load', {}, -3, 'subframe failed', 'https://example.test/frame', false, 1, 2);
   source.emit('did-finish-load');
+  await Promise.resolve();
+  assert.equal(settled, false);
+  readiness.notify();
   assert.equal(await result, true);
   assert.equal(observed, true);
   assert.equal(source.listenerCount('did-fail-load'), 0);
   assert.equal(source.listenerCount('render-process-gone'), 0);
+  assert.equal(readiness.subscribed(), false);
 });
 
 test('keeps recovery active when a Renderer reload fails, exits, or stops responding', async () => {
@@ -92,11 +102,13 @@ test('keeps recovery active when a Renderer reload fails, exits, or stops respon
     (source: ReturnType<typeof reloadSource>) => source.emit('unresponsive'),
   ]) {
     const source = reloadSource();
+    const readiness = rendererReadiness();
     let observed = false;
     const result = reloadMainRendererProcess({
       source,
       shutdownSignal: new AbortController().signal,
-      onLoaded: () => {
+      subscribeRendererReady: readiness.subscribe,
+      onReady: () => {
         observed = true;
       },
     });
@@ -106,15 +118,18 @@ test('keeps recovery active when a Renderer reload fails, exits, or stops respon
     assert.equal(observed, false);
     assert.equal(source.listenerCount('did-finish-load'), 0);
     assert.equal(source.listenerCount('unresponsive'), 0);
+    assert.equal(readiness.subscribed(), false);
   }
 });
 
 test('bounds a Renderer reload that emits no terminal event', async () => {
   const source = reloadSource();
+  const readiness = rendererReadiness();
   const result = reloadMainRendererProcess({
     source,
     shutdownSignal: new AbortController().signal,
-    onLoaded: () => assert.fail('timed-out reload must not report success'),
+    subscribeRendererReady: readiness.subscribe,
+    onReady: () => assert.fail('timed-out reload must not report success'),
     timeoutMs: 1,
   });
 
@@ -123,7 +138,30 @@ test('bounds a Renderer reload that emits no terminal event', async () => {
   assert.equal(source.listenerCount('did-fail-load'), 0);
   assert.equal(source.listenerCount('unresponsive'), 0);
   assert.equal(source.listenerCount('render-process-gone'), 0);
+  assert.equal(readiness.subscribed(), false);
 });
+
+function rendererReadiness(): {
+  subscribe(listener: () => void): () => void;
+  notify(): void;
+  subscribed(): boolean;
+} {
+  let listener: (() => void) | undefined;
+  return {
+    subscribe(next) {
+      listener = next;
+      return () => {
+        if (listener === next) listener = undefined;
+      };
+    },
+    notify() {
+      listener?.();
+    },
+    subscribed() {
+      return listener !== undefined;
+    },
+  };
+}
 
 function reloadSource(): EventEmitter & {
   reloadCalls: number;

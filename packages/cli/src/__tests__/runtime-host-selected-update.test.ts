@@ -21,7 +21,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { decodeRuntimeHostServiceManagementFrame } from '@maka/runtime-host/operator';
 import {
-  runtimeHostPackageUpdateOperation,
   runManagedRuntimeHostUpdateCli,
   runManagedRuntimeHostSelectedUpdateCli,
   type RuntimeHostSelectedUpdateCliOptions,
@@ -49,28 +48,92 @@ const OPTIONS: RuntimeHostSelectedUpdateCliOptions = {
 };
 
 describe('managed Runtime Host selected update', () => {
-  it('replaces an exact observed Host even when its package is already current', () => {
+  it('replaces an exact observed Host even when its package is already current', async () => {
     const current = {
-      currentVersion: '2.0.0',
-      currentIntegrity: INTEGRITY,
-      targetVersion: '2.0.0',
-      targetIntegrity: INTEGRITY,
+      configRevision: 7,
+      deploymentRoot: '/managed',
+      root: { id: TARGET.rootId, path: TARGET.rootPath },
+      lifecycle: { mode: 'supervised', provider: 'test' },
+      launch: {
+        package: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
+      },
     };
-    assert.equal(
-      runtimeHostPackageUpdateOperation({ ...current, replaceExpectedHost: false }),
-      'already_current',
+    const status = {
+      schemaVersion: 1,
+      action: 'status',
+      service: {
+        manager: 'systemd_user',
+        installed: true,
+        enabled: true,
+        active: true,
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '2.0.0',
+        config: {
+          schemaVersion: 1,
+          managedDeploymentRoot: '/managed',
+          rootPath: TARGET.rootPath,
+          projectDirectoryRoots: [],
+          websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
+          launch: { nodePath: process.execPath, cliPath: '/managed/current/dist/cli.js' },
+        },
+      },
+    };
+    const expectedHost = { hostEpoch: 'older-host', pid: 42 };
+    let output = '';
+    let managedReads = 0;
+    let pruned = false;
+    const exitCode = await runManagedRuntimeHostUpdateCli(
+      {
+        ...OPTIONS,
+        sourcePackageRoot: '/managed/current',
+        version: '2.0.0',
+        managedRootId: TARGET.rootId,
+        expectedHost,
+      },
+      {
+        withDeploymentLock: async (_root, operation) => operation(),
+        prepareDeployment: async () => assert.fail('current package must not be staged'),
+        prunePackages: async (config) => {
+          assert.equal(config.configRevision, 8);
+          pruned = true;
+        },
+        canonical: {
+          createLifecycleDeps: () => ({}) as never,
+          assertOperatorDeployment: async () => {},
+          recoverDeployment: async (_rootId, _deps, options) => {
+            assert.deepEqual(options?.expectedOwner, expectedHost);
+            return { kind: 'active', config: current } as never;
+          },
+          verifyProjection: async () => {},
+          assertOperatorConfig: () => {},
+          manageLifecycle: async () => {
+            managedReads += 1;
+            return status as never;
+          },
+          replaceLifecycle: async (input) => {
+            assert.equal(input.current, current);
+            assert.deepEqual(input.expectedOwner, expectedHost);
+            assert.equal(input.allowInterruptActiveTasks, false);
+            assert.equal(input.desired.configRevision, 8);
+            return { kind: 'replaced', config: input.desired };
+          },
+        },
+        writeOutput: (value) => {
+          output += value;
+        },
+      },
     );
+
+    assert.equal(exitCode, 0);
+    assert.equal(managedReads, 2);
+    assert.equal(pruned, true);
+    assert.doesNotMatch(output, /"phase":"staging"/u);
+    const result = decodeRuntimeHostServiceManagementFrame(output.trim().split('\n').at(-1) ?? '');
     assert.equal(
-      runtimeHostPackageUpdateOperation({ ...current, replaceExpectedHost: true }),
-      'replace_current',
-    );
-    assert.equal(
-      runtimeHostPackageUpdateOperation({
-        ...current,
-        targetVersion: '3.0.0',
-        replaceExpectedHost: true,
-      }),
-      'update',
+      result?.kind === 'result' && result.action === 'update' ? result.update.kind : undefined,
+      'repaired',
     );
   });
 

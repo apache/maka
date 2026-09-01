@@ -18,22 +18,39 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { MAKA_WORDMARK_PATH } from '@maka/core/maka-wordmark';
+import { isThemePalette, type ThemePalette } from '@maka/core/settings';
+import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   BrowserWindow,
   MessageBoxOptions,
   MessageBoxReturnValue,
   Rectangle,
 } from 'electron';
+import { resolveOverlayAssetDir } from './overlay-assets.js';
 
 const RESPONSE_URL_PREFIX = 'maka-dialog://response/';
 const DIALOG_WIDTH = 520;
 const INITIAL_HEIGHT = 600;
 const MIN_HEIGHT = 280;
 const WORK_AREA_MARGIN = 32;
-// Same traced brand outline as packages/ui/src/maka-wordmark.tsx. This startup
-// surface deliberately cannot depend on the main React renderer bundle.
-const MAKA_WORDMARK_PATH =
-  'M2639 1187 c-38 -29 -39 -46 -39 -479 0 -400 1 -425 19 -455 23 -37 68 -50 108 -31 41 20 53 53 53 154 0 83 2 92 25 114 l24 23 143 -138 c79 -75 156 -143 171 -151 57 -30 127 14 127 79 0 32 -39 75 -217 238 l-82 75 130 103 c157 125 173 152 123 210 -21 25 -34 31 -65 31 -35 0 -55 -13 -209 -140 l-170 -139 0 229 0 228 -26 31 c-20 24 -34 31 -62 31 -21 0 -44 -6 -53 -13z M1926 969 c-109 -26 -216 -114 -264 -217 -24 -50 -27 -69 -27 -162 0 -95 3 -111 28 -162 39 -79 104 -143 185 -181 62 -29 75 -32 168 -32 94 0 105 2 164 33 35 18 64 31 64 30 18 -50 63 -74 111 -58 57 19 60 32 57 258 -2 176 -6 211 -23 258 -24 63 -100 151 -163 188 -84 49 -205 67 -300 45z m142 -170 c93 -20 171 -113 172 -205 0 -58 -45 -140 -97 -177 -112 -80 -278 -26 -328 107 -43 112 34 247 158 276 45 11 41 11 95 -1z M547 960 c-105 -18 -200 -90 -248 -187 -23 -45 -24 -60 -27 -268 -2 -120 -1 -229 3 -242 7 -30 58 -56 94 -48 16 3 38 16 49 28 19 20 21 36 24 227 3 226 8 248 69 290 69 50 157 44 215 -14 46 -46 54 -88 54 -297 0 -179 1 -186 23 -207 43 -40 100 -37 134 7 9 11 12 71 13 201 0 102 5 202 10 222 32 114 172 160 264 87 55 -44 60 -66 61 -284 1 -110 5 -208 9 -218 13 -27 63 -49 97 -42 16 4 38 18 49 32 19 24 20 40 20 228 0 224 -8 268 -61 348 -60 90 -158 139 -280 139 -62 1 -88 -4 -135 -26 -33 -15 -71 -38 -85 -52 l-27 -26 -50 36 c-82 60 -179 83 -275 66z M3659 960 c-137 -23 -264 -138 -299 -268 -53 -202 61 -407 260 -466 102 -30 242 -14 304 35 15 12 28 20 29 18 1 -2 7 -13 13 -24 26 -48 94 -55 135 -14 19 19 20 30 17 237 -3 214 -3 218 -31 273 -50 103 -163 186 -282 208 -65 12 -79 12 -146 1z m114 -201 c33 -65 48 -81 107 -112 59 -31 61 -49 10 -72 -52 -24 -93 -70 -115 -131 -10 -27 -24 -56 -32 -64 -11 -12 -15 -12 -26 0 -8 8 -19 35 -26 59 -14 48 -67 110 -121 139 -19 10 -35 25 -35 33 0 7 21 23 46 35 52 25 106 82 115 122 8 34 24 54 38 49 6 -2 23 -28 39 -58z';
+const DIALOG_PRESENTATION_TIMEOUT_MS = 30_000;
+const DIALOG_DESIGN_TOKENS_FILE = 'browser-dialog-design-tokens.css';
+let cachedDialogDesignTokens: string | undefined;
+let activeBrowserMessageBoxPresentations = 0;
+
+export interface BrowserMessageBoxAppearance {
+  readonly locale: UiLocale;
+  readonly palette?: ThemePalette;
+  readonly dark?: boolean;
+}
+
+/** Whether closing a temporary dialog must not be interpreted as app shutdown. */
+export function isBrowserMessageBoxPresentationActive(): boolean {
+  return activeBrowserMessageBoxPresentations > 0;
+}
 
 /**
  * Product-styled replacement for Electron's native MessageBox.
@@ -45,21 +62,55 @@ const MAKA_WORDMARK_PATH =
  */
 export async function showBrowserMessageBox(
   options: MessageBoxOptions,
-  parent?: BrowserWindow,
+  parent: BrowserWindow | undefined,
+  appearance: BrowserMessageBoxAppearance,
 ): Promise<MessageBoxReturnValue> {
   // Keep the presentation helpers importable under plain `node --test`.
   // Electron itself is only required when a dialog is actually presented.
   const electron = await import('electron');
-  const visibleParent =
-    parent && !parent.isDestroyed() && parent.isVisible() && !parent.isMinimized()
-      ? parent
-      : undefined;
-  if (!electron.app.isReady()) return showNativeMessageBox(electron, options, visibleParent);
+  return showBrowserMessageBoxWithRuntime(options, parent, {
+    ready: electron.app.isReady(),
+    showBrowser: (nextOptions, nextParent) =>
+      presentBrowserMessageBox(electron, nextOptions, nextParent, appearance),
+    showNative: (nextOptions, nextParent) =>
+      showNativeMessageBox(electron, nextOptions, nextParent),
+    onBrowserError: (error) => {
+      console.error('[dialog] BrowserWindow presentation failed; using native fallback:', error);
+    },
+  });
+}
+
+export async function showBrowserMessageBoxWithRuntime(
+  options: MessageBoxOptions,
+  parent: BrowserWindow | undefined,
+  runtime: {
+    readonly ready: boolean;
+    readonly showBrowser: (
+      options: MessageBoxOptions,
+      parent: BrowserWindow | undefined,
+    ) => Promise<MessageBoxReturnValue>;
+    readonly showNative: (
+      options: MessageBoxOptions,
+      parent: BrowserWindow | undefined,
+    ) => Promise<MessageBoxReturnValue>;
+    readonly onBrowserError: (error: unknown) => void;
+  },
+): Promise<MessageBoxReturnValue> {
+  activeBrowserMessageBoxPresentations += 1;
   try {
-    return await presentBrowserMessageBox(electron, options, visibleParent);
-  } catch (error) {
-    console.error('[dialog] BrowserWindow presentation failed; using native fallback:', error);
-    return showNativeMessageBox(electron, options, visibleParent);
+    const visibleParent = (): BrowserWindow | undefined =>
+      parent && !parent.isDestroyed() && parent.isVisible() && !parent.isMinimized()
+        ? parent
+        : undefined;
+    if (!runtime.ready) return await runtime.showNative(options, visibleParent());
+    try {
+      return await runtime.showBrowser(options, visibleParent());
+    } catch (error) {
+      runtime.onBrowserError(error);
+      return await runtime.showNative(options, visibleParent());
+    }
+  } finally {
+    activeBrowserMessageBoxPresentations -= 1;
   }
 }
 
@@ -68,10 +119,7 @@ async function showNativeMessageBox(
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
 ): Promise<MessageBoxReturnValue> {
-  return parent &&
-    !parent.isDestroyed() &&
-    parent.isVisible() &&
-    !parent.isMinimized()
+  return parent
     ? electron.dialog.showMessageBox(parent, options)
     : electron.dialog.showMessageBox(options);
 }
@@ -80,11 +128,12 @@ async function presentBrowserMessageBox(
   electron: typeof import('electron'),
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
+  appearance: BrowserMessageBoxAppearance,
 ): Promise<MessageBoxReturnValue> {
-  const presentation = normalizeBrowserMessageBoxPresentation(
-    options,
-    electron.nativeTheme.shouldUseDarkColors,
-  );
+  const presentation = normalizeBrowserMessageBoxPresentation(options, {
+    ...appearance,
+    dark: appearance.dark ?? electron.nativeTheme.shouldUseDarkColors,
+  });
   const workArea = resolveWorkArea(electron, parent);
   const width = Math.max(320, Math.min(DIALOG_WIDTH, workArea.width - WORK_AREA_MARGIN * 2));
   const initialHeight = Math.max(
@@ -121,16 +170,28 @@ async function presentBrowserMessageBox(
 
     return await new Promise<MessageBoxReturnValue>((resolve, reject) => {
       let settled = false;
+      let presentationTimeout: ReturnType<typeof setTimeout> | undefined;
+      const clearPresentationTimeout = (): void => {
+        if (!presentationTimeout) return;
+        clearTimeout(presentationTimeout);
+        presentationTimeout = undefined;
+      };
       const finish = (response: number): void => {
         if (settled) return;
         settled = true;
+        clearPresentationTimeout();
         resolve({ response, checkboxChecked: false });
       };
       const fail = (error: unknown): void => {
         if (settled) return;
         settled = true;
+        clearPresentationTimeout();
         reject(error instanceof Error ? error : new Error(String(error)));
       };
+      presentationTimeout = setTimeout(
+        () => fail(new Error('Dialog renderer did not become interactive in time')),
+        DIALOG_PRESENTATION_TIMEOUT_MS,
+      );
 
       win.on('closed', () => finish(presentation.cancelId));
       win.on('unresponsive', () => fail(new Error('Dialog renderer became unresponsive')));
@@ -145,7 +206,7 @@ async function presentBrowserMessageBox(
       void win
         .loadURL(
           `data:text/html;charset=utf-8,${encodeURIComponent(
-            buildBrowserMessageBoxHtml(presentation),
+            renderBrowserMessageBoxHtml(presentation),
           )}`,
         )
         .then(async () => {
@@ -163,6 +224,7 @@ async function presentBrowserMessageBox(
           if (settled || win.isDestroyed()) return;
           win.show();
           win.focus();
+          clearPresentationTimeout();
         })
         .catch(fail);
     });
@@ -171,7 +233,7 @@ async function presentBrowserMessageBox(
   }
 }
 
-export interface BrowserMessageBoxPresentation {
+interface BrowserMessageBoxPresentation {
   readonly type: 'none' | 'info' | 'warning' | 'error' | 'question';
   readonly title: string;
   readonly message: string;
@@ -180,17 +242,16 @@ export interface BrowserMessageBoxPresentation {
   readonly defaultId: number;
   readonly cancelId: number;
   readonly dark: boolean;
-  readonly isChinese: boolean;
+  readonly locale: UiLocale;
+  readonly palette: ThemePalette;
 }
 
-export function normalizeBrowserMessageBoxPresentation(
+function normalizeBrowserMessageBoxPresentation(
   options: MessageBoxOptions,
-  dark: boolean,
+  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
 ): BrowserMessageBoxPresentation {
   const buttons = options.buttons?.length ? [...options.buttons] : ['OK'];
-  const cancelId = validButtonId(options.cancelId, buttons.length)
-    ? options.cancelId
-    : buttons.length - 1;
+  const cancelId = validButtonId(options.cancelId, buttons.length) ? options.cancelId : 0;
   const defaultId = validButtonId(options.defaultId, buttons.length)
     ? options.defaultId
     : 0;
@@ -204,8 +265,9 @@ export function normalizeBrowserMessageBoxPresentation(
     buttons,
     defaultId,
     cancelId,
-    dark,
-    isChinese: /\p{Script=Han}/u.test(`${title}${message}`),
+    dark: appearance.dark,
+    locale: appearance.locale === 'zh' ? 'zh' : 'en',
+    palette: isThemePalette(appearance.palette) ? appearance.palette : 'default',
   };
 }
 
@@ -254,6 +316,14 @@ async function measureDialogHeight(win: BrowserWindow): Promise<number> {
     : INITIAL_HEIGHT;
 }
 
+function dialogDesignTokens(): string {
+  cachedDialogDesignTokens ??= readFileSync(
+    join(resolveOverlayAssetDir(import.meta.url), DIALOG_DESIGN_TOKENS_FILE),
+    'utf8',
+  );
+  return cachedDialogDesignTokens;
+}
+
 export function parseBrowserMessageBoxResponse(
   value: string,
   buttonCount: number,
@@ -267,9 +337,18 @@ export function parseBrowserMessageBoxResponse(
     : undefined;
 }
 
-export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
+export function buildBrowserMessageBoxHtml(
+  options: MessageBoxOptions,
+  appearance: BrowserMessageBoxAppearance & { readonly dark: boolean },
+): string {
+  return renderBrowserMessageBoxHtml(
+    normalizeBrowserMessageBoxPresentation(options, appearance),
+  );
+}
+
+function renderBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
   const nonce = randomUUID().replaceAll('-', '');
-  const closeLabel = input.isChinese ? '关闭' : 'Close';
+  const closeLabel = input.locale === 'zh' ? '关闭' : 'Close';
   const closeButton = `<button class="window-close" type="button" data-response="${input.cancelId}" aria-label="${closeLabel}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
   </button>`;
@@ -307,54 +386,19 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
         : '<path d="M12 8v5M12 17h.01" />';
 
   return `<!doctype html>
-<html lang="${input.isChinese ? 'zh-CN' : 'en'}" data-theme="${input.dark ? 'dark' : 'light'}">
+<html lang="${input.locale === 'zh' ? 'zh-CN' : 'en'}" data-theme="${input.dark ? 'dark' : 'light'}" data-maka-theme="${input.palette}" data-astryx-theme="maka" class="${input.dark ? 'dark' : ''}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'">
   <title>${escapeHtml(input.title)}</title>
   <style nonce="${nonce}">
-    :root {
-      color-scheme: light;
-      --background: oklch(1 0 0);
-      --surface-overlay: var(--background);
-      --foreground: oklch(0.17 0.005 286);
-      --foreground-secondary: color-mix(in oklch, var(--foreground) 74%, var(--background));
-      --muted-foreground: color-mix(in oklch, var(--foreground) 54%, var(--background));
-      --foreground-3: color-mix(in oklch, var(--foreground) 3%, var(--background));
-      --neutral: oklch(from var(--foreground) l c h / 0.06);
-      --state-hover-bg: oklch(from var(--foreground) l c h / 0.04);
-      --border-soft: oklch(from var(--foreground) l c h / 0.06);
-      --border-strong: oklch(from var(--foreground) l c h / 0.16);
-      --accent: oklch(0.70 0.135 250);
-      --accent-solid: oklch(from var(--accent) 0.52 c h);
-      --on-accent: #fff;
-      --info: oklch(0.50 0.13 240);
-      --warning: oklch(0.50 0.18 55);
-      --destructive: oklch(0.50 0.24 28);
-      --elevation-overlay: 0 2px 4px oklch(0 0 0 / 0.05), 0 4px 12px oklch(0 0 0 / 0.10);
-      --control-overlay-hover: oklch(0 0 0 / 0.05);
-    }
-    :root[data-theme="dark"] {
-      color-scheme: dark;
-      --background: oklch(0.205 0.004 286);
-      --surface-overlay: oklch(from var(--background) calc(l + 0.018) c h);
-      --foreground: oklch(0.95 0.004 286);
-      --foreground-secondary: color-mix(in oklch, var(--foreground) 78%, var(--background));
-      --accent: oklch(0.74 0.15 250);
-      --accent-solid: oklch(from var(--accent) 0.76 c h);
-      --on-accent: #171717;
-      --info: oklch(0.74 0.13 240);
-      --warning: oklch(0.66 0.18 55);
-      --destructive: oklch(0.70 0.19 22);
-      --elevation-overlay: 0 2px 4px oklch(0 0 0 / 0.35), 0 4px 12px oklch(0 0 0 / 0.50), inset 0 0 0 1px oklch(1 0 0 / 0.08);
-      --control-overlay-hover: oklch(1 0 0 / 0.05);
-    }
+    ${dialogDesignTokens()}
     * { box-sizing: border-box; }
     html, body { margin: 0; background: transparent; }
     body {
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Microsoft YaHei UI", "Noto Sans CJK SC", "Noto Sans SC", "WenQuanYi Micro Hei", "Source Han Sans SC", "Geist Variable", sans-serif;
+      padding: var(--space-4);
+      font-family: var(--font-family-body);
       color: var(--foreground);
       -webkit-font-smoothing: antialiased;
       -moz-osx-font-smoothing: grayscale;
@@ -367,46 +411,46 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
       flex-direction: column;
       overflow: hidden;
       border: 1px solid var(--border-soft);
-      border-radius: 12px;
+      border-radius: var(--radius-container);
       background: var(--surface-overlay);
       box-shadow: var(--elevation-overlay);
-      animation: dialog-enter 300ms cubic-bezier(.2, 0, 0, 1) backwards;
+      animation: dialog-enter var(--duration-medium) var(--ease-out-strong) backwards;
     }
     body.maka-dialog-constrained .card {
-      height: calc(100vh - 32px);
-      min-height: calc(100vh - 32px);
+      height: calc(100vh - var(--space-8));
+      min-height: calc(100vh - var(--space-8));
     }
     .drag-region {
-      height: 48px;
-      flex: 0 0 48px;
+      height: var(--space-12);
+      flex: 0 0 var(--space-12);
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 8px 0 24px;
+      padding: var(--space-2) var(--space-2) 0 var(--space-6);
       -webkit-app-region: drag;
     }
     .wordmark {
       width: 68px;
       height: auto;
-      color: #71a8fd;
+      color: var(--maka-brand);
     }
     button { font: inherit; }
     .window-close {
-      width: 32px;
-      height: 32px;
+      width: var(--space-8);
+      height: var(--space-8);
       display: grid;
       place-items: center;
       padding: 0;
       border: 0;
-      border-radius: 10px;
+      border-radius: var(--radius-element);
       background: transparent;
       color: var(--muted-foreground);
       cursor: pointer;
       -webkit-app-region: no-drag;
     }
     .window-close svg {
-      width: 16px;
-      height: 16px;
+      width: var(--space-4);
+      height: var(--space-4);
       fill: none;
       stroke: currentColor;
       stroke-width: 2;
@@ -422,7 +466,7 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
       flex: 1 1 auto;
       min-height: 0;
       overflow: auto;
-      padding: 16px 24px 20px;
+      padding: var(--space-4) var(--space-6) var(--space-5);
       scrollbar-width: thin;
       scrollbar-color: var(--border-strong) transparent;
     }
@@ -437,18 +481,18 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
     .heading-row {
       display: flex;
       align-items: flex-start;
-      gap: 12px;
+      gap: var(--space-3);
     }
     .icon {
-      width: 32px;
-      height: 32px;
-      flex: 0 0 32px;
+      width: var(--space-8);
+      height: var(--space-8);
+      flex: 0 0 var(--space-8);
       display: grid;
       place-items: center;
       border-radius: 27%;
       color: var(--info);
-      background: oklch(from var(--info) l c h / 0.08);
-      box-shadow: inset 0 0 0 1px oklch(from var(--info) l c h / 0.24);
+      background: var(--info-wash);
+      box-shadow: inset 0 0 0 1px var(--info-wash-border);
     }
     .icon svg {
       width: 18px;
@@ -461,8 +505,8 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
     }
     .warning .icon {
       color: var(--warning);
-      background: oklch(from var(--warning) l c h / 0.08);
-      box-shadow: inset 0 0 0 1px oklch(from var(--warning) l c h / 0.24);
+      background: var(--warning-wash);
+      box-shadow: inset 0 0 0 1px var(--warning-wash-border);
     }
     .error .icon {
       color: var(--destructive);
@@ -477,26 +521,26 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
     .heading-copy { min-width: 0; padding-top: 1px; }
     h1 {
       margin: 0;
-      font-size: 18px;
-      line-height: 28px;
-      font-weight: 600;
+      font-size: var(--text-heading-2-size);
+      line-height: var(--text-heading-2-leading);
+      font-weight: var(--text-heading-2-weight);
     }
     .message {
       margin-top: 4px;
       color: var(--foreground-secondary);
-      font-size: 14px;
-      line-height: 20px;
+      font-size: var(--text-body-size);
+      line-height: var(--text-body-leading);
       white-space: pre-wrap;
       user-select: text;
     }
     .detail {
-      margin-top: 20px;
-      padding: 12px;
-      border-radius: 10px;
+      margin-top: var(--space-5);
+      padding: var(--space-3);
+      border-radius: var(--radius-element);
       background: var(--foreground-3);
       color: var(--foreground-secondary);
-      font-size: 14px;
-      line-height: 20px;
+      font-size: var(--text-body-size);
+      line-height: var(--text-body-leading);
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       user-select: text;
@@ -506,27 +550,27 @@ export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation)
       display: flex;
       flex-wrap: wrap;
       justify-content: flex-end;
-      gap: 8px;
-      padding: 12px 16px 16px;
+      gap: var(--space-2);
+      padding: var(--space-3) var(--space-4) var(--space-4);
     }
     .decision {
-      height: 32px;
-      padding: 6px 12px;
+      height: var(--space-8);
+      padding: var(--space-1-5) var(--space-3);
       border: 0;
-      border-radius: 10px;
+      border-radius: var(--radius-element);
       color: var(--foreground);
-      font-size: 14px;
-      line-height: 20px;
-      font-weight: 500;
+      font-size: var(--text-label-size);
+      line-height: var(--text-label-leading);
+      font-weight: var(--text-label-weight);
       white-space: nowrap;
       cursor: pointer;
-      transition: opacity 125ms ease, transform 125ms ease;
+      transition: opacity var(--duration-quick) var(--ease-out-strong), transform var(--duration-quick) var(--ease-out-strong);
       -webkit-app-region: no-drag;
     }
-    .decision:hover { background-image: linear-gradient(var(--control-overlay-hover), var(--control-overlay-hover)); }
+    .decision:hover { background-image: linear-gradient(var(--color-overlay-hover), var(--color-overlay-hover)); }
     .decision:active { transform: scale(.98); }
-    .decision.primary { background-color: var(--accent-solid); color: var(--on-accent); }
-    .decision.secondary { background-color: var(--neutral); }
+    .decision.primary { background-color: var(--accent-solid); color: var(--color-on-accent); }
+    .decision.secondary { background-color: var(--color-neutral); }
     .decision.ghost { background-color: transparent; }
     @keyframes dialog-enter {
       from { opacity: 0; transform: translateY(10px) scale(.97); }

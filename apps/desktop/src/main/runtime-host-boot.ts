@@ -81,7 +81,11 @@ import { readFileCapped } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
-import { showBrowserMessageBox } from "./browser-message-box.js";
+import {
+  isBrowserMessageBoxPresentationActive,
+  showBrowserMessageBox,
+  type BrowserMessageBoxAppearance,
+} from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
@@ -100,6 +104,7 @@ import {
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
+import { isDarkAppearance } from "./theme-source.js";
 import {
   readWithFallback,
   type ReconnectableReadIpcMain,
@@ -332,9 +337,17 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   writeClipboard: (report) => clipboard.writeText(report),
 };
 let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
+let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
+  locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+  palette: "default",
+});
 
-function showDesktopMessageBox(options: MessageBoxOptions): Promise<MessageBoxReturnValue> {
-  return showBrowserMessageBox(options, resolveBrowserDialogParent());
+async function showDesktopMessageBox(
+  options: MessageBoxOptions,
+  override?: Partial<BrowserMessageBoxAppearance>,
+): Promise<MessageBoxReturnValue> {
+  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override };
+  return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
 }
 
 function showStartupDiagnosticDialog(
@@ -343,7 +356,7 @@ function showStartupDiagnosticDialog(
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
-    showMessageBox: showDesktopMessageBox,
+    showMessageBox: (nextOptions) => showDesktopMessageBox(nextOptions, { locale }),
     copyDiagnostics: () =>
       copyDesktopDiagnosticReport(
         desktopDiagnostics,
@@ -382,6 +395,21 @@ const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
+resolveBrowserDialogAppearance = async () => {
+  try {
+    const settings = await settingsStore.get();
+    return {
+      locale: desktopLocale.observe(settings),
+      palette: settings.appearance.palette,
+      dark: isDarkAppearance(
+        e2eFixture?.theme ?? settings.appearance.theme,
+        nativeTheme.shouldUseDarkColors,
+      ),
+    };
+  } catch {
+    return { locale: desktopLocale.current(), palette: "default" };
+  }
+};
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
@@ -436,13 +464,14 @@ const mainWindowController = createMainWindowController({
       details: `Exit code: ${details.exitCode}`,
     });
     for (;;) {
+      const locale = desktopLocale.current();
       const decision = await showMainRendererProcessGoneDialog({
-        locale: desktopLocale.current(),
+        locale,
         copyDiagnostics: () =>
           copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
         // showBrowserMessageBox attaches only to a visible, non-minimized
         // parent. A pre-first-paint crash therefore gets a standalone window.
-        showMessageBox: showDesktopMessageBox,
+        showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
       });
       if (decision !== "recover") break;
       if (await mainWindowController.reloadMainRenderer()) return;
@@ -771,16 +800,20 @@ const clientSettingsTools = buildClientSettingsTools({
     return settings;
   },
   confirm: async (changes) => {
-    const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
-    const result = await showDesktopMessageBox({
-      type: "question",
-      message: copy.message,
-      detail: copy.detail,
-      buttons: copy.buttons,
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
+    const locale = await desktopLocale.resolve();
+    const copy = clientSettingsConfirmation(changes, locale);
+    const result = await showDesktopMessageBox(
+      {
+        type: "question",
+        message: copy.message,
+        detail: copy.detail,
+        buttons: copy.buttons,
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      },
+      { locale },
+    );
     return result.response === 0;
   },
 });
@@ -1138,9 +1171,10 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
       repairError: input.repairError,
       activeTasks: input.activeTasks,
     });
+    const locale = desktopLocale.current();
     return showRuntimeHostStartupRecoveryDialog(input, {
-      locale: desktopLocale.current(),
-      showMessageBox: showDesktopMessageBox,
+      locale,
+      showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
       copyDiagnostics: () =>
         copyDesktopDiagnosticReport(
           desktopDiagnostics,
@@ -1836,7 +1870,7 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin") app.quit();
+    if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
   quitCoordinator.focusOrCreateWindow();
@@ -1854,7 +1888,7 @@ async function prepareRuntimeHostDesktopQuit(): Promise<void> {
 
 async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
   const locale = await desktopLocale.resolve();
-  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale), { locale });
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {

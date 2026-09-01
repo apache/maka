@@ -103,20 +103,25 @@ if (!app.requestSingleInstanceLock()) {
       void app
         .whenReady()
         .then(() => {
-          const isChinese = resolveSystemUiLocale(app.getPreferredSystemLanguages()) === 'zh';
-          return showBrowserMessageBox({
-            type: 'warning',
-            title: isChinese ? 'Maka Dev 已在运行' : 'Maka Dev is already running',
-            message: isChinese
-              ? '另一个 Maka Dev 实例正在使用此开发配置。'
-              : 'Another Maka Dev instance is using this development profile.',
-            detail: isChinese
-              ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
-              : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
-            buttons: [isChinese ? '退出' : 'Exit'],
-            defaultId: 0,
-            cancelId: 0,
-          });
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+          const isChinese = locale === 'zh';
+          return showBrowserMessageBox(
+            {
+              type: 'warning',
+              title: isChinese ? 'Maka Dev 已在运行' : 'Maka Dev is already running',
+              message: isChinese
+                ? '另一个 Maka Dev 实例正在使用此开发配置。'
+                : 'Another Maka Dev instance is using this development profile.',
+              detail: isChinese
+                ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
+                : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+              buttons: [isChinese ? '退出' : 'Exit'],
+              defaultId: 0,
+              cancelId: 0,
+            },
+            undefined,
+            { locale },
+          );
         })
         .catch((error) => {
           console.error('[dev] styled single-instance dialog failed:', error);
@@ -200,8 +205,9 @@ if (!app.requestSingleInstanceLock()) {
         // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
         if (!isIsolatedE2e) {
           const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
           await showFatalStartupError(error, {
-            locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+            locale,
             environment: () =>
               captureDesktopDiagnosticEnvironment({
                 appVersion: app.getVersion(),
@@ -212,7 +218,8 @@ if (!app.requestSingleInstanceLock()) {
               }),
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
-            showMessageBox: (options) => showBrowserMessageBox(options),
+            showMessageBox: (options) =>
+              showBrowserMessageBox(options, undefined, { locale }),
           });
         }
       } finally {

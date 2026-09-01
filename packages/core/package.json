@@ -144,6 +144,7 @@
     "./ui-locale": "./dist/ui-locale.js",
     "./unified-diff": "./dist/unified-diff.js",
     "./dev-single-instance": "./dist/dev-single-instance.js",
+    "./maka-wordmark": "./dist/maka-wordmark.js",
     "./test-only/async-primitives": "./dist/test-only/async-primitives.js"
   },
   "scripts": {

@@ -54,7 +54,7 @@ export interface MainWindowController {
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
-  notifyRendererReady(): void;
+  notifyRendererReady(sender: Electron.WebContents): void;
   setTitlebarControlsVisible(sender: Electron.WebContents, visible: unknown): void;
   setThemeSource(sender: Electron.WebContents, themePref: unknown): void;
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
@@ -178,6 +178,12 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   // skeleton anyway. The gate defers those focus requests until markReady.
   const revealGate = createWindowRevealGate(keepHiddenForE2eFixture);
   let showFallbackTimer: NodeJS.Timeout | undefined;
+  let rendererRecoveryReadiness:
+    | {
+        readonly contents: Electron.WebContents;
+        listener?: () => void;
+      }
+    | undefined;
   let mainWindowShutdownSignal: AbortSignal | undefined;
   const clearShowFallbackTimer = (): void => {
     if (showFallbackTimer) {
@@ -543,21 +549,36 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
       ) return false;
       clearShowFallbackTimer();
       const contents = target.webContents;
+      const readiness: {
+        readonly contents: Electron.WebContents;
+        listener?: () => void;
+      } = { contents };
+      rendererRecoveryReadiness = readiness;
       const loaded = await reloadMainRendererProcess({
         source: contents,
         shutdownSignal: signal,
-        onLoaded: () => {
+        subscribeRendererReady: (listener) => {
+          readiness.listener = listener;
+          return () => {
+            if (readiness.listener === listener) readiness.listener = undefined;
+          };
+        },
+        onReady: () => {
           // The previous one-shot observer was consumed by the crash. Re-arm
           // it before successful recovery is exposed to the caller.
           observeRendererProcess(target, signal);
-          armShowFallbackTimer(target);
         },
+      }).finally(() => {
+        if (rendererRecoveryReadiness === readiness) rendererRecoveryReadiness = undefined;
       });
-      if (!loaded) console.error('[renderer] main Renderer reload did not finish');
+      if (!loaded) console.error('[renderer] main Renderer reload did not become ready');
       return loaded;
     },
     send: safeSendToRenderer,
-    notifyRendererReady() {
+    notifyRendererReady(sender) {
+      if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
+      const recovery = rendererRecoveryReadiness;
+      if (recovery?.contents === sender) recovery.listener?.();
       // PR-SHOW-AFTER-FIRST-COMMIT: the renderer finished its first React
       // commit. Cancel the fallback timer and reveal the window through the
       // shared gate — idempotent, so an HMR reload re-firing this signal (or a

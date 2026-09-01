@@ -36,7 +36,7 @@ import {
   type RuntimeHostRetirementMode,
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
-import type { HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostActivitySnapshot, HostRegistration } from '@maka/runtime-host/protocol';
 import type { DesktopTargetSessionRef } from '../shared/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
@@ -150,6 +150,14 @@ export type RuntimeHostNonRestartableAction =
   | 'replace_may_interrupt_work'
   | 'wait'
   | 'cancel_only';
+
+function isObservedRuntimeHostIdle(activity: HostActivitySnapshot): boolean {
+  return (
+    activity.connections === 0 &&
+    activity.activeOperations === 0 &&
+    activity.residencies.length === 0
+  );
+}
 
 export interface RuntimeHostLocalReplacement {
   replace(activeWorkPolicy: RuntimeHostRetirementMode): Promise<'replaced' | 'active_tasks'>;
@@ -917,10 +925,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       if (result.kind === 'upgrade_required' && result.restartable) {
         const activity = result.handshake?.activity;
         const decision =
-          activity &&
-          activity.connections === 0 &&
-          activity.activeOperations === 0 &&
-          activity.residencies.length === 0
+          activity && isObservedRuntimeHostIdle(activity)
             ? 'restart'
             : await this.#resolveRestartable(result);
         if (decision === 'cancel') {
@@ -941,11 +946,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         const replacement = target.input.profileTarget
           ? undefined
           : await this.resolveLocalHostReplacement?.(result.registration, signal);
-        if (replacement) {
+        const activity = result.handshake?.activity;
+        if (replacement && (!activity || isObservedRuntimeHostIdle(activity))) {
           // The managed-service operator can check active work even when an
           // older Host cannot include an activity snapshot in its handshake.
-          // Let idle upgrades finish without a dialog, but never grant
-          // interruption authority until the person explicitly confirms it.
+          // A present snapshot remains authoritative for connections as well
+          // as operations/residencies; interruption still requires consent.
           const attempt = await replacement.replace('refuse_active_work');
           if (attempt === 'replaced') {
             takeoverHostEpoch = undefined;

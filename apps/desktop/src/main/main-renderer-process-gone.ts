@@ -88,7 +88,8 @@ export function observeMainRendererProcessGone(deps: {
 export function reloadMainRendererProcess(deps: {
   readonly source: MainRendererReloadSource;
   readonly shutdownSignal: AbortSignal;
-  readonly onLoaded: () => void;
+  readonly subscribeRendererReady: (listener: () => void) => () => void;
+  readonly onReady: () => void;
   readonly timeoutMs?: number;
 }): Promise<boolean> {
   if (deps.shutdownSignal.aborted || deps.source.isDestroyed()) {
@@ -96,10 +97,14 @@ export function reloadMainRendererProcess(deps: {
   }
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let documentLoaded = false;
+    let rendererReady = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeRendererReady = (): void => {};
     const cleanup = (): void => {
       if (timeout) clearTimeout(timeout);
-      deps.source.off('did-finish-load', onLoaded);
+      unsubscribeRendererReady();
+      deps.source.off('did-finish-load', onDocumentLoaded);
       deps.source.off('did-fail-load', onFailed);
       deps.source.off('unresponsive', onUnresponsive);
       deps.source.off('render-process-gone', onGone);
@@ -112,13 +117,22 @@ export function reloadMainRendererProcess(deps: {
       cleanup();
       resolve(loaded);
     };
-    const onLoaded = (): void => {
+    const finishWhenReady = (): void => {
+      if (!documentLoaded || !rendererReady) return;
       try {
-        deps.onLoaded();
+        deps.onReady();
         settle(true);
       } catch {
         settle(false);
       }
+    };
+    const onDocumentLoaded = (): void => {
+      documentLoaded = true;
+      finishWhenReady();
+    };
+    const onRendererReady = (): void => {
+      rendererReady = true;
+      finishWhenReady();
     };
     const onFailed = (
       _event: Event,
@@ -134,7 +148,8 @@ export function reloadMainRendererProcess(deps: {
     const onDestroyed = (): void => settle(false);
     const onAborted = (): void => settle(false);
 
-    deps.source.once('did-finish-load', onLoaded);
+    unsubscribeRendererReady = deps.subscribeRendererReady(onRendererReady);
+    deps.source.once('did-finish-load', onDocumentLoaded);
     deps.source.on('did-fail-load', onFailed);
     deps.source.once('unresponsive', onUnresponsive);
     deps.source.once('render-process-gone', onGone);
