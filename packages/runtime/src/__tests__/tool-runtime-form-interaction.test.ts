@@ -255,4 +255,65 @@ describe('ToolRuntime form Interaction', () => {
     assert.equal(toolRuntime.pendingUserFormCount(), 0);
     assert.equal(events.filter((event) => event.type === 'form_answer_ack').length, 0);
   });
+
+  test('waits for hosted admission before withdrawing a cancelled producer form', async () => {
+    const events: SessionEvent[] = [];
+    const producer = new AbortController();
+    let admitted: { requestId: string; settlement: HostedFormSettlement } | undefined;
+    let finishAdmission!: () => void;
+    const admissionGate = new Promise<void>((resolve) => {
+      finishAdmission = resolve;
+    });
+    const withdrawals: string[] = [];
+    const toolRuntime = createTestToolRuntime({
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'c' } as never,
+      modelId: 'm',
+      appendMessage: async () => {},
+      newId: (() => {
+        let id = 0;
+        return () => `id-${++id}`;
+      })(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+      hostedInteraction: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        admitUserQuestionRequest: async () => {
+          throw new Error('Unexpected user question');
+        },
+        admitFormRequest: async (input) => {
+          admitted = { requestId: input.request.requestId, settlement: input.settlement };
+          await admissionGate;
+        },
+        withdrawFormRequest: async (requestId) => {
+          withdrawals.push(requestId);
+          await admitted?.settlement.applyClosure('producer_cancelled');
+        },
+        admitSandboxBoundaryRequest: async () => {
+          throw new Error('Unexpected sandbox boundary');
+        },
+      },
+    });
+    const pending = toolRuntime.settleToolCall({
+      tool: formTool(producer.signal),
+      turnId: 'turn-1',
+      toolCallId: 'tool-1',
+      input: {},
+      abortSignal: new AbortController().signal,
+      eventSink: sink(events),
+    });
+    while (!admitted) await new Promise<void>((resolve) => setImmediate(resolve));
+
+    producer.abort(new DOMException('Provider invocation ended', 'AbortError'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(withdrawals, []);
+    finishAdmission();
+    await pending;
+
+    assert.deepEqual(withdrawals, [admitted.requestId]);
+    assert.equal(toolRuntime.pendingUserFormCount(), 0);
+  });
 });

@@ -789,12 +789,15 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
     const connection = this.#connections.get(connectionId);
     if (!connection) return invocationCleanup;
     let task!: Promise<void>;
-    task = this.#activation
-      .runMutation(() => this.#releaseConnectionState(connection))
+    task = Promise.all([
+      invocationCleanup,
+      this.#activation.runMutation(() => this.#releaseConnectionState(connection)),
+    ])
+      .then(() => undefined)
       .finally(() => this.#pendingConnectionReleases.delete(task));
     this.#pendingConnectionReleases.add(task);
     void task.catch(() => undefined);
-    return Promise.all([invocationCleanup, task]).then(() => undefined);
+    return task;
   }
 
   #releaseConnectionState(connection: ClientProviderConnection): void {
@@ -827,10 +830,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
   async close(): Promise<void> {
     this.beginDrain();
-    for (const connectionId of [...this.#connections.keys()]) {
-      this.releaseConnection(connectionId);
-    }
-    await Promise.allSettled([...this.#pendingConnectionReleases]);
+    const releases = [...this.#connections.keys()].map((connectionId) =>
+      this.releaseConnection(connectionId),
+    );
+    await Promise.allSettled(releases);
     this.#invocations.close();
     this.#sessions.clear();
   }

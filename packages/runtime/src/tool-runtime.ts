@@ -2661,11 +2661,19 @@ export class ToolRuntime {
       this.userForms.reject(requestId, abortErrorFromSignal(abortSignal));
       this.finishDeferredFormTurnClosure();
     };
+    let hostedAdmission: Promise<void> | undefined;
     let producerWithdrawal: Promise<void> | undefined;
     const onProducerCancellation = (): void => {
       if (abortSignal.aborted) return;
       if (hostedRun) {
-        producerWithdrawal ??= hostedRun.withdrawFormRequest(requestId);
+        producerWithdrawal ??= Promise.resolve().then(async () => {
+          try {
+            await hostedAdmission;
+          } catch {
+            return;
+          }
+          await hostedRun.withdrawFormRequest(requestId);
+        });
       } else if (producerCancellationSignal) {
         this.userForms.reject(requestId, abortErrorFromSignal(producerCancellationSignal));
         this.finishDeferredFormTurnClosure();
@@ -2688,7 +2696,10 @@ export class ToolRuntime {
       };
       if (hostedRun) {
         const settlement = this.createFormSettlement(turnId, requestId);
-        const admission = hostedRun.admitFormRequest({ request: requestEvent, settlement });
+        const admission = Promise.resolve().then(() =>
+          hostedRun.admitFormRequest({ request: requestEvent, settlement }),
+        );
+        hostedAdmission = admission;
         try {
           await racePromiseWithAbort(admission, interactionSignal);
         } catch (error) {
