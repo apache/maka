@@ -29,7 +29,9 @@ on:
         type: boolean
   issues:
     types: [reopened]
-  pull_request:
+  # Reopen handling mutates labels/comments. Use the trusted base workflow so
+  # fork PRs cannot force writes through a read-only pull_request token.
+  pull_request_target:
     types: [reopened]
 
 permissions:

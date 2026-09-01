@@ -154,12 +154,12 @@ describe('pull request lifecycle', () => {
     });
   });
 
-  it('treats a lifecycle reopen marker as a fresh PR activity timestamp', () => {
+  it('ignores a lifecycle reopen marker for PR activity timing', () => {
     const plan = planLifecycle(
       pullRequest({ comments: [botComment(2, STALE_REOPEN_MARKER)] }),
       NOW,
     );
-    assert.deepEqual(plan, { action: 'none', reason: 'recent qualifying activity' });
+    assert.equal(plan.action, 'warn');
   });
 
   it('still finds human activity when more than 100 comments are present', () => {

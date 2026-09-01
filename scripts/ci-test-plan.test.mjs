@@ -808,7 +808,7 @@ function hasPullRequestTrigger(name) {
   // Event-only maintenance workflows may listen for a lifecycle action without
   // becoming a normal pull-request validation lane. They do not belong in the
   // scarce-runner allowlist or its timeout tier.
-  return !/pull_request:\s*\n\s+types:\s*\[\s*reopened\s*\]/u.test(block);
+  return !/pull_request(?:_target)?:\s*\n\s+types:\s*\[\s*reopened\s*\]/u.test(block);
 }
 
 function hasPullRequestGate(name) {

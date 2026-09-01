@@ -89,17 +89,7 @@ function issueActivityAt(item) {
 }
 
 function pullRequestActivityAt(item) {
-  const lastCommitAt = time(item.lastCommitAt ?? item.createdAt, 'lastCommitAt');
-  const reopenAt = latestTimestamp(
-    (item.comments ?? [])
-      .filter(
-        (comment) => isBot(comment) && String(comment.body ?? '').includes(STALE_REOPEN_MARKER),
-      )
-      .map((comment) => comment.createdAt),
-    Number.NEGATIVE_INFINITY,
-    'comment.createdAt',
-  );
-  return Math.max(lastCommitAt, reopenAt);
+  return time(item.lastCommitAt ?? item.createdAt, 'lastCommitAt');
 }
 
 function latestWarningAt(item) {
