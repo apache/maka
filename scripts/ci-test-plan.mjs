@@ -35,6 +35,11 @@ const FULL_SUITE_FILES = new Set([
 ]);
 
 const RELEASE_CONTRACT_FILES = new Set([
+  // Branch protection. `product-release.test.mjs` parses it and asserts the
+  // required contexts and the release-environment admission rules, and that
+  // suite runs behind `check:release` — so this selection is what proves a
+  // change to the merge gate still satisfies its own policy test.
+  '.asf.yaml',
   'apps/desktop/src/main/app-update-test-context.ts',
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
@@ -160,6 +165,10 @@ const CLI_PACKAGE_WORKSPACES = [
 
 function isCliPackagePath(path) {
   if (CLI_PACKAGE_FILES.has(path) || path.startsWith('patches/')) return true;
+  // `release:cli:pack` builds the direct-peer addon into the tarball and runs
+  // `cargo deny` against that policy, so this crate ships and CLI packaging is
+  // the JavaScript gate that proves it still does.
+  if (path === 'deny.toml' || path.startsWith('native/runtime-host-peer/')) return true;
   if (isDocumentation(path)) return false;
   if (path.startsWith('scripts/release-cli-')) return true;
   if (path.startsWith('tsconfig') && path.endsWith('.json')) return true;
@@ -444,6 +453,30 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
+    // Rust. Each of these crates has an admission lane that owns `cargo fmt`
+    // and `cargo test` for it, and `native/runtime-host-peer` additionally
+    // reaches CLI packaging through `isCliPackagePath` above. Nothing under
+    // either is read by lint, typecheck, Storybook, or a real window, so
+    // falling through to the guard below made this directory the largest
+    // single source of full-suite runs.
+    //
+    // Named one crate at a time rather than by the `native/` prefix: what
+    // earns the exemption is having a lane, not being written in Rust. A new
+    // native root has neither until someone adds one, and until then the
+    // guard below is the only thing that would test it at all.
+    //
+    // `deny.toml` is the lint policy both crates share and travels with them.
+    if (
+      path.startsWith('native/gitoxide-helper/') ||
+      path.startsWith('native/runtime-host-peer/') ||
+      path === 'deny.toml'
+    ) {
+      continue;
+    }
+    // Branch protection selects no workspace, but it is not unknown either:
+    // `RELEASE_CONTRACT_FILES` above routes it to `product-release.test.mjs`,
+    // the suite that parses it and asserts the required contexts.
+    if (path === '.asf.yaml') continue;
     if (path.startsWith('.github/')) continue;
     code = true;
     unknownCode = true;
