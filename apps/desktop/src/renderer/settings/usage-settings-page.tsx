@@ -26,12 +26,12 @@ import {
   Tab,
   TabList,
   Table,
+  Tooltip,
   type TableColumn,
   type TablePlugin,
   pixel,
   proportional,
 } from '@astryxdesign/core';
-import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { uiLocaleToIntlLocale } from '@maka/core/ui-locale';
 import { parseDesktopSessionKey } from '../../shared/runtime-host-identity.js';
 import {
