@@ -718,15 +718,14 @@ test('the recovery lane keeps every run kind out of one shared concurrency group
   assert.match(workflow, /\n {2}cancel-in-progress: true/u);
 });
 
-test('the recovery lane filters pull requests by the workspaces its steps execute', () => {
+test('the recovery lane leaves the suites it executes to the required test lane', () => {
   const workflow = readWorkflow('windows-recovery.yml');
   const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
 
   // Derived from the dist paths the steps run, then widened along the workspace
   // dependency graph the planner selects with. The separator class matches the
   // backslash form too, because these steps run under pwsh where both are
-  // legal. A new workspace on this lane, or a new dependency under one of them,
-  // fails here until the filter admits its sources and project file.
+  // legal.
   const executed = [
     ...new Set(
       [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
@@ -734,13 +733,23 @@ test('the recovery lane filters pull requests by the workspaces its steps execut
   ].sort();
   assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
 
+  // None of that closure belongs in the filter. These suites are ordinary
+  // TypeScript, so `test` runs them on Linux on every pull request and fails
+  // first; naming their sources here only bought a second, slower red. Listing
+  // one again would put this lane back on most merges, so it fails here.
   const closure = dependencyClosure(executed.map((workspace) => `packages/${workspace}`));
   assert.ok(closure.includes('packages/core'), 'dependency closure must reach core');
   for (const dir of closure) {
-    assert.ok(filtered.has(`${dir}/src/**`), `${dir}: sources`);
-    assert.ok(filtered.has(`${dir}/tsconfig.json`), `${dir}: project file`);
-    assert.ok(filtered.has(`${dir}/package.json`), `${dir}: manifest`);
+    for (const entry of [`${dir}/src/**`, `${dir}/tsconfig.json`, `${dir}/package.json`]) {
+      assert.ok(!filtered.has(entry), `${entry} belongs to the required test lane`);
+    }
   }
+
+  // What the Windows runner proves instead is that the suites still build and
+  // run here at all, which is why the unconditional install and build steps stay
+  // unconditional even though nothing in the filter names a workspace.
+  assert.match(workflow, /\n {6}- name: Install dependencies\n {8}run: npm\.cmd ci\n/u);
+  assert.match(workflow, /\n {8}run: npm\.cmd run build:test\n/u);
 });
 
 test('the recovery lane filter follows the postinstall launcher chain', () => {
@@ -763,25 +772,23 @@ test('the recovery lane filter follows the postinstall launcher chain', () => {
   }
 });
 
-test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
+test('the recovery lane filters pull requests by what only Windows can prove', () => {
   const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
 
-  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so these are
-  // first-class inputs of the lane rather than transitive edits the nightly can
-  // be left to cover. A grouped dependabot bump touches only the manifests, and
-  // the crash gates sit on a native file lock the Linux `test` lane never sees.
+  // What is left after the workspace sources came out: how `npm.cmd ci` resolves
+  // and what it produces on Windows, what `npm.cmd run build:test` cleans up
+  // there, and a PowerShell script this lane is the only caller of. Each of
+  // these can be green on Linux and red here, which is the whole test for
+  // membership in this list.
   for (const path of [
-    'package.json',
     'package-lock.json',
     'patches/**',
     'scripts/apply-dependency-patches.mjs',
     'scripts/install-electron-with-retry.mjs',
+    'scripts/run-electron-installer.cjs',
     'scripts/clean-build.mjs',
     'scripts/clean-paths.mjs',
     'scripts/windows-runtime-host-local-ipc-trust.ps1',
-    'tsconfig.base.json',
-    'tsconfig.lib.json',
-    'packages/runtime/scripts/**',
     '.github/workflows/windows-recovery.yml',
   ]) {
     assert.ok(filtered.has(path), path);

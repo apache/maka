@@ -17,24 +17,31 @@
 
 name: Windows recovery
 
-# The paths below are a pre-filter, not this lane's real input. The real input
-# is the import closure of the crash and owner-death recovery authorities in
-# storage, runtime and Runtime Host, which reaches well past any list worth
-# hand-maintaining. So they name those workspaces and every workspace they hold
-# a TypeScript project reference to, plus the manifests, patches and scripts
-# the unconditional install and clean steps consume. That keeps a change there
-# reported before merge, and the nightly run covers the transitive edits the
-# list cannot match.
+# The paths below name only what a Windows runner can prove and the required
+# `test` lane cannot: how `npm ci` behaves here, what the dependency patches and
+# the Electron installer produce here, and the Local IPC trust boundary, which
+# is a PowerShell script with no other caller.
 #
-# GitHub evaluates a path filter against the first 300 files of the diff only,
-# so a pull request wider than that can skip the filter outright. A repository-wide sweep is exactly the change that touches every
-# recovery authority at once, which is one more reason the main push below
-# carries no filter at all.
+# They deliberately do not name the recovery authorities themselves. Those used
+# to be here, as every source directory in the workspace closure of the crash
+# and owner-death tests below, which put this lane on 118 of the last 200
+# merges. Over 300 runs it never once produced a pull-request red that the
+# `test` lane had not already produced on the same commit, usually at the very
+# same step: the recovery suites are ordinary TypeScript, so a defect in them
+# fails on Linux first and blocks the merge there. Its one unique catch in that
+# window — a Windows-only NTFS alternate stream regression — came from the main
+# push below, which is what that trigger exists for.
+#
+# So the authorities are covered after merge rather than before it, minutes
+# later, by a push run that carries no filter at all. That trigger is also
+# unfiltered because `required_status_checks` is `strict: false`, so a pull
+# request can go green against a stale base, and because GitHub evaluates a path
+# filter against the first 300 files of a diff only — and a repository-wide
+# sweep is exactly the change that touches every recovery authority at once.
 on:
   pull_request:
     branches: [main]
     paths:
-      - 'package.json'
       - 'package-lock.json'
       - 'patches/**'
       - 'scripts/apply-dependency-patches.mjs'
@@ -43,21 +50,6 @@ on:
       - 'scripts/clean-build.mjs'
       - 'scripts/clean-paths.mjs'
       - 'scripts/windows-runtime-host-local-ipc-trust.ps1'
-      - 'tsconfig.base.json'
-      - 'tsconfig.lib.json'
-      - 'packages/core/package.json'
-      - 'packages/core/tsconfig.json'
-      - 'packages/core/src/**'
-      - 'packages/storage/package.json'
-      - 'packages/storage/tsconfig.json'
-      - 'packages/storage/src/**'
-      - 'packages/runtime/package.json'
-      - 'packages/runtime/tsconfig.json'
-      - 'packages/runtime/src/**'
-      - 'packages/runtime/scripts/**'
-      - 'packages/runtime-host/package.json'
-      - 'packages/runtime-host/tsconfig.json'
-      - 'packages/runtime-host/src/**'
       - '.github/workflows/windows-recovery.yml'
   # Unfiltered on purpose: required_status_checks is `strict: false`, so a pull
   # request goes green against a stale base and only the merged result proves
