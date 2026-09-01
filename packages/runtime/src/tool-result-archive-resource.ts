@@ -258,25 +258,26 @@ function inspectArchive(
   }
   if (isRecord(value)) {
     const items = Array.isArray(value.items) ? value.items : undefined;
-    const objectBase = {
+    let objectKeys = Object.keys(value)
+      .slice(0, 25)
+      .map((key) => boundedString(key));
+    const buildObjectBase = (): Record<string, unknown> => ({
       ...base,
       valueType: 'object',
       totalChars: serializedResult.length,
-      keys: Object.keys(value)
-        .slice(0, 25)
-        .map((key) => boundedString(key)),
+      keys: objectKeys,
       ...(typeof value.kind === 'string' ? { archivedKind: boundedString(value.kind) } : {}),
       ...(typeof value.status === 'string' ? { status: boundedString(value.status) } : {}),
-    };
+    });
     if (items) {
       const queryHint =
         'Call ArchiveRead with operation "query" and one of the listed itemId values.';
       let manifestItems = fitManifestItems(
-        { ...objectBase, itemCount: items.length, queryHint, readHint },
+        { ...buildObjectBase(), itemCount: items.length, queryHint, readHint },
         items,
       );
       const buildManifest = (): Record<string, unknown> => ({
-        ...objectBase,
+        ...buildObjectBase(),
         itemCount: items.length,
         items: manifestItems,
         queryHint,
@@ -288,19 +289,31 @@ function inspectArchive(
       // fitManifestItems uses a reserve for the final envelope. Re-check the
       // complete object because keys, hints, and truncation metadata are part
       // of the bounded response too.
-      while (
-        manifestItems.length > 0 &&
-        JSON.stringify(buildManifest()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS
-      ) {
-        manifestItems = manifestItems.slice(0, -1);
+      while (JSON.stringify(buildManifest()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS) {
+        if (manifestItems.length > 0) {
+          manifestItems = manifestItems.slice(0, -1);
+          continue;
+        }
+        if (objectKeys.length > 0) {
+          objectKeys = objectKeys.slice(0, -1);
+          continue;
+        }
+        break;
       }
       return buildManifest();
     }
-    return {
-      ...objectBase,
+    const buildObject = (): Record<string, unknown> => ({
+      ...buildObjectBase(),
       preview: boundedString(serializedResult, INSPECT_PREVIEW_CHARS),
       readHint,
-    };
+    });
+    while (
+      objectKeys.length > 0 &&
+      JSON.stringify(buildObject()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS
+    ) {
+      objectKeys = objectKeys.slice(0, -1);
+    }
+    return buildObject();
   }
   if (Array.isArray(value)) {
     return {
@@ -455,7 +468,7 @@ function searchArchive(
     return scanLine;
   };
 
-  let from = Math.min(Math.max(0, offset), text.length);
+  let from = normalizeSearchOffset(text, offset);
   while (matches.length < TOOL_RESULT_ARCHIVE_MAX_SEARCH_MATCHES) {
     matcher.lastIndex = from;
     const match = matcher.exec(text);
@@ -497,6 +510,27 @@ function searchArchive(
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeSearchOffset(text: string, offset: number): number {
+  const clamped = Math.min(Math.max(0, offset), text.length);
+  if (
+    clamped > 0 &&
+    clamped < text.length &&
+    isLowSurrogate(text.charCodeAt(clamped)) &&
+    isHighSurrogate(text.charCodeAt(clamped - 1))
+  ) {
+    return clamped + 1;
+  }
+  return clamped;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
 }
 
 /** Count 1-based lines in text (an empty string has zero lines). */

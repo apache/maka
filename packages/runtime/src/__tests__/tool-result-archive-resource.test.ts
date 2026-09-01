@@ -129,6 +129,24 @@ describe('tool-result archive resources', () => {
     assert.ok(JSON.stringify(result).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
   });
 
+  test('keeps empty manifests with escaped keys below the response budget', async () => {
+    const body = JSON.stringify({
+      kind: 'agent_swarm',
+      status: 'completed',
+      ...Object.fromEntries(
+        Array.from({ length: 24 }, (_, index) => ['key_' + index + '_' + '\\'.repeat(120), 'v']),
+      ),
+      items: [],
+    });
+    const { ref, reader } = fixture(body);
+    const result = await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    });
+
+    assert.ok(JSON.stringify(result).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
+  });
+
   test('query selects one swarm item and paginates below the prune threshold', async () => {
     const body = JSON.stringify({
       kind: 'agent_swarm',
@@ -384,6 +402,20 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal(result.matchCount, 1);
     assert.equal(match.offset, 0);
     assert.equal(match.snippet, 'ΟΣ');
+  });
+
+  test('search never resumes before a requested mid-surrogate offset', async () => {
+    const { ref, reader } = textFixture('a😀b😀z');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: '😀',
+      offset: 2,
+    })) as Record<string, unknown>;
+    const match = (result.matches as Array<Record<string, unknown>>)[0]!;
+
+    assert.equal(match.offset, 4);
+    assert.ok((match.offset as number) >= 2);
   });
 
   test('preserves accepted long search patterns and complete matching snippets', async () => {
