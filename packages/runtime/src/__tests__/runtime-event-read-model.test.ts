@@ -32,6 +32,7 @@ import {
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 
 const ts = 1_800_000_000_000;
@@ -1995,6 +1996,54 @@ describe('compareRuntimeReadModelMessages', () => {
     ];
 
     assert.strictEqual(compareRuntimeReadModelMessages(projected, legacy).compatible, false);
+  });
+
+  test('carries the cross-turn request anchor both ways and compares on it', () => {
+    const lastRequestAnchor = { inputTokens: 120, payloadChars: 48_000 };
+    const anchored = ev({
+      id: 'evt-token-anchor',
+      role: 'system',
+      author: 'system',
+      actions: { tokenUsage: { input: 370, output: 60, lastRequestAnchor } },
+    });
+    const projected = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-anchor-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'read the file' },
+        }),
+        anchored,
+      ],
+      { runHeaders: [header] },
+    );
+    const usage = projected.messages.find((message) => message.type === 'token_usage');
+    assert.partialDeepStrictEqual(usage, { type: 'token_usage', input: 370, lastRequestAnchor });
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: header,
+      messages: projected.messages,
+      now: () => ts,
+    });
+    assert.deepStrictEqual(
+      backfilled.events.find((event) => event.actions?.tokenUsage)?.actions?.tokenUsage
+        ?.lastRequestAnchor,
+      lastRequestAnchor,
+    );
+
+    assert.strictEqual(
+      compareRuntimeReadModelMessages(
+        [usage as StoredMessage],
+        [
+          {
+            ...(usage as Extract<StoredMessage, { type: 'token_usage' }>),
+            lastRequestAnchor: undefined,
+          },
+        ],
+      ).compatible,
+      false,
+    );
   });
 
   test('rejects mismatched replay-critical token usage fields', () => {

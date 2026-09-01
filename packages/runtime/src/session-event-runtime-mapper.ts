@@ -563,6 +563,9 @@ function mapBackendSessionEvent(
               : {}),
             ...(event.promptSegments !== undefined ? { promptSegments: event.promptSegments } : {}),
             ...(event.contextBudget !== undefined ? { contextBudget: event.contextBudget } : {}),
+            ...(event.lastRequestAnchor !== undefined
+              ? { lastRequestAnchor: event.lastRequestAnchor }
+              : {}),
           },
         },
         ...(event.providerRequestTraceId !== undefined

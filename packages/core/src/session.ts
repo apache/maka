@@ -1140,6 +1140,7 @@ const TOKEN_USAGE_MESSAGE_SHAPE = defineObjectShape<TokenUsageMessage>()(
     'promptSegments',
     'contextBudget',
     'providerRequestTraceId',
+    'lastRequestAnchor',
   ],
 );
 const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(

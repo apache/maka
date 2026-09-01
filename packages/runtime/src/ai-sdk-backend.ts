@@ -178,6 +178,7 @@ import {
 } from './responses-reasoning-state.js';
 import type { ActiveToolResultPruneDiagnosticPatch } from './active-tool-result-prune.js';
 import { toolResultOutput } from './tool-result-output.js';
+import { finitePositive } from './context-budget-helpers.js';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import type {
   AutomaticMemoryCompactionDecision,
@@ -2731,6 +2732,13 @@ export class AiSdkBackend implements AgentBackend {
               }
               return undefined;
             })();
+            // The anchor the NEXT turn estimates its first request from — see
+            // `LastRequestAnchor`. `input` below is the sum across this send's
+            // steps and anchors nothing. Either half missing (no usable usage
+            // sample, or no mid-turn seam to measure the payload) drops the
+            // whole pair and the next turn cold starts.
+            const anchorInputTokens = finitePositive(lastStepInputTokens);
+            const anchorPayloadChars = finitePositive(midTurnState?.lastRequestPayloadChars);
             // One shared usage payload for the durable message and the live
             // event: twin per-field literals drifted before (#4019), so a field
             // now has exactly one definition site.
@@ -2759,6 +2767,14 @@ export class AiSdkBackend implements AgentBackend {
                 ? { contextRemaining: contextRemainingForUsage }
                 : {}),
               ...(providerRequestTraceId ? { providerRequestTraceId } : {}),
+              ...(anchorInputTokens !== undefined && anchorPayloadChars !== undefined
+                ? {
+                    lastRequestAnchor: {
+                      inputTokens: anchorInputTokens,
+                      payloadChars: anchorPayloadChars,
+                    },
+                  }
+                : {}),
             };
             const tu: TokenUsageMessage = {
               type: 'token_usage',

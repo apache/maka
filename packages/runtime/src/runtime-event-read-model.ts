@@ -1112,6 +1112,9 @@ function projectTokenUsage(
       : {}),
     ...(usage.promptSegments !== undefined ? { promptSegments: usage.promptSegments } : {}),
     ...(usage.contextBudget !== undefined ? { contextBudget: usage.contextBudget } : {}),
+    ...(usage.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: usage.lastRequestAnchor }
+      : {}),
     ...(event.refs?.providerRequestTraceId !== undefined
       ? { providerRequestTraceId: event.refs.providerRequestTraceId }
       : {}),
@@ -1567,6 +1570,7 @@ function semanticMessage(message: StoredMessage): unknown {
         promptSegments: message.promptSegments,
         contextBudget: message.contextBudget,
         providerRequestTraceId: message.providerRequestTraceId,
+        lastRequestAnchor: message.lastRequestAnchor,
       };
     case 'turn_state':
       return {

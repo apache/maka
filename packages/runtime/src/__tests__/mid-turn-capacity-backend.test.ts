@@ -1506,6 +1506,27 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     );
   });
 
+  test('persists the LAST request as the anchor while input stays the send sum', async () => {
+    // `input` is the reconciled per-send sum (#996) and anchors nothing: an
+    // estimate started from it would be off by every earlier step. The
+    // persisted anchor is the last request alone, paired with the payload
+    // chars measured for that same request.
+    const fixture = buildFixture({ contextWindow: 1_000_000, finalAtSecondCall: true });
+    await runFixtureTurn(fixture);
+
+    const usage = fixture.messages.find(
+      (message): message is { type: 'token_usage'; input: number; lastRequestAnchor?: unknown } =>
+        (message as { type?: string }).type === 'token_usage',
+    );
+    // Two steps: 100 + 120 reported input, and the send sum is both.
+    assert.equal(usage?.input, 220);
+    const anchor = usage?.lastRequestAnchor as
+      | { inputTokens: number; payloadChars: number }
+      | undefined;
+    assert.equal(anchor?.inputTokens, 120);
+    assert.equal((anchor?.payloadChars ?? 0) > 0, true);
+  });
+
   test('an unrescuable turn under the shipped default still dispatches', async () => {
     // Same runtime-derived default (window 120 → reserve 30, high water 90):
     // no prior turns leaves no safe completed span, and the request genuinely
