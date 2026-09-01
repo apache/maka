@@ -37,6 +37,7 @@ import {
   createSqliteRuntimeStore,
   type SqliteRuntimeStoreFailpoint,
 } from '../sqlite-runtime-store.js';
+import { SQLITE_RUNTIME_SCHEMA_VERSION } from '../sqlite-runtime-schema.js';
 import {
   bindWorkspaceBaselineAuthorityStoreRootInternal,
   commitManagedMutationTerminalInternal,
@@ -660,7 +661,7 @@ describe('workspace version persistence authority', () => {
       bindWorkspaceBaselineAuthorityStoreRootInternal(upgraded, TEST_STORAGE_ROOT_ID);
       registerWorkspaceSuccessorCandidateVerifierInternal(upgraded, verifyTestCandidate);
       try {
-        assert.equal(upgraded.schemaVersion(), 14);
+        assert.equal(upgraded.schemaVersion(), SQLITE_RUNTIME_SCHEMA_VERSION);
         assert.equal(
           (
             await upgraded.readWorkspaceHead(

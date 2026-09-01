@@ -32,10 +32,10 @@ type ExecFileCallback = (
   cb: (error: ExecFileException | null, stdout: string, stderr: string) => void,
 ) => void;
 
-/** Fake `git ls-files` returning a fixed newline-joined path list. */
+/** Fake `git ls-files -z` returning a fixed NUL-delimited path list. */
 function fakeGit(stdout: string, error: ExecFileException | null = null): ExecFileCallback {
   return (_file, args, _options, cb) => {
-    assert.deepEqual(args, ['ls-files', '--cached', '--others', '--exclude-standard']);
+    assert.deepEqual(args, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
     cb(error, stdout, '');
   };
 }
@@ -63,7 +63,7 @@ async function withPlainDir(run: (root: string) => Promise<void>): Promise<void>
 describe('searchWorkspaceFiles', () => {
   it('filters with AND-of-substring tokens, case-insensitively', async () => {
     await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('src/app.tsx\nsrc/main.tsx\ndocs/app.md\n');
+      const execFileImpl = fakeGit('src/app.tsx\0src/main.tsx\0docs/app.md\0');
       const result = await searchWorkspaceFiles(root, { query: 'SRC app', execFileImpl });
       assert.ok(result.ok);
       const paths = result.ok ? result.files.map((f) => f.relativePath) : [];
@@ -73,7 +73,7 @@ describe('searchWorkspaceFiles', () => {
 
   it('ranks shorter paths first, then lexicographically', async () => {
     await withGitRepo(async (root) => {
-      const execFileImpl = fakeGit('a/b/c/app.tsx\napp.tsx\nlib/app.tsx\n');
+      const execFileImpl = fakeGit('a/b/c/app.tsx\0app.tsx\0lib/app.tsx\0');
       const result = await searchWorkspaceFiles(root, { query: 'app', execFileImpl });
       assert.ok(result.ok);
       const paths = result.ok ? result.files.map((f) => f.relativePath) : [];
@@ -81,9 +81,19 @@ describe('searchWorkspaceFiles', () => {
     });
   });
 
+  it('preserves Git filenames that require an unambiguous delimiter', async () => {
+    await withGitRepo(async (root) => {
+      const execFileImpl = fakeGit('普通.md\0 leading.txt\0trailing.txt \0line\nbreak.txt\0');
+      const result = await searchWorkspaceFiles(root, { query: '', limit: 10, execFileImpl });
+      assert.ok(result.ok);
+      const paths = result.ok ? result.files.map((file) => file.relativePath) : [];
+      assert.deepEqual(paths, ['普通.md', ' leading.txt', 'trailing.txt ', 'line\nbreak.txt']);
+    });
+  });
+
   it('caps the result count at the requested limit', async () => {
     await withGitRepo(async (root) => {
-      const many = Array.from({ length: 200 }, (_v, i) => `file-${i}.ts`).join('\n');
+      const many = `${Array.from({ length: 200 }, (_v, i) => `file-${i}.ts`).join('\0')}\0`;
       const execFileImpl = fakeGit(many);
       const result = await searchWorkspaceFiles(root, { query: '', limit: 5, execFileImpl });
       assert.ok(result.ok);

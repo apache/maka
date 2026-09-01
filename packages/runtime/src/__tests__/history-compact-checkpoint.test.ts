@@ -55,13 +55,52 @@ const STRUCTURED_SUMMARY = [
 ].join('\n');
 
 describe('history compact checkpoint', () => {
+  test('rejects provider-native state from a recreated same-slug connection', () => {
+    const providerState = {
+      kind: 'openai_codex_remote_v2' as const,
+      connectionId: 'connection-a',
+      modelId: 'gpt-5.3-codex',
+      itemId: 'cmp_123',
+      encryptedContent: 'encrypted-state',
+    };
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0), textEvent(1)],
+      providerState,
+    });
+    const recreatedConnection = {
+      providerType: 'openai-codex',
+      slug: 'codex-subscription',
+      connectionId: 'connection-b',
+    };
+
+    assert.equal(
+      canReplayHistoryCompactCheckpointForModel(
+        checkpoint,
+        recreatedConnection,
+        recreatedConnection.connectionId,
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+    assert.equal(
+      canContinueHistoryCompactCheckpointForModel(
+        checkpoint,
+        recreatedConnection,
+        recreatedConnection.connectionId,
+        'gpt-5.3-codex',
+      ),
+      false,
+    );
+  });
+
   test('persists provider-native state as a V3 checkpoint bound to one Codex model', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'connection-a',
         modelId: 'gpt-5.3-codex',
         itemId: 'cmp_123',
         encryptedContent: 'encrypted-state',
@@ -75,7 +114,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canReplayHistoryCompactCheckpointForModel(
         checkpoint,
-        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        { providerType: 'openai-codex' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       true,
@@ -83,7 +123,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canReplayHistoryCompactCheckpointForModel(
         checkpoint,
-        { providerType: 'openai-codex', slug: 'other-codex-account' },
+        { providerType: 'openai-codex' },
+        'connection-b',
         'gpt-5.3-codex',
       ),
       false,
@@ -91,7 +132,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canContinueHistoryCompactCheckpointForModel(
         checkpoint,
-        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        { providerType: 'openai-codex' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       true,
@@ -99,7 +141,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canContinueHistoryCompactCheckpointForModel(
         checkpoint,
-        { providerType: 'openai', slug: 'openai-api' },
+        { providerType: 'openai' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       false,
@@ -107,7 +150,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canReplayHistoryCompactCheckpointForModel(
         checkpoint,
-        { providerType: 'openai', slug: 'openai-api' },
+        { providerType: 'openai' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       false,
@@ -133,7 +177,7 @@ describe('history compact checkpoint', () => {
       coveredRuntimeEvents: [textEvent(0)],
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'connection-a',
         modelId: 'gpt-5.3-codex',
         itemId: 'cmp_123',
         encryptedContent: 'encrypted-state',
@@ -151,6 +195,14 @@ describe('history compact checkpoint', () => {
       validateHistoryCompactCheckpointShape({ ...checkpoint, summary: 'opaque state leaked here' }),
       false,
     );
+    const { connectionId: _connectionId, ...legacyProviderState } = checkpoint.providerState;
+    assert.equal(
+      validateHistoryCompactCheckpointShape({
+        ...checkpoint,
+        providerState: { ...legacyProviderState, connectionSlug: 'codex-subscription' },
+      }),
+      false,
+    );
     const v2 = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [textEvent(0)],
@@ -161,7 +213,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canContinueHistoryCompactCheckpointForModel(
         v2,
-        { providerType: 'openai', slug: 'openai-api' },
+        { providerType: 'openai' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       true,
@@ -169,7 +222,8 @@ describe('history compact checkpoint', () => {
     assert.equal(
       canContinueHistoryCompactCheckpointForModel(
         v2,
-        { providerType: 'openai-codex', slug: 'codex-subscription' },
+        { providerType: 'openai-codex' },
+        'connection-a',
         'gpt-5.3-codex',
       ),
       false,
@@ -433,7 +487,7 @@ describe('history compact checkpoint', () => {
       coveredRuntimeEvents: [textEvent(0), textEvent(1)],
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'connection-a',
         modelId: 'gpt-5.3-codex',
         itemId: 'cmp_durable',
         encryptedContent: 'durable-encrypted-state',
@@ -637,12 +691,14 @@ describe('history compact checkpoint', () => {
     const replacedEventIds: Array<string | undefined> = [];
     const store = {
       readEventProjection: async () => poisonedProjection,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         _event: AgentRunEvent | null,
-        options?: { replaceEventId?: string },
+        options: { ifLedgerRevision: string; replaceEventId?: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
       listSessionRuns: async () => [run('run-canonical', 10)],
@@ -777,11 +833,14 @@ describe('history compact checkpoint', () => {
     const repaired: Array<AgentRunEvent | null> = [];
     const store = {
       readEventProjection: async () => undefined,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         repairedEvent: AgentRunEvent | null,
+        options: { ifLedgerRevision: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         repaired.push(repairedEvent);
       },
       listSessionRuns: async () => [run('run-recovered', 10)],
@@ -792,6 +851,30 @@ describe('history compact checkpoint', () => {
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(repaired, [event]);
+  });
+
+  test('recovers without repairing when the store lacks a ledger revision capability', async () => {
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: 'session-1',
+      coveredRuntimeEvents: [textEvent(0)],
+      summary: 'recovered checkpoint',
+      summaryFormat: 'legacy_freeform',
+    });
+    const event = checkpointEvent('recovered-event', 'run-recovered', checkpoint, 20);
+    let repaired = false;
+    const store = {
+      readEventProjection: async () => undefined,
+      repairEventProjection: async () => {
+        repaired = true;
+      },
+      listSessionRuns: async () => [run('run-recovered', 10)],
+      readEvents: async () => [event],
+    };
+
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1');
+
+    assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
+    assert.equal(repaired, false);
   });
 
   test('identifies a parseable but invalid projection when repairing from the canonical ledger', async () => {
@@ -810,12 +893,14 @@ describe('history compact checkpoint', () => {
     const replacedEventIds: Array<string | undefined> = [];
     const store = {
       readEventProjection: async () => invalidProjection,
+      readEventLedgerRevision: async () => 'ledger-revision',
       repairEventProjection: async (
         _sessionId: string,
         _type: AgentRunEvent['type'],
         _event: AgentRunEvent | null,
-        options?: { replaceEventId?: string },
+        options: { ifLedgerRevision: string; replaceEventId?: string },
       ) => {
+        assert.equal(options.ifLedgerRevision, 'ledger-revision');
         replacedEventIds.push(options?.replaceEventId);
       },
       listSessionRuns: async () => [run('run-canonical', 10)],

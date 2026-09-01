@@ -18,6 +18,7 @@
  */
 
 import {
+  normalizePeerError,
   RuntimeHostPeerError,
   signRuntimeHostPeerIdentity,
   startRuntimeHostPeerEndpoint,
@@ -38,6 +39,8 @@ export interface RuntimeHostPeerConnectInput {
   readonly directDeadlineMs: number;
 }
 
+export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
+
 export interface RuntimeHostPeerRouteResolver {
   resolveRoutes(peerId: string):
     | {
@@ -46,6 +49,7 @@ export interface RuntimeHostPeerRouteResolver {
         readonly transitRelayPeerIds?: readonly string[];
       }
     | undefined;
+  prepareRoutes?(peerId: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface RuntimeHostPeerClient {
@@ -59,11 +63,13 @@ export interface RuntimeHostPeerClient {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream>;
   connectMeshControl(
     input: RuntimeHostPeerConnectInput,
@@ -86,6 +92,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
@@ -107,6 +114,7 @@ export function createRuntimeHostPeerClient(input: {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
   readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
@@ -119,6 +127,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
   readonly #automaticRelayDiscovery: boolean;
+  readonly #webRtcStunUrls: readonly string[] | undefined;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
@@ -138,6 +147,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
@@ -146,6 +156,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
     this.#automaticRelayDiscovery = input.automaticRelayDiscovery ?? false;
+    this.#webRtcStunUrls =
+      input.webRtcStunUrls === undefined ? undefined : [...input.webRtcStunUrls];
     this.#routeResolver = input.routeResolver;
   }
 
@@ -188,16 +200,41 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void> {
-    return this.#requireEndpoint().configureTransit(input);
+    return this.#requireEndpoint()
+      .configureTransit(input)
+      .catch((error: unknown) => {
+        throw normalizePeerError(error);
+      });
   }
 
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
+    notifyPhase(onPhase, 'discovering');
+    await this.#prepareRoutes(input, signal);
+    notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
+  }
+
+  async #prepareRoutes(
+    input: RuntimeHostPeerConnectInput,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (!this.#routeResolver?.prepareRoutes) return;
+    const deadline = AbortSignal.timeout(Math.min(10_000, input.directDeadlineMs));
+    const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    try {
+      await this.#routeResolver.prepareRoutes(input.peerId, operationSignal);
+    } catch {
+      // Route preparation enriches an invitation/profile with fresher Mesh
+      // routes. It must not suppress explicit routes the caller already has.
+      signal?.throwIfAborted();
+    }
   }
 
   async connectMeshControl(
@@ -329,7 +366,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       return stream;
     } catch (error) {
       signal?.throwIfAborted();
-      throw error;
+      throw normalizePeerError(error);
     } finally {
       settled = true;
       signal?.removeEventListener('abort', cancel);
@@ -359,6 +396,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
       automaticRelayDiscovery: this.#automaticRelayDiscovery,
+      ...(this.#webRtcStunUrls === undefined ? {} : { webRtcStunUrls: this.#webRtcStunUrls }),
     });
     this.#endpoint = endpoint;
     this.#draining = this.#drainInbound(endpoint);
@@ -446,6 +484,17 @@ interface InboundConsumer {
   readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
+}
+
+function notifyPhase(
+  observer: ((phase: RuntimeHostPeerConnectionPhase) => void) | undefined,
+  phase: RuntimeHostPeerConnectionPhase,
+): void {
+  try {
+    observer?.(phase);
+  } catch {
+    // Connection progress is diagnostic state and cannot control the connection.
+  }
 }
 
 function waitForPeerConnectTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {

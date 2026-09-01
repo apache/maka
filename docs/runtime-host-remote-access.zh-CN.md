@@ -124,6 +124,13 @@ Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中�
 连接，也可能拒绝或中止 reservation。只有已接受的 reservation 才会向 Mesh Peer 发布，Maka 仍要求
 application stream 升级为直连，不会通过 relay 传输 Session traffic。
 
+Maka 会自动竞速支持的直连 transport，用户不需要选择 QUIC 或 WebRTC。WebRTC 只使用 STUN 发现公网
+地址，不会通过 STUN 提供方传输 Session 内容。默认尽力而为策略使用 Cloudflare 公共 STUN；提供方可
+观察源 IP 和请求时间，Maka 不保证其可用性。可以在 Desktop 的 Peer Mesh 高级设置中配置，也可以使用
+`peer enable --no-public-stun`、`peer enable --default-public-stun`，或重复传入
+`peer enable --webrtc-stun <stun-url>` 来使用自有 STUN。Maka 不使用 TURN；如果所有直连都失败，只有
+明确获准的 Mesh 成员可以承载应用流量。
+
 ### Direct TLS
 
 具有稳定网络入口的 Host 使用 TLS：

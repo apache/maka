@@ -463,7 +463,9 @@ export class ConnectionCatalogDocumentOwner {
         hasModelInventory: previous.models.length > 0,
       },
       result.models,
-      { aliases: modelIdAliasesForProvider(previous.providerType) },
+      {
+        aliases: modelIdAliasesForProvider(previous.providerType),
+      },
     );
     // Discovery MOVES a target: a provider's model rename carries the default
     // across by alias. A default outside the selection the reconciler just
@@ -650,6 +652,57 @@ export class ConnectionCatalogDocumentOwner {
     return { kind: 'ready', document: next, changed: true };
   }
 
+  prepareOAuthEnrollmentUpsert(
+    current: ConnectionCatalogDocument,
+    connectionBefore: ConnectionCatalogEntry | null,
+    rawConnectionAfter: ConnectionCatalogEntry,
+  ):
+    | PreparedOnboardingResult
+    | { readonly kind: 'connection_conflict' }
+    | { readonly kind: 'catalog_full' } {
+    const connectionAfter = decodeConnectionInput(() =>
+      decodeCanonicalConnectionCatalogEntry(rawConnectionAfter),
+    );
+    const idIndex = current.connections.findIndex(
+      (connection) => connection.connectionId === connectionAfter.connectionId,
+    );
+    const slugIndex = current.connections.findIndex(
+      (connection) => connection.slug === connectionAfter.slug,
+    );
+    if (connectionBefore === null) {
+      if (idIndex >= 0 || slugIndex >= 0) {
+        const exact =
+          idIndex >= 0 &&
+          idIndex === slugIndex &&
+          isDeepStrictEqual(current.connections[idIndex], connectionAfter);
+        return exact
+          ? { kind: 'ready', document: current, changed: false }
+          : { kind: 'connection_conflict' };
+      }
+      if (current.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+        return { kind: 'catalog_full' };
+      }
+      const next = this.nextDocument(current, [...current.connections, connectionAfter]);
+      this.assertDocumentSize(next);
+      return { kind: 'ready', document: next, changed: true };
+    }
+    if (idIndex < 0 || (slugIndex >= 0 && slugIndex !== idIndex)) {
+      return { kind: 'connection_conflict' };
+    }
+    const actual = current.connections[idIndex];
+    if (isDeepStrictEqual(actual, connectionAfter)) {
+      return { kind: 'ready', document: current, changed: false };
+    }
+    if (!isDeepStrictEqual(actual, connectionBefore)) {
+      return { kind: 'connection_conflict' };
+    }
+    const connections = [...current.connections];
+    connections[idIndex] = connectionAfter;
+    const next = this.nextDocument(current, connections);
+    this.assertDocumentSize(next);
+    return { kind: 'ready', document: next, changed: true };
+  }
+
   async commitPreparedOnboarding(
     root: string,
     prepared: PreparedOnboardingResult,
@@ -663,6 +716,7 @@ export class ConnectionCatalogDocumentOwner {
     current: ConnectionCatalogDocument,
     expected: ConnectionVersionBasis,
     rawResult: ConnectionTestSummary,
+    modelFactsFingerprint: string,
   ): Promise<ConnectionCatalogSnapshot> {
     const result = decodeConnectionInput(() => decodeConnectionTestSummary(rawResult));
     const index = findConnectionIndex(current, expected);
@@ -674,6 +728,7 @@ export class ConnectionCatalogDocumentOwner {
       ...previous,
       revision: nextRevision(previous.revision),
       lastTest: result,
+      lastTestModelFactsFingerprint: modelFactsFingerprint,
     });
   }
 
@@ -695,7 +750,11 @@ export class ConnectionCatalogDocumentOwner {
     // provider that can no longer be tested, so there is nothing to
     // invalidate.
     if (previous.lastTest === undefined || isRetiredProvider(previous.providerType)) return false;
-    const { lastTest: _lastTest, ...withoutLastTest } = previous;
+    const {
+      lastTest: _lastTest,
+      lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+      ...withoutLastTest
+    } = previous;
     await this.writePatchedResult(root, current, index, {
       ...withoutLastTest,
       revision: nextRevision(previous.revision),
@@ -718,7 +777,11 @@ export class ConnectionCatalogDocumentOwner {
     if (!current.connections.some(invalidates)) return false;
     const connections = current.connections.map((connection) => {
       if (!invalidates(connection)) return connection;
-      const { lastTest: _lastTest, ...withoutLastTest } = connection;
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
       return {
         ...withoutLastTest,
         revision: nextRevision(connection.revision),

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -51,7 +52,6 @@ import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -76,7 +76,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   connectRuntimeHost,
@@ -92,19 +91,15 @@ import {
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ClientFrame,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 import { removePosixEndpointDirectories } from './endpoint-hygiene.js';
@@ -402,11 +397,15 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', () => {
+        throw new Error('pending continuation setup must not build a backend');
+      });
       const manager = new SessionManager({
         store: stores.sessionStore,
         runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
-        backends: new BackendRegistry(),
+        backends,
         safeBoundaryResumeEnabled: true,
         inspectContinuationSafety: async () => ({
           workspaceIdentity: workspace.workspaceIdentity,
@@ -711,6 +710,7 @@ export class ExecutionFixture {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt,
       });
       const result = await stores.agentRunStore.admitRootTurn({
@@ -1734,22 +1734,6 @@ async function acquireReader(capability: StorageRootCapability<'interactive'>) {
       throw new Error('Interactive root reader could not acquire the released root');
     await sleep(20);
   }
-}
-
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }
 
 function sleep(ms: number): Promise<void> {

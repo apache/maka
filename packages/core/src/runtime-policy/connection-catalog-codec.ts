@@ -372,6 +372,7 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
       'modelSource',
       'modelsFetchedAt',
       'lastTest',
+      'lastTestModelFactsFingerprint',
     ],
     [
       'connectionId',
@@ -440,6 +441,15 @@ export function decodeCanonicalConnectionCatalogEntry(value: unknown): Connectio
     ...(item.lastTest === undefined
       ? {}
       : { lastTest: decodeConnectionTestSummary(item.lastTest) }),
+    ...(item.lastTestModelFactsFingerprint === undefined
+      ? {}
+      : {
+          lastTestModelFactsFingerprint: stringValue(
+            item.lastTestModelFactsFingerprint,
+            'connection test model facts fingerprint',
+            128,
+          ),
+        }),
   };
   assertCanonicalValue(value, decoded, 'connection catalog entry');
   return decoded;
@@ -465,7 +475,20 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
   const item = exactRecord(
     value,
     'connection model',
-    ['id', 'displayName', 'apiProtocol', 'contextWindow', 'maxOutputTokens', 'capabilities'],
+    [
+      'id',
+      'displayName',
+      'description',
+      'apiProtocol',
+      'contextWindow',
+      'inputLimit',
+      'maxOutputTokens',
+      'knowledgeCutoff',
+      'structuredOutput',
+      'lastUpdated',
+      'capabilities',
+      'modalities',
+    ],
     ['id'],
   );
   if (
@@ -500,11 +523,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
       );
     }
   }
+  const modalities =
+    item.modalities === undefined ? undefined : decodeModelModalities(item.modalities);
   return {
     id: decodeConnectionModelId(item.id),
     ...(item.displayName === undefined
       ? {}
       : { displayName: stringValue(item.displayName, 'model display name', 512) }),
+    ...(item.description === undefined
+      ? {}
+      : { description: stringValue(item.description, 'model description', 2048) }),
     ...(item.apiProtocol === undefined ? {} : { apiProtocol: item.apiProtocol }),
     ...(item.contextWindow === undefined
       ? {}
@@ -512,6 +540,16 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
           contextWindow: integerValue(
             item.contextWindow,
             'model context window',
+            1,
+            Number.MAX_SAFE_INTEGER,
+          ),
+        }),
+    ...(item.inputLimit === undefined
+      ? {}
+      : {
+          inputLimit: integerValue(
+            item.inputLimit,
+            'model input limit',
             1,
             Number.MAX_SAFE_INTEGER,
           ),
@@ -526,8 +564,44 @@ export function decodeConnectionModel(value: unknown): ConnectionModel {
             Number.MAX_SAFE_INTEGER,
           ),
         }),
+    ...(item.knowledgeCutoff === undefined
+      ? {}
+      : { knowledgeCutoff: stringValue(item.knowledgeCutoff, 'model knowledge cutoff', 2048) }),
+    ...(item.structuredOutput === undefined
+      ? {}
+      : { structuredOutput: booleanValue(item.structuredOutput, 'model structured output') }),
+    ...(item.lastUpdated === undefined
+      ? {}
+      : { lastUpdated: stringValue(item.lastUpdated, 'model last updated', 2048) }),
     ...(capabilities === undefined ? {} : { capabilities }),
+    ...(modalities === undefined ? {} : { modalities }),
   };
+}
+
+function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['modalities']> {
+  const item = exactRecord(value, 'connection model modalities', ['input', 'output']);
+  if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
+    throw domainError('connection model modalities must contain input and output arrays');
+  }
+  const input = Array.from(item.input, (entry) => decodeModelInputModality(entry));
+  const output = Array.from(item.output, (entry) => decodeModelOutputModality(entry));
+  return { input, output };
+}
+
+function decodeModelInputModality(value: unknown): 'text' | 'image' | 'audio' | 'pdf' {
+  const modality = stringValue(value, 'connection model input modality', 16);
+  if (modality !== 'text' && modality !== 'image' && modality !== 'audio' && modality !== 'pdf') {
+    throw domainError('connection model input modality is invalid');
+  }
+  return modality;
+}
+
+function decodeModelOutputModality(value: unknown): 'text' | 'image' | 'audio' {
+  const modality = stringValue(value, 'connection model output modality', 16);
+  if (modality !== 'text' && modality !== 'image' && modality !== 'audio') {
+    throw domainError('connection model output modality is invalid');
+  }
+  return modality;
 }
 
 export function decodeConnectionTestSummary(value: unknown): ConnectionTestSummary {

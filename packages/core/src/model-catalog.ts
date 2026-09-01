@@ -63,6 +63,7 @@ export interface KnownModelCapabilities {
   functionCalling?: true;
   parallelToolCalls?: true;
   imageGeneration?: true;
+  webSearch?: true;
 }
 
 export interface ModelCatalogPricing {
@@ -275,13 +276,35 @@ export function buildConnectionModelCatalogEntries(
   const defaultModel = broken.has((connection.defaultModel ?? '').trim())
     ? undefined
     : connection.defaultModel;
+  const fallbackModelIds = new Set(fallbackModels);
+  const projectedModelsById = new Map(
+    (connection.models ?? []).filter(({ id }) => !broken.has(id)).map((model) => [model.id, model]),
+  );
+  // Fallback providers have no live inventory, but a projected connection can
+  // still carry enabled model-facts entries that are absent from the static
+  // list. Keep both sets in the catalog so those user-declared models retain
+  // their metadata and provenance.
+  const models = supportsModelDiscovery
+    ? connection.models?.filter(({ id }) => !broken.has(id))
+    : [
+        ...fallbackModels.map(
+          (id) =>
+            projectedModelsById.get(id) ?? {
+              id,
+              ...displayNameForKnownModel(connection.providerType, id),
+            },
+        ),
+        ...(connection.models ?? []).filter(
+          (model) => !broken.has(model.id) && !fallbackModelIds.has(model.id),
+        ),
+      ];
   return buildModelCatalogEntries({
     providerType: connection.providerType,
     connectionSlug: connection.slug,
     defaultModel,
-    models: connection.models?.filter(({ id }) => !broken.has(id)),
-    modelSource: connection.modelSource,
-    modelsFetchedAt: connection.modelsFetchedAt,
+    models,
+    modelSource: supportsModelDiscovery ? connection.modelSource : 'fallback',
+    modelsFetchedAt: supportsModelDiscovery ? connection.modelsFetchedAt : undefined,
     fallbackModels: supportsModelDiscovery
       ? (input.fallbackModels ?? fallbackModels)
       : fallbackModels,
@@ -373,11 +396,13 @@ function makeEntry(
     providerType: input.providerType,
     ...(input.connectionSlug ? { connectionSlug: input.connectionSlug } : {}),
     source,
-    capabilitySource: normalizedModel.capabilities
-      ? source
-      : metadata.capabilities
-        ? 'static_catalog'
-        : 'unknown',
+    capabilitySource: normalizedModel.factOverriddenFields?.includes('capabilities')
+      ? 'user_override'
+      : normalizedModel.capabilities
+        ? source
+        : metadata.capabilities
+          ? 'static_catalog'
+          : 'unknown',
     unavailableReason,
     availability: availabilityOf(unavailableReason),
     canUseAsChatDefault: canUseUnavailableReasonAsDefault(unavailableReason),
@@ -425,6 +450,7 @@ function mergeCapabilities(
     parallelToolCalls:
       providerCapabilities.parallelToolCalls ?? metadataCapabilities.parallelToolCalls,
     imageGeneration: providerCapabilities.imageGeneration ?? metadataCapabilities.imageGeneration,
+    webSearch: providerCapabilities.webSearch ?? metadataCapabilities.webSearch,
   };
 }
 
@@ -688,6 +714,7 @@ function normalizeCapabilities(caps: ModelInfo['capabilities']): KnownModelCapab
     ...(caps.functionCalling === true ? { functionCalling: true as const } : {}),
     ...(caps.parallelToolCalls === true ? { parallelToolCalls: true as const } : {}),
     ...(caps.imageGeneration === true ? { imageGeneration: true as const } : {}),
+    ...(caps.webSearch === true ? { webSearch: true as const } : {}),
   };
 }
 

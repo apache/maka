@@ -597,7 +597,11 @@ function createMessages(
     startFromMessage: async () => {
       throw new Error('unexpected root start');
     },
-    prepareMessage: async (input) => ({ kind: 'ready', content: input.content }),
+    prepareMessage: async (input) => ({
+      kind: 'ready',
+      content: input.content,
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    }),
     claimStop: async () => {
       throw new Error('unexpected root stop');
     },

@@ -50,6 +50,7 @@ export interface RuntimeHostServiceCliOptions {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly meshDataRoot?: string;
   };
 }

@@ -78,9 +78,16 @@ function installService(
      * against whatever the renderer last saw.
      */
     catalog?: readonly SessionSummary[];
+    /** Subtasks the Host archives per removed id, summed into the outcome. */
+    archivedByRemoval?: Record<string, number>;
   } = {},
 ): SessionNavigationSessionService {
   return {
+    list: async () => {
+      harness.listCalls += 1;
+      if (!options.surviving) throw new Error('catalog unavailable');
+      return [...options.surviving];
+    },
     setFlagged: async () => undefined,
     archive: async () => undefined,
     unarchive: async () => undefined,
@@ -92,16 +99,14 @@ function installService(
       }
       if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
       const target = options.catalog?.find((session) => session.id === id);
-      if (removeOptions.requireArchived && target && !target.isArchived) return 'restored';
+      if (removeOptions.requireArchived && target && !target.isArchived) {
+        return { disposition: 'restored', archivedSubtaskCount: 0 };
+      }
       harness.removed.push(id);
       options.onRemove?.(id);
-      return 'removed';
+      return { disposition: 'removed', archivedSubtaskCount: options.archivedByRemoval?.[id] ?? 0 };
     },
-    list: async () => {
-      harness.listCalls += 1;
-      if (!options.surviving) throw new Error('catalog unavailable');
-      return [...options.surviving];
-    },
+    previewRemoval: async () => 0,
   };
 }
 
@@ -166,6 +171,7 @@ describe('purgeSessions', () => {
     assert.deepEqual(h.removed, ['a-v2', 'b']);
     assert.deepEqual(outcome, {
       removed: 2,
+      archivedSubtasks: 0,
       remaining: [],
       restored: [],
       verified: true,
@@ -182,6 +188,20 @@ describe('purgeSessions', () => {
     assert.deepEqual(h.selections, [undefined]);
     // Nothing rejected, so there is nothing to check back.
     assert.equal(h.listCalls, 0);
+  });
+
+  it('sums the linked subtasks the Host archived across the sweep', async () => {
+    const h = harness();
+    const sessions = [summary('p1'), summary('p2'), summary('p3')];
+    const activeIdRef = { current: undefined as string | undefined };
+    // p1 archives 2 subtasks, p3 archives 1; p2 archives none.
+    const service = installService(h, { archivedByRemoval: { p1: 2, p3: 1 } });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.purgeSessions(['p1', 'p2', 'p3']);
+
+    assert.equal(outcome.removed, 3);
+    assert.equal(outcome.archivedSubtasks, 3);
   });
 
   it('reports a task restored before the sweep reached it, rather than dropping it', async () => {

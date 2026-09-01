@@ -111,7 +111,11 @@ export interface RuntimeHostAccessAuthority {
   revokeRotation(
     input: AccessCredentialRotationRevokeInput,
   ): Promise<AccessCredentialRotationRevokeResult>;
-  finalize(credentialId: string, clientInstanceId: string): Promise<AccessCredentialFinalizeResult>;
+  finalize(
+    credentialId: string,
+    clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
+  ): Promise<AccessCredentialFinalizeResult>;
   prepareCollaborationInvitation(
     rootId: string,
     input: CollaborationInvitationPrepareInput,
@@ -226,7 +230,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           credentialId: match.credentialId,
           operationGrants: match.bindClientInstanceOnFinalize
             ? ['host.status', 'access.credential.finalize']
-            : match.operationGrants,
+            : match.clientInstanceId
+              ? [...match.operationGrants, 'access.credential.finalize']
+              : match.operationGrants,
           canPublishClientCapabilities:
             !match.bindClientInstanceOnFinalize && match.canPublishClientCapabilities,
           canUseHostPaths: !match.bindClientInstanceOnFinalize && match.canUseHostPaths,
@@ -849,6 +855,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   finalize(
     credentialId: string,
     clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
   ): Promise<AccessCredentialFinalizeResult> {
     return this.#mutate(async () => {
       const retained = this.#file.credentials.find(
@@ -857,13 +864,14 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       if (!retained || retained.status === 'revoked') {
         throw new RuntimeHostAccessInputError('The current access credential is no longer active');
       }
-      return this.#finalize(retained, clientInstanceId);
+      return this.#finalize(retained, clientInstanceId, connectionAlreadyFinalized);
     });
   }
 
   async #finalize(
     retained: StoredAccessCredential,
     clientInstanceId: string,
+    connectionAlreadyFinalized: boolean,
   ): Promise<AccessCredentialFinalizeResult> {
     if (retained.status === 'active') {
       if (retained.clientInstanceId && retained.clientInstanceId !== clientInstanceId) {
@@ -871,7 +879,9 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           'The pairing candidate was claimed by another Client',
         );
       }
-      return { reconnectRequired: retained.clientInstanceId !== undefined };
+      return {
+        reconnectRequired: retained.clientInstanceId !== undefined && !connectionAlreadyFinalized,
+      };
     }
     if (Date.parse(retained.expiresAt!) <= Date.now()) {
       await this.#expirePending();
@@ -1273,6 +1283,7 @@ export async function finalizeAccessCredential(
   authority: RuntimeHostAccessAuthority | undefined,
   credentialId: string | undefined,
   clientInstanceId: string | undefined,
+  credentialClientInstanceId: string | undefined,
 ): Promise<OperationOutcome<'access.credential.finalize'>> {
   if (!authority) return unavailable('finalize');
   if (!credentialId) {
@@ -1296,7 +1307,11 @@ export async function finalizeAccessCredential(
   try {
     return {
       ok: true,
-      result: await authority.finalize(credentialId, clientInstanceId),
+      result: await authority.finalize(
+        credentialId,
+        clientInstanceId,
+        credentialClientInstanceId === clientInstanceId,
+      ),
     };
   } catch (error) {
     if (error instanceof RuntimeHostAccessInputError) {

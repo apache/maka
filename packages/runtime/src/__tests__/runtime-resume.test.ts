@@ -316,6 +316,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     const plan = await planner.plan({
       sessionId: 'session-1',
       sourceRunId: 'run-2',
+      admissionRoute: sameRouteAdmission(),
       currentCwd: '/workspace/repo',
       sourceWorkspaceIdentity: 'workspace-1',
       currentWorkspaceIdentity: 'workspace-1',
@@ -380,6 +381,7 @@ describe('runtime resume phase 1 safe-boundary continuation', () => {
     const replay = buildContinuationReplayPlan({
       prefixes: [immutablePrefix(events)],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+      admissionRoute: sameRouteAdmission(),
     });
     assert.equal(replay.kind, 'replayable');
     if (replay.kind !== 'replayable') return;
@@ -724,6 +726,16 @@ function safeBoundaryFacts() {
       runId: 'run-2',
       turnId: 'turn-2',
     },
+  };
+}
+
+function sameRouteAdmission() {
+  return {
+    runHeaders: ['run-1', 'run-2', 'run-3'].map((runId) =>
+      runHeader(runId, { llmConnectionId: 'connection-1' }),
+    ),
+    targetProviderStateIdentity: undefined,
+    targetModelId: 'test-model',
   };
 }
 

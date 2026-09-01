@@ -67,9 +67,19 @@ export function registerRuntimeHostWorkHubIpc(
         actionId: rawInput?.actionId,
         userText: rawInput?.userText,
         proposal,
-      } as Pick<WorkHubCoordinationActInput, 'actionId' | 'userText' | 'proposal'>;
+        ...(rawInput?.confirmation === undefined
+          ? {}
+          : { confirmation: rawInput.confirmation }),
+      } as Pick<
+        WorkHubCoordinationActInput,
+        'actionId' | 'userText' | 'proposal' | 'confirmation'
+      >;
       let result: WorkHubCoordinationActResult;
-      if (proposal?.disposition === 'create_new') {
+      const createsTarget =
+        proposal?.disposition === 'create_new' ||
+        (proposal?.disposition === 'replace' &&
+          proposal.target.disposition === 'create_new');
+      if (createsTarget) {
         result = await client.actWorkHubCoordination({
           ...base,
           create: {
@@ -84,9 +94,15 @@ export function registerRuntimeHostWorkHubIpc(
             : { candidateSetId: rawInput.candidateSetId }),
         });
       }
-      if (result.disposition === 'create_new') {
+      if (
+        result.disposition === 'create_new' ||
+        (result.disposition === 'replace' && result.replacementDisposition === 'create_new')
+      ) {
         options.emitSessionsChanged('created', result.targetSessionId);
-      } else if (result.disposition === 'delegate_existing') {
+      } else if (
+        result.disposition === 'delegate_existing' ||
+        result.disposition === 'replace'
+      ) {
         options.emitSessionsChanged('status-change', result.targetSessionId);
       }
       return { ok: true, result } satisfies OperationOutcome<'workhub.coordination.act'>;

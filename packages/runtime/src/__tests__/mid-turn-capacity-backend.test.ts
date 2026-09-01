@@ -151,8 +151,6 @@ interface MidTurnFixtureOptions {
   assistantTextInFirstStep?: boolean;
   /** Override the first step's reported usage; 'missing' = empty usage object. */
   firstStepUsage?: { input: number; output: number } | 'missing';
-  /** Volatile per-request turn tail (cwd/task state) appended to the user message. */
-  volatileTurnTail?: boolean;
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
@@ -465,9 +463,6 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.bigToolGroup
       ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
-    ...(options.volatileTurnTail
-      ? { turnTailPrompt: 'VOLATILE_TAIL_SENTINEL cwd=/tmp/maka task=keep-going' }
-      : {}),
     ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
     contextBudget: options.useRuntimeDefaultPolicy
       ? buildDefaultContextBudgetPolicy(
@@ -509,7 +504,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       const summary = options.providerNative
         ? ({
             kind: 'openai_codex_remote_v2',
-            connectionSlug: 'codex-subscription',
+            connectionId: 'test-connection-id',
             modelId: 'mock-model-id',
             itemId: 'cmp_mid_turn',
             encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
@@ -527,7 +522,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     ...(options.meteredSummarizer
       ? {
-          recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
+          persistPreparedRequestArtifact: async () => ({
+            artifactId: 'artifact-mid-turn-capture',
+          }),
           recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
             commits.push(commit);
             modelCalls.push(commit.attempt);
@@ -666,7 +663,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     // them durable in the ledger before the checkpoint was recorded.
     assert.equal(checkpoint.coverage.eventCount, 5);
 
-    // The next step's prompt is [compact block, verbatim head anchor, preserved tail].
+    // The next step's prompt is [compact block, verbatim head anchor, preserved active span].
     const thirdPrompt = promptJson(fixture, 2);
     assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
     assert.match(thirdPrompt, /MID_TURN_SUMMARY_SENTINEL/);
@@ -1263,28 +1260,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('the volatile turn tail survives a capacity replacement (review finding 2)', async () => {
-    // The initial provider user message decorates the durable anchor text
-    // with a volatile turn tail (cwd, shell context, task state). The
-    // replacement projection is materialized from the ledger, where the
-    // anchor holds only the raw user text — the rendering must go through
-    // the same decoration owner or compaction silently drops that context
-    // (and even counts the drop as shrinkage).
-    const fixture = buildFixture({ volatileTurnTail: true });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 1);
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
-    assert.equal(thirdPrompt.includes(ANCHOR_TEXT), true);
-    assert.equal(thirdPrompt.includes('VOLATILE_TAIL_SENTINEL'), true);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-  });
-
   test('an over-window runaway summary terminates as summarizer_failed, not head_anchor_exceeds_capacity (review finding 4)', async () => {
     // A non-shrinking replacement proves the summarizer's output is unusable,
-    // not that the irreducible remainder (anchor + tail + overhead) exceeds
+    // not that the irreducible remainder (anchor + overhead) exceeds
     // capacity — the terminal detail must say so; the diagnostic reason keeps
     // the precise replacement_not_smaller cause.
     const fixture = buildFixture({
@@ -1767,6 +1745,7 @@ function header(): SessionHeader {
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model-id',

@@ -234,6 +234,7 @@ export type PromptSegmentKind =
   | 'tool_schema'
   | 'prior_history'
   | 'current_user'
+  /** Historical usage rows only; no current request builder emits this segment. */
   | 'turn_tail';
 
 export interface PromptSegmentEstimate {

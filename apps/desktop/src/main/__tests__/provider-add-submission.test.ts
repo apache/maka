@@ -29,7 +29,7 @@ import {
   PROVIDER_DEFAULTS,
   providerSupportsModelDiscovery,
   type CreateConnectionInput,
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 
@@ -53,8 +53,9 @@ function draft(over: Partial<AddProviderDraft> = {}): AddProviderDraft {
   };
 }
 
-function connection(slug: string): LlmConnection {
+function connection(slug: string): IdentifiedLlmConnection {
   return {
+    connectionId: `connection-${slug}`,
     slug,
     name: slug,
     providerType: 'openai-compatible',
@@ -62,12 +63,12 @@ function connection(slug: string): LlmConnection {
     enabled: true,
     createdAt: 0,
     updatedAt: 0,
-  } as LlmConnection;
+  } as IdentifiedLlmConnection;
 }
 
 function bridge(over: {
-  create?: (input: CreateConnectionInput) => Promise<LlmConnection>;
-  fetchModels?: (slug: string) => Promise<unknown>;
+  create?: (input: CreateConnectionInput) => Promise<IdentifiedLlmConnection>;
+  fetchModels?: (connection: { readonly connectionId: string; readonly slug: string }) => Promise<unknown>;
 }) {
   return {
     create: over.create ?? (async (input) => connection(input.slug)),

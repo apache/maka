@@ -49,6 +49,7 @@ import {
 } from '../server/access-credential-store.js';
 import { startExecutionRuntimeHostService } from '../server/execution-service.js';
 import { authorizeRuntimeHostOperation } from '../server/connection-authority.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -668,7 +669,7 @@ test('capability-provider credentials retain a Host-verified Client owner identi
       canUseHostPaths: false,
       bindClientInstance: true,
     });
-    await authority.finalize(owner.credentialId, 'terminal-client');
+    await authority.finalize(owner.credentialId, 'terminal-client', false);
     const unboundOwner = await authority.issue({
       principalKind: 'remote_owner',
       principalId: 'unbound-owner',
@@ -728,7 +729,7 @@ test('capability-provider credentials retain a Host-verified Client owner identi
     const replacementOwner = await authority.prepareRotation({
       replacementOfCredentialId: owner.credentialId,
     });
-    await authority.finalize(replacementOwner.credentialId, 'terminal-client');
+    await authority.finalize(replacementOwner.credentialId, 'terminal-client', false);
     const replacementProvider = await authority.issue({
       ...providerInput,
       principalId: 'rotated-terminal-mcp-provider',
@@ -916,7 +917,7 @@ test('writes the capability-owner schema only after the association commits', as
       canUseHostPaths: false,
       bindClientInstance: true,
     });
-    await authority.finalize(owner.credentialId, 'schema-client');
+    await authority.finalize(owner.credentialId, 'schema-client', false);
     const path = join(directory, 'runtime-host-access.json');
     assert.equal(JSON.parse(await readFile(path, 'utf8')).schemaVersion, 3);
 
@@ -961,7 +962,7 @@ test('credential rotation preserves authority and cannot outlive its active sour
 
     await authority.revoke({ credentialId: source.credentialId });
     await assert.rejects(
-      authority.finalize(replacement.credentialId, 'rotation-client'),
+      authority.finalize(replacement.credentialId, 'rotation-client', false),
       /no longer active/u,
     );
     await assert.rejects(
@@ -1000,11 +1001,14 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
     assert.deepEqual(pending?.operationGrants, ['host.status', 'access.credential.finalize']);
     assert.equal(pending?.canPublishClientCapabilities, false);
 
-    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', false), {
       reconnectRequired: true,
     });
-    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a'), {
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', false), {
       reconnectRequired: true,
+    });
+    assert.deepEqual(await authority.finalize(candidate.credentialId, 'desktop-a', true), {
+      reconnectRequired: false,
     });
     const claimed = authority.authenticate(credential);
     assert.equal(claimed?.clientInstanceId, 'desktop-a');
@@ -1013,7 +1017,7 @@ test('a Client-bound pairing candidate can be claimed by exactly one Client iden
         claimed?.operationGrants.includes('session.catalog.query'),
     );
     await assert.rejects(
-      authority.finalize(candidate.credentialId, 'desktop-b'),
+      authority.finalize(candidate.credentialId, 'desktop-b', true),
       /claimed by another Client/u,
     );
   } finally {
@@ -1060,13 +1064,13 @@ test('principal revocation is atomic with pairing finalization', async () => {
       );
 
       if (order === 'finalize-first') {
-        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new', false);
         const revoked = authority.revokePrincipal(principal);
         assert.deepEqual(await finalized, { reconnectRequired: true });
         assert.deepEqual(await revoked, { revoked: true });
       } else {
         const revoked = authority.revokePrincipal(principal);
-        const finalized = authority.finalize(candidate.credentialId, 'desktop-new');
+        const finalized = authority.finalize(candidate.credentialId, 'desktop-new', false);
         assert.deepEqual(await revoked, { revoked: true });
         await assert.rejects(finalized, /no longer active/u);
       }
@@ -1093,7 +1097,7 @@ test('a revoked Client-bound credential remains readable after restart', async (
     bindClientInstance: true,
   });
   try {
-    await authority.finalize(candidate.credentialId, 'desktop-a');
+    await authority.finalize(candidate.credentialId, 'desktop-a', false);
     await authority.revoke({ credentialId: candidate.credentialId });
   } finally {
     await authority.close();
@@ -1506,9 +1510,9 @@ function requireRemoteConnection(
 }
 
 async function waitForCondition(condition: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (await condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail('condition did not become true');
+  await waitFor(condition, {
+    attempts: 100,
+    pollMs: 10,
+    message: 'condition did not become true',
+  });
 }

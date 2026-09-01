@@ -74,12 +74,16 @@ interface ChatComposerRegionProps
     | 'hidden'
     | 'draftKey'
     | 'stopPending'
+    | 'allowAttachmentImportWhileStreaming'
     // Read from ComposerMentionsProvider, so a catalog reload repaints the
     // popups without re-rendering the shell that would otherwise pass them.
     | 'mentionSkills'
     | 'mentionSkillsUnavailable'
     | 'mentionSkillsLoading'
     | 'onSearchMentionFiles'
+    | 'pendingDirectories'
+    | 'onRemoveDirectory'
+    | 'onPickDirectory'
   > {
   composerRef: RefObject<ComposerHandle | null>;
   active: boolean;
@@ -96,6 +100,11 @@ interface ChatComposerRegionProps
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
+  directoryComposerProps: Pick<
+    ComponentProps<typeof Composer>,
+    'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
+  >;
+  directoryPickerEnabled: boolean;
 }
 
 export function ChatComposerRegion({
@@ -113,6 +122,8 @@ export function ChatComposerRegion({
   respondToUserQuestion,
   stop,
   boundaryUnreadableNotice,
+  directoryComposerProps,
+  directoryPickerEnabled,
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
@@ -217,10 +228,18 @@ export function ChatComposerRegion({
       <Composer
         ref={composerRef}
         {...composerRest}
+        // AppShell carries staged attachments into both queued and steering
+        // follow-ups. Other Composer hosts remain gated by default because a
+        // text-only running-turn submission would leave attachments behind.
+        allowAttachmentImportWhileStreaming
         mentionSkills={mentions?.mentionSkills}
         mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
         mentionSkillsLoading={mentions?.mentionSkillsLoading}
         onSearchMentionFiles={mentions?.searchMentionFiles}
+        {...directoryComposerProps}
+        onPickDirectory={
+          directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+        }
         hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
         draftKey={activeId ?? newTaskDraftKey}
         draftPersistence={newTaskDraftPersistence}

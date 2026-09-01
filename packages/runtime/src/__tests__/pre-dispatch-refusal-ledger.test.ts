@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -372,7 +373,7 @@ test('client-capability refusal carries actionable bypass metadata', async () =>
 test('arguments the schema rejects leave a matched call/response pair on the generic lane', async () => {
   const h = harness();
 
-  const { result } = await settle(h, swarmTool, {
+  const settlement = await settle(h, swarmTool, {
     items: [
       { item_id: 'a', task: 'one', subagent_id: 'reviewer' },
       { item_id: 'b', task: 'two', subagent_id: 'reviewer' },
@@ -383,7 +384,7 @@ test('arguments the schema rejects leave a matched call/response pair on the gen
 
   // The refusal still reaches the model, unchanged.
   assert.match(
-    (result as { error?: string }).error ?? '',
+    (settlement.result as { error?: string }).error ?? '',
     /Tool "exclusive_batch" arguments failed validation/,
   );
 
@@ -444,12 +445,6 @@ test('a dispatched call still claims the T1 lane and settles through the commit 
   assert.ok(operation?.dispatchEvent, 'the T1 dispatch fact is missing');
   assert.ok(operation?.responseEvent, 'the T1 outcome fact is missing');
 });
-
-function nextId(): () => string {
-  let sequence = 0;
-  return () => `id-${++sequence}`;
-}
-
 function header(): SessionHeader {
   return {
     id: SESSION_ID,

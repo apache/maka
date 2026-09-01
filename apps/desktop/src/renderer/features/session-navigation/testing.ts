@@ -59,7 +59,8 @@ export function createFakeSessionNavigationServices(
       archive: async () => undefined,
       unarchive: async () => undefined,
       rename: async () => undefined,
-      remove: async () => 'removed',
+      remove: async () => ({ disposition: 'removed', archivedSubtaskCount: 0 }),
+      previewRemoval: async () => 0,
     },
     ...overrides,
   };

@@ -65,11 +65,11 @@ const SQLITE_BACKED_ENTRYPOINTS = [
   './session-bundle-policy',
   './session-copy-cleanup',
   './session-store',
+  './session-todo-authority',
   './shell-run-authority',
   './shell-run-store',
   './sqlite-session-metadata-store',
   './storage-writer-composition',
-  './task-ledger-authority',
   './usage-stores',
   './work-board-store',
 ];

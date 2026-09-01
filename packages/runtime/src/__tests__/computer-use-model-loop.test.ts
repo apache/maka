@@ -394,6 +394,7 @@ function createRuntime(input: {
     modelId: 'mock-computer-model',
     modelFactory: () => input.model,
     tools: [input.computerTool],
+    testProjectionArtifacts: true,
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     newId: idGenerator(),
     now: monotonicClock(),

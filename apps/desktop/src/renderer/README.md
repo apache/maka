@@ -109,10 +109,8 @@ that a capability has reached its final owner. The directory dependency rules
 remain executable. A later owner contract can add verifiable owner paths and
 public entries once each mixed legacy capability has been split precisely.
 
-Exact Hook names remain visible in the generated ledger. A legitimate Hook
-replacement must use a one-time `hookTransitions` entry: the new call count has
-to be paid one-for-one by removal of the named old Hook in the same debt file,
-the total Hook budget may not grow, and historical transitions cannot be reused.
+Exact Hook names remain visible in the generated ledger, and no tracked Hook
+call count may grow in a debt file.
 The separate AppShell render-scope inventory tracks which calls still execute
 above the whole renderer tree; this architecture checker governs the broader
 root and transitive capability debt.

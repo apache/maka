@@ -7,6 +7,8 @@
   "sideEffects": false,
   "private": true,
   "exports": {
+    "./durable-tool-result-projection": "./dist/durable-tool-result-projection.js",
+    "./model-projection-transition": "./dist/model-projection-transition.js",
     "./canonical-runtime-event": "./dist/canonical-runtime-event.js",
     "./runtime-boundary": "./dist/runtime-boundary.js",
     "./runtime-event": "./dist/runtime-event.js",
@@ -68,12 +70,14 @@
     "./agent-graph-client-projection": "./dist/agent-graph-client-projection.js",
     "./agent-graph-supervisor-wake": "./dist/agent-graph-supervisor-wake.js",
     "./task-ledger": "./dist/task-ledger.js",
+    "./session-todo": "./dist/session-todo.js",
     "./foreign-session": "./dist/foreign-session.js",
     "./external-session": "./dist/external-session.js",
     "./deep-research-run": "./dist/deep-research-run.js",
     "./deep-research-client-progress": "./dist/deep-research-client-progress.js",
     "./daily-review": "./dist/daily-review.js",
     "./work-board": "./dist/work-board.js",
+    "./workhub-creation-intent": "./dist/workhub-creation-intent.js",
     "./deep-research": "./dist/deep-research.js",
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",
@@ -84,6 +88,7 @@
     "./llm-connections": "./dist/llm-connections.js",
     "./provider-registry": "./dist/provider-registry.js",
     "./model-catalog": "./dist/model-catalog.js",
+    "./model-facts": "./dist/model-facts.js",
     "./model-metadata": "./dist/model-metadata.js",
     "./model-web-search": "./dist/model-web-search.js",
     "./model-thinking": "./dist/model-thinking.js",
@@ -138,7 +143,8 @@
     "./tool-result-status": "./dist/tool-result-status.js",
     "./ui-locale": "./dist/ui-locale.js",
     "./unified-diff": "./dist/unified-diff.js",
-    "./dev-single-instance": "./dist/dev-single-instance.js"
+    "./dev-single-instance": "./dist/dev-single-instance.js",
+    "./test-only/async-primitives": "./dist/test-only/async-primitives.js"
   },
   "scripts": {
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo src/model-metadata.generated.ts",
@@ -146,7 +152,6 @@
     "build": "tsc -p tsconfig.json",
     "pretypecheck": "npm --prefix ../.. run sync:model-metadata",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

@@ -43,6 +43,7 @@
     "./scheduled-task-store": "./dist/scheduled-task-store.js",
     "./session-bundle-policy": "./dist/session-bundle-policy.js",
     "./session-copy-cleanup": "./dist/session-copy-cleanup.js",
+    "./session-todo-authority": "./dist/session-todo-authority.js",
     "./session-store": "./dist/session-store.js",
     "./settings-store": "./dist/settings-store.js",
     "./shell-run-authority": "./dist/shell-run-authority.js",
@@ -52,7 +53,6 @@
     "./stable-storage": "./dist/stable-storage.js",
     "./state-root-composition": "./dist/state-root-composition.js",
     "./storage-writer-composition": "./dist/storage-writer-composition.js",
-    "./task-ledger-authority": "./dist/task-ledger-authority.js",
     "./usage-stores": "./dist/usage-stores.js",
     "./work-board-store": "./dist/work-board-store.js",
     "./workspace-identity": "./dist/workspace-identity.js",
@@ -63,7 +63,6 @@
     "clean": "node ../../scripts/clean-paths.mjs dist tsconfig.tsbuildinfo",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {

@@ -31,6 +31,7 @@ import {
   type McpToolBinding,
 } from '@maka/core/mcp';
 import { buildStdioEnvironment, McpClientManager, McpToolCallError } from '../index.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const fixturePath = fileURLToPath(new URL('../__fixtures__/stdio-server.js', import.meta.url));
 const managers: McpClientManager[] = [];
@@ -1395,11 +1396,7 @@ function remoteConfig(
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('condition was not reached');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await pollFor(predicate, { timeoutMs, pollMs: 5, message: 'condition was not reached' });
 }
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {

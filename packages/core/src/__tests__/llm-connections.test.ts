@@ -262,6 +262,34 @@ test('the model picker lists an enabled model a snapshot provider never listed',
   ]);
 });
 
+test('chat model choices project exact vision support for attachment composition', () => {
+  const choices = buildChatModelChoices([
+    {
+      connectionId: 'connection-vision',
+      slug: 'openai-compatible',
+      name: 'OpenAI compatible',
+      providerType: 'openai-compatible',
+      enabled: true,
+      defaultModel: 'text-model',
+      enabledModelIds: ['text-model', 'vision-model'],
+      models: [
+        { id: 'text-model', capabilities: { vision: false } },
+        { id: 'vision-model', capabilities: { vision: true } },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+
+  assert.deepEqual(
+    choices.map(({ model, supportsVision }) => ({ model, supportsVision })),
+    [
+      { model: 'text-model', supportsVision: false },
+      { model: 'vision-model', supportsVision: true },
+    ],
+  );
+});
+
 test('provider recognition does not resolve inherited object members', () => {
   // `PROVIDER_DEFAULTS` is an object literal, so plain indexing answers truthy
   // for `__proto__` / `toString` / `constructor` and they would read as

@@ -49,6 +49,7 @@ import {
   resolveRuntimeHostCliTarget,
 } from './runtime-host-cli-context.js';
 import type {
+  ConnectionIdentity,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -59,6 +60,7 @@ import {
 } from './runtime-host-session-driver.js';
 import {
   createRuntimeHostOnboardingSurface,
+  projectRuntimeHostConnectionIdentities,
   projectRuntimeHostModelChoices,
 } from './runtime-host-onboarding.js';
 import {
@@ -66,6 +68,7 @@ import {
   type TuiMcpController,
   type TuiMcpManagement,
 } from './tui-mcp-control.js';
+import { createRemoteTuiMcpPublicationTarget } from './tui-mcp-remote-publication.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -73,11 +76,7 @@ export interface RuntimeHostTuiContext {
   readonly cwd: string;
   readonly connectionSlug: string;
   readonly connectionId?: string;
-  readonly connectionIdentities: readonly {
-    readonly connectionId: string;
-    readonly connectionSlug: string;
-    readonly enabled: boolean;
-  }[];
+  readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
   readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
@@ -161,13 +160,26 @@ export async function createRuntimeHostTuiContext(
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
+    if (connected.profile.kind === 'local') {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
       mcp = createTuiMcpController({
         workspaceRoot: input.rootPath,
         connection,
+      });
+    } else if (connected.profile.kind === 'remote') {
+      if (!connected.profileIncarnationId) {
+        throw new Error('Remote Runtime Host profile incarnation is unavailable');
+      }
+      mcp = createTuiMcpController({
+        workspaceRoot: input.rootPath,
+        connection: createRemoteTuiMcpPublicationTarget({
+          clientDataRoot: input.clientDataRoot,
+          profile: connected.profile,
+          profileIncarnationId: connected.profileIncarnationId,
+          ownerClientInstanceId: connected.clientInstanceId,
+        }),
       });
     }
     const modelContextWindow = selectedTarget.connection?.models.find(
@@ -181,11 +193,7 @@ export async function createRuntimeHostTuiContext(
       ...(selectedTarget.connectionId === undefined
         ? {}
         : { connectionId: selectedTarget.connectionId }),
-      connectionIdentities: catalog.connections.map((entry) => ({
-        connectionId: entry.connectionId,
-        connectionSlug: entry.slug,
-        enabled: entry.enabled,
-      })),
+      connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
       ...(selectedTarget.connection
         ? { providerType: selectedTarget.connection.providerType }

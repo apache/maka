@@ -23,6 +23,7 @@ import type {
 } from './ai-sdk-compaction-contract.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import {
+  canContinueHistoryCompactCheckpointForModel,
   historyCompactCheckpointToModelMessage,
   isProviderHistoryCompactCheckpoint,
   type HistoryCompactProviderState,
@@ -31,18 +32,19 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import {
+  admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
+  compatibleProviderReasoningReplayEventIds,
   type RuntimeEventModelReplayItem,
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
-import { toolResultOutput } from './tool-result-output.js';
+import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
 import { providerFailureDiagnostic } from './provider-error-classification.js';
-
-export { fitHistoryCompactMessages as fitOpenAiCodexCompactionMessages } from './history-compact-input-fit.js';
 
 export interface BuildOpenAiCodexHistoryCompactorOptions {
   resolveModel: () => unknown;
-  connectionSlug: string;
+  connectionId: string;
+  providerStateIdentity?: `sha256:${string}`;
   modelId: string;
   providerOptions?: Record<string, unknown>;
 }
@@ -66,13 +68,26 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       const canContinuePrevious =
         previous &&
         isProviderHistoryCompactCheckpoint(previous) &&
-        previous.providerState.kind === 'openai_codex_remote_v2' &&
-        previous.providerState.connectionSlug === options.connectionSlug &&
-        previous.providerState.modelId === options.modelId;
+        canContinueHistoryCompactCheckpointForModel(
+          previous,
+          { providerType: 'openai-codex' },
+          options.connectionId,
+          options.modelId,
+        );
       const events = canContinuePrevious
         ? (input.newlyFoldedRuntimeEvents ?? [])
         : input.source.foldedRuntimeEvents;
-      const projectedMessages = openAiCodexCompactionMessages(events);
+      const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
+        events,
+        input.source.runHeaders,
+        options.providerStateIdentity,
+        options.modelId,
+        input.runId,
+      );
+      const projectedMessages = openAiCodexCompactionMessages(
+        events,
+        providerReasoningReplayEventIds,
+      );
       if (canContinuePrevious) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
@@ -111,7 +126,7 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       if (streamError) throw streamError;
       const state = extractOpenAiCodexCompactionState(
         content,
-        options.connectionSlug,
+        options.connectionId,
         options.modelId,
       );
       if (!state) throw new HistoryCompactSummarizerError('invalid_provider_state');
@@ -174,7 +189,10 @@ function hasAbortCause(error: unknown): boolean {
  * Runtime persists tool calls/results before a step's reasoning/text closer;
  * grouping lets the compactor keep settled tool evidence before grounded text.
  */
-export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): ModelMessage[] {
+function openAiCodexCompactionMessages(
+  events: readonly RuntimeEvent[],
+  providerReasoningReplayEventIds: ReadonlySet<string>,
+): ModelMessage[] {
   type ToolCall = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
   type ToolResult = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
   type Thinking = Extract<RuntimeEventModelReplayItem, { kind: 'thinking' }>;
@@ -190,7 +208,10 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
     | { kind: 'text'; item: Text }
     | { kind: 'thinking'; item: Thinking };
 
-  const items = buildRuntimeEventModelReplayPlan(events).items;
+  const items = admitProviderReasoningReplayItems(
+    buildRuntimeEventModelReplayPlan(events).items,
+    providerReasoningReplayEventIds,
+  );
   const results = new Map<string, ToolResult>();
   for (const item of items) {
     if (item.kind === 'tool_result') results.set(item.toolCallId, item);
@@ -232,7 +253,7 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
           type: 'tool-result',
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: toolResultOutput(result.output, result.isError),
+          output: effectiveReplayToolResultOutput(result),
         },
       ],
     });
@@ -328,7 +349,7 @@ export function openAiCodexCompactionMessages(events: readonly RuntimeEvent[]): 
 
 export function extractOpenAiCodexCompactionState(
   content: readonly unknown[] | undefined,
-  connectionSlug: string,
+  connectionId: string,
   modelId: string,
 ): HistoryCompactProviderState | undefined {
   const parts = (content ?? []).filter(isOpenAiCompactionPart);
@@ -337,7 +358,7 @@ export function extractOpenAiCodexCompactionState(
   if (!nonEmpty(metadata.itemId) || !nonEmpty(metadata.encryptedContent)) return undefined;
   return {
     kind: 'openai_codex_remote_v2',
-    connectionSlug,
+    connectionId,
     modelId,
     itemId: metadata.itemId,
     encryptedContent: metadata.encryptedContent,

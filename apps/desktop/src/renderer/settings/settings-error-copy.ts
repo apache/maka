@@ -31,6 +31,5 @@ export function settingsActionErrorMessage(error: unknown, locale: UiLocale = 'z
   const classified = locale === 'zh' ? generalizedErrorMessageChinese(new Error(raw), '') : '';
   if (classified) return classified;
   const redacted = redactSecrets(raw).trim();
-  if (locale === 'zh' && redacted && /[\u4E00-\u9FFF]/.test(redacted)) return redacted;
-  return getSettingsSharedCopy(locale).unknownError;
+  return redacted || getSettingsSharedCopy(locale).unknownError;
 }

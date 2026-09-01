@@ -20,7 +20,8 @@
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { resolveSelectedModelContextWindow } from './context-budget-policy.js';
-import { groupEventsByTurn, stableJsonLength } from './context-budget-helpers.js';
+import { stableJsonLength } from './context-budget-helpers.js';
+import { groupEventsByTurn } from './model-history.js';
 import { HistoryCompactSummarizerError } from './history-compact-error.js';
 import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import { replayPlanItemsToModelMessages } from './history-compact-summarizer.js';

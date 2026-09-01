@@ -43,6 +43,7 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   // The conversation is the Coordination Session transcript. An ordinary
   // Session is a routing target and a status row, never a turn in WorkHub.
   await waitForWorkHubReady(page, 1);
@@ -58,11 +59,12 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   const routedTurn = page.locator('.workhub-turn', { hasText: routedPrompt });
   await expect(routedTurn.locator('.workhub-submitted')).toBeVisible();
   await routedTurn.locator('.workhub-submitted > button').click();
-  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeHidden();
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeHidden();
 
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: 'WorkHub', exact: true }).click();
   await waitForWorkHubReady(page, 1);
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   await expect(
     page.locator('.workhub-projected-turn .workhub-user-bubble > p', {
       hasText: routedPrompt,
@@ -71,10 +73,34 @@ test('WorkHub rebuilds delegated execution feedback after navigating away and ba
   await expect(
     page.locator('.workhub-projected-turn', { hasText: routedPrompt })
       .locator('.workhub-submitted-state'),
-  ).toHaveText('已完成');
+  ).toHaveText('关联有效 · 已完成');
 });
 
-test('WorkHub defers destructive correction until linked delegation exists', async ({
+test('WorkHub explicitly announces a newly created work item', async ({ window: page }) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('检查支付回调重复投递时的幂等性');
+  await composer.press('Enter');
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+  await page.evaluate(async () => {
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+  await waitForWorkHubReady(page, 1);
+
+  const prompt = '创建一个新的 Session，名为登录稳定性';
+  const workHubComposer = page.locator(
+    '.workhub-surface .maka-composer-editor [contenteditable="true"]',
+  );
+  await workHubComposer.fill(prompt);
+  await workHubComposer.press('Enter');
+
+  const createdTurn = page.locator('.workhub-turn', { hasText: prompt });
+  await expect(createdTurn.locator('.workhub-submitted')).toContainText('已创建新工作：');
+  await expect(createdTurn.locator('.workhub-submitted-session strong')).toHaveText('登录稳定性');
+});
+
+test('WorkHub replaces the exact linked delegation across Sessions', async ({
   window: page,
 }) => {
   const sourceSessionName = '检查支付回调重复投递时的幂等性';
@@ -92,6 +118,7 @@ test('WorkHub defers destructive correction until linked delegation exists', asy
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
   await page.evaluate(async () => {
     await window.maka.sessions.create({ name: '登录稳定性' });
   });
@@ -119,8 +146,16 @@ test('WorkHub defers destructive correction until linked delegation exists', asy
   const correctionTurn = page.locator('.workhub-turn', {
     hasText: '不是这个，换成登录稳定性，补充刷新令牌失败判定。',
   });
-  await expect(correctionTurn.locator('.workhub-error')).toContainText(
-    '跨 Session 更正将在持久委托关联完成后开放',
+  await expect(
+    correctionTurn.locator('.workhub-submitted-session strong'),
+  ).toHaveText('登录稳定性');
+  await expect(correctionTurn.locator('.workhub-error')).toHaveCount(0);
+  await expect(
+    continuedTurn.locator('.workhub-submitted-state'),
+  ).toHaveText('已被更正');
+  await expect(
+    correctionTurn.locator('.workhub-submitted-state'),
+  ).toContainText(
+    /^关联有效 · (?:已接收|进行中|等待你|已完成|失败|已中止|正在恢复)$/u,
   );
-  await expect(correctionTurn.locator('.workhub-submitted')).toHaveCount(0);
 });

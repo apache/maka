@@ -55,6 +55,7 @@ import type {
   ToolStartEvent,
   StorageRef,
   AttachmentRef,
+  DirectoryReference,
   QuoteRef,
   ContextBudgetExhaustedDetail,
 } from '@maka/core/events';
@@ -106,7 +107,7 @@ import type {
   PricingConfig,
   ToolInvocationRecord,
 } from '@maka/core/usage-stats/types';
-import type { ContextBudgetDiagnostic, PromptSegmentEstimate } from '@maka/core/usage-stats/types';
+import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import type {
   JSONValue,
   ModelFinishReason,
@@ -194,26 +195,24 @@ import {
 } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
+import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
-import {
-  toSandboxRunTraceProjection,
-  type SandboxDiagnosticsProvider,
-  type SandboxDiagnosticsSnapshot,
-} from './sandbox/diagnostics.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
   SANDBOX_BOUNDARY_DENIED_FOR_TURN,
   SANDBOX_BOUNDARY_FINALIZATION_PROMPT,
 } from './sandbox-boundary-tool.js';
-import { renderSandboxTurnTailPrompt } from './system-prompt/sandbox-context-prompt.js';
 import { computeCost } from './telemetry/cost.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import {
+  admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
   buildSteeringEnvelope,
   collectToolActivityTurnIds,
+  compatibleProviderReasoningReplayEventIds,
   formatTextWithInlineRefs,
   steeringMessagesMissingFromBase,
   steeringModelMessage,
@@ -223,17 +222,12 @@ import {
   type RuntimeEventModelReplayPlan,
   type RuntimeEventReplayFallbackGate,
 } from './model-history.js';
-import {
-  computeRequestShapeDiagnostic,
-  toolSchemaCharsForDiagnostics,
-  type RequestShapeDiagnostic,
-} from './request-shape.js';
+import { toolSchemaCharsForDiagnostics } from './request-shape.js';
 import type { ModelCallAttempt, ModelCallKind } from '@maka/core/model-call-attempt';
 import {
   ProviderRequestTracker,
   type ModelCallAccountingInput,
-  type ProviderRequestAttemptRecord,
-  type ProviderRequestCaptureRecord,
+  type PreparedRequestArtifactInput,
   type ProviderRequestUsage,
   type ResolvedModelCallCost,
 } from './provider-request-telemetry.js';
@@ -262,7 +256,6 @@ import {
 import {
   applyRuntimeEventContextBudget,
   buildContextBudgetDiagnosticShell,
-  buildPromptSegmentEstimates,
   estimateRuntimeEventsTokens,
   mergeContextBudgetDiagnostic,
   mergeContextBudgetDiagnosticPatches,
@@ -704,6 +697,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Session context ────────────────────────────────────────────────────
   sessionId: string;
   header: SessionHeader;
+  /** Host-frozen provider endpoint and credential ownership for this backend generation. */
+  providerStateIdentity?: `sha256:${string}`;
   /** Append-message function bound to this session (e.g. SessionStore wrapper). */
   appendMessage: AppendMessageFn;
   /** Reads the authoritative session boundary immediately before every local tool invocation. */
@@ -714,8 +709,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
-  /** Optional model guidance derived fresh from the live boundary each Turn. */
-  sandboxDiagnostics?: SandboxDiagnosticsProvider;
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -746,12 +739,6 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   systemPrompt?:
     | string
     | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional provider-visible current-turn tail kept out of the durable system prefix. */
-  turnTailPrompt?:
-    | string
-    | ((context: SystemPromptContext) => string | undefined | Promise<string | undefined>);
-  /** Optional volatile ShellRun summary. Not persisted; appended to the current user turn tail only. */
-  shellRunContextSummary?: () => string | undefined | Promise<string | undefined>;
   /** Provider-native options passed through to ai-sdk. */
   providerOptions?: Record<string, unknown>;
   /** Test seam for the adapter-owned incremental Responses transport. */
@@ -771,19 +758,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   readChildAgentOutput?: ToolRuntimeInput['readChildAgentOutput'];
   /** Optional diagnostic trace hook for explaining a runtime turn without changing renderer events. */
   recordRunTrace?: RunTraceRecorder;
-  /**
-   * Durable prepared-request capture boundary. When configured, rejection
-   * prevents the corresponding provider request from being dispatched.
-   */
-  recordProviderRequestCapture?: (
-    capture: ProviderRequestCaptureRecord,
+  /** Optional private artifact sink for the secret-free prepared request. */
+  persistPreparedRequestArtifact?: (
+    input: PreparedRequestArtifactInput,
   ) => Promise<{ artifactId: string }>;
-  /** Best-effort durable row for one physical provider request attempt. */
-  recordProviderRequestAttempt?: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
-  /**
-   * Canonical metering sink. Separate from `recordProviderRequestAttempt`, which
-   * stays a diagnostic trace: this one carries the accounting record.
-   */
   /**
    * Commits one settled provider request: the canonical attempt and, when it
    * is the completed main call, the derived latest-context row it authorises.
@@ -815,9 +793,11 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
    * Caller wires this to the session ArtifactStore; runtime never imports storage.
    */
   readAttachmentBytes?: AttachmentByteReader;
+  /** Host-owned exact ref plan for inline images, persisted only after projection validation. */
+  prepareDurableProjectionArtifact?: ToolRuntimeInput['prepareDurableProjectionArtifact'];
   /**
    * Whether the selected model accepts image input. Only explicit true sends
-   * image parts; false/unknown stay as text refs with a fallback note.
+   * image parts; false/unknown keep the attachment's model-facing Read reference.
    */
   supportsVision?: boolean;
   maxProviderImageRequestBytes?: number;
@@ -828,15 +808,9 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 export interface SystemPromptContext {
   sessionId: string;
   turnId: string;
-  runId?: string;
   cwd: string;
-  workspaceRoot: string;
   /** Diagnostic-only skill catalog trace; never affects prompt construction. */
   emitSkillCatalogTrace?: (message: string, data?: Record<string, unknown>) => void;
-}
-
-function appendNonVisionImageFallbackNotice(textContent: string): string {
-  return `${textContent}\n\n[image attachments omitted: the selected model does not support image input. Tell the user you cannot view the attached image(s) and ask them to describe the image or switch to a vision-capable model.]`;
 }
 
 function isImageToolResult(
@@ -873,6 +847,37 @@ function nativeApplyPatchFailureOutput(output: ToolResultOutput): ToolResultOutp
     type: 'json',
     value: { status: 'failed', ...(message ? { output: message } : {}) },
   };
+}
+
+function durableApplyPatchReplayFactText(
+  input: unknown,
+  projection: DurableToolResultProjection,
+  isError: boolean,
+): string | null {
+  if (projection.kind === 'json') {
+    const fact = applyPatchReplayFactText(input, projection, isError);
+    if (fact) return fact;
+  }
+  const output = durableProjectionToToolResultOutput(projection);
+  switch (output.type) {
+    case 'text':
+    case 'error-text':
+      return output.value;
+    case 'json':
+    case 'error-json':
+      return JSON.stringify(output.value);
+    case 'content': {
+      const text = output.value
+        .filter((part): part is Extract<typeof part, { type: 'text' }> => part.type === 'text')
+        .map((part) => part.text)
+        .join('\n');
+      return text || null;
+    }
+    case 'execution-denied':
+      return output.reason
+        ? `ApplyPatch execution denied: ${output.reason}`
+        : 'ApplyPatch execution denied.';
+  }
 }
 
 /**
@@ -1070,12 +1075,6 @@ export class AiSdkBackend implements AgentBackend {
    * read back as absent.
    */
   private readonly activeTurns = new Set<TurnScope>();
-  /**
-   * Request-shape baseline for change attribution. Session-scoped on purpose:
-   * it compares each provider request against whatever this backend sent last,
-   * across turns.
-   */
-  private priorRequestShape: RequestShapeDiagnostic | undefined;
   private readonly compaction: AiSdkCompaction;
   /** Session-scoped running total, deliberately accumulated across turns. */
   private cumulativeUsageCheckpoint: NormalizedAiSdkUsage | undefined;
@@ -1088,8 +1087,8 @@ export class AiSdkBackend implements AgentBackend {
     this.maxSteps = input.maxSteps;
     this.providerRetrySleep = input.providerRetrySleep ?? sleepForProviderRetry;
     // One resolved options value for every reader: the main call, the
-    // auxiliary memory-extraction call, and the request-shape diagnostics all
-    // describe the same request, so they must not disagree on what was sent.
+    // auxiliary memory-extraction call, and the provider request all use the
+    // same options value, so they cannot disagree on what was sent.
     this.resolvedProviderOptions =
       input.providerOptions ??
       buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
@@ -1113,15 +1112,25 @@ export class AiSdkBackend implements AgentBackend {
     this.compaction = new AiSdkCompaction({
       input,
       sessionId: this.sessionId,
+      targetConnectionId: input.header.llmConnectionId,
+      targetProviderStateIdentity: input.providerStateIdentity,
       now: this.now,
       modelAdapter: this.modelAdapter,
       createProviderRequestTracker: (trackerInput) =>
         this.createProviderRequestTracker(trackerInput),
-      materializeRuntimeReplayPlan: (plan, imageBudget, checkpoint) =>
-        this.materializeRuntimeReplayPlan(plan, imageBudget, undefined, checkpoint),
+      materializeRuntimeReplayPlan: (
+        plan,
+        imageBudget,
+        checkpoint,
+        providerReasoningReplayEventIds,
+      ) =>
+        this.materializeRuntimeReplayPlan(
+          plan,
+          imageBudget,
+          checkpoint,
+          providerReasoningReplayEventIds,
+        ),
       canReplayProviderNative: (plan) => this.canReplayProviderNative(plan),
-      appendTurnTailPrompt: (content, turnTailPrompt) =>
-        this.appendTurnTailPrompt(content, turnTailPrompt),
     });
     if (
       input.tools.some(
@@ -1337,8 +1346,7 @@ export class AiSdkBackend implements AgentBackend {
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
-      materializeDefaultToolResultOutput: ({ toolCallId, output }) =>
-        this.materializeToolResultOutput(identity.scope().imageBudget, output, false, toolCallId),
+      prepareDurableProjectionArtifact: input.prepareDurableProjectionArtifact,
       spawnChildSession: input.spawnChildSession,
       listChildAgents: input.listChildAgents,
       readChildAgentOutput: input.readChildAgentOutput,
@@ -1374,7 +1382,7 @@ export class AiSdkBackend implements AgentBackend {
   // --------------------------------------------------------------------------
 
   async compactHistory(input: BackendCompactHistoryInput): Promise<BackendCompactHistoryResult> {
-    return this.compaction.compactHistory(input, this.priorRequestShape?.requestShapeHash);
+    return this.compaction.compactHistory(input);
   }
 
   // --------------------------------------------------------------------------
@@ -1447,12 +1455,8 @@ export class AiSdkBackend implements AgentBackend {
     let stepText = '';
     let stepTextProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
     let stepTextPartStartOffset = 0;
-    let stepThinking = '';
-    let sawStepThinking = false;
-    let stepThinkingProviderOptions: NonNullable<ModelMessage['providerOptions']> | undefined;
-    let stepResponsesThinkingParts: AssistantThinkingPart[] = [];
-    let stepResponsesThinkingPartsByItemId = new Map<string, AssistantThinkingPart>();
-    let stepSignature: string | undefined;
+    let stepThinkingParts: AssistantThinkingPart[] = [];
+    let stepThinkingPartsById = new Map<string, AssistantThinkingPart>();
     const startedAt = this.now();
 
     // Flush the current step's AssistantMessage (text + thinking) and the paired
@@ -1465,21 +1469,10 @@ export class AiSdkBackend implements AgentBackend {
     // this step's assistant row. Hoisted to send() scope so both the streaming
     // path and the abort/error handler can flush a partial step.
     const flushStep = async (): Promise<void> => {
-      const hasThinking = sawStepThinking || stepSignature !== undefined;
+      const hasThinking = stepThinkingParts.length > 0;
       if (stepText.length === 0 && !hasThinking) return;
       const stepId = currentStepMessageId;
-      const thinkingParts: AssistantThinkingPart[] =
-        stepResponsesThinkingParts.length > 0
-          ? stepResponsesThinkingParts
-          : [
-              {
-                text: stepThinking,
-                ...(stepSignature !== undefined ? { signature: stepSignature } : {}),
-                ...(stepThinkingProviderOptions !== undefined
-                  ? { providerOptions: stepThinkingProviderOptions }
-                  : {}),
-              },
-            ];
+      const thinkingText = stepThinkingParts.map((part) => part.text).join('');
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -1493,21 +1486,22 @@ export class AiSdkBackend implements AgentBackend {
         ...(hasThinking
           ? {
               thinking: {
-                text: stepThinking,
-                ...(thinkingParts.length === 1 && thinkingParts[0]!.signature !== undefined
-                  ? { signature: thinkingParts[0]!.signature }
+                text: thinkingText,
+                ...(stepThinkingParts.length === 1 && stepThinkingParts[0]!.signature !== undefined
+                  ? { signature: stepThinkingParts[0]!.signature }
                   : {}),
-                ...(thinkingParts.length === 1 && thinkingParts[0]!.providerOptions !== undefined
-                  ? { providerOptions: thinkingParts[0]!.providerOptions }
+                ...(stepThinkingParts.length === 1 &&
+                stepThinkingParts[0]!.providerOptions !== undefined
+                  ? { providerOptions: stepThinkingParts[0]!.providerOptions }
                   : {}),
-                ...(thinkingParts.length > 1 ? { parts: thinkingParts } : {}),
+                ...(stepThinkingParts.length > 1 ? { parts: stepThinkingParts } : {}),
               },
             }
           : {}),
       };
       await this.input.appendMessage(msg);
       if (hasThinking) {
-        for (const part of thinkingParts) {
+        for (const part of stepThinkingParts) {
           queue.push({
             type: 'thinking_complete',
             id: this.newId(),
@@ -1543,12 +1537,8 @@ export class AiSdkBackend implements AgentBackend {
       stepText = '';
       stepTextProviderOptions = undefined;
       stepTextPartStartOffset = 0;
-      stepThinking = '';
-      sawStepThinking = false;
-      stepThinkingProviderOptions = undefined;
-      stepResponsesThinkingParts = [];
-      stepResponsesThinkingPartsByItemId = new Map();
-      stepSignature = undefined;
+      stepThinkingParts = [];
+      stepThinkingPartsById = new Map();
     };
     let tokenUsage: NormalizedAiSdkUsage | undefined;
     let tokenUsageCostUsd: number | undefined;
@@ -1581,8 +1571,7 @@ export class AiSdkBackend implements AgentBackend {
     let streamStatus: LlmCallRecord['status'] = 'success';
     let streamErrorClass: string | undefined;
     let runtimeSteps = 0;
-    let requestShapeForTelemetry: RequestShapeDiagnostic | undefined;
-    let promptSegmentsForTelemetry: PromptSegmentEstimate[] = [];
+    let toolAvailabilityForTelemetry: ReturnType<ToolAvailabilityPlan['diagnostics']> = undefined;
     let contextBudgetForTelemetry: ContextBudgetDiagnostic | undefined;
     let contextCompactedNoteWritten = false;
     let contextCompactionFailedOpenNoteWritten = false;
@@ -1611,47 +1600,6 @@ export class AiSdkBackend implements AgentBackend {
           ...this.input.planTraceContext,
         });
       }
-    }
-    let sandboxDiagnosticsSnapshot: SandboxDiagnosticsSnapshot | undefined;
-    let sandboxPrompt: string | undefined;
-    let sandboxContextStage: 'resolve' | 'render' = 'resolve';
-    try {
-      sandboxDiagnosticsSnapshot = this.input.sandboxDiagnostics
-        ? await raceWithTurnAbort(this.resolveTurnSandboxDiagnostics(), turnAbortController.signal)
-        : undefined;
-      sandboxContextStage = 'render';
-      sandboxPrompt = sandboxDiagnosticsSnapshot
-        ? renderSandboxTurnTailPrompt(sandboxDiagnosticsSnapshot)
-        : undefined;
-    } catch (err) {
-      if (scope.aborted || turnAbortController.signal.aborted) {
-        queue.push({
-          type: 'abort',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          reason: 'user_stop',
-        } satisfies AbortEvent);
-        queue.push({
-          type: 'complete',
-          id: this.newId(),
-          turnId,
-          ts: this.now(),
-          stopReason: 'user_stop',
-        } satisfies CompleteEvent);
-        queue.close();
-        yield* this.drain(queue);
-        return;
-      }
-      trace.sandboxContextFailed(sandboxContextStage, err);
-      // This context is model guidance, not execution authority. Never fall
-      // back to a stale snapshot; continue without the prompt while the live
-      // ExecutionBoundary remains authoritative for every tool invocation.
-      sandboxDiagnosticsSnapshot = undefined;
-      sandboxPrompt = undefined;
-    }
-    if (sandboxDiagnosticsSnapshot) {
-      trace.sandboxContextResolved(toSandboxRunTraceProjection(sandboxDiagnosticsSnapshot));
     }
     const providerRequestTracker = this.createProviderRequestTracker({
       turnId,
@@ -1754,11 +1702,6 @@ export class AiSdkBackend implements AgentBackend {
         await this.resolveSystemPrompt(scope),
         scope.orchestration?.mode === 'swarm' ? renderSwarmModePrompt() : undefined,
         scope.orchestration?.mode === 'graph' ? renderGraphModePrompt() : undefined,
-        // A safe continuation deliberately has no new user message. Keep its
-        // replay byte-for-byte intact and carry only the current authority fact
-        // in the effective system envelope; ordinary volatile turn-tail facts
-        // remain excluded from continuation.
-        input.continuation ? sandboxPrompt : undefined,
       ]);
     } catch (err) {
       trace.modelStreamFailed(this.modelAdapter.classifyError(err), err);
@@ -1840,6 +1783,7 @@ export class AiSdkBackend implements AgentBackend {
         canContinueHistoryCompactCheckpointForModel(
           checkpoint,
           this.input.connection,
+          this.input.header.llmConnectionId,
           this.input.modelId,
         )
           ? checkpoint
@@ -1906,19 +1850,13 @@ export class AiSdkBackend implements AgentBackend {
           next.start();
         };
         const activeTools = plan.activeTools;
-        const turnTailPrompt = input.continuation
-          ? undefined
-          : joinPromptFragments([
-              await this.resolveTurnTailPrompt(turnId),
-              await this.resolveShellRunContextSummary(),
-              sandboxPrompt,
-            ]);
         const currentUserContent = input.continuation
           ? undefined
           : await this.buildCurrentUserContent(
               scope.imageBudget,
               input.text,
               input.attachments,
+              input.directoryReferences,
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
             );
@@ -1929,10 +1867,9 @@ export class AiSdkBackend implements AgentBackend {
                 ...priorReplay.messages,
                 {
                   role: 'user' as const,
-                  content: this.appendTurnTailPrompt(currentUserContent, turnTailPrompt),
+                  content: currentUserContent,
                 } as ModelMessage,
               ];
-        const settledModelOutputs = new Map<string, ToolResultOutput>();
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1969,7 +1906,12 @@ export class AiSdkBackend implements AgentBackend {
             // the active-step shaper must see that growth so it can roll the
             // checkpoint forward instead of resurrecting raw history.
           }
-          const replayPlan = buildRuntimeEventModelReplayPlan(replayEvents, {
+          // The current Turn is model-visible history like any other, so it is
+          // folded through the same reducer before it becomes messages. Without
+          // this, a result archived at step N is rebuilt in full at step N+1 and
+          // the ledger's account of what the model sees stops being true.
+          const foldedReplayEvents = await this.compaction.foldEffectiveModelHistory(replayEvents);
+          const replayPlan = buildRuntimeEventModelReplayPlan(foldedReplayEvents, {
             toolActivityTurnIds: collectToolActivityTurnIds([
               ...(input.runtimeContext ?? []),
               ...turnEvents,
@@ -1981,106 +1923,35 @@ export class AiSdkBackend implements AgentBackend {
           ) {
             throw new Error('durable current-run projection is not replayable');
           }
-          const anchorEventId = input.headAnchorRuntimeEvent?.id;
-          let decoratedCurrentUser = false;
-          const replayItems = replayPlan.items.map((item) => {
-            if (item.kind !== 'text' || item.role !== 'user') {
-              return item;
-            }
-            if (
-              anchorEventId !== undefined ? item.eventId !== anchorEventId : decoratedCurrentUser
-            ) {
-              return item;
-            }
-            decoratedCurrentUser = true;
-            return {
-              ...item,
-              content: this.appendTurnTailPrompt(item.content, turnTailPrompt) as string,
-            };
-          });
           const currentTurnMessages = await this.materializeRuntimeReplayPlan(
-            { ...replayPlan, items: replayItems },
+            replayPlan,
             scope.imageBudget,
-            settledModelOutputs,
             projectionCheckpoint,
+            compatibleProviderReasoningReplayEventIds(
+              replayEvents,
+              input.runtimeContextRunHeaders,
+              this.input.providerStateIdentity,
+              this.input.modelId,
+              scope.runId,
+            ),
           );
           return projectionCheckpoint
             ? currentTurnMessages
             : [...priorReplay.messages, ...currentTurnMessages];
         };
-        // Diagnostics describe the provider-visible (active) tool subset. A group
-        // loaded *this* turn expands that subset on later provider requests,
-        // so the durable cost record is refined against the final active set once
-        // the stream is consumed (see below). Both computations classify against
-        // the same pre-turn baseline. The availability runtime builds the tool
-        // diagnostic from the same per-step active set + schema-char measurement.
+        // Tool Availability describes the provider-visible (active) subset. A
+        // group loaded this turn expands that subset on later requests, so the
+        // terminal trace is refined against the final active set below.
         contextBudgetForTelemetry = priorReplay.contextBudget;
-        const priorShapeBaseline = this.priorRequestShape;
-        const computeTurnDiagnostics = (active: readonly string[]) => {
+        const computeToolAvailability = (active: readonly string[]) => {
           const toolSchemaChars = toolSchemaCharsForDiagnostics(providerTools, active);
-          const toolAvailabilityDiagnostic = plan.diagnostics(active, toolSchemaChars);
-          return {
-            promptSegments: buildPromptSegmentEstimates({
-              systemPrompt,
-              toolSchemaChars,
-              toolCount: active.length,
-              priorMessages: priorReplay.messages,
-              priorRuntimeEventCount: priorReplay.runtimeEventCount,
-              currentUserContent: input.continuation
-                ? ''
-                : formatTextWithInlineRefs(input.text, {
-                    ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-                    ...(input.quotes !== undefined ? { quotes: input.quotes } : {}),
-                  }),
-              turnTailPrompt,
-            }),
-            requestShape: computeRequestShapeDiagnostic(
-              {
-                connection: this.input.connection,
-                modelId: this.input.modelId,
-                systemPrompt,
-                providerOptions: this.resolvedProviderOptions,
-                providerTools,
-                activeTools: active,
-                priorMessages: priorReplay.messages,
-                ...(toolAvailabilityDiagnostic !== undefined
-                  ? { toolAvailability: toolAvailabilityDiagnostic }
-                  : {}),
-              },
-              priorShapeBaseline,
-            ),
-          };
+          return plan.diagnostics(active, toolSchemaChars);
         };
-        // Publish a diagnostics snapshot to every telemetry sink at once so the
-        // cost record and prefix baseline describe the same active tool set. A
-        // same-turn deferred load re-publishes the final snapshot below.
-        let turnDiagnostics = computeTurnDiagnostics(activeTools);
-        const publishTurnDiagnostics = (diag: typeof turnDiagnostics): void => {
-          turnDiagnostics = diag;
-          promptSegmentsForTelemetry = diag.promptSegments;
-          requestShapeForTelemetry = diag.requestShape;
-          this.priorRequestShape = diag.requestShape;
-        };
-        // Step-0 (turn-start) view: literally what the first request carries, so
-        // the stream-start trace reports it as the prefix actually sent.
-        publishTurnDiagnostics(turnDiagnostics);
+        toolAvailabilityForTelemetry = computeToolAvailability(activeTools);
         trace.modelStreamStarted(activeTools, {
-          systemPromptHash: turnDiagnostics.requestShape.componentHashes.systemPromptHash,
-          prefixHash: turnDiagnostics.requestShape.prefixHash,
-          prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-          requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-          requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-          ...(turnDiagnostics.requestShape.toolSchemaChangeReason !== undefined
-            ? {
-                toolSchemaChangeReason: turnDiagnostics.requestShape.toolSchemaChangeReason,
-              }
+          ...(toolAvailabilityForTelemetry !== undefined
+            ? { toolAvailability: toolAvailabilityForTelemetry }
             : {}),
-          ...(turnDiagnostics.requestShape.toolAvailability !== undefined
-            ? {
-                toolAvailability: turnDiagnostics.requestShape.toolAvailability,
-              }
-            : {}),
-          promptSegments: turnDiagnostics.promptSegments,
           ...(priorReplay.contextBudget ? { contextBudget: priorReplay.contextBudget } : {}),
         });
 
@@ -2097,7 +1968,6 @@ export class AiSdkBackend implements AgentBackend {
           queue,
           providerTools,
           () => currentRepairToolNames(),
-          turnTailPrompt,
           midTurnSystemPromptChars,
           onMidTurnDiagnosticPatch,
           scope,
@@ -2360,19 +2230,31 @@ export class AiSdkBackend implements AgentBackend {
                   >,
                   stepTextPartStartOffset,
                 );
+              } else if (event.kind === 'thinking-start') {
+                if (event.providerOptions !== undefined) {
+                  attemptSawContinuationMetadata = true;
+                }
+                const part: AssistantThinkingPart = {
+                  text: '',
+                  ...(event.providerOptions !== undefined
+                    ? { providerOptions: event.providerOptions }
+                    : {}),
+                };
+                stepThinkingParts.push(part);
+                if (event.reasoningPartId) {
+                  stepThinkingPartsById.set(event.reasoningPartId, part);
+                }
               } else if (event.kind === 'thinking') {
-                sawStepThinking = true;
-                stepThinking += event.text;
                 if (event.providerOptions !== undefined) {
                   if (event.providerOptionsOrigin !== 'maka_transport') {
                     attemptSawContinuationMetadata = true;
                   }
-                  stepThinkingProviderOptions = event.providerOptions;
                 }
-                const itemId =
-                  event.reasoningItemId ?? responsesReasoningItemId(event.providerOptions);
-                if (typeof itemId === 'string' && itemId.length > 0) {
-                  let part = stepResponsesThinkingPartsByItemId.get(itemId);
+                const partId =
+                  event.reasoningPartId ?? responsesReasoningItemId(event.providerOptions);
+                let part: AssistantThinkingPart | undefined;
+                if (typeof partId === 'string' && partId.length > 0) {
+                  part = stepThinkingPartsById.get(partId);
                   if (
                     part &&
                     event.providerOptions === undefined &&
@@ -2382,45 +2264,42 @@ export class AiSdkBackend implements AgentBackend {
                     // output_item.done. Keep it out of the finalized item or
                     // its durable summary boundaries will no longer match.
                     part = { text: '' };
-                    stepResponsesThinkingParts.push(part);
-                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                    stepThinkingParts.push(part);
+                    stepThinkingPartsById.set(partId, part);
                   }
                   if (!part) {
-                    part = {
-                      text:
-                        stepResponsesThinkingParts.length === 0 && event.text.length === 0
-                          ? stepThinking
-                          : '',
-                    };
-                    stepResponsesThinkingParts.push(part);
-                    stepResponsesThinkingPartsByItemId.set(itemId, part);
+                    part = { text: '' };
+                    stepThinkingParts.push(part);
+                    stepThinkingPartsById.set(partId, part);
                   }
-                  const nextPartText = part.text + event.text;
+                } else {
+                  part = stepThinkingParts.at(-1);
                   if (
-                    event.reasoningSummaryText !== undefined &&
-                    event.reasoningSummaryText !== nextPartText
+                    part &&
+                    decodePlaintextResponsesReasoningState(part.providerOptions).kind === 'valid'
                   ) {
-                    throw new Error(
-                      'Streamed plaintext Responses reasoning does not match final provider summary',
-                    );
-                  }
-                  part.text = nextPartText;
-                  if (event.providerOptions !== undefined) {
-                    part.providerOptions = event.providerOptions;
-                  }
-                } else if (stepResponsesThinkingParts.length > 0) {
-                  const lastPart = stepResponsesThinkingParts.at(-1)!;
-                  const lastState = decodePlaintextResponsesReasoningState(
-                    lastPart.providerOptions,
-                  );
-                  if (lastState.kind === 'valid') {
                     // An invalid next item has no usable stream id. Do not
                     // append its deltas to the finalized item: partial-error
                     // flush must keep that item's durable boundaries valid.
-                    stepResponsesThinkingParts.push({ text: event.text });
-                  } else {
-                    lastPart.text += event.text;
+                    part = undefined;
                   }
+                }
+                if (!part) {
+                  part = { text: '' };
+                  stepThinkingParts.push(part);
+                }
+                const nextPartText = part.text + event.text;
+                if (
+                  event.reasoningSummaryText !== undefined &&
+                  event.reasoningSummaryText !== nextPartText
+                ) {
+                  throw new Error(
+                    'Streamed plaintext Responses reasoning does not match final provider summary',
+                  );
+                }
+                part.text = nextPartText;
+                if (event.providerOptions !== undefined) {
+                  part.providerOptions = event.providerOptions;
                 }
                 queue.push({
                   type: 'thinking_delta',
@@ -2432,7 +2311,17 @@ export class AiSdkBackend implements AgentBackend {
                 } satisfies ThinkingDeltaEvent);
               } else if (event.kind === 'thinking-signature') {
                 attemptSawContinuationMetadata = true;
-                stepSignature = event.signature;
+                let part = event.reasoningPartId
+                  ? stepThinkingPartsById.get(event.reasoningPartId)
+                  : stepThinkingParts.at(-1);
+                if (!part) {
+                  part = { text: '' };
+                  stepThinkingParts.push(part);
+                  if (event.reasoningPartId) {
+                    stepThinkingPartsById.set(event.reasoningPartId, part);
+                  }
+                }
+                part.signature = event.signature;
               } else if (event.kind === 'provider-tool-input') {
                 // The provider has started its own tool. Even without a
                 // final tool-call/result event, retrying can repeat external
@@ -2568,7 +2457,6 @@ export class AiSdkBackend implements AgentBackend {
                       providerTools,
                       activeTools: activeToolsForRequest,
                       systemPromptChars: midTurnSystemPromptChars,
-                      turnTailPrompt,
                       queue,
                       onDiagnosticPatch: onMidTurnDiagnosticPatch,
                       origin: scope,
@@ -2618,7 +2506,7 @@ export class AiSdkBackend implements AgentBackend {
               ) {
                 if (idleWatchdogRecovery) {
                   idleWatchdogRetryCount += 1;
-                  if (stepThinking.length > 0) {
+                  if (stepThinkingParts.length > 0) {
                     await flushStep();
                     currentStepMessageId = this.newId();
                   }
@@ -2794,13 +2682,6 @@ export class AiSdkBackend implements AgentBackend {
               }
             }
             await queue.waitUntilConsumedThroughCurrent();
-            for (let index = 0; index < returnedToolCalls.length; index += 1) {
-              const toolCall = returnedToolCalls[index];
-              const settlement = settlements[index];
-              if (toolCall && settlement) {
-                settledModelOutputs.set(toolCall.toolCallId, settlement.modelOutput);
-              }
-            }
 
             const continuationWillRun =
               (maxSteps === undefined || runtimeSteps < maxSteps) &&
@@ -2876,15 +2757,15 @@ export class AiSdkBackend implements AgentBackend {
           break agentLoop;
         }
 
-        // Refine the durable cost record + prefix baseline against the final
-        // active set. Deferred loading may add tools, while boundary convergence
-        // may remove them; comparing membership avoids missing a same-size swap.
+        // Refine Tool Availability against the final active set. Deferred
+        // loading may add tools, while boundary convergence may remove them;
+        // comparing membership avoids missing a same-size swap.
         const finalActiveTools = currentRepairToolNames();
         if (
           finalActiveTools.length !== activeTools.length ||
           finalActiveTools.some((name, index) => name !== activeTools[index])
         ) {
-          publishTurnDiagnostics(computeTurnDiagnostics(finalActiveTools));
+          toolAvailabilityForTelemetry = computeToolAvailability(finalActiveTools);
         }
 
         // Final usage event. Each adapter result covers one provider request.
@@ -2896,7 +2777,6 @@ export class AiSdkBackend implements AgentBackend {
           const attemptTotalUsage = providerOutcome.usage;
           tokenUsage = sawUnusableStepUsage ? undefined : (completedStepUsage ?? attemptTotalUsage);
           if (tokenUsage) {
-            const systemPromptHash = turnDiagnostics.requestShape.componentHashes.systemPromptHash;
             tokenUsageCostUsd = this.computeTokenUsageCostUsd(tokenUsage);
             const contextBudgetForUsage = contextBudgetWithRequestProjectionDiagnostics(
               contextBudgetForTelemetry,
@@ -2939,12 +2819,6 @@ export class AiSdkBackend implements AgentBackend {
                 ? { cacheCreation: tokenUsage.cacheWriteInputTokens }
                 : {}),
               ...(tokenUsageCostUsd !== undefined ? { costUsd: tokenUsageCostUsd } : {}),
-              systemPromptHash,
-              prefixHash: turnDiagnostics.requestShape.prefixHash,
-              prefixChangeReason: turnDiagnostics.requestShape.prefixChangeReason,
-              requestShapeHash: turnDiagnostics.requestShape.requestShapeHash,
-              requestShapeChangeReason: turnDiagnostics.requestShape.requestShapeChangeReason,
-              promptSegments: turnDiagnostics.promptSegments,
               ...(contextBudgetForUsage ? { contextBudget: contextBudgetForUsage } : {}),
               ...(contextRemainingForUsage !== undefined
                 ? { contextRemaining: contextRemainingForUsage }
@@ -3124,27 +2998,8 @@ export class AiSdkBackend implements AgentBackend {
           ...(contextBudgetForTelemetry !== undefined
             ? { contextBudget: contextBudgetForTelemetry }
             : {}),
-          ...(promptSegmentsForTelemetry.length > 0
-            ? { promptSegments: promptSegmentsForTelemetry }
-            : {}),
-          ...(requestShapeForTelemetry !== undefined
-            ? {
-                systemPromptHash: requestShapeForTelemetry.componentHashes.systemPromptHash,
-                prefixHash: requestShapeForTelemetry.prefixHash,
-                prefixChangeReason: requestShapeForTelemetry.prefixChangeReason,
-                requestShapeHash: requestShapeForTelemetry.requestShapeHash,
-                requestShapeChangeReason: requestShapeForTelemetry.requestShapeChangeReason,
-                ...(requestShapeForTelemetry.toolSchemaChangeReason !== undefined
-                  ? {
-                      toolSchemaChangeReason: requestShapeForTelemetry.toolSchemaChangeReason,
-                    }
-                  : {}),
-                ...(requestShapeForTelemetry.toolAvailability !== undefined
-                  ? {
-                      toolAvailability: requestShapeForTelemetry.toolAvailability,
-                    }
-                  : {}),
-              }
+          ...(toolAvailabilityForTelemetry !== undefined
+            ? { toolAvailability: toolAvailabilityForTelemetry }
             : {}),
         });
         queue.close();
@@ -3223,7 +3078,7 @@ export class AiSdkBackend implements AgentBackend {
           const tool = snapshot.get(name);
           if (!tool) throw new Error(`Tool "${name}" is not active or nestable in this cell`);
           const parsedInput = await validateCodeModeToolInput(tool, input);
-          const settlement = await scope.toolRuntime.settleToolCallRaw({
+          const settlement = await scope.toolRuntime.settleToolCall({
             tool,
             turnId: context.turnId,
             toolCallId: `${context.toolCallId}:nested:${this.newId()}`,
@@ -3411,14 +3266,14 @@ export class AiSdkBackend implements AgentBackend {
   /**
    * One tracker for one physical provider call kind (#1679).
    *
-   * Auxiliary calls get the same capture, attempt, and accounting plumbing the
+   * Auxiliary calls get the same observation, attempt, and accounting plumbing the
    * main send uses, built here because the sinks and the current run live on
    * this backend. Callers receive a ready tracker rather than the ingredients:
    * a half-wired tracker is what produces records nothing can attribute.
    *
-   * Absent only when there is nothing to feed: no capture sink *and* no
-   * canonical sink. Metering deliberately does not depend on capture — capture
-   * is a diagnostic, and a deployment that turns it off must still be billed.
+   * Absent only when there is nothing to feed: no artifact sink, canonical
+   * sink, or dispatch gate. Metering deliberately does not depend on artifact
+   * persistence: the observation is created in memory for every tracked call.
    */
   private createProviderRequestTracker(input: {
     turnId: string;
@@ -3432,7 +3287,7 @@ export class AiSdkBackend implements AgentBackend {
      */
     runId: string | undefined;
   }): ProviderRequestTracker | undefined {
-    const persistCapture = this.input.recordProviderRequestCapture;
+    const persistArtifact = this.input.persistPreparedRequestArtifact;
     const accounting = this.modelCallAccounting(input.callKind, {
       modelId: input.modelId,
       ...(input.runId ? { runId: input.runId } : {}),
@@ -3449,15 +3304,14 @@ export class AiSdkBackend implements AgentBackend {
               runId,
             })
         : undefined;
-    if (!persistCapture && !accounting && !beforeDispatch) return undefined;
+    if (!persistArtifact && !accounting && !beforeDispatch) return undefined;
     return new ProviderRequestTracker({
       traceId: this.newId(),
       turnId: input.turnId,
       contextWindow: resolveSelectedModelContextWindow(this.input.connection, input.modelId),
       now: this.now,
       newId: this.newId,
-      ...(persistCapture ? { persistCapture } : {}),
-      recordAttempt: this.input.recordProviderRequestAttempt ?? (() => {}),
+      ...(persistArtifact ? { persistArtifact } : {}),
       ...(beforeDispatch ? { beforeDispatch } : {}),
       ...(accounting ? { accounting } : {}),
     });
@@ -3561,16 +3415,31 @@ export class AiSdkBackend implements AgentBackend {
         diagnostics: [],
       };
     }
-    const priorRuntimeContext = input.runtimeContext.filter(
+    const rawPriorRuntimeContext = input.runtimeContext.filter(
       (event) => event.turnId !== input.turnId,
+    );
+    // Everything below reads EFFECTIVE model history: raw events folded through
+    // the durable projection-transition reducer (#4283). Replay, budgeting and
+    // compaction share one input, so no RuntimeEvent replay path can resurrect
+    // content a committed transition removed. The StoredMessage projection used
+    // by the degraded fallbacks below is a separate representation that the fold
+    // does not reach — see #4283 for that remaining gap.
+    const preparedContextBudget = await this.compaction.prepareContextBudgetPolicy(
+      rawPriorRuntimeContext,
+      input.turnId,
+    );
+    const priorRuntimeContext = preparedContextBudget.events;
+    const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
+      priorRuntimeContext,
+      input.runtimeContextRunHeaders,
+      this.input.providerStateIdentity,
+      this.input.modelId,
     );
     const projectedMessages = await this.materializePriorMessages(
       scope.imageBudget,
       priorStored,
       buildSteeringSidecar(priorRuntimeContext),
     );
-    const preparedContextBudget =
-      await this.compaction.prepareContextBudgetPolicy(priorRuntimeContext);
     let contextBudget = preparedContextBudget.policy;
     const budgeted = applyRuntimeEventContextBudget(priorRuntimeContext, contextBudget);
     let runtimeContext = budgeted?.events ?? priorRuntimeContext;
@@ -3605,8 +3474,8 @@ export class AiSdkBackend implements AgentBackend {
           turnId: input.turnId,
           runId: scope.runId,
           runtimeContext: priorRuntimeContext,
+          runtimeContextRunHeaders: input.runtimeContextRunHeaders,
         },
-        this.priorRequestShape?.requestShapeHash,
         automaticMemorySource
           ? {
               runId: automaticMemorySource.runId,
@@ -3734,8 +3603,8 @@ export class AiSdkBackend implements AgentBackend {
         messages: await this.materializeRuntimeReplayPlan(
           plan,
           scope.imageBudget,
-          undefined,
           projectedHistoryCompactCheckpoint,
+          providerReasoningReplayEventIds,
         ),
         gate: 'runtime_replay_text_only',
         diagnostics: plan.diagnostics,
@@ -3758,8 +3627,8 @@ export class AiSdkBackend implements AgentBackend {
             ? await this.materializeRuntimeReplayPlan(
                 degradedPlan,
                 scope.imageBudget,
-                undefined,
                 projectedHistoryCompactCheckpoint,
+                providerReasoningReplayEventIds,
               )
             : await materializeReplayFallback(),
         gate: input.continuation
@@ -3777,8 +3646,8 @@ export class AiSdkBackend implements AgentBackend {
       messages: await this.materializeRuntimeReplayPlan(
         plan,
         scope.imageBudget,
-        undefined,
         projectedHistoryCompactCheckpoint,
+        providerReasoningReplayEventIds,
       ),
       gate: 'runtime_replay_provider_native',
       diagnostics: plan.diagnostics,
@@ -3849,8 +3718,8 @@ export class AiSdkBackend implements AgentBackend {
   private async materializeRuntimeReplayPlan(
     plan: RuntimeEventModelReplayPlan,
     budget: ProviderImageBudget,
-    settledModelOutputs?: ReadonlyMap<string, ToolResultOutput>,
-    historyCompactCheckpoint?: HistoryCompactCheckpoint,
+    historyCompactCheckpoint: HistoryCompactCheckpoint | undefined,
+    providerReasoningReplayEventIds: ReadonlySet<string>,
   ): Promise<ModelMessage[]> {
     type ToolCallItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_call' }>;
     type ToolResultItem = Extract<RuntimeEventModelReplayItem, { kind: 'tool_result' }>;
@@ -3884,6 +3753,23 @@ export class AiSdkBackend implements AgentBackend {
                 type: 'reasoning' as const,
                 text: item.text,
                 providerOptions: { anthropic: { signature: item.signature } },
+              },
+            }
+          : undefined;
+      }
+      const anthropic = item.providerOptions?.anthropic;
+      if (
+        anthropic &&
+        typeof anthropic === 'object' &&
+        !Array.isArray(anthropic) &&
+        typeof (anthropic as { redactedData?: unknown }).redactedData === 'string'
+      ) {
+        return replaySupport.signedThinking
+          ? {
+              part: {
+                type: 'reasoning' as const,
+                text: item.text,
+                providerOptions: item.providerOptions,
               },
             }
           : undefined;
@@ -3973,14 +3859,18 @@ export class AiSdkBackend implements AgentBackend {
       result: ToolResultItem,
       toolName: string,
     ): Promise<ToolResultOutput> => {
-      const output =
-        settledModelOutputs?.get(result.toolCallId) ??
-        (await this.materializeToolResultOutput(
-          budget,
-          result.output,
-          result.isError,
-          `runtime-event:${result.eventId}:tool-result`,
-        ));
+      const output = result.modelProjection
+        ? await this.materializeDurableToolResultProjection(
+            budget,
+            result.modelProjection,
+            `runtime-event:${result.eventId}:tool-result`,
+          )
+        : await this.materializeToolResultOutput(
+            budget,
+            result.output,
+            result.isError,
+            `runtime-event:${result.eventId}:tool-result`,
+          );
       if (toolName !== 'apply_patch') return output;
       return result.isError ? nativeApplyPatchFailureOutput(output) : output;
     };
@@ -4141,7 +4031,10 @@ export class AiSdkBackend implements AgentBackend {
       }
     };
 
-    for (const item of plan.items) {
+    for (const item of admitProviderReasoningReplayItems(
+      plan.items,
+      providerReasoningReplayEventIds,
+    )) {
       switch (item.kind) {
         case 'tool_call':
           if (item.toolName !== 'apply_patch') {
@@ -4172,11 +4065,13 @@ export class AiSdkBackend implements AgentBackend {
             break;
           }
           downgradedApplyPatchCalls.delete(item.toolCallId);
-          const replayFact = applyPatchReplayFactText(
-            downgradedCall.input,
-            item.output,
-            item.isError,
-          );
+          const replayFact = item.modelProjection
+            ? durableApplyPatchReplayFactText(
+                downgradedCall.input,
+                item.modelProjection,
+                item.isError,
+              )
+            : applyPatchReplayFactText(downgradedCall.input, item.output, item.isError);
           if (!replayFact) break;
           if (downgradedCall.stepId) {
             const stepFacts = replayFactsByStep.get(downgradedCall.stepId) ?? [];
@@ -4408,19 +4303,6 @@ export class AiSdkBackend implements AgentBackend {
     return out;
   }
 
-  /** Append provider-visible volatile turn facts after the durable user content. */
-  private appendTurnTailPrompt(
-    content: ModelMessage['content'],
-    turnTailPrompt?: string,
-  ): ModelMessage['content'] {
-    if (!turnTailPrompt) return content;
-    if (typeof content === 'string') return `${content}\n\n${turnTailPrompt}`;
-    return [
-      ...(content as unknown[]),
-      { type: 'text', text: turnTailPrompt },
-    ] as ModelMessage['content'];
-  }
-
   /** A decision key deduplicates re-materialization; no key charges each occurrence. */
   private chargeImageBudget(
     budget: ProviderImageBudget,
@@ -4457,7 +4339,10 @@ export class AiSdkBackend implements AgentBackend {
       return textContent;
     }
     if (this.input.supportsVision !== true) {
-      return appendNonVisionImageFallbackNotice(textContent);
+      // `textContent` already carries each attachment's stable Read argument.
+      // Native provider image delivery is unavailable here, but that does not
+      // establish whether the model can process the image through a tool.
+      return textContent;
     }
     if (!this.input.readAttachmentBytes) {
       return textContent;
@@ -4545,10 +4430,67 @@ export class AiSdkBackend implements AgentBackend {
     };
   }
 
+  private async materializeDurableToolResultProjection(
+    budget: ProviderImageBudget,
+    projection: DurableToolResultProjection,
+    decisionKey: string,
+  ): Promise<ToolResultOutput> {
+    if (projection.kind !== 'content') return durableProjectionToToolResultOutput(projection);
+    const value: Extract<ToolResultOutput, { type: 'content' }>['value'] = [];
+    for (const [index, part] of projection.parts.entries()) {
+      if (part.kind === 'text') {
+        value.push({ type: 'text', text: part.text });
+        continue;
+      }
+      if (this.input.supportsVision !== true) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but the selected model does not support image input.',
+        });
+        continue;
+      }
+      if (!this.input.readAttachmentBytes) {
+        value.push({
+          type: 'text',
+          text: 'Image was read, but its stored bytes are unavailable.',
+        });
+        continue;
+      }
+      let read: Awaited<ReturnType<AttachmentByteReader>>;
+      try {
+        read = await this.input.readAttachmentBytes(part.ref);
+      } catch {
+        value.push({
+          type: 'text',
+          text: 'Image could not be loaded from artifact storage: read_failed.',
+        });
+        continue;
+      }
+      if (!read.ok) {
+        value.push({
+          type: 'text',
+          text: `Image could not be loaded from artifact storage: ${read.reason}.`,
+        });
+        continue;
+      }
+      if (!this.chargeImageBudget(budget, read.bytes.length, `${decisionKey}:artifact:${index}`)) {
+        value.push({ type: 'text', text: PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE });
+        continue;
+      }
+      value.push({
+        type: 'file',
+        data: { type: 'data', data: Buffer.from(read.bytes).toString('base64') },
+        mediaType: part.mediaType,
+      });
+    }
+    return { type: 'content', value };
+  }
+
   private async buildCurrentUserContent(
     budget: ProviderImageBudget,
     text: string,
     attachments?: AttachmentRef[],
+    directoryReferences?: DirectoryReference[],
     quotes?: QuoteRef[],
     runtimeEventId?: string,
   ): Promise<UserContent> {
@@ -4556,6 +4498,7 @@ export class AiSdkBackend implements AgentBackend {
       budget,
       formatTextWithInlineRefs(text, {
         ...(attachments !== undefined ? { attachments } : {}),
+        ...(directoryReferences !== undefined ? { directoryReferences } : {}),
         ...(quotes !== undefined ? { quotes } : {}),
       }),
       attachments,
@@ -4569,42 +4512,12 @@ export class AiSdkBackend implements AgentBackend {
       return await this.input.systemPrompt({
         sessionId: this.sessionId,
         turnId,
-        ...(scope.runId ? { runId: scope.runId } : {}),
         cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
         emitSkillCatalogTrace: (message, data) =>
           scope.runTrace?.emit('skill', 'skill_catalog_built', message, data),
       });
     }
     return this.input.systemPrompt;
-  }
-
-  private async resolveTurnSandboxDiagnostics(): Promise<SandboxDiagnosticsSnapshot | undefined> {
-    const provider = this.input.sandboxDiagnostics;
-    if (!provider) return undefined;
-    const boundary = await this.input.readExecutionBoundary();
-    if (boundary.kind === 'external') return undefined;
-    return await provider.resolve(
-      boundary.kind === 'managed'
-        ? { cwd: this.input.header.cwd, permissionProfile: boundary.profile }
-        : { cwd: this.input.header.cwd, mode: 'bypass' },
-    );
-  }
-
-  private async resolveTurnTailPrompt(turnId: string): Promise<string | undefined> {
-    if (typeof this.input.turnTailPrompt === 'function') {
-      return await this.input.turnTailPrompt({
-        sessionId: this.sessionId,
-        turnId,
-        cwd: this.input.header.cwd,
-        workspaceRoot: this.input.header.workspaceRoot,
-      });
-    }
-    return this.input.turnTailPrompt;
-  }
-
-  private async resolveShellRunContextSummary(): Promise<string | undefined> {
-    return await this.input.shellRunContextSummary?.();
   }
 
   private async *drain(queue: AsyncEventQueue<SessionEvent>): AsyncIterable<SessionEvent> {

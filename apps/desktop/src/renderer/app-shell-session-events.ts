@@ -202,7 +202,7 @@ export function createAppShellSessionEventHandlers(options: {
     displayBatch.framePending = true;
     scheduleFrame(() => {
       displayBatch.framePending = false;
-      if (displayBatch.pendingEvents.size === 0) return;
+      if (!displayBatch.pendingEvents.size) return;
       const batches = new Map(displayBatch.pendingEvents);
       displayBatch.pendingEvents.clear();
       setLiveTurnBySession((current) => replaceLiveTurns(current, batches));
@@ -211,7 +211,7 @@ export function createAppShellSessionEventHandlers(options: {
 
   function flushDisplayEvents(sessionId: string): void {
     const events = takePendingDisplayEvents(sessionId);
-    if (events.length === 0) return;
+    if (!events.length) return;
     updateLiveTurn(sessionId, events);
   }
 
@@ -302,7 +302,7 @@ export function createAppShellSessionEventHandlers(options: {
     return messageId ? { requiredAssistantMessageId: messageId } : undefined;
   }
 
-  function handleEvent(sessionId: string, event: SessionEvent): void {
+  function handleEvent(sessionId: string, event: SessionEvent) {
     // Only unbounded, append-only display streams may wait for paint. Every
     // lifecycle/readiness event stays synchronous and flushes these first.
     if (
@@ -326,24 +326,27 @@ export function createAppShellSessionEventHandlers(options: {
       case 'queue_update':
         projectQueuedTransientMessages?.(
           sessionId,
-          [...(event.steeringEntries ?? []), ...(event.followupEntries ?? [])]
+          (event.steeringEntries ?? []).concat(event.followupEntries ?? [])
             .filter((entry) => entry.state === 'queued')
             .map((entry) => ({
               id: entry.messageId,
               transientPlacement: entry.placement,
-              ...(entry.placement === 'current_turn' ? { hostTurnId: event.turnId } : {}),
+              ...(entry.placement === 'current_turn' && { hostTurnId: event.turnId }),
               ts: event.ts,
               text: entry.content.displayText ?? entry.content.text,
-              ...(entry.content.attachments ? { attachments: [...entry.content.attachments] } : {}),
-              ...(entry.content.quotes ? { quotes: [...entry.content.quotes] } : {}),
-              ...(entry.content.inlineReferences
-                ? { inlineReferences: [...entry.content.inlineReferences] }
-                : {}),
+              ...(entry.content.attachments && { attachments: [...entry.content.attachments] }),
+              ...(entry.content.directoryReferences && {
+                directoryReferences: entry.content.directoryReferences,
+              }),
+              ...(entry.content.quotes && { quotes: [...entry.content.quotes] }),
+              ...(entry.content.inlineReferences && {
+                inlineReferences: [...entry.content.inlineReferences],
+              }),
             })),
         );
         setMessageQueueBySession?.((current) => {
-          if (event.steering.length === 0 && event.followup.length === 0) {
-            if (!(sessionId in current)) return current;
+          if (!event.steering.length && !event.followup.length) {
+            if (!current[sessionId]) return current;
             const next = { ...current };
             delete next[sessionId];
             return next;

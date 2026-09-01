@@ -66,6 +66,7 @@ import {
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
   type RuntimeHostSetupFrame,
+  type RuntimeHostWebRtcStunPolicy,
 } from '@maka/runtime-host/operator';
 import type {
   DesktopRuntimeHostSshTerminalEvent,
@@ -179,6 +180,8 @@ export interface DesktopRuntimeHostSshPeerManagementInput {
   readonly action: Extract<RuntimeHostPeerManagementAction, 'enable' | 'disable' | 'status'>;
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy;
+  readonly webRtcStunStatus?: boolean;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
@@ -191,6 +194,7 @@ export interface DesktopRuntimeHostSshPeerMeshManagementInput {
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly meshId?: string | null;
   readonly peerId?: string;
+  readonly displayName?: string | null;
   readonly invitation?: string;
   readonly signal?: AbortSignal;
 }
@@ -1179,6 +1183,10 @@ function runtimeHostSetupRemoteCommand(
     'desktop-client',
     '--lifecycle',
     input.lifecycle === 'on_demand' ? 'on-demand' : 'supervised',
+    // Development archives identify every source revision as a distinct exact
+    // package. Re-running Add computer is the explicit replacement gesture in
+    // that environment; released packages keep using the normal update UI.
+    ...(setupPackage.kind === 'development_archive' ? ['--update-existing'] : []),
     '--defer-pairing-commit',
     ...(input.projectDirectoryRoots === undefined
       ? []
@@ -1342,6 +1350,7 @@ function runtimeHostPeerManagementRemoteCommand(
     input.action,
     '--framed',
     '--relay-discovery-status',
+    ...(input.webRtcStunStatus ? ['--webrtc-stun-status'] : []),
     ...(input.action === 'enable' && input.coordinationRelays
       ? input.coordinationRelays.length === 0
         ? ['--clear-coordination-relays']
@@ -1351,6 +1360,13 @@ function runtimeHostPeerManagementRemoteCommand(
       ? [input.automaticRelayDiscovery
           ? '--automatic-relay-discovery'
           : '--no-automatic-relay-discovery']
+      : []),
+    ...(input.action === 'enable' && input.webRtcStunPolicy
+      ? input.webRtcStunPolicy.kind === 'default'
+        ? ['--default-public-stun']
+        : input.webRtcStunPolicy.kind === 'disabled'
+          ? ['--no-public-stun']
+          : input.webRtcStunPolicy.urls.flatMap((url) => ['--webrtc-stun', url])
       : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
@@ -1371,6 +1387,11 @@ function runtimeHostPeerMeshManagementRemoteCommand(
         ? ['--off']
         : []),
     ...(input.peerId ? ['--peer', input.peerId] : []),
+    ...(input.displayName === null
+      ? ['--clear-name']
+      : input.displayName
+        ? ['--name', input.displayName]
+        : []),
     ...managedServiceTargetArgs(input.expectedTarget),
   ].map(quotePosix).join(' ');
   return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;

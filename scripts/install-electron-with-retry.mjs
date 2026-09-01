@@ -95,7 +95,11 @@ export function electronInstallerSpawnOptions(repositoryRoot) {
 }
 
 async function main() {
-  const require = createRequire(import.meta.url);
+  // electron is declared by apps/desktop, not the workspace root, so anchor
+  // resolution at that package. Resolving from this script (under scripts/)
+  // only reaches electron when the installer hoists it to the root
+  // node_modules; anchoring at apps/desktop works under any layout.
+  const require = createRequire(new URL('../apps/desktop/package.json', import.meta.url));
   const installer = require.resolve('electron/install.js');
   const launcher = fileURLToPath(new URL('./run-electron-installer.cjs', import.meta.url));
   const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));

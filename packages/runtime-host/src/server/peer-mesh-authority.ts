@@ -34,6 +34,8 @@ export type PeerMeshOperationHandlers = Pick<
   | 'peer.mesh.close'
   | 'peer.mesh.reconcile'
   | 'peer.mesh.transit.set'
+  | 'peer.mesh.display-name.set'
+  | 'peer.mesh.rename'
 >;
 
 export function createPeerMeshOperationHandlers(
@@ -145,12 +147,27 @@ export function createPeerMeshOperationHandlers(
         return { ok: true, result: query() };
       });
     },
+    'peer.mesh.display-name.set': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setDisplayName(input.displayName);
+        return { ok: true, result: query() };
+      });
+    },
+    'peer.mesh.rename': async (input) => {
+      if (!mesh) return unavailable();
+      return mutate(async () => {
+        await mesh.setMeshDisplayName(input.meshId, input.displayName);
+        return { ok: true, result: query() };
+      });
+    },
   };
 }
 
 export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjection {
   return Object.freeze({
     meshId: status.roster.roster.meshId,
+    ...(status.roster.roster.displayName ? { displayName: status.roster.roster.displayName } : {}),
     role: status.role,
     authorityPeerId: status.authority.peerId,
     revision: status.roster.roster.revision,
@@ -162,9 +179,11 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
 
 export function projectPeerMeshQuery(mesh: PeerMeshNode | undefined): PeerMeshQueryResult {
   if (!mesh) return { available: false, meshes: [] };
+  const displayName = mesh.displayName();
   return Object.freeze({
     available: true,
     localPeerId: mesh.localPeerId(),
+    ...(displayName ? { localDisplayName: displayName } : {}),
     meshes: Object.freeze(mesh.status().map(projectPeerMeshStatus)),
     transit: projectTransitSnapshot(mesh.transitMeshId(), mesh.transitSnapshot()),
   });

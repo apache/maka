@@ -27,6 +27,7 @@ import {
 } from '../candidate-startup-failure.js';
 import {
   RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV,
+  RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV,
   RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV,
   runtimeHostLaunchOwnerReleaseMessage,
 } from '../candidate-launch-owner-guard.js';
@@ -56,6 +57,8 @@ export interface DetachedCandidateInput {
   inheritableAuthorityLeaseFd?: number;
   /** Keep this Candidate bound to the launcher process for its whole lifetime. */
   closeOnLauncherExit?: boolean;
+  /** Opaque Client identity admitted while the launch-owner lease remains held. */
+  launchOwnerClientInstanceId?: string;
   /** Called with the candidate's exit details; the embedder owns the sink. */
   readonly onExit?: (details: CandidateExitDetails) => void;
 }
@@ -106,6 +109,9 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   const startupAttemptId = randomUUID();
   const guarded =
     input.inheritableAuthorityLeaseFd !== undefined || input.closeOnLauncherExit === true;
+  if (input.inheritableAuthorityLeaseFd !== undefined && !input.launchOwnerClientInstanceId) {
+    throw new Error('A launch-owner-supervised Candidate requires its Client identity');
+  }
   const child = spawnCandidate(input, false, startupAttemptId, guarded);
   const exited = observeCandidateExit(child);
   notifyCandidateExit(child, exited, input.onExit);
@@ -185,7 +191,10 @@ function spawnCandidate(
       ...(guarded ? { [RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV]: '1' } : {}),
       ...(childLeaseFd === undefined
         ? {}
-        : { [RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV]: String(childLeaseFd) }),
+        : {
+            [RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV]: String(childLeaseFd),
+            [RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV]: input.launchOwnerClientInstanceId!,
+          }),
     },
   });
   const stderr = child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null;

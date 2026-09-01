@@ -21,22 +21,11 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   extractOpenAiCodexCompactionState,
-  fitOpenAiCodexCompactionMessages,
   shouldFallbackFromOpenAiCodexHistoryCompaction,
   withOpenAiCodexHistoryCompactionFallback,
 } from '../openai-codex-history-compactor.js';
 import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import type { HistoryCompactSummaryInput } from '../ai-sdk-compaction-contract.js';
-
-test('preserves the provider-specific input-fitting export', () => {
-  assert.deepEqual(
-    fitOpenAiCodexCompactionMessages(
-      [{ role: 'user', content: [{ type: 'text', text: 'bounded history' }] }],
-      { maxInputEstimatedTokens: 1_000, charsPerToken: 1 },
-    ),
-    [{ role: 'user', content: [{ type: 'text', text: 'bounded history' }] }],
-  );
-});
 
 describe('OpenAI Codex compaction fallback', () => {
   const input: HistoryCompactSummaryInput = {
@@ -116,7 +105,7 @@ describe('OpenAI Codex compaction output', () => {
       ),
       {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'codex-subscription',
         modelId: 'gpt-5.3-codex',
         itemId: 'item-1',
         encryptedContent: 'encrypted-1',

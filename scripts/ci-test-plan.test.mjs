@@ -325,6 +325,20 @@ test('core CI checks the Astryx inventory for every code change before building'
   assert.doesNotMatch(inventoryStep, /continue-on-error/u);
 });
 
+test('CI installs dependencies whenever the Astryx surface inventory runs', () => {
+  const workflow = readWorkflow('ci.yml');
+  // The inventory step imports the generator, which resolves @astryxdesign/core
+  // and parses the @maka/ui barrel. An inventory-doc-only PR is `astryx_surface`
+  // without `code`, so the `npm ci` step must gate on astryx_surface too — else
+  // the generator runs with no dependencies installed and fails closed.
+  const npmCi = workflow.indexOf('run: npm ci');
+  assert.ok(npmCi >= 0, 'expected an `npm ci` install step');
+  const stepStart = workflow.lastIndexOf('\n      - name:', npmCi) + 1;
+  const stepEnd = workflow.indexOf('\n      - ', npmCi);
+  const installStep = workflow.slice(stepStart, stepEnd);
+  assert.match(installStep, /steps\.plan\.outputs\.astryx_surface == 'true'/u);
+});
+
 test('core CI validates affected installed CLI packages on its existing runner', () => {
   const workflow = readWorkflow('ci.yml');
   const toolchain = workflow.indexOf(
@@ -336,6 +350,35 @@ test('core CI validates affected installed CLI packages on its existing runner',
   assert.ok(toolchain >= 0);
   assert.ok(toolchain < pack);
   assert.match(workflow, /run: npm run release:cli:smoke/u);
+});
+
+test('Rust build caches publish immutable source generations only from the default branch', () => {
+  const workflows = readdirSync(WORKFLOW_DIR)
+    .filter((name) => name.endsWith('.yml'))
+    .map((name) => [name, readWorkflow(name)])
+    .filter(([, workflow]) => workflow.includes('tool: kache@0.16.0'));
+
+  assert.equal(workflows.length, 5);
+  for (const [name, workflow] of workflows) {
+    assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
+    const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);
+    assert.ok(primaryKeys.length > 0, name);
+    const restoreKeys = [...workflow.matchAll(/^\s+(kache-[^\n]+-)$/gmu)].map(([, key]) => key);
+    assert.equal(restoreKeys.length, primaryKeys.length, name);
+    primaryKeys.forEach((key) => {
+      assert.match(key, /\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, name);
+      assert.ok(
+        restoreKeys.includes(key.replace(/\$\{\{ steps\.[^.]+\.outputs\.revision \}\}$/u, '')),
+        name,
+      );
+    });
+    assert.match(
+      workflow,
+      /name: Save [^\n]*Rust build cache\n\s+if: [^\n]*github\.event\.repository\.default_branch/u,
+      name,
+    );
+    assert.doesNotMatch(workflow, /kache report [^\n]*--since/u, name);
+  }
 });
 
 test('release contracts run against built CLI outputs', () => {
