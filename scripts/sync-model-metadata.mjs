@@ -22,14 +22,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { stripTypeScriptTypes } from 'node:module';
 import { dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const SOURCE_URL = 'https://models.dev/api.json';
-// This script runs before packages/core is built, so it cannot read
-// ModelModality itself. The build keeps the two in step: a value that reaches
-// the projection but not that type fails to compile. A value missing here
-// drops the whole refresh, not just the model that declares it.
-const MODALITIES = new Set(['text', 'image', 'audio', 'pdf', 'video']);
+// The projection lives in @maka/core because the Runtime Host runs it too.
+// `prepare` fires before any workspace builds, so read the TypeScript source
+// rather than a dist build that does not exist yet.
+const projection = await loadTypeScriptModule(
+  await readFile(
+    fileURLToPath(new URL('../packages/core/src/models-dev-projection.ts', import.meta.url)),
+    'utf8',
+  ),
+);
+const { selectModelsDevCatalog, assertModelsDevProvider } = projection;
+const SOURCE_URL = projection.MODELS_DEV_SOURCE_URL;
+export const PROVIDERS = projection.MODELS_DEV_PROVIDERS;
+export const toMetadata = projection.projectModelsDevModel;
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
@@ -59,55 +66,6 @@ export const PRICING_EXCLUDED_PROVIDER_TYPES = new Set([
   'xiaomi-token-plan-sgp',
   'zai-coding-plan',
 ]);
-export const PROVIDERS = {
-  anthropic: 'anthropic',
-  alibaba: 'alibaba',
-  'alibaba-cn': 'alibaba-cn',
-  'alibaba-coding-plan-cn': 'alibaba-coding-plan-cn',
-  'alibaba-coding-plan': 'alibaba-coding-plan',
-  'alibaba-token-plan-cn': 'alibaba-token-plan-cn',
-  'alibaba-token-plan': 'alibaba-token-plan',
-  cerebras: 'cerebras',
-  cohere: 'cohere',
-  'cloudflare-workers-ai': 'cloudflare-workers-ai',
-  deepinfra: 'deepinfra',
-  deepseek: 'deepseek',
-  'fireworks-ai': 'fireworks-ai',
-  'github-copilot': 'github-copilot',
-  google: 'google',
-  groq: 'groq',
-  huggingface: 'huggingface',
-  'kimi-coding-plan': 'kimi-for-coding',
-  MiniMax: 'minimax',
-  'MiniMax-cn': 'minimax-cn',
-  'minimax-coding-plan': 'minimax-coding-plan',
-  mistral: 'mistral',
-  moonshot: 'moonshotai-cn',
-  nvidia: 'nvidia',
-  'ollama-cloud': 'ollama-cloud',
-  openai: 'openai',
-  opencode: 'opencode',
-  'opencode-go': 'opencode-go',
-  openrouter: 'openrouter',
-  siliconflow: 'siliconflow',
-  stepfun: 'stepfun',
-  'stepfun-ai': 'stepfun-ai',
-  'stepfun-ai-step-plan': 'stepfun-ai-step-plan',
-  'stepfun-step-plan': 'stepfun-step-plan',
-  togetherai: 'togetherai',
-  'tencent-coding-plan': 'tencent-coding-plan',
-  'tencent-token-plan': 'tencent-token-plan',
-  'tencent-tokenhub': 'tencent-tokenhub',
-  vercel: 'vercel',
-  xai: 'xai',
-  xiaomi: 'xiaomi',
-  'xiaomi-token-plan-cn': 'xiaomi-token-plan-cn',
-  'xiaomi-token-plan-sgp': 'xiaomi-token-plan-sgp',
-  'xiaomi-token-plan-ams': 'xiaomi-token-plan-ams',
-  zai: 'zai',
-  'zai-coding-plan': 'zai-coding-plan',
-  zenmux: 'zenmux',
-};
 
 export async function main(argv = process.argv) {
   const refreshInputPath = option('--refresh-input', argv);
@@ -206,7 +164,7 @@ function buildProjection(catalog, options = {}) {
   for (const [providerType, sourceId] of Object.entries(PROVIDERS)) {
     const provider = catalog[sourceId];
     try {
-      assertProviderShape(sourceId, provider);
+      assertModelsDevProvider(sourceId, provider);
     } catch (error) {
       if (!onReject) throw error;
       onReject('provider', providerType, error);
@@ -250,27 +208,6 @@ function buildProjection(catalog, options = {}) {
   return { metadata, pricing, providerFacts, providerOverrides };
 }
 
-function assertProviderShape(sourceId, provider) {
-  if (!provider) {
-    throw new Error(`models.dev provider ${sourceId} is missing`);
-  }
-  if (
-    !provider.models ||
-    typeof provider.models !== 'object' ||
-    Array.isArray(provider.models) ||
-    Object.keys(provider.models).length === 0
-  ) {
-    throw new Error(`models.dev provider ${sourceId} has no non-empty models object`);
-  }
-  if (
-    typeof provider.id !== 'string' ||
-    typeof provider.name !== 'string' ||
-    typeof provider.doc !== 'string'
-  ) {
-    throw new Error(`models.dev provider ${sourceId} has an unsupported shape`);
-  }
-}
-
 async function readUpstream(refreshInputPath) {
   if (refreshInputPath) {
     return {
@@ -290,7 +227,7 @@ async function readUpstream(refreshInputPath) {
 
 async function refreshSnapshot(snapshotPath, refreshInputPath, options = {}) {
   const { text: sourceText, etag: sourceEtag, retrievedAt } = await readUpstream(refreshInputPath);
-  const projection = buildProjection(selectCatalog(JSON.parse(sourceText)));
+  const projection = buildProjection(selectModelsDevCatalog(JSON.parse(sourceText)));
   if (!options.acceptUpstreamRemovals) {
     const previous = await loadSnapshotIfPresent(snapshotPath);
     if (previous) assertProjectionDoesNotShrink(previous.projection, projection);
@@ -405,8 +342,8 @@ async function collectDrift(snapshot, refreshInputPath) {
   const rejectedProviders = [];
   const rejectedModels = [];
   const rejected = new Set();
-  // The raw catalog, not selectCatalog's: a provider that vanished upstream is
-  // the report's most important finding, and selectCatalog throws on it.
+  // The raw catalog, not the selected one: a provider that vanished upstream
+  // is the report's most important finding, and selection throws on it.
   const upstream = buildProjection(JSON.parse((await readUpstream(refreshInputPath)).text), {
     onReject: (kind, label, error) => {
       rejected.add(label);
@@ -621,15 +558,6 @@ async function loadSnapshotIfPresent(snapshotPath) {
   }
 }
 
-function selectCatalog(catalog) {
-  const selected = {};
-  for (const sourceId of [...new Set(Object.values(PROVIDERS))].sort()) {
-    if (!catalog[sourceId]) throw new Error(`models.dev provider ${sourceId} is missing`);
-    selected[sourceId] = catalog[sourceId];
-  }
-  return selected;
-}
-
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -700,92 +628,6 @@ function toModelProviderOverride(providerId, modelId, override) {
   };
 }
 
-export function toMetadata(providerId, modelId, provider, model) {
-  if (
-    typeof provider.doc !== 'string' ||
-    typeof model?.name !== 'string' ||
-    (model.modalities !== undefined && !Array.isArray(model.modalities?.input)) ||
-    (model.modalities !== undefined && !Array.isArray(model.modalities?.output)) ||
-    typeof model.limit?.context !== 'number' ||
-    typeof model.limit?.output !== 'number' ||
-    typeof model.reasoning !== 'boolean' ||
-    typeof model.tool_call !== 'boolean'
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  if (
-    model.modalities?.input.some((value) => !MODALITIES.has(value)) ||
-    model.modalities?.output.some((value) => !MODALITIES.has(value))
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
-  }
-  if (
-    (model.description !== undefined && typeof model.description !== 'string') ||
-    (model.knowledge !== undefined && typeof model.knowledge !== 'string') ||
-    (model.limit?.input !== undefined &&
-      (typeof model.limit.input !== 'number' || !Number.isFinite(model.limit.input))) ||
-    (model.structured_output !== undefined && typeof model.structured_output !== 'boolean') ||
-    (model.last_updated !== undefined && typeof model.last_updated !== 'string')
-  ) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  const lifecycle = lifecycleForStatus(providerId, modelId, model.status);
-  const reasoningOptions = model.reasoning_options ?? [];
-  if (!Array.isArray(reasoningOptions)) {
-    throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-  }
-  let efforts;
-  let toggle = false;
-  for (const entry of reasoningOptions) {
-    if (entry?.type === 'effort') {
-      if (!Array.isArray(entry.values) || entry.values.some((value) => typeof value !== 'string')) {
-        throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-      }
-      efforts = entry.values;
-    } else if (entry?.type === 'toggle') {
-      toggle = true;
-    } else if (entry?.type !== 'budget_tokens') {
-      // budget_tokens is a known models.dev option type with no wire consumer
-      // yet; any other unknown type fails loudly so a models.dev schema change
-      // is a conscious decision, not silent drift.
-      throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
-    }
-  }
-  return {
-    displayName: model.name,
-    ...(model.description !== undefined ? { description: model.description } : {}),
-    lifecycle,
-    contextWindow: model.limit?.context,
-    ...(model.limit?.input !== undefined ? { inputLimit: model.limit.input } : {}),
-    maxOutputTokens: model.limit?.output,
-    ...(model.knowledge !== undefined ? { knowledgeCutoff: model.knowledge } : {}),
-    ...(model.structured_output !== undefined ? { structuredOutput: model.structured_output } : {}),
-    ...(model.last_updated !== undefined ? { lastUpdated: model.last_updated } : {}),
-    ...(model.cost?.input === 0 ? { isFree: true } : {}),
-    capabilities: {
-      ...(model.modalities ? { vision: model.modalities.input.includes('image') } : {}),
-      reasoning: model.reasoning === true,
-      functionCalling: model.tool_call === true,
-    },
-    ...(efforts?.length || toggle
-      ? {
-          thinkingOptions: {
-            ...(efforts?.length ? { efforts } : {}),
-            ...(toggle ? { toggle: true } : {}),
-          },
-        }
-      : {}),
-    ...(model.modalities
-      ? {
-          modalities: {
-            input: model.modalities.input,
-            output: model.modalities.output,
-          },
-        }
-      : {}),
-  };
-}
-
 export function toPricing(providerType, modelId, model) {
   const cost = model?.cost;
   if (cost === undefined) return undefined;
@@ -823,14 +665,6 @@ export function toPricing(providerType, modelId, model) {
     ...(cacheReadUsdPer1M !== undefined ? { cacheReadUsdPer1M } : {}),
     ...(cacheWriteUsdPer1M !== undefined ? { cacheWriteUsdPer1M } : {}),
   };
-}
-
-function lifecycleForStatus(providerId, modelId, status) {
-  if (status === undefined) return 'active';
-  if (status === 'active' || status === 'beta' || status === 'alpha' || status === 'deprecated') {
-    return status;
-  }
-  throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported status`);
 }
 
 function priceNumber(providerType, modelId, value, field) {
