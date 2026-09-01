@@ -215,6 +215,7 @@ packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
+packages/ui/src/session-selection-bar.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx

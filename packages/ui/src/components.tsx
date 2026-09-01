@@ -32,6 +32,8 @@ export { SessionRailProvider } from './session-rail-context.js';
 export type {
   SessionRailChrome,
   SessionRailData,
+  SessionRailRowSelection,
+  SessionRailSelection,
   SessionViewMode,
 } from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';

@@ -274,6 +274,24 @@ type ShellCopy = {
     deleteSubtaskNoteUncertain(): string;
     /** Toast description after deleting a task that had linked subagent subtasks. */
     deletedSubtaskNote(count: number): string;
+    bulkDeleteTitle(count: number): string;
+    bulkDeleteDescription: string;
+    bulkArchiveTitle(count: number): string;
+    bulkArchiveDescription: string;
+    bulkArchiveLabel: string;
+    bulkDeletedTitle(count: number): string;
+    bulkArchivedTitle(count: number): string;
+    /** Tasks restored while the sweep was reaching them, so they were kept. */
+    bulkKeptRestored(count: number): string;
+    bulkDeleteFailedTitle: string;
+    bulkArchiveFailedTitle: string;
+    bulkFailedBody(count: number): string;
+    /** The catalog could not be read back, so nothing can be claimed. */
+    bulkUnverified: string;
+    /** Appended to the bulk delete confirm when the selection has linked subtasks. */
+    bulkDeleteSubtaskNote(): string;
+    /** Appended when the subtask preview could not be read for the whole selection. */
+    bulkDeleteSubtaskNoteUncertain(): string;
   };
   skillActions: {
     refreshSkillsFailedTitle: string;
@@ -902,6 +920,21 @@ const SHELL_COPY_BY_LOCALE = {
       deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
       deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
       deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
+      bulkDeleteTitle: (count: number) => `删除选中的 ${count} 个任务？`,
+      bulkDeleteDescription: '删除后无法恢复，任务的全部修订版本都会一并删除。',
+      bulkArchiveTitle: (count: number) => `归档选中的 ${count} 个任务？`,
+      bulkArchiveDescription: '归档后可在「设置 › 活动 › 已归档任务」中找回。',
+      bulkArchiveLabel: '归档',
+      bulkDeletedTitle: (count: number) => `已删除 ${count} 个任务`,
+      bulkArchivedTitle: (count: number) => `已归档 ${count} 个任务`,
+      bulkKeptRestored: (count: number) => `另有 ${count} 个已被恢复，未删除。`,
+      bulkDeleteFailedTitle: '部分任务未能删除',
+      bulkArchiveFailedTitle: '部分任务未能归档',
+      bulkFailedBody: (count: number) => `还有 ${count} 个没有处理成功。`,
+      bulkUnverified: '无法确认处理结果，请刷新后查看。',
+      bulkDeleteSubtaskNote: () => '它们的普通子任务不会被删除，将保留并移入归档。',
+      bulkDeleteSubtaskNoteUncertain: () =>
+        '它们的普通子任务（如有）不会被删除，将保留并移入归档。',
     },
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
@@ -1433,6 +1466,22 @@ const SHELL_COPY_BY_LOCALE = {
         'Its ordinary subtasks, if any, will be kept and moved to Archived.',
       deletedSubtaskNote: (count: number) =>
         count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+      bulkDeleteTitle: (count: number) => `Delete ${count} selected tasks?`,
+      bulkDeleteDescription:
+        'This cannot be undone, and every revision of each task goes with it.',
+      bulkArchiveTitle: (count: number) => `Archive ${count} selected tasks?`,
+      bulkArchiveDescription: 'Archived tasks stay available under Settings › Activity.',
+      bulkArchiveLabel: 'Archive',
+      bulkDeletedTitle: (count: number) => `Deleted ${count} tasks`,
+      bulkArchivedTitle: (count: number) => `Archived ${count} tasks`,
+      bulkKeptRestored: (count: number) => `${count} were restored meanwhile and kept.`,
+      bulkDeleteFailedTitle: 'Some tasks were not deleted',
+      bulkArchiveFailedTitle: 'Some tasks were not archived',
+      bulkFailedBody: (count: number) => `${count} of them did not go through.`,
+      bulkUnverified: 'The outcome could not be confirmed. Refresh to see what remains.',
+      bulkDeleteSubtaskNote: () => 'Their ordinary subtasks will be kept and moved to Archived.',
+      bulkDeleteSubtaskNoteUncertain: () =>
+        'Any ordinary subtasks they have will be kept and moved to Archived.',
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',

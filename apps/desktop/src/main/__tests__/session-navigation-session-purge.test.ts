@@ -50,12 +50,18 @@ function restored(id: string): SessionSummary {
 
 type SweepHarness = {
   removed: string[];
+  /** Each `previewRemoval` call, in order. */
+  previews: string[];
+  /** Each `archive` call, in order. */
+  archived: string[];
   /** Each `remove` call as `[sessionId, requireArchived]`. */
   removeOptions: Array<[string, boolean]>;
   cleared: string[];
   selections: Array<string | undefined>;
   /** Titles of the success toasts a row action raised. */
   toasts: string[];
+  /** Their descriptions, positionally — the half that carries the counts. */
+  toastDescriptions: (string | undefined)[];
   listCalls: number;
 };
 
@@ -68,6 +74,12 @@ function installService(
   harness: SweepHarness,
   options: {
     rejectIds?: readonly string[];
+    rejectArchiveIds?: readonly string[];
+    /** Subtasks the Host says a delete would archive, per source id. */
+    previewSubtasks?: Readonly<Record<string, number>>;
+    /** Ids whose preview rejects, standing in for a Host that cannot answer. */
+    rejectPreviewIds?: readonly string[];
+
     rejectWithUndefinedIds?: readonly string[];
     surviving?: readonly SessionSummary[];
     /** Runs after each accepted removal, to model what another client did meanwhile. */
@@ -89,7 +101,10 @@ function installService(
       return [...options.surviving];
     },
     setFlagged: async () => undefined,
-    archive: async () => undefined,
+    archive: async (id) => {
+      harness.archived.push(id);
+      if (options.rejectArchiveIds?.includes(id)) throw new Error(`archive-busy:${id}`);
+    },
     unarchive: async () => undefined,
     rename: async () => undefined,
     remove: async (id, removeOptions) => {
@@ -106,7 +121,11 @@ function installService(
       options.onRemove?.(id);
       return { disposition: 'removed', archivedSubtaskCount: options.archivedByRemoval?.[id] ?? 0 };
     },
-    previewRemoval: async () => 0,
+    previewRemoval: async (id: string) => {
+      harness.previews.push(id);
+      if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
+      return options.previewSubtasks?.[id] ?? 0;
+    },
   };
 }
 
@@ -117,6 +136,8 @@ function createActions(input: {
   pending?: Set<string>;
   refreshed?: SessionSummary[];
   service: SessionNavigationSessionService;
+  /** Answers the confirm and records what it was asked, for the sweeps. */
+  onConfirm?: (options: { title: string; description: string }) => boolean;
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
@@ -134,11 +155,12 @@ function createActions(input: {
       input.activeIdRef.current = id;
     },
     toastApi: {
-      success: (title: string) => {
+      success: (title: string, description?: string) => {
         input.harness.toasts.push(title);
+        input.harness.toastDescriptions.push(description);
       },
       error: () => undefined,
-      confirm: async () => true,
+      confirm: async (options) => input.onConfirm?.(options) ?? true,
     },
   });
 }
@@ -146,10 +168,13 @@ function createActions(input: {
 function harness(): SweepHarness {
   return {
     removed: [],
+    previews: [],
+    archived: [],
     removeOptions: [],
     cleared: [],
     selections: [],
     toasts: [],
+    toastDescriptions: [],
     listCalls: 0,
   };
 }
@@ -418,5 +443,266 @@ describe('deleteSession', () => {
     assert.equal(activeIdRef.current, 'rescued');
     // Not "Deleted rescued": nothing was.
     assert.deepEqual(h.toasts, ['rescued was restored, so it was kept']);
+  });
+});
+
+describe('deleteSessions', () => {
+  it('reads the archived premise per task instead of asserting it', async () => {
+    const h = harness();
+    // The rail lists unarchived tasks. Asserting the archived premise for them
+    // — which is what the Settings purge does — would make the Host refuse
+    // every deletion the rail can ask for.
+    const sessions = [summary('live', { isArchived: false }), summary('filed')];
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h, { catalog: sessions });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.deleteSessions(['live', 'filed']);
+
+    assert.deepEqual(h.removed, ['live', 'filed']);
+    assert.deepEqual(h.removeOptions, [
+      ['live', false],
+      ['filed', true],
+    ]);
+    assert.equal(outcome.removed, 2);
+    assert.deepEqual(outcome.remaining, []);
+    assert.equal(outcome.verified, true);
+  });
+
+  it('accounts for a rejection against the catalog, exactly as the purge does', async () => {
+    const h = harness();
+    const sessions = [summary('a', { isArchived: false }), summary('b', { isArchived: false })];
+    const activeIdRef = { current: undefined as string | undefined };
+    // 'b' rejects but is gone from the catalog anyway: the delete IPC commits
+    // the removal before it releases renderer resources, so a rejection is not
+    // evidence the task survived.
+    const service = installService(h, { rejectIds: ['b'], surviving: [] });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.deleteSessions(['a', 'b']);
+
+    assert.equal(outcome.removed, 2);
+    assert.deepEqual(outcome.remaining, []);
+    assert.equal(outcome.verified, true);
+    assert.ok(outcome.firstFailure);
+    assert.equal((outcome.firstFailure.error as Error).message, 'busy:b');
+  });
+
+  it('claims nothing when the catalog cannot be read back', async () => {
+    const h = harness();
+    const sessions = [summary('a', { isArchived: false })];
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h, { rejectIds: ['a'] });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.deleteSessions(['a']);
+
+    assert.equal(outcome.verified, false);
+    assert.equal(outcome.removed, 0);
+    assert.deepEqual(outcome.remaining, []);
+  });
+});
+
+describe('archiveSessions', () => {
+  it('archives the set, clears each family, and refreshes once', async () => {
+    const h = harness();
+    const sessions = [
+      summary('a', { isArchived: false }),
+      summary('a-v2', {
+        isArchived: false,
+        revisionRootSessionId: 'a',
+        revisionParentSessionId: 'a',
+      }),
+      summary('b', { isArchived: false }),
+    ];
+    const activeIdRef = { current: 'a-v2' as string | undefined };
+    let refreshes = 0;
+    const actions = createSessionNavigationRowActions({
+      uiLocale: 'en',
+      activeIdRef,
+      clearActiveMessages: () => undefined,
+      clearSessionRendererState: (id) => {
+        h.cleared.push(id);
+      },
+      pendingSessionRowActionsRef: { current: new Set<string>() },
+      refreshSessions: async () => {
+        refreshes += 1;
+        return [];
+      },
+      service: installService(h),
+      sessionsRef: { current: sessions },
+      setActiveId: (id) => {
+        h.selections.push(id);
+        activeIdRef.current = id;
+      },
+      toastApi: {
+        success: (title: string) => {
+          h.toasts.push(title);
+        },
+        error: () => undefined,
+        confirm: async () => true,
+      },
+    });
+
+    const outcome = await actions.archiveSessions(['a-v2', 'b']);
+
+    assert.deepEqual(h.archived, ['a-v2', 'b']);
+    assert.deepEqual(outcome, { archived: 2, failed: [], firstFailure: undefined });
+    // The whole revision family leaves the rail, so the renderer drops all of
+    // it — and the active task went with it.
+    assert.deepEqual(h.cleared, ['a', 'a-v2', 'b']);
+    assert.deepEqual(h.selections, [undefined]);
+    // Once for the sweep, not once per task: a refresh per id re-renders the
+    // rail under the cursor for every row in the selection.
+    assert.equal(refreshes, 1);
+  });
+
+  it('keeps going past a failure and names the first one', async () => {
+    const h = harness();
+    const sessions = ['a', 'b', 'c'].map((id) => summary(id, { isArchived: false }));
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h, { rejectArchiveIds: ['b'] });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.archiveSessions(['a', 'b', 'c']);
+
+    // 'c' is still attempted: one Host refusing is not the sweep's answer for
+    // every task in it.
+    assert.deepEqual(h.archived, ['a', 'b', 'c']);
+    assert.equal(outcome.archived, 2);
+    assert.deepEqual(outcome.failed, ['b']);
+    assert.ok(outcome.firstFailure);
+    assert.equal((outcome.firstFailure.error as Error).message, 'archive-busy:b');
+    assert.equal(outcome.firstFailure?.sessionId, 'b');
+    // No per-task toast: the caller phrases one message for the sweep.
+    assert.deepEqual(h.toasts, []);
+  });
+
+  it('skips a task whose row action is already in flight', async () => {
+    const h = harness();
+    const sessions = [summary('a', { isArchived: false }), summary('b', { isArchived: false })];
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h);
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef,
+      pending: new Set(['a:rename']),
+      service,
+    });
+
+    const outcome = await actions.archiveSessions(['a', 'b']);
+
+    assert.deepEqual(h.archived, ['b']);
+    // Reported rather than silently dropped: the count the caller shows has to
+    // add up to the number of tasks the user selected.
+    assert.deepEqual(outcome.failed, ['a']);
+    assert.equal(outcome.archived, 1);
+  });
+});
+
+describe('deleteSelected', () => {
+  it('warns that linked subtasks will be archived, and reports what was', async () => {
+    // The Host archives a deleted parent's ordinary subagent tasks rather than
+    // deleting them. Without the warning they reappear under Archived with no
+    // explanation; without the report the user never learns how many did.
+    const h = harness();
+    const sessions = ['a', 'b'].map((id) => summary(id, { isArchived: false }));
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h, {
+      previewSubtasks: { a: 2 },
+      archivedByRemoval: { a: 2, b: 1 },
+    });
+    const confirms: Array<{ description: string }> = [];
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef,
+      service,
+      onConfirm: (options) => {
+        confirms.push({ description: options.description });
+        return true;
+      },
+    });
+
+    await actions.deleteSelected(['a', 'b']);
+
+    // One preview per selected task: the renderer's projection cannot answer
+    // this, so it is asked for every id the confirm is about to name.
+    assert.deepEqual(h.previews, ['a', 'b']);
+    assert.equal(confirms.length, 1);
+    assert.match(confirms[0]!.description, /moved to Archived/);
+    assert.deepEqual(h.toasts, ['Deleted 2 tasks']);
+    assert.deepEqual(h.toastDescriptions, ['3 subtasks moved to Archived']);
+  });
+
+  it('says the subtask warning is uncertain when one preview cannot be read', async () => {
+    // Under-reporting a destructive set is worse than admitting the number is
+    // unknown: a silent zero reads as "nothing else will move".
+    const h = harness();
+    const sessions = ['a', 'b'].map((id) => summary(id, { isArchived: false }));
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h, {
+      previewSubtasks: { a: 2 },
+      rejectPreviewIds: ['b'],
+    });
+    const confirms: string[] = [];
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef,
+      service,
+      onConfirm: (options) => {
+        confirms.push(options.description);
+        return true;
+      },
+    });
+
+    await actions.deleteSelected(['a', 'b']);
+
+    assert.equal(confirms.length, 1);
+    assert.match(confirms[0]!, /Any ordinary subtasks/);
+  });
+
+  it('says nothing about subtasks when the selection has none', async () => {
+    const h = harness();
+    const sessions = [summary('a', { isArchived: false })];
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h);
+    const confirms: string[] = [];
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef,
+      service,
+      onConfirm: (options) => {
+        confirms.push(options.description);
+        return true;
+      },
+    });
+
+    await actions.deleteSelected(['a']);
+
+    assert.doesNotMatch(confirms[0]!, /Archived/);
+    assert.deepEqual(h.toastDescriptions, [undefined]);
+  });
+
+  it('does nothing when the confirm is declined', async () => {
+    const h = harness();
+    const sessions = [summary('a', { isArchived: false })];
+    const activeIdRef = { current: undefined as string | undefined };
+    const service = installService(h);
+    const actions = createActions({
+      harness: h,
+      sessions,
+      activeIdRef,
+      service,
+      onConfirm: () => false,
+    });
+
+    await actions.deleteSelected(['a']);
+
+    assert.deepEqual(h.removed, []);
+    assert.deepEqual(h.toasts, []);
   });
 });

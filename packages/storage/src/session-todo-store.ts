@@ -20,11 +20,6 @@
 import { resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  isTaskLedgerEvent,
-  projectTaskLedgerEvents,
-  type TaskLedgerEvent,
-} from '@maka/core/task-ledger';
-import {
   normalizeSessionTodoItems,
   type SessionTodoItem,
   type SessionTodoSnapshot,
@@ -45,12 +40,11 @@ interface StoredSessionTodoDocument {
 
 export interface SessionTodoStore {
   /**
-   * Return the initialized current document. On the first read only, bootstrap
-   * pending/in-progress legacy Tasks, map blocked Tasks to pending, and persist
-   * even an empty result.
+   * Return the initialized current document, persisting an empty one on the
+   * first read so later reads and copies see the same row.
    */
   readOrBootstrap(sessionId: string): Promise<SessionTodoSnapshot>;
-  /** Replace the complete document without consulting legacy Task state. */
+  /** Replace the complete document. */
   replaceAll(sessionId: string, items: unknown): Promise<SessionTodoSnapshot>;
   /** Initialize one conversation-copy target without overwriting conflicting state. */
   initializeCopy(input: {
@@ -58,7 +52,7 @@ export interface SessionTodoStore {
     targetSessionId: string;
     copyCurrent: boolean;
   }): Promise<SessionTodoSnapshot>;
-  /** Purge current state and the legacy events that could bootstrap it. */
+  /** Purge current state. */
   purgeSessionState(sessionId: string): Promise<void>;
 }
 
@@ -95,9 +89,9 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
         const existing = readStoredDocument(this.#lease.database, sessionId);
         if (existing) return snapshotFromDocument(existing);
 
-        const bootstrapped = bootstrapLegacyTasks(this.#lease.database, sessionId);
-        insertDocument(this.#lease.database, sessionId, bootstrapped);
-        return snapshotFromDocument(bootstrapped);
+        const initial = emptyDocument();
+        insertDocument(this.#lease.database, sessionId, initial);
+        return snapshotFromDocument(initial);
       });
     });
     return snapshot!;
@@ -132,10 +126,10 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
     let snapshot: SessionTodoSnapshot | undefined;
     await this.#write(async () => {
       snapshot = this.#lease.transaction('write', () => {
-        const source = input.copyCurrent
-          ? (readStoredDocument(this.#lease.database, input.sourceSessionId) ??
-            bootstrapAndInsert(this.#lease.database, input.sourceSessionId))
-          : emptyDocument();
+        const source =
+          (input.copyCurrent
+            ? readStoredDocument(this.#lease.database, input.sourceSessionId)
+            : undefined) ?? emptyDocument();
         const existing = readStoredDocument(this.#lease.database, input.targetSessionId);
         if (existing) {
           if (!sameDocument(existing, source)) {
@@ -157,9 +151,6 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
         this.#lease.database
           .prepare('DELETE FROM workflow_session_todo_documents WHERE session_id = ?')
           .run(sessionId);
-        this.#lease.database
-          .prepare('DELETE FROM workflow_task_ledger_events WHERE session_id = ?')
-          .run(sessionId);
       });
     });
   }
@@ -169,12 +160,6 @@ class SqliteSessionTodoStoreImpl implements SqliteSessionTodoStore {
     // cross-Session initialization linearizable without lock ordering.
     return chainWrite(this.writeQueues, 'session-todo', operation);
   }
-}
-
-function bootstrapAndInsert(database: DatabaseSync, sessionId: string): StoredSessionTodoDocument {
-  const document = bootstrapLegacyTasks(database, sessionId);
-  insertDocument(database, sessionId, document);
-  return document;
 }
 
 function emptyDocument(): StoredSessionTodoDocument {
@@ -213,60 +198,6 @@ function readStoredDocument(
   }
   const normalized = normalizeSessionTodoItems(record.items);
   if (!normalized.ok) throw new Error(`Invalid SessionTodo document: ${normalized.message}`);
-  return {
-    schemaVersion: SESSION_TODO_DOCUMENT_SCHEMA_VERSION,
-    items: normalized.value.items,
-  };
-}
-
-function bootstrapLegacyTasks(
-  database: DatabaseSync,
-  sessionId: string,
-): StoredSessionTodoDocument {
-  const rows = database
-    .prepare(`
-      SELECT record_json
-      FROM workflow_task_ledger_events
-      WHERE session_id = ?
-      ORDER BY sequence
-    `)
-    .all(sessionId) as Array<{ record_json?: unknown }>;
-  const events = rows.map((row, index) => {
-    if (typeof row.record_json !== 'string') {
-      throw new Error(`Invalid legacy Task event at sequence ${index}`);
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.record_json);
-    } catch {
-      throw new Error(`Invalid legacy Task event JSON at sequence ${index}`);
-    }
-    if (!isTaskLedgerEvent(parsed) || parsed.sessionId !== sessionId) {
-      throw new Error(`Invalid legacy Task event at sequence ${index}`);
-    }
-    return parsed;
-  }) as TaskLedgerEvent[];
-  const projected = projectTaskLedgerEvents(events);
-  if (projected.diagnostics.length > 0) {
-    throw new Error(`Legacy Task ledger is not projectable: ${projected.diagnostics.join('; ')}`);
-  }
-  const items = projected.tasks.flatMap((task) => {
-    switch (task.status) {
-      case 'pending':
-      case 'in_progress':
-        return [{ content: task.subject, status: task.status }];
-      case 'blocked':
-        // SessionTodo deliberately has no workflow-specific blocked state or
-        // reason field. Keep the unfinished subject visible for replanning.
-        return [{ content: task.subject, status: 'pending' as const }];
-      case 'completed':
-      case 'failed':
-      case 'cancelled':
-        return [];
-    }
-  });
-  const normalized = normalizeSessionTodoItems(items);
-  if (!normalized.ok) throw new Error(`Legacy Task bootstrap failed: ${normalized.message}`);
   return {
     schemaVersion: SESSION_TODO_DOCUMENT_SCHEMA_VERSION,
     items: normalized.value.items,

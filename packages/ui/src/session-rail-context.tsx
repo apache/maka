@@ -92,8 +92,64 @@ export interface SessionRailChrome {
   };
 }
 
+/**
+ * What a ROW reads: whether the mode is on, whether this row is marked, and the
+ * two ways a row changes that.
+ *
+ * Split from `SessionRailSelection` because a context consumer re-renders
+ * whenever the value it subscribes to changes, and `memo` cannot stop it. The
+ * wide value carries `listedSessionIds`, which is derived from the catalog and
+ * gets a fresh identity on a session switch — a row reading that would
+ * re-render along with every other row for a switch that changed two of them.
+ * The e2e render contract measures exactly this and budgets 2 rows (#4109).
+ *
+ * This half moves only when the selection itself does.
+ */
+export interface SessionRailRowSelection {
+  active: boolean;
+  selectedIds: ReadonlySet<string>;
+  onToggleRow(sessionId: string, selected: boolean): void;
+  onEnter(sessionId?: string): void;
+}
+
+/**
+ * What the selection BAR reads: the row half plus everything only the bar
+ * needs — what "all" means, the sweeps, and whether one is running.
+ *
+ * A THIRD context, for the reason the chrome is a second one: it changes as the
+ * user marks rows while the list does not, and folding it into
+ * `SessionRailData` would give that value a new identity per click — the
+ * ~1,000-fiber render that split exists to prevent (#4109).
+ *
+ * Absent means the rail has no multi-select: rows navigate, nothing marks, and
+ * a surface that never wired it up renders exactly as before.
+ */
+export interface SessionRailSelection {
+  /**
+   * Whether the rail is in selection mode: rows carry a checkbox and the master
+   * row is above them. Distinct from an empty `selectedIds` — unticking the
+   * master box selects none, it does not leave.
+   */
+  active: boolean;
+  selectedIds: ReadonlySet<string>;
+  /** Every row the rail is listing, in rendered order. What "all" means. */
+  listedSessionIds: readonly string[];
+  onToggleRow(sessionId: string, selected: boolean): void;
+  onEnter(sessionId?: string): void;
+  /** Leaves the mode and drops what was marked. */
+  onExit(): void;
+  onToggleAll(selected: boolean): void;
+  onArchiveSelected(): void | Promise<void>;
+  onDeleteSelected(): void | Promise<void>;
+  /** A sweep is running. The commands disable while one is, so a second click
+   *  cannot ask for the same set twice. */
+  busy?: boolean;
+}
+
 const SessionRailDataContext = createContext<SessionRailData | null>(null);
 const SessionRailChromeContext = createContext<SessionRailChrome | null>(null);
+const SessionRailSelectionContext = createContext<SessionRailSelection | null>(null);
+const SessionRailRowSelectionContext = createContext<SessionRailRowSelection | null>(null);
 
 /**
  * `chrome` is optional so the list can be rendered on its own — a test or a
@@ -103,12 +159,24 @@ const SessionRailChromeContext = createContext<SessionRailChrome | null>(null);
 export function SessionRailProvider(props: {
   data: SessionRailData;
   chrome?: SessionRailChrome;
+  selection?: SessionRailSelection;
+  /**
+   * The rows' half. Supplied separately rather than derived here so its
+   * identity is the producer's business: deriving it in this component would
+   * rebuild it on every render of the tree above, which is the churn the split
+   * exists to avoid.
+   */
+  rowSelection?: SessionRailRowSelection;
   children?: ReactNode;
 }) {
   return (
     <SessionRailDataContext.Provider value={props.data}>
       <SessionRailChromeContext.Provider value={props.chrome ?? null}>
-        {props.children}
+        <SessionRailSelectionContext.Provider value={props.selection ?? null}>
+          <SessionRailRowSelectionContext.Provider value={props.rowSelection ?? null}>
+            {props.children}
+          </SessionRailRowSelectionContext.Provider>
+        </SessionRailSelectionContext.Provider>
       </SessionRailChromeContext.Provider>
     </SessionRailDataContext.Provider>
   );
@@ -124,4 +192,17 @@ export function useSessionRailChrome(): SessionRailChrome {
   const chrome = useContext(SessionRailChromeContext);
   if (!chrome) throw new Error('SessionRailProvider is missing');
   return chrome;
+}
+
+/**
+ * Null rather than throwing, unlike the other two: multi-select is optional
+ * chrome, and a rail without it is a rail, not a misconfiguration.
+ */
+export function useSessionRailSelection(): SessionRailSelection | null {
+  return useContext(SessionRailSelectionContext);
+}
+
+/** What a row reads. Null when the rail has no multi-select. */
+export function useSessionRailRowSelection(): SessionRailRowSelection | null {
+  return useContext(SessionRailRowSelectionContext);
 }
