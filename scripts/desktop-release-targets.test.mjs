@@ -188,12 +188,16 @@ const DESKTOP_PROJECT_DIRECTORY = fileURLToPath(new URL('../apps/desktop', impor
  * electron-builder rewrites the configuration object it is handed — `normalizeFiles`
  * turns `files` into records in place — and `resolveDesktopBuilderConfig` returns one
  * shared module-level object outside the Nightly branch. Packaging calls it once, so
- * this only bites a test that builds several packagers. `beforePack` is a function and
- * cannot be structured-cloned; it is carried across by reference and never invoked here.
+ * this only bites a test that builds several packagers.
+ *
+ * Copied through JSON rather than `structuredClone`: everything electron-builder reads
+ * here has to survive serialization anyway, and the structured clone algorithm rejected
+ * this object on Node 24 while accepting it on 26. `beforePack` is the one function in
+ * the configuration; it is carried across by reference and never invoked by this test.
  */
 function isolatedBuilderConfig() {
   const { beforePack, ...rest } = resolveDesktopBuilderConfig({});
-  return { ...structuredClone(rest), beforePack };
+  return { ...JSON.parse(JSON.stringify(rest)), beforePack };
 }
 
 /**
