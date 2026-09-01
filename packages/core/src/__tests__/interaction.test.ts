@@ -34,6 +34,7 @@ import {
   interactionCanonicalOutcomesEquivalent,
   isInteractionAnswerValidForRequest,
   isInteractionCanonicalOutcomeValidForRequest,
+  isInteractionFormFieldValueValid,
   projectInteractionClientCapabilityRequest,
   projectInteractionPermissionRequest,
   projectInteractionFormRequest,
@@ -1155,6 +1156,101 @@ describe('Interaction decoding and validity', () => {
       ),
       true,
     );
+  });
+
+  test('projects every human-facing form label through the safe review boundary', () => {
+    const projected = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: '\u202e password=message-secret',
+      requester: {
+        name: 'token=requester-secret',
+        source: '\napi_key=source-secret',
+      },
+      fields: [
+        {
+          kind: 'single_select',
+          name: 'environment',
+          label: '\u0007 password=field-secret',
+          description: '\nclient_secret=description-secret',
+          required: true,
+          options: [
+            { value: 'production', label: '\u202e token=option-secret' },
+            { value: 'staging', label: 'Staging' },
+          ],
+        },
+      ],
+    });
+
+    assert.equal(projected.message, '\\u{202E} password=[redacted]');
+    assert.deepEqual(projected.requester, {
+      name: 'token=[redacted]',
+      source: '\\u{A}api_key=[redacted]',
+    });
+    assert.deepEqual(projected.fields[0], {
+      kind: 'single_select',
+      name: 'environment',
+      label: '\\u{7} password=[redacted]',
+      description: '\\u{A}client_secret=[redacted]',
+      required: true,
+      options: [
+        { value: 'production', label: '\\u{202E} token=[redacted]' },
+        { value: 'staging', label: 'Staging' },
+      ],
+    });
+    assert.doesNotMatch(JSON.stringify(projected), /message-secret|requester-secret|source-secret/);
+  });
+
+  test('rejects form option labels that collide after safe projection', () => {
+    assert.throws(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [
+          {
+            kind: 'single_select',
+            name: 'environment',
+            label: 'Environment',
+            required: true,
+            options: [
+              { value: 'first', label: 'password=first-secret' },
+              { value: 'second', label: 'password=second-secret' },
+            ],
+          },
+        ],
+      }),
+    );
+  });
+
+  test('reserves canonical outcome overhead before admitting an accepted form answer', () => {
+    const values = {
+      a: 'x'.repeat(2_048),
+      b: 'x'.repeat(2_048),
+      c: 'x'.repeat(2_048),
+      d: 'x'.repeat(1_950),
+    };
+    assert.ok(
+      Buffer.byteLength(JSON.stringify({ kind: 'form', action: 'accept', values })) < 8 * 1_024,
+    );
+    assert.throws(
+      () => decodeInteractionAnswer({ kind: 'form', action: 'accept', values }),
+      /Interaction form outcome exceeds serialized byte limit/,
+    );
+  });
+
+  test('validates date-time calendar and clock fields without Date.parse normalization', () => {
+    const field = {
+      kind: 'string' as const,
+      name: 'when',
+      label: 'When',
+      required: true,
+      format: 'date-time' as const,
+    };
+    assert.equal(isInteractionFormFieldValueValid(field, '2024-02-29T23:59:59Z'), true);
+    assert.equal(isInteractionFormFieldValueValid(field, '2023-02-29T00:00:00Z'), false);
+    assert.equal(isInteractionFormFieldValueValid(field, '2023-02-30T00:00:00Z'), false);
+    assert.equal(isInteractionFormFieldValueValid(field, '2024-01-01T24:00:00Z'), false);
+    assert.equal(isInteractionFormFieldValueValid(field, '2024-01-01T00:00:00+24:00'), false);
   });
 
   test('rejects malformed form schemas and invalid accepted values', () => {

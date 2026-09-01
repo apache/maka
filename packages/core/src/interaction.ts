@@ -509,6 +509,9 @@ export function decodeInteractionAnswer(value: unknown): InteractionAnswer {
     throw new Error('Invalid Interaction answer kind');
   }
   serializedLimit(answer, INTERACTION_ANSWER_SERIALIZED_MAX_BYTES, 'Interaction answer');
+  if (answer.kind === 'form' && answer.action === 'accept') {
+    assertAcceptedFormAnswerFitsCanonicalOutcome(answer);
+  }
   return deepFreeze(answer);
 }
 
@@ -691,7 +694,53 @@ export function projectInteractionQuestionRequest(
 export function projectInteractionFormRequest(
   input: InteractionFormProjectionInput,
 ): InteractionFormRequest {
-  return decodeInteractionRequest({ kind: 'form', ...input }) as InteractionFormRequest;
+  const decoded = decodeInteractionRequest({ kind: 'form', ...input }) as InteractionFormRequest;
+  return decodeInteractionRequest({
+    ...decoded,
+    message: projectInteractionReviewText(decoded.message, INTERACTION_FORM_MESSAGE_MAX_BYTES),
+    requester: {
+      name: projectInteractionReviewText(
+        decoded.requester.name,
+        INTERACTION_FORM_REQUESTER_NAME_MAX_BYTES,
+      ),
+      ...(decoded.requester.source === undefined
+        ? {}
+        : {
+            source: projectInteractionReviewText(
+              decoded.requester.source,
+              INTERACTION_FORM_REQUESTER_SOURCE_MAX_BYTES,
+              true,
+            ),
+          }),
+    },
+    fields: decoded.fields.map(projectInteractionFormField),
+  }) as InteractionFormRequest;
+}
+
+function projectInteractionFormField(field: InteractionFormField): InteractionFormField {
+  const display = {
+    label: projectInteractionReviewText(field.label, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+    ...(field.description === undefined
+      ? {}
+      : {
+          description: projectInteractionReviewText(
+            field.description,
+            INTERACTION_FORM_FIELD_DESCRIPTION_MAX_BYTES,
+            true,
+          ),
+        }),
+  };
+  if (field.kind !== 'single_select' && field.kind !== 'multi_select') {
+    return { ...field, ...display };
+  }
+  const options = field.options.map((option) => ({
+    ...option,
+    label: projectInteractionReviewText(option.label, INTERACTION_FORM_FIELD_LABEL_MAX_BYTES),
+  }));
+  if (new Set(options.map((option) => option.label)).size !== options.length) {
+    throw new Error('Form option labels collide after safe projection');
+  }
+  return { ...field, ...display, options };
 }
 
 export function projectInteractionSandboxBoundaryRequest(input: {
@@ -1161,21 +1210,29 @@ function matchesStringFormat(
   if (format === 'date') {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
     if (!match) return false;
-    const year = Number(match[1]);
-    const month = Number(match[2]);
-    const day = Number(match[3]);
-    const date = new Date(Date.UTC(year, month - 1, day));
-    return (
-      date.getUTCFullYear() === year &&
-      date.getUTCMonth() === month - 1 &&
-      date.getUTCDate() === day
-    );
+    return isValidCalendarDate(Number(match[1]), Number(match[2]), Number(match[3]));
   }
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
   return (
-    /^\d{4}-\d{2}-\d{2}T/.test(value) &&
-    /(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
+    isValidCalendarDate(Number(match[1]), Number(match[2]), Number(match[3])) &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 59 &&
+    (match[7] === undefined || Number(match[7]) <= 23) &&
+    (match[8] === undefined || Number(match[8]) <= 59) &&
     Number.isFinite(Date.parse(value))
   );
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= days[month - 1]!;
 }
 
 /** Reject a form that can be admitted but can never produce a bounded accepted answer. */
@@ -1190,6 +1247,22 @@ function assertFormHasAcceptedAnswer(request: InteractionFormRequest): void {
     throw new Error('Interaction form has no valid accepted answer');
   }
   serializedLimit(answer, INTERACTION_ANSWER_SERIALIZED_MAX_BYTES, 'Interaction form answer');
+  assertAcceptedFormAnswerFitsCanonicalOutcome(answer);
+}
+
+function assertAcceptedFormAnswerFitsCanonicalOutcome(
+  answer: Extract<InteractionFormAnswer, { action: 'accept' }>,
+): void {
+  serializedLimit(
+    {
+      kind: 'form_answer',
+      action: 'accept',
+      values: answer.values,
+      committedAt: Number.MAX_SAFE_INTEGER,
+    } satisfies Extract<InteractionCanonicalOutcome, { kind: 'form_answer'; action: 'accept' }>,
+    INTERACTION_OUTCOME_SERIALIZED_MAX_BYTES,
+    'Interaction form outcome',
+  );
 }
 
 function formFieldWitness(field: InteractionFormField): InteractionFormValue {
