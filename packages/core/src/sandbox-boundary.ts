@@ -300,6 +300,7 @@ export function projectSandboxBoundaryNegotiation(
         (decision.status !== 'approved' &&
           decision.status !== 'denied' &&
           decision.status !== 'conflict') ||
+        typeof decision.revision !== 'number' ||
         !Number.isSafeInteger(decision.revision) ||
         decision.revision < 0 ||
         requestToolUseId === undefined ||
