@@ -600,23 +600,27 @@ function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['mod
   if (!Array.isArray(item.input) || !Array.isArray(item.output)) {
     throw domainError('connection model modalities must contain input and output arrays');
   }
-  const input = Array.from(item.input, (entry) => decodeModelInputModality(entry));
-  const output = Array.from(item.output, (entry) => decodeModelOutputModality(entry));
+  const input = Array.from(item.input, (entry) => decodeModelModality(entry, 'input'));
+  const output = Array.from(item.output, (entry) => decodeModelModality(entry, 'output'));
   return { input, output };
 }
 
-function decodeModelInputModality(value: unknown): 'text' | 'image' | 'audio' | 'pdf' {
-  const modality = stringValue(value, 'connection model input modality', 16);
-  if (modality !== 'text' && modality !== 'image' && modality !== 'audio' && modality !== 'pdf') {
-    throw domainError('connection model input modality is invalid');
-  }
-  return modality;
-}
-
-function decodeModelOutputModality(value: unknown): 'text' | 'image' | 'audio' {
-  const modality = stringValue(value, 'connection model output modality', 16);
-  if (modality !== 'text' && modality !== 'image' && modality !== 'audio') {
-    throw domainError('connection model output modality is invalid');
+// Both directions accept the same set. models.dev declares video on either
+// side and pdf on both, so splitting them again only invites one direction to
+// drift behind the catalog it decodes.
+function decodeModelModality(
+  value: unknown,
+  direction: 'input' | 'output',
+): 'text' | 'image' | 'audio' | 'pdf' | 'video' {
+  const modality = stringValue(value, `connection model ${direction} modality`, 16);
+  if (
+    modality !== 'text' &&
+    modality !== 'image' &&
+    modality !== 'audio' &&
+    modality !== 'pdf' &&
+    modality !== 'video'
+  ) {
+    throw domainError(`connection model ${direction} modality is invalid`);
   }
   return modality;
 }

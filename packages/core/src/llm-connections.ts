@@ -116,8 +116,8 @@ export interface ModelInfo {
   };
   /** Multimodal input/output support from provider catalog metadata. */
   modalities?: {
-    input: Array<'text' | 'image' | 'audio' | 'pdf'>;
-    output: Array<'text' | 'image' | 'audio'>;
+    input: Array<'text' | 'image' | 'audio' | 'pdf' | 'video'>;
+    output: Array<'text' | 'image' | 'audio' | 'pdf' | 'video'>;
   };
   /**
    * Read-time provenance for values overlaid from model-facts.json. This is

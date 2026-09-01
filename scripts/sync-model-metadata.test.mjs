@@ -280,7 +280,7 @@ test('refresh rejects unknown model modalities instead of dropping them', async 
     const snapshot = join(root, 'snapshot.json');
     const metadata = join(root, 'metadata.ts');
     const catalog = fixtureCatalog();
-    catalog.anthropic.models.model.modalities = { input: ['text', 'video'], output: ['text'] };
+    catalog.anthropic.models.model.modalities = { input: ['text', 'hologram'], output: ['text'] };
     await writeFile(input, JSON.stringify(catalog));
 
     await assert.rejects(
@@ -297,6 +297,36 @@ test('refresh rejects unknown model modalities instead of dropping them', async 
       ]),
       /unsupported modalities/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('refresh carries the video and pdf modalities models.dev declares', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-model-snapshot-video-'));
+  try {
+    const input = join(root, 'api.json');
+    const snapshot = join(root, 'snapshot.json');
+    const metadata = join(root, 'metadata.ts');
+    const catalog = fixtureCatalog();
+    const modalities = { input: ['text', 'video'], output: ['text', 'pdf', 'video'] };
+    catalog.anthropic.models.model.modalities = modalities;
+    await writeFile(input, JSON.stringify(catalog));
+
+    await main([
+      'node',
+      'sync-model-metadata.mjs',
+      '--refresh',
+      '--refresh-input',
+      input,
+      '--snapshot',
+      snapshot,
+      '--output',
+      metadata,
+    ]);
+
+    const written = JSON.parse(await readFile(snapshot, 'utf8'));
+    assert.deepEqual(written.projection.metadata.anthropic.model.modalities, modalities);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

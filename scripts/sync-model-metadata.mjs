@@ -25,6 +25,10 @@ import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const SOURCE_URL = 'https://models.dev/api.json';
+// Must stay in step with ModelInfo['modalities'] in packages/core. A value
+// that reaches the projection but not the wire type fails the build; a value
+// missing here drops the whole refresh, not just the model that declares it.
+const MODALITIES = new Set(['text', 'image', 'audio', 'pdf', 'video']);
 const DEFAULT_SNAPSHOT = 'scripts/model-metadata/models-dev-api.snapshot.json';
 const DEFAULT_OUTPUT = 'packages/core/src/model-metadata.generated.ts';
 const DEFAULT_PRICING_OUTPUT = 'packages/runtime/src/telemetry/model-pricing.generated.ts';
@@ -540,12 +544,8 @@ export function toMetadata(providerId, modelId, provider, model) {
     throw new Error(`models.dev model ${providerId}/${modelId} has an unsupported shape`);
   }
   if (
-    model.modalities?.input.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio' && value !== 'pdf',
-    ) ||
-    model.modalities?.output.some(
-      (value) => value !== 'text' && value !== 'image' && value !== 'audio',
-    )
+    model.modalities?.input.some((value) => !MODALITIES.has(value)) ||
+    model.modalities?.output.some((value) => !MODALITIES.has(value))
   ) {
     throw new Error(`models.dev model ${providerId}/${modelId} has unsupported modalities`);
   }
