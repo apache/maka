@@ -146,19 +146,15 @@
      built on. zinc-family hue 286 at the same chroma reads clean and
      cool like the reference sidebar. */
   --foreground: oklch(0.17 0.005 286);
-  /* Alias, not a tier. It was written as "80% ink" like --foreground-secondary
-     but mixed in srgb where that one mixes in oklch, so the same words gave
-     two different colours (10.51:1 vs 12.01:1 measured). One family, one
-     colour space: derive every ink in oklch. */
-  /* `--foreground-dimmed` is gone as of Visual System 2.0 (T4). It was an alias
-     of --foreground-secondary kept alive for five call sites in the former
-     task-ledger.css (now session-todo-panel.css), which were migrated to name
-     the tier directly. Two names for one ink
-     tier is how the original bug happened: both were written as "80% ink",
-     one mixed in srgb and the other in oklch, and they resolved 10.51:1 against
-     12.01:1. The contract test still runs — it now asserts the token has no
-     independent definition, which an absent token satisfies and a
-     reintroduced color-mix does not. */
+  /* `--foreground-dimmed` and `--foreground-secondary` are both retired, and
+     the contract test keeps them out. They are the same lesson twice: dimmed
+     and secondary were both written as "80% ink", one mixed in srgb and the
+     other in oklch, so the identical words resolved 10.51:1 against 12.01:1;
+     then secondary itself turned out to be a tier nobody could hold apart from
+     muted without one of the two failing AA. Two names for one grey is how the
+     drift starts. Prose has exactly two rungs now — --foreground and
+     --muted-foreground — and everything below that is size, weight and case.
+     See the ink ladder note further down for the numbers. */
 
   /* Brand accent = logo blue (oklch L0.70 C0.135 h250), sampled from
      apps/desktop/assets/icon.png (owner decision 2026-07-03). --success stays
@@ -234,8 +230,8 @@
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
      These are surface wash stops for backgrounds, borders, and other
-     non-text surfaces only. Text color uses --foreground (primary),
-     --foreground-secondary, or --muted-foreground — never these. */
+     non-text surfaces only. Text color uses --foreground (primary) or
+     --muted-foreground — never these. */
   --foreground-2:  color-mix(in oklch, var(--foreground) 2%,  var(--background));
   --foreground-3:  color-mix(in oklch, var(--foreground) 3%,  var(--background));
   --foreground-5:  color-mix(in oklch, var(--foreground) 5%,  var(--background));
@@ -247,11 +243,12 @@
       30% ink fails 4.5:1); decorative uses inlined their color-mix.
       Fewer tiers = crisper hierarchy.
       P-FOREGROUND-TIER-CONVERGE (issue #430 PR4, 2026-07-03): the 5-step
-      text ladder (40/50/60/70/80) collapsed to 3 semantic tiers —
-      primary (var(--foreground), 100% ink), secondary (--foreground-
-      secondary, 80% ink), muted (--muted-foreground, 50% ink). The raw
-      mix stops are gone; the aliases ARE the definitions. Text call
-      sites use the semantic aliases only. */
+      text ladder (40/50/60/70/80) collapsed to semantic tiers, and
+      issue #3446 collapsed those to the two that survive —
+      primary (var(--foreground), 100% ink) and muted
+      (--muted-foreground, 68% ink). The raw mix stops are gone; the
+      aliases ARE the definitions. Text call sites use the semantic
+      aliases only. */
 
   /* === alpha overlays via oklch(from ...) ===
      Use these when stacking on a tinted surface (e.g. a card on background-elevated).
@@ -288,18 +285,23 @@
   --border-width-hairline: 1px;
   --border-width-thick:    2px;
   --muted:         oklch(from var(--foreground) l c h / 0.05);
-  /* Ink ladder (visual system 2.0, T1): three tiers about 2x apart, all above
-     4.5:1. Measured against --surface-raised, light reads 19.1 / 9.8 / 4.8.
+  /* Ink ladder (issue #3446): TWO tiers, --foreground and --muted-foreground,
+     which is Astryx's own shape. One mix serves both modes.
 
-     The audit asked for a 3x gap, copied from a reference that reaches 3.6x
-     with only TWO text tiers. Three tiers standing on a 4.5:1 AA floor cannot
-     span 3x without the bottom two colliding, so the rhythm is even instead:
-     roughly geometric, which is what three tiers can actually hold.
+     Three tiers standing on a 4.5:1 AA floor never had room to space
+     themselves: 54% muted measured 4.21:1 light and 3.89:1 dark on the default
+     palette, and across the eleven palettes it failed AA in nine of them in
+     light — onedark 3.4, nord 3.6, catppuccin 3.6. That is the direct reason
+     the middle rung goes: a ladder whose bottom rung is illegible on most
+     palettes is not a hierarchy, it is a bug with a token name.
 
-     50% muted was the one real defect — 4.21:1 in light and 3.89:1 in dark,
-     already under AA in the mode nobody checked. */
-  --muted-foreground: color-mix(in oklch, var(--foreground) 54%, var(--background));
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 74%, var(--background));
+     68% is chosen so the DEFAULT palette lands on Astryx's own
+     --color-text-secondary (#525252 light / #a3a3a3 dark, 7.8:1 / 7.1:1):
+     68% ink measures #525153 / #a2a2a4, 7.9:1 / 7.0:1. Every one of the eleven
+     palettes then clears AA in both modes; the worst is onedark light at
+     5.0:1. Hierarchy below these two rungs comes from size, weight and case —
+     never a third grey. */
+  --muted-foreground: color-mix(in oklch, var(--foreground) 68%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -936,9 +938,11 @@
   --background-elevated: var(--surface-overlay);
   /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
   --foreground: oklch(0.95 0.004 286);
-  /* Dark's ink-to-surface gap differs, so one percentage cannot put secondary
-     in the 8.5-10:1 band for both modes: 74% gives 9.8 light but 8.2 dark. */
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 78%, var(--background));
+  /* No dark override for the muted rung: 68% ink is the one mix that puts both
+     modes on Astryx's --color-text-secondary (7.9:1 light, 7.0:1 dark on the
+     default palette). The per-mode percentage that used to live here existed
+     to keep a THIRD tier from colliding with muted; with the middle rung gone
+     there is nothing left to separate. */
 
   --accent: oklch(0.74 0.15 250);
   /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light

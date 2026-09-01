@@ -107,7 +107,7 @@
   width: 7px;
   height: 7px;
   border-radius: var(--radius-pill);
-  background: var(--foreground-secondary);
+  background: var(--muted-foreground);
 }
 
 .maka-inspector-turn[data-failed='true'] .maka-inspector-turn-head::before {
@@ -139,7 +139,7 @@
 }
 
 .maka-inspector-turn-cost {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* The default 480px workbar does not leave enough room for the timestamp,
@@ -203,7 +203,7 @@
    half of the row is the fact. A 12px tier used to carry six different roles
    here; six roles at one size is not a rank, it is small print. */
 .maka-inspector-step-label {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-inspector-step-detail {
@@ -295,7 +295,7 @@
 /* One tier under a section title, for the per-tool list inside the estimate —
    it belongs to the section above it rather than opening a new one. */
 .maka-inspector-section-subtitle {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   margin-top: var(--space-1);
 }
 
@@ -444,7 +444,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 

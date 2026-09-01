@@ -88,7 +88,7 @@
 .plan-proposal-overview {
   font: var(--maka-text-body);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-section {
@@ -99,7 +99,7 @@
 .plan-proposal-section h3 {
   font: var(--maka-text-heading-5);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-steps,
@@ -152,7 +152,7 @@
 .plan-proposal-step-content p {
   margin: 0;
   overflow-wrap: anywhere;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-risks ul {
@@ -262,7 +262,11 @@
   gap: var(--space-2);
   min-height: var(--h-control-lg);
   padding: var(--space-1-5) var(--space-2);
-  color: var(--foreground-secondary);
+  /* Full ink: a pending step is live work, and the two states below (completed
+     and skipped) are the ones that recede to muted. The retired middle grey
+     used to hold this apart from them; collapsing it onto muted instead would
+     make every step in the list read as already dealt with. */
+  color: var(--foreground);
 }
 
 .plan-execution-steps li + li {

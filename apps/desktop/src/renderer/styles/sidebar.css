@@ -300,7 +300,7 @@
 }
 
 .maka-sidebar-hover-card-preview {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   line-height: var(--leading-relaxed);
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -320,7 +320,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-0-5) var(--space-1);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-sidebar-hover-card-path {

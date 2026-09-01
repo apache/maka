@@ -351,7 +351,7 @@ dialog:modal {
     transform var(--duration-base) var(--ease-out-strong);
   -webkit-app-region: no-drag;
   /* Match SideNav unselected icon ink (secondary), not ghost Button primary. */
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* The session's identity: left-aligned at the content column's left edge.
@@ -553,7 +553,7 @@ dialog:modal {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* Titlebar chrome glyph ink is set where the glyph is: `ChromeIcon`
@@ -627,7 +627,7 @@ dialog:modal {
 }
 
 .sessionTurnRequestApprovalMore {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--typography-caption);
   text-align: end;
 }
@@ -638,7 +638,7 @@ dialog:modal {
 
 .sessionCollaborationReadOnly {
   padding: var(--space-3);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   text-align: center;
 }
 

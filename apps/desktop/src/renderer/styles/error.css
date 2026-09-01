@@ -72,7 +72,7 @@
 .maka-error-copy p {
     font: var(--maka-text-body);
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     max-width: 56ch;
   }
 

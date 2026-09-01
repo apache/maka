@@ -34,7 +34,7 @@
 .maka-help-section h3 {
   font: var(--maka-text-heading-5);
   margin: 0 0 var(--space-1);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   letter-spacing: var(--tracking-normal);
   text-transform: none;
 }
@@ -52,7 +52,7 @@
 
 .maka-help-section dt {
   font: var(--maka-text-supporting);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-help-section dd {

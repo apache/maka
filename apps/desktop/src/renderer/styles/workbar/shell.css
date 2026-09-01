@@ -192,7 +192,7 @@
   min-width: 0;
   height: var(--size-element-sm);
   border-radius: var(--radius-element);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   touch-action: none;
   user-select: none;
   transition:

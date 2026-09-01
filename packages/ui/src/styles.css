@@ -123,7 +123,7 @@
 .maka-stat-tile-value-destructive { color: var(--destructive-text); }
 .maka-stat-tile-label {
   font: var(--maka-text-supporting);
- color: var(--foreground-secondary); letter-spacing: 0.025em; }
+ color: var(--muted-foreground); letter-spacing: 0.025em; }
 .maka-stat-tile-detail {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
@@ -149,7 +149,7 @@
   height: auto;
   border: 0;
   padding: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: transparent;
   text-align: left;
   box-shadow: none;
@@ -260,7 +260,7 @@
 }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading,
 .maka-deep-thinking [data-maka-contract="markdown"] strong {
-  color: color-mix(in oklch, var(--link) 28%, var(--foreground-secondary));
+  color: color-mix(in oklch, var(--link) 28%, var(--muted-foreground));
 }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading {
   font: var(--maka-text-label);
@@ -461,7 +461,7 @@
    point (13px h4-h6 dropped to muted); it is why a turn can carry four levels
    of structure inside two type sizes. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"], [data-level="3"]) {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* Astryx hands custom images no inline/block placement or spacing wrapper.
@@ -657,7 +657,7 @@
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
 .maka-pty-shell-title {
   font: var(--maka-text-label);
- color: var(--foreground-secondary); }
+ color: var(--muted-foreground); }
 .maka-pty-shell-body { display: grid; min-width: 0; gap: 8px; padding: 6px 12px; }
 .maka-pty-shell-footer {
   font: var(--maka-text-body);
@@ -680,7 +680,7 @@
  color: var(--link); }
 .maka-web-result-list p {
   font: var(--maka-text-body);
- margin: 0; color: var(--foreground-secondary); }
+ margin: 0; color: var(--muted-foreground); }
 .maka-web-result-error { gap: 6px; }
 .maka-web-result-error-message,
 .maka-web-result-repair {
@@ -879,7 +879,7 @@
   background: var(--foreground-2);
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
-.maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
+.maka-tool-diff-paths code { color: var(--muted-foreground); background: transparent; }
 .maka-tool-diff-body {
   font: var(--maka-text-supporting);
   max-height: 320px;
@@ -935,20 +935,22 @@
    flat single-tint reading the tokens exist to break up; the row's background
    tint and its marker carry add/del on their own.
 
-   This is also what brings context lines up from `--foreground-secondary` to
-   full foreground, which is deliberate rather than collateral: once a context
-   line's keywords and strings are syntax-coloured, dimming only the text
-   between them reads as damage, not as de-emphasis. The row's flat background
-   is what says "unchanged" now. */
+   Context lines read at full foreground, which is deliberate rather than
+   collateral: once a context line's keywords and strings are syntax-coloured,
+   dimming only the text between them reads as damage, not as de-emphasis. The
+   row's flat background is what says "unchanged" now. */
 .maka-tool-diff-code { color: var(--foreground); }
 .maka-tool-diff-line[data-line="meta"] .maka-tool-diff-code { color: inherit; }
 .maka-tool-diff-line[data-line="add"] { background: var(--color-success-muted); color: var(--success-text); }
 .maka-tool-diff-line[data-line="del"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
   font: var(--maka-text-heading-5);
- background: oklch(from var(--accent) l c h / 0.08); color: var(--foreground-secondary); }
+ background: oklch(from var(--accent) l c h / 0.08); color: var(--muted-foreground); }
 .maka-tool-diff-line[data-line="meta"] { color: var(--muted-foreground); }
-.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground-secondary); }
+/* Full ink, matching `.maka-tool-diff-code` above: a context line is the code
+   the change is read against, and the marker column is the only part this rule
+   still paints on its own. Meta and hunk rows are the ones that recede. */
+.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground); }
 .maka-tool-terminal-cwd { color: var(--muted-foreground); background: transparent; }
 .maka-tool-terminal-cmd {
   font: var(--maka-text-heading-5);
@@ -960,7 +962,7 @@
    instead. Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--muted-foreground); letter-spacing: var(--tracking-wide); }
 .maka-tool-terminal-exit[data-ok="true"] { background: var(--color-success-muted); color: var(--success); }
 .maka-tool-terminal-exit[data-ok="false"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-empty {
@@ -973,7 +975,7 @@
 .maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-truncated-note {
   font: var(--maka-text-supporting);
- display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--foreground-secondary); }
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--muted-foreground); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
 .maka-tool-terminal-copy { flex: 0 0 auto; }
 .maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }
@@ -998,14 +1000,14 @@
 .maka-web-search-preview a:focus-visible { text-decoration: underline; }
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
- margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
+ margin: 0; color: var(--muted-foreground); white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error { border-color: color-mix(in oklab, var(--destructive-text) 32%, var(--foreground-10)); background: color-mix(in oklab, var(--destructive-text) 8%, var(--foreground-3)); }
 .maka-web-search-error-message,
 .maka-web-search-error-repair {
   font: var(--maka-text-supporting);
  margin: 0; white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error-message { color: var(--destructive-text); }
-.maka-web-search-error-repair { color: var(--foreground-secondary); }
+.maka-web-search-error-repair { color: var(--muted-foreground); }
 
 .maka-load-tool-preview {
   display: grid;
@@ -1022,7 +1024,7 @@
   height: var(--space-8);
   place-items: center;
   border-radius: var(--radius-element);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: var(--foreground-5);
 }
 .maka-load-tool-summary {
@@ -1035,7 +1037,7 @@
 .maka-load-tool-description {
   font: var(--maka-text-supporting);
   margin-top: var(--space-0-5) !important;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
 .maka-load-tool-count {
@@ -1088,7 +1090,7 @@
 .maka-load-tool-technical dd {
   min-width: 0;
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 .maka-load-tool-technical code {
   font: var(--maka-text-code);

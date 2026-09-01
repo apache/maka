@@ -86,7 +86,7 @@
 .settingsReadOnlyValue {
   min-width: 0;
   max-width: var(--settings-row-end-cap);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
@@ -130,7 +130,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
   white-space: nowrap;
 }

@@ -218,7 +218,7 @@
   min-width: max-content;
   margin: 0;
   padding: var(--space-1-5) var(--space-2);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   white-space: pre;
 }
 
@@ -304,13 +304,13 @@
      dashed exception). */
   border: var(--border-width-hairline) solid var(--border);
   background: var(--color-accent-muted);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-artifact-preview-unsupported-body {
   font: var(--maka-text-body);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-artifact-preview-unsupported-meta {
@@ -320,14 +320,14 @@
   gap: var(--space-1) var(--space-4);
   margin: 0;
   padding: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 .maka-artifact-preview-unsupported-meta > div {
   display: contents;
 }
 .maka-artifact-preview-unsupported-meta dt {
   font: var(--maka-text-label);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 .maka-artifact-preview-unsupported-meta dd {
   margin: 0;

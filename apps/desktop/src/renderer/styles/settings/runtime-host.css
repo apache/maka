@@ -39,7 +39,7 @@
 
 .settingsRuntimeHostTransport p {
   margin: 0 0 var(--space-1);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -110,7 +110,7 @@
 }
 
 .settingsRuntimeHostManagementFacts dt {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -198,7 +198,7 @@
 
 .settingsRuntimeHostDirectPeerAdvanced summary {
   width: fit-content;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   cursor: pointer;
   font: var(--maka-text-supporting);
 }
@@ -214,7 +214,7 @@
 
 .settingsRuntimeHostManagementLogs {
   overflow-wrap: anywhere;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-code);
 }
 
@@ -266,7 +266,7 @@
 
 .settingsRuntimeHostAccessIdentity span,
 .settingsRuntimeHostAccessMeta > span {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -338,7 +338,7 @@
 
 .settingsPeerMeshConnectivityChevron {
   flex: 0 0 auto;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   transition: transform 120ms ease;
 }
 
@@ -348,7 +348,7 @@
 
 .settingsPeerMeshConnectivityHelp {
   display: inline-flex;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .settingsPeerMeshConnectivityBody {
@@ -593,13 +593,13 @@
 }
 
 .settingsPeerMeshCardSubtitle {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
 .settingsPeerMeshChevron {
   flex: 0 0 auto;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   transition: transform 120ms ease;
 }
 
@@ -670,7 +670,7 @@
 }
 
 .settingsPeerMeshTransitHelp svg {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .settingsPeerMeshTransitMetrics {
@@ -801,7 +801,7 @@
 
 .settingsPeerMeshInvitationNote svg {
   margin-top: 2px;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 @media (max-width: 620px) {
