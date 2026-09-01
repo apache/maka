@@ -70,7 +70,8 @@ export interface AgentRunInspectToolSummary {
 
 export interface AgentRunInspectCompactionCheckpoint {
   eventId: string;
-  validation: 'shape_valid' | 'invalid';
+  /** `superseded`: well-formed, but minted under an older source policy. */
+  validation: 'shape_valid' | 'invalid' | 'superseded';
   checkpointId?: string;
   policyVersion?: string;
   sourceCoverage?: ExecutionLogCoverage;
@@ -297,7 +298,9 @@ function isCompactionCheckpoint(value: unknown): boolean {
       ['checkpointId', 'policyVersion', 'sourceCoverage'],
     ) &&
     typeof value.eventId === 'string' &&
-    (value.validation === 'shape_valid' || value.validation === 'invalid') &&
+    (value.validation === 'shape_valid' ||
+      value.validation === 'invalid' ||
+      value.validation === 'superseded') &&
     isOptionalString(value.checkpointId) &&
     isOptionalString(value.policyVersion) &&
     (value.sourceCoverage === undefined || isCoverage(value.sourceCoverage))

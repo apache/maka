@@ -86,7 +86,7 @@ export interface RuntimeHostLifecycleTransitionInput {
 
 export class RuntimeHostLifecycleTransactionError extends Error {
   constructor(
-    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed',
+    readonly code: 'transition_failed' | 'recovery_failed' | 'owner_changed' | 'active_tasks',
     message: string,
     options?: ErrorOptions,
   ) {
@@ -128,6 +128,8 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   readonly desired?: RuntimeHostManagedDeploymentConfig;
   readonly deps: RuntimeHostLifecycleTransactionDeps;
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
 }): Promise<RuntimeHostManagedDeploymentConfig | undefined> {
   const current = input.current
     ? decodeRuntimeHostManagedDeploymentConfig(input.current)
@@ -139,6 +141,7 @@ export async function applyRetiredRuntimeHostLifecycleTransition(input: {
   let transitionError: unknown;
   let previousAuthorityRestored = false;
   try {
+    await input.validateRetiredState?.();
     result = await applyRuntimeHostLifecycleTransition(
       input.owner,
       {
@@ -210,6 +213,7 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
       readonly deploymentId?: string;
     };
     readonly expectedOwner?: { readonly hostEpoch: string; readonly pid: number };
+    readonly allowInterruptActiveTasks?: boolean;
     readonly ensureAvailable?: boolean;
   } = {},
 ): Promise<RuntimeHostRecoverableDeployment> {
@@ -234,11 +238,12 @@ export async function resolveRecoverableRuntimeHostManagedDeployment(
         ? { supervisor: previousProvider.supervisor }
         : {}),
     ...(options.expectedOwner ? { expectedOwner: options.expectedOwner } : {}),
+    allowInterruptActiveTasks: options.allowInterruptActiveTasks ?? false,
     retireIdleSupervisor: false,
   });
   if (retirement.kind === 'active_tasks') {
     throw new RuntimeHostLifecycleTransactionError(
-      'transition_failed',
+      'active_tasks',
       'Runtime Host lifecycle recovery is waiting for active work to finish',
     );
   }
@@ -364,10 +369,11 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     'registration' in connected ? connected.registration : undefined,
   );
   if (connected.kind !== 'connected') {
-    if (input.allowInterruptActiveTasks && input.supervisor) {
+    if (input.supervisor) {
       const status = await input.supervisor.status();
       assertExpectedSupervisorOwner(input.expectedOwner, status);
       if (status.active && status.pid !== null) {
+        if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
         await input.supervisor.retire();
         return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
       }
@@ -478,6 +484,8 @@ export async function replaceRuntimeHostLifecycle(input: {
     retire(): Promise<void>;
   };
   readonly activatePrevious?: () => Promise<void>;
+  /** Final product invariant checked after Host admission is closed and before lifecycle commit. */
+  readonly validateRetiredState?: () => Promise<void>;
   /** Product-level activation for lifecycles whose readiness is not owned by an OS supervisor. */
   readonly activateDesired?: () => Promise<void>;
 }): Promise<RuntimeHostLifecycleReplacement> {
@@ -508,6 +516,7 @@ export async function replaceRuntimeHostLifecycle(input: {
     desired,
     deps: input.deps,
     ...(input.activatePrevious ? { activatePrevious: input.activatePrevious } : {}),
+    ...(input.validateRetiredState ? { validateRetiredState: input.validateRetiredState } : {}),
   });
   try {
     if (input.activateDesired) {

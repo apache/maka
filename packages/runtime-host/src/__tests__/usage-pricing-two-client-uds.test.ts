@@ -30,6 +30,7 @@ import {
 import type { PricingConfig } from '@maka/core/usage-stats/types';
 import { BUILTIN_PRICING } from '@maka/runtime/telemetry';
 import { openInteractiveUsageStoresForWrite } from '@maka/storage/usage-stores';
+import { SessionNotFoundError } from '@maka/storage/session-store';
 import {
   resolveRootControlNamespace,
   resolveStorageRoot,
@@ -292,6 +293,112 @@ test('pricing root identity failure requests drain while expected failures do no
     );
     assert.equal(drainRequests, 1);
     await rename(movedRoot, root);
+  });
+});
+
+test('usage logs carry the Host-resolved session title and tolerate unreadable sessions', async () => {
+  await withUsageAuthority('session-title', async ({ stores }) => {
+    await Promise.all([
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-named', 10, 'openai', 'gpt-a'),
+        sessionId: 'session-named',
+        turnId: 'turn-1',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-blank', 11, 'openai', 'gpt-a'),
+        sessionId: 'session-blank',
+        turnId: 'turn-2',
+      }),
+      stores.telemetry.recordLlmCall({
+        ...usageRecord('llm-missing', 12, 'openai', 'gpt-a'),
+        sessionId: 'session-missing',
+        turnId: 'turn-3',
+      }),
+      stores.telemetry.recordToolInvocation({
+        ...toolRecord('tool-a', 13),
+        sessionId: 'session-named',
+      }),
+    ]);
+    const titles = new Map([
+      // Leading/trailing whitespace must be trimmed; a blank title is not a title.
+      ['session-named', '  重构使用统计页请求日志的任务列  '],
+      ['session-blank', '   '],
+    ]);
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      async (sessionId) => {
+        // A genuinely missing session is tolerated: its row stays untitled.
+        if (sessionId === 'session-missing') throw new SessionNotFoundError('session-missing');
+        return titles.get(sessionId);
+      },
+    );
+
+    const llm = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(llm.ok);
+    assert.equal(llm.result.kind, 'logs');
+    if (llm.result.kind !== 'logs' || llm.result.source !== 'llm')
+      throw new Error('expected llm logs');
+    const llmById = new Map(llm.result.rows.map((row) => [row.id, row]));
+    assert.equal(llmById.get('llm-named')?.sessionTitle, '重构使用统计页请求日志的任务列');
+    // Whitespace-only title is dropped; the row stays untitled and the UI falls back.
+    assert.equal(llmById.get('llm-blank')?.sessionTitle, undefined);
+    // A genuinely missing session is tolerated — one missing session never blanks the rest.
+    assert.equal(llmById.get('llm-missing')?.sessionTitle, undefined);
+    assert.equal(llmById.get('llm-named')?.sessionId, 'session-named');
+
+    const tool = await coordinator.handlers['usage.query'](
+      { kind: 'logs', source: 'tool', query: { range: 'all' }, offset: 0, limit: 100 },
+      CONNECTION_CONTEXT,
+    );
+    assert.ok(tool.ok);
+    if (tool.result.kind !== 'logs' || tool.result.source !== 'tool')
+      throw new Error('expected tool logs');
+    assert.equal(
+      tool.result.rows.find((row) => row.id === 'tool-a')?.sessionTitle,
+      '重构使用统计页请求日志的任务列',
+    );
+  });
+});
+
+test('a non–not-found title read failure propagates out of usage.query instead of blanking the row', async () => {
+  await withUsageAuthority('session-title-failure', async ({ stores }) => {
+    await stores.telemetry.recordLlmCall({
+      ...usageRecord('llm-live', 20, 'openai', 'gpt-a'),
+      sessionId: 'session-live',
+      turnId: 'turn-1',
+    });
+    const coordinator = new HostUsagePricingCoordinator(
+      stores,
+      () => {},
+      new RuntimePolicyActivationGate(),
+      () => {},
+      // The production reader is SessionStore.readHeaderSnapshot. A closed
+      // metadata store rejects with exactly this generic error — not a
+      // usage-store lifecycle type — so it classifies as `unknown` and must
+      // reach #queryUsage's failure mapping rather than be swallowed into an
+      // untitled row.
+      async () => {
+        throw new Error('SQLite session metadata store is closed');
+      },
+    );
+
+    // Not swallowed: the read failure propagates rather than yielding a
+    // false-success page. (A genuinely draining host is caught earlier by the
+    // primary usage read; this narrow case is a session store that fails on its
+    // own, which surfaces instead of masking the problem.)
+    await assert.rejects(
+      coordinator.handlers['usage.query'](
+        { kind: 'logs', source: 'llm', query: { range: 'all' }, offset: 0, limit: 100 },
+        CONNECTION_CONTEXT,
+      ),
+      /SQLite session metadata store is closed/,
+    );
   });
 });
 

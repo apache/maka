@@ -244,7 +244,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
 }
 
 export const SESSION_DOMAINS = [
-  'task',
+  'todo',
   'plan',
   'deep_research',
   'usage',

@@ -30,7 +30,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
@@ -52,7 +52,6 @@ import {
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsRow } from './settings-section';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
@@ -64,9 +63,10 @@ import {
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import type { StatusSemantic } from '@maka/ui';
 import {
   useConnectionDetail,
@@ -86,7 +86,7 @@ import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
-  const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
+  const defaults = PROVIDER_REGISTRY[props.connection.providerType];
   // Unknown providerType (a connection persisted on a branch that registers a
   // provider this build doesn't know) → render a non-actionable fallback so
   // opening the orphan connection doesn't crash on `.authKind`/`.baseUrl`.
@@ -116,7 +116,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
     if (!mounted.current || !ok) return;
     setDeleting(true);
     try {
-      await props.bridge.delete(connection.slug);
+      await props.bridge.delete({ connectionId: connection.connectionId, slug: connection.slug });
       if (!mounted.current) return;
       await props.onDeleted();
     } catch (error) {
@@ -150,7 +150,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const display = providerDisplay(connection.providerType, locale);
   const {
     apiKey,
@@ -257,7 +257,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setHeaderDrafts([]);
     setBodyDraft(formatRequestBodyOverlay(connection.requestBodyOverlay));
     void props.bridge
-      .getRequestHeaders(connection.slug)
+      .getRequestHeaders({ connectionId: connection.connectionId, slug: connection.slug })
       .then(({ names }) => {
         if (!current) return;
         setSavedHeaderNames(names);
@@ -301,7 +301,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     }
     setRequestCustomizationBusy(true);
     try {
-      const saved = await props.bridge.setRequestHeaders(connection.slug, updates);
+      const saved = await props.bridge.setRequestHeaders(
+        { connectionId: connection.connectionId, slug: connection.slug },
+        updates,
+      );
       if (!mounted.current) return true;
       setSavedHeaderNames(saved.names);
       setHeaderDrafts(savedRequestHeaderDrafts(saved.names));
@@ -330,7 +333,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     }
     setRequestCustomizationBusy(true);
     try {
-      await props.bridge.update(connection.slug, { requestBodyOverlay: overlay ?? null });
+      await props.bridge.update(
+        { connectionId: connection.connectionId, slug: connection.slug },
+        { requestBodyOverlay: overlay ?? null },
+      );
       await props.onChanged();
       return true;
     } catch (error) {
@@ -667,12 +673,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </HStack>
         <AddModelDialog
           isOpen={addModelOpen}
-          /* The catalog, not just the selection: `models` is usually a proper
-             superset of what the user enabled. Checking only the selection lets
-             a listed-but-unchecked id through, and the dialog then requires a
-             hand-typed context window that overrides the one Maka already
-             knows. */
-          existingModelIds={[...enabledModelIds, ...(connection.models ?? []).map(({ id }) => id)]}
+          /* The catalog, not just the selection: the resolved entries are
+             usually a proper superset of what the user enabled. Checking only
+             the selection lets a listed-but-unchecked id through, and the dialog
+             then requires a hand-typed context window that overrides the one
+             Maka already knows. The entries rather than the stored rows, so a
+             provider that ships its inventory instead of storing it still
+             answers "already known" for every model it offers. */
+          existingModelIds={modelChoices.map(({ id }) => id)}
           /* A write started after the dialog opened would make the store drop
              this submission silently, taking the typed id with it. */
           isSubmitDisabled={allActionsBusy}
@@ -1104,9 +1112,12 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
   const providerCopy = getProviderSettingsCopy(useUiLocale());
   const copy = providerCopy.detail;
   const flow = useOAuthLoginFlow({
-    bridge: props.service.bridge,
+    mode: 'existing',
+    authorizationBridge: props.service.authorizationBridge,
+    accountBridge: props.service.accountBridge,
     display: props.service.display,
-    onLoginSuccess: props.onRelogin,
+    onLoginSuccess: () => props.onRelogin(),
+    onAccountChanged: props.onRelogin,
   });
   const { hasSecret } = props;
   const loggedIn = hasSecret === true;
@@ -1139,6 +1150,7 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
         </>
       ) : detail}
       endContent={!loading ? (
+        <HStack gap={2}>
           <Button
             variant="primary"
             size="sm"
@@ -1146,6 +1158,18 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
             onClick={() => void flow.startLogin()}
             label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
           />
+          {loggedIn && flow.logout && (
+            <Button
+              variant="ghost"
+              size="sm"
+              isDisabled={flow.actionBusy}
+              onClick={() => void flow.logout?.()}
+              label={flow.pendingAction === 'logout'
+                ? providerCopy.oauthSection.loggingOut
+                : providerCopy.oauthSection.logout}
+            />
+          )}
+        </HStack>
       ) : undefined} />
   );
 }

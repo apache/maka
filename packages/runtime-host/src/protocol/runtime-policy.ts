@@ -20,8 +20,10 @@
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   decodeCanonicalConnectionBaseUrl,
+  decodeModelCatalogEntry,
   decodeCanonicalRuntimePolicy,
   decodeConnectionModel,
   decodeConnectionModelId,
@@ -65,6 +67,8 @@ import {
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
 } from '@maka/core/runtime-policy';
+import type { ModelCatalogEntry } from '@maka/core/model-catalog';
+export type { ModelCatalogEntry } from '@maka/core/model-catalog';
 import { normalizeRelayModelProfiles, type RelayModelProfile } from '@maka/core/model-thinking';
 // The client subgraph cannot import core subpaths directly (dependency
 // boundary); the wire types it needs are re-exported through this file.
@@ -108,7 +112,7 @@ export type ConnectionCatalogCursor =
   | { readonly connectionIndex: number; readonly part: 'connection' }
   | {
       readonly connectionIndex: number;
-      readonly part: 'enabled_model_id' | 'model';
+      readonly part: 'enabled_model_id' | 'model' | 'catalog_entry';
       readonly itemIndex: number;
     };
 
@@ -122,14 +126,29 @@ export type ConnectionCatalogQueryInput =
 
 export type ConnectionCatalogHeaderItem = Omit<
   ConnectionCatalogEntry,
-  'enabledModelIds' | 'models' | 'relayModelProfiles'
+  // The three the paginator splits into their own items, plus two the Host
+  // keeps to itself: `modelsFetchedAt` is when the Host last ran discovery —
+  // its own bookkeeping, which no client reads — and
+  // `lastTestModelFactsFingerprint` is durable invalidation metadata.
+  | 'enabledModelIds'
+  | 'models'
+  | 'relayModelProfiles'
+  | 'modelsFetchedAt'
+  | 'lastTestModelFactsFingerprint'
 > & {
   readonly kind: 'connection';
   readonly connectionIndex: number;
   readonly enabledModelIdCount: number;
   readonly modelCount: number;
+  readonly catalogEntryCount: number;
 };
 
+/**
+ * The Host owns the model catalog. Clients show what these items say, and do
+ * not work out model facts from a registry or metadata they bundle.
+ *
+ * Only add a field some client shows. Host bookkeeping stays in the Host.
+ */
 export type ConnectionCatalogPageItem =
   | ConnectionCatalogHeaderItem
   | {
@@ -148,7 +167,25 @@ export type ConnectionCatalogPageItem =
       readonly kind: 'model';
       readonly connectionIndex: number;
       readonly itemIndex: number;
-      readonly model: ConnectionModel;
+      /**
+       * The stored row with the user's `model-facts.json` overrides already
+       * merged in. Which fields an override touched stays with the Host — the
+       * one reader of that provenance is its own context-budget policy, on the
+       * execution connection rather than on this page.
+       */
+      readonly model: Omit<ConnectionModel, 'factOverriddenFields'>;
+    }
+  | {
+      /**
+       * One model as the Host resolved it — the stored row merged with the
+       * model metadata the Host owns. Clients render these instead of merging
+       * against a bundled copy of their own, so two clients of different
+       * versions attached to one Host describe a model identically.
+       */
+      readonly kind: 'catalog_entry';
+      readonly connectionIndex: number;
+      readonly itemIndex: number;
+      readonly entry: ModelCatalogEntry;
     };
 
 export type ConnectionCatalogQueryResult =
@@ -500,7 +537,7 @@ function catalogCursor(value: unknown): ConnectionCatalogCursor {
       part: 'connection',
     };
   }
-  if (item.part === 'enabled_model_id' || item.part === 'model') {
+  if (item.part === 'enabled_model_id' || item.part === 'model' || item.part === 'catalog_entry') {
     const cursor = requireExactRecord(item, 'connection catalog cursor', [
       'connectionIndex',
       'part',
@@ -509,7 +546,9 @@ function catalogCursor(value: unknown): ConnectionCatalogCursor {
     const maxItems =
       item.part === 'enabled_model_id'
         ? CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS
-        : CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION;
+        : item.part === 'model'
+          ? CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
+          : CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION;
     return {
       connectionIndex: integer(
         cursor.connectionIndex,
@@ -591,6 +630,30 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       model: decodeDomain(() => decodeConnectionModel(modelItem.model)),
     };
   }
+  if (item.kind === 'catalog_entry') {
+    const entryItem = requireExactRecord(item, 'connection catalog entry item', [
+      'kind',
+      'connectionIndex',
+      'itemIndex',
+      'entry',
+    ]);
+    return {
+      kind: 'catalog_entry',
+      connectionIndex: integer(
+        entryItem.connectionIndex,
+        'connection index',
+        0,
+        CONNECTION_CATALOG_MAX_CONNECTIONS - 1,
+      ),
+      itemIndex: integer(
+        entryItem.itemIndex,
+        'item index',
+        0,
+        CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION - 1,
+      ),
+      entry: decodeDomain(() => decodeModelCatalogEntry(entryItem.entry)),
+    };
+  }
   if (item.kind !== 'connection')
     throw invalidProtocolFrame('Invalid connection catalog page item kind');
   const header = optionalRecord(
@@ -607,11 +670,11 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'baseUrl',
       'enabled',
       'modelSource',
-      'modelsFetchedAt',
       'lastTest',
       'requestBodyOverlay',
       'enabledModelIdCount',
       'modelCount',
+      'catalogEntryCount',
     ],
     [
       'kind',
@@ -624,11 +687,9 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'enabled',
       'enabledModelIdCount',
       'modelCount',
+      'catalogEntryCount',
     ],
   );
-  if ((header.modelSource === undefined) !== (header.modelsFetchedAt === undefined)) {
-    throw invalidProtocolFrame('Invalid connection header model discovery fields');
-  }
   const provider = decodeDomain(() => decodeProviderType(header.providerType));
   const baseUrl =
     header.baseUrl === undefined
@@ -669,16 +730,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: boolean(header.enabled, 'connection enabled'),
     ...(header.modelSource === undefined ? {} : { modelSource: modelSource(header.modelSource) }),
-    ...(header.modelsFetchedAt === undefined
-      ? {}
-      : {
-          modelsFetchedAt: integer(
-            header.modelsFetchedAt,
-            'models fetched at',
-            0,
-            Number.MAX_SAFE_INTEGER,
-          ),
-        }),
     ...(header.lastTest === undefined
       ? {}
       : { lastTest: decodeDomain(() => decodeConnectionTestSummary(header.lastTest)) }),
@@ -690,6 +741,12 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
     ),
     modelCount,
+    catalogEntryCount: integer(
+      header.catalogEntryCount,
+      'catalog entry count',
+      0,
+      CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
+    ),
   };
 }
 
@@ -982,6 +1039,8 @@ function catalogCursorPartOrder(part: ConnectionCatalogCursor['part']): number {
       return 1;
     case 'model':
       return 2;
+    case 'catalog_entry':
+      return 3;
   }
 }
 

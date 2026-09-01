@@ -33,14 +33,13 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import {
-  isThinkingLevel,
-  thinkingVariantsForModel,
-  type ThinkingLevel,
-} from '@maka/core/model-thinking';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type {
+  SkillInvocationFailureReason,
+  SkillInvocationResult,
+} from '@maka/core/skill-invocation';
 import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
   slashCommandsForSurface,
@@ -53,7 +52,12 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
-import { formatUiMessage, type UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  formatUiMessage,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -89,6 +93,7 @@ import {
   inspectSessionResumeAvailability,
   type MakaAttachedSessionTurn,
   type MakaPreparedSessionTurn,
+  type MakaRetractedMessageEntry,
   type MakaRetractedMessages,
   type MakaSessionDriver,
   type MakaSideConversationParentStatus,
@@ -99,6 +104,7 @@ import {
   readFileCapped,
   resolveLocalImageFile,
   stagedImageLabel,
+  type StagedImage,
   TuiImageStaging,
 } from './tui-attachments.js';
 import { SafeBoundaryResumeParkedError } from './runtime-host-session-driver.js';
@@ -132,6 +138,13 @@ import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
 import { MakaAutocompleteAboveEditorComponent } from './tui-autocomplete-layout.js';
 import { TranscriptViewerOverlay } from './pi-tui-transcript-viewer.js';
+import { copyToClipboard } from './tui-clipboard.js';
+import {
+  getTuiAttachmentsCopy,
+  getTuiCopyCopy,
+  lastAssistantText,
+  serializeTranscriptText,
+} from './tui-copy-command.js';
 import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
@@ -176,6 +189,7 @@ import {
   isLiveGoalStatus,
 } from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
@@ -198,7 +212,6 @@ export interface MakaPiTuiInput {
   connectionId?: string;
   connectionIdentities?: readonly ConnectionIdentity[];
   connectionSlug: string;
-  providerType?: ProviderType;
   permissionMode: PermissionMode;
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
@@ -230,6 +243,17 @@ export interface MakaPiTuiInput {
   };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
+  /**
+   * The Host re-resolved its model catalog and handed back the new projection.
+   * Adopt it wholesale — the picker shows what the Host says, never a local
+   * merge of it.
+   */
+  subscribeModelCatalogChanges?: (
+    listener: (refresh: {
+      readonly modelChoices: readonly ModelChoice[];
+      readonly connectionIdentities: readonly ConnectionIdentity[];
+    }) => void,
+  ) => () => void;
   listShellRunUpdates?: (sessionId: string) => Promise<ShellRunUpdate[]>;
   /** Host-owned invocable Skill catalog used for picker, completion, and token highlighting. */
   listSkills?: (cwd: string) => Promise<readonly InvocableSkillEntry[]>;
@@ -332,36 +356,81 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
   }
 }
 
+interface TuiRewindCopy {
+  readonly pickerTitle: string;
+  readonly pending: string;
+  readonly doneRefilled: string;
+  readonly doneKeptDraft: string;
+  readonly noTargets: string;
+  readonly busy: string;
+  readonly pickerHint: string;
+}
+
+interface TuiSkillsCopy {
+  readonly pickerTitle: string;
+  readonly usage: string;
+  readonly noneAvailable: string;
+  readonly loaded: string;
+  readonly loadFailed: string;
+  readonly outcomeNoRequest: string;
+  readonly outcomeMarkersNotSent: string;
+  readonly failedItem: string;
+  readonly tooManyRequestsItem: string;
+  readonly listSeparator: string;
+  readonly failureReasons: Readonly<Record<SkillInvocationFailureReason, string>>;
+}
+
+interface TuiConnectionIdentityCopy {
+  readonly withRecovery: string;
+  readonly emptyChoiceRecovery: string;
+  readonly confirmAccount: string;
+  readonly accountDeleted: string;
+  readonly identityMismatch: string;
+  readonly accountDisabled: string;
+}
+
+interface TuiSessionActionsCopy {
+  readonly foreignScanFailed: string;
+  readonly newSessionFailed: string;
+}
+
+const TUI_REWIND_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiRewindCopy>()(TUI_COPY_RESOURCES.rewind),
+);
+
+const TUI_SKILLS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSkillsCopy>()(TUI_COPY_RESOURCES.skills),
+);
+
+const TUI_CONNECTION_IDENTITY_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiConnectionIdentityCopy>()(TUI_COPY_RESOURCES['connection-identity']),
+);
+
+const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSessionActionsCopy>()(TUI_COPY_RESOURCES['session-actions']),
+);
+
 function sessionConnectionIdentityNotice(
   session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
   identities: MakaPiTuiInput['connectionIdentities'],
   locale: UiLocale,
 ): string | undefined {
   if (!identities) return undefined;
-  const emptyChoiceRecovery =
-    locale === 'zh'
-      ? '如果 /model 没有可选项，请先添加或启用连接（API Key 连接可运行 /setup）。'
-      : 'If /model has no choices, add or enable a connection first (run /setup for API-key connections).';
+  const copy = TUI_CONNECTION_IDENTITY_COPY[locale];
+  const withRecovery = (notice: string) =>
+    formatUiMessage(copy.withRecovery, { notice, recovery: copy.emptyChoiceRecovery }, locale);
   if (!session.llmConnectionId) {
-    return locale === 'zh'
-      ? `此任务来自旧版本，需要确认一次账号。运行 /model 选择现有账号和模型。${emptyChoiceRecovery}`
-      : `This task comes from an older version and needs a one-time account confirmation. Run /model and choose an existing account and model. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.confirmAccount);
   }
   const identified = identities.find((entry) => entry.connectionId === session.llmConnectionId);
   if (!identified) {
-    return locale === 'zh'
-      ? `原账号已删除；运行 /model 选择新账号和模型后继续。${emptyChoiceRecovery}`
-      : `The original account was deleted. Run /model and choose a new account and model to continue. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.accountDeleted);
   }
   if (identified.connectionSlug !== session.llmConnectionSlug) {
-    return locale === 'zh'
-      ? `任务保存的账号身份与当前连接不一致；运行 /model 重新选择账号和模型。${emptyChoiceRecovery}`
-      : `The saved account identity no longer matches its connection. Run /model and choose an account and model again. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.identityMismatch);
   }
   if (!identified.enabled) {
-    return locale === 'zh'
-      ? `原账号已停用；请启用该账号，或运行 /model 选择新账号和模型。${emptyChoiceRecovery}`
-      : `The original account is disabled. Enable it, or run /model and choose a new account and model. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.accountDisabled);
   }
   return undefined;
 }
@@ -369,6 +438,8 @@ function sessionConnectionIdentityNotice(
 export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const locale = input.locale ?? 'en';
   const pickerCopy = getTuiPickerCopy(locale);
+  const copyCopy = getTuiCopyCopy(locale);
+  const attachmentCopy = getTuiAttachmentsCopy(locale);
   const primaryGuidance = getTuiPrimaryGuidance(locale);
   const terminal = input.terminal ?? new ProcessTerminal();
   const taskbarProgress = resolveTaskbarProgress(input.taskbarProgress);
@@ -396,21 +467,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let model = input.model;
   let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
-  // Mutable: a cross-connection /model switch rebinds the provider, which changes
-  // both the connection and the thinking variants the new model supports.
-  let providerType = input.providerType;
-  let modelContextWindow = input.modelContextWindow;
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  // The boot connection's declared capabilities win (an openai-compatible
-  // relay can declare relayModelProfiles[model].thinkingLevels). The
-  // providerType+model metadata variant is the fallback for modelChoices-free
-  // embeddings of the runner.
-  let thinkingLevels: readonly ThinkingLevel[] =
-    input.modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
-    )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let connectionIdentityNotice: string | undefined;
   let busy = false;
@@ -569,11 +628,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode,
     orchestrationMode,
     thinkingLevel,
-    thinkingLevels,
+    thinkingLevels: currentThinkingLevels(),
     sessionId: input.driver.getSessionId(),
     busy,
     usage: state.usage,
-    modelContextWindow,
+    modelContextWindow: currentModelContextWindow(),
     turnElapsedMs: turnStartedAt !== undefined ? Date.now() - turnStartedAt : undefined,
     providerRetry: state.providerRetry,
     uiLocale: locale,
@@ -593,7 +652,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const transcript = new MakaTranscriptComponent(state, metadata);
   const activityStrip = new MakaActivityStripComponent(metadata);
-  const pendingQueue = new MakaPendingQueueComponent(state);
+  const pendingQueue = new MakaPendingQueueComponent(state, locale);
   const statusLine = new MakaStatusLineComponent(metadata);
   // Use the vendor editor's full 20-item autocomplete capacity. Larger command
   // catalogs remain scrollable and keep an exact position/total counter.
@@ -746,35 +805,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // autocomplete or picker open.
   void listSkillsCached(true);
 
-  const SKILL_INVOCATION_FAILURE_REASON_LABEL: Record<string, string> = {
-    not_found: '未找到',
-    disabled: '已禁用',
-    host_incompatible: '当前主机缺少其依赖的工具',
-    invalid_name: '名称无效',
-    too_many_requests: '调用请求过多',
-  };
+  const skillsCopy = TUI_SKILLS_COPY[locale];
 
   const showSkillInvocation = (skillInvocation: SkillInvocationResult): void => {
     const failed = skillInvocation.failed;
     const failedLabels = failed.map((entry) =>
       entry.reason === 'too_many_requests'
-        ? `请求超过 ${entry.requestLimit} 个上限（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason]}）`
-        : `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`,
+        ? formatUiMessage(
+            skillsCopy.tooManyRequestsItem,
+            { limit: entry.requestLimit, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          )
+        : formatUiMessage(
+            skillsCopy.failedItem,
+            { request: entry.request, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          ),
     );
     if (failed.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `未能加载技能 ${failedLabels.join('、')}；${
-          skillInvocation.loaded.length === 0 ? '未发起模型请求。' : '失败的调用标记未发送给模型。'
-        }`,
+        text: formatUiMessage(
+          skillsCopy.loadFailed,
+          {
+            failures: failedLabels.join(skillsCopy.listSeparator),
+            outcome:
+              skillInvocation.loaded.length === 0
+                ? skillsCopy.outcomeNoRequest
+                : skillsCopy.outcomeMarkersNotSent,
+          },
+          locale,
+        ),
       });
     }
     if (skillInvocation.loaded.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `已加载技能：${skillInvocation.loaded.map((skill) => skill.name).join('、')}`,
+        text: formatUiMessage(
+          skillsCopy.loaded,
+          {
+            names: skillInvocation.loaded.map((skill) => skill.name).join(skillsCopy.listSeparator),
+          },
+          locale,
+        ),
       });
     }
     requestRender();
@@ -864,8 +939,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     process.off('unhandledRejection', handleUnhandledRejection);
   };
 
+  let unsubscribeModelCatalogChanges: (() => void) | undefined;
   const restoreTerminal = () => {
     removeProcessHandlers();
+    unsubscribeModelCatalogChanges?.();
     unsubscribeSessionTitleChanges();
     unsubscribeGoalChanges?.();
     void sideConversation?.stopParentObserver?.();
@@ -1007,7 +1084,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: 'Usage: /attach <image-path> — the image rides the next message you send.',
+        text: attachmentCopy.usageAttach,
       });
       requestRender();
       return;
@@ -1016,7 +1093,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: 'Image attachments need a Runtime Host connection; this session has no attachment authority.',
+        text: attachmentCopy.noAuthority,
       });
       requestRender();
       return;
@@ -1025,7 +1102,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `At most ${MAX_ATTACHMENT_COUNT} attachments can ride one message.`,
+        text: formatUiMessage(attachmentCopy.tooManyImages, { max: MAX_ATTACHMENT_COUNT }, locale),
       });
       requestRender();
       return;
@@ -1035,7 +1112,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `Only image files can be attached in the terminal (png, jpg, gif, webp, bmp): ${file.name}`,
+        text: formatUiMessage(attachmentCopy.notAnImage, { name: file.name }, locale),
       });
       requestRender();
       return;
@@ -1060,14 +1137,19 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         level: 'error',
         text:
           imageAttachments.size === 0
-            ? 'No images are staged on the current draft.'
-            : `Usage: /detach <number> — 1..${imageAttachments.size}.`,
+            ? attachmentCopy.noStagedImages
+            : formatUiMessage(attachmentCopy.usageDetach, { max: imageAttachments.size }, locale),
       });
       requestRender();
       return;
     }
     const removed = imageAttachments.list()[index - 1]!;
     imageAttachments.remove(removed.stagingKey);
+    // Local descriptors are a pure list removal (nothing was ingested), but a
+    // retained ref was already committed — usually by a retracted queued
+    // message — and this draft was its last owner, so its Artifact is deleted
+    // best-effort rather than lingering as an orphan in the Session's list.
+    if (removed.kind === 'retained') deleteAttachmentBestEffort(removed.attachment);
     syncStagedImagesStrip();
     requestRender();
   };
@@ -1178,16 +1260,56 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const acceptRetraction = (retracted: MakaRetractedMessages) => {
     for (const messageId of retracted.messageIds) removeTransientUserMessage(messageId);
-    // Retracted messages carry their committed attachments back: re-stage each
-    // reference as a retained item, so resubmitting reuses the exact Artifact
-    // instead of re-ingesting the same bytes into a second copy.
-    for (const entry of retracted.entries ?? []) {
-      for (const attachment of entry.attachments) imageAttachments.stageRetained(attachment);
-    }
-    if ((retracted.entries ?? []).some((entry) => entry.attachments.length > 0)) {
+    // Retracted messages carry their committed attachments back, restaged in
+    // entry order under the Host's per-message count so the restored draft is
+    // always submit-able (see restageRetractedEntries for the overflow rule).
+    const grouped = (retracted.entries ?? []).some((entry) => entry.attachments.length > 0);
+    if (grouped) {
+      const { texts, overflow } = restageRetractedEntries(retracted.entries!);
+      if (overflow > 0) {
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: formatUiMessage(
+            attachmentCopy.retractionOverflow,
+            { overflow, max: MAX_ATTACHMENT_COUNT },
+            locale,
+          ),
+        });
+      }
       syncStagedImagesStrip();
+      refillEditorFromQueues(texts.join('\n\n'));
+      return;
     }
     refillEditorFromQueues(retracted.text);
+  };
+
+  /**
+   * Restage retracted entries in order without flattening their grouping:
+   * entries stage their images sequentially, and an entry whose images would
+   * overflow the Host's per-message count contributes its text but none of its
+   * images — a merged 2×8-image retraction must not create a draft whose next
+   * submit is deterministically rejected. Returns the texts in entry order for
+   * one joined draft restore, plus how many images overflowed.
+   */
+  const restageRetractedEntries = (entries: readonly MakaRetractedMessageEntry[]) => {
+    const texts: string[] = [];
+    let overflow = 0;
+    let budget = MAX_ATTACHMENT_COUNT;
+    for (const entry of entries) {
+      texts.push(entry.text);
+      const take = entry.attachments.slice(0, Math.max(0, budget));
+      budget -= take.length;
+      overflow += entry.attachments.length - take.length;
+      for (const attachment of take) imageAttachments.stageRetained(attachment);
+      // Overflow images have no draft left that owns them (their message was
+      // retracted), so their Artifacts are deleted best-effort instead of
+      // lingering as ownerless user uploads.
+      for (const attachment of entry.attachments.slice(take.length)) {
+        deleteAttachmentBestEffort(attachment);
+      }
+    }
+    return { texts, overflow };
   };
 
   /**
@@ -1203,16 +1325,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     editor.addToHistory(text);
     const messageId = randomUUID();
     appendUserPrompt(state, text, messageId, true);
+    // The attempt synchronously claims the whole staged batch (and the Session
+    // it will ingest into): /attach, /detach, a second Send, /session, /new,
+    // and close now shape a *fresh* batch instead of mutating this one, so an
+    // in-flight submit can never send a detached item, clear one staged for
+    // the next message, or duplicate an image across two messages.
+    const claimed = imageAttachments.claim();
+    const claimedSessionId = input.driver.getSessionId();
+    syncStagedImagesStrip();
     requestRender();
     const task = (async () => {
       // The message-submit boundary owns ingestion, exactly like the Desktop
-      // composer: staged descriptors are read and ingested here, in staging
-      // order, before the Message dispatches. Each committed ref replaces its
-      // descriptor in staging, so a failed dispatch or refusal retries with the
-      // same Artifact instead of orphaning a second copy of the bytes.
+      // composer: claimed descriptors are read and ingested here, in batch
+      // order, before the Message dispatches. Staging stays untouched during
+      // the attempt — refs live in the attempt until the Host proves what
+      // happened to the Message.
       const attachments: AttachmentRef[] = [];
+      const batch: StagedImage[] = [...claimed];
+      const originals = new Map(batch.map((item) => [item.stagingKey, item]));
+      const freshlyIngestedKeys = new Set<string>();
       const freshlyIngested: AttachmentRef[] = [];
-      for (const item of imageAttachments.list()) {
+      for (const item of claimed) {
         if (item.kind === 'retained') {
           attachments.push(item.attachment);
           continue;
@@ -1224,24 +1357,56 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
             mimeType: item.mimeType,
             content,
           });
-          imageAttachments.replace(item.stagingKey, attachment);
           attachments.push(attachment);
           freshlyIngested.push(attachment);
+          freshlyIngestedKeys.add(item.stagingKey);
+          const index = batch.findIndex((entry) => entry.stagingKey === item.stagingKey);
+          if (index >= 0) {
+            batch[index] = {
+              kind: 'retained',
+              stagingKey: item.stagingKey,
+              attachment,
+            };
+          }
         } catch (error) {
-          // Nothing dispatched, so this attempt's Artifacts would be orphaned:
-          // delete them and leave staging untouched for the retry.
+          // Nothing dispatched. Roll the attempt back exactly: freshly
+          // committed Artifacts would be orphaned, so they are deleted, and
+          // the whole batch — untouched descriptors and pre-existing refs —
+          // returns to staging as it was before the attempt (freshly ingested
+          // entries revert to their original descriptors for a clean retry).
           for (const ref of freshlyIngested) deleteAttachmentBestEffort(ref);
+          rollbackStagedBatch(batch, originals, freshlyIngestedKeys);
           removeTransientUserMessage(messageId);
           reportError(error);
           requestRender();
           return;
         }
       }
+      // The Session must still be the one the Artifacts were ingested into:
+      // a mid-attempt /session switch abandons the attempt rather than
+      // submitting another Session's references. Its reset already cleaned
+      // staging, so the batch is not restored; these fresh Artifacts are
+      // deleted best-effort. (When no Session existed at claim time, the pin
+      // is the Session the ingests actually resolved under.)
+      const pinnedSessionId = claimedSessionId ?? input.driver.getSessionId();
+      if (pinnedSessionId !== null && input.driver.getSessionId() !== pinnedSessionId) {
+        for (const ref of freshlyIngested) deleteAttachmentBestEffort(ref);
+        removeTransientUserMessage(messageId);
+        requestRender();
+        return;
+      }
       if (attachments.length > 0) {
         appendUserPrompt(state, text, messageId, true, attachments);
-        syncStagedImagesStrip();
         requestRender();
       }
+      // Restore the attempt batch (with ingest replacements applied) when the
+      // refs must stay retryable; a session change voids the batch instead of
+      // restaging another Session's references.
+      const restoreBatch = () => {
+        if (pinnedSessionId !== null && input.driver.getSessionId() !== pinnedSessionId) return;
+        imageAttachments.prepend(batch);
+        syncStagedImagesStrip();
+      };
       try {
         const result = await input.driver.submitMessage(text, {
           messageId,
@@ -1250,28 +1415,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           ...options,
         });
         // Runtime Host resolved the Skills this Message named and refused it.
-        // Retire the row it belongs to and report the failure in its place.
+        // Retire the row it belongs to and report the failure in its place;
+        // the committed refs stay staged (retained) so the retry reuses them.
         if (result?.disposition === 'blocked') {
           removeTransientUserMessage(messageId);
+          restoreBatch();
           showSkillInvocation(result.skillInvocation);
           return;
         }
-        // The Message is the attachments' durable owner now.
-        imageAttachments.clear();
-        syncStagedImagesStrip();
-        // It admitted them instead. The receipt says what was loaded and what
-        // was dropped, and the submit answer is the only place it appears: the
+        // `undefined` means the outcome could not be proven: the Message may
+        // have been admitted. Ownership stays with the attempt — the refs go
+        // back to staging as retained items, so reconnect reconciliation that
+        // retires the row leaves neither an orphaned Artifact nor a lost
+        // retry; a user retry reuses the exact same Artifacts.
+        if (result === undefined) {
+          restoreBatch();
+          return;
+        }
+        // Definite admission: the Message is the attachments' durable owner.
+        // It admitted them. The receipt says what was loaded and what was
+        // dropped, and the submit answer is the only place it appears: the
         // Turn arrives through the started-Turn subscription, which carries
         // Session state rather than this Message's admission.
-        if (result?.disposition === 'turn_started' && result.skillInvocation) {
+        if (result) {
           const { loaded, failed } = result.skillInvocation;
           if (loaded.length > 0 || failed.length > 0) showSkillInvocation(result.skillInvocation);
         }
       } catch (error) {
-        // The Message never became anything, so its row goes with the failure
-        // notice that replaces it. The text stays in editor history for a
-        // retry, and staging keeps the retained refs so that retry reuses the
-        // exact Artifacts it already committed.
+        // The Message never became anything (a proven failure, or a dispatch
+        // that never happened), so its row goes with the failure notice that
+        // replaces it. The committed refs return to staging as retained items
+        // and the text stays in editor history for a retry that reuses the
+        // exact Artifacts.
+        restoreBatch();
         removeTransientUserMessage(messageId);
         reportError(error);
       } finally {
@@ -1279,6 +1455,21 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       }
     })();
     trackEnqueue(task);
+  };
+
+  /** Put an attempt's batch back at the front of staging, reverting any
+   * freshly ingested entries to their original descriptors (their Artifacts
+   * are being deleted, so a retry must re-ingest from the still-owned file). */
+  const rollbackStagedBatch = (
+    batch: readonly StagedImage[],
+    originals: ReadonlyMap<string, StagedImage>,
+    freshlyIngestedKeys: ReadonlySet<string>,
+  ): void => {
+    const restored = batch.map((item) =>
+      freshlyIngestedKeys.has(item.stagingKey) ? (originals.get(item.stagingKey) ?? item) : item,
+    );
+    imageAttachments.prepend(restored);
+    syncStagedImagesStrip();
   };
 
   // Enter during a turn asks the Host to place the message at the current
@@ -1344,6 +1535,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // available — the single source the picker and connection/model lookups read.
   let modelChoices = input.modelChoices;
   let connectionIdentities = input.connectionIdentities;
+  // Derived, never mirrored: both the choices and the selected target move —
+  // the Host republishes its catalog, the user switches model — and a stored
+  // copy of what the two imply has to be resynchronized at every one of those
+  // points or go stale at the one that was missed.
+  // The slug and model identify the target; the id narrows it only once the
+  // caller or a session summary has supplied one, because two connections can
+  // share a slug across a rebind but a caller need not know either id.
+  const currentModelChoice = (): ModelChoice | undefined =>
+    modelChoices?.find(
+      (choice) =>
+        choice.connectionSlug === connectionSlug &&
+        choice.model === model &&
+        (connectionId === undefined || choice.connectionId === connectionId),
+    );
+  const onInitialTarget = (): boolean =>
+    connectionId === input.connectionId &&
+    connectionSlug === input.connectionSlug &&
+    model === input.model;
+  /** The caller's value stands only while no choice describes the target it came with. */
+  const currentModelContextWindow = (): number | undefined =>
+    currentModelChoice()?.contextWindow ??
+    (onInitialTarget() ? input.modelContextWindow : undefined);
+  // The Host resolved these when it projected the choice — including a relay's
+  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // describes offers none rather than a locally guessed list.
+  const currentThinkingLevels = (): readonly ThinkingLevel[] =>
+    currentModelChoice()?.thinkingLevels ?? [];
+  unsubscribeModelCatalogChanges = input.subscribeModelCatalogChanges?.((refresh) => {
+    if (closed) return;
+    modelChoices = refresh.modelChoices;
+    connectionIdentities = refresh.connectionIdentities;
+    requestRender();
+  });
   // Monotonic attempt id: each setup submit captures one, and any transition
   // that abandons the in-flight attempt (back, re-pick, close) increments it so
   // a late verify/save settlement cannot clobber a newer attempt.
@@ -1620,9 +1844,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const adoptSessionMetadata = (summary: SessionSummary, announceIdentity = true) => {
     cwd = summary.cwd ?? cwd;
     setSessionTitle(summary.name);
-    const previousModel = model;
-    const previousConnectionId = connectionId;
-    const previousConnectionSlug = connectionSlug;
     model = summary.model;
     connectionId = summary.llmConnectionId;
     connectionSlug = summary.llmConnectionSlug;
@@ -1635,41 +1856,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
     }
     connectionIdentityNotice = identityNotice;
-    const matchingChoice = modelChoices?.find(
-      (choice) =>
-        choice.connectionId === summary.llmConnectionId &&
-        choice.connectionSlug === summary.llmConnectionSlug,
-    );
-    providerType =
-      matchingChoice?.providerType ??
-      (previousConnectionId === summary.llmConnectionId &&
-      previousConnectionSlug === summary.llmConnectionSlug
-        ? providerType
-        : undefined);
-    const contextWindowMatch = modelChoices?.find(
-      (choice) =>
-        choice.connectionId === summary.llmConnectionId &&
-        choice.connectionSlug === summary.llmConnectionSlug &&
-        choice.model === summary.model,
-    );
-    if (contextWindowMatch) {
-      modelContextWindow = contextWindowMatch.contextWindow;
-    } else if (
-      previousConnectionId !== summary.llmConnectionId ||
-      previousConnectionSlug !== summary.llmConnectionSlug ||
-      previousModel !== summary.model
-    ) {
-      modelContextWindow = undefined;
-    }
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    // Choice-first: a relay model's user-declared levels live on the ModelChoice;
-    // the metadata fallback serves providers whose variants derive from the
-    // model id alone.
-    thinkingLevels =
-      contextWindowMatch?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, summary.model) : []);
     refreshEditorCwd?.(cwd);
   };
 
@@ -1686,17 +1875,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const previousModel = transcriptLastUsedModel ?? model;
     await input.driver.setModel(nextModel);
     model = nextModel;
-    // Same-connection switch: scope the choice lookup to the live connection
-    // (another connection may expose the same model id with different
-    // declared thinking levels).
-    const match = modelChoices?.find(
-      (choice) => choice.connectionSlug === connectionSlug && choice.model === nextModel,
-    );
-    if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      match?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1715,9 +1894,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       return;
     }
-    if (!choice.connectionId) {
-      throw new Error('Model choice is missing its exact Connection identity');
-    }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const connectionLabels = modelChoiceConnectionLabels(modelChoices ?? [choice]);
@@ -1725,11 +1901,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     model = choice.model;
     connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
-    providerType = choice.providerType;
-    modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -2106,7 +2278,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '正在回退到该轮之前…',
+      text: TUI_REWIND_COPY[locale].pending,
     };
     state.entries.push(pendingNotice);
     requestRender();
@@ -2131,9 +2303,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: refill
-          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
-          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+        text: refill ? TUI_REWIND_COPY[locale].doneRefilled : TUI_REWIND_COPY[locale].doneKeptDraft,
       });
       requestRender();
     } catch (error) {
@@ -2341,7 +2511,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         apiKey: wizardApiKey,
         baseUrl: wizardBaseUrl,
         enabledModelIds,
-        models: wizardModels,
       })
       .then(
         (result) => {
@@ -2660,6 +2829,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // prefixed select value so they never collide with Maka session ids. A scan
     // error is surfaced (not silently swallowed): degrade to no rows but tell
     // the user why, so a real store bug isn't mistaken for "no sessions".
+    // Deliberate #2672 exception: the interpolated detail is a local
+    // file-scan diagnostic (not backend copy) and the TUI has no log channel
+    // to carry it, so dropping it would hide the only debugging signal.
     const foreignByValue = new Map<string, ForeignSessionSummary>();
     if ('error' in foreignScan) {
       const detail =
@@ -2667,7 +2839,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `读取外部对话失败：${detail}`,
+        text: formatUiMessage(
+          TUI_SESSION_ACTIONS_COPY[locale].foreignScanFailed,
+          { detail },
+          locale,
+        ),
       });
     } else {
       for (const summary of foreignScan.summaries) {
@@ -2752,7 +2928,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '没有可回退的轮次。',
+        text: TUI_REWIND_COPY[locale].noTargets,
       });
       requestRender();
       return;
@@ -2761,9 +2937,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       value: target.turnId,
       label: target.label,
     }));
+    const rewindCopy = TUI_REWIND_COPY[locale];
     showSelectPicker(
-      'Rewind',
-      'Rewind',
+      rewindCopy.pickerTitle,
+      rewindCopy.pickerTitle,
       items,
       (item) => {
         // runControl drops the action silently when busy is already held (e.g.
@@ -2774,7 +2951,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+            text: rewindCopy.busy,
           });
           requestRender();
           return;
@@ -2784,7 +2961,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        hint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
+        hint: rewindCopy.pickerHint,
       },
     );
   };
@@ -2792,17 +2969,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const newSession = async (): Promise<boolean> => {
     try {
       await input.driver.startNewSession();
-    } catch (error) {
+    } catch {
       // The identity swap was aborted driver-side: the previous Session, its
       // transcript, and every user-command card stay exactly as they were.
-      // Surface why instead of silently stranding the running commands.
+      // Surface the failure instead of silently stranding the running
+      // commands; the driver's raw error text is not product copy (#2672).
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text:
-          error instanceof Error && error.message.length > 0
-            ? error.message
-            : '无法开始新会话：停止本地命令失败，请稍后重试。',
+        text: TUI_SESSION_ACTIONS_COPY[locale].newSessionFailed,
       });
       requestRender();
       return false;
@@ -2967,13 +3142,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '当前没有可调用的技能。',
+        text: skillsCopy.noneAvailable,
       });
       requestRender();
       return;
     }
     showSelectPicker(
-      'Invoke Skill',
+      skillsCopy.pickerTitle,
       String(entries.length),
       skillPickerItems(entries),
       (item) => {
@@ -2985,7 +3160,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   };
 
   const showThinkingLevelList = () => {
-    const items = thinkingLevelPickerItems(thinkingLevels, thinkingLevel, locale);
+    const items = thinkingLevelPickerItems(currentThinkingLevels(), thinkingLevel, locale);
     showSelectPicker(
       pickerCopy.thinkingPickerTitle,
       thinkingLevel ?? 'default',
@@ -3442,6 +3617,67 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         void runControl(compactSession);
       },
     },
+    copy: {
+      description: primaryGuidance.commands.copy,
+      // Refused mid-turn: copy grabs the finished reply, and while a turn streams
+      // the last assistant entry is the half-written one — copying that would
+      // silently hand back a partial message. Wait for the turn (or Esc) first.
+      midTurn: 'refuse',
+      run: (parts: string[]) => {
+        const scope = parts.length >= 2 ? parts[1] : undefined;
+        if (parts.length > 2 || (scope !== undefined && scope !== 'all')) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: copyCopy.usage,
+          });
+          requestRender();
+          return;
+        }
+        const copyAll = scope === 'all';
+        const text = copyAll
+          ? serializeTranscriptText(state, {
+              user: copyCopy.roleUser,
+              assistant: copyCopy.roleAssistant,
+              goalContinuation: copyCopy.roleGoalContinuation,
+              legacyAutomation: copyCopy.roleLegacyAutomation,
+            })
+          : lastAssistantText(state);
+        if (!text) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'info',
+            text: copyCopy.nothingToCopy,
+          });
+          requestRender();
+          return;
+        }
+        const result = copyToClipboard(terminal, text);
+        if (!result.ok) {
+          state.entries.push({
+            kind: 'notice',
+            level: 'error',
+            text: formatUiMessage(
+              copyCopy.tooLarge,
+              { bytes: result.bytes, limit: result.limit },
+              locale,
+            ),
+          });
+          requestRender();
+          return;
+        }
+        state.entries.push({
+          kind: 'notice',
+          level: 'info',
+          text: formatUiMessage(
+            copyAll ? copyCopy.copiedAll : copyCopy.copiedLast,
+            { count: text.length },
+            locale,
+          ),
+        });
+        requestRender();
+      },
+    },
     exit: {
       description: primaryGuidance.commands.exit,
       // isExitPrompt (which also matches bare "quit"/"exit" without a slash)
@@ -3535,7 +3771,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /skill，或直接在消息中输入 /skill:<name>',
+            text: skillsCopy.usage,
           });
           requestRender();
           return;
@@ -3596,6 +3832,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       description: primaryGuidance.commands.thinking,
       midTurn: 'refuse',
       run: (parts: string[]) => {
+        const thinkingLevels = currentThinkingLevels();
         if (parts.length === 1) {
           if (thinkingLevels.length === 0) {
             state.entries.push({

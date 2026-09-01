@@ -119,6 +119,12 @@ function installStorybookRenderProbe({ storyId }) {
   connect();
 }
 
+/* Both schemes, not just light. Dark is where a theme regression actually
+   hides: light and dark are separate token blocks, so a rule that resolves in
+   one can be undefined, inverted or invisible in the other and nothing in a
+   light-only sweep says so. Every story runs twice. */
+const COLOR_SCHEMES = ['light', 'dark'];
+
 export function catalogJobs(storyIndex) {
   const entries = storyIndex?.entries;
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
@@ -126,16 +132,16 @@ export function catalogJobs(storyIndex) {
   }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .map((entry) => ({ storyId: entry.id }));
+    .flatMap((entry) => COLOR_SCHEMES.map((colorScheme) => ({ storyId: entry.id, colorScheme })));
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
 
-export function storyUrl(baseUrl, storyId) {
+export function storyUrl(baseUrl, storyId, colorScheme = 'light') {
   const url = new URL('/iframe.html', baseUrl);
   url.searchParams.set('id', storyId);
   url.searchParams.set('viewMode', 'story');
-  url.searchParams.set('globals', 'colorScheme:light');
+  url.searchParams.set('globals', `colorScheme:${colorScheme}`);
   return url.href;
 }
 
@@ -143,8 +149,12 @@ export function storyViewport(storyId) {
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
+export function jobLabel(job) {
+  return `${job.storyId} (${job.colorScheme})`;
+}
+
 async function smokeStory(page, baseUrl, job, options = {}) {
-  const prefix = `[${job.storyId}]`;
+  const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
     if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
@@ -158,7 +168,8 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
-    await page.goto(storyUrl(baseUrl, job.storyId), { waitUntil: 'load' });
+    await page.emulateMedia({ colorScheme: job.colorScheme });
+    await page.goto(storyUrl(baseUrl, job.storyId, job.colorScheme), { waitUntil: 'load' });
 
     try {
       await page.waitForFunction(
@@ -242,10 +253,10 @@ async function runJobs(browser, baseUrl, jobs, concurrency) {
       const page = await browser.newPage();
       try {
         await smokeStory(page, baseUrl, job);
-        process.stdout.write(`✓ ${job.storyId}\n`);
+        process.stdout.write(`✓ ${jobLabel(job)}\n`);
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
-        process.stdout.write(`✗ ${job.storyId}\n`);
+        process.stdout.write(`✗ ${jobLabel(job)}\n`);
       } finally {
         await page.close();
       }
@@ -335,7 +346,9 @@ async function runCli() {
   if (problems.length > 0) {
     throw new Error(`${problems.length} story render(s) failed:\n${problems.join('\n')}`);
   }
-  process.stdout.write(`Storybook render smoke passed (${jobs.length} stories).\n`);
+  process.stdout.write(
+    `Storybook render smoke passed (${storyIds.size} stories x ${COLOR_SCHEMES.length} schemes = ${jobs.length} renders).\n`,
+  );
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

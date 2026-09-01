@@ -65,11 +65,10 @@
  * stay in step and an upgrade that restructures the header keeps working.
  *
  * Bound on the header, NOT on the section root. SideNavSection wraps the whole
- * list body — every row, badge, and timestamp — in the same element as its title
+ * list body — every row and timestamp — in the same element as its title
  * (session-history-list.tsx), and custom properties inherit, so a rebind on the
- * root reaches all of it: measured live, the project session-count Badge went
- * 12px → 14px. The header is SideNavSection's first child and holds exactly the
- * title and subtitle.
+ * root would also resize the task content. The header is SideNavSection's first
+ * child and holds exactly the title and subtitle.
  *
  * Both halves of the tier move together. Size alone would leave the supporting
  * leading multiplier on a larger font and land the line box at 23.33px, off the
@@ -275,6 +274,74 @@
   padding-inline-start: var(--spacing-2) !important;
 }
 
+/*
+ * Project/task hover details. Astryx owns the floating surface, top-layer
+ * positioning, radius, padding, shadow, and open/close motion. This content
+ * only defines the reading hierarchy inside that established component.
+ */
+.maka-sidebar-hover-card {
+  font: var(--maka-text-supporting);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  width: min(304px, calc(100vw - var(--space-6)));
+  min-width: 248px;
+  text-align: start;
+}
+
+.maka-sidebar-hover-card-title {
+  font: var(--maka-text-heading-4);
+  min-width: 0;
+  color: var(--foreground);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.maka-sidebar-hover-card-preview {
+  color: var(--foreground-secondary);
+  line-height: var(--leading-relaxed);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.maka-sidebar-hover-card-preview[data-empty="true"],
+.maka-sidebar-hover-card-updated {
+  color: var(--muted-foreground);
+}
+
+.maka-sidebar-hover-card-meta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5) var(--space-1);
+  color: var(--foreground-secondary);
+}
+
+.maka-sidebar-hover-card-path {
+  font: var(--maka-text-code);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.maka-sidebar-hover-card-updated {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-0-5);
+}
+
+.maka-sidebar-hover-card-updated small {
+  font: inherit;
+}
+
 .maka-session-row-end,
 .maka-project-item-end {
   display: inline-flex;
@@ -461,4 +528,128 @@
   color: var(--muted-foreground);
   letter-spacing: var(--tracking-wide);
   white-space: nowrap;
+}
+
+/*
+ * Multi-select.
+ *
+ * The marked state is a background, not a border: the rail already spends its
+ * border vocabulary on the active row's own chrome, and a second outlined
+ * treatment beside it reads as two competing "current" marks rather than one
+ * current row among several marked ones. `--color-overlay-pressed` is the
+ * heavier of the rail's two overlays, so a marked row sits visibly above a
+ * hovered one without inventing a colour.
+ */
+.maka-session-row[data-selected='true'] > div > .astryx-side-nav-item {
+  background: var(--color-overlay-pressed);
+}
+
+/*
+ * Shift-click extends a text selection from wherever the last one was anchored,
+ * and in a list of titles that paints a blue smear across the rows the user is
+ * marking. It cannot be fixed from the click handler — the browser starts the
+ * selection on mousedown, before any click exists — so it is refused here.
+ */
+.maka-session-row {
+  user-select: none;
+}
+
+/*
+ * The bar heads the LIST, not the chrome, so it carries no rule of its own.
+ * SideNav already draws one under the whole sticky top region; a second one
+ * here put two hairlines 9px apart and grouped the bar upwards, away from the
+ * rows it governs.
+ */
+.maka-session-selection-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-block: var(--spacing-1) var(--spacing-2);
+  /*
+   * Opaque, because rows scroll underneath it. `--surface-canvas` is not a
+   * guess: the rail's ground is painted by `astryx-layout-panel` and resolves
+   * to the same oklch(0.975 0 0) this token does.
+   */
+  background: var(--surface-canvas);
+}
+
+/*
+ * Master box, count, way out. The box leads so it shares the rows' leading
+ * column: "all of these" is a claim the eye should be able to check against the
+ * boxes directly beneath it, not one it has to take on trust.
+ */
+.maka-session-selection-bar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Takes the leftover width so the way-out button stays on the trailing edge. */
+.maka-session-selection-count {
+  flex: 1 1 auto;
+}
+
+/*
+ * The row's own leading column, which exists only while the mode does. Same
+ * gap as the head above, so a box and the box governing it sit on one line.
+ */
+.maka-session-row-check {
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  z-index: 1;
+}
+
+/*
+ * Rows shift out of the way of their own box rather than the box overlapping
+ * the status dot. Padding on the row, not a margin on the item, so the hover
+ * and selected backgrounds still span the full width.
+ */
+.maka-session-row[data-selecting='true'] {
+  padding-inline-start: calc(20px + var(--space-2));
+}
+
+/*
+ * `min-width: 0` is what a flex child needs to be allowed to ellipsize rather
+ * than be crushed, and `nowrap` is what stops the crush from becoming one
+ * character per line — which is what a three-button single row did to it at
+ * 244px. Neither is decorative: the count is the number the confirm will name.
+ */
+/*
+ * `min-width: 0` is what a flex child needs to be allowed to ellipsize rather
+ * than be crushed, and `nowrap` is what stops the crush from becoming one
+ * character per line — which is what a three-button single row did to it at
+ * 244px. Neither is decorative: this is the number the confirm will name.
+ */
+.maka-session-selection-count {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: var(--typography-caption);
+  color: var(--maka-text-supporting);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Two equal halves, not a flex row that lets the longer label win. Grid keeps
+ * 归档 and 删除 the same size at every rail width, so neither reads as the
+ * primary action — one of them is destructive and must not be emphasised by
+ * accident.
+ */
+.maka-session-selection-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-1);
+}
+
+.maka-session-selection-actions > button {
+  width: 100%;
+  min-width: 0;
 }

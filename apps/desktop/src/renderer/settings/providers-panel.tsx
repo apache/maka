@@ -34,7 +34,8 @@ import {
 } from '@astryxdesign/core';
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
-  type LlmConnection,
+  type IdentifiedLlmConnection,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
@@ -45,6 +46,7 @@ import {
   ProviderCatalogPage,
   ProviderSetupPage,
   type CatalogFilter,
+  type CreatedOAuthConnectionIdentity,
   type SetupTarget,
 } from './provider-catalog-page';
 import { isRetiredProvider } from '@maka/core/provider-registry';
@@ -53,11 +55,20 @@ import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
-import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
+import {
+  getProviderSettingsCopy,
+  providerPanelActionErrorMessage,
+  ConnectionSaveUncertaintyObserver,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
+import {
+  RuntimeHostSettingsGenerationBoundary,
+  useRuntimeHostSettingsErrorReporter,
+} from './runtime-host-settings-target.js';
 
-export type { ConnectionsBridge } from './provider-panel-shared';
+export type { ConnectionsBridge } from '../features/connection-settings';
 
 /**
  * Where the panel is. Four levels, one container, one back affordance:
@@ -79,16 +90,25 @@ export type { ConnectionsBridge } from './provider-panel-shared';
 type PanelRoute =
   | { kind: 'list' }
   | { kind: 'catalog' }
-  | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
-  | { kind: 'detail'; slug: string };
+  | {
+      kind: 'setup';
+      target: SetupTarget;
+      origin: 'list' | 'catalog';
+    }
+  | {
+      kind: 'adopting-connection';
+      identity: DesktopConnectionOnboardingIdentity | CreatedOAuthConnectionIdentity;
+    }
+  | { kind: 'detail'; connectionId: string };
 
 function backTarget(route: PanelRoute): PanelRoute {
   if (route.kind === 'setup' && route.origin === 'catalog') return { kind: 'catalog' };
   return { kind: 'list' };
 }
 
-export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
+type ProvidersPanelProps = {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   initialPage?: 'connections' | 'catalog';
   /**
    * When set, open this connection's detail once the list has loaded.
@@ -104,9 +124,29 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   onInitialCatalogConsumed?: () => void;
   /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
+};
+
+export function ProvidersPanel(props: ProvidersPanelProps) {
+  return (
+    <ConnectionSaveUncertaintyObserver store={props.apiKeyOnboardingBridge?.saveUncertainty}>
+      {(hasOnboardingUncertainty) => (
+        <ProvidersPanelContent
+          {...props}
+          hasOnboardingUncertainty={hasOnboardingUncertainty}
+        />
+      )}
+    </ConnectionSaveUncertaintyObserver>
+  );
+}
+
+function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed, hasOnboardingUncertainty }: ProvidersPanelProps & {
+  hasOnboardingUncertainty: boolean;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const [connections, setConnections] = useState<LlmConnection[]>([]);
+  // Projected, not merely identified: the detail editor renders the Host's
+  // resolved entries for a connection the user has not edited, so the catalog
+  // must survive this state rather than being narrowed away here.
+  const [connections, setConnections] = useState<ProjectedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
   // Browsing state, not navigation state: it outlives the catalog so that
@@ -119,29 +159,34 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const addButtonRef = useRef<HTMLButtonElement>(null);
   // Which row the user left the list from, so returning puts focus back where
   // they were rather than on the page's primary action.
-  const listReturnFocusRef = useRef<string | null>(null);
+  const returnFocusRef = useRef<
+    | { level: 'list'; connectionId: string }
+    | { level: 'catalog'; providerType: ProviderType }
+    | null
+  >(null);
   const detailTitleId = useId();
+  const setupTitleId = useId();
   const locale = useUiLocale();
   const providerCopy = getProviderSettingsCopy(locale);
   const copy = providerCopy.panel;
 
-  async function reload(): Promise<boolean> {
+  async function reload(): Promise<Awaited<ReturnType<ConnectionsBridge['getSnapshot']>> | null> {
     const ticket = ++providersReloadTicketRef.current;
     try {
       const snapshot = await bridge.getSnapshot();
-      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
+      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return null;
       setConnections(snapshot.connections);
       setDefaultSlug(snapshot.defaultConnection);
       setLoadError(null);
       setLoading(false);
-      return true;
+      return snapshot;
     } catch (error) {
-      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return false;
+      if (!providersPanelMountedRef.current || providersReloadTicketRef.current !== ticket) return null;
       const message = providerPanelActionErrorMessage(error, locale);
       setLoadError(message);
       setLoading(false);
       reportHostError(copy.loadFailed, message);
-      return false;
+      return null;
     }
   }
 
@@ -158,23 +203,51 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      initialPage !== 'catalog' ||
+      initialCatalogOpenedRef.current
+    ) return;
     initialCatalogOpenedRef.current = true;
     setRoute({ kind: 'catalog' });
     onInitialCatalogConsumed?.();
-  }, [initialPage, loading, onInitialCatalogConsumed]);
+  }, [hasOnboardingUncertainty, initialPage, loading, onInitialCatalogConsumed]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
+    if (route.kind === 'adopting-connection') {
+      const created = connections.find(
+        (connection) => connection.connectionId === route.identity.connectionId,
+      );
+      if (!created) return;
+      if (
+        created.slug !== route.identity.slug ||
+        created.providerType !== route.identity.providerType
+      ) {
+        setRoute({ kind: 'list' });
+        reportHostError(copy.loadFailed, copy.connectionIdentityChanged);
+        return;
+      }
+      returnFocusRef.current = { level: 'list', connectionId: created.connectionId };
+      setRoute({ kind: 'detail', connectionId: created.connectionId });
+      return;
+    }
     if (loading || !initialConnectionSlug || initialConnectionDetailOpenedRef.current) return;
-    if (!connections.some((candidate) => candidate.slug === initialConnectionSlug)) return;
+    const connection = connections.find((candidate) => candidate.slug === initialConnectionSlug);
+    if (!connection?.connectionId) return;
     initialConnectionDetailOpenedRef.current = true;
-    setRoute({ kind: 'detail', slug: initialConnectionSlug });
-  }, [loading, initialConnectionSlug, connections]);
+    setRoute({ kind: 'detail', connectionId: connection.connectionId });
+  }, [loading, initialConnectionSlug, connections, route, copy.connectionIdentityChanged, copy.loadFailed, reportHostError]);
 
   const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || !initialCreateProviderType || initialCreateOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      !initialCreateProviderType ||
+      initialCreateOpenedRef.current
+    ) return;
     initialCreateOpenedRef.current = true;
     // Straight to the form, so `origin` is the list: the user never saw a
     // catalog and must not be dropped into one on the way out.
@@ -188,7 +261,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       },
     });
     onInitialCreateProviderConsumed?.();
-  }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
+  }, [hasOnboardingUncertainty, loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
   function goBack() {
     setRoute(backTarget(route));
@@ -198,24 +271,29 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'list' });
   }
 
-  function openDetail(slug: string) {
-    listReturnFocusRef.current = slug;
-    setRoute({ kind: 'detail', slug });
+  function openDetail(connection: ProjectedLlmConnection) {
+    returnFocusRef.current = { level: 'list', connectionId: connection.connectionId };
+    setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }
 
   function openCatalog() {
-    listReturnFocusRef.current = null;
+    returnFocusRef.current = null;
     setRoute({ kind: 'catalog' });
   }
 
   const selected = route.kind === 'detail'
-    ? connections.find((connection) => connection.slug === route.slug) ?? null
+    ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
+  const pendingConnectionIdentity = route.kind === 'adopting-connection' ? route.identity : null;
 
   // A detail route whose connection vanished (deleted in another window) is an
   // unsatisfiable route, not a state to correct: the list is what it renders
   // as. Deriving that beats scheduling a setState from inside render.
-  const level: PanelRoute['kind'] = route.kind === 'detail' && !selected ? 'list' : route.kind;
+  const level: Exclude<PanelRoute['kind'], 'adopting-connection'> = route.kind === 'adopting-connection'
+    ? 'list'
+    : route.kind === 'detail' && !selected
+      ? 'list'
+      : route.kind;
 
   useSettingsRouteFocus({
     level,
@@ -223,7 +301,13 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     isReady: !loading,
     resolveTarget: (current) => {
       const find = (selector: string) => document.querySelector<HTMLElement>(selector);
-      if (current === 'catalog') return find('[data-maka-contract="provider-catalog"] input');
+      if (current === 'catalog') {
+        const target = returnFocusRef.current;
+        returnFocusRef.current = null;
+        return (target?.level === 'catalog'
+          ? find(`[data-provider="${target.providerType}"] button`)
+          : null) ?? find('[data-maka-contract="provider-catalog"] input');
+      }
       if (current === 'setup') {
         return find('[data-maka-contract="provider-setup"] input')
           ?? find('[data-maka-contract="provider-setup"]');
@@ -235,9 +319,11 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       // survive the levels in between. The row the user came from may be gone —
       // that is exactly what a deletion does — so the primary action is the
       // fallback, not the default.
-      const returnToSlug = listReturnFocusRef.current;
-      listReturnFocusRef.current = null;
-      return (returnToSlug ? find(`[data-connection-slug="${returnToSlug}"] button`) : null)
+      const target = returnFocusRef.current;
+      returnFocusRef.current = null;
+      return (target?.level === 'list'
+        ? find(`[data-connection-id="${target.connectionId}"] button`)
+        : null)
         ?? addButtonRef.current;
     },
   });
@@ -268,7 +354,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             backLabel={copy.backToList}
             logo={<ProviderLogo type={selected.providerType} compact />}
             titleId={detailTitleId}
-            title={selected.name}
+            title={connectionDisplayName(selected, connections)}
             /* The control sits in the slot that shows the state. Setting the
                default connection was reachable only from the command palette,
                while this page displayed a 默认 Badge and offered no way to
@@ -306,7 +392,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   tooltip={copy.setDefaultTitle}
                   clickAction={async () => {
                     try {
-                      await bridge.setDefault(selected.slug);
+                      await bridge.setDefault({ connectionId: selected.connectionId, slug: selected.slug });
                       await reload();
                     } catch (error) {
                       // The state is unchanged on failure, so the Badge stays
@@ -322,7 +408,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
             subtitle={connectionSubtitle(selected, locale)}
           />
           <ConnectionDetail
-            key={selected.slug}
+            key={selected.connectionId ?? selected.slug}
             bridge={bridge}
             connection={selected}
             isDefault={selected.slug === defaultSlug}
@@ -344,35 +430,64 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
           />
           <ProviderCatalogPage
             filter={catalogFilter}
+            connections={connections}
             onFilterChange={setCatalogFilter}
-            onPick={(target) => setRoute({ kind: 'setup', target, origin: 'catalog' })}
+            onPick={(target) => {
+              returnFocusRef.current = { level: 'catalog', providerType: target.providerType };
+              setRoute({ kind: 'setup', target, origin: 'catalog' });
+            }}
           />
         </VStack>
       ) : level === 'setup' && route.kind === 'setup' ? (
         <VStack gap={5}>
           <SettingsRouteHeader
             onBack={goBack}
+            isBackDisabled={hasOnboardingUncertainty}
             backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
             logo={<ProviderLogo type={route.target.providerType} compact />}
-            title={copy.connectTitle(route.target.name)}
+            titleId={setupTitleId}
+            title={route.target.method === 'account' && route.target.cardId !== 'github-copilot'
+              ? providerCopy.oauthSection.addAccountTitle(route.target.name)
+              : copy.connectTitle(route.target.name)}
             subtitle={route.target.method === 'account'
               ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
               : copy.createSubtitle}
           />
-          <ProviderSetupPage
-            bridge={bridge}
-            target={route.target}
-            existingSlugs={connections.map((connection) => connection.slug)}
-            onCancel={goBack}
-            onAccountChanged={async () => { await reload(); }}
-            onCreated={async (slug, modelDiscoveryError) => {
-              await reload();
-              if (!providersPanelMountedRef.current) return;
+          <RuntimeHostSettingsGenerationBoundary>
+            <ProviderSetupPage
+              bridge={bridge}
+              apiKeyOnboardingBridge={apiKeyOnboardingBridge}
+              target={route.target}
+              existingSlugs={connections.map((connection) => connection.slug)}
+              labelledBy={setupTitleId}
+              hasSaveUncertainty={hasOnboardingUncertainty}
+              onCancel={goBack}
+              onAccountCreated={async (identity) => {
+                if (!identity) return;
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboarded={async (identity) => {
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboardingOutcomeUnknown={async () => {
+                setRoute({ kind: 'list' });
+                await reload();
+              }}
+              onCreated={async (slug, modelDiscoveryError) => {
+              const snapshot = await reload();
+              if (!snapshot || !providersPanelMountedRef.current) return;
               // The new connection's detail, not the list: creating it is the
               // start of setting it up, and every next move — pick the default
               // model, enable models, fix the endpoint the discovery error just
               // complained about — is on that page.
-              setRoute({ kind: 'detail', slug });
+              const created = snapshot.connections.find((connection) => connection.slug === slug);
+              if (!created?.connectionId) {
+                reportHostError(copy.loadFailed, copy.connectionRemoved);
+                return;
+              }
+              setRoute({ kind: 'detail', connectionId: created.connectionId });
               if (modelDiscoveryError) {
                 const providerName = providerDisplay(route.target.providerType, locale).name;
                 reportHostError(
@@ -383,11 +498,15 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   ),
                 );
               }
-            }}
-          />
+              }}
+            />
+          </RuntimeHostSettingsGenerationBoundary>
         </VStack>
       ) : (
         <>
+          {route.kind === 'detail' && !selected && (
+            <Banner status="warning" role="status" title={copy.connectionRemoved} />
+          )}
           <HStack gap={2} vAlign="center" hAlign="between">
             <HStack gap={2} vAlign="center">
               <Heading level={3}>{copy.connections}</Heading>
@@ -400,10 +519,52 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               variant="primary"
               label={copy.addConnection}
               onClick={openCatalog}
+              isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty}
               data-maka-contract="add-connection"
             />
           </HStack>
-          {loadError ? (
+          {hasOnboardingUncertainty && (
+            <Banner
+              status="warning"
+              role="status"
+              title={providerCopy.add.onboardingOutcomeUnknown}
+              description={providerCopy.add.onboardingOutcomeUnknownDetail}
+              endContent={(
+                <HStack gap={2}>
+                  <Button
+                    variant="ghost"
+                    label={providerCopy.add.onboardingReloadConnections}
+                    onClick={() => void reload()}
+                  />
+                  <Button
+                    variant="secondary"
+                    label={providerCopy.add.onboardingRestart}
+                    onClick={() => {
+                      apiKeyOnboardingBridge?.saveUncertainty.restart();
+                      openCatalog();
+                    }}
+                  />
+                </HStack>
+              )}
+            />
+          )}
+          {pendingConnectionIdentity && loadError ? (
+            <Banner
+              status="warning"
+              role="status"
+              title={copy.connectedLoadFailed}
+              description={`${pendingConnectionIdentity.slug} · ${loadError}`}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : pendingConnectionIdentity ? (
+            <Banner
+              status="info"
+              role="status"
+              title={copy.connectedLoading}
+              description={pendingConnectionIdentity.slug}
+              endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
+            />
+          ) : loadError ? (
             <Banner
               status="error"
               title={copy.loadFailed}
@@ -415,7 +576,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} />}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty} />}
             />
           ) : (
             <List hasDividers>
@@ -424,15 +585,16 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                 const isDefault = connection.slug === defaultSlug;
                 return (
                   <ListItem
-                    key={connection.slug}
+                    key={connection.connectionId ?? connection.slug}
                     className="connectionRow"
+                    data-connection-id={connection.connectionId}
                     data-connection-slug={connection.slug}
                     data-disabled={connection.enabled ? undefined : 'true'}
                     startContent={<ProviderLogo type={connection.providerType} compact />}
                     label={(
                       <HStack gap={2} vAlign="center">
                         {/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/}
-                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connection.name}</span>
+                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connectionDisplayName(connection, connections)}</span>
                         {isDefault && <Badge variant="neutral" label={copy.default} />}
                       </HStack>
                     )}
@@ -448,7 +610,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                         <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
                       </HStack>
                     )}
-                    onClick={() => openDetail(connection.slug)}
+                    onClick={() => openDetail(connection)}
                   />
                 );
               })}
@@ -459,17 +621,35 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     </VStack>
   );
 
-  function chipAriaLabel(connection: LlmConnection, isDefault: boolean): string {
+  function chipAriaLabel(connection: IdentifiedLlmConnection, isDefault: boolean): string {
     const provider = providerDisplay(connection.providerType, locale).name;
     const status = connectionChipStatus(connection, locale);
-    return copy.chipAria(connection.name, provider, isDefault, status?.label);
+    return copy.chipAria(
+      connectionDisplayName(connection, connections),
+      provider,
+      isDefault,
+      status?.label,
+    );
   }
 }
 
 /** Provider · default model — the row's second line, and the detail's subtitle. */
-function connectionSubtitle(connection: LlmConnection, locale: 'zh' | 'en'): string {
+function connectionSubtitle(connection: IdentifiedLlmConnection, locale: 'zh' | 'en'): string {
   const providerName = providerDisplay(connection.providerType, locale).name;
   const parts = [providerName];
   if (connection.defaultModel) parts.push(connection.defaultModel);
   return parts.join(' · ');
+}
+
+function connectionDisplayName(
+  connection: IdentifiedLlmConnection,
+  connections: readonly IdentifiedLlmConnection[],
+): string {
+  const ambiguous = connections.some(
+    (candidate) =>
+      candidate.connectionId !== connection.connectionId &&
+      candidate.providerType === connection.providerType &&
+      candidate.name === connection.name,
+  );
+  return ambiguous ? `${connection.name} · ${connection.slug}` : connection.name;
 }

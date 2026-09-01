@@ -67,7 +67,11 @@ export type {
   ConnectionTestTicket,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
+  InteractiveOAuthLoginInput,
+  InteractiveOAuthLoginTarget,
+  InteractiveOAuthConnectionIdentity,
   InteractiveOAuthLoginTicket,
+  QueryInteractiveOAuthLoginResult,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
@@ -80,8 +84,7 @@ export type {
   ResolveNetworkProxyExecutionResult,
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
-  ResolveWebFetchExecutionResult,
-  UnavailableProviderActionAvailability,
+  ResolveHostOutboundExecutionResult,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');
@@ -240,12 +243,12 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
         coordinator.replaceConnectionRequestHeaders(connectionId, updates),
       resolveExecutionConnection: (ref) => coordinator.resolveExecutionConnection(ref),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),
-      resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
+      resolveHostOutboundExecution: () => coordinator.resolveHostOutboundExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
-      beginInteractiveOAuthLogin: (connectionId) =>
-        coordinator.beginInteractiveOAuthLogin(connectionId),
+      beginInteractiveOAuthLogin: (input) => coordinator.beginInteractiveOAuthLogin(input),
+      queryInteractiveOAuthLogin: (attemptId) => coordinator.queryInteractiveOAuthLogin(attemptId),
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),

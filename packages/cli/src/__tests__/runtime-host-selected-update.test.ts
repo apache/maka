@@ -27,10 +27,12 @@ import {
   type RuntimeHostUpdateCliOptions,
 } from '../runtime-host-update-command.js';
 import { parseRuntimeHostCommand } from '../runtime-host-cli.js';
+import { RuntimeHostLifecycleTransactionError } from '../runtime-host-lifecycle-transaction.js';
 import type { RuntimeHostUpdateSelection } from '../runtime-host-update-discovery.js';
 
 const INTEGRITY =
   'sha512-jUKdo/5dbM94KXq+kOZ1d+obhDLAENfI/QWr1PnXWcdu2PqDyLklJBtiVO6HRwoL1l40z1NE9Rq+hLAxCN0Fyg==';
+const DEPLOYMENT_ID = '00000000-0000-4000-8000-000000000001';
 const TARGET = {
   serviceId: 'b'.repeat(64),
   rootPath: '/srv/maka',
@@ -116,6 +118,53 @@ describe('managed Runtime Host selected update', () => {
         ]),
       false,
     );
+  });
+
+  it('requires exact canonical deployment authority for manual update consent', () => {
+    const args = [
+      'service',
+      'update',
+      '--target',
+      '2.0.0',
+      '--allow-manual-update',
+      '--managed-root-id',
+      TARGET.rootId,
+      '--expected-service-id',
+      TARGET.serviceId,
+      '--expected-root-path',
+      TARGET.rootPath,
+      '--expected-root-id',
+      TARGET.rootId,
+      '--expected-deployment-id',
+      DEPLOYMENT_ID,
+    ];
+    assert.deepEqual(parseRuntimeHostCommand(args), {
+      kind: 'runtime-host-service-update',
+      json: false,
+      managedRootId: TARGET.rootId,
+      selector: { kind: 'exact', version: '2.0.0' },
+      expectedTarget: { ...TARGET, deploymentId: DEPLOYMENT_ID },
+      allowManualUpdate: true,
+    });
+  });
+
+  it('carries interruption authority through selection and preserves active work', async () => {
+    let output = '';
+    const exitCode = await runManagedRuntimeHostSelectedUpdateCli(
+      { ...OPTIONS, allowInterruptActiveTasks: true },
+      {
+        resolveSelection: async (options) => {
+          assert.equal(options.allowInterruptActiveTasks, true);
+          throw new RuntimeHostLifecycleTransactionError('active_tasks', 'active work');
+        },
+        writeOutput(value) {
+          output += value;
+        },
+      },
+    );
+    const frame = decodeRuntimeHostServiceManagementFrame(output.trim());
+    assert.equal(exitCode, 1);
+    assert.equal(frame?.kind === 'error' ? frame.error.code : undefined, 'active_tasks');
   });
 
   it('hands one verified admitted package to the existing update transaction', async () => {
@@ -206,6 +255,33 @@ describe('managed Runtime Host selected update', () => {
       0,
     );
     assert.deepEqual(updateInput?.expectedHost, { hostEpoch: 'older-host', pid: 42 });
+
+    const legacySelection = updateSelection({
+      kind: 'manual_action',
+      reason: 'current_compatibility_unknown',
+    });
+    const recoveryUpdates: RuntimeHostUpdateCliOptions[] = [];
+    assert.equal(
+      await runManagedRuntimeHostSelectedUpdateCli(
+        {
+          ...OPTIONS,
+          managedRootId: TARGET.rootId,
+          expectedTarget: { ...TARGET, deploymentId: DEPLOYMENT_ID },
+          allowManualUpdate: true,
+        },
+        {
+          resolveSelection: async () => legacySelection,
+          withPackage: async (_candidate, use) => use('/verified/package'),
+          update: async (input) => {
+            recoveryUpdates.push(input);
+            return 0;
+          },
+        },
+      ),
+      0,
+    );
+    assert.equal(recoveryUpdates[0]?.expectedHost, undefined);
+    assert.equal(recoveryUpdates[0]?.allowInterruptActiveTasks, undefined);
   });
 });
 

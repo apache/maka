@@ -58,10 +58,10 @@ export interface RetainedImageAttachment {
 export type StagedImage = LocalImageDescriptor | RetainedImageAttachment;
 
 /**
- * One live draft's staged images, ordered. Submit consumes the list in order;
- * a descriptor that finished its ingest is replaced in place by its retained
- * ref so a failed dispatch (or a refusal) retries with the same Artifact
- * instead of orphaning a second copy of the bytes.
+ * One live draft's staged images, ordered. Send claims the whole list
+ * synchronously into an attempt-owned batch — draft edits after the claim
+ * (/attach, /detach, another Send) shape a fresh batch — so concurrent draft
+ * edits can never add, drop, or duplicate an image inside an in-flight submit.
  */
 export class TuiImageStaging {
   readonly #items: StagedImage[] = [];
@@ -104,6 +104,16 @@ export class TuiImageStaging {
 
   get size(): number {
     return this.#items.length;
+  }
+
+  /** Atomically take every staged item out of the draft as one owned batch. */
+  claim(): readonly StagedImage[] {
+    return this.#items.splice(0, this.#items.length);
+  }
+
+  /** Put a batch back at the front of the draft (before any newer items). */
+  prepend(items: readonly StagedImage[]): void {
+    this.#items.unshift(...items);
   }
 
   clear(): readonly StagedImage[] {

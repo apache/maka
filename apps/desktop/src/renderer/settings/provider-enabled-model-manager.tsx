@@ -20,7 +20,7 @@
 import { MultiSelector } from '@astryxdesign/core';
 import type { ModelCatalogEntry } from '@maka/core/model-catalog';
 import { useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { getProviderSettingsCopy } from '../features/connection-settings';
 
 /**
  * Adapts Maka's model catalog to Astryx's multi-select field.
@@ -34,7 +34,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
  * `enabledModelIds` remains the only product state.
  */
 export function EnabledModelManager(props: {
-  modelChoices: ModelCatalogEntry[];
+  modelChoices: readonly ModelCatalogEntry[];
   enabledModelIds: string[];
   disabled: boolean;
   onChange(ids: string[]): void;

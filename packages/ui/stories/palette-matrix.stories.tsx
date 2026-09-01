@@ -71,8 +71,8 @@ const paletteTokens = [
   ['background', '--background'],
   ['foreground', '--foreground'],
   ['accent', '--accent'],
-  ['info', '--info'],
   ['success', '--success'],
+  ['warning', '--warning'],
   ['destructive', '--destructive'],
 ] as const;
 

@@ -32,7 +32,16 @@ import type {
   DesktopRuntimeHostRef,
   DesktopSessionSummary,
 } from '../../preload/bridge-contract.js';
-import { Spinner, useMountedRef, useUiLocale } from '@maka/ui';
+import {
+  EMPTY_LISTED_SELECTION,
+  listedSelectionMasterState,
+  pruneListedSelection,
+  setAllListedSelected,
+  Spinner,
+  toggleListedSelection,
+  useMountedRef,
+  useUiLocale,
+} from '@maka/ui';
 import { ICON_SIZE, MessageSquare } from '@maka/ui/icons';
 import { getExternalSessionImportCopy } from '../locales/external-session-import-copy.js';
 import { localizedShellErrorMessage } from '../locales/shell-copy.js';
@@ -146,6 +155,75 @@ type ImportAttempt = {
   loadedCatalogItemCountBefore: number;
 };
 
+/**
+ * The page's import activity.
+ *
+ * `single` is one row's 导入 button; `batch` is the selection's. They are one
+ * state because they are one activity and cannot overlap — and `summary` is
+ * what the last batch left behind, which no other slot on this page can hold.
+ *
+ * A batch runs SEQUENTIALLY, and not because the Host cannot take two: it
+ * dedupes per (adapter, source id) and is happy to convert different
+ * conversations at once. The reasons are here, on this page. Recovery re-reads
+ * the whole catalog window an attempt came from, so overlapping attempts would
+ * race that read; a progress count is only true when one thing is happening;
+ * and the page has no useful answer to "which of these five failed" if they
+ * fail together.
+ */
+type ImportRun =
+  | { kind: 'idle'; summary?: ImportBatchOutcome }
+  | { kind: 'single'; attempt: ImportAttempt }
+  /** `current` is the one conversion actually in flight; the rest are queued. */
+  | { kind: 'batch'; done: number; total: number; current?: string };
+
+const IDLE_IMPORT_RUN: ImportRun = { kind: 'idle' };
+
+/** What one row of a batch did. */
+type ImportBatchDisposition = 'imported' | 'duplicated' | 'failed' | 'unknown';
+
+/**
+ * What a batch import can honestly say afterwards.
+ *
+ * `duplicated` is counted apart from `imported` because a row that already had
+ * a copy is selectable on purpose — re-importing is how one is refreshed — but
+ * a user who marked twelve and reads "imported 12" deserves to know that two of
+ * them now exist twice.
+ *
+ * `unknown` is neither a success nor a failure: the call did not answer, and
+ * only a catalog read settles whether the conversion landed. Folding it into
+ * failures is what would invite the retry that makes a second copy.
+ */
+type ImportBatchOutcome = {
+  imported: number;
+  duplicated: number;
+  failed: readonly string[];
+  unknown: readonly string[];
+};
+
+const EMPTY_IMPORT_BATCH_OUTCOME: ImportBatchOutcome = {
+  imported: 0,
+  duplicated: 0,
+  failed: [],
+  unknown: [],
+};
+
+function recordImportBatchResult(
+  outcome: ImportBatchOutcome,
+  sourceSessionId: string,
+  disposition: ImportBatchDisposition,
+): ImportBatchOutcome {
+  switch (disposition) {
+    case 'imported':
+      return { ...outcome, imported: outcome.imported + 1 };
+    case 'duplicated':
+      return { ...outcome, imported: outcome.imported + 1, duplicated: outcome.duplicated + 1 };
+    case 'failed':
+      return { ...outcome, failed: [...outcome.failed, sourceSessionId] };
+    case 'unknown':
+      return { ...outcome, unknown: [...outcome.unknown, sourceSessionId] };
+  }
+}
+
 type ImportRecovery =
   | { kind: 'landed'; attempt: ImportAttempt; importedSessionId: string }
   | { kind: 'not_recorded'; attempt: ImportAttempt };
@@ -199,17 +277,32 @@ export function ImportTasksSettingsPage(props: {
   const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
   const [catalog, setCatalog] = useState<CatalogState>(EMPTY_CATALOG);
-  const [sourceLoading, setSourceLoading] = useState(false);
-  const [sourceResolved, setSourceResolved] = useState(false);
+  /**
+   * One probe, three phases — not two booleans that are always written
+   * together. `sourceLoading && sourceResolved` was never a state this page
+   * could be in, and nothing enforced that.
+   */
+  const [sourceProbe, setSourceProbe] = useState<'idle' | 'loading' | 'resolved'>('idle');
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   /**
-   * At most one import at a time. Not because two conversions would collide —
-   * Desktop Main can take both — but because the first one to succeed calls
-   * `onImported`, which closes Settings and opens the new task, orphaning any
-   * other import on a page the user can no longer see.
+   * What import work this page is doing, and what the last run said.
+   *
+   * One state, not three. A single import and a batch are the same activity —
+   * a batch is a run of conversions the user asked for at once — and the
+   * summary is what that activity leaves behind. Keeping them apart invited
+   * combinations the page can never be in (a single import in flight while a
+   * batch runs) and cost the page hook budget it does not have: the renderer
+   * debt ledger refuses this file more stateful hooks than it already carries.
+   *
+   * Still at most one at a time, and still not because two conversions would
+   * collide — Desktop Main dedupes per (adapter, source id) and takes both
+   * happily. A single import ends by calling `onImported`, which closes
+   * Settings and opens the new task; anything else running would be orphaned on
+   * a page the user can no longer see. A batch stays here and reports instead,
+   * which is why it can hold several conversions where a single one cannot.
    */
-  const [activeImport, setActiveImport] = useState<ImportAttempt | null>(null);
+  const [importRun, setImportRun] = useState<ImportRun>(IDLE_IMPORT_RUN);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
@@ -223,6 +316,12 @@ export function ImportTasksSettingsPage(props: {
    * local lock and either exposes the landed task or allows a safe retry.
    */
   const [uncertainImports, setUncertainImports] = useState<readonly ImportAttempt[]>([]);
+  /**
+   * Rows marked for a batch. Always available: this page exists to pick
+   * conversations out of a directory, so there is no mode to enter.
+   */
+  const [selection, setSelection] = useState(EMPTY_LISTED_SELECTION);
+
   // Only the newest list request may write. Switching source or toggling the
   // archived filter while a page is in flight would otherwise land the old
   // source's rows under the new source's label.
@@ -263,8 +362,7 @@ export function ImportTasksSettingsPage(props: {
 
   const loadSources = useCallback(async () => {
     const generation = ++requestGeneration.current;
-    setSourceLoading(true);
-    setSourceResolved(false);
+    setSourceProbe('loading');
     setSourceError(null);
     setCatalogError(null);
     setImportError(null);
@@ -285,8 +383,7 @@ export function ImportTasksSettingsPage(props: {
       setSourceError(localizedShellErrorMessage(error, copy.loadFailedFallback, locale));
     } finally {
       if (generation === requestGeneration.current) {
-        setSourceLoading(false);
-        setSourceResolved(true);
+        setSourceProbe('resolved');
       }
     }
   }, [copy.loadFailedFallback, host, locale]);
@@ -429,7 +526,7 @@ export function ImportTasksSettingsPage(props: {
   useEffect(() => {
     if (
       adapterId === null ||
-      activeImport !== null ||
+      importRun.kind !== 'idle' ||
       catalogLoading ||
       loadingMore ||
       !hasCatalogImportInFlight
@@ -443,7 +540,7 @@ export function ImportTasksSettingsPage(props: {
     }, EXTERNAL_SESSION_IMPORT_POLL_MS);
     return () => clearTimeout(timeout);
   }, [
-    activeImport,
+    importRun.kind,
     adapterId,
     catalog.sessions.length,
     catalogPollTick,
@@ -461,6 +558,21 @@ export function ImportTasksSettingsPage(props: {
         timeStyle: 'short',
       }),
     [locale],
+  );
+
+  /**
+   * The page's only call into `externalSessions.import`.
+   *
+   * Both the row button and the batch go through here. That is a bridge-surface
+   * fact as much as a tidiness one: the renderer debt ledger counts call sites
+   * per file and forbids this page from gaining another, so a second literal
+   * call was never an option — and a single place to convert one conversation
+   * is what the two paths wanted anyway.
+   */
+  const requestImport = useCallback(
+    (adapter: string, sourceSessionId: string) =>
+      window.maka.externalSessions.import({ adapterId: adapter, sourceSessionId }, host),
+    [host],
   );
 
   const recoverUnknownImport = useCallback(
@@ -557,7 +669,7 @@ export function ImportTasksSettingsPage(props: {
 
   const importConversation = useCallback(
     async (session: DesktopExternalSessionCatalogItem) => {
-      if (adapterId === null || activeImport !== null) return;
+      if (adapterId === null || importRun.kind !== 'idle') return;
       const attempt: ImportAttempt = {
         adapterId,
         sourceSessionId: session.id,
@@ -571,14 +683,11 @@ export function ImportTasksSettingsPage(props: {
         latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
         loadedCatalogItemCountBefore: catalog.sessions.length,
       };
-      setActiveImport(attempt);
+      setImportRun({ kind: 'single', attempt });
       setImportError(null);
       setImportRecovery(null);
       try {
-        const outcome = await window.maka.externalSessions.import({
-          adapterId: attempt.adapterId,
-          sourceSessionId: attempt.sourceSessionId,
-        }, host);
+        const outcome = await requestImport(attempt.adapterId, attempt.sourceSessionId);
         // Navigating away from Settings unmounts this page while the import is
         // still in Desktop Main's hands. The conversion itself completes and is
         // stored either way; what must not happen is a completion from a page
@@ -593,32 +702,147 @@ export function ImportTasksSettingsPage(props: {
         if (!mountedRef.current) return;
         setImportError(localizedShellErrorMessage(error, copy.importFailedFallback, locale));
       } finally {
-        if (mountedRef.current) setActiveImport(null);
+        if (mountedRef.current) setImportRun(IDLE_IMPORT_RUN);
       }
     },
     [
-      activeImport,
+      importRun.kind,
       adapterId,
       catalog.sessions.length,
       copy.importFailedFallback,
-      host,
       locale,
       mountedRef,
       props,
       recoverUnknownImport,
+      requestImport,
       includeArchived,
       search,
     ],
   );
 
-  const noSource = sourceResolved && !sourceLoading && !sourceError && adapterIds.length === 0;
+  const listedSourceIds = useMemo(
+    () => catalog.sessions.map((session) => session.id),
+    [catalog.sessions],
+  );
+  /**
+   * The marked rows that are still on screen — derived, not reconciled.
+   *
+   * A selection outlives the list it was made from: a search narrows, the
+   * archived filter flips, a poll replaces the window. Intersecting at read
+   * time answers that without an effect, so a stale id can never be counted,
+   * confirmed, or imported even for the render between the catalog changing and
+   * an effect catching up. It also leaves this page's hook budget alone, which
+   * the renderer debt ledger will not let grow.
+   */
+  const marked = useMemo(
+    () => pruneListedSelection(selection, listedSourceIds).selectedIds,
+    [listedSourceIds, selection],
+  );
+  const masterState = listedSelectionMasterState({ selectedIds: marked }, listedSourceIds);
+
+  const busy = importRun.kind !== 'idle';
+
+  const importSelected = useCallback(async () => {
+    if (adapterId === null || busy) return;
+    // Frozen at the press, in the catalog's own order rather than the set's
+    // insertion order, so the progress count walks the list the way the user
+    // reads it.
+    const targets = catalog.sessions.filter((session) => marked.has(session.id));
+    if (targets.length === 0) return;
+    setImportError(null);
+    setImportRecovery(null);
+    setImportRun({ kind: 'batch', done: 0, total: targets.length, current: targets[0]?.id });
+    let outcome = EMPTY_IMPORT_BATCH_OUTCOME;
+    try {
+      for (const [index, session] of targets.entries()) {
+        if (!mountedRef.current) return;
+        const attempt: ImportAttempt = {
+          adapterId,
+          sourceSessionId: session.id,
+          name: session.name,
+          includeArchived,
+          text: search,
+          importedCountBefore: session.importState.importedCount,
+          latestImportedSessionIdBefore: session.importState.importedSessionIds[0],
+          loadedCatalogItemCountBefore: catalog.sessions.length,
+        };
+        // A row that already had a copy is selectable on purpose — re-importing
+        // is how a conversation is refreshed — but the summary owes the user
+        // the fact that it now exists twice.
+        const wasImported = session.importState.importedCount > 0;
+        try {
+          const result = await requestImport(attempt.adapterId, attempt.sourceSessionId);
+          if (!mountedRef.current) return;
+          outcome = recordImportBatchResult(
+            outcome,
+            session.id,
+            // Not `failed`: the call did not answer, and only a catalog read
+            // settles whether the conversion landed. Calling it a failure is
+            // what invites the retry that makes a second copy.
+            result.ok ? (wasImported ? 'duplicated' : 'imported') : 'unknown',
+          );
+          if (!result.ok) {
+            // Recorded, not recovered. A single import recovers inline, but
+            // recovery re-reads the whole catalog window per attempt, and doing
+            // that between conversions would interleave N full reads with the
+            // batch and race the writes it is making. The unconfirmed banner
+            // names every one of these and its 重试 resolves them a press at a
+            // time, removing each as it settles.
+            setUncertainImports((current) =>
+              current.some(
+                (entry) =>
+                  entry.adapterId === attempt.adapterId &&
+                  entry.sourceSessionId === attempt.sourceSessionId,
+              )
+                ? current
+                : [...current, attempt],
+            );
+          }
+        } catch {
+          if (!mountedRef.current) return;
+          // One rejection is not the batch's answer for every row after it. The
+          // failure is recorded and the run continues; the summary names how
+          // many did not go through.
+          outcome = recordImportBatchResult(outcome, session.id, 'failed');
+        }
+        setImportRun({
+          kind: 'batch',
+          done: index + 1,
+          total: targets.length,
+          current: targets[index + 1]?.id,
+        });
+      }
+    } finally {
+      if (mountedRef.current) {
+        setImportRun({ kind: 'idle', summary: outcome });
+        // Cleared because it was answered. Leaving the rows marked after a run
+        // invites a second press that would import each of them again.
+        setSelection(EMPTY_LISTED_SELECTION);
+        // Imported rows change their own description ("已导入 N 次"), and the
+        // page has no other reason to re-read.
+        void loadCatalog(adapterId);
+      }
+    }
+  }, [
+    adapterId,
+    busy,
+    catalog.sessions,
+    includeArchived,
+    loadCatalog,
+    mountedRef,
+    requestImport,
+    search,
+    marked,
+  ]);
+
+  const noSource = sourceProbe === 'resolved' && !sourceError && adapterIds.length === 0;
   const catalogEmpty =
     adapterId !== null && !catalogLoading && !catalogError && catalog.sessions.length === 0;
   // The shared normalizer decides what counts as a filter, so the empty-state
   // copy and the matcher cannot disagree about a whitespace-only box.
   const activeSearch = normalizeExternalSessionQueryText(search);
 
-  if (sourceLoading) {
+  if (sourceProbe === 'loading') {
     return (
       <SettingsPage>
         <div role="status" aria-live="polite">
@@ -731,12 +955,51 @@ export function ImportTasksSettingsPage(props: {
               free to change while an import runs: filter it out, switch source,
               retry a failed page, and the row is gone. This is also what tells
               the user why every remaining 导入 is disabled. */}
-          {activeImport !== null && (
+          {importRun.kind === 'single' && (
             <div role="status" aria-live="polite">
               <Banner
                 status="info"
                 title={copy.importInProgressTitle}
-                description={copy.importInProgressDescription(activeImport.name)}
+                description={copy.importInProgressDescription(importRun.attempt.name)}
+              />
+            </div>
+          )}
+
+          {importRun.kind === 'batch' && (
+            <div role="status" aria-live="polite">
+              <Banner
+                status="info"
+                title={copy.importInProgressTitle}
+                description={copy.batchProgress(importRun.done, importRun.total)}
+              />
+            </div>
+          )}
+
+          {/* The batch stays on this page and reports here, rather than
+              navigating the way a single import does. There is no sensible task
+              to open after importing twelve, and leaving would strand the rows
+              that did not land. */}
+          {importRun.kind === 'idle' && importRun.summary !== undefined && (
+            <div role="status" aria-live="polite">
+              <Banner
+                status={importRun.summary.failed.length > 0 ? 'warning' : 'success'}
+                title={
+                  importRun.summary.imported > 0
+                    ? copy.batchDoneTitle(importRun.summary.imported)
+                    : copy.batchNothingImported
+                }
+                description={
+                  [
+                    importRun.summary.duplicated > 0
+                      ? copy.batchDuplicated(importRun.summary.duplicated)
+                      : null,
+                    importRun.summary.failed.length > 0
+                      ? copy.batchFailed(importRun.summary.failed.length)
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || undefined
+                }
               />
             </div>
           )}
@@ -816,6 +1079,37 @@ export function ImportTasksSettingsPage(props: {
           )}
 
           {catalog.sessions.length > 0 && (
+            <HStack gap={2} vAlign="center" className="maka-import-selection-bar">
+              <CheckboxInput
+                label={copy.selectAllAriaLabel}
+                isLabelHidden
+                value={masterState}
+                isDisabled={busy}
+                // Plain checkbox semantics, including from the partial state:
+                // an indeterminate box becomes ticked, which selects all. It is
+                // what the platform does and what the Session rail's own master
+                // box does, and one surface inventing a second rule for the
+                // same control is worse than either rule.
+                onChange={(checked) =>
+                  setSelection(setAllListedSelected(listedSourceIds, checked))
+                }
+              />
+              <span className="maka-import-selection-count" aria-live="polite">
+                {copy.selectedCount(marked.size, listedSourceIds.length)}
+              </span>
+              <span className="maka-import-selection-spacer" />
+              <Button
+                variant="secondary"
+                size="sm"
+                label={copy.importSelected}
+                isLoading={importRun.kind === 'batch'}
+                isDisabled={busy || marked.size === 0}
+                onClick={() => void importSelected()}
+              />
+            </HStack>
+          )}
+
+          {catalog.sessions.length > 0 && (
             <List
               density="balanced"
               hasDividers
@@ -836,7 +1130,12 @@ export function ImportTasksSettingsPage(props: {
                   .join(' · ');
                 const isImporting =
                   session.importState.isImporting ||
-                  (activeImport !== null && isSameAttempt(activeImport, adapterId, session));
+                  (importRun.kind === 'single' &&
+                    isSameAttempt(importRun.attempt, adapterId, session)) ||
+                  // Only the conversion actually in flight. Marking every
+                  // selected row would put a spinner on rows that are queued,
+                  // and a spinner claims something is happening now.
+                  (importRun.kind === 'batch' && importRun.current === session.id);
                 const latestImportedSessionId = session.importState.importedSessionIds[0];
                 const hasImported = session.importState.importedCount > 0;
                 return (
@@ -844,7 +1143,25 @@ export function ImportTasksSettingsPage(props: {
                     key={session.id}
                     label={session.name}
                     description={description.length > 0 ? description : undefined}
-                    startContent={<MessageSquare size={ICON_SIZE.control} aria-hidden="true" />}
+                    startContent={
+                      <HStack gap={2} vAlign="center">
+                        {/* The box leads, in the same column as the master box
+                            above it. The source icon stays: it says what kind of
+                            thing the row is, which selecting does not. */}
+                        <CheckboxInput
+                          label={copy.selectRowAriaLabel(session.name)}
+                          isLabelHidden
+                          value={marked.has(session.id)}
+                          isDisabled={busy || isImporting}
+                          onChange={(checked) =>
+                            setSelection((current) =>
+                              toggleListedSelection(current, session.id, checked),
+                            )
+                          }
+                        />
+                        <MessageSquare size={ICON_SIZE.control} aria-hidden="true" />
+                      </HStack>
+                    }
                     endContent={
                       <HStack gap={2} vAlign="center">
                         {latestImportedSessionId !== undefined && props.onOpenImported && (
@@ -862,7 +1179,7 @@ export function ImportTasksSettingsPage(props: {
                           isLoading={isImporting}
                           isDisabled={
                             isImporting ||
-                            activeImport !== null ||
+                            busy ||
                             uncertainImports.length > 0
                           }
                           // `onClick`, not `clickAction`. Astryx runs

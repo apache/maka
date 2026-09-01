@@ -25,4 +25,5 @@ export {
 } from './ui/runtime-host-profile-pairing-actions';
 export type { RuntimeHostPairingActionCopy } from './ui/runtime-host-profile-pairing-actions';
 export { RuntimeHostManagementServicesProvider } from './services-context';
+export { PeerMeshOperationOutcomeUnknownError } from './ports';
 export type { RuntimeHostManagementServices } from './ports';

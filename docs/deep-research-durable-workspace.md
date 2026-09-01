@@ -114,9 +114,10 @@ records local and web substeps but does not silently broaden their permissions.
 ## Authority and data flow
 
 The research event ledger is the authority for workflow state and
-relationships. The Artifact Store is the authority for large bodies. The
-existing Task Ledger remains the authority for tasks; checkpoints only link to
-task ids.
+relationships. The Artifact Store is the authority for large bodies.
+Deep Research no longer accepts Task Ledger ids from production tools;
+the persisted checkpoint `taskIds` field remains decode-compatible and is
+written as empty during the migration window.
 
 ```text
 Deep Research root session

@@ -80,10 +80,43 @@ type DirectoryPolicyEdit = {
   readonly draft: readonly ProjectDirectoryRootDraft[];
   readonly conflict?: DirectoryPolicySnapshot;
 };
+type RuntimeHostWebRtcStunPolicy = NonNullable<
+  DesktopRuntimeHostDirectPeerSnapshot['webRtcStunPolicy']
+>;
+type DirectPeerRouteDraft = {
+  readonly coordinationRelays: string;
+  readonly automaticRelayDiscovery: boolean;
+};
+type WebRtcStunPolicyDraft = {
+  readonly webRtcStunPolicyKind: RuntimeHostWebRtcStunPolicy['kind'];
+  readonly webRtcStunUrls: string;
+};
+
+function createDirectPeerRouteDraft(
+  snapshot?: DesktopRuntimeHostDirectPeerSnapshot,
+): DirectPeerRouteDraft {
+  return {
+    coordinationRelays: snapshot?.coordinationRelays.join(', ') ?? '',
+    automaticRelayDiscovery: snapshot?.automaticRelayDiscovery ?? true,
+  };
+}
+
+function createWebRtcStunPolicyDraft(
+  snapshot?: DesktopRuntimeHostDirectPeerSnapshot,
+): WebRtcStunPolicyDraft {
+  return {
+    webRtcStunPolicyKind: snapshot?.webRtcStunPolicy?.kind ?? 'default',
+    webRtcStunUrls: snapshot?.webRtcStunPolicy?.kind === 'custom'
+      ? snapshot.webRtcStunPolicy.urls.join(', ')
+      : '',
+  };
+}
+
 export interface RuntimeHostManagementTarget {
   readonly id: string;
   readonly name: string;
   readonly subtitle?: string;
+  readonly scope: 'full' | 'project_directories';
   readonly directPeerManagement: boolean;
 }
 
@@ -112,8 +145,9 @@ export function RuntimeHostManagementDialog(props: {
   const [directoryPolicyEdit, setDirectoryPolicyEdit] = useState<DirectoryPolicyEdit>();
   const [directPeer, setDirectPeer] = useState<DesktopRuntimeHostDirectPeerSnapshot>();
   const [directPeerError, setDirectPeerError] = useState<string>();
-  const [coordinationRelays, setCoordinationRelays] = useState('');
-  const [automaticRelayDiscovery, setAutomaticRelayDiscovery] = useState(true);
+  const [directPeerRouteDraft, setDirectPeerRouteDraft] = useState(createDirectPeerRouteDraft);
+  const [webRtcStunPolicyDraft, setWebRtcStunPolicyDraft] =
+    useState(createWebRtcStunPolicyDraft);
   const nextDirectoryRootId = useRef(1);
   const logsRef = useRef<HTMLPreElement>(null);
 
@@ -136,7 +170,8 @@ export function RuntimeHostManagementDialog(props: {
     setDirectoryPolicyEdit(undefined);
     setDirectPeer(undefined);
     setDirectPeerError(undefined);
-    setCoordinationRelays('');
+    setDirectPeerRouteDraft(createDirectPeerRouteDraft());
+    setWebRtcStunPolicyDraft(createWebRtcStunPolicyDraft());
     setLoading(true);
     void (async () => {
       let shouldLoadUpdatePolicy = false;
@@ -153,7 +188,7 @@ export function RuntimeHostManagementDialog(props: {
       } catch (failure) {
         if (!disposed) setError(settingsActionErrorMessage(failure, locale));
       }
-      if (shouldLoadUpdatePolicy) {
+      if (shouldLoadUpdatePolicy && target.scope === 'full') {
         try {
           const policy = await window.maka.runtimeHostManagement.getUpdatePolicy(target.id);
           if (!disposed) applyUpdatePolicy(policy);
@@ -164,7 +199,7 @@ export function RuntimeHostManagementDialog(props: {
           }
         }
       }
-      if (shouldLoadUpdatePolicy && target.directPeerManagement) {
+      if (shouldLoadUpdatePolicy && target.scope === 'full' && target.directPeerManagement) {
         try {
           const peer = await window.maka.runtimeHostManagement.getDirectPeer(target.id);
           if (!disposed) applyDirectPeer(peer);
@@ -231,7 +266,9 @@ export function RuntimeHostManagementDialog(props: {
       setResult(response);
       reconcileDirectoryPolicy(response.service);
       if (response.service.state === 'not_installed') setUpdatePolicy(undefined);
-      else if (action !== 'logs') await reloadUpdatePolicy(target.id);
+      else if (target.scope === 'full' && action !== 'logs') {
+        await reloadUpdatePolicy(target.id);
+      }
     } catch (failure) {
       const message = settingsActionErrorMessage(failure, locale);
       setUpdatePolicy(undefined);
@@ -244,8 +281,8 @@ export function RuntimeHostManagementDialog(props: {
 
   function applyDirectPeer(snapshot: DesktopRuntimeHostDirectPeerSnapshot): void {
     setDirectPeer(snapshot);
-    setCoordinationRelays(snapshot.coordinationRelays.join(', '));
-    setAutomaticRelayDiscovery(snapshot.automaticRelayDiscovery);
+    setDirectPeerRouteDraft(createDirectPeerRouteDraft(snapshot));
+    setWebRtcStunPolicyDraft(createWebRtcStunPolicyDraft(snapshot));
     setDirectPeerError(undefined);
   }
 
@@ -267,7 +304,7 @@ export function RuntimeHostManagementDialog(props: {
     setLoading(true);
     setDirectPeerError(undefined);
     try {
-      const relays = coordinationRelays
+      const relays = directPeerRouteDraft.coordinationRelays
         .split(',')
         .map((relay) => relay.trim())
         .filter(Boolean);
@@ -276,7 +313,18 @@ export function RuntimeHostManagementDialog(props: {
           target.id,
           enabled,
           relays,
-          automaticRelayDiscovery,
+          directPeerRouteDraft.automaticRelayDiscovery,
+          directPeer?.webRtcStunPolicy
+            ? webRtcStunPolicyDraft.webRtcStunPolicyKind === 'custom'
+              ? {
+                  kind: 'custom',
+                  urls: webRtcStunPolicyDraft.webRtcStunUrls
+                    .split(',')
+                    .map((url) => url.trim())
+                    .filter(Boolean),
+                }
+              : { kind: webRtcStunPolicyDraft.webRtcStunPolicyKind }
+            : undefined,
         ),
       );
     } catch (failure) {
@@ -582,6 +630,7 @@ export function RuntimeHostManagementDialog(props: {
     directoryPolicyEdit !== undefined &&
     JSON.stringify(normalizedDirectoryRoots) !== JSON.stringify(directoryPolicyEdit.baseline.roots);
   const updateOutcome = lastUpdateOutcome;
+  const fullManagement = target?.scope === 'full';
   return (
     <Dialog
       isOpen={target !== undefined}
@@ -715,7 +764,7 @@ export function RuntimeHostManagementDialog(props: {
                       <Fact label={copy.stateRoot} value={service.stateRoot} wide />
                     ) : null}
                   </dl>
-                  {serviceInstalled && target?.directPeerManagement ? (
+                  {serviceInstalled && fullManagement && target?.directPeerManagement ? (
                     <section className="settingsRuntimeHostDirectPeer">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">
                         <div>
@@ -790,29 +839,93 @@ export function RuntimeHostManagementDialog(props: {
                             <Switch
                               label={copy.directPeerAutomaticRelayDiscovery}
                               isLabelHidden
-                              value={automaticRelayDiscovery}
+                              value={directPeerRouteDraft.automaticRelayDiscovery}
                               isDisabled={
                                 loading ||
                                 directPeer.profileEnabled ||
                                 directPeer.state === 'enabled'
                               }
-                              onChange={setAutomaticRelayDiscovery}
+                              onChange={(value) => setDirectPeerRouteDraft((draft) => ({
+                                ...draft,
+                                automaticRelayDiscovery: value,
+                              }))}
                             />
                           </div>
                           <details className="settingsRuntimeHostDirectPeerAdvanced">
                             <summary>{copy.directPeerAdvancedCoordination}</summary>
                             <TextInput
                               label={copy.directPeerCoordinationRelays}
-                              value={coordinationRelays}
+                              value={directPeerRouteDraft.coordinationRelays}
                               placeholder={copy.directPeerCoordinationRelaysPlaceholder}
                               isDisabled={
                                 loading ||
                                 directPeer.profileEnabled ||
                                 directPeer.state === 'enabled'
                               }
-                              onChange={setCoordinationRelays}
+                              onChange={(value) => setDirectPeerRouteDraft((draft) => ({
+                                ...draft,
+                                coordinationRelays: value,
+                              }))}
                             />
                           </details>
+                          {directPeer.webRtcStunPolicy ? (
+                            <details className="settingsRuntimeHostDirectPeerAdvanced">
+                              <summary>{copy.directPeerAdvancedNatTraversal}</summary>
+                              <div className="settingsRuntimeHostDirectPeerStun">
+                                <Selector
+                                  label={copy.directPeerStunPolicy}
+                                  value={webRtcStunPolicyDraft.webRtcStunPolicyKind}
+                                  options={[
+                                    {
+                                      value: 'default',
+                                      label: copy.directPeerStunPolicyOptions.default,
+                                    },
+                                    {
+                                      value: 'disabled',
+                                      label: copy.directPeerStunPolicyOptions.disabled,
+                                    },
+                                    {
+                                      value: 'custom',
+                                      label: copy.directPeerStunPolicyOptions.custom,
+                                    },
+                                  ]}
+                                  isDisabled={
+                                    loading ||
+                                    directPeer.profileEnabled ||
+                                    directPeer.state === 'enabled'
+                                  }
+                                  onChange={(value) => setWebRtcStunPolicyDraft((draft) => ({
+                                    ...draft,
+                                    webRtcStunPolicyKind:
+                                      value as RuntimeHostWebRtcStunPolicy['kind'],
+                                  }))}
+                                />
+                                {webRtcStunPolicyDraft.webRtcStunPolicyKind === 'custom' ? (
+                                  <TextInput
+                                    label={copy.directPeerStunUrls}
+                                    value={webRtcStunPolicyDraft.webRtcStunUrls}
+                                    placeholder="stun:stun.example.com:3478"
+                                    isDisabled={
+                                      loading ||
+                                      directPeer.profileEnabled ||
+                                      directPeer.state === 'enabled'
+                                    }
+                                    onChange={(value) => setWebRtcStunPolicyDraft((draft) => ({
+                                      ...draft,
+                                      webRtcStunUrls: value,
+                                    }))}
+                                  />
+                                ) : null}
+                                <Text type="supporting" color="secondary">
+                                  {webRtcStunPolicyDraft.webRtcStunPolicyKind === 'default'
+                                    ? copy.directPeerStunDefaultHelp
+                                    : webRtcStunPolicyDraft.webRtcStunPolicyKind === 'disabled'
+                                      ? copy.directPeerStunDisabledHelp
+                                      : copy.directPeerStunCustomHelp}
+                                </Text>
+                              </div>
+                            </details>
+                          ) : null}
                           <div className="settingsRuntimeHostUpdatePolicyActions">
                             {target && props.onManagePeerMesh ? (
                               <Button
@@ -866,7 +979,7 @@ export function RuntimeHostManagementDialog(props: {
                       ) : null}
                     </section>
                   ) : null}
-                  {serviceInstalled ? (
+                  {serviceInstalled && fullManagement ? (
                     <section className="settingsRuntimeHostUpdatePolicy">
                       <div className="settingsRuntimeHostUpdatePolicyHeading">
                         <div>
@@ -1036,7 +1149,7 @@ export function RuntimeHostManagementDialog(props: {
                       </Text>
                     )}
                   </div>
-                  {result.action === 'logs' ? (
+                  {fullManagement && result.action === 'logs' ? (
                     <pre ref={logsRef} className="settingsRuntimeHostManagementLogs">
                       {result.logs || copy.noLogs}
                     </pre>
@@ -1253,7 +1366,7 @@ export function RuntimeHostManagementDialog(props: {
                     isDisabled={loading}
                     onClick={props.onClose}
                   />
-                  {target && !uninstalled ? (
+                  {target && fullManagement && !uninstalled ? (
                     <MoreMenu
                       label={copy.moreActions(target.name)}
                       size="sm"
@@ -1286,14 +1399,14 @@ export function RuntimeHostManagementDialog(props: {
                         isDisabled={loading}
                         onClick={() => void run('status')}
                       />
-                      {serviceInstalled && supervised && serviceActive ? (
+                      {fullManagement && serviceInstalled && supervised && serviceActive ? (
                         <Button
                           variant="primary"
                           label={copy.restartService}
                           isDisabled={loading}
                           onClick={() => void run('restart')}
                         />
-                      ) : serviceInstalled && supervised ? (
+                      ) : fullManagement && serviceInstalled && supervised ? (
                         <Button
                           variant="primary"
                           label={copy.startService}

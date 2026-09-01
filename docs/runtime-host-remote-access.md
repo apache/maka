@@ -141,6 +141,15 @@ observe the discovery connection and may refuse or drop reservations. Only accep
 are advertised to Mesh peers, and Maka still requires the application stream to upgrade to a direct
 connection instead of carrying Session traffic through the relay.
 
+Maka races its supported direct transports automatically; users do not select QUIC or WebRTC.
+WebRTC uses STUN only to discover a public address and never sends Session traffic through the STUN
+provider. The default best-effort policy uses Cloudflare's public STUN endpoint, which can observe
+the source IP and request timing and has no Maka availability guarantee. Configure this from
+Desktop's advanced Peer Mesh settings, or use `peer enable --no-public-stun`,
+`peer enable --default-public-stun`, or repeat `peer enable --webrtc-stun <stun-url>` for private
+STUN endpoints. Maka does not use TURN; if no direct path succeeds, only an explicitly approved Mesh
+member can carry application traffic.
+
 ### Direct TLS
 
 Use TLS for a stable network endpoint:

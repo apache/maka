@@ -18,6 +18,7 @@
  */
 
 import type { RuntimeHostPeerMeshManagementAction } from '@maka/runtime-host/operator';
+import type { RuntimeHostWebRtcStunPolicy } from '@maka/runtime-host/operator';
 import type {
   PeerMeshInvitationResult,
   PeerMeshQueryResult,
@@ -33,7 +34,7 @@ export interface PeerMeshOperationInput {
   readonly peerId?: string;
   readonly invitation?: string;
   readonly displayName?: string | null;
-  readonly operationId?: string;
+  readonly operationId: string;
 }
 
 export interface PeerMeshDirectPeerSnapshot {
@@ -42,17 +43,27 @@ export interface PeerMeshDirectPeerSnapshot {
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
   readonly automaticRelayDiscovery: boolean;
+  readonly webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy;
   readonly profilePresent: boolean;
   readonly profileEnabled: boolean;
   readonly clientAvailable: boolean;
   readonly managementAvailable: boolean;
 }
 
+export class PeerMeshOperationOutcomeUnknownError extends Error {
+  constructor(readonly action: RuntimeHostPeerMeshManagementAction) {
+    super('Peer Mesh operation outcome is unknown');
+    this.name = 'PeerMeshOperationOutcomeUnknownError';
+  }
+}
+
 export interface PeerMeshServices {
+  getConnectivityPolicy(): Promise<RuntimeHostWebRtcStunPolicy>;
+  setConnectivityPolicy(policy: RuntimeHostWebRtcStunPolicy): Promise<RuntimeHostWebRtcStunPolicy>;
   execute(
     target: PeerMeshTarget,
     action: RuntimeHostPeerMeshManagementAction,
-    input?: PeerMeshOperationInput,
+    input: PeerMeshOperationInput,
   ): Promise<PeerMeshQueryResult | PeerMeshInvitationResult>;
   cancel(operationId: string): Promise<void>;
   getDirectPeer(profileId: string): Promise<PeerMeshDirectPeerSnapshot>;
@@ -61,6 +72,7 @@ export interface PeerMeshServices {
     enabled: boolean,
     coordinationRelays: readonly string[],
     automaticRelayDiscovery: boolean,
+    webRtcStunPolicy?: RuntimeHostWebRtcStunPolicy,
   ): Promise<PeerMeshDirectPeerSnapshot>;
   copyText(value: string): Promise<void>;
   createOperationId(): string;

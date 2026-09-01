@@ -91,7 +91,7 @@ import {
   WorkbarTitlebarActions,
   useWorkbarController,
 } from './features/workbar';
-import { GoalHost, useGoalController } from './features/goals';
+import * as Goals from './features/goals';
 import { ModuleHubHost, useModuleHubController } from './features/module-hub';
 import {
   SessionNavigationProvider,
@@ -116,6 +116,7 @@ import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
+  rebaseWorkspaceFileReferences,
   resolveFollowUpModeAtSubmit,
 } from './follow-up-submit-routing';
 import {
@@ -180,10 +181,7 @@ import {
   createAppShellSessionEventHandlers,
 } from './app-shell-session-events';
 import { createAppShellE2eFixtureActions } from './app-shell-e2e-fixture';
-import {
-  createAppShellChatActions,
-  type WorkspaceFileReferencePosition,
-} from './app-shell-chat-actions';
+import { createAppShellChatActions } from './app-shell-chat-actions';
 import { createAppShellTurnActions } from './app-shell-turn-actions';
 import {
   abandonTurnRevisionCopyAttempt,
@@ -223,22 +221,6 @@ import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
-
-function rebaseWorkspaceFileReferences(
-  sourceText: string,
-  projectedText: string,
-  references: readonly WorkspaceFileReferencePosition[],
-): WorkspaceFileReferencePosition[] {
-  const offset = sourceText.lastIndexOf(projectedText);
-  if (offset < 0) return [];
-  return references
-    .filter(
-      (reference) =>
-        reference.start >= offset &&
-        reference.start + reference.value.length <= offset + projectedText.length,
-    )
-    .map((reference) => ({ ...reference, start: reference.start - offset }));
-}
 
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
@@ -389,6 +371,23 @@ function AppShellContent({
     epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   }, []);
 
+  const {
+    settingsOpen,
+    settingsRequest,
+    settingsProviderCatalogOpen,
+    settingsConnectionDetailSlug,
+    settingsCreateProviderType,
+    setSettingsOpen,
+    setSettingsProviderCatalogOpen,
+    setSettingsProfileId,
+    openSettings,
+    openSettingsSection,
+    openProjectSettings,
+    openProviderCatalog,
+    openConnectionDetail,
+    openProviderCreate,
+  } = useSettingsModal();
+
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
   const reportTaskEntryError = useCallback(
     ({ title, description, profileId }: TaskEntryError) => {
@@ -398,6 +397,7 @@ function AppShellContent({
   );
   const taskEntry = useTaskEntryController({
     reportError: reportTaskEntryError,
+    manageProjects: openProjectSettings,
   });
   // Named on its own because the rail depends on it: `taskEntry.commands` is a
   // fresh object every render, so depending on the bag rather than the command
@@ -408,17 +408,34 @@ function AppShellContent({
   // the composer the user is looking at, and an in-flight send needs an owner
   // that cannot move under it. See NEW_TASK_PENDING_KEY.
   const attachmentDraftKey = activeId ?? NEW_TASK_PENDING_KEY;
+  const directoryHostId = activeId
+    ? (activeCatalogSession?.profileKind === 'local'
+        ? activeCatalogSession.runtimeHostId
+        : undefined)
+    : (taskEntry.selectors.selectedHost?.kind === 'local'
+        ? taskEntry.selectors.target?.hostId
+        : undefined);
   const {
     pendingAttachments,
+    submittableAttachments,
+    hasPendingContext,
+    directoryOptions,
+    directoryComposerProps,
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
     removeAttachment,
-    clearSubmittedAttachments,
+    clearSubmittedContext,
+    imageNoticeLifecycle,
   } = useComposerAttachments({
     draftKey: attachmentDraftKey,
+    directoryHostId,
     toastApi,
     service: window.maka.attachments,
+    imageNotice: {
+      supportsVision: () => composerSupportsVision,
+      notify: toastApi.info,
+    },
   });
   const {
     pendingQuotes,
@@ -611,22 +628,6 @@ function AppShellContent({
     sessions.length > 0,
   );
   const {
-    settingsOpen,
-    settingsRequestedSection,
-    settingsProviderCatalogOpen,
-    settingsConnectionDetailSlug,
-    settingsCreateProviderType,
-    setSettingsOpen,
-    setSettingsProviderCatalogOpen,
-    openSettings,
-    openSettingsSection,
-    openProviderCatalog,
-    openConnectionDetail,
-    openProviderCreate,
-  } = useSettingsModal();
-  const [settingsDiagnosticProfileId, setSettingsDiagnosticProfileId] =
-    useState<string>();
-  const {
     themePref,
     setThemePref,
     themePalette,
@@ -812,10 +813,6 @@ function AppShellContent({
     resumeInterruptedSession,
   } = useShellResume({ activeId: ownerActiveId, toastApi, shellCopy, uiLocale });
   const rendererMountedRef = useRef(true);
-  const goals = useGoalController({
-    activeSessionId: ownerActiveId,
-    reportError: showSessionError,
-  });
   // Set of session ids whose backend / connection is no longer usable —
   // drives the sidebar "已过期" pill (PR108g, paired with the PR108e chat
   // header banner). Derivation is pure (see `stale-sessions.ts`) so the
@@ -829,9 +826,6 @@ function AppShellContent({
     [sessions, onboarding.snapshot?.sessionSendOutcomes],
   );
   const activeInteraction = activeInteractionFor(interactionBySession, ownerActiveId);
-  const activeSandboxBoundary =
-    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
-  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const activeSession = activeCatalogSession;
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
@@ -906,6 +900,7 @@ function AppShellContent({
     newChatModelLabel,
     newChatThinkingLevels,
     newChatThinkingLevel,
+    composerSupportsVision,
     setPendingNewChatModel,
     pendingNewChatThinkingLevel,
     setPendingNewChatThinkingLevel,
@@ -1129,7 +1124,7 @@ function AppShellContent({
   //   1. `data-maka-reduced-motion="true"` — PR-IR-04 reduced variant
   //   2. `data-maka-e2e-fixture="true"` — PR-IR-02 any capture
   //   3. `prefers-reduced-motion: reduce` — OS-level user preference
-  function handleLineageBadgeClick(targetTurnId: string): void {
+  function handleLineageBadgeClick(targetTurnId: string) {
     requestAnimationFrame(() => {
       const el = document.querySelector(`[data-turn-id="${CSS.escape(targetTurnId)}"]`);
       if (!el || !('scrollIntoView' in el)) return;
@@ -1580,6 +1575,7 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
+    imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
@@ -1589,7 +1585,7 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
-  }, [setNavSelection, setSearchScrollTarget, startNewSession]);
+  }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1893,7 +1889,7 @@ function AppShellContent({
     activeIdRef,
     composerRef,
     messages,
-    hasPendingAttachments: () => pendingAttachments.length > 0,
+    hasPendingAttachments: () => hasPendingContext,
     openSessionInChat,
     refreshMessages,
     refreshSessions,
@@ -1930,14 +1926,21 @@ function AppShellContent({
     }
   }
 
+  function settleNewTaskImageNoticeOwner(sourceSessionId?: string) {
+    const createdSessionId = activeIdRef.current;
+    if (!sourceSessionId && createdSessionId) {
+      imageNoticeLifecycle.transfer(NEW_TASK_PENDING_KEY, createdSessionId);
+    }
+  }
+
   async function enqueueFollowUp(
     sessionId: string,
     text: string,
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean> {
-    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const pending = submittableAttachments;
+    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     try {
       const sent = await enqueueMessage(
         sessionId,
@@ -1945,6 +1948,7 @@ function AppShellContent({
         mode === 'steer' ? 'current_turn' : 'next_turn',
         pending,
         {
+          ...directoryOptions,
           ...(quotes ? { quotes: [...quotes] } : {}),
           ...(metadata?.workspaceFileReferences?.length
             ? { workspaceFileReferences: [...metadata.workspaceFileReferences] }
@@ -1954,7 +1958,7 @@ function AppShellContent({
       // Refused: the composer keeps the draft, the attachments and the quotes,
       // because the user has to change something and send it again.
       if (!sent) return false;
-      if (pending) clearSubmittedAttachments(pending);
+      clearSubmittedContext(pending);
       if (quotes) clearQuotes();
       return true;
     } catch (error) {
@@ -2011,7 +2015,7 @@ function AppShellContent({
       revisionSend &&
       revision &&
       text.trim() === revision.originalText.trim() &&
-      pendingAttachments.length === 0
+      !hasPendingContext
     ) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
       toastApi.info(actionCopy.revisionReadyTitle, actionCopy.revisionUnchanged);
@@ -2019,7 +2023,7 @@ function AppShellContent({
     }
     if (revisionSend && revision) {
       const actionCopy = getDesktopConversationCopy(uiLocale).actions;
-      if (pendingAttachments.length > 0) {
+      if (hasPendingContext) {
         toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
         return false;
       }
@@ -2063,9 +2067,9 @@ function AppShellContent({
         return false;
       }
       if (
-        pendingAttachments.length > 0 ||
-        pendingQuotes.length > 0 ||
-        (metadata?.workspaceFileReferences?.length ?? 0) > 0
+        hasPendingContext ||
+        pendingQuotes.length ||
+        metadata?.workspaceFileReferences?.length
       ) {
         toastApi.info(
           shellCopy.sideChatContextPendingTitle,
@@ -2102,10 +2106,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2117,8 +2122,11 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+        settleNewTaskImageNoticeOwner(sessionId);
+      }
       return ok;
     }
     if (slashCommand?.kind === 'graph') {
@@ -2147,10 +2155,11 @@ function AppShellContent({
         }
         return changed;
       }
-      const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
-      const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+      const pending = submittableAttachments;
+      const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
           ? {
@@ -2162,25 +2171,30 @@ function AppShellContent({
             }
           : {}),
       });
-      if (ok !== false && pending) clearSubmittedAttachments(pending);
-      if (ok !== false && quotes) clearQuotes();
+      if (ok !== false) {
+        clearSubmittedContext(pending);
+        if (quotes) clearQuotes();
+        settleNewTaskImageNoticeOwner(sessionId);
+      }
       return ok;
     }
-    const pending = pendingAttachments.length > 0 ? pendingAttachments : undefined;
+    const pending = submittableAttachments;
     const expectedRevisionDraft = revisionSend
       ? revisionDraftRef.current
       : undefined;
-    const quotes = pendingQuotes.length > 0 ? pendingQuotes : undefined;
+    const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
+      ...directoryOptions,
       ...(quotes ? { quotes } : {}),
-      ...(workspaceFileReferences.length > 0
+      ...(workspaceFileReferences.length
         ? { workspaceFileReferences }
         : {}),
     });
-    if (ok !== false && pending) clearSubmittedAttachments(pending);
-    if (ok !== false && quotes) clearQuotes();
-    if (ok !== false && sessionId) {
-      delete retractedWorkspaceReferencesRef.current[sessionId];
+    if (ok !== false) {
+      clearSubmittedContext(pending);
+      if (quotes) clearQuotes();
+      settleNewTaskImageNoticeOwner(sessionId);
+      if (sessionId) delete retractedWorkspaceReferencesRef.current[sessionId];
     }
     if (ok !== false && revisionSend) {
       if (expectedRevisionDraft) {
@@ -2350,14 +2364,14 @@ function AppShellContent({
   const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
   const activeEventSeedRef = useRef(activeEventSeed);
   activeEventSeedRef.current = activeEventSeed;
-  const beginObservationSeed = (sessionId: string): number => {
+  const beginObservationSeed = (sessionId: string) => {
     const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
     return next.generation;
   };
-  const completeObservationSeed = (sessionId: string, generation?: number): void => {
+  const completeObservationSeed = (sessionId: string, generation?: number) => {
     const current = activeEventSeedRef.current;
     const expected = generation ?? current.generation;
     if (current.sessionId !== sessionId || current.generation !== expected) return;
@@ -2377,6 +2391,7 @@ function AppShellContent({
   useActiveSessionEvents({
     uiLocale,
     activeId,
+    activeProfileId: activeSession?.profileId,
     activeIdRef,
     handleEvent,
     beginObservationSeed,
@@ -2670,7 +2685,7 @@ function AppShellContent({
     messages,
     newTaskProfileId: taskEntry.selectors.selectedProfileId,
     settingsOpen,
-    settingsProfileId: settingsDiagnosticProfileId,
+    settingsProfileId: settingsRequest.profileId,
     sessions,
     themePref,
     visibleSessions,
@@ -2709,9 +2724,13 @@ function AppShellContent({
         : 'im_hub';
 
   return (
-    // Wraps the whole frame rather than each composer, so one projection serves
-    // the main composer and every side-chat panel. Left un-indented on purpose:
-    // re-indenting 500 lines of JSX would bury the change that matters.
+    // Goal state lives below the shell and wakes only its three readers. Composer
+    // mentions still wrap the frame so one projection serves every composer.
+    <Goals.GoalProvider
+      activeSessionId={ownerActiveId}
+      canOpenDialog={activeBoundarySurface.localInteractionAvailable}
+      reportError={showSessionError}
+    >
     <ComposerMentionsProvider {...composerMentionsSurface}>
     <div
       className="appFrame agents-layout-root"
@@ -2828,7 +2847,8 @@ function AppShellContent({
         /* Astryx's default: nav column takes --color-background-body, content takes
            --color-background-surface. Both point at the product palette through
            makaTheme.ts, so the shell follows a palette switch. Declared rather
-           than defaulted — it decides what separates the two columns. */
+           than defaulted: the two columns are separated by that background
+           step alone, so the variant IS the separation. */
         variant="elevated"
         height="fill"
         contentPadding={0}
@@ -2946,11 +2966,14 @@ function AppShellContent({
                   newTaskDraftKey={currentNewTaskDraftKey}
                   newTaskSendPending={newTaskSendPending}
                   stopPendingBySession={stopPendingBySession}
-                  activeSandboxBoundary={activeSandboxBoundary}
                   respondToSandboxBoundary={respondToSandboxBoundary}
-                  activeQuestion={activeQuestion}
+                  respondToClientCapability={workbar.commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
                   stop={stop}
+                  directoryComposerProps={directoryComposerProps}
+                  directoryPickerEnabled={!!(
+                    canStageComposerContext && directoryHostId && !revisionDraft
+                  )}
                   // #646: Stop must be available for the WHOLE turn - the moment the
                   // user most wants to interrupt is a long wait with nothing on
                   // screen (first token, or a slow provider's step-to-step lull).
@@ -3076,12 +3099,6 @@ function AppShellContent({
                   onOrchestrationModeChange={(mode) => {
                     void setOrchestrationMode(mode);
                   }}
-                  onSetGoal={
-                    activeId && activeBoundarySurface.localInteractionAvailable
-                      ? goals.commands.openDialog
-                      : undefined
-                  }
-                  goalActive={goals.selectors.active}
                   goalDisabledReason={
                     activeStreamingLive || (activeId && turnActive)
                       ? shellCopy.goalTurnActive
@@ -3121,7 +3138,6 @@ function AppShellContent({
                 userLabel={userLabel}
                 memoryActive={memoryActive}
                 onOpenMemorySettings={sharedSessionActive ? undefined : () => openSettingsSection('memory')}
-                goalIndicator={goals.selectors.indicator}
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
@@ -3255,7 +3271,7 @@ function AppShellContent({
           contextKey={activeId}
         />
       )}
-      <GoalHost model={goals.host} />
+      <Goals.GoalHost />
       <TaskEntryHost model={taskEntry.host} />
       <RuntimeHostSshTerminalDialog />
       {sharedSessionDialog.target ? (
@@ -3287,7 +3303,7 @@ function AppShellContent({
         refreshChatDefaults={() => {
           void taskEntry.commands.refresh().catch(() => undefined);
         }}
-        settingsRequestedSection={settingsRequestedSection}
+        settingsRequest={settingsRequest}
         settingsProviderCatalogOpen={settingsProviderCatalogOpen}
         settingsConnectionDetailSlug={settingsConnectionDetailSlug}
         settingsCreateProviderType={settingsCreateProviderType}
@@ -3319,9 +3335,10 @@ function AppShellContent({
           openNewTaskSurface();
           void taskEntry.commands.chooseProjectForProfile(profileId).catch(() => undefined);
         }}
-        onSelectedRuntimeHostProfileIdChange={setSettingsDiagnosticProfileId}
+        onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
     </ComposerMentionsProvider>
+    </Goals.GoalProvider>
   );
 }

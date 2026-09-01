@@ -99,10 +99,13 @@
    stationary tile float harder than it did before. */
 .maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
 .maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
-.maka-stat-tile-border-info { border-color: oklch(from var(--info) l c h / 0.24); }
-.maka-stat-tile-border-success { border-color: oklch(from var(--success) l c h / 0.24); }
-.maka-stat-tile-border-warning { border-color: oklch(from var(--warning) l c h / 0.28); }
-.maka-stat-tile-border-destructive { border-color: oklch(from var(--destructive) l c h / 0.3); }
+/* One rung, four siblings. These were 0.24/0.24/0.28/0.3 — four hand-picked
+   alphas for one ladder position, which is what a tinted edge costs when the
+   call site owns it. The `-muted` tokens are that rung. */
+.maka-stat-tile-border-info { border-color: var(--color-accent-muted); }
+.maka-stat-tile-border-success { border-color: var(--color-success-muted); }
+.maka-stat-tile-border-warning { border-color: var(--color-warning-muted); }
+.maka-stat-tile-border-destructive { border-color: var(--color-error-muted); }
 .maka-stat-tile-empty { opacity: var(--opacity-disabled); }
 .maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
 .maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
@@ -114,7 +117,7 @@
    authority, and it is the general rule for any sub-property the roles do not
    carry. */
 .maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-info { color: var(--info-text); }
+.maka-stat-tile-value-info { color: var(--accent-solid); }
 .maka-stat-tile-value-success { color: var(--success-text); }
 .maka-stat-tile-value-warning { color: var(--warning-text); }
 .maka-stat-tile-value-destructive { color: var(--destructive-text); }
@@ -170,7 +173,7 @@
 .maka-quote-chip-remove > svg,
 .maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
-.maka-task-ledger-empty {
+.maka-session-todo-empty {
   margin: 0;
 }
 
@@ -646,9 +649,9 @@
  margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
-.maka-tool-output-warning { color: var(--warning-text, var(--info-text)); }
-.maka-tool-output-warning-border { border-color: oklch(from var(--warning) l c h / 0.32); }
-.maka-tool-output-destructive-border { border-color: oklch(from var(--destructive) l c h / 0.28); }
+.maka-tool-output-warning { color: var(--warning-text); }
+.maka-tool-output-warning-border { border-color: var(--color-warning-muted); }
+.maka-tool-output-destructive-border { border-color: var(--color-error-muted); }
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
@@ -748,7 +751,7 @@
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
-.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text, var(--info-text)); }
+.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text); }
 .maka-sandbox-blocked-banner,
 .maka-requires-bypass-banner { margin-bottom: 10px; }
 .maka-sandbox-blocked-description {
@@ -760,7 +763,7 @@
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
 .maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
-.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
+.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: var(--color-error-muted); color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
 .maka-turn-host-origin {
@@ -811,8 +814,8 @@
 }
 
 .maka-turn-lineage-badge[data-direction="forward"] {
-  background: oklch(from var(--info) l c h / 0.06);
-  color: oklch(from var(--info-text) calc(l - 0.06) c h);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
 }
 
 .maka-turn-lineage-badge[data-direction="reverse"] {
@@ -939,8 +942,8 @@
    is what says "unchanged" now. */
 .maka-tool-diff-code { color: var(--foreground); }
 .maka-tool-diff-line[data-line="meta"] .maka-tool-diff-code { color: inherit; }
-.maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
-.maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
+.maka-tool-diff-line[data-line="add"] { background: var(--color-success-muted); color: var(--success-text); }
+.maka-tool-diff-line[data-line="del"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
   font: var(--maka-text-heading-5);
  background: oklch(from var(--accent) l c h / 0.08); color: var(--foreground-secondary); }
@@ -958,8 +961,8 @@
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
  height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
-.maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
-.maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
+.maka-tool-terminal-exit[data-ok="true"] { background: var(--color-success-muted); color: var(--success); }
+.maka-tool-terminal-exit[data-ok="false"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-empty {
   font: var(--maka-text-supporting);
  margin: 0; padding: var(--space-2); color: var(--muted-foreground); font-style: italic; }
@@ -967,14 +970,14 @@
   font: var(--maka-text-supporting);
  max-height: 180px; margin: 0; padding: var(--space-1-5) var(--space-2); overflow: auto; font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
 .maka-tool-terminal-stream[data-stream="stdout"] { color: var(--foreground); }
-.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: oklch(from var(--destructive) l c h / 0.04); color: var(--destructive); }
+.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-truncated-note {
   font: var(--maka-text-supporting);
- display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); }
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--foreground-secondary); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
 .maka-tool-terminal-copy { flex: 0 0 auto; }
 .maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }
-.maka-tool-terminal-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
+.maka-tool-terminal-copy[data-copy-error="true"] { border-color: var(--color-error-muted); color: var(--destructive); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }

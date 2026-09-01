@@ -40,6 +40,7 @@ import {
   type ClientCapabilityUnregisterResult,
   type ClientHello,
   type ConfigurationChangedFrame,
+  type ConnectionCatalogChangedFrame,
   type HostOperationErrorCode,
   type HostIncompatible,
   type HostRegistration,
@@ -68,6 +69,8 @@ import {
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+import type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
+export type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
 import type { OperationMode, OperationSpec } from '../protocol/operation-spec.js';
 import {
@@ -174,6 +177,7 @@ export interface ConnectRuntimeHostMessageTransportInput {
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
 
 export interface RuntimeHostConnectionResource {
@@ -230,6 +234,7 @@ export interface RuntimeHostConnection {
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly closed: Promise<void>;
   request<K extends DirectRequestOperationKey>(
     operation: K,
@@ -248,6 +253,7 @@ export interface RuntimeHostConnection {
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
   subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void;
@@ -328,6 +334,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly peerPath: RuntimeHostPeerConnectionPath | undefined;
   readonly closed: Promise<void>;
   readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
@@ -337,6 +344,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #connectionCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #projectCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   readonly #scheduledTaskChangeListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
@@ -363,6 +371,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       livenessIntervalMs?: number;
       onLivenessProbe?: () => void;
       connectionResource?: RuntimeHostConnectionResource;
+      peerPath?: RuntimeHostPeerConnectionPath;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
@@ -374,6 +383,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.selectedProtocol = accepted.selectedProtocol;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
+    this.peerPath = options?.peerPath;
     const connectionResource = options?.connectionResource;
     if (connectionResource) {
       const abortForResourceClosure = (cause: Error) =>
@@ -618,6 +628,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return () => this.#configurationChangeListeners.delete(listener);
   }
 
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#connectionCatalogChangeListeners.add(listener);
+    return () => this.#connectionCatalogChangeListeners.delete(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#projectCatalogChangeListeners.add(listener);
     return () => this.#projectCatalogChangeListeners.delete(listener);
@@ -648,6 +663,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           switch (frame.kind) {
             case 'configuration.changed':
               this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'connection.catalog.changed':
+              this.#acceptConnectionCatalogChanged(frame);
               continue;
             case 'project.catalog.changed':
               this.#acceptProjectCatalogChanged(frame);
@@ -719,6 +737,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
     for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptConnectionCatalogChanged(frame: ConnectionCatalogChangedFrame): void {
+    for (const listener of this.#connectionCatalogChangeListeners) {
       try {
         listener(frame.revision);
       } catch {
@@ -1044,6 +1072,7 @@ export async function connectRuntimeHostMessageTransport(
       livenessIntervalMs: normalized.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
       connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
     });
     if (result.kind === 'connected') {
       resourceTransferred = true;
@@ -1348,6 +1377,7 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
 
 interface LegacySurfaceClientHello extends ClientHello {
@@ -1427,6 +1457,7 @@ async function exchangeRuntimeHostHandshake(
       livenessIntervalMs: input.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
       connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
     }),
   };
 }

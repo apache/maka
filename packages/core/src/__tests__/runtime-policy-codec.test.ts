@@ -484,6 +484,50 @@ test('normalizes exact bounded model discovery results', () => {
   }
 });
 
+test('normalizes extended model facts used by the runtime host catalog', () => {
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [
+      {
+        id: 'custom-model',
+        description: 'A custom model',
+        inputLimit: 120_000,
+        knowledgeCutoff: '2025-01',
+        structuredOutput: true,
+        lastUpdated: '2026-01-01',
+        modalities: { input: ['text', 'image'], output: ['text'] },
+      },
+    ],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], {
+    id: 'custom-model',
+    description: 'A custom model',
+    inputLimit: 120_000,
+    knowledgeCutoff: '2025-01',
+    structuredOutput: true,
+    lastUpdated: '2026-01-01',
+    modalities: { input: ['text', 'image'], output: ['text'] },
+  });
+});
+
+test('rejects sparse model modality arrays', () => {
+  assert.throws(
+    () =>
+      normalizeConnectionModelDiscoveryResult({
+        models: [
+          {
+            id: 'custom-model',
+            modalities: { input: Array(1), output: ['text'] },
+          },
+        ],
+        source: 'fetched',
+        fetchedAt: 42,
+      }),
+    RuntimePolicyDomainDecodeError,
+  );
+});
+
 test('credential domain validation requires material but leaves capacity to callers', () => {
   const input = normalizeSetCredentialInput({
     locator: {

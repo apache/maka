@@ -60,7 +60,6 @@ function architectureConfig({
   legacyFiles = {},
   legacyGrowthDirectories = [],
   legacyPlatformImports = [],
-  hookTransitions = [],
   rootDebt = {},
   rootDebtClosure = {},
   legacyRendererFiles = Object.keys(rootDebt),
@@ -72,7 +71,6 @@ function architectureConfig({
     legacyGrowthDirectories: [...legacyGrowthDirectories].sort(),
     legacyFeatureImports: [...legacyFeatureImports].sort(),
     legacyPlatformImports: [...legacyPlatformImports].sort(),
-    hookTransitions: [...hookTransitions].sort((left, right) => left.id.localeCompare(right.id)),
     legacyAppShell: {
       files: legacyFiles,
       closure: legacyAppShellClosureDebt ?? {},
@@ -1056,104 +1054,52 @@ describe('renderer architecture checker fixtures', () => {
     );
   });
 
-  it('allows a one-time Hook replacement paid by removed Hook debt', async () => {
+  it('rejects a feature controller Hook returning to AppShell after provider migration', async () => {
+    const providerOwnedAppShell = `
+      import { GoalProvider } from './features/goals/index.js';
+      export const AppShell = GoalProvider;
+    `;
     await withDesktopFixture(
-      transitiveAppShellFiles(`
-        import { useState } from 'react';
-        export function legacySessionHelper() {
-          return useState('session');
-        }
-      `),
-      (desktopRoot) => {
-        const currentConfig = generateArchitectureConfig(
-          desktopRoot,
-          transitiveAppShellSeedConfig(),
-        );
-        currentConfig.hookTransitions = [
-          {
-            id: 'replace-session-reducer-with-state-read',
-            section: 'legacyAppShellClosure',
-            path: TRANSITIVE_LEGACY_HELPER_PATH,
-            from: 'useReducer',
-            to: 'useState',
-            count: 1,
-          },
-        ];
-        const baseConfig = structuredClone(currentConfig);
-        baseConfig.hookTransitions = [];
-        baseConfig.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].hookCalls = {
-          useReducer: 1,
-        };
-
-        assert.deepEqual(violationsFor(desktopRoot, currentConfig, baseConfig), []);
+      {
+        [TRANSITIVE_APP_SHELL_PATH]: providerOwnedAppShell,
+        'src/renderer/features/goals/index.ts': `
+          export const GoalProvider = true;
+          export function useGoalController() { return true; }
+        `,
       },
-    );
-  });
+      async (desktopRoot) => {
+        const seedConfig = transitiveAppShellSeedConfig();
+        const providerOwnedConfig = generateArchitectureConfig(desktopRoot, seedConfig);
 
-  it('rejects unconsumed, underfunded, and reused Hook transitions', async () => {
-    await withDesktopFixture(
-      transitiveAppShellFiles(`
-        import { useState } from 'react';
-        export function legacySessionHelper() {
-          return useState('session');
-        }
-      `),
-      (desktopRoot) => {
-        const currentConfig = generateArchitectureConfig(
+        await writeFile(
+          join(desktopRoot, TRANSITIVE_APP_SHELL_PATH),
+          `
+            import { GoalProvider, useGoalController } from './features/goals/index.js';
+            export const AppShell = [GoalProvider, useGoalController()];
+          `,
+          'utf8',
+        );
+        const regressedConfig = generateArchitectureConfig(
           desktopRoot,
-          transitiveAppShellSeedConfig(),
+          providerOwnedConfig,
         );
-        const transition = {
-          id: 'replace-session-reducer-with-state-read',
-          section: 'legacyAppShellClosure',
-          path: TRANSITIVE_LEGACY_HELPER_PATH,
-          from: 'useReducer',
-          to: 'useState',
-          count: 2,
-        };
-        currentConfig.hookTransitions = [transition];
-        const underfundedBase = structuredClone(currentConfig);
-        underfundedBase.hookTransitions = [];
-        underfundedBase.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].hookCalls = {
-          useReducer: 1,
-        };
-        const underfunded = violationsFor(desktopRoot, currentConfig, underfundedBase);
-        assertHasViolation(
-          underfunded,
-          /replace-session-reducer-with-state-read: hook transition must be paid/u,
-        );
-        assertHasViolation(
-          underfunded,
-          /replace-session-reducer-with-state-read: new hook transition was not consumed/u,
+        const violations = violationsFor(
+          desktopRoot,
+          regressedConfig,
+          providerOwnedConfig,
         );
 
-        const reusedBase = structuredClone(currentConfig);
-        reusedBase.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].hookCalls = {
-          useReducer: 2,
-        };
-        const reused = violationsFor(desktopRoot, currentConfig, reusedBase);
         assertHasViolation(
-          reused,
-          /legacy-session-helper\.ts: new or increased hookCalls debt useState/u,
+          violations,
+          /^src\/renderer\/app-shell\.ts: hookCalls debt increased from 0 to 1$/u,
         );
-
-        const prototypeKeyConfig = structuredClone(currentConfig);
-        prototypeKeyConfig.hookTransitions = [
-          { ...transition, count: 1, from: 'toString' },
-        ];
-        const prototypeKeyBase = structuredClone(prototypeKeyConfig);
-        prototypeKeyBase.hookTransitions = [];
-        prototypeKeyBase.legacyAppShell.closure[TRANSITIVE_LEGACY_HELPER_PATH].hookCalls = {
-          useReducer: 1,
-        };
         assertHasViolation(
-          violationsFor(desktopRoot, prototypeKeyConfig, prototypeKeyBase),
-          /hook transition from must be a tracked Hook name/u,
+          violations,
+          /^src\/renderer\/app-shell\.ts: new or increased hookCalls debt useGoalController$/u,
         );
       },
     );
   });
-
   it('rejects bridge and environment capability growth inside a transitive legacy AppShell helper', async () => {
     await withDesktopFixture(
       transitiveAppShellFiles(`

@@ -31,7 +31,7 @@ import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 export { SETTINGS_NAV } from './settings-nav';
 export type { SettingsNavGroup } from './settings-nav';
 
-export function SettingsModal(props: {
+export default function SettingsModal(props: {
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -49,11 +49,10 @@ export function SettingsModal(props: {
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   /**
-   * Force the modal to a specific section when it (re-)mounts or when the
-   * value changes while already open. Used by the command palette so
-   * ⌘K → "网络" jumps straight to the section without an extra click.
+   * Force the modal to a specific section and Runtime Host when it mounts.
+   * Section changes while already open remain live for command-palette jumps.
    */
-  requestedSection?: SettingsSection;
+  request?: { readonly section?: SettingsSection; readonly profileId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -105,7 +104,7 @@ export function SettingsModal(props: {
         uiLocaleUpdateGate={props.uiLocaleUpdateGate}
         onUserLabelChange={props.onUserLabelChange}
         onDefaultPermissionModeChange={props.onDefaultPermissionModeChange}
-        requestedSection={props.requestedSection}
+        request={props.request}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}
         initialCreateProviderType={props.initialCreateProviderType}

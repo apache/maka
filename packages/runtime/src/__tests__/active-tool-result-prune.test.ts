@@ -22,7 +22,14 @@ import { describe, test } from 'node:test';
 import { z } from 'zod';
 import type { ModelMessage } from '../model-protocol.js';
 
-import { rewriteActiveToolResultsInMessages } from '../active-tool-result-prune.js';
+import {
+  rewriteActiveToolResultsInMessages as rewriteActiveToolResultsInMessagesNarrow,
+  type ActiveToolResultProjectionSource,
+  type ActiveToolResultPruneInput,
+  type ActiveToolResultPruneResult,
+} from '../active-tool-result-prune.js';
+import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, TOOL_SEARCH_NAME } from '../tool-availability.js';
@@ -79,7 +86,7 @@ describe('active current-turn tool-result pruning', () => {
 
     assert.deepEqual(result?.activeTools, ['Read', TOOL_SEARCH_NAME]);
     assert.ok(result?.messages);
-    assert.match(JSON.stringify(result.messages), /maka\.active_archived_tool_result/);
+    assert.match(JSON.stringify(result.messages), /maka\.archived_tool_result/);
   });
 
   test('oversized eligible current-turn tool result is archived and replaced', async () => {
@@ -89,14 +96,12 @@ describe('active current-turn tool-result pruning', () => {
       bodySha256: string;
       toolCallId: string;
     }> = [];
-    const archivedPlaceholders = new Map();
     const rewritten = await rewriteActiveToolResultsInMessages({
       messages: [largeToolMessage('Read', 'tool-1', largeBody)],
       policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
       stepNumber: 1,
       turnId: 'turn-1',
       charsPerToken: 1,
-      archivedPlaceholders,
       archiveToolResult: (candidate) => {
         archiveRequests.push({
           serializedResult: candidate.serializedResult,
@@ -111,7 +116,7 @@ describe('active current-turn tool-result pruning', () => {
     assert.match(archiveRequests[0]?.bodySha256 ?? '', /^[a-f0-9]{64}$/);
     assert.equal(archiveRequests[0]?.toolCallId, 'tool-1');
     const secondPrompt = JSON.stringify(rewritten.messages);
-    assert.match(secondPrompt, /maka\.active_archived_tool_result/);
+    assert.match(secondPrompt, /maka\.archived_tool_result/);
     assert.match(secondPrompt, /artifact-tool-1/);
     assert.equal(secondPrompt.includes('maka://archive/'), true);
     assert.match(secondPrompt, /ArchiveRead/);
@@ -119,83 +124,37 @@ describe('active current-turn tool-result pruning', () => {
     assert.equal(secondPrompt.includes(largeBody), false);
   });
 
-  test('archive failure keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => {
+  // Every way the archive can fail to yield one usable artifact id is the same
+  // fact to this code: nothing durable was written, so nothing may be replaced.
+  for (const [name, archiveToolResult] of [
+    [
+      'throws',
+      () => {
         throw new Error('archive unavailable');
       },
+    ],
+    ['writes nothing', () => undefined],
+    ['returns an empty artifact id', () => ({ artifactId: '' })],
+    ['returns a blank artifact id', () => ({ artifactId: '   ' })],
+  ] as const) {
+    test(`keeps the original tool result when the archive ${name}`, async () => {
+      const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
+      const rewritten = await rewriteActiveToolResultsInMessages({
+        messages,
+        policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
+        stepNumber: 1,
+        turnId: 'turn-1',
+        charsPerToken: 1,
+        archiveToolResult,
+      });
+
+      assert.equal(rewritten.rewritten, 0);
+      assert.equal(rewritten.archiveFailures, 1);
+      assert.deepEqual(rewritten.messages, messages);
+      assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
+      assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.archived_tool_result/);
     });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.active_archived_tool_result/);
-  });
-
-  test('archiveRequired false still keeps original when no archive artifact is written', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: {
-        enabled: true,
-        maxCurrentResultEstimatedTokens: 1,
-        archiveRequired: false,
-      } as never,
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => undefined,
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.active_archived_tool_result/);
-  });
-
-  test('empty archive artifact id keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => ({ artifactId: '' }),
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.active_archived_tool_result/);
-  });
-
-  test('blank archive artifact id keeps the original tool result', async () => {
-    const messages = [largeToolMessage('Read', 'tool-1', 'KEEP_ME'.repeat(20))];
-    const rewritten = await rewriteActiveToolResultsInMessages({
-      messages,
-      policy: { enabled: true, maxCurrentResultEstimatedTokens: 1 },
-      stepNumber: 1,
-      turnId: 'turn-1',
-      charsPerToken: 1,
-      archiveToolResult: () => ({ artifactId: '   ' }),
-    });
-
-    assert.equal(rewritten.rewritten, 0);
-    assert.equal(rewritten.archiveFailures, 1);
-    assert.deepEqual(rewritten.messages, messages);
-    assert.match(JSON.stringify(rewritten.messages), /KEEP_ME/);
-    assert.doesNotMatch(JSON.stringify(rewritten.messages), /maka\.active_archived_tool_result/);
-  });
+  }
 
   test('empty-artifact placeholders are not treated as idempotent', async () => {
     const placeholder = invalidActivePlaceholder();
@@ -756,6 +715,90 @@ describe('active current-turn tool-result pruning', () => {
   });
 });
 
+/**
+ * Drive the prune with a durable ledger stand-in.
+ *
+ * The prune can no longer rewrite anything it cannot make durable, so every
+ * case here supplies both halves of that: a projection address for each tool
+ * call (derived from the message payload, so the size thresholds under test
+ * measure exactly what they used to) and an archive + transition recorder.
+ */
+async function rewriteActiveToolResultsInMessages(
+  input: Omit<ActiveToolResultPruneInput, 'resolveProjection' | 'transitions'> & {
+    archiveToolResult?: (candidate: {
+      sessionId: string;
+      runtimeEventId: string;
+      turnId: string;
+      toolCallId: string;
+      toolName: string;
+      serializedResult: string;
+      bodySha256: string;
+    }) => { artifactId: string } | void | Promise<{ artifactId: string } | void>;
+    recordTransition?: (transition: ModelProjectionTransition) => Promise<void>;
+  },
+): Promise<ActiveToolResultPruneResult> {
+  const { archiveToolResult, recordTransition, ...rest } = input;
+  let clock = 1000;
+  return rewriteActiveToolResultsInMessagesNarrow({
+    ...rest,
+    resolveProjection: (toolCallId) => resolveTestProjection(input.messages, toolCallId),
+    transitions: {
+      sessionId: 'session-1',
+      archiveToolResult: (candidate) =>
+        archiveToolResult
+          ? archiveToolResult(candidate)
+          : { artifactId: `artifact-${candidate.toolCallId}` },
+      recordTransition: recordTransition ?? (() => Promise.resolve()),
+      now: () => (clock += 1),
+    },
+  });
+}
+
+function resolveTestProjection(
+  messages: readonly ModelMessage[],
+  toolCallId: string,
+): ActiveToolResultProjectionSource | undefined {
+  for (const message of messages) {
+    if (message.role !== 'tool' || !Array.isArray(message.content)) continue;
+    for (const part of message.content as Array<Record<string, unknown>>) {
+      if (part.type !== 'tool-result' || part.toolCallId !== toolCallId) continue;
+      const output = part.output as { type?: string; value?: unknown } | undefined;
+      const projection = testProjection(output);
+      if (!projection) return undefined;
+      return {
+        runtimeEventId: `event-${toolCallId}`,
+        turnId: 'turn-1',
+        toolName: String(part.toolName),
+        projection,
+      };
+    }
+  }
+  return undefined;
+}
+
+function testProjection(
+  output: { type?: string; value?: unknown } | undefined,
+): DurableToolResultProjection | undefined {
+  if (!output) return undefined;
+  if (output.type === 'text' || output.type === 'error-text') {
+    return {
+      version: 1,
+      kind: 'text',
+      text: String(output.value),
+      ...(output.type === 'error-text' ? { isError: true as const } : {}),
+    };
+  }
+  if (output.type === 'json' || output.type === 'error-json') {
+    return {
+      version: 1,
+      kind: 'json',
+      value: output.value as never,
+      ...(output.type === 'error-json' ? { isError: true as const } : {}),
+    };
+  }
+  return undefined;
+}
+
 function largeToolMessage(toolName: string, toolCallId: string, body: string): ModelMessage {
   return {
     role: 'tool',
@@ -804,10 +847,10 @@ function completedCall(toolName: string, toolCallId: string, input: unknown, ste
 
 function invalidActivePlaceholder(): Record<string, unknown> {
   return {
-    kind: 'maka.active_archived_tool_result',
+    kind: 'maka.archived_tool_result',
     rewriteVersion: 1,
     artifactId: '',
-    turnId: 'turn-1',
+    runtimeEventId: 'event-tool-old',
     toolCallId: 'tool-old',
     toolName: 'Read',
     bodySha256: 'a'.repeat(64),

@@ -219,7 +219,7 @@
   }
 
 .settingsMemoryDirtyState[data-dirty="true"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
     font: var(--maka-text-label);
   }
 

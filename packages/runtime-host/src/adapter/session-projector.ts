@@ -577,6 +577,16 @@ export function projectRuntimeHostInteractionRequest(
       },
     ];
   }
+  if (interaction.request.kind === 'client_capability') {
+    return [
+      {
+        type: 'client_capability_request',
+        ...base,
+        capability: interaction.request.target.capability,
+        scope: structuredClone(interaction.request.target.scope),
+      },
+    ];
+  }
   return [];
 }
 

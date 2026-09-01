@@ -49,7 +49,11 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
-import type { IdentifiedLlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
@@ -91,9 +95,10 @@ import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
-  runtimeHostConnectionsBridge,
+  ConnectionSettingsServicesConsumer,
+  type ConnectionSettingsServices,
   type RuntimeHostSettingsConnectionsBridge,
-} from './runtime-host-settings-bridge.js';
+} from '../features/connection-settings';
 import {
   hasRuntimeHostSettingsPatch,
   projectClientOwnedSettings,
@@ -144,7 +149,7 @@ function readyRuntimeHost(
   return { profileId: entry.profile.id, hostId: entry.hostId };
 }
 
-export function SettingsSurface(props: {
+type SettingsSurfaceProps = {
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -154,7 +159,7 @@ export function SettingsSurface(props: {
   uiLocaleUpdateGate: UiLocaleUpdateGate;
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
-  requestedSection?: SettingsSection;
+  request?: { readonly section?: SettingsSection; readonly profileId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -167,12 +172,31 @@ export function SettingsSurface(props: {
   onRemoteHostAdded(profileId: string): void;
   onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
   snapshotCache?: SettingsSnapshotCache;
-}) {
+};
+
+export function SettingsSurface(props: SettingsSurfaceProps) {
+  return (
+    <ConnectionSettingsServicesConsumer>
+      {(connectionSettingsServices) => (
+        <SettingsSurfaceContent
+          {...props}
+          connectionSettingsServices={connectionSettingsServices}
+        />
+      )}
+    </ConnectionSettingsServicesConsumer>
+  );
+}
+
+function SettingsSurfaceContent(
+  props: SettingsSurfaceProps & {
+    readonly connectionSettingsServices: ConnectionSettingsServices;
+  },
+) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
   const isNarrowSettings = useMediaQuery(NARROW_SETTINGS_QUERY);
-  const [section, setSection] = useState<SettingsSection>(() => props.requestedSection ?? readLastSettingsSection());
+  const [section, setSection] = useState<SettingsSection>(() => props.request?.section ?? readLastSettingsSection());
   const [providerCatalogRequested, setProviderCatalogRequested] = useState(props.openProviderCatalog === true);
   // One-shot landing intent, mirroring providerCatalogRequested above: the
   // request retires once ProvidersPanel consumes it, so remounting the panel
@@ -190,15 +214,15 @@ export function SettingsSurface(props: {
     setCreateProviderRequest(props.initialCreateProviderType);
   }, [props.initialCreateProviderType]);
 
-  // When the parent updates requestedSection (e.g. the palette opens
+  // When the parent updates the navigation request (e.g. the palette opens
   // Settings with a different section while it's already mounted), reflect
-  // that into the local state.
+  // its section into the local state.
   useEffect(() => {
-    if (props.requestedSection && props.requestedSection !== section) {
-      setSection(props.requestedSection);
+    if (props.request?.section && props.request.section !== section) {
+      setSection(props.request.section);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.requestedSection]);
+  }, [props.request?.section]);
 
   // Focus follows the active section's nav button: on mount, and whenever
   // `section` changes (nav click — a native-focus no-op — or a ⌘K palette
@@ -252,12 +276,14 @@ export function SettingsSurface(props: {
     () => snapshotCache.readRuntimeHostCatalog(),
     [snapshotCache],
   );
+  const initialSelectedProfileId =
+    props.request?.profileId ?? initialRuntimeHostCatalog?.defaultProfileId;
   const initialRuntimeHost = useMemo(
     () => readyRuntimeHost(
       initialRuntimeHostCatalog,
-      initialRuntimeHostCatalog?.defaultProfileId,
+      initialSelectedProfileId,
     ),
-    [initialRuntimeHostCatalog],
+    [initialRuntimeHostCatalog, initialSelectedProfileId],
   );
   const initialRuntimeHostKey = initialRuntimeHost
     ? runtimeHostSettingsKey(initialRuntimeHost)
@@ -288,7 +314,7 @@ export function SettingsSurface(props: {
     initialRuntimeHostCatalog,
   ));
   const [selectedProfileId, setSelectedProfileId] = useState<string | undefined>(
-    initialRuntimeHostCatalog?.defaultProfileId,
+    initialSelectedProfileId,
   );
   const selectedProfileIdRef = useRef(selectedProfileId);
   const defaultRuntimeHostProfileIdRef = useRef(
@@ -309,7 +335,9 @@ export function SettingsSurface(props: {
   const usageReloadTicketRef = useRef(0);
   const runtimeHostReloadTicketRef = useRef(0);
   const runtimeHostCatalogHydratedRef = useRef(false);
-  const selectedProfileChangedByUserRef = useRef(false);
+  const selectedProfileChangedByUserRef = useRef(
+    props.request?.profileId !== undefined,
+  );
   const runtimeHostLifecycleByProfileRef = useRef(
     new Map<string, DesktopRuntimeHostProfileChangedEvent>(),
   );
@@ -340,12 +368,14 @@ export function SettingsSurface(props: {
     ),
     [runtimeHostLifecycleByProfile, runtimeHosts, selectedProfileId],
   );
-  const connectionsBridge = useMemo(
+  const connectionBridges = useMemo(
     () => selectedRuntimeHost
-      ? runtimeHostConnectionsBridge(selectedRuntimeHost)
+      ? props.connectionSettingsServices.forHost(selectedRuntimeHost)
       : undefined,
-    [selectedRuntimeHost],
+    [props.connectionSettingsServices, selectedRuntimeHost],
   );
+  const connectionsBridge = connectionBridges?.connections;
+  const apiKeyOnboardingBridge = connectionBridges?.apiKeyOnboarding;
   const selectedRuntimeHostKey = selectedRuntimeHost
     ? runtimeHostSettingsKey(selectedRuntimeHost)
     : undefined;
@@ -1007,6 +1037,7 @@ export function SettingsSurface(props: {
                             }
                             connections={connections}
                             connectionsBridge={connectionsBridge}
+                            apiKeyOnboardingBridge={apiKeyOnboardingBridge}
                             defaultSlug={defaultSlug}
                             runtimeHost={selectedRuntimeHost}
                             runtimeHostAvailabilityStatus={runtimeHostAvailabilityStatus}
@@ -1060,8 +1091,11 @@ function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
-  connections: IdentifiedLlmConnection[];
+  connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
+  apiKeyOnboardingBridge:
+    | ReturnType<ConnectionSettingsServices['forHost']>['apiKeyOnboarding']
+    | undefined;
   defaultSlug: string | null;
   runtimeHost: DesktopRuntimeHostRef | undefined;
   runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus;
@@ -1108,6 +1142,7 @@ function SettingsPageBody(props: {
         <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
             bridge={props.connectionsBridge}
+            apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}

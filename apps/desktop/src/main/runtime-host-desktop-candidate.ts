@@ -30,6 +30,7 @@ import {
   connectOrSpawnRuntimeHost,
   connectRuntimeHostProfile,
   type RuntimeHostPeerClient,
+  type RuntimeHostConnectionPhase,
   type RuntimeHostSshInteraction,
   type RuntimeHostSshTunnel,
   type RuntimeHostSshTunnelInput,
@@ -202,6 +203,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly peerClient?: RuntimeHostPeerClient;
+  readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
   readonly profileTarget?: {
     readonly profile: PersistedRuntimeHostProfile;
     readonly credential?: string;
@@ -435,6 +437,9 @@ async function startProfileDesktopRuntimeHostCandidate(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
+    ...(input.onConnectionPhase === undefined
+      ? {}
+      : { onConnectionPhase: input.onConnectionPhase }),
     ...(profileTarget.sshInteraction === undefined
       ? {}
       : { sshInteraction: profileTarget.sshInteraction }),

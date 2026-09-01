@@ -18,7 +18,10 @@
  */
 
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
-import type { RuntimeHostManagementServices } from '../../features/runtime-host-management';
+import {
+  PeerMeshOperationOutcomeUnknownError,
+  type RuntimeHostManagementServices,
+} from '../../features/runtime-host-management';
 
 export type DesktopRuntimeHostManagementBridge = Pick<
   MakaBridge,
@@ -30,15 +33,24 @@ export function createDesktopRuntimeHostManagementServices(
 ): RuntimeHostManagementServices {
   return {
     peerMesh: {
-      execute: (target, action, input) => bridge.runtimeHostPeerMesh.execute(target, action, input),
+      getConnectivityPolicy: () => bridge.runtimeHostPeerMesh.getConnectivityPolicy(),
+      setConnectivityPolicy: (policy) => bridge.runtimeHostPeerMesh.setConnectivityPolicy(policy),
+      execute: async (target, action, input) => {
+        const outcome = await bridge.runtimeHostPeerMesh.execute(target, action, input);
+        if (outcome.kind === 'outcome_unknown') {
+          throw new PeerMeshOperationOutcomeUnknownError(action);
+        }
+        return outcome.result;
+      },
       cancel: (operationId) => bridge.runtimeHostPeerMesh.cancel(operationId),
       getDirectPeer: (profileId) => bridge.runtimeHostManagement.getDirectPeer(profileId),
-      configureDirectPeer: (profileId, enabled, relays, automaticDiscovery) =>
+      configureDirectPeer: (profileId, enabled, relays, automaticDiscovery, webRtcStunPolicy) =>
         bridge.runtimeHostManagement.configureDirectPeer(
           profileId,
           enabled,
           relays,
           automaticDiscovery,
+          webRtcStunPolicy,
         ),
       copyText: (value) => navigator.clipboard.writeText(value),
       createOperationId: () => crypto.randomUUID(),

@@ -360,30 +360,158 @@ test('opens the complete latest Turn when bootstrap starts inside its assistant'
   assert.equal(decoded.nextCursor, null);
 });
 
-test('rejects a latest Turn that exceeds the Host range message bound', async () => {
-  const durable = Array.from({ length: 257 }, (_, index) => ({
+test('pages through a terminal Turn that exceeds the Host range message bound', async () => {
+  const durable: StoredMessage[] = Array.from({ length: 286 }, (_, index) => ({
     ...assistantMessage(index),
     turnId: 'turn-1',
   }));
-
-  await assert.rejects(
-    createSessionTranscriptBootstrap({
-      reader: transcriptReader(durable),
+  const reader = transcriptReader(durable);
+  const { bootstrap, state } = await createSessionTranscriptBootstrap({
+    reader,
+    sessionId: 'session-1',
+    subscriptionId: 'subscription-1',
+    throughSequence: durable.length - 1,
+    rootTurn: {
       sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'terminal-1',
+    },
+    activeAssistantStreams: [],
+    maxBytes: 512 * 1024,
+    projection: 'owner',
+  });
+
+  assert.equal(bootstrap.durable.fragments.length, 256);
+  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
+  assert.equal(bootstrap.durable.protectedTurnSequence, null);
+  assert.ok(bootstrap.durable.nextCursor);
+
+  const subscription = new ClientSessionSubscription(
+    {
+      hostEpoch: 'host-1',
       subscriptionId: 'subscription-1',
-      throughSequence: durable.length - 1,
-      rootTurn: {
-        sessionId: 'session-1',
-        turnId: 'turn-1',
-        runId: 'run-1',
-        status: 'running',
-      },
+      nextSequence: 1,
       activeAssistantStreams: [],
-      maxBytes: 16 * 1024,
-      projection: 'owner',
-    }),
-    /Turn range exceeds its capacity limit/,
+      transcript: bootstrap,
+      snapshot: {
+        schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+        session: {
+          sessionId: 'session-1',
+          metadataRevision: 1,
+          status: 'active',
+          createdAt: 1,
+          isArchived: false,
+        },
+        projectionRevision: 1,
+        rootTurn: {
+          sessionId: 'session-1',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          status: 'completed',
+          terminalEventId: 'terminal-1',
+        },
+        goal: null,
+        queue: { hostEpoch: 'host-1', queueRevision: 1, steering: [], followup: [] },
+        interactions: { pending: [] },
+      },
+    },
+    async () => undefined,
+    (request) => readSessionTranscriptPage({ reader, state, request }),
   );
+  const decodeStoredMessage = (value: unknown): StoredMessage =>
+    decodePersistedStoredMessage(markPersisted<StoredMessage>(value));
+  const sequences: number[] = [];
+  let pageCount = 0;
+  let page = bootstrap.durable;
+
+  for (;;) {
+    pageCount += 1;
+    const decoded = await subscription.decodeTranscriptPage(page, decodeStoredMessage);
+    sequences.push(...decoded.messages.map(({ identity }) => identity));
+    if (decoded.nextCursor === null) {
+      assert.equal(page.nextCursor, null);
+      break;
+    }
+    page = await readSessionTranscriptPage({
+      reader,
+      state,
+      request: {
+        subscriptionId: 'subscription-1',
+        source: 'durable',
+        direction: 'older',
+        throughSequence: durable.length - 1,
+        cursor: decoded.nextCursor,
+        anchorSequence: null,
+        maxBytes: 512 * 1024,
+      },
+    });
+  }
+
+  assert.equal(pageCount, 2);
+  assert.equal(new Set(sequences).size, durable.length);
+  assert.deepEqual(
+    [...sequences].sort((left, right) => left - right),
+    Array.from({ length: durable.length }, (_, index) => index),
+  );
+});
+
+test('degrades the range boundary for an oversized running Turn', async () => {
+  const durable: StoredMessage[] = Array.from({ length: 286 }, (_, index) => ({
+    ...assistantMessage(index),
+    turnId: 'turn-1',
+  }));
+  const { bootstrap } = await createSessionTranscriptBootstrap({
+    reader: transcriptReader(durable),
+    sessionId: 'session-1',
+    subscriptionId: 'subscription-1',
+    throughSequence: durable.length - 1,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'running',
+    },
+    activeAssistantStreams: [],
+    maxBytes: 512 * 1024,
+    projection: 'owner',
+  });
+
+  assert.equal(bootstrap.durable.fragments.length, 256);
+  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
+  assert.equal(bootstrap.durable.protectedTurnSequence, null);
+  assert.ok(bootstrap.durable.nextCursor);
+});
+
+test('degrades the range boundary for a Turn that exceeds the byte bound', async () => {
+  const durable: StoredMessage[] = Array.from({ length: 32 }, (_, index) => ({
+    ...assistantMessage(index),
+    turnId: 'turn-1',
+    text: 'x'.repeat(600 * 1024),
+  }));
+  const { bootstrap } = await createSessionTranscriptBootstrap({
+    reader: transcriptReader(durable),
+    sessionId: 'session-1',
+    subscriptionId: 'subscription-1',
+    throughSequence: durable.length - 1,
+    rootTurn: {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      runId: 'run-1',
+      status: 'completed',
+      terminalEventId: 'terminal-1',
+    },
+    activeAssistantStreams: [],
+    maxBytes: 512 * 1024,
+    projection: 'owner',
+  });
+
+  assert.ok(bootstrap.durable.fragments.length <= 256);
+  assert.ok(bootstrap.durable.rawBytes <= 512 * 1024);
+  assert.equal(bootstrap.durable.rangeBoundarySequence, null);
+  assert.equal(bootstrap.durable.protectedTurnSequence, null);
+  assert.ok(bootstrap.durable.nextCursor);
 });
 
 test('admits a latest Turn exactly at the Host range message bound', async () => {

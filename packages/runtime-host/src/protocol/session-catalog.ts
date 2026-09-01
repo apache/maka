@@ -20,7 +20,7 @@
 import { isCollaborationMode, type CollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode, type OrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode, type PermissionMode } from '@maka/core/permission';
-import { isSessionStartMode, type SessionStartMode } from '@maka/core/deep-research';
+import { isSessionStartMode, type SessionStartMode } from '@maka/core/session-start-mode';
 import {
   isSessionBlockedReason,
   isSessionToolProfile,

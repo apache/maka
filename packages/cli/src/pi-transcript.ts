@@ -38,7 +38,12 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -49,7 +54,7 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { basename } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -1893,10 +1898,23 @@ function formatElapsedDuration(elapsedMs: number): string {
  * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
  * Renders nothing when both queues are empty.
  */
+interface TuiPendingQueueCopy {
+  readonly steeringLabel: string;
+  readonly queuedLabel: string;
+  readonly requeueHint: string;
+  readonly stagedLabel: string;
+  readonly detachHint: string;
+}
+
+const TUI_PENDING_QUEUE_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPendingQueueCopy>()(TUI_COPY_RESOURCES['pending-queue']),
+);
+
 export function renderMakaPiPendingQueue(
   state: MakaPiTranscriptState,
   width: number,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform,
+  locale: UiLocale,
 ): string[] {
   if (
     state.stagedImages.length === 0 &&
@@ -1905,28 +1923,29 @@ export function renderMakaPiPendingQueue(
   ) {
     return [];
   }
+  const copy = TUI_PENDING_QUEUE_COPY[locale];
   const safeWidth = Math.max(1, width);
   const lines: string[] = [];
   // Staged images render beside the pending queues: they belong to the same
   // "about to be submitted" surface, and the strip is separate from the
   // editable draft text (matching the Desktop composer's staged cards).
   for (const staged of state.stagedImages) {
-    lines.push(fitLine(`${ansi.accent('Staged:')} ${ansi.dim(staged)}`, safeWidth));
+    lines.push(fitLine(`${ansi.accent(copy.stagedLabel)} ${ansi.dim(staged)}`, safeWidth));
   }
   if (state.stagedImages.length > 0) {
-    lines.push(fitLine(ansi.dim('/detach <n> 移除一张已附加的图片'), safeWidth));
+    lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.detachHint, platform)), safeWidth));
   }
   for (const text of state.steering) {
     lines.push(
-      fitLine(`${ansi.accent('Steering:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+      fitLine(`${ansi.accent(copy.steeringLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
   }
   for (const text of state.followup) {
-    lines.push(fitLine(`${ansi.dim('Queued:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth));
+    lines.push(
+      fitLine(`${ansi.dim(copy.queuedLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+    );
   }
-  lines.push(
-    fitLine(ansi.dim(renderTuiShortcutCopy('Alt+↑ 取回队列以重新编辑', platform)), safeWidth),
-  );
+  lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.requeueHint, platform)), safeWidth));
   return lines;
 }
 
@@ -1954,12 +1973,19 @@ function firstLinePreview(text: string): string {
  * Shorten an absolute path to a `~`-relative form for the statusline.
  * `/Users/alice/workspace/project` → `~/workspace/project`.
  * Falls back to the original path if it is not under the home directory.
+ * Comparison runs through `path.relative`, so Windows profile paths and
+ * case-only differences shorten as well; the remainder keeps its native
+ * separators (`~/Videos\Clips` on Windows).
  */
-function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(cwd: string, homeDir?: string): string {
   const home = homeDir ?? homedir();
-  if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
-  if (home && cwd === home) return '~';
-  return cwd;
+  if (!home) return cwd;
+  const rel = relative(home, cwd);
+  if (rel === '') return '~';
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
+    return cwd;
+  }
+  return `~/${rel}`;
 }
 
 function formatCost(costUsd: number): string {

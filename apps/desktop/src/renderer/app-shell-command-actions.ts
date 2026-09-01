@@ -20,12 +20,12 @@
 import { useMemo, useRef } from "react";
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionStartMode } from '@maka/core/deep-research';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { SettingsSection, ThemePreference } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { NavSelection } from "@maka/ui";
 import type { DesktopManualDiagnosticTarget } from '../preload/diagnostics-contract.js';
+import type { SessionStartMode } from './application/contracts/session-start-mode.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,

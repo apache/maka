@@ -26,10 +26,15 @@ import { HStack } from '@astryxdesign/core/Stack';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import type { PeerMeshProjection, PeerMeshQueryResult } from '@maka/runtime-host/protocol';
 import {
+  decodeRuntimeHostWebRtcStunPolicy,
+  type RuntimeHostWebRtcStunPolicy,
+} from '@maka/runtime-host/webrtc-stun-policy';
+import {
   Badge,
   Button,
   MoreMenu,
   redactSecrets,
+  Selector,
   Switch,
   Text,
   TextArea,
@@ -51,9 +56,10 @@ import {
   Workflow,
 } from '@maka/ui/icons';
 import { useRuntimeHostManagementServices } from '../services-context.js';
-import type {
-  PeerMeshDirectPeerSnapshot,
-  PeerMeshTarget,
+import {
+  PeerMeshOperationOutcomeUnknownError,
+  type PeerMeshDirectPeerSnapshot,
+  type PeerMeshTarget,
 } from '../ports.js';
 
 type PeerMeshDialogView =
@@ -88,6 +94,29 @@ type LocalHostAvailability =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'available'; readonly peerId: string };
 
+type DesktopConnectivityPolicyState =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'failed'; readonly message: string }
+  | { readonly kind: 'ready'; readonly policy: RuntimeHostWebRtcStunPolicy };
+
+interface DesktopConnectivityControls {
+  readonly state: DesktopConnectivityPolicyState;
+  readonly selectedKind: RuntimeHostWebRtcStunPolicy['kind'];
+  readonly customUrls: string;
+  readonly restartRequired: boolean;
+  readonly saving: boolean;
+  readonly inputInvalid: boolean;
+  readonly onKindChange: (kind: RuntimeHostWebRtcStunPolicy['kind']) => void;
+  readonly onCustomUrlsChange: (value: string) => void;
+  readonly onSave: () => void;
+  readonly onReset: () => void;
+}
+
+interface ActivePeerMeshOperation {
+  readonly operationId: string;
+  readonly cancellable: boolean;
+}
+
 const LOCAL_HOST_TARGET = { kind: 'local_host' } as const;
 
 export function RuntimeHostPeerMeshDialog(props: {
@@ -106,12 +135,25 @@ export function RuntimeHostPeerMeshDialog(props: {
   const [view, setView] = useState<PeerMeshDialogView>({ kind: 'overview' });
   const [error, setError] = useState<string>();
   const [workingAction, setWorkingAction] = useState<PeerMeshWorkingAction>();
+  const [settling, setSettling] = useState(false);
+  const [operationCancellable, setOperationCancellable] = useState(false);
+  const [connectivityPolicy, setConnectivityPolicy] = useState<DesktopConnectivityPolicyState>(
+    { kind: 'loading' },
+  );
+  const [connectivityPolicyKind, setConnectivityPolicyKind] =
+    useState<RuntimeHostWebRtcStunPolicy['kind']>('default');
+  const [customStunUrls, setCustomStunUrls] = useState('');
+  const [savingConnectivityPolicy, setSavingConnectivityPolicy] = useState(false);
+  const [connectivityPolicyInputInvalid, setConnectivityPolicyInputInvalid] = useState(false);
+  const [connectivityPolicyRestartRequired, setConnectivityPolicyRestartRequired] =
+    useState(false);
   const [managedHostPeerSetup, setManagedHostPeerSetup] = useState<ManagedHostPeerSetup>(
     props.target.kind === 'managed_host' ? { kind: 'loading' } : { kind: 'idle' },
   );
   const working = workingAction !== undefined;
-  const activeOperationId = useRef<string | undefined>(undefined);
-  const cancelledOperationId = useRef<string | undefined>(undefined);
+  const activeOperation = useRef<ActivePeerMeshOperation | undefined>(undefined);
+  const cancelRequestedOperationId = useRef<string | undefined>(undefined);
+  const closeRequested = useRef(false);
   const statusOperationIds = useRef(new Set<string>());
   const refreshSequence = useRef(0);
   const closed = useRef(false);
@@ -166,24 +208,27 @@ export function RuntimeHostPeerMeshDialog(props: {
   const refresh = useCallback(async () => {
     if (closed.current) return;
     const sequence = ++refreshSequence.current;
-    const [result, localHost] = await Promise.all([
-      executeStatus(activeTarget),
-      offerLocalHost
-        ? executeStatus(LOCAL_HOST_TARGET).then(
-            (value) => ({ kind: 'result' as const, value }),
-            () => ({ kind: 'failed' as const }),
-          )
-        : undefined,
-    ]);
+    const result = await executeStatus(activeTarget);
     if (!isSnapshot(result)) throw new Error(copy.invalidResult);
     if (closed.current || sequence !== refreshSequence.current) return;
     setSnapshot(result);
     setError(undefined);
     if (offerLocalHost) {
-      setLocalHost(
-        localHost?.kind === 'result' && isSnapshot(localHost.value) && localHost.value.localPeerId
-          ? { kind: 'available', peerId: localHost.value.localPeerId }
-          : { kind: 'unavailable' },
+      setLocalHost({ kind: 'loading' });
+      void executeStatus(LOCAL_HOST_TARGET).then(
+        (localHost) => {
+          if (closed.current || sequence !== refreshSequence.current) return;
+          setLocalHost(
+            isSnapshot(localHost) && localHost.localPeerId
+              ? { kind: 'available', peerId: localHost.localPeerId }
+              : { kind: 'unavailable' },
+          );
+        },
+        () => {
+          if (!closed.current && sequence === refreshSequence.current) {
+            setLocalHost({ kind: 'unavailable' });
+          }
+        },
       );
     }
   }, [activeTarget, copy.invalidResult, executeStatus, offerLocalHost]);
@@ -202,10 +247,33 @@ export function RuntimeHostPeerMeshDialog(props: {
       closed.current = true;
       refreshSequence.current += 1;
       cancelStatusOperations();
-      const operationId = activeOperationId.current;
-      if (operationId) void services.cancel(operationId);
     };
   }, [cancelStatusOperations, copy.unknownError, offerLocalHost, refresh]);
+
+  useEffect(() => {
+    if (props.target.kind !== 'desktop') return;
+    let disposed = false;
+    setConnectivityPolicy({ kind: 'loading' });
+    void services.getConnectivityPolicy().then(
+      (policy) => {
+        if (disposed) return;
+        setConnectivityPolicy({ kind: 'ready', policy });
+        setConnectivityPolicyKind(policy.kind);
+        setCustomStunUrls(policy.kind === 'custom' ? policy.urls.join(', ') : '');
+      },
+      (failure) => {
+        if (!disposed) {
+          setConnectivityPolicy({
+            kind: 'failed',
+            message: peerMeshErrorMessage(failure, copy.connectivityPolicyLoadFailed),
+          });
+        }
+      },
+    );
+    return () => {
+      disposed = true;
+    };
+  }, [copy.connectivityPolicyLoadFailed, props.target.kind, services]);
 
   useEffect(() => {
     if (view.kind !== 'overview' || working) return;
@@ -246,28 +314,82 @@ export function RuntimeHostPeerMeshDialog(props: {
   async function runOperation(
     action: PeerMeshWorkingAction,
     operation: (operationId: string) => Promise<void>,
+    policy: {
+      readonly cancellable?: boolean;
+      readonly preserveResultOnClose?: boolean;
+    } = {},
   ): Promise<boolean> {
     if (closed.current) return false;
     const operationId = services.createOperationId();
-    activeOperationId.current = operationId;
+    activeOperation.current = { operationId, cancellable: policy.cancellable === true };
+    cancelRequestedOperationId.current = undefined;
+    setSettling(false);
+    setOperationCancellable(policy.cancellable === true);
     setWorkingAction(action);
     setError(undefined);
     let completed = false;
-    let cancelled = false;
+    let unknownOutcome = false;
+    let unknownOutcomeReconciled = false;
     try {
       await operation(operationId);
       completed = true;
     } catch (failure) {
-      if (!closed.current && cancelledOperationId.current !== operationId) {
+      if (
+        failure instanceof PeerMeshOperationOutcomeUnknownError &&
+        !closed.current &&
+        cancelRequestedOperationId.current !== operationId
+      ) {
+        unknownOutcome = true;
+        setSettling(true);
+        setOperationCancellable(false);
+        try {
+          await refresh();
+          unknownOutcomeReconciled = true;
+          setError(
+            failure.action === 'invite'
+              ? copy.invitationOutcomeUnknown
+              : copy.outcomeUnknown,
+          );
+        } catch {
+          if (!closed.current) setError(copy.outcomeUnknownRefreshFailed);
+        }
+      } else if (!closed.current && cancelRequestedOperationId.current !== operationId) {
         setError(peerMeshErrorMessage(failure, copy.unknownError));
       }
     } finally {
-      cancelled = cancelledOperationId.current === operationId;
-      if (activeOperationId.current === operationId) activeOperationId.current = undefined;
-      if (cancelled) cancelledOperationId.current = undefined;
-      if (!closed.current) setWorkingAction(undefined);
+      const cancelled = cancelRequestedOperationId.current === operationId;
+      if (cancelled && !closed.current) {
+        try {
+          await refresh();
+        } catch (failure) {
+          if (!closed.current) setError(peerMeshErrorMessage(failure, copy.unknownError));
+        }
+      }
+      if (cancelRequestedOperationId.current === operationId) {
+        cancelRequestedOperationId.current = undefined;
+      }
+      if (activeOperation.current?.operationId === operationId) activeOperation.current = undefined;
+      if (cancelled) completed = false;
+      if (!closed.current && activeOperation.current === undefined) {
+        setWorkingAction(undefined);
+        setSettling(false);
+        setOperationCancellable(false);
+      }
+      if (!closed.current && closeRequested.current) {
+        if (unknownOutcome && !unknownOutcomeReconciled) closeRequested.current = false;
+        else if (completed && policy.preserveResultOnClose) closeRequested.current = false;
+        else finishClose();
+      }
     }
-    return completed && !cancelled && !closed.current;
+    return completed && !closed.current;
+  }
+
+  function operationIsCurrent(operationId: string): boolean {
+    return (
+      !closed.current &&
+      activeOperation.current?.operationId === operationId &&
+      cancelRequestedOperationId.current !== operationId
+    );
   }
 
   async function refreshNow(): Promise<void> {
@@ -284,18 +406,36 @@ export function RuntimeHostPeerMeshDialog(props: {
   }
 
   function cancelOperation(): void {
-    const operationId = activeOperationId.current;
-    if (operationId) {
-      cancelledOperationId.current = operationId;
-      void services.cancel(operationId);
-    }
+    const operation = activeOperation.current;
+    if (
+      !operation?.cancellable ||
+      cancelRequestedOperationId.current === operation.operationId
+    ) return;
+    const operationId = operation.operationId;
+    cancelRequestedOperationId.current = operationId;
+    if (!closed.current) setSettling(true);
+    void services.cancel(operationId);
+  }
+
+  function finishClose(): void {
+    if (closed.current) return;
+    closed.current = true;
+    cancelStatusOperations();
+    props.onClose();
   }
 
   function requestClose(): void {
-    closed.current = true;
-    if (working) cancelOperation();
-    cancelStatusOperations();
-    props.onClose();
+    if (workingAction && workingAction !== 'refresh') {
+      if (activeOperation.current?.cancellable) {
+        cancelOperation();
+        finishClose();
+        return;
+      }
+      closeRequested.current = true;
+      setSettling(true);
+      return;
+    }
+    finishClose();
   }
 
   async function createMesh(): Promise<void> {
@@ -305,49 +445,62 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
       const created = result.meshes.find(({ meshId }) => !previousMeshIds.has(meshId));
       if (created && offerLocalHost) {
         await joinLocalHost(created.meshId, operationId);
+        if (!operationIsCurrent(operationId)) return;
         await refresh();
       }
     });
   }
 
   async function join(): Promise<void> {
-    await runOperation('join', async (operationId) => {
-      const result = await services.execute(activeTarget, 'join', {
-        invitation: joinDraft.trim(),
-        operationId,
-      });
-      if (!isSnapshot(result)) throw new Error(copy.invalidResult);
-      setJoinDraft('');
-      setView({ kind: 'overview' });
-      setSnapshot(result);
-    });
+    await runOperation(
+      'join',
+      async (operationId) => {
+        const result = await services.execute(activeTarget, 'join', {
+          invitation: joinDraft.trim(),
+          operationId,
+        });
+        if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+        if (!operationIsCurrent(operationId)) return;
+        setJoinDraft('');
+        setView({ kind: 'overview' });
+        setSnapshot(result);
+      },
+      { cancellable: activeTarget.kind === 'desktop' },
+    );
   }
 
   async function createInvitation(meshId: string): Promise<void> {
-    await runOperation('invite', async (operationId) => {
-      const result = await services.execute(activeTarget, 'invite', {
-        meshId,
-        operationId,
-      });
-      if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
-      setView({
-        kind: 'invitation',
-        meshId,
-        code: JSON.stringify(result.invitation),
-        expiresAt: result.invitation.expiresAt,
-        hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
-      });
-      setSnapshot(result.snapshot);
-    });
+    await runOperation(
+      'invite',
+      async (operationId) => {
+        const result = await services.execute(activeTarget, 'invite', {
+          meshId,
+          operationId,
+        });
+        if (!isInvitationResult(result)) throw new Error(copy.invalidResult);
+        if (!operationIsCurrent(operationId)) return;
+        setView({
+          kind: 'invitation',
+          meshId,
+          code: JSON.stringify(result.invitation),
+          expiresAt: result.invitation.expiresAt,
+          hasCoordinationRelay: result.invitation.coordinationRelays.length > 0,
+        });
+        setSnapshot(result.snapshot);
+      },
+      { preserveResultOnClose: true },
+    );
   }
 
   async function addLocalHost(meshId: string): Promise<void> {
     await runOperation('add-host', async (operationId) => {
       await joinLocalHost(meshId, operationId);
+      if (!operationIsCurrent(operationId)) return;
       await refresh();
     });
   }
@@ -369,7 +522,42 @@ export function RuntimeHostPeerMeshDialog(props: {
     } catch (failure) {
       if (!closed.current) setError(peerMeshErrorMessage(failure, copy.unknownError));
     } finally {
-      if (!closed.current) setWorkingAction(undefined);
+      if (!closed.current) {
+        setWorkingAction(undefined);
+        if (closeRequested.current) finishClose();
+      }
+    }
+  }
+
+  async function saveConnectivityPolicy(
+    override?: RuntimeHostWebRtcStunPolicy,
+  ): Promise<void> {
+    if (savingConnectivityPolicy || (!override && connectivityPolicy.kind !== 'ready')) return;
+    let normalizedCandidate: RuntimeHostWebRtcStunPolicy;
+    try {
+      normalizedCandidate = override
+        ? decodeRuntimeHostWebRtcStunPolicy(override)
+        : decodeConnectivityPolicyDraft(connectivityPolicyKind, customStunUrls);
+    } catch {
+      setConnectivityPolicyInputInvalid(true);
+      return;
+    }
+    setSavingConnectivityPolicy(true);
+    setConnectivityPolicyInputInvalid(false);
+    setError(undefined);
+    try {
+      const policy = await services.setConnectivityPolicy(normalizedCandidate);
+      if (closed.current) return;
+      setConnectivityPolicy({ kind: 'ready', policy });
+      setConnectivityPolicyKind(policy.kind);
+      setCustomStunUrls(policy.kind === 'custom' ? policy.urls.join(', ') : '');
+      setConnectivityPolicyRestartRequired(true);
+    } catch (failure) {
+      if (!closed.current) {
+        setError(peerMeshErrorMessage(failure, copy.connectivityPolicySaveFailed));
+      }
+    } finally {
+      if (!closed.current) setSavingConnectivityPolicy(false);
     }
   }
 
@@ -379,7 +567,7 @@ export function RuntimeHostPeerMeshDialog(props: {
       operationId,
     });
     if (!isInvitationResult(prepared)) throw new Error(copy.invalidResult);
-    if (cancelledOperationId.current === operationId) {
+    if (!operationIsCurrent(operationId)) {
       throw new Error('Peer Mesh operation was cancelled');
     }
     const joined = await services.execute(
@@ -388,6 +576,9 @@ export function RuntimeHostPeerMeshDialog(props: {
       { invitation: JSON.stringify(prepared.invitation), operationId },
     );
     if (!isSnapshot(joined)) throw new Error(copy.invalidResult);
+    if (!operationIsCurrent(operationId)) {
+      throw new Error('Peer Mesh operation was cancelled');
+    }
   }
 
   async function mutate(
@@ -415,6 +606,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
   }
@@ -426,6 +618,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
   }
@@ -447,6 +640,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
     if (!completed) throw new Error('Peer Mesh rename did not complete');
@@ -460,6 +654,7 @@ export function RuntimeHostPeerMeshDialog(props: {
         operationId,
       });
       if (!isSnapshot(result)) throw new Error(copy.invalidResult);
+      if (!operationIsCurrent(operationId)) return;
       setSnapshot(result);
     });
     if (!completed) throw new Error('Peer Mesh rename did not complete');
@@ -538,9 +733,9 @@ export function RuntimeHostPeerMeshDialog(props: {
               {workingAction ? (
                 <Banner
                   status="info"
-                  title={copy.working[workingAction]}
+                  title={settling ? copy.settling : copy.working[workingAction]}
                   endContent={
-                    workingAction === 'enable-peer' || workingAction === 'refresh' ? undefined : (
+                    settling || !operationCancellable ? undefined : (
                       <Button
                         variant="secondary"
                         size="sm"
@@ -557,35 +752,66 @@ export function RuntimeHostPeerMeshDialog(props: {
               ) : view.kind === 'join' ? (
                 <JoinView value={joinDraft} working={working} copy={copy} onChange={setJoinDraft} />
               ) : (
-                <Overview
-                  snapshot={snapshot}
-                  copy={copy}
-                  working={working}
-                  localPeerLabel={
-                    selectedEndpoint === 'local_host' ? copy.thisRuntimeHost : copy.thisDesktop
-                  }
-                  onInvite={(meshId) => void createInvitation(meshId)}
-                  onRemove={(meshId, peerId) => void mutate('remove', meshId, peerId)}
-                  onLeave={(meshId) => void mutate('leave', meshId)}
-                  onClose={(meshId) => void mutate('close', meshId)}
-                  onJoin={() => setView({ kind: 'join' })}
-                  onCreate={() => void createMesh()}
-                  onRefresh={() => void refreshNow()}
-                  onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
-                  onRename={rename}
-                  onRenameMesh={renameMesh}
-                  onCopyPeerId={(peerId) => void copyPeerId(peerId)}
-                  onCopyMeshId={(meshId) => void copyMeshId(meshId)}
-                  localHost={localHost}
-                  onAddLocalHost={offerLocalHost ? (meshId) => void addLocalHost(meshId) : undefined}
-                  managedHostPeerSetup={managedHostPeerSetup}
-                  onEnableManagedHostPeer={() => void enableManagedHostPeer()}
-                  onInspectManagedHostPeer={
-                    managedProfileId
-                      ? () => void inspectManagedHostPeer(managedProfileId)
-                      : undefined
-                  }
-                />
+                <>
+                  <Overview
+                    snapshot={snapshot}
+                    copy={copy}
+                    working={working}
+                    localPeerLabel={
+                      selectedEndpoint === 'local_host' ? copy.thisRuntimeHost : copy.thisDesktop
+                    }
+                    onInvite={(meshId) => void createInvitation(meshId)}
+                    onRemove={(meshId, peerId) => void mutate('remove', meshId, peerId)}
+                    onLeave={(meshId) => void mutate('leave', meshId)}
+                    onClose={(meshId) => void mutate('close', meshId)}
+                    onJoin={() => setView({ kind: 'join' })}
+                    onCreate={() => void createMesh()}
+                    onRefresh={() => void refreshNow()}
+                    onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
+                    onRename={rename}
+                    onRenameMesh={renameMesh}
+                    onCopyPeerId={(peerId) => void copyPeerId(peerId)}
+                    onCopyMeshId={(meshId) => void copyMeshId(meshId)}
+                    localHost={localHost}
+                    onAddLocalHost={offerLocalHost ? (meshId) => void addLocalHost(meshId) : undefined}
+                    managedHostPeerSetup={managedHostPeerSetup}
+                    onEnableManagedHostPeer={() => void enableManagedHostPeer()}
+                    onInspectManagedHostPeer={
+                      managedProfileId
+                        ? () => void inspectManagedHostPeer(managedProfileId)
+                        : undefined
+                    }
+                  />
+                  {activeTarget.kind === 'desktop' || snapshot?.available ? (
+                    <PeerMeshAdvancedSettings
+                      localPeerId={snapshot?.available ? snapshot.localPeerId : undefined}
+                      connectivity={
+                        activeTarget.kind === 'desktop'
+                          ? {
+                              state: connectivityPolicy,
+                              selectedKind: connectivityPolicyKind,
+                              customUrls: customStunUrls,
+                              restartRequired: connectivityPolicyRestartRequired,
+                              saving: savingConnectivityPolicy,
+                              inputInvalid: connectivityPolicyInputInvalid,
+                              onKindChange: (kind) => {
+                                setConnectivityPolicyKind(kind);
+                                setConnectivityPolicyInputInvalid(false);
+                              },
+                              onCustomUrlsChange: (value) => {
+                                setCustomStunUrls(value);
+                                setConnectivityPolicyInputInvalid(false);
+                              },
+                              onSave: () => void saveConnectivityPolicy(),
+                              onReset: () => void saveConnectivityPolicy({ kind: 'default' }),
+                            }
+                          : undefined
+                      }
+                      copy={copy}
+                      onCopyPeerId={(peerId) => void copyPeerId(peerId)}
+                    />
+                  ) : null}
+                </>
               )}
             </div>
           </LayoutContent>
@@ -625,6 +851,159 @@ export function RuntimeHostPeerMeshDialog(props: {
   );
 }
 
+function PeerMeshAdvancedSettings(props: {
+  readonly localPeerId?: string;
+  readonly connectivity?: DesktopConnectivityControls;
+  readonly copy: ReturnType<typeof peerMeshCopy>;
+  readonly onCopyPeerId: (peerId: string) => void;
+}) {
+  const { connectivity } = props;
+  const savedPolicy =
+    connectivity?.state.kind === 'ready' ? connectivity.state.policy : undefined;
+  const connectivitySummary =
+    savedPolicy !== undefined
+      ? savedPolicy.kind === 'default'
+        ? props.copy.connectivityAutomatic
+        : savedPolicy.kind === 'disabled'
+          ? props.copy.connectivityKnownRoutesOnly
+          : props.copy.connectivityCustom
+      : undefined;
+  const draftPolicy = connectivity
+    ? tryDecodeConnectivityPolicyDraft(connectivity.selectedKind, connectivity.customUrls)
+    : undefined;
+  const connectivityPolicyChanged = savedPolicy
+    ? draftPolicy === undefined || !connectivityPoliciesEqual(savedPolicy, draftPolicy)
+    : false;
+  return (
+    <details className="settingsPeerMeshConnectivity">
+      <summary>
+        <span className="settingsPeerMeshConnectivitySummary">
+          <span>
+            <Text type="body" weight="semibold">{props.copy.advancedSettings}</Text>
+            <Text type="supporting" color="secondary">
+              {connectivitySummary ?? props.copy.technicalDetails}
+            </Text>
+          </span>
+          {connectivity?.restartRequired ? (
+            <Badge variant="info" label={props.copy.restartRequired} />
+          ) : null}
+        </span>
+        <ChevronDown
+          className="settingsPeerMeshConnectivityChevron"
+          size={ICON_SIZE.chrome}
+          aria-hidden="true"
+        />
+      </summary>
+      <div className="settingsPeerMeshConnectivityBody">
+        {props.localPeerId ? (
+          <div className="settingsPeerMeshTechnicalIdentity">
+            <div>
+              <Text type="supporting" weight="semibold">{props.copy.peerId}</Text>
+              <Text type="supporting" color="secondary">{props.copy.peerIdHelp}</Text>
+            </div>
+            <PeerIdText
+              peerId={props.localPeerId}
+              copy={props.copy}
+              onCopy={props.onCopyPeerId}
+            />
+          </div>
+        ) : null}
+        {connectivity ? (
+          <div className="settingsPeerMeshConnectivitySection">
+            <div className="settingsPeerMeshConnectivityHeading">
+              <Text type="supporting" weight="semibold">{props.copy.adaptiveConnectivity}</Text>
+              <Tooltip content={props.copy.adaptiveConnectivityHelp}>
+                <span
+                  className="settingsPeerMeshConnectivityHelp"
+                  aria-label={props.copy.adaptiveConnectivityHelp}
+                >
+                  <HelpCircle size={ICON_SIZE.control} aria-hidden="true" />
+                </span>
+              </Tooltip>
+            </div>
+            {connectivity.state.kind === 'loading' ? (
+              <Text type="supporting" color="secondary">
+                {props.copy.connectivityPolicyLoading}
+              </Text>
+            ) : connectivity.state.kind === 'failed' ? (
+              <>
+                <Banner
+                  status="error"
+                  title={props.copy.connectivityPolicyLoadFailed}
+                  description={connectivity.state.message}
+                />
+                <HStack hAlign="end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={props.copy.restoreDefaultConnectivityPolicy}
+                    isDisabled={connectivity.saving}
+                    onClick={connectivity.onReset}
+                  />
+                </HStack>
+              </>
+            ) : (
+              <>
+                <Selector
+                  label={props.copy.publicAddressDiscovery}
+                  value={connectivity.selectedKind}
+                  options={[
+                    { value: 'default', label: props.copy.publicStunDefault },
+                    { value: 'disabled', label: props.copy.publicStunDisabled },
+                    { value: 'custom', label: props.copy.publicStunCustom },
+                  ]}
+                  isDisabled={connectivity.saving}
+                  onChange={(value) =>
+                    connectivity.onKindChange(value as RuntimeHostWebRtcStunPolicy['kind'])
+                  }
+                />
+                {connectivity.selectedKind === 'custom' ? (
+                  <TextInput
+                    label={props.copy.customStunUrls}
+                    value={connectivity.customUrls}
+                    placeholder="stun:stun.example.com:3478"
+                    isDisabled={connectivity.saving}
+                    status={
+                      connectivity.inputInvalid
+                        ? { type: 'error', message: props.copy.customStunUrlsInvalid }
+                        : undefined
+                    }
+                    onChange={connectivity.onCustomUrlsChange}
+                  />
+                ) : null}
+                <Text type="supporting" color="secondary">
+                  {connectivity.selectedKind === 'default'
+                    ? props.copy.publicStunDefaultHelp
+                    : connectivity.selectedKind === 'disabled'
+                      ? props.copy.publicStunDisabledHelp
+                      : props.copy.publicStunCustomHelp}
+                </Text>
+                {connectivity.restartRequired ? (
+                  <Banner status="info" title={props.copy.connectivityPolicyRestartRequired} />
+                ) : null}
+                <HStack hAlign="end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={props.copy.saveConnectivityPolicy}
+                    isDisabled={
+                      connectivity.saving ||
+                      !connectivityPolicyChanged ||
+                      (connectivity.selectedKind === 'custom' &&
+                        connectivity.customUrls.trim().length === 0)
+                    }
+                    onClick={connectivity.onSave}
+                  />
+                </HStack>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function Overview(props: {
   readonly snapshot: PeerMeshQueryResult | undefined;
   readonly copy: ReturnType<typeof peerMeshCopy>;
@@ -651,6 +1030,7 @@ function Overview(props: {
   const { snapshot, copy } = props;
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
+  const [showClosedMeshes, setShowClosedMeshes] = useState(false);
   if (!snapshot) {
     return (
       <Text type="supporting" color="secondary">
@@ -670,6 +1050,9 @@ function Overview(props: {
       />
     );
   }
+  const activeMeshes = snapshot.meshes.filter((mesh) => !mesh.closed);
+  const closedMeshCount = snapshot.meshes.length - activeMeshes.length;
+  const visibleMeshes = showClosedMeshes ? snapshot.meshes : activeMeshes;
   return (
     <>
       <div className="settingsPeerMeshIdentity">
@@ -677,19 +1060,14 @@ function Overview(props: {
           <Network size={ICON_SIZE.chrome} />
         </span>
         <div>
-          <Text type="supporting" color="secondary">
-            {props.localPeerLabel}
+          <Text type="body" weight="semibold">
+            {snapshot.localDisplayName ?? props.localPeerLabel}
           </Text>
           {snapshot.localDisplayName ? (
-            <Text type="body" weight="semibold">
-              {snapshot.localDisplayName}
+            <Text type="supporting" color="secondary">
+              {props.localPeerLabel}
             </Text>
           ) : null}
-          {snapshot.localPeerId ? (
-            <PeerIdText peerId={snapshot.localPeerId} copy={copy} onCopy={props.onCopyPeerId} />
-          ) : (
-            <code>—</code>
-          )}
         </div>
         <Button
           variant="ghost"
@@ -780,7 +1158,7 @@ function Overview(props: {
                 {copy.meshes}
               </Text>
               <Text type="supporting" color="secondary">
-                {copy.meshCount(snapshot.meshes.length)}
+                {copy.activeMeshCount(activeMeshes.length)}
               </Text>
             </div>
             <HStack gap={2}>
@@ -801,32 +1179,49 @@ function Overview(props: {
               />
             </HStack>
           </div>
-          <div className="settingsPeerMeshList">
-            {snapshot.meshes.map((mesh) => (
-              <MeshCard
-                key={mesh.meshId}
-                mesh={mesh}
-                transit={snapshot.transit}
-                copy={copy}
-                working={props.working}
-                onInvite={() => props.onInvite(mesh.meshId)}
-                onRemove={(peerId) => props.onRemove(mesh.meshId, peerId)}
-                onLeave={() => props.onLeave(mesh.meshId)}
-                onClose={() => props.onClose(mesh.meshId)}
-                onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
-                onRename={(displayName) => props.onRenameMesh(mesh.meshId, displayName)}
-                onCopyPeerId={props.onCopyPeerId}
-                onCopyMeshId={props.onCopyMeshId}
-                localPeerLabel={props.localPeerLabel}
-                localHost={props.localHost}
-                onAddLocalHost={
-                  props.onAddLocalHost
-                    ? () => props.onAddLocalHost?.(mesh.meshId)
-                    : undefined
-                }
+          {closedMeshCount > 0 ? (
+            <div className="settingsPeerMeshFilter">
+              <Switch
+                label={copy.showClosedMeshes(closedMeshCount)}
+                value={showClosedMeshes}
+                isDisabled={props.working}
+                onChange={setShowClosedMeshes}
               />
-            ))}
-          </div>
+            </div>
+          ) : null}
+          {visibleMeshes.length === 0 ? (
+            <div className="settingsPeerMeshFilteredEmpty">
+              <Text type="body" weight="semibold">{copy.noActiveMeshes}</Text>
+              <Text type="supporting" color="secondary">{copy.noActiveMeshesHint}</Text>
+            </div>
+          ) : (
+            <div className="settingsPeerMeshList">
+              {visibleMeshes.map((mesh) => (
+                <MeshCard
+                  key={mesh.meshId}
+                  mesh={mesh}
+                  transit={snapshot.transit}
+                  copy={copy}
+                  working={props.working}
+                  onInvite={() => props.onInvite(mesh.meshId)}
+                  onRemove={(peerId) => props.onRemove(mesh.meshId, peerId)}
+                  onLeave={() => props.onLeave(mesh.meshId)}
+                  onClose={() => props.onClose(mesh.meshId)}
+                  onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
+                  onRename={(displayName) => props.onRenameMesh(mesh.meshId, displayName)}
+                  onCopyPeerId={props.onCopyPeerId}
+                  onCopyMeshId={props.onCopyMeshId}
+                  localPeerLabel={props.localPeerLabel}
+                  localHost={props.localHost}
+                  onAddLocalHost={
+                    props.onAddLocalHost
+                      ? () => props.onAddLocalHost?.(mesh.meshId)
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
     </>
@@ -1042,8 +1437,16 @@ function MeshCard(props: {
             />
           )}
         >
-          <span className="settingsPeerMeshCardTitle">
-            {mesh.displayName ?? copy.unnamedMesh}
+          <span className="settingsPeerMeshCardTitleBlock">
+            <span className="settingsPeerMeshCardTitle">
+              {mesh.displayName ?? copy.unnamedMesh}
+            </span>
+            <span className="settingsPeerMeshCardSubtitle">
+              {copy.memberCount(mesh.members.length)}
+              {mesh.pendingInvitationCount > 0
+                ? ` · ${copy.pending(mesh.pendingInvitationCount)}`
+                : ''}
+            </span>
           </span>
         </Button>
         <div className="settingsPeerMeshCardControls">
@@ -1092,13 +1495,6 @@ function MeshCard(props: {
             />
           ) : null}
         </div>
-      </div>
-      <div className="settingsPeerMeshCardMeta">
-        <MeshIdText meshId={mesh.meshId} copy={copy} onCopy={props.onCopyMeshId} />
-        <Text type="supporting" color="secondary">
-          {copy.memberCount(mesh.members.length)}
-          {mesh.pendingInvitationCount > 0 ? ` · ${copy.pending(mesh.pendingInvitationCount)}` : ''}
-        </Text>
       </div>
       {expanded ? (
         <div className="settingsPeerMeshCardDetails">
@@ -1273,6 +1669,13 @@ function MeshCard(props: {
               </div>
             ))}
           </div>
+          <div className="settingsPeerMeshTechnicalIdentity settingsPeerMeshMeshId">
+            <div>
+              <Text type="supporting" weight="semibold">{copy.meshId}</Text>
+              <Text type="supporting" color="secondary">{copy.meshIdHelp}</Text>
+            </div>
+            <MeshIdText meshId={mesh.meshId} copy={copy} onCopy={props.onCopyMeshId} />
+          </div>
         </div>
       ) : null}
     </section>
@@ -1330,6 +1733,46 @@ function MeshIdText(props: {
   );
 }
 
+function decodeConnectivityPolicyDraft(
+  kind: RuntimeHostWebRtcStunPolicy['kind'],
+  customUrls: string,
+): RuntimeHostWebRtcStunPolicy {
+  return decodeRuntimeHostWebRtcStunPolicy(
+    kind === 'custom'
+      ? {
+          kind,
+          urls: customUrls
+            .split(',')
+            .map((url) => url.trim())
+            .filter(Boolean),
+        }
+      : { kind },
+  );
+}
+
+function tryDecodeConnectivityPolicyDraft(
+  kind: RuntimeHostWebRtcStunPolicy['kind'],
+  customUrls: string,
+): RuntimeHostWebRtcStunPolicy | undefined {
+  try {
+    return decodeConnectivityPolicyDraft(kind, customUrls);
+  } catch {
+    return undefined;
+  }
+}
+
+function connectivityPoliciesEqual(
+  left: RuntimeHostWebRtcStunPolicy,
+  right: RuntimeHostWebRtcStunPolicy,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'custom' || right.kind !== 'custom') return true;
+  return (
+    left.urls.length === right.urls.length &&
+    left.urls.every((url, index) => url === right.urls[index])
+  );
+}
+
 function isSnapshot(value: unknown): value is PeerMeshQueryResult {
   return Boolean(value && typeof value === 'object' && 'available' in value && 'meshes' in value);
 }
@@ -1368,6 +1811,11 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh 操作失败',
         invalidResult: 'Peer Mesh 返回了无效结果',
         unknownError: 'Peer Mesh 操作失败',
+        outcomeUnknown: 'Host 可能已完成此操作。已刷新当前状态，请确认后再重试。',
+        invitationOutcomeUnknown:
+          'Host 可能已创建邀请码，但代码未能返回且无法恢复。它会自动过期；创建新邀请前请先检查待使用邀请数量。',
+        outcomeUnknownRefreshFailed:
+          'Host 可能已完成此操作，但当前状态也未能刷新。请恢复连接并刷新后再重试。',
         unavailable: '当前 endpoint 不支持 Peer Mesh',
         loading: '正在读取 Mesh 状态…',
         checkingPeerConnection: '正在检查此 Runtime Host 的 Peer 连接…',
@@ -1391,11 +1839,45 @@ function peerMeshCopy(locale: string) {
           update: '正在更新 Mesh…',
           rename: '正在保存名称…',
         },
+        settling: '正在确认最终状态…',
         endpoint: '管理对象',
         desktopEndpoint: 'Desktop Client',
         hostEndpoint: '本机 Runtime Host',
         desktopEndpointHelp: '此 Client 用于连接 Mesh 中的 Runtime Host。',
         hostEndpointHelp: '此 Host 加入后，其他成员才能连接本机分享的任务。',
+        advancedSettings: '高级设置',
+        technicalDetails: '身份与连接配置',
+        connectivityAutomatic: '自动连接（推荐）',
+        connectivityKnownRoutesOnly: '仅使用已知路径',
+        connectivityCustom: '自定义地址发现',
+        restartRequired: '需要重启',
+        adaptiveConnectivity: '自适应连接',
+        adaptiveConnectivityHelp:
+          'Maka 会自动竞速可用的直连方式，并在获准时使用成员转发；这里不需要选择具体协议。',
+        connectivityPolicyLoading: '正在读取连接策略…',
+        connectivityPolicyLoadFailed: '无法读取连接策略',
+        connectivityPolicySaveFailed: '无法保存连接策略',
+        restoreDefaultConnectivityPolicy: '恢复默认设置',
+        connectivityPolicyRestartRequired:
+          '重启 Maka 后，已保存的连接策略变更会应用到新连接。',
+        publicAddressDiscovery: '公网地址发现',
+        publicStunDefault: '公共 STUN（推荐）',
+        publicStunDisabled: '不使用公共 STUN',
+        publicStunCustom: '自定义 STUN',
+        customStunUrls: 'STUN 地址',
+        customStunUrlsInvalid:
+          '请输入以逗号分隔的 stun:主机[:端口] 地址，最多 8 个。',
+        publicStunDefaultHelp:
+          '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不承载 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
+        publicStunDisabledHelp:
+          '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
+        publicStunCustomHelp:
+          '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
+        saveConnectivityPolicy: '保存更改',
+        peerId: 'Peer ID',
+        peerIdHelp: '此 endpoint 在 Mesh 中的技术身份；点击 ID 可复制完整值。',
+        meshId: 'Mesh ID',
+        meshIdHelp: '用于诊断和识别此 Mesh；点击 ID 可复制完整值。',
         thisRuntimeHost: '本机 Runtime Host',
         thisDesktop: '本机 Desktop',
         displayName: '在 Mesh 中显示的名称',
@@ -1413,7 +1895,10 @@ function peerMeshCopy(locale: string) {
         meshes: 'Mesh',
         mesh: 'Mesh',
         members: '成员',
-        meshCount: (value: number) => `${value} 个`,
+        activeMeshCount: (value: number) => `${value} 个使用中`,
+        showClosedMeshes: (value: number) => `显示已关闭（${value}）`,
+        noActiveMeshes: '没有使用中的 Mesh',
+        noActiveMeshesHint: '已关闭的 Mesh 默认隐藏；可通过上方筛选查看。',
         authority: '管理者',
         member: '成员',
         closed: '已关闭',
@@ -1485,6 +1970,12 @@ function peerMeshCopy(locale: string) {
         failed: 'Peer Mesh operation failed',
         invalidResult: 'Peer Mesh returned an invalid result',
         unknownError: 'Peer Mesh operation failed',
+        outcomeUnknown:
+          'The Host may have completed this operation. Its current state was refreshed; review it before trying again.',
+        invitationOutcomeUnknown:
+          'The Host may have created an invitation, but its one-time code was not returned and cannot be recovered. It will expire automatically; review the pending invitation count before creating another.',
+        outcomeUnknownRefreshFailed:
+          'The Host may have completed this operation, but its current state could not be refreshed. Reconnect and refresh before trying again.',
         unavailable: 'Peer Mesh is unavailable for this endpoint',
         loading: 'Loading Mesh status…',
         checkingPeerConnection: "Checking this Runtime Host's peer connection…",
@@ -1508,11 +1999,45 @@ function peerMeshCopy(locale: string) {
           update: 'Updating Mesh…',
           rename: 'Saving name…',
         },
+        settling: 'Confirming the final state…',
         endpoint: 'Manage endpoint',
         desktopEndpoint: 'Desktop Client',
         hostEndpoint: 'Local Runtime Host',
         desktopEndpointHelp: 'This Client connects to Runtime Hosts in the Mesh.',
         hostEndpointHelp: 'Add this Host so other members can reach tasks shared from this device.',
+        advancedSettings: 'Advanced settings',
+        technicalDetails: 'Identity and connectivity details',
+        connectivityAutomatic: 'Automatic connectivity (recommended)',
+        connectivityKnownRoutesOnly: 'Known routes only',
+        connectivityCustom: 'Custom address discovery',
+        restartRequired: 'Restart required',
+        adaptiveConnectivity: 'Adaptive connectivity',
+        adaptiveConnectivityHelp:
+          'Maka races available direct paths automatically and uses approved member transit when needed. You do not choose a transport protocol here.',
+        connectivityPolicyLoading: 'Loading connectivity policy…',
+        connectivityPolicyLoadFailed: 'Could not load connectivity policy',
+        connectivityPolicySaveFailed: 'Could not save connectivity policy',
+        restoreDefaultConnectivityPolicy: 'Restore defaults',
+        connectivityPolicyRestartRequired:
+          'Restart Maka to apply saved connectivity-policy changes to new connections.',
+        publicAddressDiscovery: 'Public address discovery',
+        publicStunDefault: 'Public STUN (recommended)',
+        publicStunDisabled: 'No public STUN',
+        publicStunCustom: 'Custom STUN',
+        customStunUrls: 'STUN addresses',
+        customStunUrlsInvalid:
+          'Enter up to 8 comma-separated stun:host[:port] addresses.',
+        publicStunDefaultHelp:
+          'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
+        publicStunDisabledHelp:
+          'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
+        publicStunCustomHelp:
+          'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
+        saveConnectivityPolicy: 'Save changes',
+        peerId: 'Peer ID',
+        peerIdHelp: 'Technical identity for this endpoint. Select the ID to copy its full value.',
+        meshId: 'Mesh ID',
+        meshIdHelp: 'Used to identify and diagnose this Mesh. Select the ID to copy its full value.',
         thisRuntimeHost: 'This Runtime Host',
         thisDesktop: 'This Desktop',
         displayName: 'Name shown in the Mesh',
@@ -1530,11 +2055,14 @@ function peerMeshCopy(locale: string) {
         meshes: 'Meshes',
         mesh: 'Mesh',
         members: 'Members',
-        meshCount: (value: number) => `${value}`,
-        authority: 'Authority',
+        activeMeshCount: (value: number) => `${value} active`,
+        showClosedMeshes: (value: number) => `Show closed (${value})`,
+        noActiveMeshes: 'No active Meshes',
+        noActiveMeshesHint: 'Closed Meshes are hidden by default. Use the filter above to show them.',
+        authority: 'Owner',
         member: 'Member',
         closed: 'Closed',
-        memberCount: (value: number) => `${value} members`,
+        memberCount: (value: number) => value === 1 ? '1 member' : `${value} members`,
         pending: (value: number) => `${value} pending invites`,
         transit: 'Member transit',
         transitHelp: 'Let members of this Mesh connect through this device using its bandwidth.',

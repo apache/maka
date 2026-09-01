@@ -38,7 +38,6 @@ import { resolveStorageRoot } from '@maka/storage/root-authority';
 import {
   prepareRuntimeHostNpmGlobalStagedDeployment,
   reconcilePreparedRuntimeHostNpmGlobalDeployment,
-  type RuntimeHostLocalStagedDeployment,
 } from './runtime-host-local-handoff.js';
 import {
   resolveRuntimeHostNpmGlobalInstallation,
@@ -49,6 +48,11 @@ import {
   assertRuntimeHostArchiveExpansionBudget,
   withVerifiedRuntimeHostUpdateArchive,
 } from './runtime-host-update-package.js';
+import {
+  launchRuntimeHostTargetActivator,
+  type RuntimeHostTargetActivation,
+  type RuntimeHostTargetActivationInput,
+} from './runtime-host-local-target-activation.js';
 
 const NPM_TIMEOUT_MS = 5 * 60_000;
 const NPM_OUTPUT_MAX_BYTES = 64 * 1024;
@@ -67,22 +71,6 @@ interface RuntimeHostInstalledUpdateCoordinatorDeps {
     input: RuntimeHostTargetActivationInput,
   ) => Promise<RuntimeHostTargetActivation>;
   readonly installArchive: typeof installRuntimeHostNpmGlobalArchive;
-}
-
-interface RuntimeHostTargetActivationInput {
-  readonly rootPath: string;
-  readonly rootId: string;
-  readonly staged: RuntimeHostLocalStagedDeployment;
-  readonly ownerInstallationId: string;
-  readonly target: RuntimeHostUpdateCandidate;
-  readonly takeoverHostEpoch?: string;
-  readonly inheritableAuthorityLeaseFd: number;
-}
-
-interface RuntimeHostTargetActivation {
-  readonly kind: 'ready' | 'active_work' | 'operator_required';
-  /** Releases the short-lived child only after durable owner settlement. */
-  settle(outcome: 'committed' | 'abort'): Promise<void>;
 }
 
 export interface RuntimeHostInstalledUpdateCoordinatorInput {
@@ -109,7 +97,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     withArchive: withVerifiedRuntimeHostUpdateArchive,
     prepareStaged: prepareRuntimeHostNpmGlobalStagedDeployment,
     reconcile: reconcilePreparedRuntimeHostNpmGlobalDeployment,
-    activateTarget: launchTargetActivator,
+    activateTarget: launchRuntimeHostTargetActivator,
     installArchive: installRuntimeHostNpmGlobalArchive,
     ...overrides,
   };
@@ -209,7 +197,7 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
     const unreachable = async (): Promise<never> => {
       throw new Error('The exact target activator must settle local Host cutover');
     };
-    let result: Awaited<ReturnType<typeof deps.reconcile>>;
+    let result: Awaited<ReturnType<typeof deps.reconcile>> | undefined;
     try {
       result = await deps.reconcile(
         {
@@ -245,13 +233,14 @@ export async function runRuntimeHostInstalledUpdateCoordinator(
         },
         authorityOptions,
       );
-      if (result.kind === 'completed' && targetActivator) {
-        await targetActivator.settle('committed');
-        targetActivator = undefined;
-      }
     } finally {
-      if (targetActivator) await targetActivator.settle('abort').catch(() => undefined);
+      if (targetActivator) {
+        const settlement = targetActivator.settle();
+        if (result?.kind === 'completed') await settlement;
+        else await settlement.catch(() => undefined);
+      }
     }
+    if (!result) throw new Error('The installed update transaction produced no result');
     if (result.kind === 'completed') {
       process.stdout.write(`Updated Maka to ${input.target.version}.\n`);
       return 0;
@@ -363,93 +352,6 @@ export async function installRuntimeHostNpmGlobalArchive(
       } else resolve();
     });
   });
-}
-
-function launchTargetActivator(
-  input: RuntimeHostTargetActivationInput,
-): Promise<RuntimeHostTargetActivation> {
-  const args = [
-    input.staged.cliPath,
-    'runtime-host',
-    'local-update-activate',
-    '--root',
-    input.rootPath,
-    '--expected-root-id',
-    input.rootId,
-    '--generation',
-    input.staged.launchGeneration,
-    '--candidate-entrypoint',
-    input.staged.candidateEntrypoint,
-    '--await-coordinator-commit',
-    'true',
-    '--expected-owner-installation-id',
-    input.ownerInstallationId,
-    '--target-version',
-    input.target.version,
-    '--target-integrity',
-    input.target.integrity,
-    ...(input.takeoverHostEpoch ? ['--takeover-host-epoch', input.takeoverHostEpoch] : []),
-  ];
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, args, {
-      // fd 3 is the coordinator channel; fd 4 is the inherited authority
-      // lease. The activator, not the long-lived target, owns that lease.
-      stdio: ['inherit', 'inherit', 'inherit', 'ipc', input.inheritableAuthorityLeaseFd],
-      windowsHide: false,
-    });
-    let ready = false;
-    let settled = false;
-    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolveClosed) => {
-        child.once('close', (code, signal) => resolveClosed({ code, signal }));
-      },
-    );
-    const closeError = async (): Promise<never> => {
-      const { code, signal } = await closed;
-      if (signal) throw new Error(`Maka target activator exited on ${signal}`);
-      if (code === 3) throw new Error('The activated Runtime Host still owns active work');
-      if (code === 4) throw new Error('The observed Runtime Host requires its operator');
-      throw new Error('The exact Maka target could not be activated');
-    };
-    const settle = async (outcome: 'committed' | 'abort'): Promise<void> => {
-      if (settled) return;
-      settled = true;
-      if (child.connected) {
-        await new Promise<void>((resolveSent, rejectSent) => {
-          child.send({ kind: outcome }, (error) => (error ? rejectSent(error) : resolveSent()));
-        });
-      }
-      const exited = await closed;
-      if (outcome === 'committed' && (exited.signal || exited.code !== 0)) {
-        if (exited.signal) throw new Error(`Maka target activator exited on ${exited.signal}`);
-        throw new Error('The exact Maka target activator did not confirm durable ownership');
-      }
-    };
-    child.once('error', reject);
-    child.on('message', (message: unknown) => {
-      if (ready || !isTargetActivatorReadyMessage(message)) return;
-      ready = true;
-      resolve({ kind: 'ready', settle });
-    });
-    void closed.then(({ code, signal }) => {
-      if (ready) return;
-      if (signal) {
-        reject(new Error(`Maka target activator exited on ${signal}`));
-      } else if (code === 3) {
-        resolve({ kind: 'active_work', settle: async () => undefined });
-      } else if (code === 4) {
-        resolve({ kind: 'operator_required', settle: async () => undefined });
-      } else {
-        void closeError().catch(reject);
-      }
-    });
-  });
-}
-
-function isTargetActivatorReadyMessage(value: unknown): value is { readonly kind: 'ready' } {
-  return (
-    typeof value === 'object' && value !== null && (value as { kind?: unknown }).kind === 'ready'
-  );
 }
 
 function updateTransactionId(

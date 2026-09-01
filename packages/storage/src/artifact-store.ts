@@ -52,6 +52,7 @@ import {
   isDeepResearchArtifactRole,
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
+import { sniffAttachmentMimeType } from '@maka/core/attachments';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import {
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
@@ -161,6 +162,14 @@ export interface ConversationArtifactCopyInput {
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
   readonly excludeArtifactIds?: readonly string[];
+  /**
+   * Source-Session artifact ids to copy in addition to the turn-scoped
+   * selection, regardless of their `turnId`. Used to carry user-uploaded
+   * attachments (whose `turnId` is the upload id sentinel, not a conversation
+   * turn) that the copied transcript still references. Lenient: an id with no
+   * matching source record is a no-op.
+   */
+  readonly includeArtifactIds?: readonly string[];
   readonly linkedArtifacts?: readonly {
     readonly sessionId: string;
     readonly artifactIds: readonly string[];
@@ -391,6 +400,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     }
     const turnIds = new Set(input.turnIds);
     const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
+    const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
     const linkedArtifacts = input.linkedArtifacts ?? [];
     const requestedLinkedArtifactIds = new Map<string, Set<string>>();
@@ -426,6 +436,18 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           );
           if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
           selected.push({ ...record });
+        }
+      }
+      const selectedIds = new Set(selected.map((record) => record.id));
+      for (const record of this.records) {
+        if (
+          record.sessionId === input.sourceSessionId &&
+          includedArtifactIds.has(record.id) &&
+          !excludedArtifactIds.has(record.id) &&
+          !selectedIds.has(record.id)
+        ) {
+          selected.push({ ...record });
+          selectedIds.add(record.id);
         }
       }
       return selected;
@@ -1907,31 +1929,15 @@ function isAlreadyExists(error: unknown): boolean {
 }
 
 function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {
-  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
-  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return 'image/jpeg';
-  if (asciiStartsWith(bytes, 'GIF87a') || asciiStartsWith(bytes, 'GIF89a')) return 'image/gif';
-  if (
-    asciiStartsWith(bytes, 'RIFF') &&
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  ) {
-    return 'image/webp';
-  }
-  if (asciiStartsWith(bytes, '%PDF-')) return 'application/pdf';
+  // Core owns the binary signatures, shared with the attachment and image-read
+  // paths so the three cannot drift. SVG needs a wider text scan than a fixed
+  // prefix, so it stays local to this reader.
+  const sniffed = sniffAttachmentMimeType(bytes);
+  if (sniffed) return sniffed;
   const leading = new TextDecoder('utf-8', { fatal: false })
     .decode(bytes.slice(0, Math.min(bytes.length, 512)))
     .trimStart();
   if (/^<svg[\s>]/i.test(leading) || /^<\?xml[\s\S]*<svg[\s>]/i.test(leading))
     return 'image/svg+xml';
   return null;
-}
-
-function startsWith(bytes: Uint8Array, prefix: number[]): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.every((value, index) => bytes[index] === value);
-}
-
-function asciiStartsWith(bytes: Uint8Array, prefix: string): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.split('').every((char, index) => bytes[index] === char.charCodeAt(0));
 }

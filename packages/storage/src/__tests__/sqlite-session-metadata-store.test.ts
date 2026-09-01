@@ -369,7 +369,12 @@ describe('SqliteSessionMetadataStore', () => {
     const store = createSqliteSessionMetadataStore(':memory:');
     try {
       await store.create(fullHeader({ id: 'session-1', connectionLocked: false }));
-      const admission: PendingMessageAdmission = {
+      const skillInvocation = {
+        loaded: [{ id: 'review', name: 'Review' }],
+        failed: [{ request: 'typo', reason: 'not_found' as const }],
+        receipts: [],
+      };
+      const admission = {
         sessionId: 'session-1',
         turnId: 'turn-1',
         runId: 'run-1',
@@ -386,8 +391,9 @@ describe('SqliteSessionMetadataStore', () => {
           skillIds: ['review'],
           turnOrchestration: { mode: 'graph', source: 'slash_command' },
         },
+        skillInvocation,
         admittedAt: 10,
-      };
+      } satisfies PendingMessageAdmission & { readonly skillInvocation: typeof skillInvocation };
 
       const normalizedAdmission = {
         ...admission,
@@ -405,6 +411,13 @@ describe('SqliteSessionMetadataStore', () => {
       assert.deepEqual(
         (await store.listMessageAdmissions('session-1')).map((entry) => entry.messageId),
         ['message-1'],
+      );
+      await assert.rejects(
+        store.commitMessageAdmission({
+          ...admission,
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        }),
+        /Message admission identity conflict/,
       );
       await store.markMessagesHandedOff({
         sessionId: 'session-1',
@@ -435,6 +448,56 @@ describe('SqliteSessionMetadataStore', () => {
       assert.deepEqual(await store.listMessageAdmissions('session-1'), []);
     } finally {
       store.close();
+    }
+  });
+
+  test('migrates v34 message admissions with an empty Skill invocation outcome', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-admission-v34-'));
+    const path = join(root, 'state.sqlite');
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(fullHeader({ id: 'session-v34-admission' }));
+        await setup.commitMessageAdmission({
+          sessionId: 'session-v34-admission',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          content: { text: 'queued before the migration' },
+          submittedContentDigest: messageContentDigest({ text: 'queued before the migration' }),
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 10,
+        });
+      } finally {
+        setup.close();
+      }
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
+          UPDATE session_metadata_schema SET version = 34 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.deepEqual(
+          (await migrated.readMessageAdmission('session-v34-admission', 'message-1'))
+            ?.skillInvocation,
+          { loaded: [], failed: [], receipts: [] },
+        );
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -635,6 +698,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       });
 
@@ -674,6 +738,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 24,
       });
 
@@ -931,6 +996,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 19,
       });
       await store.cancelMessageAdmissions('session-legacy-cancelled', ['message-legacy-cancelled']);
@@ -1021,6 +1087,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 21,
       });
 
@@ -1064,6 +1131,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 22,
       });
 
@@ -1177,6 +1245,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'current_turn',
         placement: 'current_turn',
         disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       });
       await store.markMessagesHandedOff({
@@ -1229,6 +1298,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'next_turn' as const,
         placement: 'next_turn' as const,
         disposition: 'followup' as const,
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       };
       await store.commitMessageAdmission(admission);
@@ -1326,6 +1396,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'next_turn',
         placement: 'next_turn',
         disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 10,
       };
       await store.commitMessageAdmission(admission);
@@ -1390,6 +1461,7 @@ describe('SqliteSessionMetadataStore', () => {
         submittedPlacement: 'next_turn',
         placement: 'next_turn',
         disposition: 'followup',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
         admittedAt: 11,
       });
       assert.equal(admission.disposition, 'followup');
@@ -1434,6 +1506,7 @@ describe('SqliteSessionMetadataStore', () => {
             submittedPlacement: 'next_turn',
             placement: 'next_turn',
             disposition: 'followup',
+            skillInvocation: { loaded: [], failed: [], receipts: [] },
             admittedAt: 20 + index,
           });
         }

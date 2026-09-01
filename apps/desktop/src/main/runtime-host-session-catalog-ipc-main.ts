@@ -52,6 +52,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
   | 'createSession'
   | 'listSessions'
+  | 'previewSessionRemoval'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -131,7 +132,8 @@ export function registerRuntimeHostSessionCatalogIpc(
       sessionId: newId(),
       workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(request.mode === undefined ? { name: request.name } : {}),
+      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
+      name: request.name,
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
       ...normalizeCreateThinkingLevel(input?.thinkingLevel),
@@ -219,11 +221,15 @@ export function registerRuntimeHostSessionCatalogIpc(
     const ids = await actionIds(sessionId, { revisionFamily: true });
     // A task restored under the caller's decision is left alone, and nothing
     // downstream of the deletion runs for it.
-    const disposition = await deps.client.removeSession(sessionId, {
+    const outcome = await deps.client.removeSession(sessionId, {
       requireArchived: requiresArchivedSession(options),
     });
-    if (disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
-    return disposition;
+    if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
+    return outcome;
+  });
+  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
+    // Read-only: how many subtasks the delete would archive, for the confirm.
+    return deps.client.previewSessionRemoval(sessionId);
   });
 }
 

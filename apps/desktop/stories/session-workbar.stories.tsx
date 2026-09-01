@@ -24,7 +24,7 @@ import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
@@ -120,59 +120,46 @@ const SIDE_CHAT_SESSION: SessionSummary = {
 const TERMINAL_REF = 'shell-run:storybook-terminal';
 const SIDE_CHAT_PANEL_ID = 'storybook-side-chat';
 
+// A terminal whose scrollback runs long — the "very many rows" state a fresh
+// shell never shows.
+const LONG_TERMINAL_BUFFER = [
+  '$ npm run build --workspaces',
+  ...Array.from(
+    { length: 600 },
+    (_, index) => `\x1b[2m[${String(index + 1).padStart(4, '0')}]\x1b[0m compiled module ${index + 1}/600`,
+  ),
+  '$ ',
+].join('\r\n');
+
+// Colours, bold, and a carriage-return progress redraw — the control sequences
+// a plain "npm test" line never exercises.
+const RICH_TERMINAL_BUFFER = [
+  '$ npm test',
+  '\x1b[1m\x1b[34mRUNS\x1b[0m packages/ui/src/toast.test.ts',
+  '\x1b[32m✓\x1b[0m renders every variant \x1b[2m(12 ms)\x1b[0m',
+  '\x1b[33m●\x1b[0m skipped: flaky under load',
+  '\x1b[31m✗\x1b[0m confirm queue focus \x1b[2m(3 ms)\x1b[0m',
+  '\x1b[31m  Expected the cancel button to hold focus\x1b[0m',
+  'Progress: [\x1b[32m##########\x1b[0m----------] 50%\rProgress: [\x1b[32m####################\x1b[0m] 100%',
+  '\x1b[1mTests:\x1b[0m \x1b[32m41 passed\x1b[0m, \x1b[31m1 failed\x1b[0m, \x1b[33m1 skipped\x1b[0m',
+  '$ ',
+].join('\r\n');
+
 // ---- ledgers -------------------------------------------------------------
 
-// Mirrors the `task-ledger` e2e fixture (apps/desktop/src/main/e2e-fixture/
-// scenarios-chat.ts), which builds this tree through the SQLite store; that
-// store cannot run in a browser, so the shapes are restated rather than
-// imported. The long subject is deliberate: it is what proves a deep indent
-// still wraps instead of pushing owner and reason off the panel.
-function task(input: Partial<Task> & Pick<Task, 'id' | 'key' | 'subject'>): Task {
-  return { status: 'pending', createdAt: NOW, updatedAt: NOW, ...input };
-}
-
-const tasks: Task[] = [
-  task({
-    id: 'task-1',
-    key: 'T1',
-    subject: '完成会话任务台账升级',
-    status: 'in_progress',
-    owner: { actor: 'main_agent', runId: 'run-task-parent' },
-  }),
-  task({
-    id: 'task-2',
-    key: 'T1.1',
-    subject: '验证 SQLite authority 与并发短 key 分配',
-    parentId: 'task-1',
-    status: 'completed',
-    completionEvidence: 'Core 与 Storage 定向测试全部通过。',
-    endedAt: NOW - 120_000,
-    updatedAt: NOW - 120_000,
-  }),
-  task({
-    id: 'task-3',
-    key: 'T1.2',
-    subject: '检查窄窗口下的任务树布局',
-    parentId: 'task-1',
-    status: 'blocked',
-    blockedReason: '等待视觉回归截图确认 990px 视口没有文字重叠。',
-    owner: { actor: 'child_agent', agentId: 'local-read' },
-  }),
-  task({
-    id: 'task-4',
-    key: 'T1.2.1',
-    subject: '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
-    parentId: 'task-3',
-  }),
-  task({ id: 'task-5', key: 'T2', subject: '同步生命周期文档与边界说明' }),
-  task({
-    id: 'task-6',
-    key: 'T3',
-    subject: '验证 Goal 一次提醒门禁',
-    status: 'completed',
-    endedAt: NOW - 60_000,
-    updatedAt: NOW - 60_000,
-  }),
+// The long item is deliberate: it is what proves a long subject still wraps
+// instead of pushing the panel sideways.
+const tasks: SessionTodoItem[] = [
+  { content: '完成会话任务台账升级', status: 'in_progress' },
+  { content: '验证 SQLite authority 与并发短 key 分配', status: 'completed' },
+  { content: '检查窄窗口下的任务树布局', status: 'pending' },
+  {
+    content:
+      '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
+    status: 'pending',
+  },
+  { content: '同步生命周期文档与边界说明', status: 'pending' },
+  { content: '验证 Goal 一次提醒门禁', status: 'completed' },
 ];
 
 const artifacts: ArtifactRecord[] = [
@@ -787,7 +774,7 @@ const unsubscribe = () => () => undefined;
  * varies, and everything else stays on the populated default.
  */
 function bridge(options: {
-  tasks?: Task[];
+  tasks?: SessionTodoItem[];
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceNextCursor?: string;
@@ -801,11 +788,17 @@ function bridge(options: {
   review?: GitReviewReadResult;
   /** Make `review.read` reject, so the panel shows its load-error banner. */
   reviewFail?: boolean;
+  /** Make `terminal.attach` resolve to null, so the panel shows its load-failed Banner. */
+  terminalAttach?: 'missing';
+  /** The scrollback buffer the attached terminal hydrates with. */
+  terminalBuffer?: string;
+  /** Make `terminal.write` reject, so typing into the terminal shows the write-failed Banner. */
+  terminalWriteFails?: boolean;
 } = {}): Decorator {
   const browserState = options.browserState ?? EMPTY_BROWSER_STATE;
   const services = createFakeWorkbarServices({
-    tasks: {
-      list: async () => {
+    todo: {
+      read: async () => {
         if (options.tasksFail) throw new Error('读取任务失败');
         return options.tasks ?? tasks;
       },
@@ -862,15 +855,21 @@ function bridge(options: {
         throw new Error('Terminal stories mount an existing resource');
       },
       stop: async () => null,
-      attach: async () => ({
-        sessionId: SESSION_ID,
-        ref: TERMINAL_REF,
-        sequence: 1,
-        buffer: '$ npm test\r\n✓ workbar controller\r\n',
-        size: { cols: 80, rows: 24 },
-      }),
+      attach: async () => {
+        if (options.terminalAttach === 'missing') return null;
+        return {
+          sessionId: SESSION_ID,
+          ref: TERMINAL_REF,
+          sequence: 1,
+          buffer: options.terminalBuffer ?? '$ npm test\r\n✓ workbar controller\r\n',
+          size: { cols: 80, rows: 24 },
+        };
+      },
       detach: async () => undefined,
-      write: async () => null,
+      write: async () => {
+        if (options.terminalWriteFails) throw new Error('write failed');
+        return null;
+      },
       subscribePtyData: unsubscribe,
       subscribeResync: unsubscribe,
     },
@@ -911,6 +910,7 @@ function bridge(options: {
       }),
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
+      respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();
@@ -1124,6 +1124,51 @@ export const ChangesEdgeContent: Story = {
 export const Terminal: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 when `terminal.attach` finds no live resource
+// (it resolves to null); the panel raises its load-failed Banner over the
+// terminal surface instead of a silently blank pane.
+export const TerminalLoadFailed: Story = {
+  decorators: [bridge({ terminalAttach: 'missing' })],
+  render: () => <Workbar tab="terminal" />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(canvasElement.textContent).toContain('无法读取终端运行'));
+  },
+};
+
+// Real path: 任务工作栏 → 终端 after a long-running build — hundreds of lines of
+// scrollback the fresh-shell story never shows.
+export const TerminalLongScrollback: Story = {
+  decorators: [bridge({ terminalBuffer: LONG_TERMINAL_BUFFER })],
+  render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 rendering coloured, bold, and carriage-return
+// progress output — the ANSI control sequences a plain command line omits.
+export const TerminalRichOutput: Story = {
+  decorators: [bridge({ terminalBuffer: RICH_TERMINAL_BUFFER })],
+  render: () => <Workbar tab="terminal" />,
+};
+
+// Real path: 任务工作栏 → 终端 when a keystroke cannot reach the PTY
+// (`terminal.write` rejects). Typing surfaces the panel's write-failed Banner.
+// Input is driven through xterm's own helper textarea — the same handle the
+// accessibility-runtime story uses — so this is genuinely reachable from a
+// mounted story.
+export const TerminalWriteFailed: Story = {
+  decorators: [bridge({ terminalWriteFails: true })],
+  render: () => <Workbar tab="terminal" />,
+  play: async ({ canvasElement }) => {
+    const textarea = await waitFor(() => {
+      const el = canvasElement.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+      if (!el) throw new Error('xterm helper textarea not ready');
+      return el;
+    });
+    textarea.focus();
+    await userEvent.keyboard('echo hi');
+    await waitFor(() => expect(canvasElement.textContent).toContain('无法发送终端输入'));
+  },
 };
 
 // Real path: sidebar → a session → 展开任务工作栏, landing on the tab the app
@@ -1354,8 +1399,7 @@ export const TraceCompositionUnrecorded: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet — the
-// state the task-ledger e2e fixture opens on.
+// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet.
 export const TraceEmpty: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="inspector" />,

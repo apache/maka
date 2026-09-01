@@ -198,6 +198,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       readonly setupPackage: DesktopRuntimeHostSetupPackage;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
       readonly expectedHost?: { readonly hostEpoch: string; readonly pid: number };
+      readonly allowManualUpdate?: boolean;
       readonly allowInterruptActiveTasks?: boolean;
       readonly signal?: AbortSignal;
     },
@@ -424,6 +425,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
               ? ['--expected-host-json', JSON.stringify(command.expectedHost)]
               : []),
             ...managedTargetArgs(command.target),
+            ...(command.allowManualUpdate ? ['--allow-manual-update'] : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ],
         },

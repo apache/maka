@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { readBoundedResponseText } from '@maka/core/bounded-response';
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import TurndownService from 'turndown';
@@ -105,7 +106,11 @@ export function createLocalWebFetchExecutor(input: LocalWebFetchInput): WebFetch
             : String(response.status);
           throw new Error(`WebFetch HTTP error: ${status}`);
         }
-        const body = await readBoundedText(response);
+        const body = await readBoundedResponseText(
+          response,
+          WEB_FETCH_RESPONSE_MAX_BYTES,
+          responseLimitError,
+        );
         const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
         const content =
           contentType.includes('text/html') || contentType.includes('application/xhtml+xml')
@@ -121,46 +126,6 @@ export function createLocalWebFetchExecutor(input: LocalWebFetchInput): WebFetch
       }
     },
   };
-}
-
-async function readBoundedText(response: Response): Promise<string> {
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > WEB_FETCH_RESPONSE_MAX_BYTES) {
-    await response.body?.cancel();
-    throw responseLimitError();
-  }
-  if (!response.body) return '';
-
-  const reader = response.body.getReader();
-  const decoder = responseTextDecoder(response);
-  let bytes = 0;
-  let text = '';
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > WEB_FETCH_RESPONSE_MAX_BYTES) {
-        await reader.cancel();
-        throw responseLimitError();
-      }
-      text += decoder.decode(value, { stream: true });
-    }
-    return text + decoder.decode();
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-function responseTextDecoder(response: Response): TextDecoder {
-  const contentType = response.headers.get('content-type') ?? '';
-  const charset = /(?:^|;)\s*charset\s*=\s*"?([^;"\s]+)/i.exec(contentType)?.[1];
-  if (!charset) return new TextDecoder();
-  try {
-    return new TextDecoder(charset);
-  } catch {
-    return new TextDecoder();
-  }
 }
 
 function responseLimitError(): Error {

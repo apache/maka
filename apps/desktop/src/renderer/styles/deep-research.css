@@ -113,12 +113,12 @@
   padding: var(--space-3) var(--space-4);
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
-  background: var(--info-wash);
+  background: var(--color-accent-muted);
   color: var(--foreground);
 }
 
 .maka-deep-research-run-panel[data-status="completed"] {
-  background: var(--success-wash);
+  background: var(--color-success-muted);
 }
 
 .maka-deep-research-run-summary,
@@ -160,7 +160,7 @@
   align-items: center;
   padding: var(--space-0-5) var(--space-2);
   border-radius: var(--radius-pill);
-  background: var(--info-wash);
+  background: var(--color-accent-muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -181,12 +181,15 @@
     border-color var(--duration-quick) var(--ease-out-strong);
 }
 
+/* Two steps out of one rung: the neutral hover is the product's own
+   --state-hover-bg, and the press lands on the informational tint. The wash
+   family this replaced spent a second status alpha on the press alone. */
 .maka-deep-research-handoff-button:hover {
-  background: var(--info-wash);
+  background: var(--state-hover-bg);
 }
 
 .maka-deep-research-handoff-button:active {
-  background: var(--info-wash-border);
+  background: var(--color-accent-muted);
 }
 
 .maka-deep-research-handoff-button:focus-visible {

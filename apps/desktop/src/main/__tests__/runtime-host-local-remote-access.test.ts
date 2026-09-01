@@ -234,6 +234,66 @@ test('keeps the managed service visible when Direct peer support is unavailable'
   assert.equal(snapshot.managedService, true);
 });
 
+test('repairs an existing managed Host with the current setup package and restarts it when already current', async (t) => {
+  const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-repair-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const clientDataRoot = join(base, 'client');
+  const rootPath = join(clientDataRoot, 'workspaces', 'default');
+  const rootId = 'a'.repeat(64);
+  const setupPackage = { kind: 'npm' as const, specifier: 'maka-agent@0.2.0' };
+  await mkdir(rootPath, { recursive: true });
+  await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
+  const actions: string[] = [];
+  const service = createDesktopLocalRuntimeHostRemoteAccess({
+    ipcMain: { handle() {}, removeHandler() {} },
+    clientDataRoot,
+    rootPath,
+    rootId,
+    directPeerAvailable: true,
+    manager: () => undefined,
+    resolveSetupPackage: async () => setupPackage,
+    operator: {
+      async runUpdate(input: {
+        readonly setupPackage: unknown;
+        readonly target: { readonly rootId: string; readonly deploymentId?: string };
+        readonly allowManualUpdate?: boolean;
+        readonly allowInterruptActiveTasks?: boolean;
+      }) {
+        actions.push('update');
+        assert.equal(input.setupPackage, setupPackage);
+        assert.equal(input.target.rootId, rootId);
+        assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
+        assert.equal(input.allowManualUpdate, true);
+        assert.equal(input.allowInterruptActiveTasks, undefined);
+        return {
+          kind: 'result',
+          action: 'update',
+          update: { kind: 'already_current', version: '0.2.0' },
+        } as never;
+      },
+      async runService(input: {
+        readonly action: string;
+        readonly target: { readonly rootId: string; readonly deploymentId?: string };
+        readonly allowInterruptActiveTasks?: boolean;
+      }) {
+        actions.push(input.action);
+        assert.equal(input.action, 'restart');
+        assert.equal(input.target.rootId, rootId);
+        assert.equal(input.target.deploymentId, RECOVERY_DEPLOYMENT_ID);
+        assert.equal(input.allowInterruptActiveTasks, undefined);
+        return { kind: 'result', action: 'restart' } as never;
+      },
+      async close() {},
+    } as unknown as ReturnType<typeof createDesktopRuntimeHostLocalOperator>,
+  });
+  t.after(() => service.close());
+
+  assert.deepEqual(await service.repairManagedStartup({ allowManualUpdate: true }), {
+    kind: 'repaired',
+  });
+  assert.deepEqual(actions, ['update', 'restart']);
+});
+
 test('replaces a conflicting supervised Host through canonical authority without a receipt', async (t) => {
   const base = await mkdtemp(join(tmpdir(), 'maka-local-managed-conflict-'));
   t.after(() => rm(base, { recursive: true, force: true }));

@@ -1,3 +1,15 @@
+---
+doc_id: architecture.bot-onboarding-runtime
+title: "Maka IM 扫码接入 runtime architecture"
+language: zh-CN
+source_language: zh-CN
+implementation_status: current
+document_status: current
+translation_status: source-only
+last_verified: 2026-08-31
+owners:
+  - maka-backend
+---
 <!--
   Licensed to the Apache Software Foundation (ASF) under one
   or more contributor license agreements.  See the NOTICE file
@@ -19,7 +31,7 @@
 
 # Maka IM 扫码接入 runtime architecture
 
-状态：V1 implemented and verified（2026-07-18）
+状态：Current（2026-08-31）
 
 ## 1. 目标与边界
 
@@ -28,7 +40,7 @@ Maka 的 IM 接入同时支持两条路径：
 - 快捷接入：用户扫描平台二维码，平台完成应用或机器人注册，Maka 自动取得 credential、启用 channel 并启动 runtime bridge。
 - 手动配置：保留 provider-specific App ID、Secret、Token 或本地 bridge 配置，作为平台能力不可用时的 fallback。
 
-V1 快捷接入覆盖钉钉、飞书、Lark、企业微信和微信。飞书与 Lark 共享一个 `feishu` channel，通过 domain 区分账号区域。IM onboarding 是独立的 main-process capability，不进入 MCP manager，也不建立第二套 bot runtime。
+V1 快捷接入覆盖钉钉、飞书、Lark、企业微信、微信和 QQ。飞书与 Lark 共享一个 `feishu` channel，通过 domain 区分账号区域。Telegram、Slack、Discord 有 runtime bridge，但不在 `BOT_ONBOARDING_PROVIDERS` 里，不能扫码接入。IM onboarding 是独立的 main-process capability，不进入 MCP manager，也不建立第二套 bot runtime。
 
 V1 不包含：
 
@@ -71,8 +83,9 @@ flowchart LR
 | Lark | `accounts.larksuite.com/oauth/v1/app/registration` | 同飞书；domain=`larksuite.com` | official Channel WebSocket |
 | 企业微信 | `work.weixin.qq.com/ai/qc/{generate,query_result}` | `botid` → `appId`；`secret` → `appSecret` | official AI Bot WebSocket |
 | 微信 | `ilinkai.weixin.qq.com/ilink/bot/*` | bot token、base URL、bot identity | existing iLink polling bridge |
+| QQ | `q.qq.com/lite/{create_bind_task,poll_bind_result}` | `bot_appid` → `appId`；解密后的 secret → `appSecret` | official Gateway WebSocket |
 
-所有 outbound request 由 main process 发出。单次请求 timeout 为 15 秒；provider 给出的 polling interval 会 clamp 到 1–30 秒。`slow_down` 每次增加 5 秒 backoff，最大仍为 30 秒。
+所有 outbound request 由 main process 发出。单次请求 timeout 为 15 秒；QQ bind HTTP 为 10 秒。provider 给出的 polling interval 会 clamp 到 1–30 秒。`slow_down` 每次增加 5 秒 backoff，最大仍为 30 秒。
 
 QR payload 有两种来源：
 
@@ -111,6 +124,7 @@ Snapshot 字段固定为：
 - `canOpenInBrowser`
 - optional non-sensitive identity `{ id, displayName }`
 - redacted user-facing error
+- optional `warning`：凭证已落盘，但 live bridge 未在 commit window 内达到 running/healthy；不是 onboarding 失败，也不携带 credential
 
 `poll()` 对同一 session 的并发调用共享一个 in-flight promise，避免 duplicate provider polling。新建同 provider session 会 abort 旧 session；不同 provider 可以独立进行。
 
@@ -122,7 +136,7 @@ confirmed 后执行一个受 current-session fence 保护的 commit sequence：
 2. 把 provider credential 映射为 channel patch，并设置 `enabled: true`、`readiness: configured`。
 3. 原子写入 settings。
 4. 调用 `applySettingsRuntimeEffects`，让 `BotRegistry` reconcile channel。
-5. 读取 runtime identity，并把非敏感字段投影给 renderer。
+5. 读取 runtime identity，并把非敏感字段投影给 renderer。bridge 未 running 时快照带 `warning`，会话仍为 `connected`。
 
 每个 await 边界后都重新检查 `currentByProvider` 与 `AbortSignal`。如果用户在 settings write 或 runtime effect 期间取消，service 只回滚本次 onboarding 拥有的字段。
 
@@ -157,7 +171,7 @@ Rollback 使用 `SettingsStore.updateIf(predicate, patch)`：只有 current chan
 - IPC start input 只接受 closed provider enum；`brand` 只允许用于 Feishu channel。
 - 外部浏览器只允许打开当前 session 的 HTTPS verification URL。
 - Provider error 经过固定 user-facing projection，不把 response body、URL query、credential 或 raw stack 返回 renderer。
-- Settings read IPC 会 mask `token` 与 `appSecret`；E2E 断言完整 renderer response 不包含原始 secret。
+- Settings read IPC 会 mask `token` 与 `appSecret`；unit tests 断言 snapshot 不含原始 secret。
 - QR modal unmount 必须 cancel current session；late async result 不能更新 React state 或持久化 credential。
 - 正式 runtime 不提供 test adapter 注入入口给 renderer。deterministic adapter 只在 dev/test e2e-fixture 中由 main wiring 注入。
 
@@ -169,20 +183,15 @@ Rollback 使用 `SettingsStore.updateIf(predicate, patch)`：只有 current chan
 - Feishu channel 在快捷模式内提供飞书 / Lark brand 切换。
 - Modal 明确区分生成中、等待扫码、已扫码、正在连接、已连接、过期、拒绝、取消和错误。
 - 用户可刷新 QR、取消、在 HTTPS browser 中打开 verification URL；过期或失败后可重新生成。
-- 成功状态只展示 non-sensitive bot identity，不展示 credential。
+- 成功状态只展示 non-sensitive bot identity，不展示 credential。bridge 未起来时用 `warning`，不用失败态。
 - QR frame 在 desktop viewport 居中，light/dark 与窄窗口保持同一 action hierarchy。
 
 ## 9. 验收标准
 
-1. Unit tests 覆盖 input validation、poll dedupe、slow-down、expiry、cancel、runtime effect 和 credential rollback。
+1. Unit tests 覆盖 input validation、poll dedupe、slow-down、expiry、cancel、runtime effect、credential rollback，以及 connected 后 bridge 未 running 的 `warning`。
 2. 并发测试证明 cancel 能跨过 runtime-effect commit window，且不会覆盖 concurrent manual edit。
 3. Runtime tests覆盖 Feishu/WeCom message mapping，以及 failed-handshake cleanup 顺序。
-4. Electron E2E 通过真实 renderer → preload → IPC → main session → settings persistence 路径验证：
-   - 钉钉 waiting → scanned → connected。
-   - renderer 不含 raw secret。
-   - 微信 modal close 后迟到 credential 不落盘。
-   - 企业微信 expiry 与 restart。
-   - Feishu / Lark brand selection。
+4. Electron E2E 通过 renderer → preload → IPC → main session 打开 Settings › 远程接入（`settings-bots-onboarding` fixture）。该场景只把 modal 固定在 `waiting` 以供界面校验；main unit tests 直接覆盖 `waiting → connected`，部分 dev/test adapters 能产生 `scanned → connected`，但 Playwright 当前没有运行完整 onboarding 行程的 spec。
 5. light/dark、wide/narrow visual capture 无 overflow，QR 和 modal 保持居中。
 6. Runtime dependency 在 built Electron E2E 中可解析。仓库目前没有 ASAR/notarized packaging pipeline；引入 packager 时必须新增 packaged-app launch smoke，不能用 source-tree E2E 代替。
 

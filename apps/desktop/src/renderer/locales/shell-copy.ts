@@ -64,6 +64,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -268,6 +272,30 @@ type ShellCopy = {
     deletedTitle(name: string): string;
     /** The task was restored elsewhere, so the delete was called off. */
     deleteRestoredTitle(name: string): string;
+    /** Appended to the delete confirm when the task has linked subagent subtasks. */
+    deleteSubtaskNote(): string;
+    /** Appended to the delete confirm when the subtask preview could not be read. */
+    deleteSubtaskNoteUncertain(): string;
+    /** Toast description after deleting a task that had linked subagent subtasks. */
+    deletedSubtaskNote(count: number): string;
+    bulkDeleteTitle(count: number): string;
+    bulkDeleteDescription: string;
+    bulkArchiveTitle(count: number): string;
+    bulkArchiveDescription: string;
+    bulkArchiveLabel: string;
+    bulkDeletedTitle(count: number): string;
+    bulkArchivedTitle(count: number): string;
+    /** Tasks restored while the sweep was reaching them, so they were kept. */
+    bulkKeptRestored(count: number): string;
+    bulkDeleteFailedTitle: string;
+    bulkArchiveFailedTitle: string;
+    bulkFailedBody(count: number): string;
+    /** The catalog could not be read back, so nothing can be claimed. */
+    bulkUnverified: string;
+    /** Appended to the bulk delete confirm when the selection has linked subtasks. */
+    bulkDeleteSubtaskNote(): string;
+    /** Appended when the subtask preview could not be read for the whole selection. */
+    bulkDeleteSubtaskNoteUncertain(): string;
   };
   skillActions: {
     refreshSkillsFailedTitle: string;
@@ -377,13 +405,9 @@ type ShellCopy = {
     copyFailed: string;
     copyReport: string;
     title: string;
-    descriptionBeforeRetry: string;
+    description: string;
     retry: string;
-    descriptionBeforeReload: string;
     reload: string;
-    descriptionAfterReload: string;
-    errorDetails: string;
-    componentStack: string;
     clipboardFailure: string;
   };
   commandPalette: {
@@ -533,7 +557,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -546,7 +570,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -598,7 +626,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -621,7 +652,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -636,7 +667,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -694,7 +725,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -893,6 +927,24 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: '取消',
       deletedTitle: (name: string) => `已删除 ${name}`,
       deleteRestoredTitle: (name: string) => `${name} 已被恢复，未删除`,
+      deleteSubtaskNote: () => '其普通子任务不会被删除，将保留并移入归档。',
+      deleteSubtaskNoteUncertain: () => '其普通子任务（如有）不会被删除，将保留并移入归档。',
+      deletedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
+      bulkDeleteTitle: (count: number) => `删除选中的 ${count} 个任务？`,
+      bulkDeleteDescription: '删除后无法恢复，任务的全部修订版本都会一并删除。',
+      bulkArchiveTitle: (count: number) => `归档选中的 ${count} 个任务？`,
+      bulkArchiveDescription: '归档后可在「设置 › 活动 › 已归档任务」中找回。',
+      bulkArchiveLabel: '归档',
+      bulkDeletedTitle: (count: number) => `已删除 ${count} 个任务`,
+      bulkArchivedTitle: (count: number) => `已归档 ${count} 个任务`,
+      bulkKeptRestored: (count: number) => `另有 ${count} 个已被恢复，未删除。`,
+      bulkDeleteFailedTitle: '部分任务未能删除',
+      bulkArchiveFailedTitle: '部分任务未能归档',
+      bulkFailedBody: (count: number) => `还有 ${count} 个没有处理成功。`,
+      bulkUnverified: '无法确认处理结果，请刷新后查看。',
+      bulkDeleteSubtaskNote: () => '它们的普通子任务不会被删除，将保留并移入归档。',
+      bulkDeleteSubtaskNoteUncertain: () =>
+        '它们的普通子任务（如有）不会被删除，将保留并移入归档。',
     },
     skillActions: {
       refreshSkillsFailedTitle: '刷新技能失败',
@@ -1057,14 +1109,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: '复制失败',
       copyReport: '复制诊断信息',
       title: 'Maka 渲染层崩溃了',
-      descriptionBeforeRetry: '已捕获一次未处理的 React 异常。下面是错误摘要；点',
+      description:
+        '已捕获一次未处理的 React 异常。可以重试以清除这次崩溃，或重新加载整个窗口。需要交接时先复制诊断信息。',
       retry: '重试',
-      descriptionBeforeReload: '清掉这次崩溃，',
       reload: '重新加载',
-      descriptionAfterReload: '会刷新整个窗口。需要交接时先复制诊断信息。',
-      errorDetails: '错误详情',
-      componentStack: '组件栈',
-      clipboardFailure: '剪贴板不可用或被系统拒绝；可以手动选择上面的错误摘要。',
+      clipboardFailure: '剪贴板不可用或被系统拒绝，请稍后重试。',
     },
     commandPalette: {
       label: '命令面板',
@@ -1419,6 +1468,27 @@ const SHELL_COPY_BY_LOCALE = {
       cancelLabel: 'Cancel',
       deletedTitle: (name: string) => `Deleted ${name}`,
       deleteRestoredTitle: (name: string) => `${name} was restored, so it was kept`,
+      deleteSubtaskNote: () => 'Its ordinary subtasks will be kept and moved to Archived.',
+      deleteSubtaskNoteUncertain: () =>
+        'Its ordinary subtasks, if any, will be kept and moved to Archived.',
+      deletedSubtaskNote: (count: number) =>
+        count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+      bulkDeleteTitle: (count: number) => `Delete ${count} selected tasks?`,
+      bulkDeleteDescription:
+        'This cannot be undone, and every revision of each task goes with it.',
+      bulkArchiveTitle: (count: number) => `Archive ${count} selected tasks?`,
+      bulkArchiveDescription: 'Archived tasks stay available under Settings › Activity.',
+      bulkArchiveLabel: 'Archive',
+      bulkDeletedTitle: (count: number) => `Deleted ${count} tasks`,
+      bulkArchivedTitle: (count: number) => `Archived ${count} tasks`,
+      bulkKeptRestored: (count: number) => `${count} were restored meanwhile and kept.`,
+      bulkDeleteFailedTitle: 'Some tasks were not deleted',
+      bulkArchiveFailedTitle: 'Some tasks were not archived',
+      bulkFailedBody: (count: number) => `${count} of them did not go through.`,
+      bulkUnverified: 'The outcome could not be confirmed. Refresh to see what remains.',
+      bulkDeleteSubtaskNote: () => 'Their ordinary subtasks will be kept and moved to Archived.',
+      bulkDeleteSubtaskNoteUncertain: () =>
+        'Any ordinary subtasks they have will be kept and moved to Archived.',
     },
     skillActions: {
       refreshSkillsFailedTitle: 'Could not refresh Skills',
@@ -1584,14 +1654,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: 'Copy failed',
       copyReport: 'Copy diagnostics',
       title: 'The Maka renderer crashed',
-      descriptionBeforeRetry: 'An unhandled React error was caught. The summary is below. Choose',
+      description:
+        'An unhandled React error was caught. Try again to clear this crash, or reload to refresh the entire window. Copy the diagnostics before handing off the issue.',
       retry: 'Try again',
-      descriptionBeforeReload: 'to clear this crash, or',
       reload: 'Reload',
-      descriptionAfterReload: 'to refresh the entire window. Copy the diagnostics before handing off the issue.',
-      errorDetails: 'Error details',
-      componentStack: 'Component stack',
-      clipboardFailure: 'The clipboard is unavailable or was denied. You can select the error summary above manually.',
+      clipboardFailure: 'The clipboard is unavailable or was denied. Try again later.',
     },
     commandPalette: {
       label: 'Command palette',

@@ -120,6 +120,13 @@ class AttachmentDriver implements MakaSessionDriver {
   ingestGate: Promise<void> | undefined;
   /** When set, the next submit rejects once (a refused dispatch, not a lost one). */
   nextSubmitError: Error | undefined;
+  /** When set, the next submit resolves undefined (an unprovable admission outcome). */
+  nextSubmitUnknown = false;
+  /** Live session id for getSessionId; switchSession mutates it. */
+  liveSessionId = 'session-1';
+  /** When set, ingestAttachment moves the live Session to this id as it
+   * resolves — modeling a /session switch landing between ingest and dispatch. */
+  switchAfterIngest: string | undefined;
   retracted: MakaRetractedMessages = { text: '', messageIds: [], entries: [] };
   switchedInMessages: StoredMessage[] = [];
   startedTurnListener: ((turn: MakaAttachedSessionTurn) => void) | undefined;
@@ -132,6 +139,10 @@ class AttachmentDriver implements MakaSessionDriver {
     this.ingests.push({ ...input });
     await this.ingestGate;
     const outcome = this.ingestScript.shift();
+    if (this.switchAfterIngest) {
+      this.liveSessionId = this.switchAfterIngest;
+      this.switchAfterIngest = undefined;
+    }
     if (outcome) throw outcome;
     this.ingestSeq += 1;
     return imageAttachmentRef(input.name, input.content.byteLength, this.ingestSeq);
@@ -166,7 +177,10 @@ class AttachmentDriver implements MakaSessionDriver {
       this.nextSubmitError = undefined;
       throw error;
     }
+    const unknown = this.nextSubmitUnknown;
+    this.nextSubmitUnknown = false;
     this.submits.push({ text, options });
+    if (unknown) return undefined;
     const turn = await this.preparePrompt(text, {
       turnId: options.messageId,
       ...(options.modelText !== undefined ? { modelText: options.modelText } : {}),
@@ -175,11 +189,27 @@ class AttachmentDriver implements MakaSessionDriver {
     queueMicrotask(() =>
       this.startedTurnListener?.({
         ...turn,
-        messages: [],
+        // Canonical Host admission carries the user Message back: the
+        // transcript replacement retires the transient row in favor of the
+        // durable one (with its attachment chips).
+        messages: [
+          {
+            type: 'user',
+            id: options.messageId,
+            turnId: turn.turnId,
+            ts: 1,
+            text,
+            ...(options.attachments ? { attachments: [...options.attachments] } : {}),
+          } satisfies StoredMessage,
+        ],
         summary: fakeSessionSummary(turn.sessionId),
       }),
     );
-    return { disposition: 'turn_started', turnId: turn.turnId };
+    return {
+      disposition: 'turn_started',
+      turnId: turn.turnId,
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    };
   }
 
   subscribeStartedTurns(listener: (turn: MakaAttachedSessionTurn) => void): () => void {
@@ -195,6 +225,7 @@ class AttachmentDriver implements MakaSessionDriver {
 
   async switchSession(sessionId: string): Promise<MakaSessionSwitchResult> {
     this.switchCalls.push(sessionId);
+    this.liveSessionId = sessionId;
     return {
       summary: fakeSessionSummary(sessionId),
       messages: this.switchedInMessages,
@@ -227,7 +258,7 @@ class AttachmentDriver implements MakaSessionDriver {
     return Promise.resolve();
   }
   getSessionId(): string | null {
-    return this.sessionId;
+    return this.liveSessionId;
   }
 }
 
@@ -421,11 +452,12 @@ describe('TUI image attachments through Runtime Host', () => {
         imageAttachmentRef('one.png', 2, 2),
       ]);
       assert.equal(submit.text, 'what are these');
+      // The user row renders the committed refs as chips — the transient row
+      // and its canonical replacement both carry them.
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('📎 two.png'));
       // Success consumes staging: the Message owns the refs now.
-      await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+      assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
       assert.deepEqual(driver.deleted, []);
-      // The transient row renders the committed refs as chips.
-      assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('📎 two.png'));
     } finally {
       exitMaka(terminal);
       await closeRunner(run);
@@ -721,6 +753,271 @@ describe('TUI image attachments through Runtime Host', () => {
       exitMaka(terminal);
       await closeRunner(run);
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('submit-ownership and lifecycle review fixes (#4248 review)', () => {
+  test('a second Send cannot duplicate an in-flight batch: it goes out with no attachments', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-tui-attach-'));
+    const imagePath = join(dir, 'raced.png');
+    await writeFile(imagePath, new Uint8Array([1, 2, 3]));
+    const driver = new AttachmentDriver();
+    const gate = deferred<void>();
+    driver.ingestGate = gate.promise;
+    const { terminal, run } = startTui(driver, dir);
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input(`/attach ${imagePath}`);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+
+      terminal.input('first send');
+      terminal.input('\r');
+      await waitFor(() => driver.ingests.length === 1);
+      // The attempt synchronously claimed the batch: the strip is empty while
+      // the ingest is in flight, and a second Send has nothing to claim.
+      assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+      terminal.input('second send');
+      terminal.input('\r');
+      await waitFor(() => driver.submits.length === 1);
+      assert.equal(driver.submits[0]?.text, 'second send');
+      assert.equal(driver.submits[0]?.options.attachments, undefined);
+
+      gate.resolve();
+      await waitFor(() => driver.submits.length === 2);
+      // The exact claimed batch rides the first send — once.
+      assert.deepEqual(driver.submits[1]?.text, 'first send');
+      assert.deepEqual(driver.submits[1]?.options.attachments, [
+        imageAttachmentRef('raced.png', 3, 1),
+      ]);
+      assert.equal(driver.ingests.length, 1);
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('/attach and /detach during an in-flight attempt shape a fresh batch only', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-tui-attach-'));
+    const firstPath = join(dir, 'claimed.png');
+    const secondPath = join(dir, 'later.png');
+    await writeFile(firstPath, new Uint8Array([1]));
+    await writeFile(secondPath, new Uint8Array([2]));
+    const driver = new AttachmentDriver();
+    const gate = deferred<void>();
+    driver.ingestGate = gate.promise;
+    const { terminal, run } = startTui(driver, dir);
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input(`/attach ${firstPath}`);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+
+      terminal.input('send claimed');
+      terminal.input('\r');
+      await waitFor(() => driver.ingests.length === 1);
+
+      // Draft edits during the attempt shape the NEXT message only.
+      terminal.input(`/attach ${secondPath}`);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('📎 later.png'));
+
+      gate.resolve();
+      await waitFor(() => driver.submits.length === 1);
+      assert.deepEqual(driver.submits[0]?.options.attachments, [
+        imageAttachmentRef('claimed.png', 1, 1),
+      ]);
+      assert.equal(driver.submits[0]?.text, 'send claimed');
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a session switch mid-attempt abandons it instead of submitting cross-session refs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-tui-attach-'));
+    const imagePath = join(dir, 'switched.png');
+    await writeFile(imagePath, new Uint8Array([1, 2]));
+    const driver = new AttachmentDriver();
+    // A /session switch lands between ingest resolution and dispatch.
+    driver.switchAfterIngest = 'session-2';
+    const { terminal, run } = startTui(driver, dir);
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input(`/attach ${imagePath}`);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+
+      terminal.input('cross session');
+      terminal.input('\r');
+      // submitMessage flips the live Session; the attempt must refuse to send
+      // another Session's references and must not restage them here either.
+      await waitFor(() => driver.ingests.length === 1);
+      await waitFor(() => driver.liveSessionId === 'session-2');
+      await delay(60);
+      assert.deepEqual(driver.submits, []);
+      assert.deepEqual(driver.deleted, [imageAttachmentRef('switched.png', 2, 1)]);
+      assert.ok(!plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a partial ingest failure rolls the batch back exactly, and the retry re-ingests cleanly', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-tui-attach-'));
+    const firstPath = join(dir, 'good.png');
+    const secondPath = join(dir, 'bad.png');
+    await writeFile(firstPath, new Uint8Array([1]));
+    await writeFile(secondPath, new Uint8Array([2]));
+    const driver = new AttachmentDriver();
+    driver.ingestScript.push(undefined, new Error('Host rejected the upload'));
+    const { terminal, run } = startTui(driver, dir);
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input(`/attach ${firstPath}`);
+      terminal.input('\r');
+      terminal.input(`/attach ${secondPath}`);
+      terminal.input('\r');
+      await waitFor(
+        () => plainTerminalOutput(terminal.screenOutput()).split('Staged:').length >= 3,
+      );
+
+      terminal.input('send both');
+      terminal.input('\r');
+      await waitFor(() => driver.ingests.length === 2);
+      await waitFor(() => driver.deleted.length === 1);
+      assert.deepEqual(driver.deleted, [imageAttachmentRef('good.png', 1, 1)]);
+      // The earlier descriptor was never converted to a ref-and-deleted pair:
+      // both items return to the strip and a retry re-ingests fresh copies.
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('📎 good.png'));
+      assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('📎 bad.png'));
+      assert.equal(driver.submits.length, 0);
+
+      terminal.input('\x1b[A'); // Up: recall the failed draft
+      await waitFor(() => editorText(terminal).includes('send both'));
+      terminal.input('\r');
+      await waitFor(() => driver.submits.length === 1);
+      assert.equal(driver.ingests.length, 4);
+      const retrySubmit: MakaSubmitMessageOptions | undefined =
+        driver.submits[driver.submits.length - 1]?.options;
+      assert.deepEqual(retrySubmit?.attachments, [
+        imageAttachmentRef('good.png', 1, 2),
+        imageAttachmentRef('bad.png', 1, 3),
+      ]);
+      assert.equal(driver.deleted.length, 1);
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('an outcome-unknown dispatch keeps the transient row and keeps the refs staged', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'maka-tui-attach-'));
+    const imagePath = join(dir, 'unknown.png');
+    await writeFile(imagePath, new Uint8Array([1, 2, 3, 4]));
+    const driver = new AttachmentDriver();
+    driver.nextSubmitUnknown = true;
+    const { terminal, run } = startTui(driver, dir);
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input(`/attach ${imagePath}`);
+      terminal.input('\r');
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+
+      terminal.input('maybe admitted');
+      terminal.input('\r');
+      await waitFor(() => driver.submits.length === 1);
+      // Ownership stays with the attempt: the refs return to staging so a
+      // retry reuses the exact Artifacts and /detach can still clean them up.
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('📎 unknown.png'));
+      assert.deepEqual(driver.deleted, []);
+      // The transient row stays until reconciliation retires or replaces it.
+      assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('maybe admitted'));
+
+      // Reconnect-style reconciliation retires the transient row, but the
+      // staged refs remain a user-owned retry/cleanup surface either way.
+      terminal.input('/detach 1');
+      terminal.input('\r');
+      await waitFor(() => driver.deleted.length === 1);
+      assert.deepEqual(driver.deleted, [imageAttachmentRef('unknown.png', 4, 1)]);
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('/detach of a retained ref deletes its Artifact; local descriptors stay client-local', async () => {
+    const driver = new AttachmentDriver();
+    const retained = imageAttachmentRef('retracted.png', 5, 1);
+    // Empty entry text keeps the editor free, so /detach can be typed cleanly.
+    driver.retracted = {
+      text: '',
+      messageIds: ['m-1'],
+      entries: [{ text: '', attachments: [retained] }],
+    };
+    const { terminal, run } = startTui(driver, '/repo');
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('\x1b[1;3A'); // Alt+Up restages the retained ref
+      await waitFor(() =>
+        plainTerminalOutput(terminal.screenOutput()).includes('📎 retracted.png'),
+      );
+
+      terminal.input('/detach 1');
+      terminal.input('\r');
+      await waitFor(() => driver.deleted.length === 1);
+      assert.deepEqual(driver.deleted, [retained]);
+      await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('Staged:'));
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
+    }
+  });
+
+  test('a two-message retraction restages entry-bounded images so the draft stays submit-able', async () => {
+    const driver = new AttachmentDriver();
+    const firstBatch = Array.from({ length: 6 }, (_, index) =>
+      imageAttachmentRef(`first-${index + 1}.png`, 1, index + 1),
+    );
+    const secondBatch = Array.from({ length: 6 }, (_, index) =>
+      imageAttachmentRef(`second-${index + 1}.png`, 1, index + 7),
+    );
+    driver.retracted = {
+      text: 'first queued\n\nsecond queued',
+      messageIds: ['m-1', 'm-2'],
+      entries: [
+        { text: 'first queued', attachments: firstBatch },
+        { text: 'second queued', attachments: secondBatch },
+      ],
+    };
+    const { terminal, run } = startTui(driver, '/repo');
+    try {
+      await waitForTuiPaint(terminal);
+      terminal.input('\x1b[1;3A'); // Alt+Up
+      await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('first queued'));
+      await waitFor(() => editorText(terminal).includes('second queued'));
+      // Bounded restaging: 8 ride the draft, the 4 overflow are deleted
+      // best-effort so nothing lingers without an owner.
+      await waitFor(() => driver.deleted.length === 4);
+      const screen = plainTerminalOutput(terminal.screenOutput());
+      assert.equal(screen.split('Staged:').length - 1, 8);
+      assert.ok(screen.includes('retracted image'));
+      assert.ok(screen.includes('📎 first-1.png'));
+
+      terminal.input('resubmit');
+      terminal.input('\r');
+      await waitFor(() => driver.submits.length === 1);
+      assert.equal(driver.submits[0]?.options.attachments?.length, 8);
+    } finally {
+      exitMaka(terminal);
+      await closeRunner(run);
     }
   });
 });

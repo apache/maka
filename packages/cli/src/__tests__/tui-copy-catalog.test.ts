@@ -27,6 +27,16 @@ const MESSAGE_VALUES = {
   count: 2,
   detail: 'HTTP 401',
   hasDetail: true,
+  bytes: 40_000,
+  serverId: 'filesystem',
+  names: 'Alpha',
+  failures: '/skill:nope (not found)',
+  outcome: 'no model request was made.',
+  request: 'nope',
+  reason: 'not found',
+  limit: 3,
+  notice: 'The original account was deleted.',
+  recovery: 'Add or enable a connection first.',
 } as const;
 
 describe('TUI copy resources', () => {

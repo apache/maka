@@ -21,6 +21,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
   isContextBudgetExhaustedDetail,
+  DIRECTORY_REFERENCE_MAX_COUNT,
   isCanonicalAttachmentRef,
   type ContextBudgetExhaustedDetail,
   type ContextCompactionOutcome,
@@ -413,6 +414,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
       TURN_MESSAGE_TEXT_MAX_BYTES,
       true,
     );
+  }
+  if ((content.directoryReferences?.length ?? 0) > DIRECTORY_REFERENCE_MAX_COUNT) {
+    throw invalidProtocolFrame('Too many directory references');
   }
   if ((content.attachments?.length ?? 0) > MAX_ATTACHMENT_COUNT) {
     throw invalidProtocolFrame('Invalid Message attachments');
