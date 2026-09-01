@@ -32,15 +32,26 @@ export const windowsPackageSourceEntrypoints = [
 ];
 
 export async function collectWindowsPackageSourceClosure(repoRoot = defaultRepoRoot) {
+  return collectWorkspaceSourceClosure(windowsPackageSourceEntrypoints, repoRoot);
+}
+
+/**
+ * Workspace sources `entryPoints` reach, transitively, resolved through the
+ * workspace `exports` map back to `src` rather than to built `dist`. Two lanes
+ * derive a path filter from this instead of maintaining one by hand, so a
+ * dependency added anywhere under an entry point cannot escape the filter that
+ * is supposed to schedule the runner able to observe it.
+ */
+export async function collectWorkspaceSourceClosure(entryPoints, repoRoot = defaultRepoRoot) {
   const workspaces = loadWorkspacePackages(repoRoot);
   const result = await build({
     absWorkingDir: repoRoot,
     bundle: true,
-    entryPoints: windowsPackageSourceEntrypoints,
+    entryPoints,
     format: 'esm',
     logLevel: 'silent',
     metafile: true,
-    outdir: 'windows-package-source-closure',
+    outdir: 'workspace-source-closure',
     packages: 'external',
     platform: 'node',
     plugins: [workspaceSourcePlugin(repoRoot, workspaces)],

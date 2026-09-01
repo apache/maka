@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   changedFilesBetween,
@@ -28,6 +29,7 @@ import {
   planTests,
   requiresHeavyValidation,
 } from './ci-test-plan.mjs';
+import { collectWorkspaceSourceClosure } from './windows-package-source-closure.mjs';
 
 const dirs = [
   'packages/core',
@@ -494,12 +496,85 @@ test('contract checks run before dependency setup and can fail the job', () => {
 /** Every file the two app-icon drift tests read. */
 const APP_ICON_INPUTS = [
   'apps/desktop/assets/app-icons/sky.png',
+  // Read by path in the drift test, so pointing it at a different icon that
+  // happens to exist would otherwise package cleanly with the assertion unrun.
+  'apps/desktop/electron-builder.config.mjs',
   'packages/core/src/settings.ts',
   'scripts/generate-app-icons.py',
   'scripts/generate-app-icons.test.mjs',
   'scripts/verify-packaged-app.mjs',
   'scripts/verify-packaged-app-icons.test.mjs',
 ];
+
+test('every selection that gates an installed step is one heavy validation covers', () => {
+  const workflow = readWorkflow('ci.yml');
+
+  // `heavy` decides whether the toolchain is installed at all, so any later
+  // step gated on a selection outside that disjunction would run against a
+  // runner with no dependencies — or, if the step is a `run:` that tolerates
+  // it, report green having done nothing. Derived from the workflow rather
+  // than restated, so a new plan output cannot gate a step without joining
+  // the disjunction first.
+  const [, installed] = workflow.split(/\n\s+- uses: actions\/setup-node[^\n]*\n/u);
+  assert.ok(installed, 'ci.yml no longer installs a toolchain');
+
+  const gating = [
+    ...new Set([...installed.matchAll(/steps\.plan\.outputs\.(\w+) ==/gu)].map(([, name]) => name)),
+  ].sort();
+  assert.ok(gating.length > 0, 'no installed step is gated on a selection');
+
+  // The planner names selections in camelCase and publishes them in snake_case.
+  const source = readFileSync(new URL('./ci-test-plan.mjs', import.meta.url), 'utf8');
+  const disjunction = source.match(/export function requiresHeavyValidation[\s\S]*?\n\}/u)?.[0];
+  assert.ok(disjunction, 'requiresHeavyValidation is no longer a single expression');
+
+  for (const output of gating) {
+    if (output === 'heavy') continue;
+    const camel = output.replace(/_(\w)/gu, (_, letter) => letter.toUpperCase());
+    assert.match(
+      disjunction,
+      new RegExp(`plan\\.${camel}\\b`, 'u'),
+      `${output} gates an installed step but does not select the install`,
+    );
+  }
+});
+
+test('the app icon gate selects every file its own tests open', () => {
+  // Derived from the step, not from a memory of it: whatever `App icon artwork
+  // drift` runs is the authority on what has to select it. The list this
+  // replaces was assembled by reading those tests, which is how the packaging
+  // config — opened by path rather than imported — stayed off it while the
+  // drift assertion it feeds could be skipped silently.
+  const step = readWorkflow('ci.yml').match(
+    /if: steps\.plan\.outputs\.app_icons == 'true'\n\s+run: node --test ([^\n]+)/u,
+  );
+  assert.ok(step, 'no step is gated on the app icon selection');
+  const suites = step[1].trim().split(/\s+/u);
+  assert.ok(suites.length > 0);
+
+  for (const suite of suites) {
+    assert.equal(planTests([suite], { graph }).appIcons, true, suite);
+    const source = readFileSync(new URL(`../${suite}`, import.meta.url), 'utf8');
+
+    // Every repository path those suites name, however they reach it: a
+    // `new URL` read, a relative import, or a directory of artwork.
+    const named = [
+      ...[...source.matchAll(/new URL\('([^']+)'/gu)].map((match) => match[1]),
+      ...[...source.matchAll(/from '(\.[^']+)'/gu)].map((match) => match[1]),
+    ].map((path) => new URL(path, new URL(`../${suite}`, import.meta.url)).pathname);
+
+    const root = new URL('..', import.meta.url).pathname;
+    for (const absolute of named) {
+      // A trailing slash names a directory, so probe inside it as well: the
+      // artwork is selected by prefix rather than file by file.
+      const path = absolute.slice(root.length).replace(/\/$/u, '');
+      const selects = [path, `${path}/probe`].some(
+        (candidate) => planTests([candidate], { graph }).appIcons,
+      );
+      assert.ok(selects, `${suite} reads ${path}`);
+    }
+  }
+});
 
 test('app icon drift selects the artwork and whatever derives or names it', () => {
   for (const path of APP_ICON_INPUTS) {
@@ -772,22 +847,43 @@ test('the recovery lane filter follows the postinstall launcher chain', () => {
   }
 });
 
-test('every workspace file on the recovery filter branches on Windows', () => {
+test('the recovery filter is exactly the Windows-branching closure of its tests', async () => {
+  const workflow = readWorkflow('windows-recovery.yml');
   const filtered = pullRequestPathFilter('windows-recovery.yml').filter((path) =>
     path.startsWith('packages/'),
   );
 
-  // The rule that admits a workspace file here is that Linux cannot go red on
-  // it: these are the modules whose behaviour forks on the platform, and the
-  // test files whose cases are skipped off Windows. Anything portable belongs
-  // to the required `test` lane instead, so a file that stops branching has to
-  // leave this list. A glob would defeat the rule, so each is named.
-  assert.ok(filtered.length > 0, 'no Windows-specific surface is filtered');
-  for (const path of filtered) {
-    assert.doesNotMatch(path, /\*/u, `${path}: must name one file`);
-    const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-    assert.match(source, /win32/u, `${path}: no Windows branch`);
+  // Derived from the dist tests the steps actually execute, mapped back to
+  // source. A suite added to a step joins this set without anyone remembering
+  // to widen the filter.
+  const entrypoints = [
+    ...new Set(
+      [...workflow.matchAll(/packages\/([\w-]+)\/dist\/__tests__\/([\w.-]+)\.test\.js/gu)].map(
+        ([, workspace, name]) => `packages/${workspace}/src/__tests__/${name}.test.ts`,
+      ),
+    ),
+  ].sort();
+  assert.ok(entrypoints.length > 0, 'no executed suite was recognised');
+  for (const entrypoint of entrypoints) {
+    assert.ok(existsSync(new URL(`../${entrypoint}`, import.meta.url)), entrypoint);
   }
+
+  // Set equality, not containment, and in both directions on purpose. A subset
+  // check cannot see an omission, which is how `stable-storage.ts` — reached
+  // through the two listed lock authorities — sat outside a filter that was
+  // supposed to cover exactly it. A superset check cannot see a file that
+  // stopped branching and now schedules a Windows runner for nothing.
+  const closure = await collectWorkspaceSourceClosure(
+    entrypoints,
+    fileURLToPath(new URL('..', import.meta.url)),
+  );
+  const windowsBranching = closure
+    .filter((path) =>
+      readFileSync(new URL(`../${path}`, import.meta.url), 'utf8').includes('win32'),
+    )
+    .sort();
+
+  assert.deepEqual(filtered.sort(), windowsBranching);
 });
 
 test('the recovery lane filters pull requests by what only Windows can prove', () => {

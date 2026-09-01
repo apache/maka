@@ -260,11 +260,13 @@ function isAstryxSurfaceInventoryPath(path) {
 /**
  * The two app-icon drift tests read exactly this surface: the committed
  * artwork, the generator that must still reproduce it, the `APP_ICONS` catalog
- * they check it against, and the packaged-resource list that has to keep
- * naming every file. Regenerating the artwork costs about a minute, which
- * every unrelated code change used to pay.
+ * they check it against, the packaged-resource list that has to keep naming
+ * every file, and the packaging config, which the drift test opens by path to
+ * prove the bundle icon is still `DEFAULT_APP_ICON`. Regenerating the artwork
+ * costs about a minute, which every unrelated code change used to pay.
  */
 const APP_ICON_FILES = new Set([
+  'apps/desktop/electron-builder.config.mjs',
   'packages/core/src/settings.ts',
   'scripts/generate-app-icons.py',
   'scripts/generate-app-icons.test.mjs',
@@ -488,7 +490,8 @@ export function planTests(changedFiles, options = {}) {
 
 export function requiresHeavyValidation(plan) {
   return Boolean(
-    plan.asfSource ||
+    plan.appIcons ||
+      plan.asfSource ||
       plan.astryxSurface ||
       plan.cliPackage ||
       plan.code ||
