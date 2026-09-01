@@ -2021,6 +2021,7 @@ function validateMainWindowEntryContract(desktopRoot, violations) {
   }
 
   const allowedNavigationFiles = new Set([
+    'src/main/browser-message-box.ts',
     'src/main/browser/controller.ts',
     'src/main/computer-use/cursor-overlay-window.ts',
     'src/main/computer-use/pip-electron.ts',
