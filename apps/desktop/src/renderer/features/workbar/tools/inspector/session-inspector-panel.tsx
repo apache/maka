@@ -19,7 +19,6 @@
 
 import { type ReactNode, useMemo } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
-import { Badge } from '@astryxdesign/core/Badge';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Heading } from '@astryxdesign/core/Heading';
@@ -149,7 +148,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             {copy.summaryUnavailable}
           </Text>
         )}
-        {(snapshot.summary || overview.context || overview.composition || overview.requestPreservation) && (
+        {(snapshot.summary || overview.context || overview.composition) && (
           <InspectorOverview
             copy={copy}
             locale={locale}
@@ -273,9 +272,6 @@ function InspectorOverview(props: {
 
   return (
     <VStack gap={6} data-maka-contract="session-inspector-overview">
-      {overview.requestPreservation && (
-        <InspectorRequestPreservationBadge copy={copy} requestPreservation={overview.requestPreservation} />
-      )}
       {props.showTotals && (
         <VStack gap={2} data-maka-contract="session-inspector-stats">
           <InspectorOverviewStat
@@ -286,12 +282,6 @@ function InspectorOverview(props: {
             <InspectorOverviewStat
               label={copy.overview.cacheHit}
               value={formatPercent(overview.cacheHitRate)}
-            />
-          )}
-          {overview.providerCacheUsage && (
-            <InspectorOverviewStat
-              label={copy.overview.providerCache}
-              value={`${formatCompactNumber(overview.providerCacheUsage.readTokens)} / ${formatCompactNumber(overview.providerCacheUsage.writeTokens)}`}
             />
           )}
           <Text type="supporting" color="secondary">
@@ -317,45 +307,6 @@ function InspectorOverview(props: {
         />
       )}
     </VStack>
-  );
-}
-
-export function InspectorRequestPreservationBadge(props: {
-  copy: InspectorCopy;
-  requestPreservation: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['requestPreservation']>;
-}) {
-  const { requestPreservation, copy } = props;
-  if (requestPreservation.status === 'no_predecessor') return null;
-  if (requestPreservation.status === 'preserved') {
-    return (
-      <Badge
-        variant="neutral"
-        label={copy.overview.requestPreservation.preserved(
-          requestPreservation.preservedSegmentCount,
-          requestPreservation.previousSegmentCount,
-        )}
-        data-maka-contract="request-preservation"
-      />
-    );
-  }
-  if (requestPreservation.status === 'diverged') {
-    return (
-      <Badge
-        variant="error"
-        label={copy.overview.requestPreservation.diverged(
-          copy.overview.requestPreservation.segment[requestPreservation.firstDivergentSegment.kind],
-          requestPreservation.firstDivergentSegment.index + 1,
-        )}
-        data-maka-contract="request-preservation"
-      />
-    );
-  }
-  return (
-    <Badge
-      variant={requestPreservation.status === 'unknown' ? 'warning' : 'neutral'}
-      label={copy.overview.requestPreservation.cannotJudge}
-      data-maka-contract="request-preservation"
-    />
   );
 }
 

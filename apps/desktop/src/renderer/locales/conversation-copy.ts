@@ -262,16 +262,6 @@ export interface DesktopConversationCopy {
       };
       /** The three figures a reader opens this tab for, as headline stats. */
       cacheHit: string;
-      providerCache: string;
-      requestPreservation: {
-        preserved: (preserved: number, previous: number) => string;
-        diverged: (segment: string, index: number) => string;
-        cannotJudge: string;
-        segment: Record<
-          'tool_schema' | 'system_prompt' | 'message' | 'provider_options',
-          string
-        >;
-      };
       /** Heading over the causal record. */
       timelineTab: string;
       /**
@@ -606,18 +596,6 @@ const COPY = {
           free: '剩余',
         },
         cacheHit: '缓存命中率',
-        providerCache: 'Provider 缓存读取 / 写入',
-        requestPreservation: {
-          preserved: (preserved, previous) => `上次请求内容已保留 ${preserved}/${previous}`,
-          diverged: (segment, index) => `上次请求从${segment} ${index}起有变化`,
-          cannotJudge: '无法比较上次请求',
-          segment: {
-            tool_schema: '工具',
-            system_prompt: '系统提示',
-            message: '消息',
-            provider_options: '模型选项',
-          },
-        },
         timelineTab: '时间轴',
         composition: {
           title: '构成估算',
@@ -853,19 +831,6 @@ const COPY = {
           free: 'Remaining',
         },
         cacheHit: 'Cache hit rate',
-        providerCache: 'Provider cache read / write',
-        requestPreservation: {
-          preserved: (preserved, previous) =>
-            `Previous request ${preserved}/${previous} preserved`,
-          diverged: (segment, index) => `Previous request changed at ${segment} ${index}`,
-          cannotJudge: 'Previous request could not be compared',
-          segment: {
-            tool_schema: 'tool',
-            system_prompt: 'system prompt',
-            message: 'message',
-            provider_options: 'model option',
-          },
-        },
         timelineTab: 'Timeline',
         composition: {
           title: 'Estimated composition',
