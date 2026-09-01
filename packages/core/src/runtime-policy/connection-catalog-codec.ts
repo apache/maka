@@ -18,10 +18,12 @@
  */
 
 import {
+  isModelModality,
   isRelayProviderType,
   PROVIDER_REGISTRY,
   providerDefaultsOf,
   validateSlug,
+  type ModelModality,
   type ProviderType,
 } from '../llm-connections.js';
 import { MAX_PREPENDED_FALLBACK_MODELS } from '../model-catalog.js';
@@ -608,18 +610,9 @@ function decodeModelModalities(value: unknown): NonNullable<ConnectionModel['mod
 // Both directions accept the same set. models.dev declares video on either
 // side and pdf on both, so splitting them again only invites one direction to
 // drift behind the catalog it decodes.
-function decodeModelModality(
-  value: unknown,
-  direction: 'input' | 'output',
-): 'text' | 'image' | 'audio' | 'pdf' | 'video' {
+function decodeModelModality(value: unknown, direction: 'input' | 'output'): ModelModality {
   const modality = stringValue(value, `connection model ${direction} modality`, 16);
-  if (
-    modality !== 'text' &&
-    modality !== 'image' &&
-    modality !== 'audio' &&
-    modality !== 'pdf' &&
-    modality !== 'video'
-  ) {
+  if (!isModelModality(modality)) {
     throw domainError(`connection model ${direction} modality is invalid`);
   }
   return modality;

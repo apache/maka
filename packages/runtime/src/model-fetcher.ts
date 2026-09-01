@@ -21,9 +21,11 @@ import {
   PROVIDER_REGISTRY,
   providerFallbackModelIds,
   effectiveBaseUrl,
+  isModelModality,
   providerAuthSupportsApiKey,
   type LlmConnection,
   type ModelInfo,
+  type ModelModality,
 } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import {
@@ -883,12 +885,9 @@ function providerObjectArray<T extends object>(
  * non-string — is dropped rather than guessed at, so an unrecognized list
  * reads as "said nothing" instead of "said not text".
  */
-function knownOutputModalities(declared: readonly unknown[] | undefined): string[] {
+function knownOutputModalities(declared: readonly unknown[] | undefined): ModelModality[] {
   if (declared === undefined) return [];
-  return declared.filter(
-    (value): value is 'text' | 'image' | 'audio' =>
-      value === 'text' || value === 'image' || value === 'audio',
-  );
+  return declared.filter(isModelModality);
 }
 
 function assertOptionalArray(
