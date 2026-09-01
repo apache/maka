@@ -1773,7 +1773,11 @@ export const Composer = forwardRef<
             <ChatComposerDrawer
               className="maka-composer-drawer"
               data-maka-session-reference-only={sessionReferenceDrawer ? 'true' : undefined}
-              count={drawerTokenCount}
+              // A Session reference is already a compact, always-visible
+              // context token. Omitting count keeps the drawer's disclosure
+              // control out of this single-reference presentation while
+              // preserving the public ChatComposerDrawer contract.
+              count={sessionReferenceDrawer ? undefined : drawerTokenCount}
               label={copy.stagedContext}
               defaultIsCollapsed={props.contextDrawerDefaultCollapsed}
               // The collapse band's tooltip (composer.css ::after) follows the
@@ -1823,6 +1827,7 @@ export const Composer = forwardRef<
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
+                    className={quote.sourceSessionId ? 'maka-composer-session-token' : undefined}
                     icon={quote.sourceSessionId ? <MessagesSquare aria-hidden="true" /> : undefined}
                     label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}

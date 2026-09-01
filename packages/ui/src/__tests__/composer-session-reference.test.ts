@@ -57,7 +57,7 @@ test('Composer copy tells users that @ can reference files or Sessions', () => {
 
 test('Session search stays name-only and @ keeps the menu open after spaces', () => {
   const composer = readSource('composer.tsx');
-  const dependencyPatch = readRepoFile('patches/@astryxdesign+core+0.5.0.patch');
+  const dependencyPatch = readRepoFile('patches/@astryxdesign+core+0.5.2.patch');
 
   assert.match(composer, /const searchQuery = query\.trim\(\)/);
   assert.match(composer, /mentionQueryMatches\(searchQuery, session\.name\)/);
@@ -68,4 +68,18 @@ test('Session search stays name-only and @ keeps the menu open after spaces', ()
 test('Session Quote chips use the conversation icon so they are distinct from pasted excerpts', () => {
   const source = readSource('quote-ref-chip.tsx');
   assert.match(source, /props\.quote\.sourceSessionId \? MessagesSquare : TextQuote/);
+});
+
+test('Session-only context stays compact without bypassing the drawer disclosure contract', () => {
+  const composer = readSource('composer.tsx');
+  const styles = readRepoFile('apps/desktop/src/renderer/styles/composer.css');
+  const sessionStyles = styles.slice(
+    styles.indexOf('/* A Session reference follows'),
+    styles.indexOf('/* Astryx ChatComposerDrawer wraps'),
+  );
+
+  assert.match(composer, /count=\{sessionReferenceDrawer \? undefined : drawerTokenCount\}/);
+  assert.match(composer, /className=\{quote\.sourceSessionId \? 'maka-composer-session-token' : undefined\}/);
+  assert.doesNotMatch(sessionStyles, /\[role=|> div\[id\]|\.astryx-token/);
+  assert.match(sessionStyles, /\.maka-composer-session-token[\s\S]*max-width: min\(420px, 100%\)/);
 });
