@@ -428,9 +428,7 @@ test('every pull request lane holds a scarce runner for the same bounded time', 
   // Granularity is the file, not the job: a job inside a gating workflow that
   // opts out of pull requests still carries the tier, because reading a job's
   // `if:` would need the YAML parser this file cannot install.
-  const gates = readdirSync(WORKFLOW_DIR).filter((name) =>
-    /\bpull_request\b/u.test(triggerBlock(name)),
-  );
+  const gates = readdirSync(WORKFLOW_DIR).filter(hasPullRequestGate);
   assert.ok(gates.length > 0, 'no pull request lane found');
 
   for (const name of gates) {
@@ -804,7 +802,18 @@ function triggerBlock(name) {
 }
 
 function hasPullRequestTrigger(name) {
-  return /\bpull_request(_target)?\b/u.test(triggerBlock(name));
+  const block = triggerBlock(name);
+  if (!/\bpull_request(_target)?\b/u.test(block)) return false;
+
+  // Event-only maintenance workflows may listen for a lifecycle action without
+  // becoming a normal pull-request validation lane. They do not belong in the
+  // scarce-runner allowlist or its timeout tier.
+  return !/pull_request:\s*\n\s+types:\s*\[\s*reopened\s*\]/u.test(block);
+}
+
+function hasPullRequestGate(name) {
+  const block = triggerBlock(name);
+  return /^\s*pull_request:\s*$/mu.test(block) && hasPullRequestTrigger(name);
 }
 
 /**
