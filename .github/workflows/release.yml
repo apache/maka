@@ -218,14 +218,17 @@ jobs:
         run: |
           previous_exe="$(node scripts/prepare-windows-upgrade-baseline.mjs \
             "${{ needs.release-identity.outputs.version }}" artifacts/windows-upgrade-baseline)"
+          previous_contract="$(node -p "require('./scripts/windows-upgrade-baseline.json').artifactContract")"
           echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
+          echo "artifact_contract=$previous_contract" >> "$GITHUB_OUTPUT"
 
       - name: Exercise pinned Windows upgrade and uninstall
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-installer -- \
             "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
-            "${{ steps.previous.outputs.exe }}"
+            "${{ steps.previous.outputs.exe }}" \
+            "${{ steps.previous.outputs.artifact_contract }}"
 
       - name: Build the version-bumped autoupdate installer
         if: matrix.platform == 'windows'

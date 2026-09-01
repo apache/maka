@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import {
@@ -138,6 +138,12 @@ const baseDesktopBuilderConfig = {
     },
     ...(process.platform === 'win32'
       ? [
+          ...(existsSync('resources/bin/maka-cu-windows/maka-cu-windows.exe')
+            ? [{
+                from: 'resources/bin/maka-cu-windows',
+                to: 'bin/maka-cu-windows',
+              }]
+            : []),
           {
             from: 'resources/windows-sandbox/maka-windows-sandbox.exe',
             to: 'windows-sandbox/maka-windows-sandbox.exe',

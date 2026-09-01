@@ -36,6 +36,7 @@
 // This test exists so the next action cannot ship the same way.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { zodSchema } from 'ai';
 
 import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core/computer-use';
 import { computerWireParams } from '../computer-use-tools.js';
@@ -174,6 +175,28 @@ test('every action in the strict union has a sample call above', () => {
   const sampled = new Set(CALLS.map((call) => String(call.action)));
   for (const action of computerActionNames()) {
     assert.ok(sampled.has(action), `${action} has no sample call in CALLS`);
+  }
+});
+
+test('provider JSON Schema uses one array item schema for every coordinate field', async () => {
+  const schema = (await zodSchema(computerWireParams as never).jsonSchema) as {
+    properties?: Record<
+      string,
+      { type?: string; items?: unknown; minItems?: number; maxItems?: number }
+    >;
+  };
+  for (const [name, length] of [
+    ['coordinate', 2],
+    ['start_coordinate', 2],
+    ['position', 2],
+    ['size', 2],
+    ['region', 4],
+  ] as const) {
+    const field = schema.properties?.[name];
+    assert.equal(field?.type, 'array', `${name} must be an array`);
+    assert.equal(Array.isArray(field?.items), false, `${name} must not be a tuple schema`);
+    assert.equal(field?.minItems, length, `${name} must require ${length} values`);
+    assert.equal(field?.maxItems, length, `${name} must cap values at ${length}`);
   }
 });
 

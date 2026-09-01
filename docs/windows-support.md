@@ -19,6 +19,29 @@
 
 # Windows support baseline
 
+## Native Computer Use helper
+
+Windows Computer Use uses the C#/.NET `maka.cu.windows/0` helper. The desktop
+host starts it as a direct stdio child, verifies the SHA-256 and size pins for
+the executable and every native companion recorded in
+`apps/desktop/bundled-tools.json`, and invalidates observations whenever the
+helper generation exits or restarts. The protocol is private to Windows and
+does not reuse the macOS `maka.cu/2` executor.
+
+The v1 surface is deliberately closed: enumerate and explicitly select one
+running top level window, read its UI Automation tree, capture that window with
+Windows Graphics Capture, and invoke `set_value` or `click_element` using a
+single use snapshot token. Ambiguous app/window matches fail closed. Global
+input, screen rectangle capture, post-message, and unsupported actions are not
+fallbacks. A packaged build is enabled only when the Windows manifest entry
+sets `distributionReady: true`; development artifacts are prepared with
+`MAKA_CU_WINDOWS_SOURCE=<path-to-maka-cu> node scripts/prepare-windows-cu-helper.mjs`.
+The script follows the native publish contract (`win-x64`, self-contained,
+single-file, uncompressed, untrimmed, embedded debug), copies the executable
+and required Windows Desktop native companion files together, rejects the
+small framework-dependent apphost, and remains distribution-ineligible by
+default.
+
 Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for the managed filesystem-worker surface, with packaged lifecycle and adversarial evidence, and automatic updates are verified end to end in CI on the unsigned preview channel. Signing, the wider general-command sandbox tier, direct Credential Manager/DPAPI probes, independent security review, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/apache/maka/issues/2142).
 
 ## Install the Windows x64 preview
@@ -227,7 +250,11 @@ The root test timeout is tracked separately from individual test failures. Phase
   host named pipes, ambient environment, host registry values, parent tokens, and descendant
   denial or AppContainer/Job inheritance. It does not claim UDP/DNS/SMB enforcement, local inbound-listener enforcement, the deferred
   no-Win32k/window-station tier, or direct Credential Manager/DPAPI isolation.
-- Computer-use has no Windows backend.
+- Computer Use has a Windows native backend when a pinned helper digest is
+  present. Packaged builds also require `distributionReady: true`; source
+  development artifacts remain opt-in and do not establish full Windows
+  support. The product integration is tracked in [issue #4318](https://github.com/apache/maka/issues/4318),
+  with related executor hardening in [issue #3785](https://github.com/apache/maka/issues/3785).
 - The Windows x64 NSIS installer is unsigned. The in-app automatic-update path (electron-updater →
   NSIS handoff → relaunch) is verified end to end in CI against a loopback feed; the production
   GitHub feed configuration is pinned by unit tests. Updates are not signature-verified until an

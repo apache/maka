@@ -38,6 +38,9 @@ export function validateWindowsUpgradeBaseline(manifest, candidateVersion) {
   if (!/^[0-9a-f]{64}$/u.test(manifest.sha256)) {
     throw new Error('Baseline SHA-256 must be a lowercase 64-character digest.');
   }
+  if (manifest.artifactContract !== 'current' && manifest.artifactContract !== 'legacy-baseline') {
+    throw new Error('Baseline artifact contract must be current or legacy-baseline.');
+  }
   if (compareProductReleaseVersions(manifest.version, candidateVersion) >= 0) {
     throw new Error('Windows upgrade baseline must be older than the candidate.');
   }

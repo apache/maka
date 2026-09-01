@@ -370,6 +370,24 @@ function remainingProbeBudget(deadline) {
   return Math.max(1, Math.min(pollingProbeTimeoutMs, deadline - Date.now()));
 }
 
+export function previousInstallerVerificationOptions(
+  previousVersion,
+  artifactContract,
+  environment = process.env,
+) {
+  if (artifactContract !== 'current' && artifactContract !== 'legacy-baseline') {
+    throw new Error(`Unknown previous Windows artifact contract: ${artifactContract}`);
+  }
+  return {
+    expectedVersion: previousVersion,
+    artifactContract,
+    environment:
+      artifactContract === 'current' && previousVersion.includes('-dev.')
+        ? { ...environment, MAKA_DESKTOP_NIGHTLY_VERSION: previousVersion }
+        : environment,
+  };
+}
+
 export async function verifyWindowsInstallerLifecycle(
   inputPath,
   previousInputPath,
@@ -383,13 +401,17 @@ export async function verifyWindowsInstallerLifecycle(
     waitForProcessesToExit = waitForInstalledProcessesToExit,
     remove = rm,
     resolvePath = resolve,
+    previousArtifactContract = 'legacy-baseline',
+    environment = process.env,
   } = {},
 ) {
   if (platform !== 'win32') {
     throw new Error('Windows installer lifecycle verification requires Windows.');
   }
   if (!inputPath) {
-    throw new Error('Usage: npm run verify:windows-installer -- <path-to-exe>');
+    throw new Error(
+      'Usage: npm run verify:windows-installer -- <path-to-exe> [previous-exe] [previous-artifact-contract]',
+    );
   }
 
   const installer = resolvePath(inputPath);
@@ -401,6 +423,11 @@ export async function verifyWindowsInstallerLifecycle(
   if (previousInstaller) {
     installerVersion(previousInstaller);
     await requirePath(previousInstaller);
+    previousInstallerVerificationOptions(
+      installerVersion(previousInstaller),
+      previousArtifactContract,
+      environment,
+    );
   }
 
   const temporaryDirectory = await makeTemporaryDirectory();
@@ -423,8 +450,11 @@ export async function verifyWindowsInstallerLifecycle(
       console.log('[verify-windows-installer] verifying the previous installed application');
       await verifyApp(installDirectory, {
         workingDirectory: smokeDirectory,
-        expectedVersion: previousVersion,
-        artifactContract: 'legacy-baseline',
+        ...previousInstallerVerificationOptions(
+          previousVersion,
+          previousArtifactContract,
+          environment,
+        ),
       });
       console.log('[verify-windows-installer] waiting for previous-version processes to exit');
       await waitForProcessesToExit(installDirectory);
@@ -505,6 +535,8 @@ export async function verifyWindowsInstallerLifecycle(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyWindowsInstallerLifecycle(process.argv[2], process.argv[3]);
+  const result = await verifyWindowsInstallerLifecycle(process.argv[2], process.argv[3], {
+    previousArtifactContract: process.argv[4],
+  });
   console.log(`Verified installer lifecycle for ${result.installer}`);
 }

@@ -51,6 +51,7 @@ import {
   completeInstalledApplicationUninstall,
   installerVersion,
   listInstalledProcesses,
+  previousInstallerVerificationOptions,
   terminateInstalledProcesses,
   waitForInstalledProcessAppearance,
   waitForInstalledProcessesToExit,
@@ -278,12 +279,37 @@ it('uses the product SemVer contract throughout Windows release verification', (
     version: '1.2.3-beta.1',
     tag: 'v1.2.3-beta.1',
     assetName: 'Maka-1.2.3-beta.1-win-x64.exe',
+    artifactContract: 'current',
     sha256: 'a'.repeat(64),
   };
   assert.equal(validateWindowsUpgradeBaseline(baseline, '1.2.3-beta.2'), baseline);
   assert.throws(
     () => validateWindowsUpgradeBaseline(baseline, '1.2.3-alpha.1'),
     /must be older than the candidate/u,
+  );
+  assert.throws(
+    () =>
+      validateWindowsUpgradeBaseline({ ...baseline, artifactContract: 'optional' }, '1.2.3-beta.2'),
+    /artifact contract must be current or legacy-baseline/u,
+  );
+});
+
+it('verifies a pinned Nightly with its current artifact and update contracts', () => {
+  const environment = { PATH: 'fixture' };
+  assert.deepEqual(
+    previousInstallerVerificationOptions('0.2.0-dev.11.20260831', 'current', environment),
+    {
+      expectedVersion: '0.2.0-dev.11.20260831',
+      artifactContract: 'current',
+      environment: {
+        PATH: 'fixture',
+        MAKA_DESKTOP_NIGHTLY_VERSION: '0.2.0-dev.11.20260831',
+      },
+    },
+  );
+  assert.throws(
+    () => previousInstallerVerificationOptions('0.2.0-dev.11.20260831', 'optional'),
+    /Unknown previous Windows artifact contract/u,
   );
 });
 
