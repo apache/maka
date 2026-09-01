@@ -19,7 +19,56 @@
 
 import { expect, test } from './fixtures';
 
-test('Agent Graph keeps its heading visible without covering scrolled content', async ({ window: page }) => {
+test('production AgentGraphPanel keeps its heading visible without covering scrolled content', async ({ agentGraphWindow: page }) => {
+  const panel = page.getByRole('region', { name: 'Agent Graph' });
+  await expect(panel).toBeVisible();
+  await expect(panel.locator('.maka-agent-graph-operators > li')).toHaveCount(24);
+  const content = panel.locator('.maka-agent-graph-content');
+  const before = await panel.evaluate((element) => {
+    const heading = element.querySelector('.maka-agent-graph-heading');
+    const content = element.querySelector('.maka-agent-graph-content');
+    if (!(heading instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+      throw new Error('Agent Graph production panel structure is incomplete');
+    }
+    const panelRect = element.getBoundingClientRect();
+    const headingRect = heading.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    return {
+      panelHeight: panelRect.height,
+      headingTop: headingRect.top,
+      headingBottom: headingRect.bottom,
+      contentTop: contentRect.top,
+      contentScrollHeight: content.scrollHeight,
+      contentClientHeight: content.clientHeight,
+      contentScrollTop: content.scrollTop,
+    };
+  });
+  expect(before.contentScrollHeight).toBeGreaterThan(before.contentClientHeight);
+  await content.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  const after = await panel.evaluate((element) => {
+    const heading = element.querySelector('.maka-agent-graph-heading');
+    const content = element.querySelector('.maka-agent-graph-content');
+    if (!(heading instanceof HTMLElement) || !(content instanceof HTMLElement)) {
+      throw new Error('Agent Graph production panel structure is incomplete');
+    }
+    const headingRect = heading.getBoundingClientRect();
+    const contentRect = content.getBoundingClientRect();
+    return {
+      headingTop: headingRect.top,
+      headingBottom: headingRect.bottom,
+      contentTop: contentRect.top,
+      contentScrollTop: content.scrollTop,
+    };
+  });
+  expect(after.contentScrollTop).toBeGreaterThan(0);
+  expect(Math.abs(after.headingTop - before.headingTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(after.contentTop - before.contentTop)).toBeLessThanOrEqual(1);
+  expect(after.contentTop).toBeGreaterThanOrEqual(after.headingBottom);
+});
+
+test('Agent Graph CSS contract keeps its heading visible without covering scrolled content', async ({ window: page }) => {
   const geometry = await page.evaluate(() => {
     const panel = document.createElement('section');
     panel.className = 'maka-agent-graph-panel';
