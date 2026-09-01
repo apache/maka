@@ -52,6 +52,7 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostStatusResult,
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -204,6 +205,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly peerClient?: RuntimeHostPeerClient;
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly profileTarget?: {
     readonly profile: PersistedRuntimeHostProfile;
     readonly credential?: string;
@@ -440,6 +442,9 @@ async function startProfileDesktopRuntimeHostCandidate(
     ...(input.onConnectionPhase === undefined
       ? {}
       : { onConnectionPhase: input.onConnectionPhase }),
+    ...(input.onHostStatus === undefined
+      ? {}
+      : { onHostStatus: input.onHostStatus }),
     ...(profileTarget.sshInteraction === undefined
       ? {}
       : { sshInteraction: profileTarget.sshInteraction }),

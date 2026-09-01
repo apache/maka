@@ -73,7 +73,7 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready' || peerId === 'fallback' || (peerId === 'self-contained' && selfContainedRoutesPrepared)) return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'observed' || (peerId === 'self-contained' && selfContainedRoutesPrepared)) return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
@@ -118,8 +118,8 @@ module.exports = {
             await client.connectMeshControl(peerConnectInput(peerId));
           }
         },
-        resolveRoutes: () =>
-          routesPrepared
+        resolveRoutes: (peerId) =>
+          routesPrepared && peerId !== 'observed'
             ? {
                 routeHints: ['/memory/discovered'],
                 coordinationRelays: ['/memory/relay'],
@@ -167,6 +167,16 @@ module.exports = {
     });
     await selfContained;
     assert.equal(preparedPeerIds.includes('self-contained'), true);
+    client.observeAuthenticatedRoutes({
+      peerId: 'observed',
+      routeHints: ['/memory/fresh'],
+      coordinationRelays: ['/memory/fresh-relay'],
+    });
+    await client.connect({
+      ...peerConnectInput('observed'),
+      routeHints: ['/memory/stale'],
+      coordinationRelays: ['/memory/stale-relay'],
+    });
     assert.deepEqual(native.default.stats, {
       starts: 1,
       closes: 0,
@@ -226,6 +236,13 @@ module.exports = {
           routeHints: ['/memory/discovered', '/memory/1'],
           coordinationRelays: ['/memory/relay', '/memory/explicit-relay'],
           transitRelayPeerIds: ['transit-peer'],
+        },
+        {
+          requestId: 9,
+          peerId: 'observed',
+          routeHints: ['/memory/fresh', '/memory/stale'],
+          coordinationRelays: ['/memory/fresh-relay', '/memory/stale-relay'],
+          transitRelayPeerIds: [],
         },
       ],
       cancellations: [1, 1],

@@ -168,6 +168,7 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
       maxCircuitBytes: 256 * 1024 * 1024,
     }),
     configureTransit: async () => undefined,
+    observeAuthenticatedRoutes: () => undefined,
     connect: async () => {
       throw new Error('not used');
     },
