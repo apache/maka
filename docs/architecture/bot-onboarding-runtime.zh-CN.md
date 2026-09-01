@@ -191,7 +191,7 @@ Rollback 使用 `SettingsStore.updateIf(predicate, patch)`：只有 current chan
 1. Unit tests 覆盖 input validation、poll dedupe、slow-down、expiry、cancel、runtime effect、credential rollback，以及 connected 后 bridge 未 running 的 `warning`。
 2. 并发测试证明 cancel 能跨过 runtime-effect commit window，且不会覆盖 concurrent manual edit。
 3. Runtime tests覆盖 Feishu/WeCom message mapping，以及 failed-handshake cleanup 顺序。
-4. Electron E2E 通过 renderer → preload → IPC → main session 打开 Settings › 远程接入（`settings-bots-onboarding` fixture）。waiting → scanned → connected 由 main unit tests 与 deterministic e2e-fixture adapters 覆盖；Playwright 当前没有单独的行程 spec。
+4. Electron E2E 通过 renderer → preload → IPC → main session 打开 Settings › 远程接入（`settings-bots-onboarding` fixture）。该场景只把 modal 固定在 `waiting` 以供界面校验；main unit tests 直接覆盖 `waiting → connected`，部分 dev/test adapters 能产生 `scanned → connected`，但 Playwright 当前没有运行完整 onboarding 行程的 spec。
 5. light/dark、wide/narrow visual capture 无 overflow，QR 和 modal 保持居中。
 6. Runtime dependency 在 built Electron E2E 中可解析。仓库目前没有 ASAR/notarized packaging pipeline；引入 packager 时必须新增 packaged-app launch smoke，不能用 source-tree E2E 代替。
 
