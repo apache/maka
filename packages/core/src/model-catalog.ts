@@ -350,7 +350,7 @@ export function buildConnectionModelCatalogEntries(
  * and the session compatibility projection share one normalization.
  */
 export function normalizeOpenAiCodexConnection<
-  T extends Pick<LlmConnection, 'providerType' | 'models' | 'defaultModel'>,
+  T extends Pick<LlmConnection, 'providerType' | 'models' | 'defaultModel' | 'enabledModelIds'>,
 >(connection: T): T {
   if (connection.providerType !== 'openai-codex') return connection;
   const fallbackModels = PROVIDER_REGISTRY['openai-codex'].fallbackModels;
@@ -358,15 +358,33 @@ export function normalizeOpenAiCodexConnection<
     (entry) => entry.id && !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id),
   );
   const models = safeModels.length ? safeModels : fallbackModels.map((id) => ({ id }));
-  const enabledModelIds = new Set(models.map((entry) => entry.id));
+  // The stored selection is filtered by the same rule as the inventory. An id
+  // this subscription cannot serve was picker-visible once, so it is still in
+  // `enabledModelIds` on a connection saved back then; leaving it there put it
+  // back into the catalog as a model no inventory lists — selectable, and
+  // failing at the provider when a scheduled run finally sent to it.
+  const servableEnabledModelIds = connection.enabledModelIds?.filter(
+    (id) => !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(id),
+  );
+  const enabledModelIds =
+    servableEnabledModelIds?.length === connection.enabledModelIds?.length
+      ? connection.enabledModelIds
+      : servableEnabledModelIds;
+  const listedModelIds = new Set(models.map((entry) => entry.id));
   const defaultModel =
     connection.defaultModel &&
     !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(connection.defaultModel) &&
-    enabledModelIds.has(connection.defaultModel)
+    listedModelIds.has(connection.defaultModel)
       ? connection.defaultModel
       : (models[0]?.id ?? fallbackModels[0] ?? connection.defaultModel);
-  if (models === connection.models && defaultModel === connection.defaultModel) return connection;
-  return { ...connection, defaultModel, models };
+  if (
+    models === connection.models &&
+    defaultModel === connection.defaultModel &&
+    enabledModelIds === connection.enabledModelIds
+  ) {
+    return connection;
+  }
+  return { ...connection, defaultModel, models, enabledModelIds };
 }
 
 /**

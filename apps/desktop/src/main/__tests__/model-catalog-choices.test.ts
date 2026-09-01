@@ -26,6 +26,7 @@ import type {
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { pickNewChatModel } from '../../renderer/shell-chat-model-selection.js';
+import { buildCatalogDailyReviewModelOptions } from '../../renderer/model-catalog-choices.js';
 
 function connection(
   overrides: Partial<IdentifiedLlmConnection> &
@@ -117,4 +118,33 @@ describe('model catalog picker helpers', () => {
     assert.ok(choices.every((choice) => !(choice.connectionName ?? '').includes('@')));
   });
 
+  it('does not offer Daily Review a Codex model the subscription cannot serve', () => {
+    // A connection saved while `gpt-5-codex` was still picker-visible keeps it
+    // in `enabledModelIds`. The inventory filter alone left it there, and the
+    // catalog listed it back as a model no inventory describes — selectable,
+    // and failing at the provider once a scheduled run sent to it.
+    const options = buildCatalogDailyReviewModelOptions(
+      [
+        connection({
+          slug: 'codex',
+          providerType: 'openai-codex',
+          defaultModel: 'gpt-5.5',
+          enabledModelIds: ['gpt-5.5', 'gpt-5-codex'],
+          models: [{ id: 'gpt-5.5' }],
+          modelSource: 'fetched',
+        }),
+      ],
+      '',
+    );
+    const keys = options.map(([key]) => key);
+    assert.ok(
+      keys.includes('codex::gpt-5.5'),
+      `expected the servable model to be offered, got ${JSON.stringify(keys)}`,
+    );
+    assert.equal(
+      keys.includes('codex::gpt-5-codex'),
+      false,
+      `unsupported Codex model was offered: ${JSON.stringify(keys)}`,
+    );
+  });
 });
