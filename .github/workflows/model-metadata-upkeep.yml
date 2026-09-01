@@ -1,0 +1,135 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+name: Model metadata upkeep
+
+on:
+  schedule:
+    # Weekly, offset from the hour to reduce peak-time scheduling delays. The
+    # snapshot is a build input a human reviews, so a nightly cadence would
+    # only stack five near-identical pull requests against one week of upstream
+    # movement, on runners the whole foundation shares.
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-metadata-upkeep
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    # A fork inherits the schedule but owns neither the branch this pushes nor
+    # the pull request it opens.
+    if: github.repository == 'apache/maka'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Report snapshot drift against models.dev
+        # Drift exits non-zero by design. The report is what this step is for,
+        # and the refresh below is what decides whether the run fails.
+        continue-on-error: true
+        run: npm run --silent check:model-metadata-drift 2>&1 | tee "$RUNNER_TEMP/drift.txt"
+
+      - name: Publish the drift report
+        run: |
+          {
+            echo '### models.dev drift'
+            echo ''
+            echo '```text'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # No --accept-upstream-removals. A model leaving upstream is a decision
+      # for a person, so the job fails and says so rather than committing the
+      # removal into a pull request nobody asked for.
+      - name: Refresh the snapshot from models.dev
+        run: npm run refresh:model-metadata
+
+      - name: Verify the regenerated outputs
+        run: npm run check:model-metadata
+
+      - name: Detect a snapshot change
+        id: change
+        run: |
+          if git diff --quiet -- scripts/model-metadata/models-dev-api.snapshot.json; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the review pull request
+        if: steps.change.outputs.changed == 'true'
+        env:
+          BRANCH: automation/model-metadata-refresh
+          GH_TOKEN: ${{ github.token }}
+          TITLE: 'chore(model-metadata): refresh the models.dev snapshot'
+        run: |
+          {
+            echo '## Summary'
+            echo ''
+            echo 'Scheduled `refresh:model-metadata` run. The snapshot is the build'
+            echo 'input for the bundled model catalog; this only moves it to what'
+            echo 'models.dev serves today.'
+            echo ''
+            echo 'Refs #4398'
+            echo ''
+            echo '## Verification'
+            echo ''
+            echo 'The workflow ran `refresh:model-metadata` and `check:model-metadata`'
+            echo 'before opening this. Drift against upstream at refresh time:'
+            echo ''
+            echo '```text'
+            cat "$RUNNER_TEMP/drift.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/pr-body.md"
+          git config user.name 'Apache Maka'
+          git config user.email 'commits@maka.apache.org'
+          git switch -c "$BRANCH"
+          git add scripts/model-metadata/models-dev-api.snapshot.json
+          git commit -m "$TITLE"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" \
+            "HEAD:refs/heads/$BRANCH"
+          # A force push updates an open pull request in place, so only open one
+          # when none is waiting.
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            echo "Updated the open pull request on $BRANCH."
+          else
+            gh pr create --draft --base main --head "$BRANCH" \
+              --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi

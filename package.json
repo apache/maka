@@ -62,7 +62,7 @@
     "release:asf:source": "node scripts/asf-source-release.mjs create",
     "release:asf:verify": "node scripts/asf-source-release.mjs verify",
     "release:asf:sign": "node scripts/asf-source-release.mjs sign",
-    "check:asf-source": "npm run check:model-metadata && node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs scripts/asf-license-headers.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs",
+    "check:asf-source": "npm run check:model-metadata && node --test scripts/asf-source-release.test.mjs scripts/asf-source-workflow-policy.test.mjs scripts/asf-license-headers.test.mjs scripts/model-metadata-upkeep-workflow-policy.test.mjs scripts/source-legal-inventory.test.mjs scripts/sync-model-metadata.test.mjs",
     "check:asf-npm": "node --test scripts/asf-npm-workflow-policy.test.mjs",
     "check:product-release-identity": "node scripts/product-release-identity.mjs",
     "package:cli:macos-arm64": "node scripts/package-macos-arm64-cli.mjs",

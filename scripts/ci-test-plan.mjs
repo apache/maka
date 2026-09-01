@@ -118,6 +118,7 @@ const CLI_PACKAGE_FILES = new Set([
 
 const ASF_SOURCE_FILES = new Set([
   '.github/workflows/asf-source-candidate.yml',
+  '.github/workflows/model-metadata-upkeep.yml',
   'DISCLAIMER-WIP',
   'LICENSE',
   'NOTICE',
@@ -131,6 +132,7 @@ const ASF_SOURCE_FILES = new Set([
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',
+  'scripts/model-metadata-upkeep-workflow-policy.test.mjs',
   'scripts/model-metadata/models-dev-api.snapshot.json',
   'scripts/source-legal-inventory.test.mjs',
   'scripts/sync-model-metadata.mjs',
