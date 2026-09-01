@@ -1987,6 +1987,22 @@ function providerTypesByOrder(
 }
 
 /**
+ * The registry entry for a provider, or `undefined` when this build does not
+ * register one.
+ *
+ * Sole owner of the question "is this `providerType` one we know". Plain
+ * indexing cannot answer it: `providerRegistry` is an object literal, so
+ * `PROVIDER_REGISTRY['__proto__']` and `['toString']` resolve to inherited
+ * members and read as registered providers. Every recognition site goes
+ * through here rather than repeating the own-property check.
+ */
+export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
+  return Object.hasOwn(PROVIDER_REGISTRY, providerType)
+    ? PROVIDER_REGISTRY[providerType as ProviderType]
+    : undefined;
+}
+
+/**
  * The models a provider offers with no live list to go on: the baseline it
  * ships, minus anything quarantined. This is the only reader of
  * `fallbackModels` — a provider's offline offer has exactly one authority.
@@ -2008,8 +2024,8 @@ export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');
  * inferring retirement from an unavailable adapter: a provider that was never
  * wired looks identical from there and is not the same thing.
  */
-export function isRetiredProvider(providerType: ProviderType): boolean {
-  return PROVIDER_REGISTRY[providerType]?.retired === true;
+export function isRetiredProvider(providerType: string): boolean {
+  return providerDefaultsOf(providerType)?.retired === true;
 }
 
 export const CATALOG_PROVIDER_TYPES = providerTypesByOrder('catalogOrder');

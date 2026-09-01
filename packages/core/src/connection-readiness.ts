@@ -119,7 +119,7 @@ export interface IsConnectionReadyInput {
 export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionReadyResult {
   const { connection, hasSecret, requestedModel } = input;
 
-  if (!isKnownProvider(connection)) {
+  if (!isRealConnection(connection)) {
     return { ready: false, reason: 'fake_backend' };
   }
   // Ahead of every other check: a retired provider has no Runtime adapter, so
@@ -169,9 +169,5 @@ export function isConnectionReady(input: IsConnectionReadyInput): IsConnectionRe
  * still unusable when it happens to carry `lastTestStatus: 'verified'`.
  */
 export function isRealConnection(connection: Pick<LlmConnection, 'providerType'>): boolean {
-  return isKnownProvider(connection);
-}
-
-function isKnownProvider(connection: Pick<LlmConnection, 'providerType'>): boolean {
   return providerDefaultsOf(connection.providerType) !== undefined;
 }

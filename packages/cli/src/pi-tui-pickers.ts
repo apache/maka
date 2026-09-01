@@ -44,7 +44,12 @@ import {
   type UiLocale,
 } from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import { PROVIDER_REGISTRY, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+import {
+  PROVIDER_REGISTRY,
+  providerDefaultsOf,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import type {
   ModelChoice,
   OnboardingFailure,
@@ -746,7 +751,7 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;
-  const providerLabel = PROVIDER_REGISTRY[choice.providerType]?.label;
+  const providerLabel = providerDefaultsOf(choice.providerType)?.label;
   if (providerLabel && providerLabel.toLowerCase().includes(query)) return true;
   return false;
 }

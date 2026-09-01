@@ -19,6 +19,7 @@
 
 import {
   PROVIDER_REGISTRY,
+  providerDefaultsOf,
   providerFallbackModelIds,
   classifyConnectionModelInventory,
   connectionEnabledModelIds,
@@ -214,7 +215,7 @@ async function testConnectionModel(
   // A stored connection can still be opened long after its provider stopped
   // being offered, and the caller renders this result — so a retired provider
   // has to fail the test, not crash it.
-  if (PROVIDER_REGISTRY[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
+  if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);

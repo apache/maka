@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { PROVIDER_REGISTRY, type ProviderType } from './provider-registry.js';
+import { providerDefaultsOf, type ProviderType } from './provider-registry.js';
 import type { ModelFactField, ModelInfo } from './llm-connections.js';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
@@ -61,7 +61,7 @@ export function modelFactKey(providerType: ProviderType | string, modelId: strin
   if (!provider || !model || !PROVIDER_ID_PATTERN.test(provider) || !MODEL_ID_PATTERN.test(model)) {
     throw new Error('Model fact keys must use a non-empty provider:model identifier');
   }
-  if (!Object.hasOwn(PROVIDER_REGISTRY, provider)) {
+  if (providerDefaultsOf(provider) === undefined) {
     throw new Error(`Unknown model-facts provider: ${provider}`);
   }
   const key = `${provider}:${model}`;

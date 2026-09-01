@@ -42,6 +42,7 @@ import {
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
+  providerDefaultsOf,
   providerFallbackModelIds,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
@@ -61,6 +62,7 @@ export {
   PROVIDER_REGISTRY,
   READY_PROVIDER_TYPES,
   RECOMMENDED_PROVIDER_TYPES,
+  providerDefaultsOf,
   providerFallbackModelIds,
 };
 export type {
@@ -318,7 +320,7 @@ export function authorizeConnectionModel(
   // The one veto: quarantined ids fail in a shape the send cannot surface
   // (e.g. a billed 200 with an empty completion), so the request settling it
   // is not available as the arbiter. See ProviderDefaults.brokenModelIds.
-  if (PROVIDER_REGISTRY[connection.providerType]?.brokenModelIds?.includes(model)) {
+  if (providerDefaultsOf(connection.providerType)?.brokenModelIds?.includes(model)) {
     return undefined;
   }
   // The observed row wins wherever it exists: it carries wire metadata such as
@@ -493,22 +495,6 @@ export interface ConnectionTestResult {
 }
 
 /**
- * The registry entry for a provider, or `undefined` when this build does not
- * register one.
- *
- * Sole owner of the question "is this `providerType` one we know". Plain
- * indexing cannot answer it: `PROVIDER_REGISTRY` is an object literal, so
- * `PROVIDER_REGISTRY['__proto__']` and `['toString']` resolve to inherited
- * members and read as registered providers. Every recognition site goes
- * through here rather than repeating the own-property check.
- */
-export function providerDefaultsOf(providerType: string): ProviderDefaults | undefined {
-  return Object.hasOwn(PROVIDER_REGISTRY, providerType)
-    ? PROVIDER_REGISTRY[providerType as ProviderType]
-    : undefined;
-}
-
-/**
  * The models a connection created without an explicit selection starts with,
  * or undefined when the provider seeds nothing. Derived from the provider's
  * shipped baseline rather than listed a second time: the two can then never
@@ -577,7 +563,7 @@ export function persistedBaseUrl(
 ): string | undefined {
   const trimmed = baseUrl?.trim();
   if (!trimmed) return undefined;
-  if (trimmed === PROVIDER_REGISTRY[providerType]?.baseUrl) return undefined;
+  if (trimmed === providerDefaultsOf(providerType)?.baseUrl) return undefined;
   return trimmed;
 }
 

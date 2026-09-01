@@ -23,7 +23,7 @@ import {
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, providerDefaultsOf } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 
 const IPC_CONNECTION_SLUG_MAX_LENGTH = 64;
@@ -64,7 +64,9 @@ export function normalizeCreateConnectionInputForIpc(value: unknown): CreateConn
     typeof input.name !== 'string' ||
     input.name.length === 0 ||
     typeof input.providerType !== 'string' ||
-    !(input.providerType in PROVIDER_REGISTRY)
+    // `in` traverses the prototype chain, so it admitted `__proto__`,
+    // `toString` and `constructor` as provider types across the IPC boundary.
+    providerDefaultsOf(input.providerType) === undefined
   ) {
     throw new Error('Invalid Connection input');
   }

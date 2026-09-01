@@ -179,30 +179,6 @@ export function resolveModelVisionSupport(
   return VISION_BY_DEFAULT_PROVIDERS.has(providerType) && VISION_BY_DEFAULT.test(modelId.trim());
 }
 
-/**
- * Resolve the input modalities for one model, preferring an explicit provider
- * inventory and falling back to the generated models.dev facts. An empty
- * result is intentional: unknown models must not be treated as attachment
- * capable by default.
- */
-export function resolveModelInputModalities(
-  providerType: ProviderType,
-  models: readonly ModelInfo[] | undefined,
-  modelId: string,
-): NonNullable<ModelInfo['modalities']>['input'] {
-  const stored = models?.find((entry) => entry.id === modelId)?.modalities?.input;
-  if (stored !== undefined) return stored;
-  return lookupModelMetadata(providerType, modelId).modalities?.input ?? [];
-}
-
-export function resolveModelPdfSupport(
-  providerType: ProviderType,
-  models: readonly ModelInfo[] | undefined,
-  modelId: string,
-): boolean {
-  return resolveModelInputModalities(providerType, models, modelId).includes('pdf');
-}
-
 const REASONING_FUNCTION_CALLING = {
   reasoning: true,
   functionCalling: true,

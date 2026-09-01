@@ -22,7 +22,6 @@ import { describe, it } from 'node:test';
 import {
   lookupModelMetadata,
   openAiAdapterApiProtocol,
-  resolveModelInputModalities,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
 import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
@@ -124,16 +123,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
     );
   });
 
-  it('accepts both text and image input modalities', () => {
-    const input = resolveModelInputModalities(
-      'deepseek',
-      undefined,
-      'deepseek-v4-flash-vision-exp',
-    );
-    assert.ok(input.includes('text'));
-    assert.ok(input.includes('image'));
-  });
-
   it('keeps the model present in the deepseek shipped baseline', () => {
     assert.ok(
       providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
@@ -169,10 +158,6 @@ describe('deepseek v4 flash vision exp metadata regression', () => {
 
     assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
     assert.equal(metadata.capabilities?.vision, true);
-    assert.deepEqual(resolveModelInputModalities('deepseek', discovered, modelId), [
-      'text',
-      'image',
-    ]);
     assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
     assert.equal(
       resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),

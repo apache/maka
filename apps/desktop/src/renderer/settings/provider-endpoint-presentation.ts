@@ -20,6 +20,7 @@
 import {
   effectiveBaseUrl,
   PROVIDER_REGISTRY,
+  providerDefaultsOf,
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import {
@@ -89,7 +90,7 @@ function providerRoutesModelsElsewhere(
   connection: { providerType: LlmConnection['providerType']; baseUrl?: string },
 ): boolean {
   if (connection.baseUrl?.trim()) return false;
-  const defaultBaseUrl = PROVIDER_REGISTRY[connection.providerType]?.baseUrl;
+  const defaultBaseUrl = providerDefaultsOf(connection.providerType)?.baseUrl;
   if (!defaultBaseUrl) return false;
   const cached = modelOverrideRouteCache.get(connection.providerType);
   if (cached !== undefined) return cached;
