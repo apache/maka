@@ -86,4 +86,63 @@ describe('bot session lifecycle bindings', () => {
     assert.deepEqual(sent, ['bot-session-1', 'bot-session-2']);
     assert.deepEqual(replies, ['reply from bot-session-1', 'reply from bot-session-2']);
   });
+
+  test('keeps the conversation unbound when Session creation fails', async () => {
+    const created: string[] = [];
+    const sent: string[] = [];
+    const replies: string[] = [];
+    let createAttempts = 0;
+    const sessions = {
+      async createSession() {
+        createAttempts += 1;
+        if (createAttempts === 1) throw new Error('Host create failed');
+        const id = `bot-session-${createAttempts}`;
+        created.push(id);
+        return id;
+      },
+      async prepareSession() {
+        return 'ready' as const;
+      },
+      async runTurn({ sessionId }: { sessionId: string }) {
+        sent.push(sessionId);
+        return { kind: 'completed' as const, text: `reply from ${sessionId}` };
+      },
+    };
+
+    const service = createBotIncomingMainService({
+      botRegistry: {
+        async sendMessage(_platform: string, _chatId: string, text: string) {
+          replies.push(text);
+          return 'message-id';
+        },
+        async sendTypingIndicator() {
+          return true;
+        },
+      } as unknown as BotRegistry,
+      sessions,
+    });
+
+    const base = {
+      platform: 'telegram',
+      userId: 'user',
+      userName: 'User',
+      chatId: 'chat',
+      isGroup: false,
+      receivedAt: Date.now(),
+    };
+    // First message: creation fails, the user sees the sanitized error
+    // notice, and no binding is installed.
+    await service.handleBotIncomingMessage({ ...base, text: 'first', sourceMessageId: 'source-1' } as BotIncomingMessage);
+    await waitFor(() => replies.length === 1);
+    assert.match(replies[0], /暂时无法处理这条消息/);
+
+    // Second message: the conversation map is still empty, so a fresh
+    // Session is created and the turn runs on it.
+    await service.handleBotIncomingMessage({ ...base, text: 'second', sourceMessageId: 'source-2', receivedAt: Date.now() + 1 } as BotIncomingMessage);
+    await waitFor(() => replies.length === 2);
+
+    assert.deepEqual(created, ['bot-session-2']);
+    assert.deepEqual(sent, ['bot-session-2']);
+    assert.equal(replies[1], 'reply from bot-session-2');
+  });
 });

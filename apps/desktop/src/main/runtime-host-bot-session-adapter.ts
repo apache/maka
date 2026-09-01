@@ -40,6 +40,7 @@ type RuntimeHostBotSessionClient = Pick<
   | 'createSession'
   | 'getSession'
   | 'openSession'
+  | 'setSessionLifecycle'
   | 'startTurn'
   | 'updateSessionConfiguration'
 >;
@@ -70,13 +71,17 @@ export function createRuntimeHostBotSessionAdapter(
       const sessionId = newId();
       let session: SessionCatalogProjection;
       try {
+        // Do not pass permissionMode: 'explore' on create. Runtime Host
+        // requires a declared SessionStartMode (e.g. deep_research) when
+        // explore is requested at create time; bot conversations are not
+        // that product mode. Create with the Host default, then pin explore
+        // via the same configuration update prepareSession uses.
         session = await deps.client.createSession({
           sessionId,
           workspace: target.workspace,
           name: input.name,
           labels: [...input.labels],
           modelTarget: { kind: 'default' },
-          permissionMode: 'explore',
         });
       } catch (error) {
         if (
@@ -85,9 +90,48 @@ export function createRuntimeHostBotSessionAdapter(
         ) {
           throw error;
         }
-        const reconciled = await deps.client.getSession(sessionId);
+        // The create may have committed while its response was lost. A null
+        // read means it did not (nothing to clean up); a failed read means
+        // the committed row is indistinguishable from absent, so mirror the
+        // pin path and abandon the id before rethrowing the create error.
+        let reconciled: SessionCatalogProjection | null;
+        try {
+          reconciled = await deps.client.getSession(sessionId);
+        } catch {
+          await abandonUnusableBotSession(deps.client, sessionId);
+          throw error;
+        }
         if (!reconciled) throw error;
         session = reconciled;
+      }
+      if (session.permissionMode !== 'explore') {
+        try {
+          session = await deps.client.updateSessionConfiguration(session.id, {
+            permissionMode: 'explore',
+          });
+        } catch (error) {
+          throwUnavailable(error, session.id);
+          // session.configuration.update carries its own post-commit
+          // uncertainty: a lost response may still have pinned explore. The
+          // caller binds nothing unless createSession resolves, so verify the
+          // stable id before deciding the Session is unusable — otherwise the
+          // next inbound message forks another conversation.
+          const reconciled = isCommitOutcomeUnknown(error)
+            ? await deps.client.getSession(session.id).catch(() => null)
+            : null;
+          if (isVerifiedExploreSession(reconciled)) {
+            session = reconciled;
+          } else {
+            await abandonUnusableBotSession(deps.client, session.id);
+            throw error;
+          }
+        }
+        if (session.isArchived || session.permissionMode !== 'explore') {
+          await abandonUnusableBotSession(deps.client, session.id);
+          throw new Error(
+            `Bot Session could not enter explore mode: ${session.id}`,
+          );
+        }
       }
       deps.emitSessionsChanged('created', session.id);
       return session.id;
@@ -224,6 +268,32 @@ async function collectRuntimeHostBotTurn(
   }
 
   throw new Error('Runtime Host Bot Session subscription ended before the Turn settled');
+}
+
+function isCommitOutcomeUnknown(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError &&
+    error.code === 'commit_outcome_unknown'
+  );
+}
+
+function isVerifiedExploreSession(
+  session: SessionCatalogProjection | null,
+): session is SessionCatalogProjection {
+  return session !== null && !session.isArchived && session.permissionMode === 'explore';
+}
+
+// A Session that reached the Host but never got bound to a conversation is a
+// leak: the desktop session list shows it and the next inbound message
+// creates a sibling instead of reusing it. Archiving (rather than removing)
+// keeps any committed state inspectable while taking the Session out of the
+// active conversation flow. Best-effort by design — a cleanup failure must
+// not mask the original create/pin error.
+async function abandonUnusableBotSession(
+  client: RuntimeHostBotSessionClient,
+  sessionId: string,
+): Promise<void> {
+  await client.setSessionLifecycle(sessionId, 'archived').catch(() => undefined);
 }
 
 function throwUnavailable(error: unknown, sessionId: string): void {
