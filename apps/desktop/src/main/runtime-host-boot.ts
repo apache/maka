@@ -115,10 +115,12 @@ import {
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
 import {
+  defaultRuntimeHostRecoveryDialog,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
   showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
+import { getNativeDiagnosticDialogCopy } from "./native-diagnostic-dialog-copy.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
@@ -334,6 +336,7 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
 function showStartupDiagnosticDialog(
   options: MessageBoxOptions,
   locale: ReturnType<typeof resolveSystemUiLocale>,
+  diagnosticDetails = options.detail,
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
@@ -344,7 +347,7 @@ function showStartupDiagnosticDialog(
         createDesktopStartupDiagnosticInput({
           title: options.title || options.message,
           description: options.message,
-          ...(options.detail ? { details: options.detail } : {}),
+          ...(diagnosticDetails ? { details: diagnosticDetails } : {}),
         }),
       ),
   });
@@ -1909,26 +1912,20 @@ async function confirmDesktopStorageRootRepair(
   console.log(
     "[storage-root] root-identity conflict; parking at repair dialog",
   );
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+  const copy = getNativeDiagnosticDialogCopy(locale).storageRootRepair;
   const { response } = await showStartupDiagnosticDialog(
     {
       type: "warning",
-      title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
-      message: isChinese
-        ? "Maka 无法验证这个工作区。"
-        : "Maka cannot verify this workspace.",
-      detail: isChinese
-        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
-        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
-      buttons: isChinese
-        ? ["修复工作区", "退出"]
-        : ["Repair Workspace", "Exit"],
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail(workspaceRoot),
+      buttons: [copy.repair, copy.exit],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
     },
-    isChinese ? "zh" : "en",
+    locale,
   );
   return response === 0;
 }
@@ -1937,28 +1934,12 @@ async function promptForDefaultRuntimeHostRecovery(input: {
   readonly profileName: string;
   readonly error: Error;
 }): Promise<"retry" | "use_local" | "keep_offline"> {
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+  const dialogInput = defaultRuntimeHostRecoveryDialog({ ...input, locale });
   const { response } = await showStartupDiagnosticDialog(
-    {
-      type: "warning",
-      title: isChinese
-        ? "默认 Runtime Host 无法连接"
-        : "Default Runtime Host is unavailable",
-      message: isChinese
-        ? `无法连接 ${input.profileName}`
-        : `Could not connect to ${input.profileName}`,
-      detail: isChinese
-        ? `${input.error.message}\n\n你可以重试、改用 Local 作为默认 Host，或保持当前选择并稍后在设置中处理。`
-        : `${input.error.message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
-      buttons: isChinese
-        ? ["重试", "改用 Local", "保持离线"]
-        : ["Retry", "Use Local", "Keep Offline"],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-    },
-    isChinese ? "zh" : "en",
+    dialogInput.options,
+    locale,
+    dialogInput.diagnosticDetails,
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

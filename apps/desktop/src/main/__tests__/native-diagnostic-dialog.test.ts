@@ -23,8 +23,10 @@ import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import {
   copyDesktopDiagnosticReport,
   createDesktopMainRendererDiagnosticInput,
+  createDesktopStartupDiagnosticInput,
 } from '../main-process-diagnostics.js';
 import {
+  defaultRuntimeHostRecoveryDialog,
   showFatalStartupError,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
@@ -80,6 +82,40 @@ test('copies diagnostics as an auxiliary native-dialog action', async () => {
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
 });
 
+test('keeps Default Runtime Host errors in diagnostics instead of dialog copy', async () => {
+  const error = new Error('Authorization: Bearer very-secret-token');
+  const recovery = defaultRuntimeHostRecoveryDialog({
+    locale: 'en',
+    profileName: 'Shared Host',
+    error,
+  });
+
+  assert.doesNotMatch(JSON.stringify(recovery.options), /very-secret-token/u);
+  assert.match(recovery.options.detail ?? '', /Copy diagnostics/u);
+  assert.match(recovery.diagnosticDetails, /very-secret-token/u);
+
+  let report = '';
+  await copyDesktopDiagnosticReport(
+    {
+      environment: diagnosticEnvironment,
+      mainLogs: () => [],
+      runtimeHostProcessLogs: () => [],
+      resolveActiveRuntimeHost: () => undefined,
+      resolveRuntimeHost: () => undefined,
+      writeClipboard: (value) => {
+        report = value;
+      },
+    },
+    createDesktopStartupDiagnosticInput({
+      title: recovery.options.title ?? '',
+      description: recovery.options.message,
+      details: recovery.diagnosticDetails,
+    }),
+  );
+  assert.match(report, /Error: Authorization/u);
+  assert.doesNotMatch(report, /very-secret-token/u);
+});
+
 test('fatal startup errors remain copyable without a renderer or BrowserWindow', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [1, 0];
@@ -100,6 +136,11 @@ test('fatal startup errors remain copyable without a renderer or BrowserWindow',
 
   assert.deepEqual(shown[0]?.buttons, ['Exit', 'Copy Diagnostics']);
   assert.deepEqual(shown[1]?.buttons, ['Exit', 'Copy Again']);
+  assert.equal(
+    shown[0]?.detail,
+    'An unexpected startup error occurred. Copy diagnostics to inspect the details.',
+  );
+  assert.doesNotMatch(shown[0]?.detail ?? '', /very-secret-token/);
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
   assert.match(clipboard, /Surface: startup/);
   assert.match(clipboard, /Recent main-process logs \(1\)/);
@@ -178,5 +219,6 @@ test('managed Host recovery preserves the workspace and confirms active-work int
   assert.match(shown?.detail ?? '', /workspace, Host identity, credentials, and settings/);
   assert.match(shown?.detail ?? '', /automatic update compatibility cannot be confirmed/);
   assert.match(shown?.detail ?? '', /interrupt that work/);
-  assert.match(shown?.detail ?? '', /service update failed/);
+  assert.match(shown?.detail ?? '', /Copy diagnostics to inspect the details/);
+  assert.doesNotMatch(shown?.detail ?? '', /service update failed/);
 });

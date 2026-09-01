@@ -401,13 +401,9 @@ type ShellCopy = {
     copyFailed: string;
     copyReport: string;
     title: string;
-    descriptionBeforeRetry: string;
+    description: string;
     retry: string;
-    descriptionBeforeReload: string;
     reload: string;
-    descriptionAfterReload: string;
-    errorDetails: string;
-    componentStack: string;
     clipboardFailure: string;
   };
   commandPalette: {
@@ -1099,14 +1095,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: '复制失败',
       copyReport: '复制诊断信息',
       title: 'Maka 渲染层崩溃了',
-      descriptionBeforeRetry: '已捕获一次未处理的 React 异常。下面是错误摘要；点',
+      description:
+        '已捕获一次未处理的 React 异常。可以重试以清除这次崩溃，或重新加载整个窗口。需要交接时先复制诊断信息。',
       retry: '重试',
-      descriptionBeforeReload: '清掉这次崩溃，',
       reload: '重新加载',
-      descriptionAfterReload: '会刷新整个窗口。需要交接时先复制诊断信息。',
-      errorDetails: '错误详情',
-      componentStack: '组件栈',
-      clipboardFailure: '剪贴板不可用或被系统拒绝；可以手动选择上面的错误摘要。',
+      clipboardFailure: '剪贴板不可用或被系统拒绝，请稍后重试。',
     },
     commandPalette: {
       label: '命令面板',
@@ -1647,14 +1640,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: 'Copy failed',
       copyReport: 'Copy diagnostics',
       title: 'The Maka renderer crashed',
-      descriptionBeforeRetry: 'An unhandled React error was caught. The summary is below. Choose',
+      description:
+        'An unhandled React error was caught. Try again to clear this crash, or reload to refresh the entire window. Copy the diagnostics before handing off the issue.',
       retry: 'Try again',
-      descriptionBeforeReload: 'to clear this crash, or',
       reload: 'Reload',
-      descriptionAfterReload: 'to refresh the entire window. Copy the diagnostics before handing off the issue.',
-      errorDetails: 'Error details',
-      componentStack: 'Component stack',
-      clipboardFailure: 'The clipboard is unavailable or was denied. You can select the error summary above manually.',
+      clipboardFailure: 'The clipboard is unavailable or was denied. Try again later.',
     },
     commandPalette: {
       label: 'Command palette',

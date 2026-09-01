@@ -27,6 +27,7 @@ import {
   formatDesktopDiagnosticReport,
   type DesktopDiagnosticEnvironment,
 } from './main-process-diagnostics.js';
+import { getNativeDiagnosticDialogCopy } from './native-diagnostic-dialog-copy.js';
 import { whileAwaitingPerson } from './startup-step.js';
 
 interface DiagnosticDialogDeps {
@@ -49,6 +50,27 @@ export interface RuntimeHostStartupRecoveryDialogInput {
   readonly activeTasks: boolean;
 }
 
+export function defaultRuntimeHostRecoveryDialog(input: {
+  readonly locale: UiLocale;
+  readonly profileName: string;
+  readonly error: Error;
+}): { readonly options: MessageBoxOptions; readonly diagnosticDetails: string } {
+  const copy = getNativeDiagnosticDialogCopy(input.locale).defaultRuntimeHostRecovery;
+  return {
+    options: {
+      type: 'warning',
+      title: copy.title,
+      message: copy.connectFailed(input.profileName),
+      detail: copy.detail,
+      buttons: [copy.retry, copy.useLocal, copy.keepOffline],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    },
+    diagnosticDetails: input.error.stack ?? `${input.error.name}: ${input.error.message}`,
+  };
+}
+
 export async function showMessageBoxWithDiagnostics(
   options: MessageBoxOptions,
   deps: DiagnosticDialogDeps,
@@ -66,9 +88,10 @@ export async function showFatalStartupError(
   error: unknown,
   deps: FatalStartupDiagnosticDialogDeps,
 ): Promise<void> {
-  const copy = FATAL_STARTUP_COPY[deps.locale];
+  const copy = getNativeDiagnosticDialogCopy(deps.locale).fatalStartup;
   const message = error instanceof Error ? error.message : String(error);
   const input = createDesktopStartupDiagnosticInput({
+    // The diagnostic report is machine-facing and stays English regardless of locale.
     title: 'Maka failed to start',
     description: message || 'Unknown startup error',
     ...(error instanceof Error && error.stack ? { details: error.stack } : {}),
@@ -78,7 +101,7 @@ export async function showFatalStartupError(
       type: 'error',
       title: copy.title,
       message: copy.message,
-      detail: message || copy.unknownError,
+      detail: copy.detail,
       buttons: [copy.exit],
       defaultId: 0,
       cancelId: 0,
@@ -103,7 +126,7 @@ export async function showFatalStartupError(
 export async function showMainRendererProcessGoneDialog(
   deps: DiagnosticDialogDeps,
 ): Promise<'relaunch' | 'exit'> {
-  const copy = MAIN_RENDERER_GONE_COPY[deps.locale];
+  const copy = getNativeDiagnosticDialogCopy(deps.locale).rendererGone;
   const result = await showMessageBoxWithDiagnostics(
     {
       type: 'error',
@@ -124,13 +147,11 @@ export async function showRuntimeHostStartupRecoveryDialog(
   input: RuntimeHostStartupRecoveryDialogInput,
   deps: DiagnosticDialogDeps,
 ): Promise<'repair' | 'exit'> {
-  const copy = RUNTIME_HOST_STARTUP_RECOVERY_COPY[deps.locale];
+  const copy = getNativeDiagnosticDialogCopy(deps.locale).runtimeHostRecovery;
   const detail = [
     copy.detail,
     input.activeTasks ? copy.activeTasks : undefined,
-    input.repairError
-      ? `${copy.repairFailed}\n${input.repairError.message}`
-      : undefined,
+    input.repairError ? copy.repairFailed : undefined,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -156,10 +177,10 @@ async function copyDiagnostics(
 ): Promise<string> {
   try {
     await copy();
-    return DIALOG_COPY[locale].copied;
+    return getNativeDiagnosticDialogCopy(locale).dialog.copied;
   } catch (error) {
     console.error('[diagnostics] native clipboard write failed:', error);
-    return DIALOG_COPY[locale].copyFailed;
+    return getNativeDiagnosticDialogCopy(locale).dialog.copyFailed;
   }
 }
 
@@ -172,7 +193,7 @@ function diagnosticDialogOptions(
   if (!buttons || buttons.length === 0) {
     throw new TypeError('A diagnostic dialog requires at least one decision button');
   }
-  const copy = DIALOG_COPY[locale];
+  const copy = getNativeDiagnosticDialogCopy(locale).dialog;
   return {
     options: {
       ...options,
@@ -184,76 +205,3 @@ function diagnosticDialogOptions(
     copyId: buttons.length,
   };
 }
-
-const DIALOG_COPY = {
-  en: {
-    copy: 'Copy Diagnostics',
-    copyAgain: 'Copy Again',
-    copied: 'Diagnostics copied. You can paste them into an issue report.',
-    copyFailed: 'Could not copy diagnostics.',
-  },
-  zh: {
-    copy: '复制诊断信息',
-    copyAgain: '再次复制',
-    copied: '诊断信息已复制，可直接粘贴到问题报告中。',
-    copyFailed: '无法复制诊断信息。',
-  },
-} as const;
-
-const FATAL_STARTUP_COPY = {
-  en: {
-    title: 'Maka failed to start',
-    message: 'Maka could not finish starting.',
-    unknownError: 'An unknown startup error occurred.',
-    exit: 'Exit',
-  },
-  zh: {
-    title: 'Maka 启动失败',
-    message: 'Maka 无法完成启动。',
-    unknownError: '启动时发生未知错误。',
-    exit: '退出',
-  },
-} as const;
-
-const MAIN_RENDERER_GONE_COPY = {
-  en: {
-    title: 'Maka needs to recover',
-    message: "Maka's interface stopped unexpectedly.",
-    detail: 'Relaunch Maka to continue, or exit and reopen it later.',
-    relaunch: 'Relaunch',
-    exit: 'Exit',
-  },
-  zh: {
-    title: 'Maka 需要恢复',
-    message: 'Maka 界面意外停止运行。',
-    detail: '重新启动 Maka 以继续，或退出后稍后再打开。',
-    relaunch: '重新启动',
-    exit: '退出',
-  },
-} as const;
-
-const RUNTIME_HOST_STARTUP_RECOVERY_COPY = {
-  en: {
-    title: 'Maka needs to repair Runtime Host',
-    message: 'The Runtime Host for this workspace could not start.',
-    detail:
-      'Maka can repair the managed Runtime Host selected by this Desktop. Your workspace, Host identity, credentials, and settings will be preserved. Repair may replace the installed Host with the version selected for this Desktop even when automatic update compatibility cannot be confirmed.',
-    activeTasks:
-      'The Host may still own active work. Continuing can interrupt that work before the Host restarts.',
-    repairFailed: 'The previous repair attempt did not finish:',
-    repair: 'Repair Runtime Host',
-    repairAndRestart: 'Repair and Restart Host',
-    exit: 'Exit',
-  },
-  zh: {
-    title: 'Maka 需要修复 Runtime Host',
-    message: '管理此工作区的 Runtime Host 无法启动。',
-    detail:
-      'Maka 可以修复此 Desktop 选择的托管 Runtime Host。工作区、Host 身份、凭证和设置都会保留。即使无法确认自动更新兼容性，修复也可能使用此 Desktop 选择的版本替换当前 Host。',
-    activeTasks: 'Host 可能仍有正在运行的任务。继续会先中断这些任务，再重启 Host。',
-    repairFailed: '上一次修复未能完成：',
-    repair: '修复 Runtime Host',
-    repairAndRestart: '修复并重启 Host',
-    exit: '退出',
-  },
-} as const;
