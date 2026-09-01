@@ -315,30 +315,24 @@ const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
 };
 
 // Ollama Cloud accepts reasoning_effort for every active reasoning model in its
-// generated catalog. GPT-OSS is the narrower exception and cannot be disabled.
+// generated catalog, whatever knob the model declares on its own.
 const OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS: ThinkingOptions = {
   efforts: ['none', 'low', 'medium', 'high', 'max'],
   toggle: true,
-};
-
-const OLLAMA_CLOUD_GPT_OSS_THINKING_OPTIONS: ThinkingOptions = {
-  efforts: ['low', 'medium', 'high'],
 };
 
 function ollamaCloudThinkingModels(active: ModelsDevMetadata): Record<string, ModelMetadata> {
   return Object.fromEntries(
     Object.entries(active['ollama-cloud'] ?? {})
       .filter(
-        ([, metadata]) => metadata.capabilities?.reasoning && metadata.lifecycle !== 'deprecated',
+        ([id, metadata]) =>
+          metadata.capabilities?.reasoning &&
+          metadata.lifecycle !== 'deprecated' &&
+          // GPT-OSS is the narrower exception and cannot be disabled. models.dev
+          // declares that set itself, so pinning it here would only restate it.
+          !id.startsWith('gpt-oss'),
       )
-      .map(([id]) => [
-        id,
-        {
-          thinkingOptions: id.startsWith('gpt-oss')
-            ? OLLAMA_CLOUD_GPT_OSS_THINKING_OPTIONS
-            : OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS,
-        },
-      ]),
+      .map(([id]) => [id, { thinkingOptions: OLLAMA_CLOUD_STANDARD_THINKING_OPTIONS }]),
   );
 }
 
@@ -402,23 +396,20 @@ function buildStaticModelMetadata(active: ModelsDevMetadata): ModelsDevMetadata 
     groq: {
       // Groq documents reasoning_effort only for the gpt-oss family
       // (low/medium/high) and qwen3.6-27b (none/default); see
-      // console.groq.com/docs/reasoning. models.dev currently declares
-      // ['none','default'] for qwen/qwen3-32b, which is qwen3.6's value set
-      // misapplied — qwen3-32b reasons with no knob, so it is pinned to no
-      // options until a live check proves otherwise. The gpt-oss family's
-      // effort sets now come from the models.dev snapshot.
+      // console.groq.com/docs/reasoning. qwen3-32b reasons with no knob, and
+      // models.dev no longer lists it at all, so this is the only thing that
+      // keeps a connection carrying the id from offering an effort menu.
       'qwen/qwen3-32b': { thinkingOptions: { efforts: [] } },
     },
     openrouter: {
-      // gpt-5.6-sol and deepseek-v4-pro pin Maka-verified effort sets; the rest
-      // of openrouter's effort declarations come from the models.dev snapshot.
+      // gpt-5.6-sol pins the toggle models.dev omits; every other openrouter
+      // effort declaration comes from models.dev.
       'openai/gpt-5.6-sol': {
         thinkingOptions: {
           efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
           toggle: true,
         },
       },
-      'deepseek/deepseek-v4-pro': { thinkingOptions: { efforts: ['high', 'xhigh'], toggle: true } },
     },
     'cloudflare-workers-ai': {
       '@cf/moonshotai/kimi-k2.6': {
