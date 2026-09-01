@@ -494,21 +494,21 @@ export function providerDefaultsOf(providerType: string): ProviderDefaults | und
 export function defaultEnabledModelIdsWhenOmitted(
   providerType: ProviderType,
 ): readonly string[] | undefined {
-  return PROVIDER_REGISTRY[providerType].defaultEnabledModelIds;
+  return providerDefaultsOf(providerType)?.defaultEnabledModelIds;
 }
 
 export function providerAuthRequiresSecret(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_REGISTRY[providerType]?.authKind;
+  const authKind = providerDefaultsOf(providerType)?.authKind;
   return authKind === 'api_key' || authKind === 'oauth_token';
 }
 
 export function providerAuthSupportsApiKey(providerType: ProviderType): boolean {
-  const authKind = PROVIDER_REGISTRY[providerType]?.authKind;
+  const authKind = providerDefaultsOf(providerType)?.authKind;
   return authKind === 'api_key' || authKind === 'optional_api_key';
 }
 
 export function providerSupportsModelDiscovery(providerType: ProviderType): boolean {
-  const discovery = PROVIDER_REGISTRY[providerType]?.modelDiscovery;
+  const discovery = providerDefaultsOf(providerType)?.modelDiscovery;
   return discovery !== undefined && discovery.kind !== 'fallback';
 }
 
@@ -531,7 +531,7 @@ export function backendKindOf(c: Pick<LlmConnection, 'providerType'>): BackendKi
 
 export function effectiveBaseUrl(c: Pick<LlmConnection, 'providerType' | 'baseUrl'>): string {
   if (c.baseUrl && c.baseUrl.trim()) return c.baseUrl.trim();
-  return PROVIDER_REGISTRY[c.providerType]?.baseUrl ?? '';
+  return providerDefaultsOf(c.providerType)?.baseUrl ?? '';
 }
 
 /**
