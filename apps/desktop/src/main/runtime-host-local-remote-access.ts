@@ -93,6 +93,11 @@ export interface DesktopRuntimeHostLocalManagementTarget
   readonly deploymentId: string;
 }
 
+export type DesktopRuntimeHostManagedStartupRepairResult =
+  | { readonly kind: 'repaired' }
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'unavailable' };
+
 export interface DesktopLocalRuntimeHostRemoteAccess {
   getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
   createCollaborationConnectionTarget(): Promise<{
@@ -117,6 +122,11 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
     registration: HostRegistration,
     signal: AbortSignal,
   ): Promise<{ replace(): Promise<void> } | undefined>;
+  repairManagedStartup(input?: {
+    readonly allowManualUpdate?: boolean;
+    readonly allowInterruptActiveTasks?: boolean;
+    readonly signal?: AbortSignal;
+  }): Promise<DesktopRuntimeHostManagedStartupRepairResult>;
   recoverBeforeLocalHostStart(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -747,6 +757,57 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           }),
       };
     },
+    repairManagedStartup: (options = {}) =>
+      serialize(async () => {
+        const signal = options.signal
+          ? AbortSignal.any([options.signal, closing.signal])
+          : closing.signal;
+        signal.throwIfAborted();
+        const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
+        if (lifecycle?.state !== 'managed') return { kind: 'unavailable' };
+
+        const setupPackage = await input.resolveSetupPackage(signal);
+        const frame = await input.operator.runUpdate(
+          {
+            setupPackage,
+            target: lifecycle,
+            ...(options.allowManualUpdate ? { allowManualUpdate: true } : {}),
+            ...(options.allowInterruptActiveTasks
+              ? { allowInterruptActiveTasks: true }
+              : {}),
+            signal,
+          },
+          () => undefined,
+        );
+        if (frame.kind === 'error') {
+          if (frame.error.code === 'active_tasks') return { kind: 'active_tasks' };
+          throw new Error(`Runtime Host repair failed: ${frame.error.message}`);
+        }
+        if (frame.kind === 'progress' || frame.action !== 'update') {
+          throw new Error('Runtime Host repair returned an unrelated result');
+        }
+        if (frame.update.kind === 'active_tasks') return { kind: 'active_tasks' };
+
+        if (frame.update.kind === 'already_current') {
+          const restarted = await input.operator.runService({
+            operatorPath: lifecycle.operatorPath,
+            action: 'restart',
+            target: lifecycle,
+            ...(options.allowInterruptActiveTasks
+              ? { allowInterruptActiveTasks: true }
+              : {}),
+            signal,
+          });
+          if (restarted.kind === 'error') {
+            if (restarted.error.code === 'active_tasks') return { kind: 'active_tasks' };
+            throw new Error(`Runtime Host restart failed: ${restarted.error.message}`);
+          }
+          if (restarted.kind === 'progress' || restarted.action !== 'restart') {
+            throw new Error('Runtime Host restart returned an unrelated result');
+          }
+        }
+        return { kind: 'repaired' };
+      }),
     recoverBeforeLocalHostStart: async (signal) => {
       const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
       operationSignal.throwIfAborted();

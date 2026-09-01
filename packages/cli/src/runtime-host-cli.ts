@@ -233,6 +233,7 @@ export type RuntimeHostCliCommand =
       expectedTarget: RuntimeHostManagedServiceTarget;
       expectedHost?: RuntimeHostExpectedHost;
       selector?: RuntimeHostUpdateSelector;
+      allowManualUpdate?: true;
       allowInterruptActiveTasks?: true;
     }
   | {
@@ -809,6 +810,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
 
   let retainManagedDeployment = false;
   let allowInterruptActiveTasks = false;
+  let allowManualUpdate = false;
   let clientDataRoot: string | undefined;
   let updateTarget: string | undefined;
   let expectedHost: RuntimeHostExpectedHost | undefined;
@@ -827,7 +829,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
             allowInterruptActiveTasks = true;
           },
         }
-      : action === 'restart' || action === 'retire' || action === 'update' || action === 'configure'
+      : action === 'update'
         ? {
             '--allow-interrupt-active-tasks': () => {
               if (allowInterruptActiveTasks) {
@@ -835,8 +837,21 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
               }
               allowInterruptActiveTasks = true;
             },
+            '--allow-manual-update': () => {
+              if (allowManualUpdate) return error('Duplicate --allow-manual-update');
+              allowManualUpdate = true;
+            },
           }
-        : {};
+        : action === 'restart' || action === 'retire' || action === 'configure'
+          ? {
+              '--allow-interrupt-active-tasks': () => {
+                if (allowInterruptActiveTasks) {
+                  return error('Duplicate --allow-interrupt-active-tasks');
+                }
+                allowInterruptActiveTasks = true;
+              },
+            }
+          : {};
   const options = parseManagedServiceOptions(argv.slice(1), {
     allowConfiguration: action === 'install' || action === 'configure',
     allowFramed: true,
@@ -953,6 +968,16 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
     const selector =
       updateTarget === undefined ? undefined : parseUpdateSelector(updateTarget, 'update');
     if (selector && 'kind' in selector && selector.kind === 'error') return selector;
+    if (
+      allowManualUpdate &&
+      (selector?.kind !== 'exact' ||
+        !options.managedRootId ||
+        !options.expectedTarget?.deploymentId)
+    ) {
+      return error(
+        '--allow-manual-update requires an exact --target, --managed-root-id, and --expected-deployment-id',
+      );
+    }
     return {
       kind: 'runtime-host-service-update',
       json: options.json,
@@ -965,6 +990,7 @@ function parseServiceManagementCommand(argv: string[]): RuntimeHostCliCommand {
       expectedTarget: options.expectedTarget!,
       ...(expectedHost ? { expectedHost } : {}),
       ...(selector ? { selector } : {}),
+      ...(allowManualUpdate ? { allowManualUpdate: true } : {}),
       ...(allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
     };
   }

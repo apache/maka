@@ -42,6 +42,7 @@ import {
   applyRuntimeHostLifecycleTransition,
   recoverRuntimeHostLifecycleTransition,
   replaceRuntimeHostLifecycle,
+  resolveRecoverableRuntimeHostManagedDeployment,
   retireRuntimeHostLifecycleOwner,
   runtimeHostReconciliationTriggerDefinition,
   runtimeHostSupervisorDefinition,
@@ -530,6 +531,66 @@ test('does not consume replacement consent after the supervised Host exits', asy
     { code: 'owner_changed' },
   );
   assert.equal(retired, false);
+});
+
+test('requires explicit interruption authority to recover an unreachable supervised transition', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-recovery-consent-'));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  const authorityDirectory = dirname(
+    resolveRuntimeHostManagedDeploymentConfigPath(capability.rootId),
+  );
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  t.after(() => rm(authorityDirectory, { recursive: true, force: true }));
+
+  const current = config(capability.canonicalPath, capability.rootId, 1, 'launch_agent');
+  const desired = config(capability.canonicalPath, capability.rootId, 2, 'launch_agent');
+  await claimRuntimeHostManagedDeployment(capability, current);
+  const provider = new FakeLifecycleProvider('launch_agent', 'launch_agent_timer');
+  provider.install(current);
+  provider.running = 42;
+  const interruptedOwner = await tryAcquireStateRootOwner(capability);
+  assert.ok(interruptedOwner);
+  await beginRuntimeHostManagedDeploymentTransition(interruptedOwner, {
+    transactionId: '00000000-0000-4000-8000-000000000101',
+    operation: 'lifecycle_change',
+    recovery: 'complete_to',
+    expected: current,
+    desired,
+  });
+  Object.assign(provider.supervisor, {
+    activate: async () => {
+      provider.running = 43;
+    },
+    retire: async () => {
+      provider.running = null;
+      await interruptedOwner.close();
+    },
+  });
+  const deps: RuntimeHostLifecycleTransactionDeps = {
+    convergeOperator: async () => undefined,
+    verifyOperator: async () => undefined,
+    resolveProvider: () => provider,
+    connectExisting: async () =>
+      ({
+        kind: 'connected',
+        connection: {
+          rootId: capability.rootId,
+          request: async () => ({ pid: 43 }),
+          status: async () => ({ state: 'ready' }),
+          close: async () => undefined,
+        },
+      }) as unknown as Awaited<ReturnType<typeof connectExistingRuntimeHost>>,
+  };
+
+  await assert.rejects(resolveRecoverableRuntimeHostManagedDeployment(capability.rootId, deps), {
+    code: 'active_tasks',
+  });
+  const recovered = await resolveRecoverableRuntimeHostManagedDeployment(capability.rootId, deps, {
+    allowInterruptActiveTasks: true,
+  });
+
+  assert.equal(recovered.kind, 'active');
+  assert.deepEqual(recovered.kind === 'active' ? recovered.config : undefined, desired);
 });
 
 test('readiness waits for a reachable Host to leave the starting state', async (t) => {
