@@ -18,11 +18,9 @@
  */
 
 import { isThinkingLevel, type ThinkingLevel } from '../model-thinking.js';
-import type { ModelCatalogEntry, ModelCatalogPricing } from '../model-catalog.js';
+import type { ModelCatalogEntry } from '../model-catalog.js';
 import { decodeConnectionModel } from './connection-catalog-codec.js';
-import { booleanValue, domainError, exactRecord, stringValue } from './domain-codec.js';
-
-const PRICING_SOURCES = ['builtin', 'user_override'] as const;
+import { booleanValue, domainError, exactRecord } from './domain-codec.js';
 
 /**
  * A catalog entry as the Host resolved it. The entry is a projection, not
@@ -44,7 +42,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'thinkingLevels',
       'contextWindow',
       'knowledgeCutoff',
-      'pricing',
     ],
     ['id', 'canUseAsChatDefault', 'isDefault', 'supportsVision', 'thinkingLevels'],
   );
@@ -61,7 +58,6 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     supportsVision: booleanValue(item.supportsVision, 'entry vision support'),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
-    ...(item.pricing === undefined ? {} : { pricing: decodePricing(item.pricing) }),
   };
 }
 
@@ -75,39 +71,6 @@ function decodeThinkingLevels(value: unknown): readonly ThinkingLevel[] {
     throw domainError('entry thinking levels must be unique');
   }
   return levels;
-}
-
-function decodePricing(value: unknown): ModelCatalogPricing {
-  const item = exactRecord(
-    value,
-    'entry pricing',
-    ['inputUsdPer1M', 'outputUsdPer1M', 'cacheReadUsdPer1M', 'cacheWriteUsdPer1M', 'source'],
-    ['inputUsdPer1M', 'outputUsdPer1M', 'source'],
-  );
-  return {
-    inputUsdPer1M: priceValue(item.inputUsdPer1M, 'entry input price'),
-    outputUsdPer1M: priceValue(item.outputUsdPer1M, 'entry output price'),
-    ...(item.cacheReadUsdPer1M === undefined
-      ? {}
-      : { cacheReadUsdPer1M: priceValue(item.cacheReadUsdPer1M, 'entry cache read price') }),
-    ...(item.cacheWriteUsdPer1M === undefined
-      ? {}
-      : { cacheWriteUsdPer1M: priceValue(item.cacheWriteUsdPer1M, 'entry cache write price') }),
-    source: oneOf(item.source, PRICING_SOURCES, 'entry pricing source'),
-  };
-}
-
-function priceValue(value: unknown, context: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw domainError(`${context} must be a non-negative finite number`);
-  }
-  return value;
-}
-
-function oneOf<T extends string>(value: unknown, allowed: readonly T[], context: string): T {
-  const parsed = stringValue(value, context, 64);
-  if (!(allowed as readonly string[]).includes(parsed)) throw domainError(`${context} is invalid`);
-  return parsed as T;
 }
 
 function pick(item: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {

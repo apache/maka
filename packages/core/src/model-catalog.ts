@@ -33,7 +33,6 @@ import {
   providerSupportsModelDiscovery,
   type HostResolvedConnectionCatalog,
 } from './llm-connections.js';
-import type { PricingConfig } from './usage-stats/types.js';
 import { lookupModelMetadata, resolveModelVisionSupport } from './model-metadata.js';
 import {
   relayModelProfile,
@@ -41,15 +40,6 @@ import {
   type RelayModelProfiles,
   type ThinkingLevel,
 } from './model-thinking.js';
-import { pricingModelKey } from './usage-stats/pricing.js';
-
-export interface ModelCatalogPricing {
-  inputUsdPer1M: number;
-  outputUsdPer1M: number;
-  cacheReadUsdPer1M?: number;
-  cacheWriteUsdPer1M?: number;
-  source: 'builtin' | 'user_override';
-}
 
 /**
  * One model as the Host resolved it for one connection.
@@ -58,11 +48,18 @@ export interface ModelCatalogPricing {
  * desktop IPC boundary, so a field nothing renders is paid for on every
  * catalog read by every attached client — and the ones that were here
  * (`providerType`, `connectionSlug`, `source`, `unavailableReason`,
- * `lifecycle`, `docsUrl`, `inputLimit`, `maxOutputTokens`, `structuredOutput`,
- * `lastUpdated`, `modalities`, `provenance`, and every capability but vision)
- * had none. They are not needed today; when a surface actually asks for one,
- * add it back with the reader that wants it. `makeEntry` still consults all of
- * those facts to decide `canUseAsChatDefault` — they simply stop being shipped.
+ * `lifecycle`, `inputLimit`, `maxOutputTokens`, `structuredOutput`,
+ * `lastUpdated`, `modalities`, `provenance`, `pricing`, and every capability
+ * but vision) had none. They are not needed today; when a surface actually asks
+ * for one, add it back with the reader that wants it. `makeEntry` still
+ * consults all of those facts to decide `canUseAsChatDefault` — they simply
+ * stop being shipped.
+ *
+ * `pricing` was the one that had no producer either: nothing ever passed rates
+ * in, so the field, its two builder inputs and its wire decoder existed for a
+ * picker that shows a rate beside a model. That picker can arrive with them.
+ * Cost accounting never depended on it — `record-llm-call.ts` prices a call
+ * from `pricingModelKey` when the call is recorded.
  */
 export interface ModelCatalogEntry {
   id: string;
@@ -84,15 +81,6 @@ export interface ModelCatalogEntry {
   thinkingLevels: readonly ThinkingLevel[];
   contextWindow?: number;
   knowledgeCutoff?: string;
-  /**
-   * Per-1M rates for this model. The only field kept without a producer: no
-   * caller passes `pricing` yet, so it is always absent today. Cost accounting
-   * itself does not depend on it — `record-llm-call.ts` prices a call from
-   * `pricingModelKey` when the call is recorded. This is the seam for showing
-   * a rate beside a model in a picker, and stays until that surface exists or
-   * is ruled out.
-   */
-  pricing?: ModelCatalogPricing;
 }
 
 export interface BuildConnectionModelCatalogInput {
@@ -106,8 +94,6 @@ export interface BuildConnectionModelCatalogInput {
     | 'modelSource'
     | 'relayModelProfiles'
   >;
-  pricing?: Iterable<PricingConfig>;
-  pricingSource?: 'builtin' | 'user_override';
 }
 
 export interface BuildModelCatalogInput {
@@ -118,8 +104,6 @@ export interface BuildModelCatalogInput {
   fallbackModels?: string[];
   /** A provider Maka has retired: its models list but can no longer be chosen. */
   providerRetired?: boolean;
-  pricing?: Iterable<PricingConfig>;
-  pricingSource?: 'builtin' | 'user_override';
   /** Ids the catalog must list even when no inventory describes them (#1584). */
   savedModelIds?: Iterable<string | undefined | null>;
   /** Per-model user declarations; authoritative over every catalog source. */
@@ -252,8 +236,6 @@ export function buildConnectionModelCatalogEntries(
     // keep offering models that can no longer send — `runtimeAdapter:
     // 'unavailable'` blocks the send, not the choice.
     providerRetired: defaults.retired === true,
-    pricing: input.pricing,
-    pricingSource: input.pricingSource,
     ...(connection.relayModelProfiles ? { relayModelProfiles: connection.relayModelProfiles } : {}),
     // Enabling a model IS a user choice — the raw array is written only by the
     // user, in connection settings — so it projects an entry even when no
@@ -438,7 +420,6 @@ function makeEntry(
 ): ModelCatalogEntry {
   const { input, normalizedDefaultModel } = ctx;
   const normalizedModel = { ...model, id: model.id.trim() };
-  const pricing = findPricing(input, normalizedModel.id);
   const metadata = lookupModelMetadata(input.providerType, normalizedModel.id);
   const contextWindow = normalizedModel.contextWindow ?? metadata.contextWindow;
   const description = normalizedModel.description ?? metadata.description;
@@ -487,7 +468,6 @@ function makeEntry(
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
-    ...(pricing ? { pricing } : {}),
   };
 }
 
@@ -569,24 +549,4 @@ function normalizedIdSet(ids: Iterable<string | undefined | null> | undefined): 
     if (trimmed) result.add(trimmed);
   }
   return result;
-}
-
-function findPricing(input: BuildModelCatalogInput, id: string): ModelCatalogPricing | null {
-  if (!input.pricing) return null;
-  const modelKey = pricingModelKey(input.providerType, id);
-  for (const item of input.pricing) {
-    if (item.modelKey !== modelKey) continue;
-    return {
-      inputUsdPer1M: item.inputUsdPer1M,
-      outputUsdPer1M: item.outputUsdPer1M,
-      ...(item.cacheReadUsdPer1M !== undefined
-        ? { cacheReadUsdPer1M: item.cacheReadUsdPer1M }
-        : {}),
-      ...(item.cacheWriteUsdPer1M !== undefined
-        ? { cacheWriteUsdPer1M: item.cacheWriteUsdPer1M }
-        : {}),
-      source: input.pricingSource ?? 'builtin',
-    };
-  }
-  return null;
 }

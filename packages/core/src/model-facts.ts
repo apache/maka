@@ -103,6 +103,14 @@ export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
   return { schemaVersion: MODEL_FACTS_SCHEMA_VERSION, overrides };
 }
 
+/**
+ * `structuredOutput` and `lastUpdated` are declared, generated, decoded and
+ * overridable here, and nothing reads either one. They stay anyway: this
+ * validator fails closed on an unknown key, and it fails the whole document, so
+ * retiring a field would make one stale line in a user's `model-facts.json`
+ * discard every override in the file. Dropping them is a release decision with
+ * a migration, not a cleanup.
+ */
 export function normalizeModelFactOverride(value: unknown): ModelFactOverride {
   if (!isRecord(value)) throw new Error('Model fact override must be an object');
   const allowed = new Set([
