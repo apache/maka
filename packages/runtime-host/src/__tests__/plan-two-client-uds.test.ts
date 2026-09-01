@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { withTimeout } from '@maka/core/test-only/async-primitives';
+import { waitFor, withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -225,21 +225,27 @@ async function waitForTerminal(
   initial: OperationOutput<'plan.turn.start'>['turn'],
 ): Promise<void> {
   let snapshot = initial;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (
-      snapshot.status === 'completed' ||
-      snapshot.status === 'failed' ||
-      snapshot.status === 'cancelled'
-    ) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    snapshot = await connection.request('turn.query', {
-      sessionId: snapshot.sessionId,
-      turnId: snapshot.turnId,
-    });
-  }
-  throw new Error('Plan execution Turn did not settle');
+  await waitFor(
+    async () => {
+      if (
+        snapshot.status === 'completed' ||
+        snapshot.status === 'failed' ||
+        snapshot.status === 'cancelled'
+      ) {
+        return true;
+      }
+      snapshot = await connection.request('turn.query', {
+        sessionId: snapshot.sessionId,
+        turnId: snapshot.turnId,
+      });
+      return false;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Plan execution Turn did not settle',
+    },
+  );
 }
 
 async function nextFrameOfKind<K extends SubscriptionFrame['kind']>(
