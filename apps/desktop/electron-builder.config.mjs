@@ -284,6 +284,11 @@ const baseDesktopBuilderConfig = {
     // the running app, so it cannot follow the user's icon choice.
     icon: 'assets/app-icons/sky.png',
     category: 'Development',
+    // Without this electron-builder names the binary after the npm package, and
+    // this one is scoped: `@maka/desktop` sanitizes to `@makadesktop`, which is
+    // not a name a desktop entry's `Exec=` can launch. Only Linux derives an
+    // executable name this way, which is why macOS and Windows never showed it.
+    executableName: 'maka',
     // fpm refuses to build a deb without a maintainer, and the field must
     // carry an address. The project list is the only stable one; no individual
     // owns the package.

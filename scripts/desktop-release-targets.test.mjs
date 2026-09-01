@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
 import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
 
@@ -28,7 +29,11 @@ import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-
 // itself is the only way to know whether that statement is true, so this test
 // drives its own resolution functions rather than restating their behaviour.
 const require = createRequire(import.meta.url);
-const { computeArchToTargetNamesMap } = require('app-builder-lib/out/targets/targetFactory');
+const { Packager } = require('app-builder-lib');
+const {
+  computeArchToTargetNamesMap,
+  createTargets,
+} = require('app-builder-lib/out/targets/targetFactory');
 const { expandMacro } = require('app-builder-lib/out/util/macroExpander');
 const { Arch, getArtifactArchName } = require('builder-util/out/arch');
 const { normalizeOptions } = require('electron-builder/out/builder');
@@ -169,6 +174,72 @@ test('no packaging script builds an architecture other than its own', async () =
     // on macOS, one that was never notarized.
     assert.equal(architectures.size, 1, `${name} builds ${[...architectures].join(' and ')}`);
     assert.ok(name.endsWith(`-${[...architectures][0]}`), `${name} does not name its architecture`);
+  }
+});
+
+/**
+ * A Linux executable name reaches the desktop entry's `Exec=` and `Icon=`, so it
+ * has to be a name a shell and a desktop environment will accept.
+ */
+const LINUX_EXECUTABLE_NAME = /^[a-z0-9][a-z0-9+._-]*$/u;
+const DESKTOP_PROJECT_DIRECTORY = fileURLToPath(new URL('../apps/desktop', import.meta.url));
+
+/**
+ * electron-builder rewrites the configuration object it is handed — `normalizeFiles`
+ * turns `files` into records in place — and `resolveDesktopBuilderConfig` returns one
+ * shared module-level object outside the Nightly branch. Packaging calls it once, so
+ * this only bites a test that builds several packagers. `beforePack` is a function and
+ * cannot be structured-cloned; it is carried across by reference and never invoked here.
+ */
+function isolatedBuilderConfig() {
+  const { beforePack, ...rest } = resolveDesktopBuilderConfig({});
+  return { ...structuredClone(rest), beforePack };
+}
+
+/**
+ * electron-builder settles the Linux executable name and the deb's metadata long
+ * before it packages anything, and both are drawn from places the packaging
+ * configuration never mentions: the executable name falls back to the npm package
+ * name — which is scoped here, so it is not a legal executable name — and fpm
+ * refuses to run without a project homepage the manifests do not declare. Neither
+ * failure needs a build to observe, and neither is visible on macOS or Windows.
+ * Asking electron-builder costs milliseconds on any host; learning it from a real
+ * Linux build costs a runner, and learning it on release day costs a release.
+ */
+test('electron-builder accepts the configuration for every Linux target', async () => {
+  const scripts = (await packagingScripts()).filter(
+    ([, command]) => parseElectronBuilderArguments(command).linux,
+  );
+  assert.ok(scripts.length > 0, 'no Linux packaging script to check');
+
+  for (const [name, command] of scripts) {
+    const { targets } = normalizeOptions(parseElectronBuilderArguments(command));
+    for (const [platform, raw] of targets) {
+      const packager = new Packager({
+        targets,
+        projectDir: DESKTOP_PROJECT_DIRECTORY,
+        config: isolatedBuilderConfig(),
+      });
+      await packager.validateConfig();
+      const helper = await packager.createHelper(platform);
+
+      assert.match(
+        helper.executableName,
+        LINUX_EXECUTABLE_NAME,
+        `${name} would install the executable as ${helper.executableName}`,
+      );
+      // The AppImage target inherits an empty `checkOptions`, so the assertion
+      // above is the only one that covers it; fpm implements it and is where the
+      // packaging metadata — homepage, maintainer — is demanded.
+      for (const target of createTargets(
+        new Map(),
+        [...raw.values()].flat(),
+        packager.projectDir,
+        helper,
+      )) {
+        await target.checkOptions();
+      }
+    }
   }
 });
 
