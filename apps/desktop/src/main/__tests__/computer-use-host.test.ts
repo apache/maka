@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -136,6 +136,23 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the Windows private helper entry with the same host hash gate', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-windows-host-'));
+    try {
+      const binaryPath = process.execPath;
+      const hash = createHash('sha256').update(await readFile(binaryPath)).digest('hex');
+      const manifestPath = join(directory, 'bundled-tools.json');
+      await writeFile(manifestPath, JSON.stringify({ windowsCu: { binarySha256: hash, distributionReady: false } }));
+      const development = createComputerUseHost({ isPackaged: false, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(development.selected.backendId, 'windows-native');
+      await writeFile(manifestPath, JSON.stringify({ windowsCu: { binarySha256: hash, distributionReady: true } }));
+      const packaged = createComputerUseHost({ isPackaged: true, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(packaged.selected.backendId, 'windows-native');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
