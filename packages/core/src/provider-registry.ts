@@ -112,6 +112,12 @@ export type ProviderModelDiscovery =
 
 export interface ProviderDefaults {
   label: string;
+  /**
+   * A shorter name for a dense model row, where the label's qualifier is
+   * already implied by the row it sits in ("Z.AI Coding Plan" → "Z.AI"). Set
+   * only where it actually differs; `providerMenuLabel` falls back to `label`.
+   */
+  menuLabel?: string;
   description: string;
   baseUrl: string;
   baseUrlTemplate?: string;
@@ -775,6 +781,7 @@ const providerRegistry = {
   },
   'kimi-coding-plan': {
     label: 'Kimi Coding Plan',
+    menuLabel: 'Kimi',
     description: 'Kimi for Coding over selectable Anthropic- or OpenAI-compatible protocol.',
     baseUrl: 'https://api.kimi.com/coding/v1',
     authKind: 'api_key',
@@ -915,6 +922,7 @@ const providerRegistry = {
   },
   google: {
     label: 'Google Gemini',
+    menuLabel: 'Google',
     description: 'Gemini API key access from Google AI Studio.',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
     authKind: 'api_key',
@@ -990,6 +998,7 @@ const providerRegistry = {
   },
   'zai-coding-plan': {
     label: 'Z.AI Coding Plan',
+    menuLabel: 'Z.AI',
     description: 'GLM coding plan over OpenAI-compatible protocol.',
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     authKind: 'api_key',
@@ -1959,6 +1968,7 @@ const providerRegistry = {
   },
   'openai-codex': {
     label: 'OpenAI OAuth (ChatGPT / Codex)',
+    menuLabel: 'OpenAI OAuth',
     description: 'ChatGPT/Codex account OAuth path for OpenAI Responses models.',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
     authKind: 'oauth_token',
@@ -2016,6 +2026,20 @@ export function providerFallbackModelIds(
 ): string[] {
   const broken = new Set(defaults.brokenModelIds ?? []);
   return defaults.fallbackModels.filter((id) => !broken.has(id));
+}
+
+/**
+ * The provider's name as a model row shows it, or `undefined` when this build
+ * does not register the provider.
+ *
+ * The one answer for a picker. Clients used to keep their own tables — the
+ * model menu carried ten overrides of which six restated `label` verbatim, and
+ * the TUI read `label` directly — so the same provider was named three ways
+ * depending on which surface the user was looking at.
+ */
+export function providerMenuLabel(providerType: string): string | undefined {
+  const defaults = providerDefaultsOf(providerType);
+  return defaults && (defaults.menuLabel ?? defaults.label);
 }
 
 export const READY_PROVIDER_TYPES = providerTypesByOrder('readyOrder');

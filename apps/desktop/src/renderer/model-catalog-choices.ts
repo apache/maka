@@ -18,13 +18,13 @@
  */
 
 import {
+  offerableCatalogEntries,
   resolveConnectionModelCatalog,
   type ModelCatalogEntry,
 } from '@maka/core/model-catalog';
 import {
-  PROVIDER_REGISTRY,
-  connectionEnabledModelIds,
   providerDefaultsOf,
+  providerMenuLabel,
   type HostResolvedConnectionCatalog,
 } from '@maka/core/llm-connections';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
@@ -61,7 +61,9 @@ export function buildCatalogDailyReviewModelOptions(
   for (const connection of connections) {
     if (!isModelConsumerConnection(connection)) continue;
     const safeSourceLabel = safeConnectionLabel(connection.providerType, connection.slug, providerCounts);
-    for (const entry of dailyReviewCatalogEntries(connection)) {
+    // The Host decides what is offerable; the caller appends a saved-but-
+    // unavailable selection itself, with a label that says so.
+    for (const entry of offerableCatalogEntries(connection)) {
       const key = dailyReviewModelKey(connection.slug, entry.id);
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
@@ -91,22 +93,6 @@ export function buildCatalogDailyReviewModelOptions(
   return options;
 }
 
-/**
- * The offerable models of one connection. A model the user picked that this
- * connection can no longer serve is not offered here — the caller appends the
- * saved key with an "unavailable" label so the current selection stays
- * visible without pretending it is selectable.
- */
-function dailyReviewCatalogEntries(
-  connection: Pick<LlmConnection, 'slug' | 'providerType' | 'enabledModelIds' | 'defaultModel'> &
-    HostResolvedConnectionCatalog,
-): readonly ModelCatalogEntry[] {
-  const enabledIds = new Set(connectionEnabledModelIds(connection));
-  return connection.catalogEntries.filter(
-    (entry) => enabledIds.has(entry.id) && entry.canUseAsChatDefault,
-  );
-}
-
 function modelDisplayLabel(entry: Pick<ModelCatalogEntry, 'id' | 'displayName'>): string {
   return entry.displayName?.trim() || entry.id;
 }
@@ -132,7 +118,7 @@ function safeConnectionLabel(
   connectionSlug: string,
   providerCounts: ReadonlyMap<ProviderType, number>,
 ): string {
-  const label = PROVIDER_REGISTRY[providerType].label;
+  const label = providerMenuLabel(providerType) ?? providerType;
   return (providerCounts.get(providerType) ?? 0) > 1 ? `${label} · ${connectionSlug}` : label;
 }
 

@@ -328,6 +328,47 @@ export function resolveConnectionModelCatalog(
   });
 }
 
+/**
+ * The models this connection offers a user to pick, as the Host decided them.
+ *
+ * The one answer to "may this model be offered". Every picker — chat, daily
+ * review, the TUI, subagent presets — asks here, so a Desktop and a TUI
+ * attached to one Host cannot disagree about what is selectable. Three facts
+ * decide it and all three are the Host's:
+ *
+ *   1. the connection is enabled and its provider is one this build registers;
+ *   2. the user enabled this model on it;
+ *   3. the Host's entry says the connection can hold a chat on it.
+ *
+ * (3) already subsumes what clients used to re-derive locally: a retired
+ * provider, a quarantined `brokenModelIds` id, and a model whose metadata says
+ * it cannot chat are all non-offerable before a client sees them. A client
+ * re-testing any of those against its OWN registry answers for a build that is
+ * not the one running the send.
+ *
+ * A saved selection that is no longer offered is deliberately absent rather
+ * than filtered late: callers that must keep the current value visible append
+ * it themselves with an "unavailable" label, which says the true thing.
+ *
+ * The Codex subscription's servable set needs no filter here either: the Host
+ * resolved these entries through `normalizeOpenAiCodexConnection`, so an id
+ * that subscription cannot serve never became an entry to intersect with.
+ */
+export function offerableCatalogEntries(
+  connection: {
+    readonly providerType: string;
+    readonly enabled: boolean;
+    readonly enabledModelIds?: readonly string[];
+    readonly defaultModel?: string;
+  } & HostResolvedConnectionCatalog,
+): readonly ModelCatalogEntry[] {
+  if (!connection.enabled || !providerDefaultsOf(connection.providerType)) return [];
+  const enabled = new Set(connectionEnabledModelIds(connection));
+  return connection.catalogEntries.filter(
+    (entry) => entry.canUseAsChatDefault && enabled.has(entry.id),
+  );
+}
+
 /** A connection editor's unsaved model state. */
 export interface ConnectionModelDraft {
   readonly models: readonly ModelInfo[];

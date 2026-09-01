@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { isRetiredProvider } from '@maka/core/provider-registry';
+import { offerableCatalogEntries } from '@maka/core/model-catalog';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
   readRuntimeHostConnectionCatalog,
@@ -95,31 +95,23 @@ export function createRuntimeHostOnboardingSurface(
 export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
   const choices: ModelChoice[] = [];
   for (const connection of catalog.connections) {
-    // A retained retired connection stays enabled so its credential remains
-    // visible and deletable, but every send through it is refused — offering
-    // its models here would only let the user pick something that fails on
-    // selection.
-    if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
-    // Model facts come from the Host's resolved entry, not from the stored row
-    // merged against this build's bundled metadata: a TUI older or newer than
-    // the Host must describe a model the way the Host does.
-    const entriesById = new Map(connection.catalogEntries.map((entry) => [entry.id, entry]));
-    const ids = new Set(connection.enabledModelIds);
-    if (catalog.defaultTarget?.connectionId === connection.connectionId) {
-      ids.add(catalog.defaultTarget.modelId);
-    }
-    for (const model of ids) {
-      const entry = entriesById.get(model);
+    // Which models are offerable, and what is true about them, are both the
+    // Host's answers. A TUI older or newer than the Host must not re-derive
+    // either against its own registry and bundled metadata — that is how the
+    // same model came to be selectable here and refused elsewhere. A retained
+    // retired connection drops out through the same gate: its entries are not
+    // chat-capable, so none of them reach this list.
+    for (const entry of offerableCatalogEntries(connection)) {
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
         connectionName: connection.name,
         providerType: connection.providerType,
-        model,
-        displayName: entry?.displayName,
+        model: entry.id,
+        displayName: entry.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
-        contextWindow: entry?.contextWindow,
-        thinkingLevels: entry?.thinkingLevels ?? [],
+        contextWindow: entry.contextWindow,
+        thinkingLevels: entry.thinkingLevels,
       });
     }
   }

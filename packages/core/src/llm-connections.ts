@@ -44,6 +44,7 @@ import {
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
+  providerMenuLabel,
   type ApplyPatchProtocol,
   type ProviderCatalogGroup,
   type ProviderCategory,
@@ -64,6 +65,7 @@ export {
   RECOMMENDED_PROVIDER_TYPES,
   providerDefaultsOf,
   providerFallbackModelIds,
+  providerMenuLabel,
 };
 export type {
   ApplyPatchProtocol,

@@ -28,6 +28,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { type PermissionMode } from '@maka/core/permission';
 import { type OrchestrationMode } from '@maka/core/orchestration';
 import { type SessionEvent, type ShellRunUpdate } from '@maka/core/events';
@@ -4083,7 +4084,16 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           enabled: true,
           enabledModelIds: ['shared-model'],
-          catalogEntries: [],
+          // The Host resolves the catalog before projecting it, and the picker
+          // offers what those entries say. A bare `[]` describes a snapshot no
+          // Host produces for an enabled model.
+          catalogEntries: resolveConnectionModelCatalog({
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: '',
+            enabledModelIds: ['shared-model'],
+            models: [{ id: 'shared-model' }],
+          }),
           models: [{ id: 'shared-model' }],
         },
         {
@@ -4094,7 +4104,16 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           enabled: true,
           enabledModelIds: ['shared-model'],
-          catalogEntries: [],
+          // The Host resolves the catalog before projecting it, and the picker
+          // offers what those entries say. A bare `[]` describes a snapshot no
+          // Host produces for an enabled model.
+          catalogEntries: resolveConnectionModelCatalog({
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: '',
+            enabledModelIds: ['shared-model'],
+            models: [{ id: 'shared-model' }],
+          }),
           models: [{ id: 'shared-model' }],
         },
       ],
