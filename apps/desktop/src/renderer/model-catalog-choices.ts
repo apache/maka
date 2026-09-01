@@ -17,12 +17,9 @@
  * under the License.
  */
 
+import { resolveConnectionModelCatalog, type ModelCatalogEntry } from '@maka/core/model-catalog';
 import {
   offerableCatalogEntries,
-  resolveConnectionModelCatalog,
-  type ModelCatalogEntry,
-} from '@maka/core/model-catalog';
-import {
   providerDefaultsOf,
   providerMenuLabel,
   type HostResolvedConnectionCatalog,

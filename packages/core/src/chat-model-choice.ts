@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { offerableCatalogEntries } from './model-catalog.js';
 import { type ThinkingLevel } from './model-thinking.js';
 import {
+  offerableCatalogEntries,
   providerDefaultsOf,
   providerMenuLabel,
   type ProjectedLlmConnection,

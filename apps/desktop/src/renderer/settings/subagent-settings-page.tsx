@@ -43,11 +43,11 @@ import {
 } from '@maka/core/subagent-settings';
 import { type AppSettings, type UpdateAppSettingsResult } from '@maka/core/settings';
 import {
+  offerableCatalogEntries,
   type HostResolvedConnectionCatalog,
   type LlmConnection,
 } from '@maka/core/llm-connections';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
-import { offerableCatalogEntries } from '@maka/core/model-catalog';
 import {
   Badge,
   Button,

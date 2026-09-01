@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { offerableCatalogEntries } from '@maka/core/model-catalog';
+import { offerableCatalogEntries } from '@maka/core/llm-connections';
 import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
   readRuntimeHostConnectionCatalog,

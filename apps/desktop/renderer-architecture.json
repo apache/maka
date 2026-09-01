@@ -4361,7 +4361,6 @@
           "./subagent-preset-presentation.js": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 1,
-          "@maka/core/model-catalog": 1,
           "@maka/core/model-thinking": 1,
           "@maka/core/settings": 1,
           "@maka/core/subagent-settings": 1,
