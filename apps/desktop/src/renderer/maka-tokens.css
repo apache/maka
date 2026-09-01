@@ -550,10 +550,10 @@
      property of the Astryx palette, and buying it back would mean product CSS
      repainting a component's own surface.
 
-     Second, `--h-control-md/lg/xl` now DERIVE from `--size-element-sm/md/lg`
-     rather than restating 28/32/36. That is Astryx's own control ruler — what
-     its Button, TextInput, Selector and SideNavItem read — and maka's md/lg/xl
-     are those three at shifted names. While the two were independent
+     Second, `--h-control-md/lg` now DERIVE from `--size-element-sm/md`
+     rather than restating 28/32. That is Astryx's own control ruler — what
+     its Button, TextInput, Selector and SideNavItem read — and maka's md/lg
+     are those two at shifted names. While the two were independent
      arithmetic, a chip at `--h-control-lg` and an Astryx control beside it at
      `--size-element-md` lined up by coincidence; retuning Astryx would have
      reintroduced, at the box, the drift #1878 removed at the line. They agree
@@ -838,23 +838,31 @@
 
   /* === control-height scale (component sizing, #520 PR4 item 15) =========
      Interactive controls (button / input / select / tab / nav row / badge /
-     kbd) live on the 4px spacing ruler and share the `--h-control-*` scale
-     (20, 24, 28, 32, 36, and 40px).
+     kbd) live on the 4px spacing ruler and share the `--h-control-*` scale.
+     FOUR rungs, and only four: 20 / 24 / 28 / 32px.
      The historic sidebar/会话/设置 height drift came from off-ruler bare px
      (22/26/30/34/38); this scale converges them. Square icon controls use
      the same token for width and height (their footprint = control size).
      The app-chrome bar (--h-titlebar) stays as its own semantic token — it is
      structure, not a control.
-     xs/sm/2xl (20/24/40) stay on the --space-* ruler: Astryx has no element
-     token at those sizes, and 20px is what its own Badge and Kbd take from
+
+     THE LETTERS ARE OFFSET BY ONE RUNG AGAINST ASTRYX, and that is the trap
+     this note exists to close: maka's `md` is Astryx's `--size-element-sm`,
+     maka's `lg` is its `-md`. `--h-control-sm` is 24px while
+     `--size-element-sm` three lines below is 28px — same letter, different
+     box. Resolve a rung from the control's height, never from the letter that
+     sounds right, exactly as with the radius ladder (DESIGN.md §6). The offset
+     is structural: maka's ladder starts two rungs lower than Astryx's, because
+     xs/sm (20/24) have no Astryx element token at all and stay on the
+     --space-* ruler — 20px is what its own Badge and Kbd take from
      --spacing-5, so that tier already agrees by construction. */
   --h-control-xs:  var(--space-5);  /* 20px — kbd, dot, tiny chip / close  */
   --h-control-sm:  var(--space-6);  /* 24px — small button, chip, sidebar
                                       topbar button, model switcher       */
-  /* #1879: md/lg/xl DERIVE from Astryx rather than restating its numbers.
+  /* #1879: md/lg DERIVE from Astryx rather than restating its numbers.
      Astryx sizes Button, TextInput, Selector and SideNavItem off
-     `--size-element-sm/md/lg` (28/32/36); maka's md/lg/xl ARE those three at
-     shifted names. They used to be independent arithmetic on `--spacing`, so a
+     `--size-element-sm/md` (28/32); maka's md/lg ARE those two at shifted
+     names. They used to be independent arithmetic on `--spacing`, so a
      chip at `--h-control-lg` and an Astryx control beside it at
      `--size-element-md` lined up by coincidence. Now they cannot disagree. */
   --h-control-md:  var(--size-element-sm);  /* 28px — compact menu item, sm tab,
