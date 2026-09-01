@@ -147,6 +147,33 @@ describe('tool-result archive resources', () => {
     assert.ok(JSON.stringify(result).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
   });
 
+  test('keeps a queryable item after trimming escaped manifest keys', async () => {
+    const body = JSON.stringify({
+      kind: 'agent_swarm',
+      status: 'completed',
+      ...Object.fromEntries(
+        Array.from({ length: 24 }, (_, index) => ['key_' + index + '_' + '\\'.repeat(120), 'v']),
+      ),
+      items: [{ itemId: 'core', summary: 'complete' }],
+    });
+    const { ref, reader } = fixture(body);
+    const inspected = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    })) as { items: Array<{ itemId?: string }> };
+
+    assert.ok(JSON.stringify(inspected).length <= TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS);
+    assert.equal(inspected.items[0]?.itemId, 'core');
+
+    const queried = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'query',
+      itemId: inspected.items[0]?.itemId,
+    })) as { ok: boolean; itemId: string };
+    assert.equal(queried.ok, true);
+    assert.equal(queried.itemId, 'core');
+  });
+
   test('query selects one swarm item and paginates below the prune threshold', async () => {
     const body = JSON.stringify({
       kind: 'agent_swarm',

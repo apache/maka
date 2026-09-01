@@ -29,7 +29,6 @@ export const TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS = 7_500;
 const ARCHIVE_ARTIFACT_ID_PATTERN = /^[A-Za-z0-9._-]{1,160}$/;
 const MAX_MANIFEST_ITEMS = 100;
 const MAX_METADATA_STRING_CHARS = 160;
-const MANIFEST_RESPONSE_RESERVE_CHARS = 600;
 
 export type ToolResultArchiveResourceOperation = 'inspect' | 'read' | 'query' | 'search';
 
@@ -272,10 +271,8 @@ function inspectArchive(
     if (items) {
       const queryHint =
         'Call ArchiveRead with operation "query" and one of the listed itemId values.';
-      let manifestItems = fitManifestItems(
-        { ...buildObjectBase(), itemCount: items.length, queryHint, readHint },
-        items,
-      );
+      const projectedItems = items.slice(0, MAX_MANIFEST_ITEMS).map(inspectItem);
+      let manifestItems = projectedItems;
       const buildManifest = (): Record<string, unknown> => ({
         ...buildObjectBase(),
         itemCount: items.length,
@@ -286,11 +283,10 @@ function inspectArchive(
           ? { itemsTruncated: true, listedItemCount: manifestItems.length }
           : {}),
       });
-      // fitManifestItems uses a reserve for the final envelope. Re-check the
-      // complete object because keys, hints, and truncation metadata are part
-      // of the bounded response too.
+      // Keep one actionable itemId when it can fit, then trade keys for more
+      // manifest entries and re-add entries against the complete envelope.
       while (JSON.stringify(buildManifest()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS) {
-        if (manifestItems.length > 0) {
+        if (manifestItems.length > 1) {
           manifestItems = manifestItems.slice(0, -1);
           continue;
         }
@@ -298,7 +294,19 @@ function inspectArchive(
           objectKeys = objectKeys.slice(0, -1);
           continue;
         }
+        if (manifestItems.length > 0) {
+          manifestItems = [];
+          continue;
+        }
         break;
+      }
+      for (const projectedItem of projectedItems.slice(manifestItems.length)) {
+        const next = [...manifestItems, projectedItem];
+        manifestItems = next;
+        if (JSON.stringify(buildManifest()).length > TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS) {
+          manifestItems = next.slice(0, -1);
+          break;
+        }
       }
       return buildManifest();
     }
@@ -661,25 +669,6 @@ function inspectItem(value: unknown): unknown {
     ...(typeof value.summary === 'string' ? { summaryChars: value.summary.length } : {}),
     ...(typeof value.result === 'string' ? { resultChars: value.result.length } : {}),
   };
-}
-
-function fitManifestItems(base: Record<string, unknown>, items: readonly unknown[]): unknown[] {
-  const fitted: unknown[] = [];
-  for (const candidate of items.slice(0, MAX_MANIFEST_ITEMS)) {
-    const projected = inspectItem(candidate);
-    const next = [...fitted, projected];
-    if (
-      JSON.stringify({
-        ...base,
-        items: next,
-      }).length >
-      TOOL_RESULT_ARCHIVE_MAX_RESPONSE_CHARS - MANIFEST_RESPONSE_RESERVE_CHARS
-    ) {
-      break;
-    }
-    fitted.push(projected);
-  }
-  return fitted;
 }
 
 function boundedString(value: string, max: number = MAX_METADATA_STRING_CHARS): string {
